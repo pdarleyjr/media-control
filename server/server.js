@@ -236,7 +236,7 @@ app.get('/api/devices/:id/screenshot', (req, res) => {
     res.set('Cache-Control', 'no-cache');
     return res.send(buffer);
   }
-  const screenshot = sdb.prepare('SELECT * FROM screenshots WHERE device_id = ? ORDER BY created_at DESC LIMIT 1').get(req.params.id);
+  const screenshot = sdb.prepare('SELECT * FROM screenshots WHERE device_id = ? ORDER BY captured_at DESC LIMIT 1').get(req.params.id);
   if (!screenshot) return res.status(404).json({ error: 'No screenshot available' });
   const safePath = path.resolve(config.screenshotsDir, path.basename(screenshot.filepath));
   if (!safePath.startsWith(path.resolve(config.screenshotsDir))) return res.status(403).json({ error: 'Invalid path' });
@@ -438,11 +438,13 @@ app.get('/download/apk', (req, res) => {
   }
 });
 
-// SPA fallback for app routes
+// SPA fallback for app routes. Unmatched /api/ paths return 404 so misrouted
+// clients fail fast instead of hanging until Cloudflare's 15s upstream timeout.
 app.get('*', (req, res) => {
-  if (!req.path.startsWith('/api/')) {
-    res.sendFile(path.join(config.frontendDir, 'index.html'));
+  if (req.path.startsWith('/api/')) {
+    return res.status(404).json({ error: 'Not found' });
   }
+  res.sendFile(path.join(config.frontendDir, 'index.html'));
 });
 
 const listenPort = hasSsl ? config.httpsPort : config.port;
