@@ -39,9 +39,34 @@ export const api = {
   }),
 
   // Content
-  getContent: () => request('/content'),
+  getContent: (folderId) => {
+    if (folderId === undefined) return request('/content');
+    const q = folderId === null ? 'root' : encodeURIComponent(folderId);
+    return request(`/content?folder_id=${q}`);
+  },
   getContentItem: (id) => request(`/content/${id}`),
   deleteContent: (id) => request(`/content/${id}`, { method: 'DELETE' }),
+  updateContent: (id, data) => request(`/content/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  moveContent: (id, folderId) => request(`/content/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ folder_id: folderId })
+  }),
+
+  // Folders
+  getFolders: () => request('/folders'),
+  createFolder: (name, parentId) => request('/folders', {
+    method: 'POST',
+    body: JSON.stringify({ name, parent_id: parentId || null })
+  }),
+  renameFolder: (id, name) => request(`/folders/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ name })
+  }),
+  moveFolder: (id, parentId) => request(`/folders/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ parent_id: parentId || null })
+  }),
+  deleteFolder: (id) => request(`/folders/${id}`, { method: 'DELETE' }),
   uploadContent: async (file, onProgress) => {
     const formData = new FormData();
     formData.append('file', file);

@@ -65,6 +65,17 @@ const migrations = [
   "ALTER TABLE playlists ADD COLUMN published_snapshot TEXT",
   // Phase 4: group scheduling (column add only — full migration with CHECK below)
   "ALTER TABLE schedules ADD COLUMN group_id TEXT REFERENCES device_groups(id) ON DELETE SET NULL",
+  // Hierarchical content folders (per-user)
+  `CREATE TABLE IF NOT EXISTS content_folders (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    parent_id   TEXT REFERENCES content_folders(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_content_folders_user ON content_folders(user_id, parent_id)",
+  "ALTER TABLE content ADD COLUMN folder_id TEXT REFERENCES content_folders(id) ON DELETE SET NULL",
+  "CREATE INDEX IF NOT EXISTS idx_content_folder ON content(folder_id)",
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (e) { /* already exists */ }

@@ -8,13 +8,23 @@ const upload = require('../middleware/upload');
 const config = require('../config');
 const { checkStorageLimit, checkRemoteUrl } = require('../middleware/subscription');
 
-// List content for current user (admins see all)
+// List content for current user (admins see all).
+// folder_id filter: omit for everything; "root" or "" for root-level only; <uuid> for that folder.
 router.get('/', (req, res) => {
   const isAdmin = req.user.role === 'superadmin';
   const folder = req.query.folder;
+  const folderId = req.query.folder_id;
   let sql = `SELECT * FROM content ${isAdmin ? 'WHERE 1=1' : 'WHERE (user_id = ? OR user_id IS NULL)'}`;
   const params = isAdmin ? [] : [req.user.id];
   if (folder) { sql += ' AND folder = ?'; params.push(folder); }
+  if (folderId !== undefined) {
+    if (folderId === 'root' || folderId === '') {
+      sql += ' AND folder_id IS NULL';
+    } else {
+      sql += ' AND folder_id = ?';
+      params.push(folderId);
+    }
+  }
   sql += ' ORDER BY folder, created_at DESC LIMIT ? OFFSET ?';
   params.push(Math.min(parseInt(req.query.limit) || 100, 500), parseInt(req.query.offset) || 0);
   const content = db.prepare(sql).all(...params);
@@ -213,13 +223,27 @@ router.put('/:id', (req, res) => {
   const content = checkContentAccess(req, res);
   if (!content) return;
 
-  const { filename, mime_type, remote_url, folder } = req.body;
+  const { filename, mime_type, remote_url, folder, folder_id } = req.body;
   const updates = [];
   const values = [];
   if (filename !== undefined) { updates.push('filename = ?'); values.push(filename); }
   if (mime_type !== undefined) { updates.push('mime_type = ?'); values.push(mime_type); }
   if (remote_url !== undefined) { updates.push('remote_url = ?'); values.push(remote_url || null); }
   if (folder !== undefined) { updates.push('folder = ?'); values.push(folder || null); }
+  if (folder_id !== undefined) {
+    // Verify the destination folder belongs to the same user (admins can move anywhere).
+    let target = null;
+    if (folder_id) {
+      target = db.prepare('SELECT user_id FROM content_folders WHERE id = ?').get(folder_id);
+      if (!target) return res.status(400).json({ error: 'Invalid folder_id' });
+      const isAdmin = ['admin', 'superadmin'].includes(req.user.role);
+      if (!isAdmin && target.user_id !== req.user.id) {
+        return res.status(403).json({ error: 'Cannot move content to another user\'s folder' });
+      }
+    }
+    updates.push('folder_id = ?');
+    values.push(folder_id || null);
+  }
 
   if (updates.length > 0) {
     values.push(req.params.id);

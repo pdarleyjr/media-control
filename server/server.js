@@ -202,6 +202,7 @@ app.get('/api/content/:id/thumbnail', (req, res) => {
 const { requireAuth } = require('./middleware/auth');
 app.use('/api/devices', requireAuth, require('./routes/devices'));
 app.use('/api/content', requireAuth, require('./routes/content'));
+app.use('/api/folders', requireAuth, require('./routes/folders'));
 app.use('/api/assignments', requireAuth, require('./routes/assignments'));
 app.use('/api/provision', requireAuth, require('./routes/provisioning'));
 app.use('/api/layouts', requireAuth, require('./routes/layouts'));

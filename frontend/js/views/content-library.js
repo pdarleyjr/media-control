@@ -71,13 +71,12 @@ export function render(container) {
     </div>
     </div>
 
-    <div style="display:flex;gap:12px;margin-bottom:16px;align-items:center;flex-wrap:wrap">
+    <div style="display:flex;gap:12px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
       <input type="text" id="contentSearch" class="input" placeholder="Search content..." style="max-width:250px;width:100%">
-      <select id="folderFilter" class="input" style="max-width:180px;width:100%;background:var(--bg-input)">
-        <option value="">All Folders</option>
-      </select>
       <button class="btn btn-secondary btn-sm" id="newFolderBtn">+ New Folder</button>
     </div>
+    <div id="folderBreadcrumb" style="display:flex;gap:6px;align-items:center;margin-bottom:12px;font-size:13px;flex-wrap:wrap"></div>
+    <div id="folderGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:16px"></div>
     <div class="content-grid" id="contentGrid">
       <div class="empty-state" style="grid-column:1/-1"><h3>Loading...</h3></div>
     </div>
@@ -148,35 +147,40 @@ export function render(container) {
     }
   });
 
-  // Content search + folder filter
+  // Content search filters items currently shown in the grid.
   function filterContent() {
     const q = document.getElementById('contentSearch').value.toLowerCase();
-    const folder = document.getElementById('folderFilter').value;
     document.querySelectorAll('.content-item').forEach(item => {
       const name = item.querySelector('.content-item-name')?.textContent.toLowerCase() || '';
-      const itemFolder = item.dataset.folder || '';
-      const matchSearch = !q || name.includes(q);
-      const matchFolder = !folder || itemFolder === folder;
-      item.style.display = (matchSearch && matchFolder) ? '' : 'none';
+      item.style.display = (!q || name.includes(q)) ? '' : 'none';
+    });
+    document.querySelectorAll('.folder-card').forEach(card => {
+      const name = card.dataset.name?.toLowerCase() || '';
+      card.style.display = (!q || name.includes(q)) ? '' : 'none';
     });
   }
   document.getElementById('contentSearch').oninput = filterContent;
-  document.getElementById('folderFilter').onchange = filterContent;
 
-  // New folder
-  document.getElementById('newFolderBtn').onclick = () => {
+  // Create folder in the current folder.
+  document.getElementById('newFolderBtn').onclick = async () => {
     const name = prompt('Folder name:');
-    if (name) {
-      // Just add to the dropdown - folders are created when content is moved into them
-      const opt = document.createElement('option');
-      opt.value = name; opt.textContent = name;
-      document.getElementById('folderFilter').appendChild(opt);
-      showToast(`Folder "${name}" created. Edit content to move it here.`, 'info');
-    }
+    if (!name || !name.trim()) return;
+    try {
+      await api.createFolder(name.trim(), state.currentFolderId);
+      showToast(`Folder "${name}" created`, 'success');
+      loadContent();
+    } catch (err) { showToast(err.message, 'error'); }
   };
 
   loadContent();
 }
+
+// View state — current folder navigation. Lives at module scope so the back button
+// and other handlers can read it without threading it through every callback.
+const state = {
+  currentFolderId: null, // null = root
+  folders: [],           // all folders for this user (flat tree)
+};
 
 async function handleFiles(files) {
   const progress = document.getElementById('uploadProgress');
@@ -205,26 +209,116 @@ async function handleFiles(files) {
 
 async function loadContent() {
   const grid = document.getElementById('contentGrid');
-  if (!grid) return;
+  const folderGrid = document.getElementById('folderGrid');
+  const breadcrumb = document.getElementById('folderBreadcrumb');
+  if (!grid || !folderGrid || !breadcrumb) return;
 
   try {
-    const content = await api.getContent();
+    const [content, folders] = await Promise.all([
+      api.getContent(state.currentFolderId === null ? null : state.currentFolderId),
+      api.getFolders(),
+    ]);
+    state.folders = folders;
+
+    // Breadcrumb path: walk parent_id chain from current folder up to root.
+    const folderById = new Map(folders.map(f => [f.id, f]));
+    const path = [];
+    let cursor = state.currentFolderId ? folderById.get(state.currentFolderId) : null;
+    while (cursor) {
+      path.unshift(cursor);
+      cursor = cursor.parent_id ? folderById.get(cursor.parent_id) : null;
+    }
+    breadcrumb.innerHTML = `
+      <a href="#" data-folder-nav="" style="color:var(--text-secondary);text-decoration:none">All Content</a>
+      ${path.map(f => `
+        <span style="color:var(--text-muted)">/</span>
+        <a href="#" data-folder-nav="${f.id}" style="color:var(--text-primary);text-decoration:none">${esc(f.name)}</a>
+      `).join('')}
+      ${state.currentFolderId ? `
+        <button class="btn btn-secondary btn-sm" id="renameFolderBtn" style="margin-left:auto">Rename</button>
+        <button class="btn btn-danger btn-sm" id="deleteFolderBtn">Delete folder</button>
+      ` : ''}
+    `;
+    breadcrumb.querySelectorAll('[data-folder-nav]').forEach(a => {
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        const id = a.dataset.folderNav;
+        state.currentFolderId = id || null;
+        loadContent();
+      });
+    });
+    const renameBtn = breadcrumb.querySelector('#renameFolderBtn');
+    if (renameBtn) renameBtn.onclick = async () => {
+      const current = folderById.get(state.currentFolderId);
+      const name = prompt('Rename folder:', current?.name || '');
+      if (!name || !name.trim() || name === current?.name) return;
+      try {
+        await api.renameFolder(state.currentFolderId, name.trim());
+        showToast('Folder renamed', 'success');
+        loadContent();
+      } catch (err) { showToast(err.message, 'error'); }
+    };
+    const deleteBtn = breadcrumb.querySelector('#deleteFolderBtn');
+    if (deleteBtn) deleteBtn.onclick = async () => {
+      if (!confirm('Delete this folder? Content inside moves back to the root level. Subfolders will also be deleted.')) return;
+      try {
+        const parentId = folderById.get(state.currentFolderId)?.parent_id || null;
+        await api.deleteFolder(state.currentFolderId);
+        showToast('Folder deleted', 'success');
+        state.currentFolderId = parentId;
+        loadContent();
+      } catch (err) { showToast(err.message, 'error'); }
+    };
+
+    // Render subfolders of the current folder.
+    const subfolders = folders.filter(f => (f.parent_id || null) === state.currentFolderId);
+    folderGrid.innerHTML = subfolders.map(f => `
+      <div class="folder-card" data-folder-id="${f.id}" data-name="${esc(f.name)}"
+           style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-md);padding:14px;cursor:pointer;display:flex;align-items:center;gap:10px"
+           data-drop-folder="${f.id}">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+        </svg>
+        <div style="font-size:14px;font-weight:500;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.name)}</div>
+      </div>
+    `).join('');
+    folderGrid.querySelectorAll('.folder-card').forEach(card => {
+      card.addEventListener('click', () => {
+        state.currentFolderId = card.dataset.folderId;
+        loadContent();
+      });
+      // Drop target for dragging content items into this folder.
+      card.addEventListener('dragover', (e) => { e.preventDefault(); card.style.outline = '2px solid var(--primary)'; });
+      card.addEventListener('dragleave', () => { card.style.outline = ''; });
+      card.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        card.style.outline = '';
+        const contentId = e.dataTransfer.getData('text/content-id');
+        if (!contentId) return;
+        try {
+          await api.moveContent(contentId, card.dataset.folderId);
+          showToast('Moved', 'success');
+          loadContent();
+        } catch (err) { showToast(err.message, 'error'); }
+      });
+    });
+
     if (!content.length) {
-      grid.innerHTML = `
+      grid.innerHTML = subfolders.length ? '' : `
         <div class="empty-state" style="grid-column:1/-1">
           <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
             <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
             <polyline points="13 2 13 9 20 9"/>
           </svg>
-          <h3>No content yet</h3>
-          <p>Upload videos and images to get started.</p>
+          <h3>${state.currentFolderId ? 'This folder is empty' : 'No content yet'}</h3>
+          <p>${state.currentFolderId ? 'Drag content here, or use the Move action.' : 'Upload videos and images to get started.'}</p>
         </div>
       `;
       return;
     }
 
     grid.innerHTML = content.map(c => `
-      <div class="content-item" data-content-id="${c.id}" data-folder="${c.folder || ''}">
+      <div class="content-item" draggable="true" data-content-id="${c.id}" data-folder="${c.folder || ''}">
         <div class="content-item-preview">
           ${c.mime_type === 'video/youtube'
             ? `<div style="position:relative;width:100%;height:100%;background:#000;display:flex;align-items:center;justify-content:center">
@@ -283,15 +377,12 @@ async function loadContent() {
       </div>
     `).join('');
 
-    // Populate folder dropdown
-    const folderSelect = document.getElementById('folderFilter');
-    const folders = [...new Set(content.filter(c => c.folder).map(c => c.folder))].sort();
-    folders.forEach(f => {
-      if (!folderSelect.querySelector(`option[value="${f}"]`)) {
-        const opt = document.createElement('option');
-        opt.value = f; opt.textContent = `${f} (${content.filter(c => c.folder === f).length})`;
-        folderSelect.appendChild(opt);
-      }
+    // Drag-to-move: each content item exposes its id; folder cards are the drop targets.
+    grid.querySelectorAll('.content-item').forEach(item => {
+      item.addEventListener('dragstart', (e) => {
+        e.dataTransfer.setData('text/content-id', item.dataset.contentId);
+        e.dataTransfer.effectAllowed = 'move';
+      });
     });
 
     // Delete handler via event delegation
@@ -397,6 +488,13 @@ function showEditModal(contentItem, onSave) {
             <option value="image/webp" ${contentItem.mime_type === 'image/webp' ? 'selected' : ''}>Image (WebP)</option>
           </select>
         </div>
+        <div class="form-group">
+          <label>Folder</label>
+          <select id="editFolderId" class="input" style="background:var(--bg-input)">
+            <option value="">— Root —</option>
+            ${state.folders.map(f => `<option value="${f.id}" ${contentItem.folder_id === f.id ? 'selected' : ''}>${esc(folderPath(f, state.folders))}</option>`).join('')}
+          </select>
+        </div>
         ${!isRemote ? `
         <div class="form-group">
           <label>Replace File</label>
@@ -428,10 +526,12 @@ function showEditModal(contentItem, onSave) {
       const headers = { Authorization: 'Bearer ' + token };
 
       // Update metadata
+      const folderId = overlay.querySelector('#editFolderId')?.value || '';
       const updateData = {};
       if (filename !== contentItem.filename) updateData.filename = filename;
       if (mimeType !== contentItem.mime_type) updateData.mime_type = mimeType;
       if (remoteUrl !== undefined && remoteUrl !== contentItem.remote_url) updateData.remote_url = remoteUrl;
+      if ((contentItem.folder_id || '') !== folderId) updateData.folder_id = folderId || null;
 
       if (Object.keys(updateData).length > 0) {
         await fetch('/api/content/' + contentItem.id, {
@@ -489,6 +589,19 @@ function showPreview(content) {
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
   overlay.querySelector('#closePreview').onclick = () => overlay.remove();
   document.body.appendChild(overlay);
+}
+
+// Build a "Parent / Child / Leaf" path for a folder so the move-to dropdown is unambiguous
+// when two folders share a name in different branches.
+function folderPath(folder, all) {
+  const byId = new Map(all.map(f => [f.id, f]));
+  const parts = [folder.name];
+  let cursor = folder;
+  while (cursor.parent_id && byId.has(cursor.parent_id)) {
+    cursor = byId.get(cursor.parent_id);
+    parts.unshift(cursor.name);
+  }
+  return parts.join(' / ');
 }
 
 export function cleanup() {}
