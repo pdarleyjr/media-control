@@ -689,7 +689,10 @@
           }
           overlay.remove();
         };
-        container.style.position = 'relative';
+        // Don't override container.style.position here — #playerContainer is already
+        // position:fixed so absolute children anchor to it. Setting position:relative
+        // collapsed the container to 0 height (no content sizing it in normal flow),
+        // which made the YT iframe render black.
         container.appendChild(overlay);
       }
 
