@@ -421,7 +421,7 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
     for (const g of (data.device_groups || [])) {
       const newId = uuid.v4();
       idMap.groups[g.id] = newId;
-      db.prepare(`INSERT INTO device_groups (id, user_id, name, color, created_at) VALUES (?, ?, ?, ?, ?)`).run(newId, userId, g.name, g.color || '#3B82F6', g.created_at || Math.floor(Date.now() / 1000));
+      db.prepare(`INSERT INTO device_groups (id, user_id, workspace_id, name, color, created_at) VALUES (?, ?, ?, ?, ?, ?)`).run(newId, userId, workspaceId, g.name, g.color || '#3B82F6', g.created_at || Math.floor(Date.now() / 1000));
       stats.device_groups++;
     }
     for (const gm of (data.device_group_members || [])) {
