@@ -284,15 +284,16 @@ router.put('/:id', (req, res) => {
   }
   if (folder !== undefined) { updates.push('folder = ?'); values.push(folder || null); }
   if (folder_id !== undefined) {
-    // Verify the destination folder belongs to the same user. Only superadmin gets
-    // cross-user access — matches the policy in routes/folders.js so a plain "admin"
-    // can't move content into a folder they can't see in GET /api/folders.
+    // Phase 2.2c: target folder must live in the same workspace as the
+    // content row being modified. Strict same-workspace check - no
+    // platform_admin override, because cross-workspace folder references
+    // break the isolation model. To move content across workspaces, switch
+    // workspace first.
     if (folder_id) {
-      const target = db.prepare('SELECT user_id FROM content_folders WHERE id = ?').get(folder_id);
+      const target = db.prepare('SELECT workspace_id FROM content_folders WHERE id = ?').get(folder_id);
       if (!target) return res.status(400).json({ error: 'Invalid folder_id' });
-      const isSuperadmin = PLATFORM_ROLES.includes(req.user.role);
-      if (!isSuperadmin && target.user_id !== req.user.id) {
-        return res.status(403).json({ error: 'Cannot move content to another user\'s folder' });
+      if (target.workspace_id !== content.workspace_id) {
+        return res.status(403).json({ error: 'Cannot move content to a folder in another workspace' });
       }
     }
     updates.push('folder_id = ?');

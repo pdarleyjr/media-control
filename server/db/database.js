@@ -90,6 +90,9 @@ const migrations = [
   "ALTER TABLE video_wall_devices ADD COLUMN canvas_y REAL",
   "ALTER TABLE video_wall_devices ADD COLUMN canvas_width REAL",
   "ALTER TABLE video_wall_devices ADD COLUMN canvas_height REAL",
+  // Phase 2.2c: content_folders gets workspace_id. Phase 1 missed this table.
+  "ALTER TABLE content_folders ADD COLUMN workspace_id TEXT REFERENCES workspaces(id)",
+  "CREATE INDEX IF NOT EXISTS idx_content_folders_workspace ON content_folders(workspace_id)",
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (e) { /* already exists */ }
@@ -326,6 +329,46 @@ function migrateGroupSchedules() {
 }
 
 migrateGroupSchedules();
+
+// Phase 2.2c migration: backfill content_folders.workspace_id from owner's
+// default workspace. The ALTER lives in the migrations array above; this
+// one-shot populates the column for any rows that pre-date it.
+const PHASE6_MIGRATION_ID = 'phase6_content_folders_workspace';
+
+function migrateFolderWorkspaceIds() {
+  const already = db.prepare('SELECT 1 FROM schema_migrations WHERE id = ?').get(PHASE6_MIGRATION_ID);
+  if (already) return;
+
+  // Check the column exists before trying to backfill. (Defensive: on a fresh
+  // install the schema.sql defines content_folders without the column, the
+  // ALTER above adds it, and we proceed; but if anything went sideways we
+  // skip rather than throw.)
+  const cols = db.prepare("PRAGMA table_info(content_folders)").all();
+  if (!cols.some(c => c.name === 'workspace_id')) {
+    console.warn('Phase 2.2c migration: content_folders.workspace_id column missing, skipping backfill');
+    return;
+  }
+
+  const stmt = db.prepare(`
+    UPDATE content_folders SET workspace_id = (
+      SELECT w.id FROM workspaces w
+      JOIN workspace_members wm ON wm.workspace_id = w.id
+      WHERE wm.user_id = content_folders.user_id
+      ORDER BY wm.joined_at ASC LIMIT 1
+    )
+    WHERE workspace_id IS NULL AND user_id IS NOT NULL
+  `);
+
+  const tx = db.transaction(() => {
+    const result = stmt.run();
+    db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(PHASE6_MIGRATION_ID);
+    return result.changes;
+  });
+  const changes = tx();
+  if (changes > 0) console.log(`Phase 2.2c migration: backfilled workspace_id on ${changes} content_folders row(s).`);
+}
+
+migrateFolderWorkspaceIds();
 
 // Prune old telemetry (keep last 24h worth at 15s intervals = ~5760, cap at 6000)
 function pruneTelemetry(deviceId) {
