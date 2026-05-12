@@ -1,6 +1,6 @@
 # ScreenTinker
 
-Open-source digital signage management software. Control content on TVs, displays, and kiosks from anywhere.
+ScreenTinker is self-hosted digital signage software. Manage screens across multiple locations from one dashboard — built for retail, offices, lobbies, and any environment where you need centralized control over what's displayed on remote screens. Open source, multi-tenant, single-developer maintained with direct contact access.
 
 **Hosted version:** [screentinker.com](https://screentinker.com) — free tier available, no credit card required.
 **Community:** [Discord](https://discord.gg/JHWQRPaG)
@@ -19,10 +19,11 @@ Open-source digital signage management software. Control content on TVs, display
 - **Device telemetry** — battery, storage, RAM, CPU, WiFi signal strength, and uptime reported by Android players
 - **Offline resilience** — both web and Android players keep displaying cached content during server or internet outages (Android ContentCache, web player Service Worker); state syncs when connectivity returns
 - **Mobile-responsive** — full management dashboard and landing page work on phones and tablets
-- **Alerts** — email notifications when devices go offline
-- **Teams** — multi-user with owner, editor, and viewer roles; team-based device access
+- **Workspaces** — multi-tenant data model: organizations contain workspaces, workspaces contain devices/content/playlists/schedules; users can be members of multiple workspaces and switch via a dropdown in the sidebar
+- **Member roles** — six-level hierarchy (platform_admin / org_owner / org_admin / workspace_admin / workspace_editor / workspace_viewer) gated at every API route
+- **Alerts** — email notifications via Microsoft Graph when devices go offline; built-in spam protection (2h dedup, 24h long-offline cutoff, sequential send pattern); per-user opt-out via Settings → Account
 - **White-label** — custom branding, colors, logo, favicon, CSS, and domain
-- **Content management** — folder organization, remote URL content (no upload needed), YouTube embeds, video duration detection via ffprobe, automatic thumbnail generation
+- **Content management** — folder organization, remote URL content (no upload needed), YouTube embeds, video duration detection via ffprobe, automatic thumbnail generation, Unicode-safe filenames (NFC normalization + UTF-8 multipart decoding)
 - **Export/Import** — v2 format with playlists, device groups, schedules, and optional media bundling (ZIP); backward-compatible v1 import with automatic playlist migration
 - **Device authentication** — per-device tokens for secure WebSocket connections; devices authenticate on every reconnect
 - **Account management** — in-app password change, profile editing, email-based password reset
@@ -30,6 +31,48 @@ Open-source digital signage management software. Control content on TVs, display
 - **Built-in billing** — Stripe integration for SaaS subscriptions (optional)
 - **Auto-update** — OTA updates pushed to devices automatically
 - **Activity log** — full audit trail of user and system actions
+
+## Architecture
+
+### Multi-tenancy model
+
+Three nested primitives:
+
+```
+organizations (billing + branding container)
+   workspaces  (resource scope: devices, content, playlists, schedules, walls, layouts, widgets, groups)
+      members (users with a role on that workspace)
+```
+
+Every resource (device, content row, playlist, schedule, etc.) carries a `workspace_id`. Every API route filters by it. Cross-workspace access requires switching workspaces via the sidebar dropdown — there are no magic role-based "see everything" bypasses on individual resource routes.
+
+### Role hierarchy
+
+Six roles, top wins:
+
+| Role | Scope | Cap |
+|---|---|---|
+| `platform_admin` | every workspace in the system | full read/write (via acting-as on workspaces they're not a direct member of) |
+| `org_owner` | one organization | billing + delete + admin within all workspaces in the org |
+| `org_admin` | one organization | admin within all workspaces in the org (no billing) |
+| `workspace_admin` | one workspace | manage members, rename, full read/write |
+| `workspace_editor` | one workspace | create/edit content, devices, playlists, schedules; no member changes |
+| `workspace_viewer` | one workspace | read-only |
+
+### Workspace switcher
+
+Users who are members of more than one workspace see a dropdown in the sidebar header. Switching mints a fresh JWT with the new `current_workspace_id` claim and reloads the page. Platform admins see every workspace in the system.
+
+### Auto-migration on boot
+
+Schema migrations run automatically the first time the server starts after a git pull. **Self-hosters never need to run a manual migration command.** On detecting a pre-multi-tenancy database, the server takes a timestamped snapshot (`server/db/remote_display.pre-migration-<timestamp>.db`), runs the Phase 1 migration (creates `organizations` / `workspaces` / `workspace_members` tables, backfills `workspace_id` on every resource, one auto-created Default workspace per existing user), then continues startup. If the migration fails the server prints the restore command and exits.
+
+### Data flow
+
+- **Android / web players** → device-namespace WebSocket → server. Authenticated per-device with a long-lived device token. Each device joins a room keyed on its `device_id`.
+- **Admin dashboard** → dashboard-namespace WebSocket → server. Authenticated with the user's JWT. Each socket joins one room per accessible workspace so outbound events (device status, screenshots, playback progress) only reach dashboards that should see them.
+- **Admin REST** → `/api/*` HTTPS → Express → SQLite. Everything scoped by `workspace_id` from JWT `current_workspace_id` claim.
+- **Email** → Microsoft Graph `sendMail` via client-credentials OAuth flow. In-memory token cache. Sequential send pattern through alert backlogs to respect Graph's per-app concurrency limits.
 
 ## Supported Platforms
 
@@ -39,8 +82,9 @@ Android TV, Fire TV, Raspberry Pi, Windows, ChromeOS, LG webOS, Samsung Tizen, a
 
 ### Requirements
 
-- Node.js 20+
+- Node.js **20.6+** (the npm scripts use the built-in `--env-file-if-exists` flag, added in 20.6)
 - Linux, macOS, or Windows
+- SQLite (bundled via `better-sqlite3`; no separate install needed — `npm install` handles the native bindings)
 
 ### Quick Start
 
@@ -48,10 +92,14 @@ Android TV, Fire TV, Raspberry Pi, Windows, ChromeOS, LG webOS, Samsung Tizen, a
 git clone https://github.com/screentinker/screentinker.git
 cd screentinker/server
 npm install
-SELF_HOSTED=true node server.js
+SELF_HOSTED=true npm start
 ```
 
 The server starts on port 3001 (HTTP). If SSL certificates are present in `server/certs/`, it starts on port 3443 (HTTPS) with automatic HTTP-to-HTTPS redirect. Open the URL shown in the startup banner. The first registered user gets full access with all features unlocked.
+
+Schema migrations run automatically on first boot — no manual migration commands at any point in the lifecycle.
+
+`npm start` is preferred over `node server.js` directly because the script invokes Node with `--env-file-if-exists=.env` so a `server/.env` file (gitignored) is loaded automatically for local dev.
 
 ### Environment Variables
 
@@ -59,6 +107,7 @@ The server starts on port 3001 (HTTP). If SSL certificates are present in `serve
 |----------|-------------|---------|
 | `PORT` | HTTP port | `3001` |
 | `HTTPS_PORT` | HTTPS port (used when SSL certs are present) | `3443` |
+| `NODE_ENV` | Runtime env (`production` enables Express production optimizations + stricter error handling) | _(none)_ |
 | `SELF_HOSTED` | First user gets all features unlocked | `false` |
 | `DISABLE_REGISTRATION` | Block new account creation (including OAuth auto-signup). First-user setup on an empty DB is still allowed. | `false` |
 | `APP_URL` | Your public URL (used for Stripe callbacks) | _(none)_ |
@@ -191,6 +240,12 @@ Environment=SELF_HOSTED=true
 # Environment=APP_URL=https://signage.yourcompany.com
 # Environment=STRIPE_SECRET_KEY=sk_live_...
 # Environment=STRIPE_WEBHOOK_SECRET=whsec_...
+# Email alerts via Microsoft Graph - see Email Alerts section above for setup
+# Environment=GRAPH_TENANT_ID=...
+# Environment=GRAPH_CLIENT_ID=...
+# Environment=GRAPH_CLIENT_SECRET=...
+# Environment=GRAPH_SENDER_EMAIL=support@yourcompany.com
+# Environment=GRAPH_SENDER_NAME=Your Brand
 
 [Install]
 WantedBy=multi-user.target
@@ -265,6 +320,8 @@ sudo systemctl restart screentinker
 
 Your database, uploads, and configuration are preserved — only code files are updated.
 
+**Schema migrations run automatically.** No manual migration commands at any point. On detecting a database that hasn't been through Phase 1 multi-tenancy migration yet, the server takes a timestamped snapshot first (`server/db/remote_display.pre-migration-<timestamp>.db`) and only continues startup once migration commits cleanly. If migration fails, the server logs the snapshot's path and exits — restore it with `cp` and investigate before retrying.
+
 ### Backups
 
 The SQLite database is at `server/db/remote_display.db`. Back it up regularly:
@@ -325,6 +382,41 @@ keytool -genkey -v -keystore android/release-key.jks -keyalg RSA -keysize 2048 -
    - **Any browser**: Open `https://your-instance/player` in kiosk/fullscreen mode
 4. Enter the pairing code shown on the device
 
+### For Developers
+
+Working on ScreenTinker itself:
+
+```bash
+git clone https://github.com/screentinker/screentinker.git
+cd screentinker/server
+npm install
+npm start          # starts in dev with --env-file-if-exists=.env
+# or:
+npm run dev        # same as start, plus --watch for auto-restart
+```
+
+**`.env` file (gitignored):** create `server/.env` for local configuration. Anything documented in the env var tables above works. Common starting set:
+
+```
+SELF_HOSTED=true
+APP_URL=https://localhost:3443
+# Optional: Microsoft Graph email config for testing real delivery
+# GRAPH_TENANT_ID=...
+# GRAPH_CLIENT_ID=...
+# GRAPH_CLIENT_SECRET=...
+# GRAPH_SENDER_EMAIL=you@yourcompany.com
+# Optional: dev safety - only let these recipient emails through to Graph
+# GRAPH_DEV_RESTRICT_TO=you@yourcompany.com,colleague@yourcompany.com
+```
+
+**No M365 access?** That's fine. With `GRAPH_*` env vars unset, `sendEmail()` short-circuits and logs `[EMAIL] not configured - would send to ...` to stdout. Everything else runs normally; only outbound email is suppressed. Useful for backend work that touches the email path without setting up an Azure app.
+
+**Running against a fresh prod DB clone?** Set `GRAPH_DEV_RESTRICT_TO=your-email@example.com` to keep accidental sends from reaching real users in the cloned database. Sends to anyone outside the list are logged but never posted to Graph.
+
+**Reporting issues:** [GitHub Issues](https://github.com/screentinker/screentinker/issues) for bugs and feature requests, or drop into [Discord](https://discord.gg/JHWQRPaG) for quick questions and feedback.
+
+**Contributions welcome.** Fork → branch → PR. There are no formal style guides yet beyond what you can pick up from reading the existing code. Tests aren't required but smoke-test against your local server before opening a PR.
+
 ## Project Structure
 
 ```
@@ -348,11 +440,24 @@ scripts/          Device setup scripts + admin recovery
 
 ## Tech Stack
 
-- **Backend:** Node.js, Express, Socket.IO, SQLite (better-sqlite3)
-- **Frontend:** Vanilla JS SPA (no framework, no build step)
+- **Backend:** Node.js 20.6+, Express, Socket.IO, SQLite (better-sqlite3)
+- **Frontend:** Vanilla JS SPA (no framework, no build step), ES modules, Service Worker for offline support
 - **Android:** Kotlin, ExoPlayer, Socket.IO client
 - **Auth:** JWT with bcrypt, Google/Microsoft OAuth (optional)
+- **Email:** Microsoft Graph via `@azure/msal-node` client-credentials (optional)
 - **Payments:** Stripe (optional)
+- **Data model:** multi-tenant — organizations contain workspaces contain resources; six-level role hierarchy gated server-side at every API route
+
+## Support
+
+ScreenTinker is built and maintained by one developer. If the project is useful to you and you want to support continued development:
+
+- Star the repo on GitHub
+- Open [issues](https://github.com/screentinker/screentinker/issues) with feedback or bug reports
+- Drop into the [Discord](https://discord.gg/JHWQRPaG) and say hi
+- Contribute back if you've extended something useful
+
+GitHub Sponsors integration is planned. Direct contact: [dan@bytetinker.net](mailto:dan@bytetinker.net) or via Discord.
 
 ## License
 
