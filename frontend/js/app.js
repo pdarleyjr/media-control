@@ -19,6 +19,7 @@ import * as admin from './views/admin.js';
 import * as adminPlayerDebug from './views/admin-player-debug.js';
 import * as designer from './views/designer.js';
 import * as playlists from './views/playlists.js';
+import * as screenShare from './views/screen-share.js';
 import * as workspaceMembers from './views/workspace-members.js';
 import { applyBranding } from './branding.js';
 import { t } from './i18n.js';
@@ -317,6 +318,7 @@ function route() {
     else if (hash === '#/schedule' && link.dataset.view === 'schedule') link.classList.add('active');
     else if (hash === '#/widgets' && link.dataset.view === 'widgets') link.classList.add('active');
     else if ((hash.startsWith('#/wall') || hash === '#/walls') && link.dataset.view === 'walls') link.classList.add('active');
+    else if (hash === '#/screen-share' && link.dataset.view === 'screen-share') link.classList.add('active');
     else if (hash === '#/reports' && link.dataset.view === 'reports') link.classList.add('active');
     else if (hash === '#/activity' && link.dataset.view === 'activity') link.classList.add('active');
     else if (hash === '#/designer' && link.dataset.view === 'designer') link.classList.add('active');
@@ -330,8 +332,8 @@ function route() {
     currentView = dashboard;
     dashboard.render(app);
   } else if (hash === '#/screen-share') {
-    const { render } = await import('./views/screen-share.js');
-    await render(container);
+    currentView = screenShare;
+    screenShare.render(app);
   } else if (hash.startsWith('#/device/')) {
     const deviceId = hash.split('#/device/')[1].split('/')[0];
     currentView = deviceDetail;

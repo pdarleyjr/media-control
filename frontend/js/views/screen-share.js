@@ -106,17 +106,18 @@ export async function render(container) {
     </div>
   `;
 
+  // Wire listeners IMMEDIATELY so a click during async fetches isn't lost.
   wireSocketListenersOnce();
-  await Promise.all([
-    primeIceServers(),
-    populateTargetList(),
-  ]);
-
   container.querySelector('#ss-start-capture').addEventListener('click', () => startCapture(container));
   container.querySelector('#ss-stop-capture').addEventListener('click', () => stopCapture(container));
   container.querySelectorAll('input[name="content-hint"]').forEach(el => {
     el.addEventListener('change', (e) => applyContentHint(e.target.value));
   });
+
+  // Fire-and-forget the network calls. The router does not await render(),
+  // so any awaits here only block our own progress, not the page.
+  primeIceServers();
+  populateTargetList();
 }
 
 export function unmount() {
