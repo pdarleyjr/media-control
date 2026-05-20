@@ -256,7 +256,6 @@ app.use('/api/auth/register', rateLimit(60000, 5)); // 5 registrations per minut
 app.use('/api/auth/users', rateLimit(60000, 20));
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/admin', require('./routes/admin-sync'));
-app.use('/api/screen-share', requireAuth, require('./routes/screen-share'));
 // Rate limit pairing to prevent brute force (5 attempts per minute per IP)
 app.use('/api/provision/pair', rateLimit(60000, 5));
 // Rate limit expensive operations
@@ -382,6 +381,7 @@ app.use('/api/schedules', requireAuth, resolveTenancy, require('./routes/schedul
 app.use('/api/walls', requireAuth, resolveTenancy, require('./routes/video-walls'));
 app.use('/api/teams', requireAuth, resolveTenancy, require('./routes/teams'));
 app.use('/api/reports', requireAuth, resolveTenancy, require('./routes/reports'));
+app.use('/api/screen-share', requireAuth, require('./routes/screen-share'));  // screen-share REST: ICE/TURN credential issuance, JWT-gated
 app.use('/api/groups', requireAuth, resolveTenancy, require('./routes/device-groups'));
 app.use('/api/playlists', requireAuth, resolveTenancy, require('./routes/playlists'));
 app.use('/api/activity', requireAuth, resolveTenancy, require('./routes/activity'));
