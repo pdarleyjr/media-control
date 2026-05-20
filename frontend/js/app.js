@@ -329,6 +329,9 @@ function route() {
   if (hash === '#/' || hash === '#' || hash === '') {
     currentView = dashboard;
     dashboard.render(app);
+  } else if (hash === '#/screen-share') {
+    const { render } = await import('./views/screen-share.js');
+    await render(container);
   } else if (hash.startsWith('#/device/')) {
     const deviceId = hash.split('#/device/')[1].split('/')[0];
     currentView = deviceDetail;

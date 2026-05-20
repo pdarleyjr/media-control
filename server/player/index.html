@@ -218,6 +218,24 @@
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
+<script>
+// Expose the player's socket to the screen-share receiver. The player JS
+// calls io('/device', ...) - we monkey-patch io() so the resulting Manager's
+// /device namespace socket is captured on window.__playerSocket.
+(function () {
+  if (!window.io) return;
+  var origIo = window.io;
+  window.io = function () {
+    var s = origIo.apply(this, arguments);
+    if (arguments[0] === '/device' || (s && s.nsp === '/device')) {
+      window.__playerSocket = s;
+    }
+    return s;
+  };
+  Object.keys(origIo).forEach(function (k) { window.io[k] = origIo[k]; });
+})();
+</script>
+
   <script>
     // ==================== i18n ====================
     // Lightweight inline i18n for the player. The player is a standalone page
@@ -1680,5 +1698,6 @@
       }
     });
   </script>
+  <script src="/player/screen-share-receiver.js" defer></script>
 </body>
 </html>
