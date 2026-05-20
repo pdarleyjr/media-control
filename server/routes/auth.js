@@ -86,7 +86,7 @@ router.post('/register', (req, res) => {
   }
   const { email, password, name } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
-  if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  if (password.length < 4) return res.status(400).json({ error: 'Password must be at least 4 characters' });
 
   const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email.toLowerCase());
   if (existing) return res.status(409).json({ error: 'Email already registered' });
@@ -400,7 +400,7 @@ router.put('/me', requireAuth, (req, res) => {
       .run(email_alerts ? 1 : 0, req.user.id);
   }
   if (password) {
-    if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    if (password.length < 4) return res.status(400).json({ error: 'Password must be at least 4 characters' });
     const row = db.prepare('SELECT password_hash, auth_provider FROM users WHERE id = ?').get(req.user.id);
     if (!row) return res.status(404).json({ error: 'User not found' });
     if (row.auth_provider !== 'local') {
@@ -459,8 +459,8 @@ router.put('/users/:id/role', requireAuth, requireSuperAdmin, (req, res) => {
 // current_password — this endpoint is the override path.
 router.put('/users/:id/password', requireAuth, requireAdmin, (req, res) => {
   const { password } = req.body;
-  if (!password || password.length < 8) {
-    return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  if (!password || password.length < 4) {
+    return res.status(400).json({ error: 'Password must be at least 4 characters' });
   }
   if (req.params.id === req.user.id) {
     return res.status(400).json({ error: 'Use Settings > Change Password for your own account' });

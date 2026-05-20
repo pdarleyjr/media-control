@@ -255,6 +255,7 @@ app.use('/api/auth/register', rateLimit(60000, 5)); // 5 registrations per minut
 // path prefix first, so this fires before /api/auth catches the request.
 app.use('/api/auth/users', rateLimit(60000, 20));
 app.use('/api/auth', require('./routes/auth'));
+app.use('/api/admin', require('./routes/admin-sync'));
 // Rate limit pairing to prevent brute force (5 attempts per minute per IP)
 app.use('/api/provision/pair', rateLimit(60000, 5));
 // Rate limit expensive operations
