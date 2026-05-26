@@ -77,6 +77,9 @@ const dashboardCsp = helmet.contentSecurityPolicy({
     objectSrc: ["'none'"],
     baseUri: ["'self'"],
     formAction: ["'self'"],
+    // Allow MBFD Workspace (cloud.mbfdhub.com) to embed this dashboard via
+    // External Sites widget. All other origins still rejected.
+    frameAncestors: ["'self'", "https://cloud.mbfdhub.com"],
     // Don't force HTTPS — self-hosted deployments may run on HTTP-only LANs.
     // Public production traffic is upgraded by Cloudflare / the reverse proxy and
     // protected by the HSTS header set above.
@@ -87,6 +90,7 @@ const dashboardCsp = helmet.contentSecurityPolicy({
 app.use(helmet({
   contentSecurityPolicy: false,        // we apply our own below, scoped to non-render paths
   crossOriginEmbedderPolicy: false,    // allow loading external widget content
+  frameguard: false,                   // X-Frame-Options can't express multi-origin; frame-ancestors does
   hsts: { maxAge: 31536000, includeSubDomains: true },
 }));
 
