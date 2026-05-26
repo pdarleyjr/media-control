@@ -106,6 +106,20 @@
       iceServers: [
         { urls: 'stun:stun.cloudflare.com:3478' },
         { urls: 'stun:stun.l.google.com:19302' },
+        // OpenRelay free public TURN by Metered.ca - public credentials by design.
+        // Lets the receiver advertise its own relay candidates so the broadcaster
+        // can reach it through symmetric NAT / firewall (the broadcaster's TURN
+        // alone is not always enough on truly hostile networks).
+        {
+          urls: [
+            'turn:openrelay.metered.ca:80',
+            'turn:openrelay.metered.ca:80?transport=tcp',
+            'turn:openrelay.metered.ca:443',
+            'turns:openrelay.metered.ca:443?transport=tcp',
+          ],
+          username: 'openrelayproject',
+          credential: 'openrelayproject',
+        },
       ],
       iceTransportPolicy: 'all',
     };
