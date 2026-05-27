@@ -728,6 +728,28 @@
           currentIndex = ((data.current_index % playlist.length) + playlist.length) % playlist.length;
           playCurrentItem();
         }
+        // YouTube follower alignment. The IFrame API has no playbackRate so
+        // we can't nudge gently; we hard-seek on any non-trivial drift. Also
+        // forcibly resume playback if the embed is stuck in UNSTARTED (-1),
+        // PAUSED (2), or CUED (5) — Silk Browser's autoplay policy on Fire
+        // TV is one of the reasons a follower can land in CUED.
+        if (activeYtPlayer && typeof data.position_sec === 'number' &&
+            typeof activeYtPlayer.getCurrentTime === 'function') {
+          try {
+            const now = Date.now();
+            const latency = data.sent_at ? Math.max(0, (now - data.sent_at) / 1000) : 0;
+            const target = data.position_sec + latency;
+            const ytTime = activeYtPlayer.getCurrentTime() || 0;
+            if (Math.abs(ytTime - target) > 1.5) {
+              activeYtPlayer.seekTo(target, true);
+            }
+            const state = activeYtPlayer.getPlayerState ? activeYtPlayer.getPlayerState() : -1;
+            // YT.PlayerState: -1=unstarted, 0=ended, 1=playing, 2=paused, 3=buffering, 5=cued
+            if (state === -1 || state === 2 || state === 5) {
+              activeYtPlayer.playVideo();
+            }
+          } catch (_) { /* tolerated — followers retry every sync tick */ }
+        }
         // Hold the follower close to the leader's clock. Account for relay
         // latency: the leader was at position_sec when sent_at was stamped;
         // by now a bit more time has elapsed, so target = position + latency.
@@ -972,9 +994,17 @@
       if (!wallConfig?.is_leader || !socket?.connected || playlist.length === 0) return;
       const item = playlist[currentIndex];
       if (!item) return;
-      const position = currentVideoEl
-        ? (currentVideoEl.currentTime || 0)
-        : Math.max(0, (Date.now() - currentItemStartedAt) / 1000);
+      // Prefer the actual playing element's position. YouTube is in an iframe,
+      // so we read its clock via the JS API; HTML5 <video> reports directly;
+      // image / widget items use wall-clock since item start (no embedded clock).
+      let position = 0;
+      if (activeYtPlayer && typeof activeYtPlayer.getCurrentTime === 'function') {
+        try { position = activeYtPlayer.getCurrentTime() || 0; } catch (_) {}
+      } else if (currentVideoEl) {
+        position = currentVideoEl.currentTime || 0;
+      } else {
+        position = Math.max(0, (Date.now() - currentItemStartedAt) / 1000);
+      }
       socket.emit('wall:sync', {
         wall_id: wallConfig.wall_id,
         device_id: config.deviceId,
@@ -1220,14 +1250,20 @@
       // Destroy old player without triggering side effects (callbacks check generation)
       if (activeYtPlayer) { try { activeYtPlayer.destroy(); } catch {} activeYtPlayer = null; }
 
+      // Wall-follower flag drives mute/overlay/autoplay decisions below. Followers
+      // never have their own audio (leader-only audio rule prevents echo across
+      // adjacent TVs), so the "Click to unmute" overlay would be misleading on a
+      // follower and could itself create echo if someone tapped it.
+      const isFollowerEmbed = !!(wallConfig && !wallConfig.is_leader);
+
       // Create a div for the YT player to replace
       const playerDiv = document.createElement('div');
       playerDiv.id = 'yt-player-' + Date.now();
       playerDiv.style.cssText = 'width:100%;height:100%;background:#000';
       container.appendChild(playerDiv);
 
-      // Add a click-to-unmute overlay on top of the YouTube iframe
-      if (!userHasInteracted) {
+      // Add a click-to-unmute overlay on top of the YouTube iframe — leader/solo only.
+      if (!userHasInteracted && !isFollowerEmbed) {
         const overlay = document.createElement('div');
         overlay.style.cssText = 'position:absolute;inset:0;z-index:10;cursor:pointer;display:flex;align-items:end;justify-content:center;padding-bottom:40px;';
         overlay.innerHTML = '<div style="background:rgba(0,0,0,0.7);color:#fff;padding:10px 24px;border-radius:8px;font:14px sans-serif;pointer-events:none">Click to unmute</div>';
@@ -1261,24 +1297,45 @@
           height: '100%',
           playerVars: {
             autoplay: 1,
-            mute: userHasInteracted ? 0 : 1,
+            // Wall followers MUST stay muted regardless of userHasInteracted
+            // (leader-only audio rule prevents echo). Solo / leader follow the
+            // standard autoplay-policy logic: muted until the user interacts.
+            mute: isFollowerEmbed ? 1 : (userHasInteracted ? 0 : 1),
             controls: 0,
             rel: 0,
             modestbranding: 1,
             loop: shouldLoop ? 1 : 0,
             playlist: shouldLoop ? videoId : undefined,
             enablejsapi: 1,
+            playsinline: 1,
             origin: window.location.origin,
           },
           events: {
             onReady: (event) => {
               if (myGeneration !== ytGeneration) return;
-              console.log('YouTube player ready:', item.filename);
+              const role = isFollowerEmbed ? 'follower' : (wallConfig?.is_leader ? 'leader' : 'solo');
+              console.log('YouTube player ready:', item.filename, 'role=' + role);
               event.target.playVideo();
-              if (userHasInteracted) {
+              if (userHasInteracted && !isFollowerEmbed) {
                 event.target.unMute();
                 event.target.setVolume(100);
               }
+              // Silk Browser on Fire TV (and some other lockdown Chromium variants)
+              // sometimes leaves the player in UNSTARTED (-1) / CUED (5) state
+              // even with autoplay=1 + mute=1. Poll up to 5 times in 5 seconds
+              // to kick playVideo() until the state machine actually transitions.
+              let kickRetries = 0;
+              const kick = () => {
+                if (myGeneration !== ytGeneration) return;
+                if (!activeYtPlayer || typeof activeYtPlayer.getPlayerState !== 'function') return;
+                const s = activeYtPlayer.getPlayerState();
+                if (s === -1 || s === 5) {
+                  try { activeYtPlayer.playVideo(); } catch (_) {}
+                  kickRetries++;
+                  if (kickRetries < 5) setTimeout(kick, 1000);
+                }
+              };
+              setTimeout(kick, 1000);
             },
             onError: (event) => {
               if (myGeneration !== ytGeneration) return;
@@ -1292,11 +1349,25 @@
               if (myGeneration !== ytGeneration) return;
               // Track when video actually starts playing
               if (event.data === 1) playStartTime = Date.now();
-              // YT.PlayerState.ENDED = 0 — advance to next video
-              // Ignore ENDED if video played for less than 3 seconds (spurious during init)
+              // Followers paused unexpectedly (e.g. OS audio-focus loss on
+              // Fire TV) should resume — the leader is the source of truth
+              // and a wall:sync may not arrive fast enough to recover the
+              // playback state on its own.
+              if (event.data === 2 && isFollowerEmbed) {
+                setTimeout(() => {
+                  if (myGeneration === ytGeneration && activeYtPlayer &&
+                      typeof activeYtPlayer.getPlayerState === 'function' &&
+                      activeYtPlayer.getPlayerState() === 2) {
+                    try { activeYtPlayer.playVideo(); } catch (_) {}
+                  }
+                }, 500);
+              }
+              // YT.PlayerState.ENDED = 0 — only the leader / solo advances.
+              // Followers wait for wall:sync to bump current_index; if they
+              // self-advanced on ENDED the wall would desync.
               if (event.data === 0 && !shouldLoop && (Date.now() - playStartTime) > 3000) {
-                console.log('YouTube video ended:', item.filename);
-                nextItem();
+                console.log('YouTube video ended:', item.filename, 'role=' + (isFollowerEmbed ? 'follower' : 'leader/solo'));
+                if (!isFollowerEmbed) nextItem();
               }
             },
           },
