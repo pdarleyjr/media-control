@@ -15,36 +15,94 @@
  *   - Dashboard sockets are JWT-authenticated; they joined workspace rooms
  *     at connect time (see ws/dashboardSocket.js).
  *   - canActOnDevice(socket, device_id, 'write') is called on EVERY
- *     incoming dashboard event to enforce: (a) the device exists,
- *     (b) the device is in a workspace the user can access, and (c) the
- *     user has write tier (editor or admin) on that workspace. This is
- *     the same gate used for remote-touch / remote-start.
- *   - Device sockets are device_token-authenticated; their currentDeviceId
- *     is set in deviceSocket.js after register, so we trust device->dashboard
- *     emits as coming from the named device (server stamps device_id, never
- *     trusts a client-supplied value).
+ *     incoming dashboard event. Same gate used for remote-touch /
+ *     remote-start.
+ *   - Device sockets are device_token-authenticated. The server stamps
+ *     the authenticated device_id on every device->dashboard relay;
+ *     client-supplied values are never trusted.
  *
  * Active sessions:
- *   activeSessions: Map<device_id, { broadcasterSocketId, startedAt }>
- *   - Only one broadcaster per device at a time. A new start from a different
- *     broadcaster preempts the existing session (the prior broadcaster gets
- *     a 'screen-share:preempted' notice and tears down its peer connection).
+ *   activeSessions: Map<device_id, {
+ *     broadcasterSocketId, startedAt, disconnectedAt | null
+ *   }>
+ *
+ *   - Only one broadcaster per device at a time. A new start from a
+ *     different broadcaster preempts the existing session.
+ *   - On broadcaster disconnect, the session is marked with
+ *     disconnectedAt instead of being torn down immediately. A reaper
+ *     interval tears down sessions where disconnectedAt is older than
+ *     BROADCASTER_RECONNECT_GRACE_MS. This survives transient ping
+ *     timeouts (Cloudflare WS dropouts, brief Wi-Fi blips) without
+ *     killing every receiver.
+ *
+ * Rate limiting:
+ *   ICE candidate events are rate-limited per socket via a token bucket
+ *   (ICE_CANDIDATE_BURST in ICE_CANDIDATE_WINDOW_MS). Excess is dropped
+ *   silently - WebRTC tolerates candidate loss, and a single
+ *   misbehaving client cannot DoS the relay.
  */
+
+const ICE_CANDIDATE_BURST = 100;
+const ICE_CANDIDATE_WINDOW_MS = 10_000;
+const BROADCASTER_RECONNECT_GRACE_MS = 30_000;
+const REAPER_INTERVAL_MS = 5_000;
 
 const activeSessions = new Map();
 
 function setupScreenShareSignaling({ dashboardNs, deviceNs, canActOnDevice, deviceSocketRegistry }) {
   // ------------------------------------------------------------------
+  // Reaper: clean up sessions whose broadcaster has been disconnected
+  // longer than the grace window. Also a belt-and-braces guard against
+  // any session that lost its broadcasterSocketId reference somehow.
+  // ------------------------------------------------------------------
+  const reaper = setInterval(() => {
+    const now = Date.now();
+    for (const [deviceId, session] of activeSessions) {
+      if (!session.disconnectedAt) continue;
+      if (now - session.disconnectedAt < BROADCASTER_RECONNECT_GRACE_MS) continue;
+      try {
+        deviceNs.to(deviceId).emit('device:screen-share-end', {
+          reason: 'broadcaster_disconnect_grace_expired',
+        });
+      } catch (_) { /* ignore */ }
+      activeSessions.delete(deviceId);
+      console.log(`[screen-share] reaper cleaned device=${deviceId} after grace expired`);
+    }
+  }, REAPER_INTERVAL_MS);
+  if (typeof reaper.unref === 'function') reaper.unref();
+
+  // ------------------------------------------------------------------
+  // Per-socket token bucket for ICE candidate flood protection.
+  // ------------------------------------------------------------------
+  function allowIceCandidate(socket) {
+    const data = socket.data;
+    if (!data.__iceBucket) {
+      data.__iceBucket = { count: 0, windowStart: Date.now() };
+    }
+    const b = data.__iceBucket;
+    const now = Date.now();
+    if (now - b.windowStart > ICE_CANDIDATE_WINDOW_MS) {
+      b.windowStart = now;
+      b.count = 0;
+    }
+    b.count += 1;
+    if (b.count > ICE_CANDIDATE_BURST) {
+      if (!data.__iceBucketWarned) {
+        data.__iceBucketWarned = true;
+        console.warn(`[screen-share] ICE candidate flood from socket ${socket.id}; throttling`);
+      }
+      return false;
+    }
+    return true;
+  }
+
+  // ------------------------------------------------------------------
   // Dashboard -> Device direction
   // (broadcaster initiates session and sends offer / ICE candidates)
   // ------------------------------------------------------------------
   dashboardNs.on('connection', (socket) => {
-    // Track sessions this dashboard socket owns so we can clean up on disconnect
     socket.data.ownedScreenShareSessions = new Set();
 
-    // Start a screen-share session. The dashboard hasn't built a peer
-    // connection yet - this is the heads-up to the device so it can prepare
-    // to receive an offer next. Server marks the session active.
     socket.on('screen-share:start', (data, ack) => {
       const { device_id } = data || {};
       if (!device_id) {
@@ -60,17 +118,22 @@ function setupScreenShareSignaling({ dashboardNs, deviceNs, canActOnDevice, devi
 
       const existing = activeSessions.get(device_id);
       if (existing && existing.broadcasterSocketId !== socket.id) {
+        // If the existing session was awaiting reconnect, this new start
+        // implicitly takes over (the original broadcaster has been replaced).
+        // Otherwise notify the prior owner that they have been preempted.
         const priorSocket = dashboardNs.sockets.get(existing.broadcasterSocketId);
-        if (priorSocket) {
+        if (priorSocket && !existing.disconnectedAt) {
           priorSocket.emit('screen-share:preempted', { device_id });
-          priorSocket.data.ownedScreenShareSessions &&
+          if (priorSocket.data.ownedScreenShareSessions) {
             priorSocket.data.ownedScreenShareSessions.delete(device_id);
+          }
         }
       }
 
       activeSessions.set(device_id, {
         broadcasterSocketId: socket.id,
         startedAt: Date.now(),
+        disconnectedAt: null,
       });
       socket.data.ownedScreenShareSessions.add(device_id);
 
@@ -81,7 +144,6 @@ function setupScreenShareSignaling({ dashboardNs, deviceNs, canActOnDevice, devi
       ack && ack({ ok: true });
     });
 
-    // SDP offer from broadcaster -> device. Forwarded verbatim.
     socket.on('screen-share:offer', (data, ack) => {
       const { device_id, sdp } = data || {};
       if (!device_id || !sdp) {
@@ -98,17 +160,16 @@ function setupScreenShareSignaling({ dashboardNs, deviceNs, canActOnDevice, devi
       ack && ack({ ok: true });
     });
 
-    // ICE candidate from broadcaster -> device.
     socket.on('screen-share:ice-candidate', (data) => {
       const { device_id, candidate } = data || {};
       if (!device_id || !candidate) return;
+      if (!allowIceCandidate(socket)) return;
       const session = activeSessions.get(device_id);
       if (!session || session.broadcasterSocketId !== socket.id) return;
       if (!canActOnDevice(socket, device_id, 'write')) return;
       deviceNs.to(device_id).emit('device:screen-share-ice-candidate', { candidate });
     });
 
-    // Broadcaster requests session stop.
     socket.on('screen-share:stop', (data, ack) => {
       const { device_id } = data || {};
       if (!device_id) {
@@ -129,18 +190,20 @@ function setupScreenShareSignaling({ dashboardNs, deviceNs, canActOnDevice, devi
       ack && ack({ ok: true });
     });
 
-    // On dashboard socket disconnect, tear down any sessions this broadcaster
-    // owned. Prevents zombie sessions where the broadcaster crashed without
-    // explicit stop.
+    // On dashboard socket disconnect, mark each owned session with
+    // disconnectedAt rather than tearing it down immediately. The reaper
+    // will clean up after the grace period if no reconnect happens. Also,
+    // a fresh screen-share:start from the same user (new socket.id) will
+    // preempt the dangling session naturally.
     socket.on('disconnect', () => {
       const owned = socket.data.ownedScreenShareSessions;
       if (!owned || owned.size === 0) return;
+      const disconnectedAt = Date.now();
       for (const deviceId of owned) {
         const session = activeSessions.get(deviceId);
         if (session && session.broadcasterSocketId === socket.id) {
-          deviceNs.to(deviceId).emit('device:screen-share-end', { reason: 'broadcaster_disconnect' });
-          activeSessions.delete(deviceId);
-          console.log(`[screen-share] cleanup on broadcaster disconnect: device=${deviceId}`);
+          session.disconnectedAt = disconnectedAt;
+          console.log(`[screen-share] broadcaster disconnect grace-started: device=${deviceId}`);
         }
       }
     });
@@ -148,11 +211,8 @@ function setupScreenShareSignaling({ dashboardNs, deviceNs, canActOnDevice, devi
 
   // ------------------------------------------------------------------
   // Device -> Dashboard direction
-  // (receiver's SDP answer + ICE candidates back to broadcaster)
   // ------------------------------------------------------------------
   deviceNs.on('connection', (socket) => {
-    // SDP answer from device -> broadcaster.
-    // Server stamps device_id from the authenticated socket - never trusts client.
     socket.on('device:screen-share-answer', (data) => {
       const { sdp } = data || {};
       const deviceId = deviceSocketRegistry.getDeviceId(socket);
@@ -164,11 +224,11 @@ function setupScreenShareSignaling({ dashboardNs, deviceNs, canActOnDevice, devi
       broadcaster.emit('screen-share:answer', { device_id: deviceId, sdp });
     });
 
-    // ICE candidate from device -> broadcaster.
     socket.on('device:screen-share-ice-candidate', (data) => {
       const { candidate } = data || {};
       const deviceId = deviceSocketRegistry.getDeviceId(socket);
       if (!deviceId || !candidate) return;
+      if (!allowIceCandidate(socket)) return;
       const session = activeSessions.get(deviceId);
       if (!session) return;
       const broadcaster = dashboardNs.sockets.get(session.broadcasterSocketId);
@@ -176,8 +236,6 @@ function setupScreenShareSignaling({ dashboardNs, deviceNs, canActOnDevice, devi
       broadcaster.emit('screen-share:device-ice-candidate', { device_id: deviceId, candidate });
     });
 
-    // Device notifies that it has ended the session locally (user closed,
-    // player crashed, page navigation, etc.).
     socket.on('device:screen-share-ended', () => {
       const deviceId = deviceSocketRegistry.getDeviceId(socket);
       if (!deviceId) return;
@@ -186,20 +244,25 @@ function setupScreenShareSignaling({ dashboardNs, deviceNs, canActOnDevice, devi
       const broadcaster = dashboardNs.sockets.get(session.broadcasterSocketId);
       if (broadcaster) {
         broadcaster.emit('screen-share:ended-by-device', { device_id: deviceId });
-        broadcaster.data.ownedScreenShareSessions &&
+        if (broadcaster.data.ownedScreenShareSessions) {
           broadcaster.data.ownedScreenShareSessions.delete(deviceId);
+        }
       }
       activeSessions.delete(deviceId);
       console.log(`[screen-share] ended by device: device=${deviceId}`);
     });
   });
 
-  // Expose read-only session inventory for debug/monitoring endpoints.
   return {
     getActiveSessions: () => {
       const out = [];
       for (const [device_id, s] of activeSessions) {
-        out.push({ device_id, broadcaster_socket: s.broadcasterSocketId, started_at: s.startedAt });
+        out.push({
+          device_id,
+          broadcaster_socket: s.broadcasterSocketId,
+          started_at: s.startedAt,
+          disconnected_at: s.disconnectedAt,
+        });
       }
       return out;
     },

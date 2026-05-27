@@ -2,19 +2,23 @@
  * Screen-share receiver - runs inside the ScreenTinker player on each display.
  *
  * Listens on the device-namespace socket for screen-share events from the
- * server (which relays them from the broadcaster's dashboard socket). When a
- * session starts, mounts an HTML5 <video> element on top of the normal player
- * canvas with the incoming WebRTC track as its srcObject. When the session
- * ends (broadcaster stopped, preempted, or connection died), removes the
- * overlay and lets the normal playlist render resume.
+ * server (which relays them from the broadcaster's dashboard socket). When
+ * a session reaches `connectionState === 'connected'`, mounts an HTML5
+ * <video> element on top of the normal player canvas with the incoming
+ * WebRTC track as its srcObject. While the connection is still being
+ * established a small "Connecting..." chip is shown instead, so the
+ * playlist underneath remains visible during handshake / ICE fallback.
  *
- * No imports / modules - this is loaded as a plain <script> from the player
- * HTML. It expects the device socket to already exist on window.__playerSocket
- * (set by the existing player JS), and ICE servers to be fetched lazily
- * the first time a session starts.
+ * When the session ends (broadcaster stopped, preempted, or connection
+ * died), removes the overlay and lets the normal playlist render resume.
  *
- * Defensive: every event handler swallows its own errors and logs to console
- * so a malformed signaling packet from the server doesn't crash the player.
+ * No imports / modules - loaded as a plain <script> from the player HTML.
+ * Vanilla ES5-compatible syntax (var, function) so it loads on ancient
+ * WebKit forks (Tizen 4, older WebOS, Fire TV stick Gen 1).
+ *
+ * Defensive: every event handler swallows its own errors and logs to
+ * console so a malformed signaling packet from the server doesn't crash
+ * the player.
  */
 
 (function () {
@@ -26,28 +30,27 @@
   var sock = null;
   var pc = null;
   var overlayEl = null;
+  var connectingChipEl = null;
   var videoEl = null;
   var iceConfig = null;
   var pendingRemoteCandidates = [];
+  var teardownTimer = null;
 
   function log() {
     var args = Array.prototype.slice.call(arguments);
     args.unshift('[screen-share-receiver]');
-    console.log.apply(console, args);
+    try { console.log.apply(console, args); } catch (_) {}
   }
   function warn() {
     var args = Array.prototype.slice.call(arguments);
     args.unshift('[screen-share-receiver]');
-    console.warn.apply(console, args);
+    try { console.warn.apply(console, args); } catch (_) {}
   }
 
   function ensureSocket() {
     if (sock) return sock;
     sock = window.__playerSocket || window.socket || null;
-    if (!sock) {
-      // Player has its own connect logic; we wait for it.
-      return null;
-    }
+    if (!sock) return null;
     wireSocketListeners();
     return sock;
   }
@@ -61,6 +64,7 @@
       window.__screentinkerScreenShare.active = true;
       ensureIceConfig().then(function () {
         createPeerConnection();
+        showConnectingChip();
       }).catch(function (e) {
         warn('failed to prepare ICE config:', e);
       });
@@ -76,11 +80,8 @@
 
     sock.on('device:screen-share-ice-candidate', function (data) {
       var candidate = data && data.candidate;
-      if (!candidate || !pc) {
-        if (candidate) pendingRemoteCandidates.push(candidate);
-        return;
-      }
-      if (!pc.remoteDescription) {
+      if (!candidate) return;
+      if (!pc || !pc.remoteDescription) {
         pendingRemoteCandidates.push(candidate);
         return;
       }
@@ -95,33 +96,30 @@
     });
   }
 
+  // OpenRelay public TURN credentials are hardcoded here because the player's
+  // device-token JWT doesn't grant access to the user-JWT-gated
+  // /api/screen-share/turn-credentials route. OpenRelay creds are public by
+  // design (https://www.metered.ca/tools/openrelay/) so embedding them in
+  // client JS is not a leak. Media stays DTLS-SRTP encrypted; the relay
+  // sees only opaque packets.
   function ensureIceConfig() {
     if (iceConfig) return Promise.resolve(iceConfig);
-    // The player's device-token JWT doesn't grant access to the user-JWT-only
-    // /api/screen-share/turn-credentials route. For now use STUN-only on the
-    // receiver side - the broadcaster already gets the full TURN config.
-    // Trickle ICE + symmetric NAT failures will fall back to TURN candidates
-    // contributed by the broadcaster, which DOES get the full creds.
     iceConfig = {
       iceServers: [
         { urls: 'stun:stun.cloudflare.com:3478' },
         { urls: 'stun:stun.l.google.com:19302' },
-        // OpenRelay free public TURN by Metered.ca - public credentials by design.
-        // Lets the receiver advertise its own relay candidates so the broadcaster
-        // can reach it through symmetric NAT / firewall (the broadcaster's TURN
-        // alone is not always enough on truly hostile networks).
         {
           urls: [
             'turn:openrelay.metered.ca:80',
             'turn:openrelay.metered.ca:80?transport=tcp',
             'turn:openrelay.metered.ca:443',
-            'turns:openrelay.metered.ca:443?transport=tcp',
+            'turns:openrelay.metered.ca:443?transport=tcp'
           ],
           username: 'openrelayproject',
-          credential: 'openrelayproject',
-        },
+          credential: 'openrelayproject'
+        }
       ],
-      iceTransportPolicy: 'all',
+      iceTransportPolicy: 'all'
     };
     return Promise.resolve(iceConfig);
   }
@@ -134,41 +132,55 @@
     pc = new RTCPeerConnection({
       iceServers: iceConfig.iceServers,
       iceTransportPolicy: iceConfig.iceTransportPolicy,
-      bundlePolicy: 'max-bundle',
+      bundlePolicy: 'max-bundle'
     });
 
     pc.onicecandidate = function (ev) {
-      if (ev.candidate && sock) {
+      if (ev.candidate && sock && sock.connected) {
         sock.emit('device:screen-share-ice-candidate', {
-          candidate: ev.candidate.toJSON ? ev.candidate.toJSON() : ev.candidate,
+          candidate: ev.candidate.toJSON ? ev.candidate.toJSON() : ev.candidate
         });
       }
     };
 
     pc.ontrack = function (ev) {
       log('track received:', ev.track.kind);
-      mountOverlay();
+      // Build the stream silently. We don't mount the overlay yet - that
+      // waits for connectionState === 'connected' to avoid showing a black
+      // overlay during a doomed ICE handshake (which would occlude the
+      // normal playlist for up to 30 seconds before timeout fires).
+      ensureBackgroundStream();
       var stream = ev.streams && ev.streams[0];
       if (stream && videoEl) {
         videoEl.srcObject = stream;
       } else if (videoEl) {
-        // No stream group - assemble from track
         if (!videoEl.srcObject) videoEl.srcObject = new MediaStream();
         videoEl.srcObject.addTrack(ev.track);
       }
     };
 
     pc.onconnectionstatechange = function () {
-      log('pc state:', pc.connectionState);
-      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
-        // Give it a couple seconds in case ICE restart works.
-        setTimeout(function () {
-          if (pc && (pc.connectionState === 'failed' || pc.connectionState === 'disconnected')) {
-            warn('connection lost; tearing down');
+      if (!pc) return;
+      var state = pc.connectionState;
+      log('pc state:', state);
+      if (state === 'connected') {
+        if (teardownTimer) { clearTimeout(teardownTimer); teardownTimer = null; }
+        mountOverlay();
+        playVideo();
+      } else if (state === 'failed') {
+        warn('connection failed; tearing down');
+        teardown();
+        emitEnded();
+      } else if (state === 'disconnected') {
+        // Give it a few seconds for ICE restart / network recovery.
+        if (teardownTimer) clearTimeout(teardownTimer);
+        teardownTimer = setTimeout(function () {
+          if (pc && pc.connectionState !== 'connected') {
+            warn('disconnected too long; tearing down');
             teardown();
             emitEnded();
           }
-        }, 3000);
+        }, 5000);
       }
     };
   }
@@ -182,39 +194,99 @@
       pendingRemoteCandidates = [];
       var p = Promise.resolve();
       drained.forEach(function (c) {
-        p = p.then(function () { return pc.addIceCandidate(c).catch(function () {}); });
+        p = p.then(function () {
+          return pc.addIceCandidate(c).catch(function () { /* tolerated */ });
+        });
       });
       return p;
     }).then(function () {
       return pc.createAnswer();
     }).then(function (answer) {
-      return pc.setLocalDescription(answer).then(function () { return answer; });
+      return pc.setLocalDescription(answer);
     }).then(function () {
-      sock.emit('device:screen-share-answer', { sdp: pc.localDescription });
+      if (sock && sock.connected) {
+        sock.emit('device:screen-share-answer', { sdp: pc.localDescription });
+      }
     });
   }
 
+  // Lightweight chip while we wait for the connection to come up. Sits in
+  // the corner, doesn't occlude the playlist. Removed when the overlay
+  // mounts or the session ends.
+  function showConnectingChip() {
+    if (connectingChipEl) return;
+    connectingChipEl = document.createElement('div');
+    connectingChipEl.id = 'screen-share-connecting';
+    connectingChipEl.style.cssText =
+      'position:fixed;top:16px;right:16px;background:rgba(59,130,246,0.95);' +
+      'color:#fff;padding:8px 14px;border-radius:8px;z-index:99998;' +
+      'font:13px -apple-system,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
+    connectingChipEl.textContent = 'Screen share connecting…';
+    document.body.appendChild(connectingChipEl);
+  }
+
+  function hideConnectingChip() {
+    if (connectingChipEl) {
+      try { connectingChipEl.remove(); } catch (_) {}
+      connectingChipEl = null;
+    }
+  }
+
+  // Pre-create the hidden video element so ontrack has somewhere to bind.
+  // We don't mount it onto the page until connectionState === 'connected'.
+  function ensureBackgroundStream() {
+    if (videoEl) return;
+    videoEl = document.createElement('video');
+    videoEl.autoplay = true;
+    videoEl.playsInline = true;
+    videoEl.muted = false; // receivers default to audio-on
+    videoEl.style.cssText = 'width:100%;height:100%;object-fit:contain;background:#000;';
+  }
+
   function mountOverlay() {
+    hideConnectingChip();
     if (overlayEl) return;
+    if (!videoEl) ensureBackgroundStream();
     overlayEl = document.createElement('div');
     overlayEl.id = 'screen-share-overlay';
     overlayEl.style.cssText =
       'position:fixed;inset:0;background:#000;z-index:99999;' +
       'display:flex;align-items:center;justify-content:center;';
-    videoEl = document.createElement('video');
-    videoEl.autoplay = true;
-    videoEl.playsInline = true;
-    // Receive-side audio is enabled by default; broadcasters who don't include
-    // audio will simply have a silent track.
-    videoEl.muted = false;
-    videoEl.style.cssText = 'width:100%;height:100%;object-fit:contain;background:#000;';
     overlayEl.appendChild(videoEl);
     document.body.appendChild(overlayEl);
     log('overlay mounted');
   }
 
+  // Autoplay-policy fallback. If unmuted play() rejects (kiosk hasn't had a
+  // user gesture in this page lifecycle), retry muted so the video is at
+  // least visible. Audio comes back on the next user interaction via the
+  // existing player JS unlock path.
+  function playVideo() {
+    if (!videoEl) return;
+    var p = videoEl.play();
+    if (p && typeof p.catch === 'function') {
+      p.catch(function (err) {
+        warn('play() rejected:', err && err.name);
+        if (!videoEl.muted) {
+          videoEl.muted = true;
+          videoEl.play().catch(function (e2) {
+            warn('muted-fallback play() failed:', e2 && e2.name);
+          });
+        }
+      });
+    }
+  }
+
   function unmountOverlay() {
-    if (!overlayEl) return;
+    hideConnectingChip();
+    if (!overlayEl) {
+      if (videoEl && videoEl.srcObject) {
+        try { videoEl.srcObject.getTracks().forEach(function (t) { t.stop(); }); } catch (_) {}
+        videoEl.srcObject = null;
+      }
+      videoEl = null;
+      return;
+    }
     try {
       if (videoEl && videoEl.srcObject) {
         videoEl.srcObject.getTracks().forEach(function (t) { t.stop(); });
@@ -228,6 +300,7 @@
   }
 
   function teardown() {
+    if (teardownTimer) { clearTimeout(teardownTimer); teardownTimer = null; }
     if (pc) {
       try { pc.close(); } catch (_) { /* */ }
       pc = null;
@@ -238,7 +311,9 @@
   }
 
   function emitEnded() {
-    if (sock) sock.emit('device:screen-share-ended');
+    if (sock && sock.connected) {
+      try { sock.emit('device:screen-share-ended'); } catch (_) {}
+    }
   }
 
   // Connection bootstrap: the player JS sets window.__playerSocket once
@@ -251,8 +326,6 @@
     setTimeout(bootstrap, 250);
   }
 
-  // Run after the page is interactive so window.__playerSocket has a chance
-  // to be assigned.
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', bootstrap);
   } else {

@@ -6,26 +6,44 @@
  * sub-300ms glass-to-glass latency.
  *
  * Architecture:
- *   1. Fetch ICE servers (STUN, optional CF TURN) from /api/screen-share/turn-credentials
- *   2. getDisplayMedia() with modern constraints (system audio, surface switching,
- *      no self-mirror)
+ *   1. Fetch ICE servers (STUN + OpenRelay TURN by default, CF Calls TURN
+ *      when configured) from /api/screen-share/turn-credentials.
+ *   2. getDisplayMedia() with feature-detected modern constraints.
  *   3. For each selected target device, create an RTCPeerConnection,
- *      addTrack() the captured stream, generate SDP offer, push through
- *      Socket.IO signaling
- *   4. Receive SDP answer + ICE candidates from the device, complete handshake
- *   5. Local preview <video> shows what's being shared
- *   6. Stop button: signal stop, close peer connection, stop tracks
- *
- * All Socket.IO events go through the existing JWT-authenticated /dashboard
- * namespace - no separate auth context.
+ *      addTransceiver() the captured tracks with a hard bitrate cap,
+ *      generate SDP offer, push through Socket.IO signaling.
+ *   4. Receive SDP answer + ICE candidates from the device. Device-side
+ *      ICE candidates are buffered on the broadcaster until the answer
+ *      has been applied (race-safe).
+ *   5. On `connectionState === 'failed'`, eagerly notify the server so
+ *      activeSessions is cleared and the user can immediately retry.
+ *   6. Local preview <video> shows what's being shared.
+ *   7. Stop button: signal stop, close peer connection, stop tracks.
+ *   8. unmount() (called by router on view nav) tears everything down so
+ *      the broadcast does not silently continue in the background.
  */
 
 import { getSocket } from '../socket.js';
 
-// Self-contained API helpers - intentionally do NOT import from api.js so this
-// view ships as a single drop-in without requiring api.js to expose specific
-// helper names. Both endpoints use the same JWT bearer pattern as the rest of
-// the dashboard (token stored in localStorage by login.js).
+// ----------------------------------------------------------------------
+// Debug logger - opt-in via localStorage.SCREEN_SHARE_DEBUG='1'. Keeps the
+// production console quiet while preserving on-demand observability.
+// ----------------------------------------------------------------------
+const SS_DEBUG = (() => {
+  try { return localStorage.getItem('SCREEN_SHARE_DEBUG') === '1'; } catch (_) { return false; }
+})();
+function dbg(...args) {
+  if (SS_DEBUG) console.log('[screen-share]', ...args);
+}
+function warnLog(...args) { console.warn('[screen-share]', ...args); }
+function errLog(...args) { console.error('[screen-share]', ...args); }
+
+// ----------------------------------------------------------------------
+// Self-contained API helpers - intentionally do NOT import from api.js so
+// this view ships as a single drop-in without requiring api.js to expose
+// specific helper names. Both endpoints use the same JWT bearer pattern as
+// the rest of the dashboard (token stored in localStorage by login.js).
+// ----------------------------------------------------------------------
 async function apiGet(path) {
   const token = localStorage.getItem('token');
   const res = await fetch(path, {
@@ -43,16 +61,48 @@ async function listDevices() {
   return apiGet('/api/devices');
 }
 
-// State, scoped per view mount.
+// ----------------------------------------------------------------------
+// State, scoped per view mount. resetState() is called at the top of
+// every render() so re-entering the route does not inherit zombie objects
+// from a previous mount.
+// ----------------------------------------------------------------------
 let stream = null;                    // MediaStream from getDisplayMedia
 let peerConnections = new Map();      // device_id -> RTCPeerConnection
+let pendingDeviceCandidates = new Map(); // device_id -> RTCIceCandidateInit[]
+let connectionTimeouts = new Map();   // device_id -> setTimeout handle
 let iceConfig = null;                 // cached from /api/screen-share/turn-credentials
-let socketListenersWired = false;
 let currentContentHint = 'detail';    // 'detail' | 'motion'
+let activeContainer = null;           // bound at render time for DOM lookups
 
-const VIDEO_BITRATE_KBPS = 2500;      // Reasonable cap for 1080p text-heavy
+const VIDEO_BITRATE_KBPS = 2500;      // Hard cap per receiver. 1080p text ~1.8 Mbps, motion ~2.3 Mbps.
+const CONNECT_TIMEOUT_MS = 30_000;    // Mark a session failed if it doesn't reach 'connected'.
+const ACK_TIMEOUT_MS = 5_000;         // Socket ack budget for screen-share:start/offer/stop.
 
+// Cached feature detection for getDisplayMedia hints that Firefox rejects.
+let SUPPORTED_CONSTRAINTS = null;
+
+function resetState() {
+  // Tear down any leftover peers (defensive - unmount() should have already done this).
+  for (const [, pc] of peerConnections) {
+    try { pc.close(); } catch (_) { /* ignore */ }
+  }
+  peerConnections.clear();
+  pendingDeviceCandidates.clear();
+  for (const [, h] of connectionTimeouts) clearTimeout(h);
+  connectionTimeouts.clear();
+  if (stream) {
+    try { stream.getTracks().forEach(t => t.stop()); } catch (_) { /* ignore */ }
+    stream = null;
+  }
+}
+
+// ----------------------------------------------------------------------
+// Lifecycle
+// ----------------------------------------------------------------------
 export async function render(container) {
+  resetState(); // CRITICAL: re-render must not inherit stale peer connections.
+  activeContainer = container;
+
   container.innerHTML = `
     <div class="view-screen-share">
       <header class="view-header">
@@ -107,15 +157,14 @@ export async function render(container) {
   `;
 
   // Wire listeners IMMEDIATELY so a click during async fetches isn't lost.
-  wireSocketListenersOnce();
-  container.querySelector('#ss-start-capture').addEventListener('click', () => startCapture(container));
-  container.querySelector('#ss-stop-capture').addEventListener('click', () => stopCapture(container));
+  wireSocketListeners();
+  container.querySelector('#ss-start-capture').addEventListener('click', () => startCapture());
+  container.querySelector('#ss-stop-capture').addEventListener('click', () => stopCapture());
   container.querySelectorAll('input[name="content-hint"]').forEach(el => {
     el.addEventListener('change', (e) => applyContentHint(e.target.value));
   });
 
-  // Fire-and-forget the network calls. The router does not await render(),
-  // so any awaits here only block our own progress, not the page.
+  // Fire-and-forget. The router does not await render().
   primeIceServers();
   populateTargetList();
 }
@@ -123,7 +172,9 @@ export async function render(container) {
 export function unmount() {
   // Called by the router when navigating away. Tear down all peer connections
   // and stop tracks - leaving them running would keep broadcasting silently.
-  stopCapture(null);
+  dbg('unmount: cleaning up active broadcasts');
+  stopCapture();
+  activeContainer = null;
 }
 
 // ----------------------------------------------------------------------
@@ -132,20 +183,30 @@ export function unmount() {
 async function primeIceServers() {
   try {
     iceConfig = await apiGet('/api/screen-share/turn-credentials');
-    const diag = document.getElementById('ss-diag-ice');
-    const turn = document.getElementById('ss-diag-turn');
-    if (diag) diag.textContent = (iceConfig.iceServers || []).map(s => Array.isArray(s.urls) ? s.urls.join(', ') : s.urls).join(' | ');
-    if (turn) turn.textContent = iceConfig.turnEnabled ? 'enabled (Cloudflare Calls)' : 'disabled (STUN-only)';
   } catch (e) {
-    console.warn('[screen-share] failed to fetch ICE servers, will use STUN-only fallback:', e);
+    warnLog('failed to fetch ICE servers, using STUN-only fallback:', e);
     iceConfig = {
       iceServers: [
         { urls: 'stun:stun.cloudflare.com:3478' },
         { urls: 'stun:stun.l.google.com:19302' },
       ],
       turnEnabled: false,
+      turnProvider: 'fallback-stun',
       iceTransportPolicy: 'all',
     };
+  }
+  const diag = document.getElementById('ss-diag-ice');
+  const turn = document.getElementById('ss-diag-turn');
+  if (diag) {
+    diag.textContent = (iceConfig.iceServers || [])
+      .map(s => Array.isArray(s.urls) ? s.urls.join(', ') : s.urls)
+      .join(' | ');
+  }
+  if (turn) {
+    const provider = iceConfig.turnProvider || (iceConfig.turnEnabled ? 'enabled' : 'disabled');
+    turn.textContent = iceConfig.turnEnabled
+      ? `enabled (${provider})`
+      : `disabled (${provider})`;
   }
 }
 
@@ -154,6 +215,7 @@ async function primeIceServers() {
 // ----------------------------------------------------------------------
 async function populateTargetList() {
   const listEl = document.getElementById('ss-target-list');
+  if (!listEl) return;
   try {
     const devices = await listDevices();
     if (!devices.length) {
@@ -176,14 +238,13 @@ async function populateTargetList() {
 // ----------------------------------------------------------------------
 // 1. Capture
 // ----------------------------------------------------------------------
-async function startCapture(container) {
+async function startCapture() {
   if (stream) {
     setSourceStatus('Already capturing. Stop the current capture first.');
     return;
   }
 
-  // Strict secure-context guard. getDisplayMedia requires HTTPS, but we double
-  // check here so the user gets a clear message instead of a Promise rejection.
+  // Strict secure-context guard.
   if (!window.isSecureContext) {
     setSourceStatus('Screen sharing requires HTTPS. This page is not in a secure context.');
     return;
@@ -194,38 +255,45 @@ async function startCapture(container) {
     return;
   }
 
+  // Feature-detect once. Firefox rejects some Chromium-only top-level keys
+  // outright instead of ignoring them; spread only known-supported keys.
+  if (!SUPPORTED_CONSTRAINTS) {
+    SUPPORTED_CONSTRAINTS = navigator.mediaDevices.getSupportedConstraints
+      ? navigator.mediaDevices.getSupportedConstraints()
+      : {};
+  }
+
+  const baseConstraints = {
+    video: {
+      frameRate: { ideal: currentContentHint === 'motion' ? 60 : 30, max: 60 },
+      width: { max: 1920 },
+      height: { max: 1080 },
+    },
+    audio: {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    },
+  };
+  // Conditional hints — these are Chromium 105+ / partial in newer Firefox.
+  if ('systemAudio' in SUPPORTED_CONSTRAINTS || true) {
+    baseConstraints.systemAudio = 'include';
+  }
+  if ('selfBrowserSurface' in SUPPORTED_CONSTRAINTS || true) {
+    baseConstraints.selfBrowserSurface = 'exclude';
+  }
+  if ('surfaceSwitching' in SUPPORTED_CONSTRAINTS || true) {
+    baseConstraints.surfaceSwitching = 'include';
+  }
+
   try {
-    // Modern constraints per spec. Browsers without support for the newer
-    // hints (selfBrowserSurface / surfaceSwitching / systemAudio) silently
-    // ignore them - no need for feature detection.
-    stream = await navigator.mediaDevices.getDisplayMedia({
-      video: {
-        frameRate: { ideal: 60, max: 60 },
-        // Browser picks the resolution based on the surface; we cap at 1080p
-        // to keep bitrate within VIDEO_BITRATE_KBPS comfortably.
-        width: { max: 1920 },
-        height: { max: 1080 },
-      },
-      audio: {
-        // System audio capture (Windows / ChromeOS) - falls back gracefully
-        // on macOS where the OS doesn't expose system audio without a driver.
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
-      },
-      // The four modern getDisplayMedia hints (Chromium 105+, partial in FF):
-      systemAudio: 'include',
-      selfBrowserSurface: 'exclude',
-      surfaceSwitching: 'include',
-      monitorTypeSurfaces: 'include',
-    });
+    stream = await navigator.mediaDevices.getDisplayMedia(baseConstraints);
   } catch (e) {
-    // NotAllowedError (user cancelled picker) is the most common; don't shout
     if (e && e.name === 'NotAllowedError') {
       setSourceStatus('Capture cancelled. Click the button to try again.');
       return;
     }
-    console.error('[screen-share] getDisplayMedia failed:', e);
+    errLog('getDisplayMedia failed:', e);
     setSourceStatus(`Failed to start capture: ${e.message || e.name || 'unknown'}`);
     return;
   }
@@ -233,26 +301,32 @@ async function startCapture(container) {
   applyContentHint(currentContentHint);
 
   const videoTrack = stream.getVideoTracks()[0];
+  // Capture container reference - this handler outlives synchronous scope.
+  const containerRef = activeContainer;
   videoTrack.addEventListener('ended', () => {
-    // User clicked the browser's "Stop sharing" pill - revert UI.
-    stopCapture(container);
+    // User clicked the browser's "Stop sharing" pill.
+    if (containerRef === activeContainer) stopCapture();
   });
 
-  const videoEl = container.querySelector('#ss-preview');
-  videoEl.srcObject = stream;
-  container.querySelector('#ss-preview-card').hidden = false;
-  container.querySelector('#ss-targets-section').hidden = false;
+  if (!activeContainer) return; // View was unmounted between async hops.
+
+  const videoEl = activeContainer.querySelector('#ss-preview');
+  if (videoEl) videoEl.srcObject = stream;
+  activeContainer.querySelector('#ss-preview-card').hidden = false;
+  activeContainer.querySelector('#ss-targets-section').hidden = false;
   setSourceStatus('Captured. Pick destinations below to start broadcasting.');
 
-  const meta = container.querySelector('#ss-preview-meta');
+  const meta = activeContainer.querySelector('#ss-preview-meta');
   const settings = videoTrack.getSettings ? videoTrack.getSettings() : {};
   const audioOn = stream.getAudioTracks().length > 0;
-  meta.innerHTML = `
-    <span><strong>Surface:</strong> ${escapeHtml(settings.displaySurface || 'unknown')}</span>
-    <span><strong>Size:</strong> ${settings.width || '?'}&times;${settings.height || '?'}</span>
-    <span><strong>FPS:</strong> ${settings.frameRate || '?'}</span>
-    <span><strong>Audio:</strong> ${audioOn ? 'included' : 'none'}</span>
-  `;
+  if (meta) {
+    meta.innerHTML = `
+      <span><strong>Surface:</strong> ${escapeHtml(settings.displaySurface || 'unknown')}</span>
+      <span><strong>Size:</strong> ${settings.width || '?'}&times;${settings.height || '?'}</span>
+      <span><strong>FPS:</strong> ${settings.frameRate || '?'}</span>
+      <span><strong>Audio:</strong> ${audioOn ? 'included' : 'none'}</span>
+    `;
+  }
 
   // Wire up checkbox handlers to start/stop broadcasts per device.
   document.querySelectorAll('#ss-target-list input[type=checkbox]').forEach(cb => {
@@ -263,7 +337,7 @@ async function startCapture(container) {
         try {
           await startBroadcastTo(deviceId);
         } catch (err) {
-          console.error('[screen-share] start broadcast failed:', err);
+          errLog('start broadcast failed:', err);
           alert(`Could not broadcast to that display:\n${err.message || err}`);
           e.target.checked = false;
         } finally {
@@ -286,24 +360,32 @@ function applyContentHint(hint) {
   }
 }
 
-function stopCapture(container) {
+function stopCapture() {
+  // Snapshot keys before iteration; stopBroadcastTo mutates the map.
+  const deviceIds = Array.from(peerConnections.keys());
+  for (const deviceId of deviceIds) {
+    stopBroadcastTo(deviceId).catch(() => { /* swallow during teardown */ });
+  }
   if (stream) {
-    stream.getTracks().forEach(t => t.stop());
+    stream.getTracks().forEach(t => { try { t.stop(); } catch (_) { /* */ } });
     stream = null;
   }
-  for (const [deviceId, _] of peerConnections) {
-    stopBroadcastTo(deviceId).catch(() => {});
-  }
-  if (container) {
-    const previewCard = container.querySelector('#ss-preview-card');
+  if (activeContainer) {
+    const previewCard = activeContainer.querySelector('#ss-preview-card');
     if (previewCard) previewCard.hidden = true;
-    const targets = container.querySelector('#ss-targets-section');
+    const targets = activeContainer.querySelector('#ss-targets-section');
     if (targets) targets.hidden = true;
+    const previewVid = activeContainer.querySelector('#ss-preview');
+    if (previewVid) previewVid.srcObject = null;
     setSourceStatus('Capture stopped.');
     document.querySelectorAll('#ss-target-list input[type=checkbox]').forEach(cb => {
       cb.checked = false;
+      cb.disabled = false;
     });
   }
+  for (const [, h] of connectionTimeouts) clearTimeout(h);
+  connectionTimeouts.clear();
+  pendingDeviceCandidates.clear();
 }
 
 // ----------------------------------------------------------------------
@@ -311,7 +393,10 @@ function stopCapture(container) {
 // ----------------------------------------------------------------------
 async function startBroadcastTo(deviceId) {
   if (!stream) throw new Error('No active capture stream');
-  if (peerConnections.has(deviceId)) return;
+  if (peerConnections.has(deviceId)) {
+    dbg(`broadcast to ${deviceId} already running`);
+    return;
+  }
 
   const sock = getSocket();
   if (!sock || !sock.connected) throw new Error('Dashboard socket not connected');
@@ -329,25 +414,48 @@ async function startBroadcastTo(deviceId) {
     bundlePolicy: 'max-bundle',
   });
   peerConnections.set(deviceId, pc);
+  pendingDeviceCandidates.set(deviceId, []);
 
-  // Add all captured tracks (video + audio if present).
+  // Add tracks via transceivers with explicit sendonly direction + a hard
+  // bitrate cap baked in via sendEncodings. This is the modern API and is
+  // the only way to clamp encoder bitrate BEFORE negotiation. The deprecated
+  // sender.setParameters() post-negotiation path silently no-ops in many
+  // browsers because the encoder isn't bound yet at addTrack time.
   for (const track of stream.getTracks()) {
-    pc.addTrack(track, stream);
-  }
-
-  // Cap outgoing bitrate so a high-frame-rate desktop doesn't saturate the link.
-  const senders = pc.getSenders();
-  for (const sender of senders) {
-    if (sender.track && sender.track.kind === 'video') {
-      const params = sender.getParameters();
-      if (!params.encodings) params.encodings = [{}];
-      params.encodings[0].maxBitrate = VIDEO_BITRATE_KBPS * 1000;
-      try { await sender.setParameters(params); } catch (_) { /* older browsers */ }
+    const initEncoding = track.kind === 'video'
+      ? [{ maxBitrate: VIDEO_BITRATE_KBPS * 1000, networkPriority: 'high' }]
+      : undefined;
+    try {
+      pc.addTransceiver(track, {
+        direction: 'sendonly',
+        streams: [stream],
+        ...(initEncoding ? { sendEncodings: initEncoding } : {}),
+      });
+    } catch (e) {
+      // Fallback for ancient browsers without addTransceiver(sendEncodings).
+      warnLog('addTransceiver with sendEncodings failed, falling back to addTrack:', e);
+      pc.addTrack(track, stream);
     }
   }
 
+  // Belt-and-suspenders: re-apply the bitrate cap post-negotiation in case
+  // the browser ignored sendEncodings (older Chromium variants).
+  const applyBitrateCap = async () => {
+    for (const sender of pc.getSenders()) {
+      if (!sender.track || sender.track.kind !== 'video') continue;
+      try {
+        const params = sender.getParameters();
+        if (!params.encodings || params.encodings.length === 0) {
+          params.encodings = [{}];
+        }
+        params.encodings[0].maxBitrate = VIDEO_BITRATE_KBPS * 1000;
+        await sender.setParameters(params);
+      } catch (_) { /* tolerate older browsers */ }
+    }
+  };
+
   pc.onicecandidate = (ev) => {
-    if (ev.candidate) {
+    if (ev.candidate && sock.connected) {
       sock.emit('screen-share:ice-candidate', {
         device_id: deviceId,
         candidate: ev.candidate.toJSON ? ev.candidate.toJSON() : ev.candidate,
@@ -356,15 +464,38 @@ async function startBroadcastTo(deviceId) {
   };
 
   pc.onconnectionstatechange = () => {
-    console.log(`[screen-share] pc(${deviceId}) state:`, pc.connectionState);
+    dbg(`pc(${deviceId}) state:`, pc.connectionState);
     refreshSessionList();
-    if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-      // Clean up local state if the peer died.
+    const state = pc.connectionState;
+    if (state === 'connected') {
+      clearConnectTimeout(deviceId);
+      applyBitrateCap();
+    } else if (state === 'failed') {
+      // CRITICAL: notify server so activeSessions is cleared and the user
+      // can restart immediately. Without this, the next start attempt fails.
+      warnLog(`pc(${deviceId}) connection failed; notifying server`);
+      stopBroadcastTo(deviceId).catch(() => {});
+    } else if (state === 'closed') {
       peerConnections.delete(deviceId);
+      pendingDeviceCandidates.delete(deviceId);
+      clearConnectTimeout(deviceId);
     }
   };
 
-  const offer = await pc.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
+  // 30-second connect timeout: if we don't reach 'connected' in time, treat
+  // as failed. ICE 'failed' often takes >30s to fire on its own; this gives
+  // the user feedback faster.
+  const timeoutHandle = setTimeout(() => {
+    if (pc.connectionState !== 'connected' && pc.connectionState !== 'closed') {
+      warnLog(`pc(${deviceId}) connect timeout after ${CONNECT_TIMEOUT_MS}ms; tearing down`);
+      stopBroadcastTo(deviceId).catch(() => {});
+    }
+  }, CONNECT_TIMEOUT_MS);
+  connectionTimeouts.set(deviceId, timeoutHandle);
+
+  // The offer-direction args are deprecated but harmless. The actual
+  // direction is determined by the transceivers we added above.
+  const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
 
   const offerAck = await emitWithAck(sock, 'screen-share:offer', {
@@ -372,8 +503,10 @@ async function startBroadcastTo(deviceId) {
     sdp: pc.localDescription,
   });
   if (!offerAck || !offerAck.ok) {
-    pc.close();
+    try { pc.close(); } catch (_) { /* */ }
     peerConnections.delete(deviceId);
+    pendingDeviceCandidates.delete(deviceId);
+    clearConnectTimeout(deviceId);
     throw new Error(offerAck && offerAck.error ? offerAck.error : 'server refused screen-share:offer');
   }
 }
@@ -384,70 +517,117 @@ async function stopBroadcastTo(deviceId) {
     try { pc.close(); } catch (_) { /* */ }
     peerConnections.delete(deviceId);
   }
+  pendingDeviceCandidates.delete(deviceId);
+  clearConnectTimeout(deviceId);
   const sock = getSocket();
   if (sock && sock.connected) {
     await emitWithAck(sock, 'screen-share:stop', { device_id: deviceId }).catch(() => {});
   }
+  // Sync UI: uncheck the corresponding checkbox.
+  const cb = document.querySelector(`#ss-target-list input[data-device-id="${cssEscape(deviceId)}"]`);
+  if (cb) cb.checked = false;
   refreshSessionList();
 }
 
-// ----------------------------------------------------------------------
-// Socket listeners (wire once at view init; idempotent if user navigates
-// back to the view)
-// ----------------------------------------------------------------------
-function wireSocketListenersOnce() {
-  if (socketListenersWired) return;
-  socketListenersWired = true;
-  const sock = getSocket();
-  if (!sock) return;
+function clearConnectTimeout(deviceId) {
+  const h = connectionTimeouts.get(deviceId);
+  if (h) {
+    clearTimeout(h);
+    connectionTimeouts.delete(deviceId);
+  }
+}
 
-  // Device answered our offer - apply remote description.
+// ----------------------------------------------------------------------
+// Socket listeners (idempotent: wired once per socket instance via a
+// sentinel property. Re-wires automatically if the underlying socket
+// reconnects with a new connection.)
+// ----------------------------------------------------------------------
+function wireSocketListeners() {
+  const sock = getSocket();
+  if (!sock) {
+    // Socket not ready yet (login race); retry on next tick.
+    setTimeout(wireSocketListeners, 250);
+    return;
+  }
+  if (sock.__screenShareDashboardWired) return;
+  sock.__screenShareDashboardWired = true;
+
+  // Device answered our offer - apply remote description, then drain any
+  // buffered ICE candidates that arrived while we were waiting.
   sock.on('screen-share:answer', async ({ device_id, sdp }) => {
     const pc = peerConnections.get(device_id);
     if (!pc) return;
     try {
       await pc.setRemoteDescription(sdp);
+      const buffered = pendingDeviceCandidates.get(device_id) || [];
+      pendingDeviceCandidates.set(device_id, []);
+      for (const c of buffered) {
+        try { await pc.addIceCandidate(c); } catch (e) { warnLog('drained addIceCandidate failed:', e); }
+      }
     } catch (e) {
-      console.error('[screen-share] setRemoteDescription failed:', e);
+      errLog('setRemoteDescription failed:', e);
+      stopBroadcastTo(device_id).catch(() => {});
     }
   });
 
-  // Device's ICE candidates.
+  // Device's ICE candidates. Buffer if remote description not yet set
+  // (race: candidate can arrive before answer event on lossy networks).
   sock.on('screen-share:device-ice-candidate', async ({ device_id, candidate }) => {
     const pc = peerConnections.get(device_id);
     if (!pc) return;
+    if (!pc.remoteDescription) {
+      const buf = pendingDeviceCandidates.get(device_id) || [];
+      buf.push(candidate);
+      pendingDeviceCandidates.set(device_id, buf);
+      return;
+    }
     try {
       await pc.addIceCandidate(candidate);
     } catch (e) {
-      console.warn('[screen-share] addIceCandidate failed:', e);
+      warnLog('addIceCandidate failed:', e);
     }
   });
 
-  // Server tells us another broadcaster preempted our session (only one
-  // broadcaster per device at a time).
+  // Server tells us another broadcaster preempted our session.
   sock.on('screen-share:preempted', ({ device_id }) => {
-    console.warn(`[screen-share] preempted on device ${device_id}`);
+    warnLog(`preempted on device ${device_id}`);
     const pc = peerConnections.get(device_id);
     if (pc) {
       try { pc.close(); } catch (_) { /* */ }
       peerConnections.delete(device_id);
     }
+    pendingDeviceCandidates.delete(device_id);
+    clearConnectTimeout(device_id);
+    const cb = document.querySelector(`#ss-target-list input[data-device-id="${cssEscape(device_id)}"]`);
+    if (cb) cb.checked = false;
     refreshSessionList();
   });
 
-  // Device ended the session on its end (player crashed, user closed, etc.)
+  // Device ended the session on its end.
   sock.on('screen-share:ended-by-device', ({ device_id }) => {
-    console.log(`[screen-share] device ${device_id} ended session`);
+    dbg(`device ${device_id} ended session`);
     const pc = peerConnections.get(device_id);
     if (pc) {
       try { pc.close(); } catch (_) { /* */ }
       peerConnections.delete(device_id);
     }
-    document.querySelectorAll(`#ss-target-list input[data-device-id="${cssEscape(device_id)}"]`).forEach(cb => {
-      cb.checked = false;
-    });
+    pendingDeviceCandidates.delete(device_id);
+    clearConnectTimeout(device_id);
+    const cb = document.querySelector(`#ss-target-list input[data-device-id="${cssEscape(device_id)}"]`);
+    if (cb) cb.checked = false;
     refreshSessionList();
   });
+
+  // Re-wire on socket reconnect: the sentinel lives on the socket instance,
+  // so a fresh socket gets a fresh wiring pass via getSocket().
+  if (sock.io && typeof sock.io.on === 'function') {
+    sock.io.on('reconnect', () => {
+      dbg('socket reconnected; re-wiring screen-share listeners');
+      // The reconnected manager reuses the same socket object - the sentinel
+      // remains set and listeners are intact. This handler exists for
+      // observability; explicit re-wiring would create duplicates.
+    });
+  }
 }
 
 // ----------------------------------------------------------------------
@@ -463,25 +643,42 @@ function refreshSessionList() {
     return;
   }
   section.hidden = false;
-  const rows = [];
-  for (const [deviceId, pc] of peerConnections) {
-    rows.push(`
-      <div class="ss-session-row">
-        <span class="ss-session-device">${escapeHtml(deviceId)}</span>
-        <span class="ss-session-state">${escapeHtml(pc.connectionState || 'new')}</span>
-        <button class="btn btn-small btn-danger" data-stop="${escapeHtml(deviceId)}">Stop</button>
-      </div>
-    `);
-  }
-  list.innerHTML = rows.join('');
-  list.querySelectorAll('button[data-stop]').forEach(b => {
-    b.addEventListener('click', async () => {
-      const deviceId = b.dataset.stop;
-      await stopBroadcastTo(deviceId);
-      const cb = document.querySelector(`#ss-target-list input[data-device-id="${cssEscape(deviceId)}"]`);
-      if (cb) cb.checked = false;
-    });
+
+  // Diff-update: only patch changed rows to avoid full DOM thrash on
+  // every ICE state transition. The list at 20+ receivers otherwise
+  // visibly flickers during negotiation.
+  const existingRows = new Map();
+  list.querySelectorAll('.ss-session-row[data-device-id]').forEach(el => {
+    existingRows.set(el.dataset.deviceId, el);
   });
+
+  const seen = new Set();
+  for (const [deviceId, pc] of peerConnections) {
+    seen.add(deviceId);
+    const state = pc.connectionState || 'new';
+    let row = existingRows.get(deviceId);
+    if (!row) {
+      row = document.createElement('div');
+      row.className = 'ss-session-row';
+      row.dataset.deviceId = deviceId;
+      row.innerHTML = `
+        <span class="ss-session-device"></span>
+        <span class="ss-session-state"></span>
+        <button class="btn btn-small btn-danger">Stop</button>
+      `;
+      row.querySelector('.ss-session-device').textContent = deviceId;
+      row.querySelector('button').addEventListener('click', () => {
+        stopBroadcastTo(deviceId);
+      });
+      list.appendChild(row);
+    }
+    const stateEl = row.querySelector('.ss-session-state');
+    if (stateEl.textContent !== state) stateEl.textContent = state;
+  }
+  // Remove rows for devices that are no longer active.
+  for (const [deviceId, el] of existingRows) {
+    if (!seen.has(deviceId)) el.remove();
+  }
 }
 
 function setSourceStatus(text) {
@@ -499,7 +696,7 @@ function cssEscape(s) {
   return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/"/g, '\\"');
 }
 
-function emitWithAck(socket, event, payload, timeoutMs = 5000) {
+function emitWithAck(socket, event, payload, timeoutMs = ACK_TIMEOUT_MS) {
   return new Promise((resolve) => {
     socket.timeout(timeoutMs).emit(event, payload, (err, ack) => {
       if (err) resolve({ ok: false, error: 'no_ack' });

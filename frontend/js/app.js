@@ -231,8 +231,13 @@ async function refreshCurrentUser() {
 }
 
 function route() {
-  // Cleanup previous view
-  if (currentView && currentView.cleanup) currentView.cleanup();
+  // Cleanup previous view. Call BOTH cleanup() and unmount() because
+  // older views use cleanup() while screen-share (and any view that holds
+  // background resources like a WebRTC peer connection) uses unmount().
+  if (currentView) {
+    if (currentView.cleanup) { try { currentView.cleanup(); } catch (_) { /* */ } }
+    if (currentView.unmount) { try { currentView.unmount(); } catch (_) { /* */ } }
+  }
 
   const hash = window.location.hash || '#/';
 
