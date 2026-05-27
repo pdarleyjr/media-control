@@ -436,32 +436,84 @@ app.use('/api/status', require('./routes/status'));
 // Activity logging middleware now mounted earlier (just before the workspace
 // route block) - leaving this comment here as a breadcrumb for the move.
 
-// APK version check endpoint (public, used by devices to check for updates)
+// APK version check endpoint (public, used by devices to check for updates).
+//
+// Source of truth (in priority order):
+//   1. ScreenTinker.apk.json next to the APK - this is the output-metadata.json
+//      that Gradle writes at app/build/outputs/apk/debug/output-metadata.json,
+//      renamed and copied alongside ScreenTinker.apk so a single rebuild keeps
+//      both the binary and its version metadata in lockstep. Schema:
+//        { "elements": [ { "versionName": "1.7.8", "versionCode": 11, ... } ] }
+//   2. A legacy VERSION file (one-line text) at the repo root - kept for
+//      backwards compatibility with installs that pre-date the metadata file.
+//   3. Fallback: '0.0.0' - chosen so that the safety check below NEVER flags
+//      an update when the metadata is unavailable. This prevents the infinite
+//      update loop bug where a device on "1.7.8" would see latest="1.0.0",
+//      detect a mismatch, "update" to the same APK, reboot, repeat.
 app.get('/api/update/check', (req, res) => {
-  const currentVersion = req.query.version;
+  const currentVersion = (req.query.version || '').toString().trim();
   const apkPath = path.join(__dirname, '..', 'ScreenTinker.apk');
   const apkExists = fs.existsSync(apkPath);
   const apkSize = apkExists ? fs.statSync(apkPath).size : 0;
   const apkModified = apkExists ? fs.statSync(apkPath).mtimeMs : 0;
 
-  // Read version from a version file, or use the APK modification time as a version indicator
-  const versionFile = path.join(__dirname, '..', 'VERSION');
-  let latestVersion = '1.0.0';
-  try {
-    if (fs.existsSync(versionFile)) latestVersion = fs.readFileSync(versionFile, 'utf8').trim();
-  } catch {}
+  let latestVersion = '0.0.0';
+  let latestVersionCode = 0;
+  let source = 'fallback';
 
-  const updateAvailable = currentVersion && currentVersion !== latestVersion;
+  // Priority 1: APK metadata JSON (canonical).
+  try {
+    const metaPath = path.join(__dirname, '..', 'ScreenTinker.apk.json');
+    if (fs.existsSync(metaPath)) {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+      const element = Array.isArray(meta.elements) ? meta.elements[0] : null;
+      if (element && typeof element.versionName === 'string' && element.versionName.length > 0) {
+        latestVersion = element.versionName.trim();
+        if (typeof element.versionCode === 'number') latestVersionCode = element.versionCode;
+        source = 'apk-metadata';
+      }
+    }
+  } catch (e) {
+    console.warn('[update-check] failed to parse ScreenTinker.apk.json:', e.message);
+  }
+
+  // Priority 2: legacy VERSION file.
+  if (source === 'fallback') {
+    try {
+      const versionFile = path.join(__dirname, '..', 'VERSION');
+      if (fs.existsSync(versionFile)) {
+        const v = fs.readFileSync(versionFile, 'utf8').trim();
+        if (v.length > 0) { latestVersion = v; source = 'version-file'; }
+      }
+    } catch (e) {
+      console.warn('[update-check] failed to read VERSION:', e.message);
+    }
+  }
+
+  // Safety: only flag an update when BOTH versions are real and different.
+  // Without this guard a missing/unreadable metadata file would advertise
+  // "0.0.0" and every installed device would detect a mismatch with its
+  // real version and enter a download/reinstall loop on every poll.
+  const looksLikeRealVersion = (v) => /^\d+\.\d+\.\d+/.test(v);
+  const updateAvailable = !!(
+    currentVersion &&
+    looksLikeRealVersion(currentVersion) &&
+    looksLikeRealVersion(latestVersion) &&
+    currentVersion !== latestVersion
+  );
 
   res.json({
     latest_version: latestVersion,
+    latest_version_code: latestVersionCode,
     current_version: currentVersion || 'unknown',
     update_available: updateAvailable,
     download_url: '/download/apk',
     apk_size: apkSize,
     apk_modified: apkModified,
+    source,
   });
 });
+
 
 // (Content file endpoint moved above protected routes)
 

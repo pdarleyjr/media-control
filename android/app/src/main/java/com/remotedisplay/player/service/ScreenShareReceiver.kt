@@ -1,7 +1,9 @@
 package com.remotedisplay.player.service
 
 import android.content.Context
+import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -128,10 +130,26 @@ class ScreenShareReceiver(
             rendererInitialized = true
         }
 
-        // Route receive-side audio through TV speakers, not the phone earpiece.
+        // Route receive-side audio through the TV speakers, not the phone earpiece.
+        // setCommunicationDevice() is the API-31+ replacement for the deprecated
+        // isSpeakerphoneOn setter. Falls back to the legacy setter on older sticks
+        // (Fire TV Stick 3rd gen runs API 25-29; Fire TV 4K Max runs API 30+).
         val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         am.mode = AudioManager.MODE_NORMAL
-        am.isSpeakerphoneOn = true
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val speaker = am.availableCommunicationDevices.firstOrNull { device ->
+                device.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+            }
+            if (speaker != null) {
+                val ok = am.setCommunicationDevice(speaker)
+                if (!ok) Log.w(TAG, "setCommunicationDevice(BUILTIN_SPEAKER) returned false")
+            } else {
+                Log.w(TAG, "no BUILTIN_SPEAKER in availableCommunicationDevices; audio may route incorrectly")
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            am.isSpeakerphoneOn = true
+        }
 
         Log.i(TAG, "PeerConnectionFactory + renderer initialized")
     }
@@ -369,6 +387,15 @@ class ScreenShareReceiver(
                 rendererInitialized = false
             }
         }.onFailure { Log.w(TAG, "renderer.release failed: ${it.message}") }
+        // Surrender the communication-device route so the system reverts to
+        // its default audio routing. Best-effort - any failure here is logged
+        // but never blocks teardown.
+        runCatching {
+            val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                am.clearCommunicationDevice()
+            }
+        }.onFailure { Log.w(TAG, "clearCommunicationDevice failed: ${it.message}") }
         runCatching { factory?.dispose() }.onFailure { Log.w(TAG, "factory.dispose failed: ${it.message}") }
         factory = null
         runCatching { eglBase?.release() }.onFailure { Log.w(TAG, "eglBase.release failed: ${it.message}") }
