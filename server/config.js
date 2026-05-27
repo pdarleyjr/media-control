@@ -24,7 +24,14 @@ module.exports = {
   // Worst-case dead-socket detection: pingInterval + pingTimeout = 60s.
   pingInterval: parseInt(process.env.PING_INTERVAL) || 30000,
   pingTimeout:  parseInt(process.env.PING_TIMEOUT)  || 30000,
-  maxFileSize: 500 * 1024 * 1024, // 500MB
+  // Generous file-size ceiling for video-wall content. Triple-4K wallpapers
+  // as PNG can easily land at 100-300MB; long-form training videos can run
+  // to a couple of GB. NOTE: Cloudflare's edge enforces its own body-size
+  // ceiling (100MB Free, 100MB Pro, 200MB Business, 500MB Enterprise) so
+  // anything above the CF tier won't ever reach this limit and the user
+  // sees a 413 from the edge, not us. Prefer JPEG/WebP for wallpapers to
+  // stay comfortably under all tiers.
+  maxFileSize: 2 * 1024 * 1024 * 1024, // 2GB
   thumbnailWidth: 320,
   screenshotQuality: 70,
   // SSL: drop your Cloudflare Origin cert + key in certs/ folder

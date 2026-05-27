@@ -95,20 +95,40 @@ router.post('/', checkStorageLimit, upload.single('file'), async (req, res) => {
     const filepath = req.file.filename;
     let width = null, height = null, durationSec = null, thumbnailPath = null;
 
-    // Try to generate thumbnail, get dimensions, and detect duration
+    // Try to generate thumbnail, get dimensions, and detect duration.
+    // Thumbnail failure must be non-fatal: a 25MP triple-4K wallpaper can
+    // exceed libvips defaults or run out of RAM during decode, but the
+    // upload itself should still succeed (we keep the original file and
+    // accept that the thumbnail might be missing — the UI falls back to a
+    // placeholder).
     try {
       if (req.file.mimetype.startsWith('image/')) {
         const sharp = require('sharp');
-        const metadata = await sharp(req.file.path).metadata();
-        width = metadata.width;
-        height = metadata.height;
-
-        // Generate thumbnail
-        thumbnailPath = `thumb_${filepath}`;
-        await sharp(req.file.path)
-          .resize(config.thumbnailWidth)
-          .jpeg({ quality: 70 })
-          .toFile(path.join(config.contentDir, thumbnailPath));
+        // limitInputPixels:false disables libvips's 268MP safety ceiling.
+        // We deliberately accept any pixel count the user uploaded — the
+        // multer fileSize cap is the real gate. failOn:'none' makes sharp
+        // skip transient ICC/EXIF warnings that would otherwise throw on
+        // some camera-exported images.
+        const sharpOpts = { limitInputPixels: false, failOn: 'none' };
+        try {
+          const metadata = await sharp(req.file.path, sharpOpts).metadata();
+          width = metadata.width;
+          height = metadata.height;
+        } catch (e) {
+          console.warn('sharp metadata read failed (non-fatal):', e.message);
+        }
+        // Thumbnail: best-effort. Wrapped in its own try so a thumbnail
+        // failure does not orphan the upload.
+        try {
+          thumbnailPath = `thumb_${filepath}`;
+          await sharp(req.file.path, sharpOpts)
+            .resize(config.thumbnailWidth)
+            .jpeg({ quality: 70 })
+            .toFile(path.join(config.contentDir, thumbnailPath));
+        } catch (e) {
+          console.warn('sharp thumbnail generation failed (non-fatal):', e.message);
+          thumbnailPath = null;
+        }
       } else if (req.file.mimetype.startsWith('video/')) {
         // Extract video duration and dimensions with ffprobe
         try {
@@ -336,16 +356,29 @@ router.put('/:id/replace', upload.single('file'), async (req, res) => {
   const filepath = req.file.filename;
   let width = null, height = null, thumbnailPath = null;
 
-  // Generate new thumbnail for images
+  // Generate new thumbnail for images. Same defenses as the create path:
+  // limitInputPixels:false bypasses libvips's 268MP ceiling for triple-4K
+  // wallpapers, failOn:'none' skips transient EXIF/ICC warnings, and any
+  // failure here is logged but doesn't break the replace-content flow.
   try {
     if (req.file.mimetype.startsWith('image/')) {
       const sharp = require('sharp');
-      const metadata = await sharp(req.file.path).metadata();
-      width = metadata.width;
-      height = metadata.height;
-      thumbnailPath = `thumb_${filepath}`;
-      await sharp(req.file.path).resize(config.thumbnailWidth).jpeg({ quality: 70 })
-        .toFile(path.join(config.contentDir, thumbnailPath));
+      const sharpOpts = { limitInputPixels: false, failOn: 'none' };
+      try {
+        const metadata = await sharp(req.file.path, sharpOpts).metadata();
+        width = metadata.width;
+        height = metadata.height;
+      } catch (e) {
+        console.warn('sharp metadata read failed (non-fatal):', e.message);
+      }
+      try {
+        thumbnailPath = `thumb_${filepath}`;
+        await sharp(req.file.path, sharpOpts).resize(config.thumbnailWidth).jpeg({ quality: 70 })
+          .toFile(path.join(config.contentDir, thumbnailPath));
+      } catch (e) {
+        console.warn('sharp thumbnail generation failed (non-fatal):', e.message);
+        thumbnailPath = null;
+      }
     }
   } catch (e) {
     console.warn('Thumbnail generation failed:', e.message);

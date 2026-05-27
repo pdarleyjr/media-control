@@ -61,6 +61,47 @@ async function listDevices() {
   return apiGet('/api/devices');
 }
 
+async function listVideoWalls() {
+  // Returns array of walls, each with .devices = [{ device_id, device_name,
+  // device_status, grid_col, grid_row, canvas_x, canvas_y, canvas_width,
+  // canvas_height }, ...]. Empty array on auth/no-workspace.
+  try { return await apiGet('/api/video-walls'); } catch (_) { return []; }
+}
+
+/**
+ * Compute the per-device wall_tile payload for a screen-share-to-wall session.
+ * Mirrors the player playlist's wall geometry: the bounding box of all member
+ * canvas_x/y/w/h becomes the "player canvas" that the broadcast paints; each
+ * member's own canvas_x/y/w/h becomes its screen_rect. Receivers position the
+ * stage at vw/vh coordinates derived from these two rects.
+ *
+ * Returns Map<device_id, { screen_rect, player_rect }>.
+ */
+function computeWallTiles(wall) {
+  if (!wall || !Array.isArray(wall.devices) || wall.devices.length === 0) return new Map();
+  // Filter members that have a canvas rect; ones without are unconfigured.
+  const members = wall.devices.filter(d =>
+    typeof d.canvas_x === 'number' && typeof d.canvas_y === 'number' &&
+    typeof d.canvas_width === 'number' && typeof d.canvas_height === 'number' &&
+    d.canvas_width > 0 && d.canvas_height > 0
+  );
+  if (members.length === 0) return new Map();
+  // Bounding box.
+  const minX = Math.min(...members.map(d => d.canvas_x));
+  const minY = Math.min(...members.map(d => d.canvas_y));
+  const maxX = Math.max(...members.map(d => d.canvas_x + d.canvas_width));
+  const maxY = Math.max(...members.map(d => d.canvas_y + d.canvas_height));
+  const playerRect = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+  const tiles = new Map();
+  for (const m of members) {
+    tiles.set(m.device_id, {
+      screen_rect: { x: m.canvas_x, y: m.canvas_y, w: m.canvas_width, h: m.canvas_height },
+      player_rect: { ...playerRect },
+    });
+  }
+  return tiles;
+}
+
 // ----------------------------------------------------------------------
 // State, scoped per view mount. resetState() is called at the top of
 // every render() so re-entering the route does not inherit zombie objects
@@ -211,28 +252,90 @@ async function primeIceServers() {
 }
 
 // ----------------------------------------------------------------------
-// Device list (workspace-scoped via existing /api/devices)
+// Target list - both video walls (as single targets that fan out to all
+// members on the broadcaster side, each receiver getting its computed
+// wall_tile) AND individual displays.
 // ----------------------------------------------------------------------
+let walls = []; // cached walls (with .devices) for use by the checkbox handler
+
 async function populateTargetList() {
   const listEl = document.getElementById('ss-target-list');
   if (!listEl) return;
   try {
-    const devices = await listDevices();
-    if (!devices.length) {
-      listEl.innerHTML = '<div class="muted">No paired displays in this workspace yet. Pair a display first under Devices.</div>';
+    const [devices, fetchedWalls] = await Promise.all([listDevices(), listVideoWalls()]);
+    walls = Array.isArray(fetchedWalls) ? fetchedWalls : [];
+
+    // Devices that are members of a wall are still individually targetable, but
+    // we tag them visually so the user can see they belong to a wall.
+    const wallMemberById = new Map();
+    for (const w of walls) {
+      for (const m of (w.devices || [])) {
+        wallMemberById.set(m.device_id, w);
+      }
+    }
+
+    let html = '';
+
+    if (walls.length > 0) {
+      html += `<div class="ss-target-section-label">Video walls</div>`;
+      for (const w of walls) {
+        const members = (w.devices || []);
+        const onlineMembers = members.filter(m => m.device_status === 'online');
+        const allOnline = members.length > 0 && onlineMembers.length === members.length;
+        const tiles = computeWallTiles(w);
+        const wellFormed = tiles.size === members.length && tiles.size > 0;
+        const disabled = !(allOnline && wellFormed);
+        const reason = !wellFormed ? 'missing canvas layout' : (!allOnline ? `${members.length - onlineMembers.length} of ${members.length} offline` : `${members.length} displays`);
+        html += `
+          <label class="ss-target-row ss-target-wall" data-wall-id="${escapeHtml(w.id)}">
+            <input type="checkbox" data-wall-id="${escapeHtml(w.id)}" ${disabled ? 'disabled' : ''}>
+            <span class="ss-target-name">${escapeHtml(w.name || 'Wall')} <span class="muted">(${w.grid_cols}×${w.grid_rows} — single broadcast)</span></span>
+            <span class="status-dot ${allOnline ? 'online' : 'offline'}"></span>
+            <span class="muted">${escapeHtml(reason)}</span>
+          </label>
+        `;
+      }
+    }
+
+    if (devices.length > 0) {
+      html += `<div class="ss-target-section-label">Individual displays</div>`;
+      for (const d of devices) {
+        const wallTag = wallMemberById.has(d.id) ? `<span class="ss-target-walltag" title="Member of wall: ${escapeHtml(wallMemberById.get(d.id).name)}">in wall</span>` : '';
+        html += `
+          <label class="ss-target-row" data-device-id="${escapeHtml(d.id)}">
+            <input type="checkbox" data-device-id="${escapeHtml(d.id)}" ${d.status === 'online' ? '' : 'disabled'}>
+            <span class="ss-target-name">${escapeHtml(d.name || 'Unnamed display')} ${wallTag}</span>
+            <span class="status-dot ${d.status === 'online' ? 'online' : 'offline'}"></span>
+            <span class="muted">${d.status}</span>
+          </label>
+        `;
+      }
+    }
+
+    if (html === '') {
+      listEl.innerHTML = '<div class="muted">No paired displays or walls in this workspace yet. Pair a display under Devices.</div>';
       return;
     }
-    listEl.innerHTML = devices.map(d => `
-      <label class="ss-target-row" data-device-id="${escapeHtml(d.id)}">
-        <input type="checkbox" data-device-id="${escapeHtml(d.id)}" ${d.status === 'online' ? '' : 'disabled'}>
-        <span class="ss-target-name">${escapeHtml(d.name || 'Unnamed display')}</span>
-        <span class="status-dot ${d.status === 'online' ? 'online' : 'offline'}"></span>
-        <span class="muted">${d.status}</span>
-      </label>
-    `).join('');
+    listEl.innerHTML = html;
   } catch (e) {
     listEl.innerHTML = `<div class="muted">Could not load displays: ${escapeHtml(e.message || String(e))}</div>`;
   }
+}
+
+// Resolve a wall id to the broadcast targets we need to dispatch. Returns
+// [{ device_id, wall_tile }] for use by the broadcast loop.
+function resolveWallTargets(wallId) {
+  const w = walls.find(x => x.id === wallId);
+  if (!w) return [];
+  const tiles = computeWallTiles(w);
+  const out = [];
+  for (const m of (w.devices || [])) {
+    const tile = tiles.get(m.device_id);
+    if (m.device_status === 'online' && tile) {
+      out.push({ device_id: m.device_id, wall_tile: tile });
+    }
+  }
+  return out;
 }
 
 // ----------------------------------------------------------------------
@@ -328,23 +431,51 @@ async function startCapture() {
     `;
   }
 
-  // Wire up checkbox handlers to start/stop broadcasts per device.
+  // Wire up checkbox handlers. A wall checkbox starts/stops broadcasts to all
+  // its members in lockstep; a device checkbox starts/stops one peer. Wall
+  // members carry the computed wall_tile so each receiver clips to its slice.
   document.querySelectorAll('#ss-target-list input[type=checkbox]').forEach(cb => {
     cb.addEventListener('change', async (e) => {
+      const wallId = e.target.dataset.wallId;
       const deviceId = e.target.dataset.deviceId;
+      const isWall = !!wallId;
       if (e.target.checked) {
         e.target.disabled = true;
         try {
-          await startBroadcastTo(deviceId);
+          if (isWall) {
+            const targets = resolveWallTargets(wallId);
+            if (targets.length === 0) throw new Error('wall has no broadcastable members');
+            // Start all members in parallel; partial success is acceptable
+            // (the user sees per-tile status in the Active broadcasts list
+            // and can stop the wall to roll back).
+            const settled = await Promise.allSettled(
+              targets.map(t => startBroadcastTo(t.device_id, t.wall_tile))
+            );
+            const failures = settled.filter(s => s.status === 'rejected');
+            if (failures.length === targets.length) {
+              throw new Error(failures[0].reason && failures[0].reason.message || 'all wall members refused');
+            }
+            if (failures.length > 0) {
+              warnLog(`wall broadcast: ${failures.length}/${targets.length} members failed`);
+              alert(`Broadcasting to ${targets.length - failures.length} of ${targets.length} wall tiles. Check the Active broadcasts list for which tile failed.`);
+            }
+          } else {
+            await startBroadcastTo(deviceId);
+          }
         } catch (err) {
           errLog('start broadcast failed:', err);
-          alert(`Could not broadcast to that display:\n${err.message || err}`);
+          alert(`Could not broadcast to that target:\n${err.message || err}`);
           e.target.checked = false;
         } finally {
           e.target.disabled = false;
         }
       } else {
-        await stopBroadcastTo(deviceId);
+        if (isWall) {
+          const targets = resolveWallTargets(wallId);
+          await Promise.allSettled(targets.map(t => stopBroadcastTo(t.device_id)));
+        } else {
+          await stopBroadcastTo(deviceId);
+        }
       }
       refreshSessionList();
     });
@@ -391,7 +522,7 @@ function stopCapture() {
 // ----------------------------------------------------------------------
 // 2. Per-device broadcast (one RTCPeerConnection per target device)
 // ----------------------------------------------------------------------
-async function startBroadcastTo(deviceId) {
+async function startBroadcastTo(deviceId, wallTile = null) {
   if (!stream) throw new Error('No active capture stream');
   if (peerConnections.has(deviceId)) {
     dbg(`broadcast to ${deviceId} already running`);
@@ -401,9 +532,13 @@ async function startBroadcastTo(deviceId) {
   const sock = getSocket();
   if (!sock || !sock.connected) throw new Error('Dashboard socket not connected');
 
-  // Server-side session setup. Server returns ok or error - we trust the
-  // server's session bookkeeping completely.
-  const startAck = await emitWithAck(sock, 'screen-share:start', { device_id: deviceId });
+  // Server-side session setup. wall_tile is optional - when present, the
+  // server forwards it to the receiver so it can render this device's
+  // slice of the wall canvas instead of a fullscreen overlay.
+  const startPayload = wallTile
+    ? { device_id: deviceId, wall_tile: wallTile }
+    : { device_id: deviceId };
+  const startAck = await emitWithAck(sock, 'screen-share:start', startPayload);
   if (!startAck || !startAck.ok) {
     throw new Error(startAck && startAck.error ? startAck.error : 'server refused screen-share:start');
   }

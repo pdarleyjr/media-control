@@ -59,8 +59,14 @@
     if (sock.__screenShareWired) return;
     sock.__screenShareWired = true;
 
-    sock.on('device:screen-share-start', function () {
-      log('session start');
+    sock.on('device:screen-share-start', function (data) {
+      // wall_tile is optional: { screen_rect, player_rect } describing this
+      // device's slice of the broadcast canvas. When present the overlay
+      // becomes a tile of the wall (positioned via vw/vh with overflow:hidden
+      // on the body so off-tile content is clipped). Absent => fullscreen.
+      var wallTile = (data && data.wall_tile) || null;
+      window.__screentinkerScreenShare.wallTile = wallTile;
+      log('session start', wallTile ? 'wall-tile' : 'fullscreen');
       window.__screentinkerScreenShare.active = true;
       ensureIceConfig().then(function () {
         createPeerConnection();
@@ -249,9 +255,42 @@
     if (!videoEl) ensureBackgroundStream();
     overlayEl = document.createElement('div');
     overlayEl.id = 'screen-share-overlay';
-    overlayEl.style.cssText =
-      'position:fixed;inset:0;background:#000;z-index:99999;' +
-      'display:flex;align-items:center;justify-content:center;';
+
+    var wallTile = window.__screentinkerScreenShare.wallTile;
+    if (wallTile && wallTile.screen_rect && wallTile.player_rect) {
+      // Wall-tile mode. Mirrors the playlist's wall-stage CSS:
+      //   stage left = (player.x - screen.x) / screen.w * 100 vw
+      //   stage top  = (player.y - screen.y) / screen.h * 100 vh
+      //   stage size = (player.w / screen.w) * 100 vw, (player.h / screen.h) * 100 vh
+      // The stage commonly extends beyond the device's 100vw/100vh viewport
+      // (e.g. 300vw wide for a 3-tile-wide row); body overflow:hidden clips it
+      // so each TV shows only its slice of the broadcast.
+      var s = wallTile.screen_rect, p = wallTile.player_rect;
+      if (s.w > 0 && s.h > 0) {
+        var left = ((p.x - s.x) / s.w) * 100;
+        var top = ((p.y - s.y) / s.h) * 100;
+        var width = (p.w / s.w) * 100;
+        var height = (p.h / s.h) * 100;
+        overlayEl.style.cssText =
+          'position:fixed;background:#000;z-index:99999;overflow:hidden;' +
+          'left:' + left + 'vw;top:' + top + 'vh;' +
+          'width:' + width + 'vw;height:' + height + 'vh;';
+        // Video fills the stage and is stretched (object-fit:fill) to match
+        // the wall aspect. Each device sees only the visible-viewport slice.
+        videoEl.style.cssText =
+          'width:100%;height:100%;object-fit:fill;background:#000;display:block;';
+        // Keep the page itself from showing scrollbars when the stage extends
+        // outside the viewport (playerContainer already has overflow:hidden in
+        // wall-mode, but the overlay sits at body level on top).
+        document.documentElement.style.overflow = 'hidden';
+        document.body.style.overflow = 'hidden';
+      }
+    } else {
+      // Fullscreen mode (existing single-display behavior).
+      overlayEl.style.cssText =
+        'position:fixed;inset:0;background:#000;z-index:99999;' +
+        'display:flex;align-items:center;justify-content:center;';
+    }
     overlayEl.appendChild(videoEl);
     document.body.appendChild(overlayEl);
     log('overlay mounted');
@@ -279,6 +318,12 @@
 
   function unmountOverlay() {
     hideConnectingChip();
+    // Restore body / html overflow if wall-tile mode set them. Idempotent —
+    // setting style.overflow = '' falls back to the stylesheet default.
+    try {
+      document.documentElement.style.overflow = '';
+      document.body.style.overflow = '';
+    } catch (_) { /* */ }
     if (!overlayEl) {
       if (videoEl && videoEl.srcObject) {
         try { videoEl.srcObject.getTracks().forEach(function (t) { t.stop(); }); } catch (_) {}
@@ -296,6 +341,7 @@
     } catch (e) { warn('unmount error:', e); }
     overlayEl = null;
     videoEl = null;
+    window.__screentinkerScreenShare.wallTile = null;
     log('overlay removed');
   }
 

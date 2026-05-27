@@ -104,7 +104,7 @@ function setupScreenShareSignaling({ dashboardNs, deviceNs, canActOnDevice, devi
     socket.data.ownedScreenShareSessions = new Set();
 
     socket.on('screen-share:start', (data, ack) => {
-      const { device_id } = data || {};
+      const { device_id, wall_tile } = data || {};
       if (!device_id) {
         return ack && ack({ ok: false, error: 'device_id required' });
       }
@@ -114,6 +114,20 @@ function setupScreenShareSignaling({ dashboardNs, deviceNs, canActOnDevice, devi
       const room = deviceNs.adapter.rooms.get(device_id);
       if (!room || room.size === 0) {
         return ack && ack({ ok: false, error: 'device_offline' });
+      }
+
+      // Lightly validate the optional wall_tile payload. We don't trust the
+      // client's geometry beyond well-formedness; the receiver applies its own
+      // sanity checks. Discarding malformed values silently is preferable to
+      // surfacing them and letting a single bad cell break the whole wall.
+      let safeWallTile = null;
+      if (wall_tile && typeof wall_tile === 'object') {
+        const s = wall_tile.screen_rect, p = wall_tile.player_rect;
+        const ok = s && p &&
+          ['x', 'y', 'w', 'h'].every(k => typeof s[k] === 'number' && Number.isFinite(s[k])) &&
+          ['x', 'y', 'w', 'h'].every(k => typeof p[k] === 'number' && Number.isFinite(p[k])) &&
+          s.w > 0 && s.h > 0 && p.w > 0 && p.h > 0;
+        if (ok) safeWallTile = { screen_rect: { ...s }, player_rect: { ...p } };
       }
 
       const existing = activeSessions.get(device_id);
@@ -134,13 +148,15 @@ function setupScreenShareSignaling({ dashboardNs, deviceNs, canActOnDevice, devi
         broadcasterSocketId: socket.id,
         startedAt: Date.now(),
         disconnectedAt: null,
+        wallTile: safeWallTile,
       });
       socket.data.ownedScreenShareSessions.add(device_id);
 
       deviceNs.to(device_id).emit('device:screen-share-start', {
         broadcaster_socket: socket.id,
+        wall_tile: safeWallTile,
       });
-      console.log(`[screen-share] start: device=${device_id} broadcaster=${socket.id}`);
+      console.log(`[screen-share] start: device=${device_id} broadcaster=${socket.id}${safeWallTile ? ' (wall-tile)' : ''}`);
       ack && ack({ ok: true });
     });
 
