@@ -34,6 +34,17 @@
         android:layout_height="match_parent"
         android:visibility="gone" />
 
+    <!-- WebRTC screen-share receive surface. Sits above the media player and
+         YouTube WebView; initially gone, made visible when ScreenShareReceiver
+         reports ICE state CONNECTED. Goes back to gone on session end so the
+         normal playlist resumes underneath. -->
+    <org.webrtc.SurfaceViewRenderer
+        android:id="@+id/screenShareSurface"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#000000"
+        android:visibility="gone" />
+
     <!-- Status Overlay -->
     <LinearLayout
         android:id="@+id/statusOverlay"

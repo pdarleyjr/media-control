@@ -28,9 +28,11 @@ import com.remotedisplay.player.player.PlaylistItem
 import com.remotedisplay.player.player.ZoneManager
 import com.remotedisplay.player.remote.ScreenshotCapture
 import com.remotedisplay.player.remote.TouchInjector
+import com.remotedisplay.player.service.ScreenShareReceiver
 import com.remotedisplay.player.service.UpdateChecker
 import com.remotedisplay.player.service.WebSocketService
 import org.json.JSONObject
+import org.webrtc.SurfaceViewRenderer
 import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
@@ -52,6 +54,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusOverlay: View
     private lateinit var statusText: TextView
     private lateinit var rootView: View
+    private lateinit var screenShareSurface: SurfaceViewRenderer
+    private var screenShareReceiver: ScreenShareReceiver? = null
 
     private val handler = Handler(Looper.getMainLooper())
     private var remoteStreaming = false
@@ -121,6 +125,7 @@ class MainActivity : AppCompatActivity() {
         statusOverlay = findViewById(R.id.statusOverlay)
         statusText = findViewById(R.id.statusText)
         rootView = findViewById(R.id.rootLayout)
+        screenShareSurface = findViewById(R.id.screenShareSurface)
 
         // Hide player controls
         playerView.useController = false
@@ -411,6 +416,52 @@ class MainActivity : AppCompatActivity() {
                 finish()
             }
         }
+
+        // WebRTC screen-share receiver. Lazy: only instantiated when the server
+        // tells us a session has started. The factory + EGL init is expensive
+        // (~300-500ms on Fire TV) so we defer it past cold launch.
+        wsService?.onScreenShareStart = {
+            ensureScreenShareReceiver().startSession()
+        }
+        wsService?.onScreenShareOffer = { sdp ->
+            screenShareReceiver?.handleOffer(sdp)
+        }
+        wsService?.onScreenShareIce = { candidate ->
+            screenShareReceiver?.handleRemoteIceCandidate(candidate)
+        }
+        wsService?.onScreenShareEnd = {
+            screenShareReceiver?.endSession()
+        }
+    }
+
+    private fun ensureScreenShareReceiver(): ScreenShareReceiver {
+        screenShareReceiver?.let { return it }
+        val ws = wsService
+        val receiver = ScreenShareReceiver(
+            context = applicationContext,
+            renderer = screenShareSurface,
+            sendAnswer = { payload -> ws?.sendScreenShareAnswer(payload) },
+            sendIceCandidate = { payload -> ws?.sendScreenShareIceCandidate(payload) },
+            sendEnded = { ws?.sendScreenShareEnded() },
+            onOverlayShouldBeVisible = { visible -> setScreenShareOverlayVisible(visible) },
+        )
+        screenShareReceiver = receiver
+        return receiver
+    }
+
+    private fun setScreenShareOverlayVisible(visible: Boolean) {
+        handler.post {
+            if (visible) {
+                Log.i("MainActivity", "screen-share overlay -> visible")
+                screenShareSurface.visibility = View.VISIBLE
+                // Suppress the status overlay so the share isn't covered by a
+                // 'Connecting...' message left over from earlier.
+                statusOverlay.visibility = View.GONE
+            } else {
+                Log.i("MainActivity", "screen-share overlay -> hidden")
+                screenShareSurface.visibility = View.GONE
+            }
+        }
     }
 
     private fun playItem(item: PlaylistItem) {
@@ -573,6 +624,8 @@ class MainActivity : AppCompatActivity() {
             stopScreenshotStreaming()
             mediaPlayer.release()
         }
+        try { screenShareReceiver?.release() } catch (e: Throwable) { Log.w("MainActivity", "screenShareReceiver.release: ${e.message}") }
+        screenShareReceiver = null
         if (bound) {
             try { unbindService(connection) } catch (_: Exception) {}
             bound = false

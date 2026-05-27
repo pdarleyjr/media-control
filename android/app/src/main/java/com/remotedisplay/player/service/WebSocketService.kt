@@ -41,6 +41,14 @@ class WebSocketService : Service() {
     var onRemoteKey: ((String) -> Unit)? = null
     var onCommand: ((String, JSONObject?) -> Unit)? = null
 
+    // WebRTC screen-share signaling callbacks. Wired up by MainActivity to the
+    // ScreenShareReceiver, which owns the PeerConnection lifecycle. Server
+    // pushes these to the device namespace from screen-share-signaling.js.
+    var onScreenShareStart: (() -> Unit)? = null
+    var onScreenShareOffer: ((JSONObject) -> Unit)? = null
+    var onScreenShareIce: ((JSONObject) -> Unit)? = null
+    var onScreenShareEnd: (() -> Unit)? = null
+
     inner class LocalBinder : Binder() {
         fun getService(): WebSocketService = this@WebSocketService
     }
@@ -264,11 +272,58 @@ class WebSocketService : Service() {
                     }
                 }
 
+                // WebRTC screen-share events (relayed by screen-share-signaling.js).
+                // Payloads mirror the JS receiver one-for-one.
+                safeOn("device:screen-share-start") {
+                    Log.i("WebSocketService", "screen-share start")
+                    handler.post { try { onScreenShareStart?.invoke() } catch (e: Throwable) { Log.e("WebSocketService", "onScreenShareStart cb: ${e.message}") } }
+                }
+
+                safeOn("device:screen-share-offer") { args ->
+                    val data = args.firstOrNull() as? JSONObject ?: return@safeOn
+                    val sdp = data.optJSONObject("sdp") ?: return@safeOn
+                    handler.post { try { onScreenShareOffer?.invoke(sdp) } catch (e: Throwable) { Log.e("WebSocketService", "onScreenShareOffer cb: ${e.message}") } }
+                }
+
+                safeOn("device:screen-share-ice-candidate") { args ->
+                    val data = args.firstOrNull() as? JSONObject ?: return@safeOn
+                    val cand = data.optJSONObject("candidate") ?: return@safeOn
+                    handler.post { try { onScreenShareIce?.invoke(cand) } catch (e: Throwable) { Log.e("WebSocketService", "onScreenShareIce cb: ${e.message}") } }
+                }
+
+                safeOn("device:screen-share-end") {
+                    Log.i("WebSocketService", "screen-share end")
+                    handler.post { try { onScreenShareEnd?.invoke() } catch (e: Throwable) { Log.e("WebSocketService", "onScreenShareEnd cb: ${e.message}") } }
+                }
+
                 connect()
             }
         } catch (e: Throwable) {
             Log.e("WebSocketService", "Socket setup error: ${e.message}", e)
         }
+    }
+
+    // ----------------------------------------------------------------------
+    // Outbound screen-share signaling helpers (device -> server -> broadcaster).
+    // Server stamps device_id from the authenticated socket, so we send only
+    // the payload body. No-ops when disconnected.
+    // ----------------------------------------------------------------------
+    fun sendScreenShareAnswer(payload: JSONObject) {
+        if (socket?.connected() != true) return
+        runCatching { socket?.emit("device:screen-share-answer", payload) }
+            .onFailure { Log.w("WebSocketService", "sendScreenShareAnswer: ${it.message}") }
+    }
+
+    fun sendScreenShareIceCandidate(payload: JSONObject) {
+        if (socket?.connected() != true) return
+        runCatching { socket?.emit("device:screen-share-ice-candidate", payload) }
+            .onFailure { Log.w("WebSocketService", "sendScreenShareIceCandidate: ${it.message}") }
+    }
+
+    fun sendScreenShareEnded() {
+        if (socket?.connected() != true) return
+        runCatching { socket?.emit("device:screen-share-ended") }
+            .onFailure { Log.w("WebSocketService", "sendScreenShareEnded: ${it.message}") }
     }
 
     private fun register() {

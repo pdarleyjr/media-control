@@ -75,4 +75,9 @@ dependencies {
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
+    // WebRTC for live screen-share receive (community fork after Google deprecated
+    // org.webrtc:google-webrtc in 2023). Maintained by webrtc-sdk on GitHub.
+    // Receive-only - no capture/encode permissions needed beyond INTERNET.
+    implementation("io.github.webrtc-sdk:android:114.5735.10")
 }
