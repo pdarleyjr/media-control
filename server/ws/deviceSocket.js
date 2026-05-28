@@ -491,42 +491,78 @@ module.exports = function setupDeviceSocket(io) {
     }
 
     // Heartbeat with telemetry
+    // 2026-05-28: hardened against process-killing FK violations. If the
+    // device row is deleted (by an admin or a reset) between socket register
+    // and the heartbeat firing, the INSERT INTO device_telemetry would throw
+    // SQLITE_CONSTRAINT_FOREIGNKEY and propagate out of the Socket.IO event
+    // handler, crashing Node. Now we (a) re-check the parent row exists
+    // before any FK insert, and (b) wrap each write in try/catch so a single
+    // malformed payload never restarts the container.
     socket.on('device:heartbeat', (data) => {
-      if (!requireDeviceAuth()) return;
-      const { device_id, telemetry } = data;
-      if (!device_id || device_id !== currentDeviceId) return;
+      try {
+        if (!requireDeviceAuth()) return;
+        const { device_id, telemetry } = data || {};
+        if (!device_id || device_id !== currentDeviceId) return;
 
-      currentDeviceId = device_id;
-      heartbeat.updateHeartbeat(device_id);
+        // Parent existence check: if the device row was deleted server-side
+        // (workspace cleanup, admin delete, schema rebuild) the socket is
+        // stale. Tell the player to re-provision and bail.
+        const exists = db.prepare('SELECT 1 FROM devices WHERE id = ?').get(device_id);
+        if (!exists) {
+          try { socket.emit('device:unpaired', { reason: 'not_found' }); } catch (_) {}
+          authenticated = false;
+          currentDeviceId = null;
+          return;
+        }
 
-      db.prepare("UPDATE devices SET status = 'online', last_heartbeat = strftime('%s','now'), updated_at = strftime('%s','now') WHERE id = ?")
-        .run(device_id);
+        heartbeat.updateHeartbeat(device_id);
 
-      if (telemetry) {
-        db.prepare(`
-          INSERT INTO device_telemetry (device_id, battery_level, battery_charging, storage_free_mb, storage_total_mb,
-            ram_free_mb, ram_total_mb, cpu_usage, wifi_ssid, wifi_rssi, uptime_seconds)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          device_id,
-          telemetry.battery_level ?? null,
-          telemetry.battery_charging ? 1 : 0,
-          telemetry.storage_free_mb ?? null,
-          telemetry.storage_total_mb ?? null,
-          telemetry.ram_free_mb ?? null,
-          telemetry.ram_total_mb ?? null,
-          telemetry.cpu_usage ?? null,
-          telemetry.wifi_ssid ?? null,
-          telemetry.wifi_rssi ?? null,
-          telemetry.uptime_seconds ?? null
-        );
-        pruneTelemetry(device_id);
+        try {
+          db.prepare("UPDATE devices SET status = 'online', last_heartbeat = strftime('%s','now'), updated_at = strftime('%s','now') WHERE id = ?")
+            .run(device_id);
+        } catch (e) {
+          console.warn(`heartbeat UPDATE devices failed for ${device_id}: ${e.message}`);
+        }
 
-        emitToDeviceWorkspace(dashboardNs, device_id, 'dashboard:device-status', {
-          device_id,
-          status: 'online',
-          telemetry
-        });
+        if (telemetry) {
+          try {
+            db.prepare(`
+              INSERT INTO device_telemetry (device_id, battery_level, battery_charging, storage_free_mb, storage_total_mb,
+                ram_free_mb, ram_total_mb, cpu_usage, wifi_ssid, wifi_rssi, uptime_seconds)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(
+              device_id,
+              telemetry.battery_level ?? null,
+              telemetry.battery_charging ? 1 : 0,
+              telemetry.storage_free_mb ?? null,
+              telemetry.storage_total_mb ?? null,
+              telemetry.ram_free_mb ?? null,
+              telemetry.ram_total_mb ?? null,
+              telemetry.cpu_usage ?? null,
+              telemetry.wifi_ssid ?? null,
+              telemetry.wifi_rssi ?? null,
+              telemetry.uptime_seconds ?? null
+            );
+            pruneTelemetry(device_id);
+          } catch (e) {
+            // FK violation, race with delete, etc. Log and skip telemetry —
+            // don't crash the whole device namespace.
+            console.warn(`device_telemetry INSERT failed for ${device_id}: ${e.message}`);
+          }
+
+          try {
+            emitToDeviceWorkspace(dashboardNs, device_id, 'dashboard:device-status', {
+              device_id,
+              status: 'online',
+              telemetry
+            });
+          } catch (e) {
+            console.warn(`dashboard emit failed for ${device_id}: ${e.message}`);
+          }
+        }
+      } catch (e) {
+        // Catch-all so a malformed payload never escapes the event loop.
+        console.error(`device:heartbeat handler crashed: ${e.message}`, e.stack);
       }
     });
 
@@ -607,11 +643,19 @@ module.exports = function setupDeviceSocket(io) {
       }
     });
 
+    // Catch-all for any uncaught throw on this socket so the device
+    // namespace stays alive even if a future handler is buggy. Node would
+    // otherwise terminate the entire process on an emit-from-handler throw.
+    socket.on('error', (err) => {
+      console.error(`device socket error (id=${socket.id}, dev=${currentDeviceId}):`, err?.message || err);
+    });
+
     // Video wall sync relay. Sender must be a member of the wall it claims —
     // otherwise an authenticated device could inject sync packets into a wall
     // it doesn't belong to (jitter/DoS that wall's playback). Exclusion uses
     // currentDeviceId, never the client-supplied data.device_id.
     socket.on('wall:sync', (data) => {
+      try {
       if (!requireDeviceAuth()) return;
       if (!data?.wall_id) return;
       const isMember = db.prepare(
@@ -626,6 +670,9 @@ module.exports = function setupDeviceSocket(io) {
       for (const wd of wallDevices) {
         deviceNs.to(wd.device_id).emit('wall:sync', payload);
       }
+      } catch (e) {
+        console.warn(`wall:sync handler error: ${e.message}`);
+      }
     });
 
     // A follower asks for an immediate position update from the leader.
@@ -633,18 +680,22 @@ module.exports = function setupDeviceSocket(io) {
     // the next periodic wall:sync tick. Server forwards only to the leader,
     // and only when the requester is actually a member of the named wall.
     socket.on('wall:sync-request', (data) => {
-      if (!requireDeviceAuth()) return;
-      if (!data?.wall_id) return;
-      const isMember = db.prepare(
-        'SELECT 1 FROM video_wall_devices WHERE wall_id = ? AND device_id = ?'
-      ).get(data.wall_id, currentDeviceId);
-      if (!isMember) return;
-      const wall = db.prepare('SELECT leader_device_id FROM video_walls WHERE id = ?').get(data.wall_id);
-      if (!wall?.leader_device_id || wall.leader_device_id === currentDeviceId) return;
-      deviceNs.to(wall.leader_device_id).emit('wall:sync-request', {
-        wall_id: data.wall_id,
-        requested_by: currentDeviceId,
-      });
+      try {
+        if (!requireDeviceAuth()) return;
+        if (!data?.wall_id) return;
+        const isMember = db.prepare(
+          'SELECT 1 FROM video_wall_devices WHERE wall_id = ? AND device_id = ?'
+        ).get(data.wall_id, currentDeviceId);
+        if (!isMember) return;
+        const wall = db.prepare('SELECT leader_device_id FROM video_walls WHERE id = ?').get(data.wall_id);
+        if (!wall?.leader_device_id || wall.leader_device_id === currentDeviceId) return;
+        deviceNs.to(wall.leader_device_id).emit('wall:sync-request', {
+          wall_id: data.wall_id,
+          requested_by: currentDeviceId,
+        });
+      } catch (e) {
+        console.warn(`wall:sync-request handler error: ${e.message}`);
+      }
     });
 
     socket.on('disconnect', () => {
