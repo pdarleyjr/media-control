@@ -198,7 +198,77 @@ router.post('/remote', checkRemoteUrl, (req, res) => {
   }
 });
 
+// Background YouTube transcode via yt-dlp. Caps height at 1080 so the result
+// stays within Fire TV decode limits (older sticks max out around 4K texture
+// width — the transcoded MP4 is rendered through the HTML5 video path which
+// works correctly across multi-tile walls, unlike the YouTube iframe which
+// can only render the video pixels in a centered portion of its own frame).
+// Best-effort: if yt-dlp is missing OR transcode fails, the content row keeps
+// `mime_type='video/youtube'` so the player falls back to iframe embed.
+function transcodeYouTubeInBackground(contentId, videoId) {
+  const { execFile } = require('child_process');
+  const fs = require('fs');
+  const ext = 'mp4';
+  const outFilename = `${uuidv4()}.${ext}`;
+  const outPath = path.join(config.contentDir, outFilename);
+  // -f best[height<=1080] picks the highest available stream up to 1080p.
+  // --no-warnings + --no-progress keeps stderr quiet so we can detect real
+  // errors. --merge-output-format mp4 ensures muxed mp4 output regardless of
+  // upstream split-stream availability.
+  const args = [
+    '-f', 'best[height<=1080][ext=mp4]/best[height<=1080]',
+    '--no-warnings', '--no-progress', '--no-playlist',
+    '--merge-output-format', 'mp4',
+    '-o', outPath,
+    `https://www.youtube.com/watch?v=${videoId}`,
+  ];
+  // 10-minute hard timeout — any clip we care about should fit; runaway downloads die.
+  execFile('yt-dlp', args, { timeout: 10 * 60 * 1000 }, (err, stdout, stderr) => {
+    if (err) {
+      console.warn(`yt-dlp transcode failed for ${videoId}: ${err.message}${stderr ? ' | stderr: ' + String(stderr).slice(0, 200) : ''}`);
+      // Mark transcode as failed in the existing row so the dashboard can show status.
+      // Player keeps iframe fallback; nothing visible breaks.
+      try {
+        db.prepare("UPDATE content SET filepath = '' WHERE id = ? AND filepath = ?").run(contentId, outFilename);
+      } catch (_) { /* row may have been deleted */ }
+      // Clean up any partial file.
+      try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch (_) {}
+      return;
+    }
+    // Probe duration + dimensions before swapping the row to video/mp4.
+    let durationSec = null, width = null, height = null, fileSize = 0;
+    try {
+      const stat = fs.statSync(outPath);
+      fileSize = stat.size;
+      const { execFileSync } = require('child_process');
+      const probe = execFileSync('ffprobe', ['-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', outPath], { timeout: 15000 }).toString();
+      const info = JSON.parse(probe);
+      if (info.format?.duration) durationSec = parseFloat(info.format.duration);
+      const vs = info.streams?.find(s => s.codec_type === 'video');
+      if (vs) { width = vs.width; height = vs.height; }
+    } catch (e) {
+      console.warn(`ffprobe of transcoded YouTube file failed: ${e.message}`);
+    }
+    try {
+      db.prepare(`UPDATE content SET filepath = ?, mime_type = 'video/mp4', file_size = ?, duration_sec = ?, width = ?, height = ? WHERE id = ?`)
+        .run(outFilename, fileSize, durationSec, width, height, contentId);
+      console.log(`yt-dlp transcoded ${videoId} -> ${outFilename} (${width}x${height}, ${durationSec}s)`);
+    } catch (e) {
+      console.error(`Failed to update content row after yt-dlp transcode: ${e.message}`);
+    }
+  });
+}
+
 // Add YouTube content (available to all plans - no storage used)
+//
+// 2026-05-28: row is created immediately as `video/youtube` (iframe-mode) so
+// the dashboard sees the content right away. A background yt-dlp job then
+// downloads the video as MP4 and rewrites the row in place to `video/mp4`
+// with a local filepath. The next playlist publish picks up the local file
+// and the player renders via HTML5 video (works correctly on multi-tile
+// walls, unlike the YouTube iframe). If yt-dlp isn't installed (or the
+// transcode fails), the row stays as `video/youtube` and falls back to
+// iframe embed — same behaviour as before this change.
 router.post('/youtube', async (req, res) => {
   try {
     if (!req.workspaceId) return res.status(403).json({ error: 'No workspace context. Switch to a workspace before adding YouTube content.' });
@@ -230,6 +300,11 @@ router.post('/youtube', async (req, res) => {
       INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, remote_url, thumbnail_path)
       VALUES (?, ?, ?, ?, '', 'video/youtube', 0, ?, ?)
     `).run(id, req.user.id, req.workspaceId, safeFilename(filename), embedUrl, thumbnailUrl);
+
+    // Kick off background transcode (no await — caller gets 201 immediately).
+    try { transcodeYouTubeInBackground(id, videoId); } catch (e) {
+      console.warn(`Failed to dispatch yt-dlp transcode: ${e.message}`);
+    }
 
     const content = db.prepare('SELECT * FROM content WHERE id = ?').get(id);
     res.status(201).json(content);
@@ -297,11 +372,20 @@ router.put('/:id', (req, res) => {
   const content = checkContentWrite(req, res);
   if (!content) return;
 
-  const { filename, mime_type, remote_url, folder, folder_id } = req.body;
+  const { filename, mime_type, remote_url, folder, folder_id, default_fit_mode } = req.body;
   const updates = [];
   const values = [];
   if (filename !== undefined) { updates.push('filename = ?'); values.push(safeFilename(filename)); }
   if (mime_type !== undefined) { updates.push('mime_type = ?'); values.push(mime_type); }
+  if (default_fit_mode !== undefined) {
+    const VALID = ['cover', 'contain', 'fill', 'none', 'scale-down'];
+    let v = default_fit_mode;
+    if (v === null || v === '' || v === 'inherit') v = null;
+    else if (typeof v !== 'string' || !VALID.includes(v.toLowerCase())) return res.status(400).json({ error: 'invalid default_fit_mode' });
+    else v = v.toLowerCase();
+    updates.push('default_fit_mode = ?');
+    values.push(v);
+  }
   if (remote_url !== undefined) {
     if (remote_url) {
       const urlErr = validateRemoteUrl(remote_url);

@@ -29,7 +29,7 @@ export function render(container) {
         </svg>
         <p>${t('content.drop')}</p>
         <p class="upload-hint">${t('content.upload_hint')}</p>
-        <input type="file" id="fileInput" style="display:none" multiple accept="video/*,image/*">
+        <input type="file" id="fileInput" style="display:none" multiple accept="video/*,image/*,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/msword,application/vnd.ms-excel,application/vnd.ms-powerpoint,application/vnd.oasis.opendocument.text,application/vnd.oasis.opendocument.spreadsheet,application/vnd.oasis.opendocument.presentation">
         <div class="upload-progress" id="uploadProgress" style="display:none">
           <div class="upload-progress-bar">
             <div class="upload-progress-fill" id="uploadProgressFill" style="width:0%"></div>
@@ -516,6 +516,10 @@ function showEditModal(contentItem, onSave) {
             <option value="image/png" ${contentItem.mime_type === 'image/png' ? 'selected' : ''}>${t('content.mime.image_png')}</option>
             <option value="image/gif" ${contentItem.mime_type === 'image/gif' ? 'selected' : ''}>${t('content.mime.image_gif')}</option>
             <option value="image/webp" ${contentItem.mime_type === 'image/webp' ? 'selected' : ''}>${t('content.mime.image_webp')}</option>
+            <option value="application/pdf" ${contentItem.mime_type === 'application/pdf' ? 'selected' : ''}>PDF document</option>
+            <option value="application/vnd.openxmlformats-officedocument.wordprocessingml.document" ${contentItem.mime_type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ? 'selected' : ''}>Word (.docx)</option>
+            <option value="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ${contentItem.mime_type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ? 'selected' : ''}>Excel (.xlsx)</option>
+            <option value="application/vnd.openxmlformats-officedocument.presentationml.presentation" ${contentItem.mime_type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ? 'selected' : ''}>PowerPoint (.pptx)</option>
           </select>
         </div>
         <div class="form-group">
@@ -525,10 +529,20 @@ function showEditModal(contentItem, onSave) {
             ${state.folders.map(f => `<option value="${f.id}" ${contentItem.folder_id === f.id ? 'selected' : ''}>${esc(folderPath(f, state.folders))}</option>`).join('')}
           </select>
         </div>
+        <div class="form-group">
+          <label>Default display fit</label>
+          <select id="editFitMode" class="input" style="background:var(--bg-input)">
+            <option value="" ${!contentItem.default_fit_mode ? 'selected' : ''}>Auto (contain in solo, fill on wall)</option>
+            <option value="contain" ${contentItem.default_fit_mode === 'contain' ? 'selected' : ''}>Contain — letterbox, preserve aspect</option>
+            <option value="cover" ${contentItem.default_fit_mode === 'cover' ? 'selected' : ''}>Cover — crop to fill screen</option>
+            <option value="fill" ${contentItem.default_fit_mode === 'fill' ? 'selected' : ''}>Fullscreen — stretch to fill (recommended for video walls)</option>
+          </select>
+          <p style="font-size:11px;color:var(--text-muted);margin-top:4px">Default for new playlist additions. Existing playlist items keep their own per-item override.</p>
+        </div>
         ${!isRemote ? `
         <div class="form-group">
           <label>${t('content.label_replace_file')}</label>
-          <input type="file" id="editFileReplace" accept="video/*,image/*" style="font-size:13px;color:var(--text-secondary)">
+          <input type="file" id="editFileReplace" accept="video/*,image/*,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/msword,application/vnd.ms-excel,application/vnd.ms-powerpoint,application/vnd.oasis.opendocument.text,application/vnd.oasis.opendocument.spreadsheet,application/vnd.oasis.opendocument.presentation" style="font-size:13px;color:var(--text-secondary)">
           <p style="font-size:11px;color:var(--text-muted);margin-top:4px">${t('content.replace_file_hint')}</p>
         </div>
         ` : ''}
@@ -557,11 +571,13 @@ function showEditModal(contentItem, onSave) {
 
       // Update metadata
       const folderId = overlay.querySelector('#editFolderId')?.value || '';
+      const fitMode = overlay.querySelector('#editFitMode')?.value || '';
       const updateData = {};
       if (filename !== contentItem.filename) updateData.filename = filename;
       if (mimeType !== contentItem.mime_type) updateData.mime_type = mimeType;
       if (remoteUrl !== undefined && remoteUrl !== contentItem.remote_url) updateData.remote_url = remoteUrl;
       if ((contentItem.folder_id || '') !== folderId) updateData.folder_id = folderId || null;
+      if ((contentItem.default_fit_mode || '') !== fitMode) updateData.default_fit_mode = fitMode || null;
 
       if (Object.keys(updateData).length > 0) {
         await fetch('/api/content/' + contentItem.id, {

@@ -6,6 +6,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.net.Uri
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Environment
 import android.os.Handler
@@ -75,9 +77,18 @@ class UpdateChecker(private val context: Context) {
 
                 Log.i(TAG, "Current: $currentVersion, Latest: $latestVersion, Update: $updateAvailable")
 
-                if (updateAvailable && downloadUrl.isNotEmpty()) {
-                    Log.i(TAG, "Update available! Downloading...")
+                // 2026-05-28: hardened against the infinite-update-loop bug.
+                // A previously deployed server returned update_available=true
+                // with latest_version="1.0.0" — the device would re-install
+                // the same APK every 30 minutes forever. Trust client-side
+                // version comparison rather than the server's boolean.
+                if (updateAvailable && downloadUrl.isNotEmpty() && isNewerVersion(latestVersion, currentVersion) && hasWifi()) {
+                    Log.i(TAG, "Update available and current device is on Wi-Fi! Downloading...")
                     downloadAndInstall("${config.serverUrl}$downloadUrl", latestVersion)
+                } else if (updateAvailable && !isNewerVersion(latestVersion, currentVersion)) {
+                    Log.w(TAG, "Server claims update but version is not newer ($latestVersion <= $currentVersion). Skipping to avoid loop.")
+                } else if (updateAvailable && !hasWifi()) {
+                    Log.i(TAG, "Update available but device is not on Wi-Fi — deferring.")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Update check error: ${e.message}")
@@ -166,10 +177,18 @@ class UpdateChecker(private val context: Context) {
                     }
                 }
 
+                // 2026-05-28: FLAG_IMMUTABLE on API 31+ so a co-installed
+                // app can't fill in the PendingIntent and redirect the
+                // install-complete callback. Older SDKs require FLAG_MUTABLE
+                // for PackageInstaller status results.
+                val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+                    android.app.PendingIntent.FLAG_IMMUTABLE
+                else
+                    android.app.PendingIntent.FLAG_MUTABLE
                 val pendingIntent = android.app.PendingIntent.getBroadcast(
                     context, sessionId,
                     Intent("com.remotedisplay.player.INSTALL_COMPLETE"),
-                    android.app.PendingIntent.FLAG_MUTABLE
+                    flags
                 )
                 session.commit(pendingIntent.intentSender)
                 Log.i(TAG, "Package installer session committed")
@@ -184,6 +203,45 @@ class UpdateChecker(private val context: Context) {
             context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.0"
         } catch (e: Exception) {
             "1.0.0"
+        }
+    }
+
+    // Strict semantic-style comparison. Returns true iff `latest` is strictly
+    // greater than `current`. Malformed versions (non-numeric segments, missing
+    // dots) return false — fail safe: never auto-update when comparison is
+    // ambiguous. Trailing pre-release/build tags are ignored.
+    private fun isNewerVersion(latest: String, current: String): Boolean {
+        return try {
+            val cleanLatest = latest.split('-', '+').first().split('.').map { it.toInt() }
+            val cleanCurrent = current.split('-', '+').first().split('.').map { it.toInt() }
+            val len = maxOf(cleanLatest.size, cleanCurrent.size)
+            for (i in 0 until len) {
+                val l = cleanLatest.getOrElse(i) { 0 }
+                val c = cleanCurrent.getOrElse(i) { 0 }
+                if (l > c) return true
+                if (l < c) return false
+            }
+            false
+        } catch (e: Exception) {
+            Log.w(TAG, "Version comparison failed: $latest vs $current — refusing update")
+            false
+        }
+    }
+
+    // Check whether the device is on Wi-Fi before triggering a ~50MB APK
+    // download. Saves cellular data on rare carrier-connected Fire TVs and
+    // keeps the device responsive during the download.
+    private fun hasWifi(): Boolean {
+        return try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val network = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(network) ?: return false
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+        } catch (e: Exception) {
+            // If we can't determine, default to allowing — better to update
+            // than to be stuck on an old version with bugs.
+            true
         }
     }
 }

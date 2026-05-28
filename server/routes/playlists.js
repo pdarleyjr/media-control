@@ -64,9 +64,13 @@ function requirePlaylistWrite(req, res, next) {
 }
 
 // Build the snapshot item list for a playlist (denormalized for device payload)
+// 2026-05-28: surface fit_mode resolved against content.default_fit_mode so the
+// player gets a single effective fit_mode per item. Item-level override wins;
+// content default applies when item-level is null.
 function buildSnapshotItems(playlistId) {
   return db.prepare(`
     SELECT pi.content_id, pi.widget_id, pi.zone_id, pi.sort_order, pi.duration_sec,
+           COALESCE(pi.fit_mode, c.default_fit_mode) AS fit_mode,
            COALESCE(c.filename, w.name) as filename, c.mime_type, c.filepath, c.file_size,
            c.duration_sec as content_duration, c.remote_url,
            w.name as widget_name, w.widget_type, w.config as widget_config
@@ -76,6 +80,18 @@ function buildSnapshotItems(playlistId) {
     WHERE pi.playlist_id = ?
     ORDER BY pi.sort_order ASC
   `).all(playlistId);
+}
+
+// 2026-05-28: validate fit_mode values. Null/undefined means "inherit" (zone
+// default in layouts, contain in solo, fill in walls). Any other value is the
+// authoritative override.
+const VALID_FIT_MODES = ['cover', 'contain', 'fill', 'none', 'scale-down'];
+function normalizeFitMode(v) {
+  if (v === undefined) return undefined;
+  if (v === null || v === '' || v === 'inherit') return null;
+  if (typeof v !== 'string') return undefined;
+  const lower = v.toLowerCase();
+  return VALID_FIT_MODES.includes(lower) ? lower : undefined;
 }
 
 // Mark playlist as draft (called after item mutations from the playlist detail UI)
@@ -220,10 +236,10 @@ router.post('/:id/discard', requirePlaylistWrite, (req, res) => {
     // Clear current draft items
     db.prepare('DELETE FROM playlist_items WHERE playlist_id = ?').run(req.params.id);
     // Re-insert from snapshot, skipping items whose content/widget was deleted
-    const insert = db.prepare('INSERT INTO playlist_items (playlist_id, content_id, widget_id, zone_id, sort_order, duration_sec) VALUES (?, ?, ?, ?, ?, ?)');
+    const insert = db.prepare('INSERT INTO playlist_items (playlist_id, content_id, widget_id, zone_id, sort_order, duration_sec, fit_mode) VALUES (?, ?, ?, ?, ?, ?, ?)');
     for (const item of publishedItems) {
       try {
-        insert.run(req.params.id, item.content_id || null, item.widget_id || null, item.zone_id || null, item.sort_order, item.duration_sec);
+        insert.run(req.params.id, item.content_id || null, item.widget_id || null, item.zone_id || null, item.sort_order, item.duration_sec, item.fit_mode ?? null);
       } catch (e) {
         if (e.message.includes('FOREIGN KEY')) {
           console.warn(`Discard: skipping snapshot item (content_id=${item.content_id}, widget_id=${item.widget_id}) — referenced entity was deleted`);
@@ -288,6 +304,10 @@ router.post('/:id/items', requirePlaylistWrite, async (req, res) => {
   try {
     const { content_id, widget_id, sort_order } = req.body;
     let { duration_sec } = req.body;
+    const fit_mode = normalizeFitMode(req.body.fit_mode);
+    if (req.body.fit_mode !== undefined && fit_mode === undefined) {
+      return res.status(400).json({ error: 'invalid fit_mode (expected cover|contain|fill|none|scale-down|null)' });
+    }
 
     if (!content_id && !widget_id) return res.status(400).json({ error: 'content_id or widget_id required' });
     if (duration_sec !== undefined && duration_sec !== null && (typeof duration_sec !== 'number' || duration_sec < 1)) {
@@ -323,9 +343,9 @@ router.post('/:id/items', requirePlaylistWrite, async (req, res) => {
     }
 
     const result = db.prepare(`
-      INSERT INTO playlist_items (playlist_id, content_id, widget_id, sort_order, duration_sec)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(req.params.id, content_id || null, widget_id || null, order, duration_sec);
+      INSERT INTO playlist_items (playlist_id, content_id, widget_id, sort_order, duration_sec, fit_mode)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(req.params.id, content_id || null, widget_id || null, order, duration_sec, fit_mode ?? null);
 
     // Mark as draft (items changed since last publish)
     markDraft(req.params.id);
@@ -366,6 +386,12 @@ router.put('/:id/items/:itemId', requirePlaylistWrite, (req, res) => {
     }
     updates.push('duration_sec = ?');
     values.push(duration_sec);
+  }
+  if (req.body.fit_mode !== undefined) {
+    const fit_mode = normalizeFitMode(req.body.fit_mode);
+    if (fit_mode === undefined) return res.status(400).json({ error: 'invalid fit_mode' });
+    updates.push('fit_mode = ?');
+    values.push(fit_mode);
   }
 
   if (updates.length > 0) {

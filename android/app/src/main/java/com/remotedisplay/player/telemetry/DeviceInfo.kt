@@ -126,6 +126,30 @@ class DeviceInfo(private val context: Context) {
     private fun getDisplayMetrics(): DisplayMetrics {
         val dm = DisplayMetrics()
         val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        // 2026-05-28: previously called getRealMetrics() unconditionally,
+        // which returns the OS surface resolution (often 1080p on Fire TV
+        // even when the panel is 4K — the OS renders at 1080p internally and
+        // upscales at the compositor). For multi-panel mosaic walls (where
+        // the actual rendering canvas spans several panels) the device
+        // self-report is meaningless; the dashboard must dictate the
+        // canonical canvas via the wall editor. Here we prefer the highest
+        // physical mode the display advertises — closer to the panel native
+        // resolution — and still fall back to getRealMetrics() if the
+        // platform doesn't expose modes.
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                @Suppress("DEPRECATION")
+                val display = wm.defaultDisplay
+                val mode = display.supportedModes?.maxByOrNull {
+                    it.physicalWidth.toLong() * it.physicalHeight
+                }
+                if (mode != null && mode.physicalWidth > 0 && mode.physicalHeight > 0) {
+                    dm.widthPixels = mode.physicalWidth
+                    dm.heightPixels = mode.physicalHeight
+                    return dm
+                }
+            }
+        } catch (_: Throwable) { /* fall back below */ }
         @Suppress("DEPRECATION")
         wm.defaultDisplay.getRealMetrics(dm)
         return dm

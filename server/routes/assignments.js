@@ -44,7 +44,7 @@ function ensureDevicePlaylist(deviceId, userId) {
 
 // Standard item query with joined content/widget info
 const ITEM_SELECT = `
-  SELECT pi.id, pi.playlist_id, pi.content_id, pi.widget_id, pi.zone_id, pi.sort_order, pi.duration_sec,
+  SELECT pi.id, pi.playlist_id, pi.content_id, pi.widget_id, pi.zone_id, pi.sort_order, pi.duration_sec, pi.fit_mode,
          pi.created_at, pi.updated_at,
          COALESCE(c.filename, w.name) as filename,
          c.mime_type, c.filepath, c.thumbnail_path,
@@ -54,6 +54,16 @@ const ITEM_SELECT = `
   LEFT JOIN content c ON pi.content_id = c.id
   LEFT JOIN widgets w ON pi.widget_id = w.id
 `;
+
+// Validate fit_mode (kept in sync with routes/playlists.js)
+const VALID_FIT_MODES = ['cover', 'contain', 'fill', 'none', 'scale-down'];
+function normalizeFitMode(v) {
+  if (v === undefined) return undefined;
+  if (v === null || v === '' || v === 'inherit') return null;
+  if (typeof v !== 'string') return undefined;
+  const lower = v.toLowerCase();
+  return VALID_FIT_MODES.includes(lower) ? lower : undefined;
+}
 
 // Get assignments (playlist items) for a device
 router.get('/device/:deviceId', (req, res) => {
@@ -79,6 +89,10 @@ router.post('/device/:deviceId', (req, res) => {
   const access = checkDeviceAccess(req, res, 'deviceId', true);
   if (!access) return;
   const { content_id, widget_id, zone_id, duration_sec = 10, sort_order } = req.body;
+  const fit_mode = normalizeFitMode(req.body.fit_mode);
+  if (req.body.fit_mode !== undefined && fit_mode === undefined) {
+    return res.status(400).json({ error: 'invalid fit_mode' });
+  }
 
   if (!content_id && !widget_id) return res.status(400).json({ error: 'content_id or widget_id required' });
 
@@ -108,9 +122,9 @@ router.post('/device/:deviceId', (req, res) => {
 
   try {
     const result = db.prepare(`
-      INSERT INTO playlist_items (playlist_id, content_id, widget_id, zone_id, sort_order, duration_sec)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(playlistId, content_id || null, widget_id || null, zone_id || null, order, duration_sec);
+      INSERT INTO playlist_items (playlist_id, content_id, widget_id, zone_id, sort_order, duration_sec, fit_mode)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(playlistId, content_id || null, widget_id || null, zone_id || null, order, duration_sec, fit_mode ?? null);
 
     markDraft(playlistId);
 
@@ -153,6 +167,12 @@ router.put('/:id', (req, res) => {
   // zone_id can be null (clear the zone) - treat undefined as "no change",
   // any other value (including null) as "write this".
   if (zone_id !== undefined) { updates.push('zone_id = ?'); values.push(zone_id || null); }
+  if (req.body.fit_mode !== undefined) {
+    const fit_mode = normalizeFitMode(req.body.fit_mode);
+    if (fit_mode === undefined) return res.status(400).json({ error: 'invalid fit_mode' });
+    updates.push('fit_mode = ?');
+    values.push(fit_mode);
+  }
 
   if (updates.length > 0) {
     updates.push("updated_at = strftime('%s','now')");

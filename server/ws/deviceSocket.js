@@ -66,7 +66,7 @@ function logDeviceStatus(deviceId, status) {
 // Build playlist payload with layout and zones
 // Reads from published_snapshot (Phase 3) so draft edits don't affect live devices
 function buildPlaylistPayload(deviceId) {
-  const device = db.prepare('SELECT playlist_id, layout_id, orientation, wall_id FROM devices WHERE id = ?').get(deviceId);
+  const device = db.prepare('SELECT playlist_id, layout_id, orientation, wall_id, screen_width, screen_height, refresh_rate_hz, auto_detect_resolution FROM devices WHERE id = ?').get(deviceId);
 
   let assignments = [];
   if (device?.playlist_id) {
@@ -74,6 +74,27 @@ function buildPlaylistPayload(deviceId) {
     if (playlist?.published_snapshot) {
       try { assignments = JSON.parse(playlist.published_snapshot); } catch (e) { assignments = []; }
     }
+    // 2026-05-28: Republish-from-snapshot drops fit_mode (added after the
+    // initial snapshot schema). Backfill from playlist_items so existing
+    // published playlists pick up per-item fit_mode without needing a
+    // re-publish.
+    try {
+      const liveItems = db.prepare(`
+        SELECT content_id, widget_id, sort_order, fit_mode
+        FROM playlist_items WHERE playlist_id = ?
+      `).all(device.playlist_id);
+      const byKey = new Map();
+      for (const li of liveItems) {
+        const key = (li.content_id || '') + '|' + (li.widget_id || '') + '|' + li.sort_order;
+        byKey.set(key, li.fit_mode);
+      }
+      for (const a of assignments) {
+        if (a.fit_mode == null) {
+          const key = (a.content_id || '') + '|' + (a.widget_id || '') + '|' + a.sort_order;
+          if (byKey.has(key)) a.fit_mode = byKey.get(key);
+        }
+      }
+    } catch (e) { /* live backfill is best-effort */ }
   }
 
   let layout = null;
@@ -141,11 +162,26 @@ function buildPlaylistPayload(deviceId) {
         player_rect: playerRect,
         is_leader: wall.leader_device_id === deviceId,
         rotation: pos.rotation || 0,
+        refresh_rate_hz: wall.refresh_rate_hz || null,
       };
     }
   }
 
-  return { assignments, layout, orientation: device?.orientation || 'landscape', wall_config };
+  return {
+    assignments,
+    layout,
+    orientation: device?.orientation || 'landscape',
+    wall_config,
+    // 2026-05-28: surface the device's authoritative geometry so the player
+    // can size to the canonical (admin-overridden) resolution rather than the
+    // browser-reported screen.width/height (which underreports on Fire TV).
+    device_geometry: {
+      width: device?.screen_width || null,
+      height: device?.screen_height || null,
+      refresh_rate_hz: device?.refresh_rate_hz || null,
+      auto_detected: !!device?.auto_detect_resolution,
+    },
+  };
 }
 
 // Check if a device should show trial expired screen
@@ -337,8 +373,20 @@ module.exports = function setupDeviceSocket(io) {
           }
 
           if (device_info) {
-            db.prepare('UPDATE devices SET android_version = ?, app_version = ?, screen_width = ?, screen_height = ? WHERE id = ?')
-              .run(device_info.android_version, device_info.app_version, device_info.screen_width, device_info.screen_height, device_id);
+            // 2026-05-28: only overwrite reported screen dimensions when the
+            // device is in auto-detect mode. Admins can pin canonical values
+            // (e.g. 12372x2160 wall) via /api/devices/:id and have those
+            // survive reconnects even though the Fire TV keeps reporting
+            // 1920x1080 (the OS surface res, not panel res).
+            const fresh = db.prepare('SELECT auto_detect_resolution FROM devices WHERE id = ?').get(device_id);
+            const autoDetect = !fresh || fresh.auto_detect_resolution !== 0;
+            if (autoDetect) {
+              db.prepare('UPDATE devices SET android_version = ?, app_version = ?, screen_width = ?, screen_height = ? WHERE id = ?')
+                .run(device_info.android_version, device_info.app_version, device_info.screen_width, device_info.screen_height, device_id);
+            } else {
+              db.prepare('UPDATE devices SET android_version = ?, app_version = ? WHERE id = ?')
+                .run(device_info.android_version, device_info.app_version, device_id);
+            }
           }
 
           heartbeat.registerConnection(device_id, socket.id);

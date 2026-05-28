@@ -709,8 +709,36 @@
         saveConfig(config);
         document.getElementById('setupScreen').style.display = 'flex';
         document.getElementById('urlForm').style.display = 'block';
-        document.getElementById('pairingSection').style.display = 'none';
-        document.getElementById('setupStatus').textContent = 'Authentication failed. Please re-pair this device.';
+        // 2026-05-28: previously this hid pairingSection and only showed a
+        // status text, leaving the operator with no way to recover on a Fire
+        // TV (no keyboard for Escape, the "re-pair" wording with nothing to
+        // click). Now: if we still have a cached pairingCode, surface it; if
+        // not, generate a fresh one and re-register immediately so the user
+        // can claim the device from the dashboard /devices "Unassigned" tab.
+        const setupStatus = document.getElementById('setupStatus');
+        const pairingSection = document.getElementById('pairingSection');
+        setupStatus.textContent = 'Authentication failed — enter the code below on the dashboard.';
+        let code = config.pairingCode;
+        if (!code) {
+          code = String(Math.floor(100000 + Math.random() * 900000));
+          config.pairingCode = code;
+          saveConfig(config);
+        }
+        const pairingCodeEl = document.getElementById('pairingCode');
+        if (pairingCodeEl) pairingCodeEl.textContent = code;
+        if (pairingSection) pairingSection.style.display = 'block';
+        // Re-register with the pairing code so the server creates a fresh
+        // device row that an admin can claim. Without this, the player would
+        // sit dead waiting for the user to "re-pair" by hand.
+        try {
+          if (socket && socket.connected) {
+            socket.emit('device:register', {
+              pairing_code: code,
+              fingerprint: getFingerprint?.(),
+              device_info: getDeviceInfo?.(),
+            });
+          }
+        } catch (e) { console.warn('Auto re-register after auth-error failed:', e?.message || e); }
       });
 
       socket.on('device:playlist-update', (data) => {
@@ -1411,9 +1439,24 @@
 
       // Defense in depth: bail to waiting state on missing/malformed item rather
       // than fall through every branch and leave a blank container.
+      // 2026-05-28: also accept PDF + Office MIMEs so they don't fall into the
+      // "Waiting for content" hole.
+      const OFFICE_MIMES = [
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/vnd.ms-excel',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'application/vnd.ms-powerpoint',
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        'application/vnd.oasis.opendocument.text',
+        'application/vnd.oasis.opendocument.spreadsheet',
+        'application/vnd.oasis.opendocument.presentation',
+      ];
       const hasRenderableType = item && (
         item.widget_id ||
         item.mime_type === 'video/youtube' ||
+        item.mime_type === 'application/pdf' ||
+        OFFICE_MIMES.includes(item.mime_type) ||
         (typeof item.mime_type === 'string' && (item.mime_type.startsWith('video/') || item.mime_type.startsWith('image/')))
       );
       if (!hasRenderableType) {
@@ -1442,9 +1485,18 @@
       const isYoutube = item.mime_type === 'video/youtube';
       const isVideo = !isYoutube && item.mime_type?.startsWith('video/');
       const isImage = item.mime_type?.startsWith('image/');
+      const isPdf = item.mime_type === 'application/pdf';
+      const isOffice = OFFICE_MIMES.includes(item.mime_type);
       const remoteUrl = item.remote_url;
       const serverUrl = config.serverUrl;
       const src = remoteUrl || `${serverUrl}/uploads/content/${item.filepath}`;
+      // 2026-05-28: per-item fit_mode override. Null/undefined falls back to
+      // 'fill' (wall) / 'contain' (solo). Validated server-side so any value
+      // arriving here is a known CSS object-fit token.
+      const itemFit = (item.fit_mode || '').trim();
+      const cssFit = wallConfig
+        ? (itemFit || 'fill')
+        : (itemFit || 'contain');
 
       if (layout && layout.zones && layout.zones.length > 1 && !wallConfig) {
         renderZones(container, item);
@@ -1470,9 +1522,7 @@
           // which is the original vertical-misalignment bug. Fill keeps the
           // vertical mapping uniform across devices that share a viewport
           // height. Solo (non-wall) keeps contain to preserve aspect.
-          video.style.cssText = wallConfig
-            ? 'width:100%;height:100%;object-fit:fill;background:#000'
-            : 'width:100%;height:100%;object-fit:contain;background:#000';
+          video.style.cssText = `width:100%;height:100%;object-fit:${cssFit};background:#000`;
           video.loop = (playlist.length === 1);
           video.onended = () => { if (!video.loop && !isFollower) nextItem(); };
           video.onerror = (e) => {
@@ -1508,9 +1558,7 @@
         } else if (isImage) {
           const img = document.createElement('img');
           img.src = src;
-          img.style.cssText = wallConfig
-            ? 'width:100%;height:100%;object-fit:fill'
-            : 'width:100%;height:100%;object-fit:contain';
+          img.style.cssText = `width:100%;height:100%;object-fit:${cssFit}`;
           img.onerror = () => {
             console.error('Image error');
             if (!isFollower) advanceTimer = setTimeout(nextItem, 3000);
@@ -1518,6 +1566,45 @@
           mount.appendChild(img);
           // Leader / single screen drives image advance; follower waits for sync
           if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 10) * 1000);
+        } else if (isPdf) {
+          // 2026-05-28: PDF rendering via the browser's native PDF viewer
+          // (Silk Browser on Fire TV inherits Chrome's PDF support). The
+          // #toolbar=0&navpanes=0&scrollbar=0 fragment hides Chrome's PDF
+          // chrome so the page fills the kiosk. The duration_sec from the
+          // playlist item drives advance. For multi-page navigation in
+          // future, swap this for pdf.js with a paged advance loop.
+          const pdfFrame = document.createElement('iframe');
+          pdfFrame.src = src + '#toolbar=0&navpanes=0&scrollbar=0&view=FitH';
+          pdfFrame.style.cssText = `width:100%;height:100%;border:none;background:#fff;object-fit:${cssFit}`;
+          pdfFrame.allow = 'autoplay; fullscreen';
+          mount.appendChild(pdfFrame);
+          if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 30) * 1000);
+        } else if (isOffice) {
+          // 2026-05-28: Office documents render through the ONLYOFFICE
+          // Document Server already running at office.mbfdhub.com. The viewer
+          // URL is a public 'apps/preview/' path; if that endpoint isn't
+          // exposed, the file shows as a download instead — non-fatal but
+          // suboptimal. Follow-up: implement server-side conversion to PDF
+          // at upload time so we can always route through the PDF branch.
+          const officeFrame = document.createElement('iframe');
+          // ONLYOFFICE preview URL pattern. The file URL must be publicly
+          // reachable; we use the same /api/content/:id/file route the
+          // player already uses.
+          officeFrame.src = `https://office.mbfdhub.com/web-apps/apps/api/documents/api.js?fileUrl=${encodeURIComponent(src)}`;
+          officeFrame.style.cssText = 'width:100%;height:100%;border:none;background:#fff';
+          officeFrame.allow = 'autoplay; fullscreen';
+          // If the iframe fails to load, fall back to displaying the file
+          // (browsers may offer a download — still better than a black void).
+          officeFrame.onerror = () => {
+            console.warn('ONLYOFFICE iframe error; falling back to direct embed');
+            mount.innerHTML = '';
+            const fallback = document.createElement('iframe');
+            fallback.src = src;
+            fallback.style.cssText = 'width:100%;height:100%;border:none;background:#fff';
+            mount.appendChild(fallback);
+          };
+          mount.appendChild(officeFrame);
+          if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 60) * 1000);
         } else if (item.widget_id) {
           const iframe = document.createElement('iframe');
           iframe.src = `${serverUrl}/api/widgets/${item.widget_id}/render`;

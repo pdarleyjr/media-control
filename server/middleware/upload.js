@@ -28,16 +28,45 @@ const storage = multer.diskStorage({
   }
 });
 
+// 2026-05-28: expanded to accept PDF + Microsoft Office documents in addition
+// to images and video. PDFs render natively via PDF.js in the player. Office
+// docs render via ONLYOFFICE Document Server (running on office.mbfdhub.com)
+// as an embedded viewer iframe. Cloudflare's edge plan caps body size at
+// 100 MB on Free/Pro / 200 MB on Business — files larger than that will
+// 413 at the edge before reaching multer. Document for operators.
+const ALLOWED_DOC_TYPES = new Set([
+  // PDF
+  'application/pdf',
+  // Word
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  // Excel
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  // PowerPoint
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  // OpenDocument formats
+  'application/vnd.oasis.opendocument.text',
+  'application/vnd.oasis.opendocument.spreadsheet',
+  'application/vnd.oasis.opendocument.presentation',
+]);
+
 const fileFilter = (req, file, cb) => {
   const allowedTypes = [
     'video/mp4', 'video/webm', 'video/avi', 'video/mkv', 'video/mov',
     'video/x-msvideo', 'video/quicktime', 'video/x-matroska',
     'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp'
   ];
-  if (allowedTypes.includes(file.mimetype) || file.mimetype.startsWith('video/') || file.mimetype.startsWith('image/')) {
+  if (
+    allowedTypes.includes(file.mimetype) ||
+    file.mimetype.startsWith('video/') ||
+    file.mimetype.startsWith('image/') ||
+    ALLOWED_DOC_TYPES.has(file.mimetype)
+  ) {
     cb(null, true);
   } else {
-    cb(new Error('Only video and image files are allowed'), false);
+    cb(new Error('Only video, image, PDF, and Office document files are allowed'), false);
   }
 };
 
@@ -54,4 +83,8 @@ const upload = multer({
   defParamCharset: 'utf8'
 });
 
+// Export the multer instance as the default; also surface the doc-type set so
+// callers (routes/content.js, frontend file pickers via /api/upload/accept) can
+// reuse the canonical list.
 module.exports = upload;
+module.exports.ALLOWED_DOC_TYPES = ALLOWED_DOC_TYPES;

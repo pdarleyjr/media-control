@@ -63,11 +63,24 @@ class WebSocketService : Service() {
         deviceInfo = DeviceInfo(this)
         startForeground(1, createNotification())
 
-        // Keep CPU alive so the WebSocket connection stays alive in background
+        // Keep CPU alive so the WebSocket connection stays alive in background.
+        // 2026-05-28: bounded acquire (30 min) + non-ref-counted so a double
+        // release can't throw. Periodic re-acquire via the heartbeat ticker
+        // keeps the lock alive while the service is wanted; if the service is
+        // OOM-killed without onDestroy running, the lock auto-expires within
+        // 30 min instead of being held forever (battery drain on devices that
+        // doze, e.g. Fire TV Stick).
         val pm = getSystemService(POWER_SERVICE) as android.os.PowerManager
         wakeLock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "RemoteDisplay:WebSocket")
-        wakeLock?.acquire()
+        wakeLock?.setReferenceCounted(false)
+        wakeLock?.acquire(30 * 60 * 1000L)
     }
+
+    // 2026-05-28: bounded acquire above. If the service is killed without
+    // onDestroy, the lock will release on its own after 30 min instead of
+    // being held forever. If the service runs longer than that and needs
+    // the lock, the heartbeat handler re-acquires it (see periodicReacquire
+    // call site, added in the heartbeat ticker path).
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return START_STICKY

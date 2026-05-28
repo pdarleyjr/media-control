@@ -143,20 +143,59 @@ router.put('/:id', (req, res) => {
   const device = checkDeviceOwnership(req, res);
   if (!device) return;
 
-  const { name, notes, timezone, orientation, default_content_id } = req.body;
-  // Whitelist allowed fields to prevent SQL injection via field names
-  const ALLOWED_FIELDS = ['name', 'notes', 'timezone', 'orientation', 'default_content_id'];
+  const {
+    name, notes, timezone, orientation, default_content_id,
+    // 2026-05-28: admin override for display geometry. Setting any of these
+    // (or explicitly flipping auto_detect_resolution=0) makes the wall editor
+    // authoritative — device:register stops overwriting screen_width/height
+    // from the device's self-reported value.
+    screen_width, screen_height, refresh_rate_hz, auto_detect_resolution,
+  } = req.body;
+  const ALLOWED_FIELDS = [
+    'name', 'notes', 'timezone', 'orientation', 'default_content_id',
+    'screen_width', 'screen_height', 'refresh_rate_hz', 'auto_detect_resolution',
+  ];
   const updates = [];
   const values = [];
-  Object.entries({ name, notes, timezone, orientation, default_content_id }).forEach(([key, val]) => {
+  // If an admin writes any geometry field without flipping auto_detect, flip
+  // it automatically so the override sticks. Otherwise the next device:register
+  // would overwrite the just-set value.
+  let bodyAuto = auto_detect_resolution;
+  const wroteGeometry = (screen_width !== undefined || screen_height !== undefined || refresh_rate_hz !== undefined);
+  if (wroteGeometry && bodyAuto === undefined) bodyAuto = 0;
+  Object.entries({
+    name, notes, timezone, orientation, default_content_id,
+    screen_width, screen_height, refresh_rate_hz,
+    auto_detect_resolution: bodyAuto,
+  }).forEach(([key, val]) => {
     if (val !== undefined && ALLOWED_FIELDS.includes(key)) {
+      // Normalize integer-ish columns
+      let v = val;
+      if (key === 'screen_width' || key === 'screen_height' || key === 'refresh_rate_hz' || key === 'auto_detect_resolution') {
+        if (v === null || v === '') { v = null; }
+        else { const n = Number(v); if (!Number.isFinite(n)) return; v = key === 'auto_detect_resolution' ? (n ? 1 : 0) : Math.round(n); }
+      }
       updates.push(`${key} = ?`);
-      values.push(val);
+      values.push(v);
     }
   });
   if (updates.length > 0) {
     values.push(req.params.id);
     db.prepare(`UPDATE devices SET ${updates.join(', ')}, updated_at = strftime('%s','now') WHERE id = ?`).run(...values);
+
+    // 2026-05-28: if geometry changed, the playlist payload includes
+    // device_geometry — push an update so the player can resize without
+    // waiting for the next reconnect.
+    if (wroteGeometry) {
+      try {
+        const io = req.app.get('io');
+        if (io) {
+          const { buildPlaylistPayload } = require('../ws/deviceSocket');
+          const commandQueue = require('../lib/command-queue');
+          commandQueue.queueOrEmitPlaylistUpdate(io.of('/device'), req.params.id, buildPlaylistPayload);
+        }
+      } catch (e) { /* silent */ }
+    }
   }
 
   const updated = db.prepare('SELECT * FROM devices WHERE id = ?').get(req.params.id);

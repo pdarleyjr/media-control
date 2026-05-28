@@ -320,18 +320,35 @@ app.get('/api/devices/:id/screenshot', (req, res) => {
 });
 
 // Public content file serving (must be BEFORE protected routes)
+// 2026-05-28: previously the playlist check was global — any caller with a
+// content UUID could fetch the file if it was referenced by ANY playlist in
+// any workspace. Now both the playlist AND widget checks are scoped to the
+// content's own workspace. Platform-template content (workspace_id IS NULL)
+// remains globally fetchable when referenced anywhere, since that's its
+// purpose.
 app.get('/api/content/:id/file', (req, res) => {
   const { db } = require('./db/database');
   const content = db.prepare('SELECT * FROM content WHERE id = ?').get(req.params.id);
   if (!content) return res.status(404).json({ error: 'Content not found' });
   if (!content.filepath) return res.status(404).json({ error: 'No file (remote URL content)' });
-  const inPlaylist = db.prepare('SELECT id FROM playlist_items WHERE content_id = ? LIMIT 1').get(req.params.id);
-  // Scope widget lookup to widgets in the content's workspace — prevents a user
-  // in another workspace from unlocking this content by creating a widget that
-  // references the UUID. Phase 2.2d: keyed off content.workspace_id (was user_id).
-  // Perf note: LIKE scan on widgets.config is O(n) per request. Fine at current scale
-  // (<100 widgets); revisit with a content_widget_refs join table if this grows.
-  const inWidget = inPlaylist ? null : db.prepare('SELECT id FROM widgets WHERE workspace_id = ? AND config LIKE ? LIMIT 1').get(content.workspace_id, `%/api/content/${req.params.id}/%`);
+  let inPlaylist, inWidget;
+  if (content.workspace_id) {
+    // Workspace-scoped: only count references inside the content's own workspace.
+    inPlaylist = db.prepare(
+      `SELECT pi.id FROM playlist_items pi
+       JOIN playlists p ON p.id = pi.playlist_id
+       WHERE pi.content_id = ? AND p.workspace_id = ? LIMIT 1`
+    ).get(req.params.id, content.workspace_id);
+    inWidget = inPlaylist ? null : db.prepare(
+      'SELECT id FROM widgets WHERE workspace_id = ? AND config LIKE ? LIMIT 1'
+    ).get(content.workspace_id, `%/api/content/${req.params.id}/%`);
+  } else {
+    // Platform-template (workspace_id IS NULL): globally referenceable.
+    inPlaylist = db.prepare('SELECT id FROM playlist_items WHERE content_id = ? LIMIT 1').get(req.params.id);
+    inWidget = inPlaylist ? null : db.prepare(
+      'SELECT id FROM widgets WHERE config LIKE ? LIMIT 1'
+    ).get(`%/api/content/${req.params.id}/%`);
+  }
   if (!inPlaylist && !inWidget) return res.status(403).json({ error: 'Content not assigned to any playlist or widget' });
   const safePath = path.resolve(config.contentDir, path.basename(content.filepath));
   if (!safePath.startsWith(path.resolve(config.contentDir))) return res.status(403).json({ error: 'Invalid path' });

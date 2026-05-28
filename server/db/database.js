@@ -142,6 +142,36 @@ const migrations = [
   // playlist_items conversion (migrateAssignmentsToPlaylists) dropped this
   // column. Column ADD is idempotent via the surrounding try/catch loop.
   "ALTER TABLE playlist_items ADD COLUMN zone_id TEXT REFERENCES layout_zones(id) ON DELETE SET NULL",
+  // 2026-05-28: per-item fit_mode override. Null = inherit zone's fit_mode (or
+  // 'contain' in solo / 'fill' in wall mode). Explicit value overrides per item
+  // so an instructor can mark "this MP4 should fill the screen edge-to-edge"
+  // without having to redesign the layout. Mirrored on assignments for the
+  // legacy assignment-based device flow.
+  "ALTER TABLE playlist_items ADD COLUMN fit_mode TEXT",
+  "ALTER TABLE assignments ADD COLUMN fit_mode TEXT",
+  // 2026-05-28: admin override for display geometry. Auto-detect underreports
+  // for video-wall mosaics (Fire TV reports the OS surface res, not the panel).
+  // refresh_rate_hz is informational/UI; auto_detect_resolution controls whether
+  // device:register may overwrite screen_width/height. Default=1 preserves
+  // existing behaviour; admins can flip to 0 and write canonical values via the
+  // wall editor.
+  "ALTER TABLE devices ADD COLUMN refresh_rate_hz INTEGER",
+  "ALTER TABLE devices ADD COLUMN auto_detect_resolution INTEGER NOT NULL DEFAULT 1",
+  // 2026-05-28: video_walls gets a refresh_rate_hz hint. Canvas dimensions are
+  // already supported via player_width/player_height; this completes the spec
+  // for "12372x2160 @ 59.94 Hz" wall config that admins can dictate manually.
+  "ALTER TABLE video_walls ADD COLUMN refresh_rate_hz REAL",
+  // 2026-05-28: stable slot identifiers on layout_zones so playlist_items.zone_id
+  // can survive a layout duplicate / template-apply. Existing zones get NULL;
+  // new layouts (and the editor's "Save" path) should populate slot_key with a
+  // human-readable identifier ('main','side','ticker',etc.). buildPlaylistPayload
+  // resolves zone_id by both id-match AND slot_key fallback.
+  "ALTER TABLE layout_zones ADD COLUMN slot_key TEXT",
+  // 2026-05-28: per-content default fit mode. New playlist_items default to
+  // the content's default_fit_mode; playlist_items.fit_mode (the existing
+  // column) remains an override. Resolution order in payload builder:
+  //   playlist_items.fit_mode (override) > content.default_fit_mode > null (player default).
+  "ALTER TABLE content ADD COLUMN default_fit_mode TEXT",
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (e) { /* already exists */ }

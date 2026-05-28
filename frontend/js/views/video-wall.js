@@ -193,6 +193,18 @@ async function renderWallEditor(container, wallId) {
           <div class="form-group" style="margin:0"><label style="font-size:11px;color:var(--text-muted)">${t('wall.v_bezel')}</label><input type="number" id="bezelV" class="input" value="${Math.round(wall.bezel_v_mm)}" min="0" step="1" style="width:80px"></div>
           <span style="font-size:11px;color:var(--text-muted);max-width:340px">Cols/rows/bezel are used by Auto-arrange. Drag freely on the canvas to override.</span>
         </div>
+        <!-- 2026-05-28: manual canvas dimension override. Auto-detection from
+             Fire TV screen.width/height underreports the actual panel size on
+             multi-panel mosaics — admins can pin canonical values here that
+             survive reconnects regardless of what each device reports. -->
+        <div style="display:flex;gap:12px;margin-top:12px;align-items:center;flex-wrap:wrap;padding-top:12px;border-top:1px solid var(--border)">
+          <strong style="font-size:12px">Wall canvas (px)</strong>
+          <div class="form-group" style="margin:0"><label style="font-size:11px;color:var(--text-muted)">Width</label><input type="number" id="canvasWidth" class="input" value="${Math.round(wall.player_width || 11520)}" min="320" step="1" style="width:100px"></div>
+          <div class="form-group" style="margin:0"><label style="font-size:11px;color:var(--text-muted)">Height</label><input type="number" id="canvasHeight" class="input" value="${Math.round(wall.player_height || 2160)}" min="180" step="1" style="width:100px"></div>
+          <div class="form-group" style="margin:0"><label style="font-size:11px;color:var(--text-muted)">Refresh (Hz)</label><input type="number" id="refreshRate" class="input" value="${wall.refresh_rate_hz || 59.94}" min="1" step="0.01" style="width:80px"></div>
+          <button class="btn btn-sm" id="distributeEvenlyBtn" title="Reset all tiles to evenly fill the canvas using current cols/rows">Distribute evenly</button>
+          <span style="font-size:11px;color:var(--text-muted);max-width:340px">Authoritative geometry. Click Distribute to reset tile rects from canvas / cols / rows.</span>
+        </div>
         <div style="margin-top:16px">
           <h3 style="font-size:14px;margin:0 0 8px">${t('wall.playlist') || 'Playlist'}</h3>
           <select id="wallPlaylist" class="input" style="width:300px;background:var(--bg-input)">
@@ -602,8 +614,48 @@ async function renderWallEditor(container, wallId) {
     if (screens.length === 0) return;
     const b = boundsOf(screens);
     player.x = b.x; player.y = b.y; player.w = b.w; player.h = b.h;
+    // 2026-05-28: also sync the canvas-dim inputs so the user sees the new
+    // size reflected without having to look at the player rect numerically.
+    const cwEl = document.getElementById('canvasWidth');
+    const chEl = document.getElementById('canvasHeight');
+    if (cwEl) cwEl.value = Math.round(b.w);
+    if (chEl) chEl.value = Math.round(b.h);
     markDirty();
     renderAll();
+  });
+
+  document.getElementById('distributeEvenlyBtn').addEventListener('click', () => {
+    const cw = parseInt(document.getElementById('canvasWidth').value, 10);
+    const ch = parseInt(document.getElementById('canvasHeight').value, 10);
+    const cols = Math.max(1, parseInt(document.getElementById('gridCols').value, 10) || 1);
+    const rows = Math.max(1, parseInt(document.getElementById('gridRows').value, 10) || 1);
+    if (!Number.isFinite(cw) || !Number.isFinite(ch) || cw < 320 || ch < 180) {
+      showToast('Set canvas width/height first', 'error');
+      return;
+    }
+    if (screens.length === 0) {
+      showToast('Add at least one display to the wall first', 'error');
+      return;
+    }
+    // Place tiles in row-major order across the canvas. Excess tiles beyond
+    // cols*rows are dropped to (cols-1, rows-1) — the admin can drag them out
+    // afterwards. Tile size = canvas / (cols, rows) with NO bezel allowance
+    // (bezel math is wall-mm, canvas is screen-px — different unit systems).
+    const tileW = Math.floor(cw / cols);
+    const tileH = Math.floor(ch / rows);
+    screens.forEach((s, i) => {
+      const col = i % cols;
+      const row = Math.min(rows - 1, Math.floor(i / cols));
+      s.x = col * tileW;
+      s.y = row * tileH;
+      s.w = tileW;
+      s.h = tileH;
+    });
+    // Player rect = whole canvas.
+    player.x = 0; player.y = 0; player.w = cw; player.h = ch;
+    markDirty();
+    renderAll();
+    showToast(`Distributed ${screens.length} tile(s) across ${cw}x${ch}`, 'success');
   });
 
   document.getElementById('saveLayoutBtn').addEventListener('click', async () => {
@@ -619,10 +671,20 @@ async function renderWallEditor(container, wallId) {
       // FP drift between two screens with the same nominal Y/H produces
       // visibly different `top`/`height` percentages downstream — a known
       // source of vertical-misalignment bugs across the wall.
+      // 2026-05-28: canonical canvas dimensions override the player-rect
+      // bounding box if the admin set them explicitly. Refresh rate is
+      // informational metadata used by the player to pick the optimal video
+      // display mode on Fire TV.
+      const cW = Math.max(320, parseInt(document.getElementById('canvasWidth')?.value, 10) || Math.round(player.w));
+      const cH = Math.max(180, parseInt(document.getElementById('canvasHeight')?.value, 10) || Math.round(player.h));
+      const refresh = parseFloat(document.getElementById('refreshRate')?.value) || null;
+      // If admin set a canvas width/height that doesn't match the dragged
+      // player rect, prefer the typed dims — they're the canonical override.
       await API(`/walls/${wallId}`, { method: 'PUT', body: JSON.stringify({
         grid_cols: cols, grid_rows: rows, bezel_h_mm: bH, bezel_v_mm: bV,
         player_x: Math.round(player.x), player_y: Math.round(player.y),
-        player_width: Math.round(player.w), player_height: Math.round(player.h),
+        player_width: cW, player_height: cH,
+        refresh_rate_hz: refresh,
       })});
       // grid_col/grid_row are kept only to satisfy the legacy
       // UNIQUE(wall_id, grid_col, grid_row) constraint — render math now uses
