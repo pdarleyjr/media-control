@@ -1260,50 +1260,7 @@
       const playerDiv = document.createElement('div');
       playerDiv.id = 'yt-player-' + Date.now();
       playerDiv.style.cssText = 'width:100%;height:100%;background:#000';
-
-      // Wall-mode mount path. Default wall-stage approach (300vw × 100vh stage
-      // + overflow:hidden) produces a 16:3 iframe on a 1080p Fire TV, and
-      // YouTube's player letterboxes a 16:9 source inside it with massive
-      // left/right black bars - only the middle tile sees the actual video.
-      //
-      // Instead we keep the YT iframe at native viewport size (1920×1080) so
-      // YouTube renders 16:9 content filling it with no letterbox, then use
-      // CSS transform to scale + translate the iframe's VISUAL rendering
-      // across the wall canvas. window.innerWidth still reports the native
-      // viewport size so YouTube's player does not change its rendering;
-      // transforms only affect the compositor output.
-      let ytMount = container;
-      if (wallConfig && wallConfig.screen_rect && wallConfig.player_rect &&
-          wallConfig.screen_rect.w > 0 && wallConfig.screen_rect.h > 0) {
-        const s = wallConfig.screen_rect;
-        const p = wallConfig.player_rect;
-        const scaleX = p.w / s.w;
-        const scaleY = p.h / s.h;
-        const translateX = -((s.x - p.x) / s.w) * 100; // vw
-        const translateY = -((s.y - p.y) / s.h) * 100; // vh
-
-        // Force the wall-stage to viewport size + clipping. styleWallStage()
-        // sets it to player_rect-relative dimensions (e.g. 300vw); we override.
-        if (container.classList && container.classList.contains('wall-stage')) {
-          container.style.left = '0';
-          container.style.top = '0';
-          container.style.width = '100vw';
-          container.style.height = '100vh';
-          container.style.overflow = 'hidden';
-          container.style.transform = '';
-        }
-
-        const wrapper = document.createElement('div');
-        wrapper.style.cssText =
-          'position:absolute;left:0;top:0;width:100vw;height:100vh;' +
-          'transform-origin:0 0;' +
-          'transform:translate(' + translateX + 'vw,' + translateY + 'vh) scale(' + scaleX + ',' + scaleY + ');';
-        container.appendChild(wrapper);
-        ytMount = wrapper;
-        console.log('[wall/yt] scale=' + scaleX + ',' + scaleY + ' translate=' + translateX + 'vw,' + translateY + 'vh');
-      }
-
-      ytMount.appendChild(playerDiv);
+      container.appendChild(playerDiv);
 
       // Add a click-to-unmute overlay on top of the YouTube iframe — leader/solo only.
       if (!userHasInteracted && !isFollowerEmbed) {
