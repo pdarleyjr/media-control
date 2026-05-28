@@ -242,47 +242,60 @@ module.exports = function setupDeviceSocket(io) {
                 const lastBeat = oldDevice.last_heartbeat || 0;
                 const secondsSince = Math.floor(Date.now() / 1000) - lastBeat;
                 if (liveConn || (oldDevice.status === 'online') || secondsSince < RECLAIM_GRACE_SECONDS) {
-                  console.warn(`Fingerprint reclaim rejected for ${existing.device_id}: device active (status=${oldDevice.status}, ${secondsSince}s since last heartbeat, liveConn=${!!liveConn})`);
-                  socket.emit('device:auth-error', {
-                    error: 'This display is currently active. If you reinstalled the app, the original device must be offline for 24 hours before its slot can be reclaimed.'
-                  });
+                  // Reclaim refused (guard against fingerprint hijack of a
+                  // live device), but the player ALSO sent a pairing_code
+                  // which means it is willing to be paired as a fresh slot.
+                  // Don't dead-end with auth-error — that forces the player
+                  // to wipe credentials and show "Authentication failed"
+                  // with no pairing code visible. Instead, log + fall
+                  // through to the normal new-device registration path
+                  // below so the admin can claim it from the dashboard.
+                  console.warn(`Fingerprint reclaim rejected for ${existing.device_id}: device active (status=${oldDevice.status}, ${secondsSince}s since last heartbeat, liveConn=${!!liveConn}); proceeding with new-device pairing for ${pairing_code}`);
+                  // Detach the fingerprint from the in-use device so this
+                  // pairing creates its own row when claimed; avoids two
+                  // physical displays sharing a single fingerprint slot.
+                  try {
+                    db.prepare('DELETE FROM device_fingerprints WHERE fingerprint = ? AND device_id = ?').run(fingerprint, existing.device_id);
+                  } catch (e) {
+                    console.warn('failed to detach colliding fingerprint:', e.message);
+                  }
+                  // Fall through (no return) to the standard new-device flow.
+                } else {
+                  // Fingerprint matched — this is a reinstalled app reconnecting to its old device.
+                  // Issue a fresh token so the app can authenticate going forward.
+                  const newToken = generateDeviceToken();
+                  db.prepare('UPDATE devices SET device_token = ? WHERE id = ?').run(newToken, existing.device_id);
+                  console.log(`Fingerprint match: linking reinstalled app to existing device ${existing.device_id} (new token issued)`);
+                  authenticated = true;
+                  // Cancel any pending offline timer - device is back in the grace window
+                  if (pendingOfflines.has(existing.device_id)) {
+                    clearTimeout(pendingOfflines.get(existing.device_id));
+                    pendingOfflines.delete(existing.device_id);
+                  }
+                  evictPriorSocket(existing.device_id, socket.id);
+                  db.prepare("UPDATE devices SET status = 'online', last_heartbeat = strftime('%s','now'), ip_address = ?, updated_at = strftime('%s','now') WHERE id = ?")
+                    .run(getClientIp(socket), existing.device_id);
+                  socket.emit('device:registered', { device_id: existing.device_id, device_token: newToken, status: 'online' });
+                  // If device was already claimed by a user, tell the player it's paired
+                  if (oldDevice.user_id) {
+                    socket.emit('device:paired', { name: oldDevice.name || 'Display' });
+                  }
+                  currentDeviceId = existing.device_id;
+                  heartbeat.registerConnection(existing.device_id, socket.id);
+                  socket.join(existing.device_id);
+                  logDeviceStatus(existing.device_id, 'online');
+                  emitToDeviceWorkspace(dashboardNs, existing.device_id, 'dashboard:device-status', { device_id: existing.device_id, status: 'online' });
+                  // Flush any commands/playlist-updates queued while this device was offline.
+                  commandQueue.flushQueue(deviceNs, existing.device_id, buildPlaylistPayload);
+                  // Send playlist
+                  const access = checkDeviceAccess(existing.device_id);
+                  if (!access.allowed) {
+                    socket.emit('device:playlist-update', { assignments: [], suspended: true, message: access.message, detail: access.detail });
+                  } else {
+                    socket.emit('device:playlist-update', buildPlaylistPayload(existing.device_id));
+                  }
                   return;
                 }
-
-                // Fingerprint matched — this is a reinstalled app reconnecting to its old device.
-                // Issue a fresh token so the app can authenticate going forward.
-                const newToken = generateDeviceToken();
-                db.prepare('UPDATE devices SET device_token = ? WHERE id = ?').run(newToken, existing.device_id);
-                console.log(`Fingerprint match: linking reinstalled app to existing device ${existing.device_id} (new token issued)`);
-                authenticated = true;
-                // Cancel any pending offline timer - device is back in the grace window
-                if (pendingOfflines.has(existing.device_id)) {
-                  clearTimeout(pendingOfflines.get(existing.device_id));
-                  pendingOfflines.delete(existing.device_id);
-                }
-                evictPriorSocket(existing.device_id, socket.id);
-                db.prepare("UPDATE devices SET status = 'online', last_heartbeat = strftime('%s','now'), ip_address = ?, updated_at = strftime('%s','now') WHERE id = ?")
-                  .run(getClientIp(socket), existing.device_id);
-                socket.emit('device:registered', { device_id: existing.device_id, device_token: newToken, status: 'online' });
-                // If device was already claimed by a user, tell the player it's paired
-                if (oldDevice.user_id) {
-                  socket.emit('device:paired', { name: oldDevice.name || 'Display' });
-                }
-                currentDeviceId = existing.device_id;
-                heartbeat.registerConnection(existing.device_id, socket.id);
-                socket.join(existing.device_id);
-                logDeviceStatus(existing.device_id, 'online');
-                emitToDeviceWorkspace(dashboardNs, existing.device_id, 'dashboard:device-status', { device_id: existing.device_id, status: 'online' });
-                // Flush any commands/playlist-updates queued while this device was offline.
-                commandQueue.flushQueue(deviceNs, existing.device_id, buildPlaylistPayload);
-                // Send playlist
-                const access = checkDeviceAccess(existing.device_id);
-                if (!access.allowed) {
-                  socket.emit('device:playlist-update', { assignments: [], suspended: true, message: access.message, detail: access.detail });
-                } else {
-                  socket.emit('device:playlist-update', buildPlaylistPayload(existing.device_id));
-                }
-                return;
               }
             }
           } else if (device_id || pairing_code) {
