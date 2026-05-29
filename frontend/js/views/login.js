@@ -25,11 +25,10 @@ export async function render(container) {
             <line x1="8" y1="21" x2="16" y2="21"/>
             <line x1="12" y1="17" x2="12" y2="21"/>
           </svg>
-          <h1 style="font-size:24px;font-weight:700;color:var(--accent)">ScreenTinker</h1>
+          <h1 style="font-size:24px;font-weight:700;color:var(--accent)">Media Control</h1>
           <p style="color:var(--text-secondary);font-size:13px;margin-top:4px">
             ${isSetup ? t('auth.subtitle_setup') : t('auth.subtitle_signin')}
           </p>
-          ${!isSetup && canRegister ? `<p style="color:var(--warning);font-size:12px;margin-top:8px">${t('auth.trial_notice')}</p>` : ''}
         </div>
 
         <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:24px">

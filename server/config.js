@@ -1,6 +1,7 @@
 const path = require('path');
 
 module.exports = {
+  appName: process.env.APP_NAME || 'Media Control',
   port: process.env.PORT || 3001,
   httpsPort: process.env.HTTPS_PORT || 3443,
   dbPath: path.join(__dirname, 'db', 'remote_display.db'),
@@ -53,16 +54,13 @@ module.exports = {
   // Microsoft OAuth - set these in env or here
   microsoftClientId: process.env.MICROSOFT_CLIENT_ID || '',
   microsoftTenantId: process.env.MICROSOFT_TENANT_ID || 'common',
-  // Stripe (optional - for paid subscriptions)
-  stripeSecretKey: process.env.STRIPE_SECRET_KEY || '',
-  stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
   // Microsoft Graph email sender (services/email.js). Required for actual
   // delivery; absent values short-circuit to a stdout fallback for local dev.
   graphTenantId: process.env.GRAPH_TENANT_ID || '',
   graphClientId: process.env.GRAPH_CLIENT_ID || '',
   graphClientSecret: process.env.GRAPH_CLIENT_SECRET || '',
   graphSenderEmail: process.env.GRAPH_SENDER_EMAIL || '',
-  graphSenderName: process.env.GRAPH_SENDER_NAME || 'ScreenTinker',
+  graphSenderName: process.env.GRAPH_SENDER_NAME || 'Media Control',
   // Dev safety net: comma-separated allow-list of recipient emails. When set,
   // sends to any address NOT in the list are suppressed (logged but not posted
   // to Graph). Intended for local dev that pulls fresh prod DB copies - keeps

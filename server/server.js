@@ -109,10 +109,10 @@ app.use(helmet({
 // Apply CSP everywhere except routes that legitimately need inline scripts:
 // - widget/kiosk renders (public, fetched by devices, intentionally inline)
 // - /player (the web player has inline JS, served to display devices)
-// - /         (landing page has inline JSON-LD + a pricing fetch script)
+// - /         (redirects to /app)
 // The dashboard at /app uses ES modules only and gets the strict policy.
 app.use((req, res, next) => {
-  if (req.path === '/' || req.path === '/landing.html') return next();
+  if (req.path === '/') return next();
   if (req.path.startsWith('/player')) return next();
   if (req.path.startsWith('/api/widgets/') && req.path.endsWith('/render')) return next();
   if (req.path.startsWith('/api/kiosk/') && req.path.endsWith('/render')) return next();
@@ -149,39 +149,18 @@ app.use(cors({
   origin: corsOriginCheck,
   credentials: true,
 }));
-// Stripe webhook needs raw body (before express.json parses it)
-const stripeRouter = require('./routes/stripe');
-app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), stripeRouter);
 
 app.use(express.json());
 const { sanitizeBody } = require('./middleware/sanitize');
 app.use(sanitizeBody);
 
-// Landing page BEFORE static middleware (so / doesn't serve index.html).
-// When DISABLE_HOMEPAGE is set, redirect to the app instead - for self-hosted
-// internal deployments that don't want the public marketing page. 302 (not
-// 301) so flipping the var back later isn't hard-cached by browsers.
-app.get('/', (req, res) => {
-  if (config.disableHomepage) return res.redirect(302, '/app');
-  res.sendFile(path.join(config.frontendDir, 'landing.html'));
-});
+// Root always redirects to the app (no public marketing landing page).
+// 302 (not 301) so this isn't hard-cached by browsers.
+app.get('/', (req, res) => res.redirect(302, '/app'));
 
 // Dashboard app
 app.get('/app', (req, res) => {
   res.sendFile(path.join(config.frontendDir, 'index.html'));
-});
-
-// Sitemap and robots — served explicitly so the Content-Type is guaranteed
-// and these endpoints are immune to any future static-middleware reshuffle.
-app.get('/sitemap.xml', (req, res) => {
-  res.type('application/xml');
-  res.setHeader('Cache-Control', 'public, max-age=3600'); // 1h, sitemap rarely changes
-  res.sendFile(path.join(config.frontendDir, 'sitemap.xml'));
-});
-app.get('/robots.txt', (req, res) => {
-  res.type('text/plain');
-  res.setHeader('Cache-Control', 'public, max-age=3600');
-  res.sendFile(path.join(config.frontendDir, 'robots.txt'));
 });
 
 // Serve frontend static files
@@ -279,9 +258,6 @@ app.use('/api/status/export', rateLimit(60000, 5)); // 5 exports per minute
 app.use('/api/status/import', rateLimit(60000, 3)); // 3 imports per minute
 app.use('/api/content', rateLimit(60000, 30)); // 30 content operations per minute
 
-// Subscription routes (mixed auth)
-app.use('/api/subscription', require('./routes/subscription'));
-
 // Public contact form (enterprise inquiries from landing page). Rate limited
 // to 5 submissions per minute per IP; honeypot enforced inside the route.
 app.use('/api/contact', rateLimit(60000, 5));
@@ -292,9 +268,6 @@ app.use('/api/contact', require('./routes/contact'));
 // per IP+path. Body is JSON (express.json() is global at line 140).
 app.use('/api/player-debug', rateLimit(60000, 10));
 app.use('/api/player-debug', require('./routes/player-debug'));
-
-// Stripe billing routes (checkout, portal)
-app.use('/api/stripe', stripeRouter);
 
 
 // Screenshot route (before protected routes - needs custom auth for img tags)
@@ -388,9 +361,8 @@ const { resolveTenancy } = require('./lib/tenancy');
 // activityLogger wraps res.json on every subsequent route to auto-log
 // successful POST/PUT/DELETE mutations. Mount it BEFORE the workspace routes
 // (this fix corrects a pre-existing bug where it was mounted after them and
-// silently never fired). Auth / subscription / stripe routes are already
-// mounted above and stay opt-out from the auto-logger (login has its own
-// inline writers; payment webhooks don't belong in activity_log).
+// silently never fired). Auth routes are already mounted above and stay
+// opt-out from the auto-logger (login has its own inline writers).
 const { activityLogger } = require('./services/activity');
 app.use(activityLogger);
 
@@ -437,7 +409,7 @@ function updateFrontendHash() {
   try {
     const files = ['index.html', 'js/app.js', 'js/api.js', 'js/socket.js', 'css/main.css',
       'js/views/dashboard.js', 'js/views/device-detail.js', 'js/views/content-library.js',
-      'js/views/settings.js', 'js/views/login.js', 'js/views/billing.js',
+      'js/views/settings.js', 'js/views/login.js',
       'js/views/layout-editor.js', 'js/views/schedule.js', 'js/views/widgets.js',
       'js/views/video-wall.js', 'js/views/reports.js', 'js/views/designer.js',
       'js/views/activity.js', 'js/views/kiosk.js'].map(f => {
@@ -583,8 +555,7 @@ const { db } = require('./db/database');
 const originalProvisionRoute = require('./routes/provisioning');
 
 // Override provision to also notify device via WS
-const { checkDeviceLimit } = require('./middleware/subscription');
-app.post('/api/provision/pair', requireAuth, resolveTenancy, checkDeviceLimit, (req, res) => {
+app.post('/api/provision/pair', requireAuth, resolveTenancy, (req, res) => {
   const { pairing_code, name } = req.body;
   if (!pairing_code) return res.status(400).json({ error: 'pairing_code required' });
   // Phase 2.2a: pair into the caller's current workspace. Refusing on no
@@ -642,7 +613,7 @@ const protocol = hasSsl ? 'https' : 'http';
 server.listen(listenPort, '0.0.0.0', () => {
   console.log(`
 ╔══════════════════════════════════════════════════╗
-║       ScreenTinker Server v1.2.0                ║
+║               Media Control Server               ║
 ║──────────────────────────────────────────────────║
 ║  Dashboard: ${protocol}://localhost:${String(listenPort).padEnd(5)}              ║
 ║  API:       ${protocol}://localhost:${String(listenPort).padEnd(5)}/api          ║

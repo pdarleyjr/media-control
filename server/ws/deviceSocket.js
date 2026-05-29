@@ -18,7 +18,6 @@ const commandQueue = require('../lib/command-queue');
 // next checker sweep within heartbeatInterval).
 const pendingOfflines = new Map();
 const OFFLINE_DEBOUNCE_MS = 5000;
-const { getUserPlan, getUserDeviceCount } = require('../middleware/subscription');
 // Phase 2.3: deviceRoom() resolves a device_id to its workspace room so
 // dashboardNs.emit can be scoped instead of broadcast platform-wide.
 const { deviceRoom, emitToWorkspace } = require('../lib/socket-rooms');
@@ -184,46 +183,11 @@ function buildPlaylistPayload(deviceId) {
   };
 }
 
-// Check if a device should show trial expired screen
+// Device access gating (billing/trial/device-limit) has been removed.
+// This function is retained with its original name and return shape so callers
+// (the register handlers) continue to work unchanged. It now unconditionally
+// grants access — no trial-expired screen, no device-limit block.
 function checkDeviceAccess(deviceId) {
-  const device = db.prepare('SELECT * FROM devices WHERE id = ?').get(deviceId);
-  if (!device || !device.user_id) return { allowed: true };
-
-  const plan = getUserPlan(device.user_id);
-  if (!plan) return { allowed: true };
-
-  // Check if trial expired and over free limit
-  if (plan.trial_started && !plan.trial_active && plan.plan_name === 'free') {
-    const deviceCount = getUserDeviceCount(device.user_id);
-    // Get this device's position (ordered by created_at)
-    const userDevices = db.prepare('SELECT id FROM devices WHERE user_id = ? ORDER BY created_at ASC').all(device.user_id);
-    const deviceIndex = userDevices.findIndex(d => d.id === deviceId);
-
-    // Only the first device (within free limit) is allowed
-    if (deviceIndex >= plan.max_devices) {
-      return {
-        allowed: false,
-        reason: 'trial_expired',
-        message: 'Trial Expired',
-        detail: 'Upgrade your plan to continue using this display.',
-      };
-    }
-  }
-
-  // Check if over plan device limit (non-trial)
-  if (!plan.trial_started && plan.max_devices > 0) {
-    const userDevices = db.prepare('SELECT id FROM devices WHERE user_id = ? ORDER BY created_at ASC').all(device.user_id);
-    const deviceIndex = userDevices.findIndex(d => d.id === deviceId);
-    if (deviceIndex >= plan.max_devices) {
-      return {
-        allowed: false,
-        reason: 'device_limit',
-        message: 'Device Limit Reached',
-        detail: 'Upgrade your plan to activate this display.',
-      };
-    }
-  }
-
   return { allowed: true };
 }
 
@@ -430,7 +394,7 @@ module.exports = function setupDeviceSocket(io) {
             } catch (e) { console.error('Wall leader reclaim failed:', e.message); }
           }
 
-          // Check subscription/trial status before sending playlist
+          // Device access gating removed — checkDeviceAccess always grants access.
           const access = checkDeviceAccess(device_id);
           if (!access.allowed) {
             socket.emit('device:playlist-update', { assignments: [], suspended: true, message: access.message, detail: access.detail });

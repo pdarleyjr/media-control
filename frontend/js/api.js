@@ -181,8 +181,4 @@ export const api = {
     method: 'PUT',
     body: JSON.stringify({ password }),
   }),
-  assignPlan: (user_id, plan_id) => request('/subscription/assign', {
-    method: 'POST',
-    body: JSON.stringify({ user_id, plan_id })
-  }),
 };

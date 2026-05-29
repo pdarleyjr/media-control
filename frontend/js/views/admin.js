@@ -24,18 +24,12 @@ export async function render(container) {
     </div>
 
     <div class="settings-section">
-      <h3>${t('admin.plans')}</h3>
-      <div id="plansTable"><p style="color:var(--text-muted)">${t('common.loading')}</p></div>
-    </div>
-
-    <div class="settings-section">
       <h3>${t('admin.system')}</h3>
       <div id="systemInfo"><p style="color:var(--text-muted)">${t('common.loading')}</p></div>
     </div>
   `;
 
   loadUsers();
-  loadPlans();
   loadSystem();
 
 }
@@ -43,7 +37,7 @@ export async function render(container) {
 async function loadUsers() {
   const el = document.getElementById('allUsersTable');
   try {
-    const [users, plans] = await Promise.all([API('/auth/users'), fetch('/api/subscription/plans').then(r => r.json())]);
+    const users = await API('/auth/users');
     const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
 
     el.innerHTML = `
@@ -54,7 +48,6 @@ async function loadUsers() {
           <th style="padding:8px;text-align:left;color:var(--text-muted)">${t('admin.col.auth')}</th>
           <th style="padding:8px;text-align:left;color:var(--text-muted)">${t('admin.col.last_login')}</th>
           <th style="padding:8px;text-align:left;color:var(--text-muted)">${t('admin.col.role')}</th>
-          <th style="padding:8px;text-align:left;color:var(--text-muted)">${t('admin.col.plan')}</th>
           <th style="padding:8px;text-align:left;color:var(--text-muted)">${t('admin.col.actions')}</th>
         </tr></thead>
         <tbody>
@@ -68,11 +61,6 @@ async function loadUsers() {
                   <option value="user" ${u.role === 'user' ? 'selected' : ''}>${t('admin.role.user')}</option>
                   <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>${t('admin.role.admin')}</option>
                   <option value="superadmin" ${u.role === 'superadmin' ? 'selected' : ''}>${t('admin.role.superadmin')}</option>
-                </select>
-              </td>
-              <td style="padding:8px">
-                <select class="input" style="max-width:130px;width:100%;background:var(--bg-input);font-size:12px;padding:4px" data-plan-user="${u.id}">
-                  ${plans.map(p => `<option value="${p.id}" ${u.plan_id === p.id ? 'selected' : ''}>${p.display_name}</option>`).join('')}
                 </select>
               </td>
               <td style="padding:8px;white-space:nowrap">
@@ -92,15 +80,6 @@ async function loadUsers() {
         try {
           await API(`/auth/users/${select.dataset.roleUser}/role`, { method: 'PUT', body: JSON.stringify({ role: select.value }) });
           showToast(t('admin.toast.role_updated'), 'success');
-        } catch (err) { showToast(err.message, 'error'); loadUsers(); }
-      };
-    });
-
-    el.querySelectorAll('[data-plan-user]').forEach(select => {
-      select.onchange = async () => {
-        try {
-          await API('/subscription/assign', { method: 'POST', body: JSON.stringify({ user_id: select.dataset.planUser, plan_id: select.value }) });
-          showToast(t('admin.toast.plan_updated'), 'success');
         } catch (err) { showToast(err.message, 'error'); loadUsers(); }
       };
     });
@@ -131,37 +110,6 @@ async function loadUsers() {
         setTimeout(() => { confirming = false; btn.textContent = t('admin.remove'); btn.style.background = ''; btn.style.color = ''; }, 3000);
       };
     });
-  } catch (err) { el.innerHTML = `<p style="color:var(--danger)">${esc(err.message)}</p>`; }
-}
-
-async function loadPlans() {
-  const el = document.getElementById('plansTable');
-  try {
-    const plans = await fetch('/api/subscription/plans').then(r => r.json());
-    el.innerHTML = `
-      <div class="table-wrap">
-      <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:500px">
-        <thead><tr style="border-bottom:1px solid var(--border)">
-          <th style="padding:8px;text-align:left;color:var(--text-muted)">${t('admin.col.plan')}</th>
-          <th style="padding:8px;text-align:right;color:var(--text-muted)">${t('admin.col.devices')}</th>
-          <th style="padding:8px;text-align:right;color:var(--text-muted)">${t('admin.col.storage')}</th>
-          <th style="padding:8px;text-align:right;color:var(--text-muted)">${t('admin.col.monthly')}</th>
-          <th style="padding:8px;text-align:right;color:var(--text-muted)">${t('admin.col.yearly')}</th>
-        </tr></thead>
-        <tbody>
-          ${plans.map(p => `
-            <tr style="border-bottom:1px solid var(--border)">
-              <td style="padding:8px;font-weight:500">${p.display_name}</td>
-              <td style="padding:8px;text-align:right">${p.max_devices === -1 ? t('admin.unlimited') : p.max_devices}</td>
-              <td style="padding:8px;text-align:right">${p.max_storage_mb === -1 ? t('admin.unlimited') : p.max_storage_mb >= 1024 ? (p.max_storage_mb/1024)+'GB' : p.max_storage_mb+'MB'}</td>
-              <td style="padding:8px;text-align:right">${p.price_monthly > 0 ? '$'+p.price_monthly : t('admin.free')}</td>
-              <td style="padding:8px;text-align:right">${p.price_yearly > 0 ? '$'+p.price_yearly : '-'}</td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
-      </div>
-    `;
   } catch (err) { el.innerHTML = `<p style="color:var(--danger)">${esc(err.message)}</p>`; }
 }
 

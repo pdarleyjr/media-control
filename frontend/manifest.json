@@ -1,6 +1,6 @@
 {
-  "name": "ScreenTinker",
-  "short_name": "ScreenTinker",
+  "name": "Media Control",
+  "short_name": "MediaCtrl",
   "description": "Digital Signage Management",
   "start_url": "/",
   "display": "standalone",

@@ -70,7 +70,7 @@ export async function render(container) {
       <div id="whiteLabelForm">
         <p style="color:var(--text-muted);font-size:12px;margin-bottom:16px">${t('settings.white_label_desc')}</p>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div class="form-group"><label>${t('settings.brand_name')}</label><input type="text" id="wlBrandName" class="input" placeholder="ScreenTinker"></div>
+          <div class="form-group"><label>${t('settings.brand_name')}</label><input type="text" id="wlBrandName" class="input" placeholder="Media Control"></div>
           <div class="form-group"><label>${t('settings.logo_url')}</label><input type="text" id="wlLogoUrl" class="input" placeholder="https://..."></div>
           <div class="form-group"><label>${t('settings.primary_color')}</label><input type="color" id="wlPrimaryColor" value="#3B82F6" style="width:100%;height:36px;border:none;cursor:pointer;border-radius:var(--radius)"></div>
           <div class="form-group"><label>${t('settings.bg_color')}</label><input type="color" id="wlBgColor" value="#111827" style="width:100%;height:36px;border:none;cursor:pointer;border-radius:var(--radius)"></div>
@@ -148,7 +148,7 @@ export async function render(container) {
     <div class="settings-section">
       <h3>${t('settings.about')}</h3>
       <div style="color:var(--text-secondary);font-size:13px">
-        <p><strong>ScreenTinker</strong> v1.4.1</p>
+        <p><strong>Media Control</strong> v1.4.1</p>
         <p style="margin-top:4px">${t('settings.about_tagline')}</p>
         <p style="margin-top:12px">
           <a href="/legal/terms.html" target="_blank" style="color:var(--accent);font-size:12px">${t('auth.terms')}</a>
@@ -334,21 +334,6 @@ async function loadWhiteLabel() {
   const token = localStorage.getItem('token');
   const headers = { Authorization: `Bearer ${token}` };
 
-  // Only show white-label for enterprise plans or platform admins.
-  // Use the fresh user cached by render() above, which called api.getMe().
-  const user = JSON.parse(localStorage.getItem('user') || '{}');
-  const section = document.getElementById('whiteLabelSection');
-  if (section && user.plan_id !== 'enterprise' && !isPlatformAdmin(user)) {
-    section.innerHTML = `
-      <h3>${t('settings.white_label')}</h3>
-      <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:16px;text-align:center">
-        <p style="color:var(--text-secondary);font-size:14px;margin-bottom:8px">${t('settings.white_label_enterprise_only')}</p>
-        <a href="#/billing" class="btn btn-secondary btn-sm" style="text-decoration:none">${t('settings.view_plans')}</a>
-      </div>
-    `;
-    return;
-  }
-
   try {
     const res = await fetch('/api/white-label', { headers });
     const wl = await res.json();
@@ -400,10 +385,7 @@ async function loadUsers() {
   if (!el) return;
 
   try {
-    const [users, plans] = await Promise.all([
-      api.getUsers(),
-      fetch('/api/subscription/plans').then(r => r.json())
-    ]);
+    const users = await api.getUsers();
 
     const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
 
@@ -415,7 +397,6 @@ async function loadUsers() {
             <th style="padding:8px 12px;color:var(--text-muted);font-weight:500">${t('settings.user.col_user')}</th>
             <th style="padding:8px 12px;color:var(--text-muted);font-weight:500">${t('settings.user.col_auth')}</th>
             <th style="padding:8px 12px;color:var(--text-muted);font-weight:500">${t('settings.user.col_role')}</th>
-            <th style="padding:8px 12px;color:var(--text-muted);font-weight:500">${t('settings.user.col_plan')}</th>
             <th style="padding:8px 12px;color:var(--text-muted);font-weight:500">${t('settings.user.col_actions')}</th>
           </tr>
         </thead>
@@ -432,11 +413,6 @@ async function loadUsers() {
               <td style="padding:10px 12px">
                 <span style="color:${u.role === 'admin' ? 'var(--accent)' : 'var(--text-secondary)'}">${u.role}</span>
               </td>
-              <td style="padding:10px 12px">
-                <select class="input plan-select" data-user-id="${u.id}" style="padding:4px 8px;font-size:12px;width:auto">
-                  ${plans.map(p => `<option value="${p.id}" ${u.plan_id === p.id ? 'selected' : ''}>${p.display_name}</option>`).join('')}
-                </select>
-              </td>
               <td style="padding:10px 12px;white-space:nowrap">
                 ${u.auth_provider === 'local' && u.id !== currentUser.id ? `<button class="btn btn-secondary btn-sm reset-user-pw-btn" data-user-id="${u.id}" data-user-email="${u.email}" style="margin-right:4px">${t('settings.user.reset_password')}</button>` : ''}
                 ${u.id !== currentUser.id ? `<button class="btn btn-danger btn-sm delete-user-btn" data-user-id="${u.id}">${t('settings.user.remove')}</button>` : `<span style="color:var(--text-muted);font-size:11px">${t('settings.user.you')}</span>`}
@@ -448,21 +424,6 @@ async function loadUsers() {
       </div>
       <p style="color:var(--text-muted);font-size:11px;margin-top:12px">${tn('settings.user.count', users.length)}</p>
     `;
-
-    // Plan change handlers
-    el.querySelectorAll('.plan-select').forEach(select => {
-      select.addEventListener('change', async () => {
-        const userId = select.dataset.userId;
-        const planId = select.value;
-        try {
-          await api.assignPlan(userId, planId);
-          showToast(t('settings.toast.plan_updated'), 'success');
-        } catch (err) {
-          showToast(err.message, 'error');
-          loadUsers(); // Revert
-        }
-      });
-    });
 
     // Reset password handlers
     el.querySelectorAll('.reset-user-pw-btn').forEach(btn => {

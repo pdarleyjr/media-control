@@ -30,14 +30,12 @@ function ensureDefaultOrgForUser(user) {
     ? `${user.name}'s organization`
     : `${user.email}'s organization`;
   const tx = db.transaction(() => {
+    // Billing/subscription removed: create the org on the unlimited 'enterprise'
+    // plan (satisfies the plan_id FK) with no stripe/subscription state.
     db.prepare(`INSERT INTO organizations (
-      id, name, owner_user_id, plan_id,
-      stripe_customer_id, stripe_subscription_id,
-      subscription_status, subscription_ends
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      orgId, orgName, user.id, user.plan_id || 'free',
-      user.stripe_customer_id || null, user.stripe_subscription_id || null,
-      user.subscription_status || 'active', user.subscription_ends || null
+      id, name, owner_user_id, plan_id
+    ) VALUES (?, ?, ?, ?)`).run(
+      orgId, orgName, user.id, user.plan_id || 'enterprise'
     );
     db.prepare(`INSERT INTO organization_members (organization_id, user_id, role) VALUES (?, ?, 'org_owner')`).run(orgId, user.id);
     db.prepare(`INSERT INTO workspaces (id, organization_id, name, created_by) VALUES (?, ?, 'Default', ?)`).run(wsId, orgId, user.id);
@@ -94,20 +92,20 @@ router.post('/register', (req, res) => {
   const id = uuidv4();
   const passwordHash = bcrypt.hashSync(password, 10);
 
-  // First user becomes platform_admin with enterprise plan (self-hosted) or free plan with Pro trial.
+  // First user becomes platform_admin. Billing/trial logic removed: every new
+  // user is created on the seeded unlimited 'enterprise' plan (satisfies the
+  // plan_id FK) with no trial or subscription state.
   // Phase 1 renamed the legacy 'superadmin' role to 'platform_admin'; new bootstrap users get the new name directly.
   const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
   const role = userCount === 0 ? 'platform_admin' : 'user';
-  const isFirstUser = userCount === 0;
-  const plan = (isFirstUser && config.selfHosted) ? 'enterprise' : 'pro'; // Start on Pro trial
-  const trialStarted = isFirstUser && config.selfHosted ? null : Math.floor(Date.now() / 1000);
+  const plan = 'enterprise';
 
   db.prepare(`
-    INSERT INTO users (id, email, name, password_hash, auth_provider, role, plan_id, trial_started, trial_plan)
-    VALUES (?, ?, ?, ?, 'local', ?, ?, ?, ?)
-  `).run(id, email.toLowerCase(), name || email.split('@')[0], passwordHash, role, plan, trialStarted, trialStarted ? 'pro' : null);
+    INSERT INTO users (id, email, name, password_hash, auth_provider, role, plan_id)
+    VALUES (?, ?, ?, ?, 'local', ?, ?)
+  `).run(id, email.toLowerCase(), name || email.split('@')[0], passwordHash, role, plan);
 
-  const user = db.prepare('SELECT id, email, name, role, auth_provider, avatar_url, plan_id, stripe_customer_id, stripe_subscription_id, subscription_status, subscription_ends FROM users WHERE id = ?').get(id);
+  const user = db.prepare('SELECT id, email, name, role, auth_provider, avatar_url, plan_id FROM users WHERE id = ?').get(id);
   const workspaceId = ensureDefaultOrgForUser(user);
   const token = generateToken(user, workspaceId);
 
@@ -160,14 +158,13 @@ router.post('/google', async (req, res) => {
       const id = uuidv4();
       const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
       const role = userCount === 0 ? 'platform_admin' : 'user';
-      const isFirst = userCount === 0;
-      const plan = (isFirst && config.selfHosted) ? 'enterprise' : 'pro';
-      const trialStarted = isFirst && config.selfHosted ? null : Math.floor(Date.now() / 1000);
+      // Billing/trial removed: seed every new user on the unlimited 'enterprise' plan.
+      const plan = 'enterprise';
 
       db.prepare(`
-        INSERT INTO users (id, email, name, auth_provider, provider_id, avatar_url, role, plan_id, trial_started, trial_plan)
-        VALUES (?, ?, ?, 'google', ?, ?, ?, ?, ?, ?)
-      `).run(id, email.toLowerCase(), name || '', googleId, picture || '', role, plan, trialStarted, trialStarted ? 'pro' : null);
+        INSERT INTO users (id, email, name, auth_provider, provider_id, avatar_url, role, plan_id)
+        VALUES (?, ?, ?, 'google', ?, ?, ?, ?)
+      `).run(id, email.toLowerCase(), name || '', googleId, picture || '', role, plan);
 
       user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
     } else if (user.auth_provider !== 'google') {
@@ -239,14 +236,13 @@ router.post('/microsoft', async (req, res) => {
       const id = uuidv4();
       const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
       const role = userCount === 0 ? 'platform_admin' : 'user';
-      const isFirst = userCount === 0;
-      const plan = (isFirst && config.selfHosted) ? 'enterprise' : 'pro';
-      const trialStarted = isFirst && config.selfHosted ? null : Math.floor(Date.now() / 1000);
+      // Billing/trial removed: seed every new user on the unlimited 'enterprise' plan.
+      const plan = 'enterprise';
 
       db.prepare(`
-        INSERT INTO users (id, email, name, auth_provider, provider_id, role, plan_id, trial_started, trial_plan)
-        VALUES (?, ?, ?, 'microsoft', ?, ?, ?, ?, ?)
-      `).run(id, email, name, microsoftId, role, plan, trialStarted, trialStarted ? 'pro' : null);
+        INSERT INTO users (id, email, name, auth_provider, provider_id, role, plan_id)
+        VALUES (?, ?, ?, 'microsoft', ?, ?, ?)
+      `).run(id, email, name, microsoftId, role, plan);
 
       user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
     } else if (user.auth_provider !== 'microsoft') {
