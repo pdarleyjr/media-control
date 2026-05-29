@@ -4,7 +4,10 @@ module.exports = {
   appName: process.env.APP_NAME || 'Media Control',
   port: process.env.PORT || 3001,
   httpsPort: process.env.HTTPS_PORT || 3443,
-  dbPath: path.join(__dirname, 'db', 'remote_display.db'),
+  // DB_PATH lets the SQLite file live OUTSIDE the code dir. In Docker the data
+  // volume must NOT mount over server/db or it shadows database.js/schema.sql
+  // (the volume is seeded once from the first image and never refreshes the code).
+  dbPath: process.env.DB_PATH || path.join(__dirname, 'db', 'remote_display.db'),
   uploadsDir: path.join(__dirname, 'uploads'),
   contentDir: path.join(__dirname, 'uploads', 'content'),
   screenshotsDir: path.join(__dirname, 'uploads', 'screenshots'),
