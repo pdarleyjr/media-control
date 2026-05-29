@@ -1,0 +1,16 @@
+Media Control
+=============
+
+Media Control is a derivative work of Screen Tinker.
+
+Upstream source repo : https://github.com/pdarleyjr/screentinker
+Baseline branch      : screen-share
+Baseline commit      : addd08db2643ac9817d5f579c30496cb851425ae (2026-05-28)
+Upstream license     : MIT (see LICENSE)
+
+Screen Tinker is itself a fork of https://github.com/screentinker/screentinker (MIT).
+
+The original MIT LICENSE and the upstream authors' copyright are retained in
+LICENSE. Modifications made for the Media Control product are
+Copyright (c) 2026 Peter Darley / Miami Beach Fire Department and are provided
+under the same MIT License unless an individual file states otherwise.

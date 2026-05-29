@@ -43,3 +43,28 @@ Thumbs.db
 
 # Local-only marketing assets
 video/
+
+# === Media Control: planning, secrets, runtime — DO NOT COMMIT ===
+# AI planning / reasoning artifacts, agent notes, CF scratch
+.ai_plans/
+planning/
+planning/private/
+.agent_notes/
+.cf-work/
+
+# Runtime logs
+logs/
+*.log
+
+# Local SQLite (any location)
+*.sqlite
+*.sqlite3
+
+# Environment files (keep *.example only)
+.env*
+!.env*.example
+
+# Deployment compose overrides (keep example only)
+compose.media-control.*.yaml
+!compose.media-control.example.yaml
+docker-compose.override.yml
