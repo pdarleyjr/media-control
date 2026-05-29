@@ -632,10 +632,14 @@ backfillPlaylistItemsZoneId();
 // ALTER-in-a-loop pattern used by the inline `migrations` array above.
 const MC_DISPLAY_VIEWPORT_ID = 'mc_display_viewport';
 function migrateDisplayViewportColumns() {
-  const already = db.prepare('SELECT 1 FROM schema_migrations WHERE id = ?').get(MC_DISPLAY_VIEWPORT_ID);
-  if (already) return;
-
-  const cols = db.prepare('PRAGMA table_info(devices)').all().map(c => c.name);
+  // Self-healing: ensure the columns exist on EVERY boot driven off PRAGMA
+  // (the actual table shape), NOT the schema_migrations stamp. A prior boot
+  // stamped this migration even though the ALTERs had not landed, which then
+  // made a stamp-gated version skip the fix forever. Driving off real columns
+  // is idempotent and recovers from that state.
+  let cols;
+  try { cols = db.prepare('PRAGMA table_info(devices)').all().map(c => c.name); }
+  catch (e) { console.warn('[mc_display_viewport] table_info(devices) failed:', e.message); return; }
   const adds = [
     ['viewport_css_w', 'ALTER TABLE devices ADD COLUMN viewport_css_w INTEGER'],
     ['viewport_css_h', 'ALTER TABLE devices ADD COLUMN viewport_css_h INTEGER'],
@@ -645,15 +649,13 @@ function migrateDisplayViewportColumns() {
     ['last_viewport_at', 'ALTER TABLE devices ADD COLUMN last_viewport_at INTEGER'],
     ['location_label', 'ALTER TABLE devices ADD COLUMN location_label TEXT'],
   ];
-  for (const [name, sql] of adds) {
-    if (cols.includes(name)) continue; // already present — nothing to do
-    try { db.exec(sql); } catch (e) { /* already exists / benign race */ }
+  const missing = adds.filter(([name]) => !cols.includes(name));
+  for (const [name, sql] of missing) {
+    try { db.exec(sql); console.log('[mc_display_viewport] added column', name); }
+    catch (e) { console.error('[mc_display_viewport] ADD COLUMN', name, 'failed:', e.message); }
   }
-
-  try {
-    db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(MC_DISPLAY_VIEWPORT_ID);
-    console.log('mc_display_viewport migration: devices viewport columns ensured.');
-  } catch (e) { /* schema_migrations stamp best-effort */ }
+  try { db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(MC_DISPLAY_VIEWPORT_ID); }
+  catch (e) { /* stamp best-effort */ }
 }
 
 migrateDisplayViewportColumns();
