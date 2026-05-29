@@ -11,6 +11,11 @@ FROM node:22-alpine
 RUN apk add --no-cache ffmpeg tini vips yt-dlp poppler-utils
 WORKDIR /app
 COPY --from=deps /app/server/node_modules ./server/node_modules
+# Cache-bust: pass --build-arg CACHEBUST=$(git rev-parse HEAD) on every deploy so
+# the app-code COPY layers always refresh on a new commit. (BuildKit's COPY cache
+# was over-aggressively reused, freezing deployed code at the first build.)
+ARG CACHEBUST=dev
+RUN echo "cachebust=$CACHEBUST"
 COPY server ./server
 COPY frontend ./frontend
 COPY scripts ./scripts
