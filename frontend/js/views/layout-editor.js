@@ -4,6 +4,58 @@ import { t, tn } from '../i18n.js';
 
 const API = (url, opts = {}) => fetch('/api' + url, { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}`, ...opts.headers }, ...opts }).then(r => r.json());
 
+// Phase 4: one-tap layout presets. Each entry is a server-recognized preset
+// key (the canonical generator lives in routes/layouts.js apply-preset) plus a
+// human label. The frontend only forwards the key; the server replaces the
+// layout's zones with the standard set. Labels are localized via t() when an
+// `layout.preset.*` translation exists and otherwise fall back to the English
+// literal — t() falls back to the key string for missing keys, so we OR-default
+// to the literal to keep the touch UI clean even before translations land.
+// Order defines the quick-start row.
+const PRESETS = [
+  { key: 'full',          label: () => tp('layout.preset.full', 'Full') },
+  { key: 'quad',          label: () => tp('layout.preset.quad', 'Quad') },
+  { key: 'main_sidebar', label: () => tp('layout.preset.main_sidebar', 'Main + Sidebars') },
+  { key: 'columns_3', label: () => tp('layout.preset.columns_3', '3 Columns') },
+  { key: 'six',           label: () => tp('layout.preset.six', 'Six') },
+  { key: 'columns_2',   label: () => tp('layout.preset.columns_2', '2 Columns') },
+  { key: 'rows_2',      label: () => tp('layout.preset.rows_2', '2 Rows') },
+];
+
+// Translate-or-fallback: t() returns the raw key when no translation exists
+// (see i18n lookup()). For these brand-new preset strings we don't own the
+// i18n files, so fall back to the supplied English literal whenever the
+// translation is missing — keeps labels human-readable without raw keys leaking
+// into the UI, while still picking up real translations if they get added.
+function tp(key, fallbackText) {
+  const v = t(key);
+  return v === key ? fallbackText : v;
+}
+
+// Tiny inline SVG-ish thumbnail (pure CSS boxes) so each preset button reads at
+// a glance on a touch screen. Returns markup placed inside a 36x22 flex box.
+function presetThumb(key) {
+  const cell = (style) => `<span style="background:rgba(59,130,246,0.45);border-radius:1px;${style}"></span>`;
+  switch (key) {
+    case 'full':
+      return cell('flex:1');
+    case 'quad':
+      return `<span style="display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:2px;flex:1">${cell('').repeat(4)}</span>`;
+    case 'main_sidebar':
+      return `<span style="display:flex;gap:2px;flex:1">${cell('flex:2')}<span style="display:flex;flex-direction:column;gap:2px;flex:1">${cell('flex:1')}${cell('flex:1')}</span></span>`;
+    case 'columns_3':
+      return `<span style="display:flex;gap:2px;flex:1">${cell('flex:1')}${cell('flex:1')}${cell('flex:1')}</span>`;
+    case 'six':
+      return `<span style="display:grid;grid-template-columns:1fr 1fr 1fr;grid-template-rows:1fr 1fr;gap:2px;flex:1">${cell('').repeat(6)}</span>`;
+    case 'columns_2':
+      return `<span style="display:flex;gap:2px;flex:1">${cell('flex:1')}${cell('flex:1')}</span>`;
+    case 'rows_2':
+      return `<span style="display:flex;flex-direction:column;gap:2px;flex:1">${cell('flex:1')}${cell('flex:1')}</span>`;
+    default:
+      return cell('flex:1');
+  }
+}
+
 export async function render(container) {
   const hash = window.location.hash;
   if (hash.startsWith('#/layout/')) {
@@ -119,6 +171,21 @@ async function renderEditor(container, layoutId) {
       <div style="display:flex;gap:8px">
         <button class="btn btn-secondary btn-sm" id="addZoneBtn">${t('layout.add_zone')}</button>
         <button class="btn btn-primary btn-sm" id="saveLayoutBtn">${t('common.save')}</button>
+      </div>
+    </div>
+    <div id="presetBar" style="margin-bottom:16px">
+      <div style="font-size:13px;color:var(--text-secondary);margin-bottom:8px;display:flex;align-items:center;gap:6px">
+        ${tp('layout.preset.title', 'Quick layouts')}
+        <span class="help-tip" data-tip="${tp('layout.preset.help_tip', 'Tap a preset to instantly generate a standard set of zones. You can still add, drag, resize, and fine-tune zones manually afterwards.')}">?</span>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">
+        ${PRESETS.map(p => `
+          <button type="button" class="btn btn-secondary preset-btn" data-preset="${p.key}"
+            style="min-height:56px;min-width:120px;flex:0 0 auto;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:8px 14px">
+            <span style="display:flex;gap:2px;width:36px;height:22px">${presetThumb(p.key)}</span>
+            <span style="font-size:12px;font-weight:500">${p.label()}</span>
+          </button>
+        `).join('')}
       </div>
     </div>
     <div style="display:flex;gap:20px">
@@ -271,6 +338,39 @@ async function renderEditor(container, layoutId) {
     renderZones();
     updateProperties();
   };
+
+  // Phase 4: one-tap presets. Tapping a preset asks the server to (re)generate
+  // a standard set of zones on this layout via the existing zone create/replace
+  // path, then we re-fetch the layout so the editor's local `zones` state and
+  // canvas reflect the new arrangement. The manual add/drag/resize/properties
+  // flow above is untouched — this is purely a quick-start shortcut. The button
+  // disables itself while the request is in flight to prevent double-taps on a
+  // touch screen.
+  document.querySelectorAll('.preset-btn').forEach((btn) => {
+    btn.onclick = async () => {
+      const preset = btn.dataset.preset;
+      if (!preset || btn.disabled) return;
+      const presetDef = PRESETS.find((p) => p.key === preset);
+      const presetLabel = presetDef ? presetDef.label() : preset;
+      const buttons = document.querySelectorAll('.preset-btn');
+      buttons.forEach((b) => { b.disabled = true; });
+      try {
+        await api.layouts.applyPreset(layoutId, preset);
+        // Re-fetch so local state mirrors the server's authoritative zones
+        // (correct ids, sort_order, defaults applied by the route).
+        layout = await API(`/layouts/${layoutId}`);
+        zones = layout.zones || [];
+        selectedZone = null;
+        renderZones();
+        updateProperties();
+        showToast(tp('layout.preset.toast_applied', `Applied "${presetLabel}" layout`), 'success');
+      } catch (err) {
+        showToast(err.message || tp('layout.preset.toast_failed', 'Failed to apply preset'), 'error');
+      } finally {
+        buttons.forEach((b) => { b.disabled = false; });
+      }
+    };
+  });
 
   document.getElementById('deleteZoneBtn').onclick = () => {
     if (selectedZone === null) return;

@@ -7,6 +7,10 @@ const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
 // platform-shared pair (NULL user_id, NULL workspace_id) and are visible
 // everywhere, writable only by platform_admin.
 const { accessContext } = require('../lib/tenancy');
+// Phase 4: one-tap layout presets (Full, Quad, 2/3 Columns, 2 Rows,
+// Main+Sidebars, Six). Generates standard zones using the existing
+// layout_zones percentage shape.
+const { buildPresetZones, presetKeys } = require('../lib/layout-presets');
 
 // List layouts in the caller's current workspace plus all templates.
 // Phase 2.2h: workspace-scoped. Templates (is_template=1) remain visible to
@@ -190,6 +194,42 @@ router.delete('/:id/zones/:zoneId', (req, res) => {
   db.prepare('DELETE FROM layout_zones WHERE id = ? AND layout_id = ?').run(req.params.zoneId, req.params.id);
   db.prepare("UPDATE layouts SET updated_at = strftime('%s','now') WHERE id = ?").run(req.params.id);
   res.json({ success: true });
+});
+
+// Phase 4: Apply a one-tap layout preset. REPLACES the layout's zones with the
+// generated preset zone set. Write-access gated identically to the other zone
+// mutators (checkLayoutWrite). Reuses the same layout_zones INSERT shape as
+// POST /:id/zones and the duplicate route, run transactionally so a partial
+// failure can't leave the layout with a half-applied preset.
+router.post('/:id/apply-preset', (req, res) => {
+  const layout = checkLayoutWrite(req, res);
+  if (!layout) return;
+
+  const { preset } = req.body || {};
+  const zones = preset ? buildPresetZones(preset) : null;
+  if (!zones) {
+    return res.status(400).json({ error: 'Unknown preset', valid: presetKeys() });
+  }
+
+  const insertStmt = db.prepare(`
+    INSERT INTO layout_zones (id, layout_id, name, x_percent, y_percent, width_percent, height_percent, z_index, zone_type, fit_mode, background_color, sort_order)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const applyPreset = db.transaction((layoutId, zoneList) => {
+    db.prepare('DELETE FROM layout_zones WHERE layout_id = ?').run(layoutId);
+    zoneList.forEach((z, i) => {
+      insertStmt.run(uuidv4(), layoutId, z.name, z.x_percent, z.y_percent,
+        z.width_percent, z.height_percent, z.z_index,
+        z.zone_type, z.fit_mode, '#000000', z.sort_order != null ? z.sort_order : i);
+    });
+    db.prepare("UPDATE layouts SET updated_at = strftime('%s','now') WHERE id = ?").run(layoutId);
+  });
+
+  applyPreset(req.params.id, zones);
+
+  const updatedZones = db.prepare('SELECT * FROM layout_zones WHERE layout_id = ? ORDER BY sort_order').all(req.params.id);
+  res.json({ success: true, preset, zones: updatedZones });
 });
 
 // Duplicate layout (for using templates). Source needs read-access only;

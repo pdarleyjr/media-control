@@ -186,6 +186,20 @@ export const api = {
   // Device Groups - Playlist
   groupAssignPlaylist: (groupId, playlist_id) => request(`/groups/${groupId}/assign-playlist`, { method: 'POST', body: JSON.stringify({ playlist_id }) }),
 
+  // ==================== Phase 4: Layouts ====================
+  // Thin wrapper over the layouts routes. applyPreset() asks the server to
+  // generate a standard set of layout_zones on an existing layout (replacing
+  // the current zones). The editor then re-fetches the layout to reflect the
+  // newly generated zones. Preset keys are validated server-side; the UI just
+  // forwards the chosen key. Follows the same request()/Bearer pattern as the
+  // rest of the API surface.
+  layouts: {
+    applyPreset: (layoutId, preset) => request(`/layouts/${layoutId}/apply-preset`, {
+      method: 'POST',
+      body: JSON.stringify({ preset }),
+    }),
+  },
+
   // ==================== Phase 3: Scenes (Operational Activities) ====================
   // A scene is a named snapshot of which content/playlist shows on which
   // display. trigger() pushes the snapshot to all of the scene's displays in
