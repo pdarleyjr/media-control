@@ -389,6 +389,11 @@ app.use('/api/reports', requireAuth, resolveTenancy, require('./routes/reports')
 app.use('/api/screen-share', requireAuth, require('./routes/screen-share'));  // screen-share REST: ICE/TURN credential issuance, JWT-gated
 app.use('/api/groups', requireAuth, resolveTenancy, require('./routes/device-groups'));
 app.use('/api/playlists', requireAuth, resolveTenancy, require('./routes/playlists'));
+// Phase 3: Operational Activities ("Scenes") + Fast Broadcast. Same
+// requireAuth + resolveTenancy gating as the other resource routes; handlers
+// scope by req.workspaceId and reuse the existing device-content-push path.
+app.use('/api/scenes', requireAuth, resolveTenancy, require('./routes/scenes'));
+app.use('/api/broadcast', requireAuth, resolveTenancy, require('./routes/broadcast'));
 app.use('/api/activity', requireAuth, resolveTenancy, require('./routes/activity'));
 app.use('/api/white-label', requireAuth, resolveTenancy, require('./routes/white-label'));
 // Kiosk render is public (accessed by devices), CRUD is protected

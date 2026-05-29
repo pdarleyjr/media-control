@@ -25,6 +25,38 @@ async function request(url, options = {}) {
   return res.json();
 }
 
+// Phase 3 broadcast helper. The broadcast endpoint returns 409 with a
+// { code: 'CONFIRM_ALL_REQUIRED', count } envelope when the caller targets
+// every display in the workspace WITHOUT passing confirm_all:true. The generic
+// request() above turns any non-2xx into a thrown Error and discards the body,
+// which would throw the confirmation signal away. This helper instead resolves
+// with the parsed body so the UI can detect CONFIRM_ALL_REQUIRED, prompt the
+// operator, and retry with confirm_all:true. All other non-2xx responses still
+// throw (matching request()).
+async function requestBroadcast(payload) {
+  const res = await fetch(API_BASE + '/broadcast', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify(payload),
+  });
+  if (res.status === 401) {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    window.location.hash = '#/login';
+    window.location.reload();
+    throw new Error('Session expired');
+  }
+  const body = await res.json().catch(() => ({ error: res.statusText }));
+  // Surface the confirm-all gate to the caller instead of throwing it away.
+  if (res.status === 409 && body && body.code === 'CONFIRM_ALL_REQUIRED') {
+    return body;
+  }
+  if (!res.ok) {
+    throw new Error(body.error || 'Request failed');
+  }
+  return body;
+}
+
 export const api = {
   // Devices
   getDevices: () => request('/devices'),
@@ -153,6 +185,30 @@ export const api = {
 
   // Device Groups - Playlist
   groupAssignPlaylist: (groupId, playlist_id) => request(`/groups/${groupId}/assign-playlist`, { method: 'POST', body: JSON.stringify({ playlist_id }) }),
+
+  // ==================== Phase 3: Scenes (Operational Activities) ====================
+  // A scene is a named snapshot of which content/playlist shows on which
+  // display. trigger() pushes the snapshot to all of the scene's displays in
+  // one tap; capture() snapshots the current state of the given displays into
+  // a new scene.
+  scenes: {
+    list: () => request('/scenes'),
+    create: (data) => request('/scenes', { method: 'POST', body: JSON.stringify(data) }),
+    get: (id) => request(`/scenes/${id}`),
+    update: (id, data) => request(`/scenes/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    remove: (id) => request(`/scenes/${id}`, { method: 'DELETE' }),
+    getPlacements: (id) => request(`/scenes/${id}/placements`),
+    setPlacements: (id, placements) => request(`/scenes/${id}/placements`, { method: 'PUT', body: JSON.stringify({ placements }) }),
+    trigger: (id) => request(`/scenes/${id}/trigger`, { method: 'POST' }),
+    capture: (data) => request('/scenes/capture', { method: 'POST', body: JSON.stringify(data) }),
+  },
+
+  // ==================== Phase 3: Fast broadcast ====================
+  // Send one content/URL/playlist to a selection of displays. When the target
+  // is every display in the workspace, the server responds 409 with
+  // { code:'CONFIRM_ALL_REQUIRED', count }; broadcast() resolves with that body
+  // (instead of throwing) so the UI can prompt and retry with confirm_all:true.
+  broadcast: (payload) => requestBroadcast(payload),
 
   // Current user
   getMe: () => request('/auth/me'),

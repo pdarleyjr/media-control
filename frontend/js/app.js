@@ -18,6 +18,7 @@ import * as admin from './views/admin.js';
 import * as adminPlayerDebug from './views/admin-player-debug.js';
 import * as designer from './views/designer.js';
 import * as playlists from './views/playlists.js';
+import * as scenes from './views/scenes.js';
 import * as screenShare from './views/screen-share.js';
 import * as workspaceMembers from './views/workspace-members.js';
 import { applyBranding } from './branding.js';
@@ -182,6 +183,32 @@ function renderNavLabels() {
   });
 }
 
+// Phase 3: inject the "Scenes" (Operational Activities) nav link. The static
+// nav lives in index.html; rather than touch that template, we insert the
+// nav item right after Playlists at boot. Idempotent — re-running is a no-op
+// once the link exists. Label is plain English (no i18n key) to match the
+// other Phase-3 features that ship before translations are wired up.
+function ensureScenesNav() {
+  if (document.querySelector('.nav-link[data-view="scenes"]')) return;
+  const playlistsLink = document.querySelector('.nav-link[data-view="playlists"]');
+  const playlistsLi = playlistsLink ? playlistsLink.closest('li') : null;
+  const navList = playlistsLi ? playlistsLi.parentElement : document.querySelector('.nav-links');
+  if (!navList) return;
+  const li = document.createElement('li');
+  li.innerHTML = `
+    <a href="#/scenes" class="nav-link" data-view="scenes">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+      </svg>
+      <span>Scenes</span>
+    </a>`;
+  if (playlistsLi && playlistsLi.nextSibling) {
+    navList.insertBefore(li, playlistsLi.nextSibling);
+  } else {
+    navList.appendChild(li);
+  }
+}
+
 // Translate any element marked with data-i18n / data-i18n-placeholder /
 // data-i18n-html. Runs on init and on every language change. Used for static
 // HTML in index.html (e.g. the Add-Display modal) where t() can't be inlined
@@ -317,6 +344,7 @@ function route() {
     else if (hash.startsWith('#/settings') && link.dataset.view === 'settings') link.classList.add('active');
     else if ((hash.startsWith('#/layout') || hash === '#/layouts') && link.dataset.view === 'layouts') link.classList.add('active');
     else if ((hash === '#/playlists' || hash.startsWith('#/playlists/')) && link.dataset.view === 'playlists') link.classList.add('active');
+    else if (hash === '#/scenes' && link.dataset.view === 'scenes') link.classList.add('active');
     else if (hash === '#/schedule' && link.dataset.view === 'schedule') link.classList.add('active');
     else if (hash === '#/widgets' && link.dataset.view === 'widgets') link.classList.add('active');
     else if ((hash.startsWith('#/wall') || hash === '#/walls') && link.dataset.view === 'walls') link.classList.add('active');
@@ -346,6 +374,9 @@ function route() {
   } else if (hash === '#/playlists' || hash.startsWith('#/playlists/')) {
     currentView = playlists;
     playlists.render(app);
+  } else if (hash === '#/scenes') {
+    currentView = scenes;
+    scenes.render(app);
   } else if (hash === '#/layouts' || hash.startsWith('#/layout/')) {
     currentView = layoutEditor;
     layoutEditor.render(app);
@@ -438,6 +469,7 @@ function updateSidebarUser() {
 }
 
 // Initialize
+ensureScenesNav();
 renderNavLabels();
 translateStaticDom();
 window.addEventListener('language-changed', () => {

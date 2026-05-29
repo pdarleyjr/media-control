@@ -30,6 +30,23 @@ function canActOnDevice(socket, deviceId, tier /* 'read' | 'write' */) {
   return ctx.workspaceRole === 'workspace_editor' || ctx.workspaceRole === 'workspace_admin';
 }
 
+// Phase 3: permission gate for scene (operational_activities) socket commands.
+// A scene targets many devices, so the gate is against the SCENE's workspace
+// rather than a single device, but uses the identical access-tier logic as
+// canActOnDevice (platform/org admin pass via actingAs; write tier requires
+// workspace_editor or workspace_admin).
+function canActOnScene(socket, activityId, tier /* 'read' | 'write' */) {
+  const scene = db.prepare('SELECT workspace_id FROM operational_activities WHERE id = ?').get(activityId);
+  if (!scene || !scene.workspace_id) return false;
+  const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(scene.workspace_id);
+  if (!ws) return false;
+  const ctx = accessContext(socket.userId, socket.userRole, ws);
+  if (!ctx) return false;
+  if (ctx.actingAs) return true;
+  if (tier === 'read') return !!ctx.workspaceRole;
+  return ctx.workspaceRole === 'workspace_editor' || ctx.workspaceRole === 'workspace_admin';
+}
+
 module.exports = function setupDashboardSocket(io) {
   const dashboardNs = io.of('/dashboard');
   const deviceNs = io.of('/device');
@@ -135,6 +152,33 @@ module.exports = function setupDashboardSocket(io) {
       } catch (e) { /* command-queue module absent; fall through to lost */ }
       console.log(`Command for offline device ${device_id}: ${type} (queued=${queued})`);
       if (typeof ack === 'function') ack({ delivered: false, queued, reason: 'offline' });
+    });
+
+    // Phase 3: trigger an Operational Activity ("Scene") — pushes the scene to
+    // all its displays via the existing device-content-push path. Permission
+    // gate mirrors the write tier used by dashboard:remote-* / device-command,
+    // but checked against the SCENE's workspace (a scene targets many devices)
+    // rather than a single device. Follows the same ack-callback shape as
+    // dashboard:device-command.
+    socket.on('dashboard:scene-trigger', (data, ack) => {
+      const { activityId } = data || {};
+      if (!activityId) {
+        if (typeof ack === 'function') ack({ delivered: false, reason: 'missing_activity_id' });
+        return;
+      }
+      if (!canActOnScene(socket, activityId, 'write')) {
+        if (typeof ack === 'function') ack({ delivered: false, reason: 'forbidden' });
+        return;
+      }
+      try {
+        const sceneEngine = require('../services/scene-engine');
+        const result = sceneEngine.triggerScene(io, activityId);
+        console.log(`Scene triggered ${activityId}: pushed=${result.pushed}, failed=${result.failed}`);
+        if (typeof ack === 'function') ack({ delivered: true, ...result });
+      } catch (e) {
+        console.error(`dashboard:scene-trigger failed for ${activityId}: ${e.message}`);
+        if (typeof ack === 'function') ack({ delivered: false, reason: 'error' });
+      }
     });
 
     socket.on('disconnect', () => {

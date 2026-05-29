@@ -660,6 +660,54 @@ function migrateDisplayViewportColumns() {
 
 migrateDisplayViewportColumns();
 
+// Phase 3: Operational Activities ("Scenes") + asset placements.
+// A scene is a named snapshot of which content/playlist shows on which display;
+// one tap triggers it and pushes each placement to its device via the existing
+// device-content-push path (services/scene-engine.js). Idempotent: tables use
+// CREATE TABLE IF NOT EXISTS so a re-run can't throw, and we do NOT gate solely
+// on the schema_migrations stamp (the stamp is best-effort/cosmetic). Mirrors
+// the additive, self-healing pattern used by the migrations above.
+const MC_SCENES_ID = 'mc_scenes';
+function migrateScenes() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS operational_activities (
+        id           TEXT PRIMARY KEY,
+        workspace_id TEXT,
+        name         TEXT NOT NULL,
+        description  TEXT,
+        created_by   TEXT,
+        created_at   INTEGER,
+        updated_at   INTEGER
+      );
+    `);
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS activity_asset_placements (
+        id                    TEXT PRIMARY KEY,
+        activity_id           TEXT NOT NULL,
+        device_id             TEXT,
+        wall_id               TEXT,
+        content_id            TEXT,
+        remote_url            TEXT,
+        playlist_id           TEXT,
+        fit_mode              TEXT DEFAULT 'contain',
+        rotation              TEXT DEFAULT '0',
+        sort_order            INTEGER DEFAULT 0,
+        custom_properties_json TEXT,
+        FOREIGN KEY(activity_id) REFERENCES operational_activities(id) ON DELETE CASCADE
+      );
+    `);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_activity_placements_activity ON activity_asset_placements(activity_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_operational_activities_workspace ON operational_activities(workspace_id)');
+  } catch (e) {
+    console.error('[mc_scenes] migration failed:', e.message);
+  }
+  try { db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(MC_SCENES_ID); }
+  catch (e) { /* stamp best-effort */ }
+}
+
+migrateScenes();
+
 // Prune old telemetry (keep last 24h worth at 15s intervals = ~5760, cap at 6000)
 function pruneTelemetry(deviceId) {
   db.prepare(`

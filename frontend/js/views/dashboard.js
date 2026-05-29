@@ -289,7 +289,13 @@ export function render(container) {
     </div>
     <div id="selectionBar" style="display:none;align-items:center;gap:10px;padding:8px 12px;margin-bottom:12px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px">
       <span id="selectionCount" style="font-weight:500;font-size:13px"></span>
-      <button class="btn btn-primary btn-sm" id="createWallBtn">
+      <button class="btn btn-primary btn-sm" id="broadcastBtn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px">
+          <path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1"/>
+        </svg>
+        <span id="broadcastBtnLabel">Send to selection</span>
+      </button>
+      <button class="btn btn-sm" id="createWallBtn">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px">
           <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="12" y1="3" x2="12" y2="21"/>
         </svg>
@@ -403,6 +409,7 @@ export function render(container) {
   });
 
   document.getElementById('createWallBtn').addEventListener('click', () => createWallFromSelection());
+  document.getElementById('broadcastBtn').addEventListener('click', () => openBroadcastPicker());
 
   // Load everything
   loadDashboard();
@@ -484,6 +491,10 @@ function refreshSelectionBar() {
   const btn = document.getElementById('createWallBtn');
   btn.disabled = n < 2;
   btn.title = n < 2 ? 'Select at least 2 displays to create a video wall' : '';
+  // Broadcast works with any 1+ selection - keep its label in sync with the
+  // count so "Send to N" reads accurately ("Send to 1 display" / "Send to 3").
+  const bLabel = document.getElementById('broadcastBtnLabel');
+  if (bLabel) bLabel.textContent = `Send to ${n} ${n === 1 ? 'display' : 'displays'}`;
 }
 
 // Pick a sensible default grid for n devices: prefer near-square layouts,
@@ -500,6 +511,198 @@ function defaultGridForCount(n) {
   const cols = Math.ceil(Math.sqrt(n));
   const rows = Math.ceil(n / cols);
   return { cols, rows };
+}
+
+// Phase 3: fast broadcast. Opens a small picker so the operator can pick a
+// piece of content (or paste a URL) plus a fit_mode, then pushes it to every
+// selected display in ~2 taps. Reuses the existing "push content to a device"
+// path via the server's /broadcast endpoint (which fans out the same way the
+// per-device assignment path does). The server gates a workspace-wide blast
+// behind a 409 { code:'CONFIRM_ALL_REQUIRED', count } envelope, which
+// api.broadcast() surfaces (rather than throwing); we then prompt and retry
+// with confirm_all:true.
+const VALID_FIT_MODES = ['cover', 'contain', 'fill', 'none', 'scale-down'];
+
+async function openBroadcastPicker() {
+  const ids = [...selectedDeviceIds];
+  if (ids.length === 0) { showToast('Select at least 1 display', 'error'); return; }
+
+  const modal = document.createElement('div');
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:1000';
+  modal.innerHTML = `
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:24px;max-width:560px;width:95vw;max-height:85vh;display:flex;flex-direction:column">
+      <h3 style="margin-bottom:4px;color:var(--text-primary)">Send to ${ids.length} ${ids.length === 1 ? 'display' : 'displays'}</h3>
+      <p style="margin:0 0 16px;font-size:12px;color:var(--text-muted)">Pick content from your library, or paste a URL to show right now.</p>
+      <div style="display:flex;gap:8px;margin-bottom:12px">
+        <button class="btn btn-primary btn-sm bc-tab active" data-tab="content">Library</button>
+        <button class="btn btn-secondary btn-sm bc-tab" data-tab="url">URL</button>
+      </div>
+      <div id="bcContentPane">
+        <input type="text" id="bcSearch" class="input" placeholder="Search content..." style="width:100%;margin-bottom:12px">
+        <div id="bcList" style="overflow-y:auto;min-height:180px;max-height:320px;border:1px solid var(--border);border-radius:var(--radius)"></div>
+      </div>
+      <div id="bcUrlPane" style="display:none">
+        <input type="text" id="bcUrl" class="input" placeholder="https://example.com/page-or-media" style="width:100%;margin-bottom:12px">
+        <p style="font-size:12px;color:var(--text-muted);margin:0 0 4px">The displays will load this URL immediately.</p>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:16px">
+        <label style="font-size:13px;color:var(--text-secondary)">Fit</label>
+        <select id="bcFitMode" class="input" style="width:160px;padding:4px 8px;font-size:13px;background:var(--bg-input)">
+          <option value="">Default</option>
+          <option value="cover">Cover (fill, crop)</option>
+          <option value="contain">Contain (letterbox)</option>
+          <option value="fill">Fill (stretch)</option>
+          <option value="none">None (actual size)</option>
+          <option value="scale-down">Scale down</option>
+        </select>
+        <div style="flex:1"></div>
+        <button class="btn btn-secondary" id="bcCancel">Cancel</button>
+        <button class="btn btn-primary" id="bcSend" disabled>Send</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  let activeTab = 'content';
+  let selectedContentId = null;
+  let allContent = [];
+
+  const listEl = modal.querySelector('#bcList');
+  const sendBtn = modal.querySelector('#bcSend');
+  const urlInput = modal.querySelector('#bcUrl');
+
+  function close() { modal.remove(); }
+  modal.querySelector('#bcCancel').addEventListener('click', close);
+  modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+
+  function refreshSendEnabled() {
+    if (activeTab === 'url') {
+      sendBtn.disabled = !urlInput.value.trim();
+    } else {
+      sendBtn.disabled = !selectedContentId;
+    }
+  }
+
+  try {
+    allContent = await api.getContent();
+  } catch (err) {
+    listEl.innerHTML = `<div style="color:var(--text-muted);padding:20px;text-align:center">Couldn't load content: ${esc(err.message)}</div>`;
+  }
+
+  function renderContentList() {
+    const search = (modal.querySelector('#bcSearch')?.value || '').toLowerCase();
+    const filtered = (allContent || []).filter(c => (c.filename || c.name || '').toLowerCase().includes(search));
+    if (!filtered.length) {
+      listEl.innerHTML = `<div style="color:var(--text-muted);padding:20px;text-align:center">No content found</div>`;
+      return;
+    }
+    listEl.innerHTML = filtered.map(c => {
+      const name = c.filename || c.name || 'Untitled';
+      const thumb = c.thumbnail_path ? `/api/content/${esc(c.id)}/thumbnail` : null;
+      return `
+        <div class="bc-row" data-id="${esc(c.id)}" style="display:flex;align-items:center;gap:12px;padding:10px;cursor:pointer;border-bottom:1px solid var(--border)">
+          <div style="width:40px;height:30px;border-radius:4px;overflow:hidden;background:var(--bg-input);flex-shrink:0;display:flex;align-items:center;justify-content:center">
+            ${thumb ? `<img src="${thumb}" style="width:100%;height:100%;object-fit:cover">` : '<div style="color:var(--text-muted);opacity:0.4"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg></div>'}
+          </div>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(name)}</div>
+            <div style="font-size:11px;color:var(--text-muted)">${esc(c.mime_type || '')}</div>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    listEl.querySelectorAll('.bc-row').forEach(row => {
+      row.addEventListener('click', () => {
+        selectedContentId = row.dataset.id;
+        listEl.querySelectorAll('.bc-row').forEach(r => { r.style.background = ''; });
+        row.style.background = 'var(--bg-secondary)';
+        refreshSendEnabled();
+      });
+    });
+  }
+
+  modal.querySelectorAll('.bc-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      activeTab = btn.dataset.tab;
+      modal.querySelectorAll('.bc-tab').forEach(b => {
+        b.classList.toggle('btn-primary', b.dataset.tab === activeTab);
+        b.classList.toggle('btn-secondary', b.dataset.tab !== activeTab);
+        b.classList.toggle('active', b.dataset.tab === activeTab);
+      });
+      modal.querySelector('#bcContentPane').style.display = activeTab === 'content' ? '' : 'none';
+      modal.querySelector('#bcUrlPane').style.display = activeTab === 'url' ? '' : 'none';
+      refreshSendEnabled();
+    });
+  });
+
+  modal.querySelector('#bcSearch').addEventListener('input', renderContentList);
+  urlInput.addEventListener('input', refreshSendEnabled);
+
+  sendBtn.addEventListener('click', async () => {
+    const fitRaw = modal.querySelector('#bcFitMode').value;
+    const fit_mode = VALID_FIT_MODES.includes(fitRaw) ? fitRaw : undefined;
+    const payload = { device_ids: ids };
+    if (fit_mode) payload.fit_mode = fit_mode;
+    if (activeTab === 'url') {
+      const url = urlInput.value.trim();
+      if (!url) return;
+      payload.url = url;
+    } else {
+      if (!selectedContentId) return;
+      payload.content_id = selectedContentId;
+    }
+
+    sendBtn.disabled = true;
+    sendBtn.textContent = 'Sending...';
+    try {
+      const ok = await doBroadcast(payload);
+      if (ok) close();
+      else { sendBtn.disabled = false; sendBtn.textContent = 'Send'; }
+    } catch (err) {
+      showToast(err.message, 'error');
+      sendBtn.disabled = false;
+      sendBtn.textContent = 'Send';
+    }
+  });
+
+  renderContentList();
+}
+
+// Executes a broadcast and handles the confirm-all gate. Returns true when the
+// broadcast completed (success path) so the caller can close its modal, false
+// when the operator declined the all-displays confirmation.
+async function doBroadcast(payload) {
+  const result = await api.broadcast(payload);
+  if (result && result.code === 'CONFIRM_ALL_REQUIRED') {
+    const count = result.count;
+    if (!confirm(`Broadcast to ALL ${count} display${count === 1 ? '' : 's'} in this workspace?`)) {
+      return false;
+    }
+    const confirmed = await api.broadcast({ ...payload, confirm_all: true });
+    if (confirmed && confirmed.code === 'CONFIRM_ALL_REQUIRED') {
+      // Server still wants confirmation despite the flag - surface as an error
+      // rather than looping a confirm dialog.
+      showToast('Broadcast not confirmed', 'error');
+      return false;
+    }
+    reportBroadcast(confirmed);
+    return true;
+  }
+  reportBroadcast(result);
+  return true;
+}
+
+function reportBroadcast(result) {
+  const n = result && (result.devices_updated ?? result.sent ?? result.count);
+  const offline = result && result.offline;
+  if (n != null && offline) {
+    showToast(`Sent to ${n} display${n === 1 ? '' : 's'} (${offline} offline)`, 'warning');
+  } else if (n != null) {
+    showToast(`Sent to ${n} display${n === 1 ? '' : 's'}`, 'success');
+  } else {
+    showToast('Broadcast sent', 'success');
+  }
 }
 
 async function createWallFromSelection() {
