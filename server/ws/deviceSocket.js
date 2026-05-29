@@ -607,6 +607,111 @@ module.exports = function setupDeviceSocket(io) {
       }
     });
 
+    // Phase 2 (display self-report): the player reports its rendering
+    // geometry/capabilities so the dashboard can show real per-display info
+    // (CSS viewport, screen res, DPR, refresh rate, orientation) and so admins
+    // can spot a misreporting panel. Trust ONLY the server-stamped
+    // currentDeviceId — never the client-supplied id — for the row update.
+    // Every DB write is wrapped in try/catch so a malformed payload can't crash
+    // the device namespace (same hardening as device:heartbeat).
+    socket.on('display:viewport', (data) => {
+      try {
+        if (!requireDeviceAuth()) return;
+        const deviceId = currentDeviceId;
+        const {
+          css_w, css_h, screen_w, screen_h,
+          device_pixel_ratio, refresh_hz, orientation, capabilities,
+        } = data || {};
+
+        // Parent existence check: the device row may have been deleted
+        // server-side between register and this event. Bail quietly.
+        const exists = db.prepare('SELECT 1 FROM devices WHERE id = ?').get(deviceId);
+        if (!exists) return;
+
+        // Coerce to safe types. Anything non-finite becomes null rather than
+        // poisoning the row. capabilities is stringified defensively.
+        const toInt = (v) => { const n = Number(v); return Number.isFinite(n) ? Math.round(n) : null; };
+        const toReal = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+        let capsJson = '{}';
+        try { capsJson = JSON.stringify(capabilities || {}); } catch (_) { capsJson = '{}'; }
+
+        const cssW = toInt(css_w);
+        const cssH = toInt(css_h);
+        const dpr = toReal(device_pixel_ratio);
+        const hz = toInt(refresh_hz);
+        const nowSec = Math.floor(Date.now() / 1000);
+
+        try {
+          db.prepare(`
+            UPDATE devices SET
+              viewport_css_w = ?, viewport_css_h = ?,
+              device_pixel_ratio = ?, refresh_hz = ?,
+              capabilities_json = ?, last_viewport_at = ?
+            WHERE id = ?
+          `).run(cssW, cssH, dpr, hz, capsJson, nowSec, deviceId);
+        } catch (e) {
+          console.warn(`display:viewport UPDATE devices failed for ${deviceId}: ${e.message}`);
+        }
+
+        // orientation + screen_width/screen_height live on the base schema /
+        // earlier migrations. Only write them when the device supplied a value.
+        // screen_width/height are also fed by device:register; respect the
+        // admin auto_detect_resolution pin so a self-report can't clobber a
+        // manually-set wall geometry.
+        try {
+          if (orientation === 'landscape' || orientation === 'portrait') {
+            db.prepare('UPDATE devices SET orientation = ? WHERE id = ?').run(orientation, deviceId);
+          }
+        } catch (e) {
+          console.warn(`display:viewport orientation update failed for ${deviceId}: ${e.message}`);
+        }
+
+        try {
+          const sw = toInt(screen_w);
+          const sh = toInt(screen_h);
+          if (sw != null || sh != null) {
+            const fresh = db.prepare('SELECT auto_detect_resolution FROM devices WHERE id = ?').get(deviceId);
+            const autoDetect = !fresh || fresh.auto_detect_resolution !== 0;
+            if (autoDetect) {
+              if (sw != null) db.prepare('UPDATE devices SET screen_width = ? WHERE id = ?').run(sw, deviceId);
+              if (sh != null) db.prepare('UPDATE devices SET screen_height = ? WHERE id = ?').run(sh, deviceId);
+            }
+          }
+        } catch (e) {
+          console.warn(`display:viewport screen dims update failed for ${deviceId}: ${e.message}`);
+        }
+
+        // Notify the dashboard (workspace-scoped) so it can live-update the
+        // per-display panel. Reuse the existing dashboard:device-status event
+        // and helper used by heartbeat/register, adding viewport fields.
+        try {
+          const row = db.prepare(
+            'SELECT screen_width, screen_height, orientation FROM devices WHERE id = ?'
+          ).get(deviceId) || {};
+          emitToDeviceWorkspace(dashboardNs, deviceId, 'dashboard:device-status', {
+            device_id: deviceId,
+            status: 'online',
+            viewport: {
+              css_w: cssW,
+              css_h: cssH,
+              screen_w: row.screen_width ?? null,
+              screen_h: row.screen_height ?? null,
+              device_pixel_ratio: dpr,
+              refresh_hz: hz,
+              orientation: row.orientation ?? (orientation || null),
+              capabilities: capabilities || {},
+              last_viewport_at: nowSec,
+            },
+          });
+        } catch (e) {
+          console.warn(`display:viewport dashboard emit failed for ${deviceId}: ${e.message}`);
+        }
+      } catch (e) {
+        // Catch-all so a malformed payload never escapes the event loop.
+        console.error(`display:viewport handler crashed: ${e.message}`, e.stack);
+      }
+    });
+
     // Catch-all for any uncaught throw on this socket so the device
     // namespace stays alive even if a future handler is buggy. Node would
     // otherwise terminate the entire process on an emit-from-handler throw.

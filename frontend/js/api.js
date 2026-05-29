@@ -31,6 +31,7 @@ export const api = {
   getDevice: (id) => request(`/devices/${id}`),
   updateDevice: (id, data) => request(`/devices/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteDevice: (id) => request(`/devices/${id}`, { method: 'DELETE' }),
+  identify: (deviceId) => request(`/devices/${deviceId}/identify`, { method: 'POST' }),
 
   // Provisioning
   pairDevice: (pairing_code, name) => request('/provision/pair', {

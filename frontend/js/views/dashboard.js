@@ -50,6 +50,26 @@ function formatBytes(mb) {
   return `${mb} MB`;
 }
 
+// Build a compact "1920x1080 - landscape - @2x" descriptor from whatever
+// viewport/screen telemetry a display has reported. Prefers CSS viewport
+// dimensions (what the player actually renders into), falling back to the raw
+// screen resolution. Returns '' when nothing useful is available so the meta
+// item can be omitted entirely.
+function formatDisplayInfo(device) {
+  const w = device.viewport_css_w || device.screen_width;
+  const h = device.viewport_css_h || device.screen_height;
+  const parts = [];
+  if (w && h) parts.push(`${w}x${h}`);
+  if (device.orientation) parts.push(device.orientation);
+  const dpr = device.device_pixel_ratio;
+  if (dpr && Number(dpr) > 0 && Number(dpr) !== 1) {
+    // Trim trailing zeros: 2 -> "@2x", 1.5 -> "@1.5x"
+    const n = Number(dpr);
+    parts.push(`@${Number.isInteger(n) ? n : n.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')}x`);
+  }
+  return parts.join(' - ');
+}
+
 function renderProgressFor(deviceId) {
   const state = playbackByDevice.get(deviceId);
   document.querySelectorAll(`#progress-${CSS.escape(deviceId)}`).forEach(el => {
@@ -83,6 +103,7 @@ function renderDeviceCard(device) {
     : null;
 
   const checked = selectedDeviceIds.has(device.id);
+  const displayInfo = formatDisplayInfo(device);
   return `
     <div class="device-card${checked ? ' selected' : ''}" draggable="true" data-device-id="${device.id}" data-device-name="${esc(device.name)}" onclick="window.location.hash='/device/${device.id}'">
       <label class="device-card-select" title="Select for wall" onclick="event.stopPropagation()">
@@ -128,6 +149,13 @@ function renderDeviceCard(device) {
             </svg>
             ${formatTimeAgo(device.last_heartbeat)}
           </div>
+          ${displayInfo ? `
+          <div class="meta-item" title="${esc(displayInfo)}">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+            </svg>
+            ${esc(displayInfo)}
+          </div>` : ''}
           ${device.battery_level !== null && device.battery_level !== undefined ? `
           <div class="meta-item">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -152,6 +180,15 @@ function renderDeviceCard(device) {
             ${formatBytes(device.storage_free_mb)} free
           </div>` : ''}
         </div>
+        ${device.status !== 'provisioning' ? `
+        <div class="device-card-actions" style="margin-top:8px">
+          <button class="btn btn-sm device-identify-btn" data-identify-id="${device.id}" data-identify-name="${esc(device.name)}" title="Flash a marker on this display" style="padding:4px 10px;font-size:12px" onclick="event.stopPropagation()">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px">
+              <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+            Identify
+          </button>
+        </div>` : ''}
       </div>
     </div>
   `;
@@ -337,6 +374,25 @@ export function render(container) {
     if (cb.checked) selectedDeviceIds.add(id); else selectedDeviceIds.delete(id);
     cb.closest('.device-card')?.classList.toggle('selected', cb.checked);
     refreshSelectionBar();
+  });
+
+  // "Identify" flashes a marker on the chosen physical display so an operator
+  // can match a card to a screen on the wall. Delegated on the container so it
+  // keeps working across loadDashboard() re-renders of #groupedDevices.
+  container.addEventListener('click', async (ev) => {
+    const btn = ev.target.closest?.('.device-identify-btn');
+    if (!btn) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const id = btn.dataset.identifyId;
+    const name = btn.dataset.identifyName || id;
+    if (!id) return;
+    showToast(`Identifying ${name}...`, 'info');
+    try {
+      await api.identify(id);
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
   });
 
   document.getElementById('clearSelectionBtn').addEventListener('click', () => {

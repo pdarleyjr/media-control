@@ -623,6 +623,41 @@ function backfillPlaylistItemsZoneId() {
 
 backfillPlaylistItemsZoneId();
 
+// Phase 2 (display self-report): add viewport / DPR / refresh / capabilities
+// columns to devices so displays can auto-report their rendering geometry.
+// Idempotent in two layers: (1) skip entirely once stamped in
+// schema_migrations, and (2) each ADD COLUMN is wrapped in its own try/catch
+// so a partially-applied run (or a column that already exists from a previous
+// hand-applied ALTER) can't throw and crash boot. Mirrors the additive
+// ALTER-in-a-loop pattern used by the inline `migrations` array above.
+const MC_DISPLAY_VIEWPORT_ID = 'mc_display_viewport';
+function migrateDisplayViewportColumns() {
+  const already = db.prepare('SELECT 1 FROM schema_migrations WHERE id = ?').get(MC_DISPLAY_VIEWPORT_ID);
+  if (already) return;
+
+  const cols = db.prepare('PRAGMA table_info(devices)').all().map(c => c.name);
+  const adds = [
+    ['viewport_css_w', 'ALTER TABLE devices ADD COLUMN viewport_css_w INTEGER'],
+    ['viewport_css_h', 'ALTER TABLE devices ADD COLUMN viewport_css_h INTEGER'],
+    ['device_pixel_ratio', 'ALTER TABLE devices ADD COLUMN device_pixel_ratio REAL'],
+    ['refresh_hz', 'ALTER TABLE devices ADD COLUMN refresh_hz INTEGER'],
+    ['capabilities_json', 'ALTER TABLE devices ADD COLUMN capabilities_json TEXT'],
+    ['last_viewport_at', 'ALTER TABLE devices ADD COLUMN last_viewport_at INTEGER'],
+    ['location_label', 'ALTER TABLE devices ADD COLUMN location_label TEXT'],
+  ];
+  for (const [name, sql] of adds) {
+    if (cols.includes(name)) continue; // already present — nothing to do
+    try { db.exec(sql); } catch (e) { /* already exists / benign race */ }
+  }
+
+  try {
+    db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(MC_DISPLAY_VIEWPORT_ID);
+    console.log('mc_display_viewport migration: devices viewport columns ensured.');
+  } catch (e) { /* schema_migrations stamp best-effort */ }
+}
+
+migrateDisplayViewportColumns();
+
 // Prune old telemetry (keep last 24h worth at 15s intervals = ~5760, cap at 6000)
 function pruneTelemetry(deviceId) {
   db.prepare(`

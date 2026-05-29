@@ -202,6 +202,30 @@ router.put('/:id', (req, res) => {
   res.json(updated);
 });
 
+// Identify device: flash an on-screen marker on the chosen display so an admin
+// can physically locate which panel is which. Gated identically to PUT/DELETE
+// (workspace write access via checkDeviceOwnership). Reaches the device the same
+// way the PUT/DELETE handlers do — req.app.get('io') -> /device namespace.
+router.post('/:id/identify', (req, res) => {
+  const device = checkDeviceOwnership(req, res);
+  if (!device) return;
+
+  // Label the player renders on the flash marker: device name, or a short id
+  // suffix as a fallback when unnamed.
+  const label = (device.name && String(device.name).trim())
+    ? device.name
+    : String(device.id).slice(0, 8);
+
+  const io = req.app.get('io');
+  if (io) {
+    try {
+      io.of('/device').to(req.params.id).emit('device:identify', { label });
+    } catch (e) { /* socket layer best-effort; route still succeeds */ }
+  }
+
+  res.json({ success: true, device_id: req.params.id, label });
+});
+
 // Delete device
 router.delete('/:id', (req, res) => {
   const device = checkDeviceOwnership(req, res);

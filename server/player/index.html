@@ -623,6 +623,84 @@
 
     document.getElementById('connectBtn').onclick = connectBtnFunc;
 
+    // ==================== Display Viewport Reporting ====================
+    // Phase 2: displays self-report their viewport/resolution/orientation/
+    // capabilities so the dashboard can show per-display info. Emitted once
+    // after registration and again (debounced) on resize / orientationchange.
+    function getDisplayViewport() {
+      let orientation;
+      try {
+        orientation = (screen.orientation && screen.orientation.type) ||
+          (window.matchMedia('(orientation:portrait)').matches ? 'portrait' : 'landscape');
+      } catch (e) {
+        orientation = (window.innerHeight > window.innerWidth) ? 'portrait' : 'landscape';
+      }
+      return {
+        css_w: window.innerWidth,
+        css_h: window.innerHeight,
+        screen_w: (screen.width || 0),
+        screen_h: (screen.height || 0),
+        device_pixel_ratio: (window.devicePixelRatio || 1),
+        orientation: orientation,
+        capabilities: {
+          webrtc: !!window.RTCPeerConnection,
+          video: true,
+        },
+      };
+    }
+
+    function emitDisplayViewport() {
+      try {
+        if (!socket || !socket.connected) return;
+        const payload = getDisplayViewport();
+        if (config.deviceId) payload.device_id = config.deviceId;
+        socket.emit('display:viewport', payload);
+      } catch (e) { /* reporting is best-effort; never break playback */ }
+    }
+
+    // Debounced re-emit on viewport changes so we don't spam the server.
+    let _viewportDebounceTimer = null;
+    function scheduleViewportReport() {
+      if (_viewportDebounceTimer) clearTimeout(_viewportDebounceTimer);
+      _viewportDebounceTimer = setTimeout(() => {
+        _viewportDebounceTimer = null;
+        emitDisplayViewport();
+      }, 500);
+    }
+    window.addEventListener('resize', scheduleViewportReport);
+    window.addEventListener('orientationchange', scheduleViewportReport);
+
+    // ==================== Display Identify Overlay ====================
+    // Phase 2: the dashboard's "Identify" action triggers a fullscreen, high-
+    // contrast marker on the chosen display for ~5 seconds. Rendered as a
+    // dynamically-created overlay that sits above all content but does NOT
+    // touch the underlying playback (no teardown, no mute changes).
+    function showIdentifyOverlay(label) {
+      try {
+        const existing = document.getElementById('identifyOverlay');
+        if (existing) existing.remove();
+        const text = (label != null && String(label).trim()) ||
+          config.deviceName || 'Display';
+        const ov = document.createElement('div');
+        ov.id = 'identifyOverlay';
+        ov.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:flex;' +
+          'align-items:center;justify-content:center;text-align:center;' +
+          'background:rgba(0,0,0,0.78);color:#fff;font-family:-apple-system,sans-serif;' +
+          'pointer-events:none;padding:5vw;box-sizing:border-box';
+        const span = document.createElement('div');
+        span.style.cssText = 'font-size:14vw;font-weight:800;line-height:1.05;' +
+          'letter-spacing:1px;text-shadow:0 4px 24px rgba(0,0,0,0.9);' +
+          'word-break:break-word;max-width:100%';
+        span.textContent = text;
+        ov.appendChild(span);
+        document.body.appendChild(ov);
+        setTimeout(() => {
+          const el = document.getElementById('identifyOverlay');
+          if (el) el.remove();
+        }, 5000);
+      } catch (e) { /* identify is best-effort; never break playback */ }
+    }
+
     // ==================== Socket Connection ====================
     function connect(serverUrl) {
       if (socket) { socket.disconnect(); socket = null; }
@@ -677,6 +755,10 @@
         startHeartbeat();
         startPlaylistRefresh();
         startVersionCheck();
+
+        // Phase 2: report this display's viewport/resolution/orientation/
+        // capabilities so the dashboard can show per-display info.
+        emitDisplayViewport();
       });
 
       socket.on('device:paired', (data) => {
@@ -879,6 +961,13 @@
         if (data.type === 'launch') { document.getElementById('screenOffOverlay')?.remove(); }
         if (data.type === 'screen_off') toggleScreenOff();
         if (data.type === 'screen_on') { document.getElementById('screenOffOverlay')?.remove(); }
+      });
+
+      // Phase 2: dashboard "Identify" action — flash a big high-contrast
+      // marker on this display for ~5s. Does not disturb playback underneath.
+      socket.on('device:identify', (data) => {
+        console.log('Identify requested:', data?.label || config.deviceName || '');
+        showIdentifyOverlay(data && data.label);
       });
     }
 

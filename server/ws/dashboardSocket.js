@@ -92,6 +92,25 @@ module.exports = function setupDashboardSocket(io) {
       console.log(`Remote session stopped for device ${device_id}`);
     });
 
+    // Phase 2 (display self-report): flash an on-screen marker on a chosen
+    // display so an admin can physically identify which panel is which.
+    // Same write-tier gate + device-room emit pattern as dashboard:remote-*.
+    // The label defaults to the device name (or a short id suffix) so the
+    // player can render a human-readable badge.
+    socket.on('dashboard:identify', (data) => {
+      const { device_id } = data || {};
+      if (!canActOnDevice(socket, device_id, 'write')) return;
+      let label = null;
+      try {
+        const row = db.prepare('SELECT name FROM devices WHERE id = ?').get(device_id);
+        label = (row && row.name) ? row.name : String(device_id).slice(0, 8);
+      } catch (e) {
+        label = String(device_id).slice(0, 8);
+      }
+      deviceNs.to(device_id).emit('device:identify', { label });
+      console.log(`Identify flashed on device ${device_id} (label: ${label})`);
+    });
+
     socket.on('dashboard:device-command', (data, ack) => {
       const { device_id, type, payload } = data;
       if (!canActOnDevice(socket, device_id, 'write')) {
