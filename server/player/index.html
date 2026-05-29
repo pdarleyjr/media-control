@@ -701,6 +701,179 @@
       } catch (e) { /* identify is best-effort; never break playback */ }
     }
 
+    // ==================== Smartboard (Whiteboard) Overlay ====================
+    // Phase 6: the dashboard "Smartboard" action drives a fullscreen drawing
+    // overlay on this display. The operator draws on a tablet; normalized
+    // 0..1 strokes arrive via device:wb-* events and are rendered here on a
+    // <canvas> that sits above all content. Like the identify overlay, this is
+    // purely additive: it never stops/tears down the underlying playback, it
+    // just overlays on top and is removed on stop. The display only renders —
+    // it does not capture input (pointer-events:none on the overlay).
+    const _wb = {
+      overlay: null,   // wrapper element
+      canvas: null,    // drawing canvas
+      ctx: null,       // 2d context
+      strokes: [],     // in-memory list of { points:[{x,y}], color, size, tool }
+      cssW: 0,         // canvas CSS pixel width
+      cssH: 0,         // canvas CSS pixel height
+      resizeHandler: null,
+    };
+
+    // Size (or re-size) the whiteboard canvas to the current window, accounting
+    // for devicePixelRatio so lines stay crisp on hi-dpi displays.
+    function wbFitCanvas() {
+      try {
+        if (!_wb.canvas || !_wb.ctx) return;
+        const dpr = window.devicePixelRatio || 1;
+        const cssW = window.innerWidth;
+        const cssH = window.innerHeight;
+        _wb.cssW = cssW;
+        _wb.cssH = cssH;
+        _wb.canvas.style.width = cssW + 'px';
+        _wb.canvas.style.height = cssH + 'px';
+        _wb.canvas.width = Math.max(1, Math.round(cssW * dpr));
+        _wb.canvas.height = Math.max(1, Math.round(cssH * dpr));
+        // Draw in CSS pixel space; the DPR transform handles the scale-up.
+        _wb.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        _wb.ctx.lineJoin = 'round';
+        _wb.ctx.lineCap = 'round';
+      } catch (e) { /* never break playback */ }
+    }
+
+    // Render a single stroke. Normalized points {x,y} in 0..1 are mapped to
+    // CSS pixels. Pen = solid; highlighter = translucent + thicker; eraser =
+    // destination-out (clears what it touches). Smoothed via quadratic
+    // midpoints so fast strokes don't look like polygons.
+    function wbDrawStroke(stroke) {
+      try {
+        if (!_wb.ctx || !stroke || !Array.isArray(stroke.points) || stroke.points.length === 0) return;
+        const ctx = _wb.ctx;
+        const w = _wb.cssW || window.innerWidth;
+        const h = _wb.cssH || window.innerHeight;
+        const tool = stroke.tool === 'highlighter' || stroke.tool === 'eraser' ? stroke.tool : 'pen';
+        const baseSize = Number(stroke.size) > 0 ? Number(stroke.size) : 4;
+        const color = typeof stroke.color === 'string' && stroke.color ? stroke.color : '#ffffff';
+
+        ctx.save();
+        if (tool === 'eraser') {
+          ctx.globalCompositeOperation = 'destination-out';
+          ctx.globalAlpha = 1;
+          ctx.strokeStyle = 'rgba(0,0,0,1)';
+          ctx.lineWidth = baseSize * 2.5;
+        } else if (tool === 'highlighter') {
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.globalAlpha = 0.35;
+          ctx.strokeStyle = color;
+          ctx.lineWidth = baseSize * 2.5;
+        } else {
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.globalAlpha = 1;
+          ctx.strokeStyle = color;
+          ctx.lineWidth = baseSize;
+        }
+
+        const pts = stroke.points;
+        const px = (p) => (Number(p.x) || 0) * w;
+        const py = (p) => (Number(p.y) || 0) * h;
+
+        if (pts.length === 1) {
+          // A single tap → draw a dot of the right thickness.
+          const r = Math.max(0.5, ctx.lineWidth / 2);
+          ctx.beginPath();
+          ctx.fillStyle = (tool === 'eraser') ? 'rgba(0,0,0,1)' : color;
+          ctx.arc(px(pts[0]), py(pts[0]), r, 0, Math.PI * 2);
+          ctx.fill();
+        } else {
+          ctx.beginPath();
+          ctx.moveTo(px(pts[0]), py(pts[0]));
+          // Quadratic curve through midpoints for smoothing.
+          for (let i = 1; i < pts.length - 1; i++) {
+            const cx = px(pts[i]);
+            const cy = py(pts[i]);
+            const mx = (cx + px(pts[i + 1])) / 2;
+            const my = (cy + py(pts[i + 1])) / 2;
+            ctx.quadraticCurveTo(cx, cy, mx, my);
+          }
+          // Final segment to the last point.
+          ctx.lineTo(px(pts[pts.length - 1]), py(pts[pts.length - 1]));
+          ctx.stroke();
+        }
+        ctx.restore();
+      } catch (e) { /* never break playback */ }
+    }
+
+    // Clear the canvas and replay every stroke in order (used after resize/undo).
+    function wbRedrawAll() {
+      try {
+        if (!_wb.ctx || !_wb.canvas) return;
+        _wb.ctx.save();
+        _wb.ctx.setTransform(1, 0, 0, 1, 0, 0);
+        _wb.ctx.clearRect(0, 0, _wb.canvas.width, _wb.canvas.height);
+        _wb.ctx.restore();
+        for (let i = 0; i < _wb.strokes.length; i++) {
+          wbDrawStroke(_wb.strokes[i]);
+        }
+      } catch (e) { /* never break playback */ }
+    }
+
+    // Create the fullscreen whiteboard overlay (idempotent). Does NOT disturb
+    // the underlying playback — it overlays on top.
+    function wbShow() {
+      try {
+        if (_wb.overlay) return; // already shown
+        const ov = document.createElement('div');
+        ov.id = 'smartboardOverlay';
+        ov.style.cssText = 'position:fixed;inset:0;z-index:2147483646;' +
+          'background:#10151c;pointer-events:none;overflow:hidden';
+
+        const canvas = document.createElement('canvas');
+        canvas.id = 'smartboardCanvas';
+        canvas.style.cssText = 'position:absolute;top:0;left:0;' +
+          'pointer-events:none;display:block';
+
+        const label = document.createElement('div');
+        label.id = 'smartboardLabel';
+        label.style.cssText = 'position:absolute;top:14px;left:18px;' +
+          'font-family:-apple-system,sans-serif;font-size:14px;font-weight:700;' +
+          'letter-spacing:0.5px;color:rgba(255,255,255,0.55);' +
+          'pointer-events:none;user-select:none;text-shadow:0 1px 4px rgba(0,0,0,0.6)';
+        label.textContent = 'Smartboard';
+
+        ov.appendChild(canvas);
+        ov.appendChild(label);
+        document.body.appendChild(ov);
+
+        _wb.overlay = ov;
+        _wb.canvas = canvas;
+        _wb.ctx = canvas.getContext('2d');
+        _wb.strokes = [];
+        wbFitCanvas();
+
+        _wb.resizeHandler = function () {
+          wbFitCanvas();
+          wbRedrawAll();
+        };
+        window.addEventListener('resize', _wb.resizeHandler);
+        window.addEventListener('orientationchange', _wb.resizeHandler);
+      } catch (e) { /* never break playback */ }
+    }
+
+    // Tear down the whiteboard overlay and revert to normal playback.
+    function wbStop() {
+      try {
+        if (_wb.resizeHandler) {
+          window.removeEventListener('resize', _wb.resizeHandler);
+          window.removeEventListener('orientationchange', _wb.resizeHandler);
+          _wb.resizeHandler = null;
+        }
+        if (_wb.overlay) _wb.overlay.remove();
+        _wb.overlay = null;
+        _wb.canvas = null;
+        _wb.ctx = null;
+        _wb.strokes = [];
+      } catch (e) { /* never break playback */ }
+    }
+
     // ==================== Socket Connection ====================
     function connect(serverUrl) {
       if (socket) { socket.disconnect(); socket = null; }
@@ -968,6 +1141,50 @@
       socket.on('device:identify', (data) => {
         console.log('Identify requested:', data?.label || config.deviceName || '');
         showIdentifyOverlay(data && data.label);
+      });
+
+      // Phase 6: Smartboard — the dashboard relays normalized 0..1 drawing
+      // events here. We render them on a fullscreen overlay above playback.
+      // Every handler is wrapped defensively: a bad payload must never crash
+      // the player (playback continues underneath regardless).
+      socket.on('device:wb-show', () => {
+        try {
+          console.log('Smartboard: show');
+          wbShow();
+        } catch (e) { /* never break playback */ }
+      });
+
+      socket.on('device:wb-stroke', (data) => {
+        try {
+          if (!_wb.overlay) wbShow(); // tolerate a stroke before show
+          const stroke = data && data.stroke;
+          if (!stroke || !Array.isArray(stroke.points) || stroke.points.length === 0) return;
+          _wb.strokes.push(stroke);
+          wbDrawStroke(stroke);
+        } catch (e) { /* never break playback */ }
+      });
+
+      socket.on('device:wb-clear', () => {
+        try {
+          console.log('Smartboard: clear');
+          _wb.strokes = [];
+          wbRedrawAll();
+        } catch (e) { /* never break playback */ }
+      });
+
+      socket.on('device:wb-undo', () => {
+        try {
+          console.log('Smartboard: undo');
+          if (_wb.strokes.length > 0) _wb.strokes.pop();
+          wbRedrawAll();
+        } catch (e) { /* never break playback */ }
+      });
+
+      socket.on('device:wb-stop', () => {
+        try {
+          console.log('Smartboard: stop');
+          wbStop();
+        } catch (e) { /* never break playback */ }
       });
     }
 

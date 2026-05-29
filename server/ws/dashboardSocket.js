@@ -128,6 +128,44 @@ module.exports = function setupDashboardSocket(io) {
       console.log(`Identify flashed on device ${device_id} (label: ${label})`);
     });
 
+    // Phase 6 (Smartboard): relay whiteboard control/draw events from the
+    // dashboard SPA to a single display on the /device namespace. Reuses the
+    // exact write-tier gate + device-room emit pattern as dashboard:remote-* /
+    // dashboard:identify (no new namespace). Coordinates in each stroke are
+    // normalized 0..1 and are relayed verbatim; the player scales them by its
+    // overlay canvas dimensions.
+    socket.on('dashboard:wb-start', (data) => {
+      const { device_id } = data || {};
+      if (!canActOnDevice(socket, device_id, 'write')) return;
+      deviceNs.to(device_id).emit('device:wb-show', {});
+      console.log(`Whiteboard started on device ${device_id}`);
+    });
+
+    socket.on('dashboard:wb-stroke', (data) => {
+      const { device_id, stroke } = data || {};
+      if (!canActOnDevice(socket, device_id, 'write')) return;
+      deviceNs.to(device_id).emit('device:wb-stroke', { stroke });
+    });
+
+    socket.on('dashboard:wb-clear', (data) => {
+      const { device_id } = data || {};
+      if (!canActOnDevice(socket, device_id, 'write')) return;
+      deviceNs.to(device_id).emit('device:wb-clear', {});
+    });
+
+    socket.on('dashboard:wb-undo', (data) => {
+      const { device_id } = data || {};
+      if (!canActOnDevice(socket, device_id, 'write')) return;
+      deviceNs.to(device_id).emit('device:wb-undo', {});
+    });
+
+    socket.on('dashboard:wb-stop', (data) => {
+      const { device_id } = data || {};
+      if (!canActOnDevice(socket, device_id, 'write')) return;
+      deviceNs.to(device_id).emit('device:wb-stop', {});
+      console.log(`Whiteboard stopped on device ${device_id}`);
+    });
+
     socket.on('dashboard:device-command', (data, ack) => {
       const { device_id, type, payload } = data;
       if (!canActOnDevice(socket, device_id, 'write')) {

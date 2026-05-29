@@ -20,6 +20,7 @@ import * as designer from './views/designer.js';
 import * as playlists from './views/playlists.js';
 import * as scenes from './views/scenes.js';
 import * as screenShare from './views/screen-share.js';
+import * as smartboard from './views/smartboard.js';
 import * as workspaceMembers from './views/workspace-members.js';
 import { applyBranding } from './branding.js';
 import { t } from './i18n.js';
@@ -209,6 +210,35 @@ function ensureScenesNav() {
   }
 }
 
+// Phase 6: inject the "Smartboard" nav link. Like ensureScenesNav above, the
+// static nav lives in index.html; rather than touch that template we insert
+// the item at boot, right after the Screen Share link (both are "live to a
+// display" features). Idempotent — re-running is a no-op once the link exists.
+// Label is plain English (no i18n key) to match other features shipping
+// before translations are wired up.
+function ensureSmartboardNav() {
+  if (document.querySelector('.nav-link[data-view="smartboard"]')) return;
+  const ssLink = document.querySelector('.nav-link[data-view="screen-share"]');
+  const ssLi = ssLink ? ssLink.closest('li') : null;
+  const navList = ssLi ? ssLi.parentElement : document.querySelector('.nav-links');
+  if (!navList) return;
+  const li = document.createElement('li');
+  li.innerHTML = `
+    <a href="#/smartboard" class="nav-link" data-view="smartboard">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="3" y="4" width="18" height="13" rx="1"/>
+        <path d="M12 17v3"/><path d="M8 20h8"/>
+        <path d="M7 12c1.5-2 3-2 5 0s3.5 2 5 0"/>
+      </svg>
+      <span>Smartboard</span>
+    </a>`;
+  if (ssLi && ssLi.nextSibling) {
+    navList.insertBefore(li, ssLi.nextSibling);
+  } else {
+    navList.appendChild(li);
+  }
+}
+
 // Translate any element marked with data-i18n / data-i18n-placeholder /
 // data-i18n-html. Runs on init and on every language change. Used for static
 // HTML in index.html (e.g. the Add-Display modal) where t() can't be inlined
@@ -349,6 +379,7 @@ function route() {
     else if (hash === '#/widgets' && link.dataset.view === 'widgets') link.classList.add('active');
     else if ((hash.startsWith('#/wall') || hash === '#/walls') && link.dataset.view === 'walls') link.classList.add('active');
     else if (hash === '#/screen-share' && link.dataset.view === 'screen-share') link.classList.add('active');
+    else if (hash === '#/smartboard' && link.dataset.view === 'smartboard') link.classList.add('active');
     else if (hash === '#/reports' && link.dataset.view === 'reports') link.classList.add('active');
     else if (hash === '#/activity' && link.dataset.view === 'activity') link.classList.add('active');
     else if (hash === '#/designer' && link.dataset.view === 'designer') link.classList.add('active');
@@ -364,6 +395,9 @@ function route() {
   } else if (hash === '#/screen-share') {
     currentView = screenShare;
     screenShare.render(app);
+  } else if (hash === '#/smartboard') {
+    currentView = smartboard;
+    smartboard.render(app);
   } else if (hash.startsWith('#/device/')) {
     const deviceId = hash.split('#/device/')[1].split('/')[0];
     currentView = deviceDetail;
@@ -470,6 +504,7 @@ function updateSidebarUser() {
 
 // Initialize
 ensureScenesNav();
+ensureSmartboardNav();
 renderNavLabels();
 translateStaticDom();
 window.addEventListener('language-changed', () => {
