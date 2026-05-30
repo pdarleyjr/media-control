@@ -1611,3 +1611,16 @@ body {
 .mc-display-name { font-weight: 600; font-size: var(--font-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mc-display-meta { font-size: var(--font-1); color: var(--text-muted); margin-top: 2px; font-variant-numeric: tabular-nums; min-height: 14px; }
 .mc-yt-input { margin: 0; }
+
+/* Persistent room command bar (Start Class / Blank). Sticks to the bottom so
+   the "make it sane" + "eyes on me" controls are always one tap away. */
+.mc-cmdbar {
+  position: sticky; bottom: 0;
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3);
+  margin-top: var(--space-6); padding: var(--space-4) 0 var(--space-2);
+  background: linear-gradient(to top, var(--bg-primary) 72%, transparent);
+}
+.mc-blank-banner {
+  font-weight: 700; color: #fca5a5; font-size: var(--font-3);
+  letter-spacing: 0.3px;
+}

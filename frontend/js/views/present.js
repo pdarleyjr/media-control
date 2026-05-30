@@ -13,13 +13,14 @@
 // CSP-clean: addEventListener only, esc() on all dynamic text, no inline handlers.
 
 import { api } from '../api.js';
-import { esc, isPlatformAdmin } from '../utils.js';
+import { esc } from '../utils.js';
 import { showToast } from '../components/toast.js';
 import { confirmDialog } from '../components/confirm.js';
+import { sendCommand } from '../socket.js';
 
 let devices = [];
 let target = 'all';          // 'all' | <deviceId>
-let socketHandlerBound = false;
+let blanked = false;         // best-effort UI state for the Blank toggle
 
 function deviceIdsForTarget() {
   if (target === 'all') return devices.map((d) => d.id);
@@ -183,6 +184,15 @@ function render(app) {
         <h2 class="mc-section-h">Displays</h2>
         <div class="mc-display-grid">${renderDisplayGrid()}</div>
       </section>
+
+      <div class="mc-cmdbar" role="group" aria-label="Room controls">
+        <button type="button" class="mc-btn mc-btn-lg mc-btn-primary" data-cmd="start">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          Start Class
+        </button>
+        <button type="button" class="mc-btn mc-btn-lg mc-cmd-blank" data-cmd="blank">Blank</button>
+        <span class="mc-blank-banner" hidden>SCREEN IS BLANK — tap Un-blank to resume</span>
+      </div>
     </div>`;
 
   // Target chips
@@ -207,6 +217,34 @@ function render(app) {
       }
     });
   });
+
+  // Command bar: Start Class (wake/un-blank all) + Blank (same-button toggle on
+  // the current target). Reuses the proven screen_on / screen_off device
+  // commands over the dashboard socket — no new server plumbing.
+  const blankBtn = app.querySelector('.mc-cmd-blank');
+  const banner = app.querySelector('.mc-blank-banner');
+  const reflectBlank = () => {
+    if (blankBtn) {
+      blankBtn.textContent = blanked ? 'Un-blank' : 'Blank';
+      blankBtn.classList.toggle('mc-btn-danger', blanked);
+    }
+    if (banner) banner.hidden = !blanked;
+  };
+  app.querySelector('[data-cmd="start"]')?.addEventListener('click', () => {
+    if (!devices.length) { showToast('No displays paired yet — pair one in Setup → Displays.', 'error'); return; }
+    devices.forEach((d) => sendCommand(d.id, 'screen_on', {}));
+    blanked = false; reflectBlank();
+    showToast(`Class started — ${devices.length} display${devices.length === 1 ? '' : 's'} ready.`, 'success');
+  });
+  blankBtn?.addEventListener('click', () => {
+    const ids = deviceIdsForTarget();
+    if (!ids.length) { showToast('No displays to blank.', 'error'); return; }
+    blanked = !blanked;
+    ids.forEach((id) => sendCommand(id, blanked ? 'screen_off' : 'screen_on', {}));
+    reflectBlank();
+    showToast(blanked ? `Blanked ${targetLabel()}.` : `Resumed ${targetLabel()}.`, 'info');
+  });
+  reflectBlank();
 }
 
 export async function renderView(app) {
