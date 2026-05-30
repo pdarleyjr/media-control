@@ -1,5 +1,5 @@
 /**
- * Screen-share receiver - runs inside the ScreenTinker player on each display.
+ * Screen-share receiver - runs inside the Media Control player on each display.
  *
  * Listens on the device-namespace socket for screen-share events from the
  * server (which relays them from the broadcaster's dashboard socket). When

@@ -274,7 +274,7 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
     data = req.body;
   }
   if (!data || !data.format || !data.format.startsWith('screentinker-export')) {
-    return res.status(400).json({ error: 'Invalid export file. Must be a ScreenTinker export JSON.' });
+    return res.status(400).json({ error: 'Invalid export file. Must be a Media Control export JSON.' });
   }
 
   const isV2 = data.format === 'screentinker-export-v2';
@@ -443,9 +443,9 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
       const wl = data.white_label;
       const existing = db.prepare('SELECT id FROM white_labels WHERE workspace_id = ?').get(workspaceId);
       if (existing) {
-        db.prepare(`UPDATE white_labels SET brand_name=?, logo_url=?, favicon_url=?, primary_color=?, bg_color=?, custom_domain=?, custom_css=?, hide_branding=?, updated_at=strftime('%s','now') WHERE workspace_id=?`).run(wl.brand_name || 'ScreenTinker', wl.logo_url || null, wl.favicon_url || null, wl.primary_color || '#3B82F6', wl.bg_color || '#111827', wl.custom_domain || null, wl.custom_css || null, wl.hide_branding || 0, workspaceId);
+        db.prepare(`UPDATE white_labels SET brand_name=?, logo_url=?, favicon_url=?, primary_color=?, bg_color=?, custom_domain=?, custom_css=?, hide_branding=?, updated_at=strftime('%s','now') WHERE workspace_id=?`).run(wl.brand_name || 'Media Control', wl.logo_url || null, wl.favicon_url || null, wl.primary_color || '#3B82F6', wl.bg_color || '#111827', wl.custom_domain || null, wl.custom_css || null, wl.hide_branding || 0, workspaceId);
       } else {
-        db.prepare(`INSERT INTO white_labels (id, user_id, workspace_id, brand_name, logo_url, favicon_url, primary_color, bg_color, custom_domain, custom_css, hide_branding) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(uuid.v4(), userId, workspaceId, wl.brand_name || 'ScreenTinker', wl.logo_url || null, wl.favicon_url || null, wl.primary_color || '#3B82F6', wl.bg_color || '#111827', wl.custom_domain || null, wl.custom_css || null, wl.hide_branding || 0);
+        db.prepare(`INSERT INTO white_labels (id, user_id, workspace_id, brand_name, logo_url, favicon_url, primary_color, bg_color, custom_domain, custom_css, hide_branding) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(uuid.v4(), userId, workspaceId, wl.brand_name || 'Media Control', wl.logo_url || null, wl.favicon_url || null, wl.primary_color || '#3B82F6', wl.bg_color || '#111827', wl.custom_domain || null, wl.custom_css || null, wl.hide_branding || 0);
       }
     }
   });

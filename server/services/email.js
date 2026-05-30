@@ -90,7 +90,7 @@ function postSendMail(token, payload) {
 function buildSendMailPayload(to, subject, text, html) {
   return {
     message: {
-      subject: `[ScreenTinker] ${subject}`,
+      subject: `[Media Control] ${subject}`,
       body: {
         contentType: 'HTML',
         content: html || `<pre style="font-family:sans-serif">${escapeHtml(text || '')}</pre>`,
@@ -99,7 +99,7 @@ function buildSendMailPayload(to, subject, text, html) {
       from: {
         emailAddress: {
           address: config.graphSenderEmail,
-          name: config.graphSenderName || 'ScreenTinker',
+          name: config.graphSenderName || 'Media Control',
         },
       },
     },

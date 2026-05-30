@@ -1,5 +1,5 @@
 // MBFD admin user mirror endpoint.
-// Bearer-auth'd upsert for keeping ScreenTinker user table in sync with the
+// Bearer-auth'd upsert for keeping Media Control user table in sync with the
 // MBFD Hub Laravel admin user table. Called by app/Listeners/SyncToScreentinker.php
 // in the MBFD Hub on User saved+password-dirty events. Bypasses canRegister().
 const express = require('express');
