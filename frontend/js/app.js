@@ -16,6 +16,8 @@ import * as scenes from './views/scenes.js';
 import * as screenShare from './views/screen-share.js';
 import * as smartboard from './views/smartboard.js';
 import * as present from './views/present.js';
+import * as home from './views/home.js';
+import * as comingSoon from './views/coming-soon.js';
 import * as workspaceMembers from './views/workspace-members.js';
 import { applyBranding } from './branding.js';
 import { t } from './i18n.js';
@@ -154,7 +156,6 @@ function consumePendingInviteToast() {
 // Map nav-link data-view to its translation key.
 const NAV_LABEL_KEYS = {
   dashboard: 'nav.displays',
-  content: 'nav.content',
   playlists: 'nav.playlists',
   layouts: 'nav.layouts',
   walls: 'nav.walls',
@@ -257,7 +258,15 @@ function route() {
   // If authenticated and on login page, redirect to the Present surface
   // (the instructor home) or onboarding. Dashboard stays reachable at #/.
   if (isAuthenticated() && hash === '#/login') {
-    window.location.hash = localStorage.getItem('rd_onboarded') ? '#/present' : '#/onboarding';
+    if (!localStorage.getItem('rd_onboarded')) { window.location.hash = '#/onboarding'; return; }
+    // Instructors land on the classroom Present surface; editors / admins /
+    // owners land on the studio Home dashboard. Same role taxonomy as the
+    // Setup-nav gate in updateSidebarUser().
+    const u = getCurrentUser();
+    const role = String(u?.role || '').toLowerCase();
+    const instructorOnly = !isPlatformAdmin(u) &&
+      ['workspace_viewer', 'workspace_editor', 'viewer', 'editor', 'member', 'instructor'].includes(role);
+    window.location.hash = instructorOnly ? '#/present' : '#/home';
     return;
   }
 
@@ -307,7 +316,15 @@ function route() {
   navLinks.forEach(link => {
     link.classList.remove('active');
     if (hash === '#/present' && link.dataset.view === 'present') link.classList.add('active');
-    else if (hash === '#/' && link.dataset.view === 'dashboard') link.classList.add('active');
+    else if (hash === '#/home' && link.dataset.view === 'home') link.classList.add('active');
+    else if ((hash === '#/' || hash === '#/displays') && link.dataset.view === 'dashboard') link.classList.add('active');
+    else if (hash === '#/presentations' && link.dataset.view === 'presentations') link.classList.add('active');
+    else if (hash === '#/ai-deck' && link.dataset.view === 'ai-deck') link.classList.add('active');
+    else if (hash === '#/slide-editor' && link.dataset.view === 'slide-editor') link.classList.add('active');
+    else if (hash === '#/downloads' && link.dataset.view === 'downloads') link.classList.add('active');
+    else if (hash === '#/broadcast' && link.dataset.view === 'broadcast') link.classList.add('active');
+    else if (hash === '#/files' && link.dataset.view === 'files') link.classList.add('active');
+    else if (hash === '#/audit' && link.dataset.view === 'audit') link.classList.add('active');
     else if (hash.startsWith('#/content') && link.dataset.view === 'content') link.classList.add('active');
     else if (hash.startsWith('#/settings') && link.dataset.view === 'settings') link.classList.add('active');
     else if ((hash.startsWith('#/layout') || hash === '#/layouts') && link.dataset.view === 'layouts') link.classList.add('active');
@@ -330,7 +347,10 @@ function route() {
   if (hash === '#/present') {
     currentView = present;
     present.render(app);
-  } else if (hash === '#/' || hash === '#' || hash === '') {
+  } else if (hash === '#/home') {
+    currentView = home;
+    home.render(app);
+  } else if (hash === '#/' || hash === '#' || hash === '' || hash === '#/displays') {
     currentView = dashboard;
     dashboard.render(app);
   } else if (hash === '#/screen-share') {
@@ -378,6 +398,30 @@ function route() {
   } else if (hash === '#/settings') {
     currentView = settings;
     settings.render(app);
+  } else if (hash === '#/presentations') {
+    currentView = comingSoon;
+    comingSoon.render(app, 'presentations');
+  } else if (hash === '#/ai-deck') {
+    currentView = comingSoon;
+    comingSoon.render(app, 'ai-deck');
+  } else if (hash === '#/slide-editor') {
+    currentView = comingSoon;
+    comingSoon.render(app, 'slide-editor');
+  } else if (hash === '#/downloads') {
+    currentView = comingSoon;
+    comingSoon.render(app, 'downloads');
+  } else if (hash === '#/broadcast') {
+    currentView = comingSoon;
+    comingSoon.render(app, 'broadcast');
+  } else if (hash === '#/files') {
+    currentView = comingSoon;
+    comingSoon.render(app, 'files');
+  } else if (hash === '#/audit') {
+    currentView = comingSoon;
+    comingSoon.render(app, 'audit');
+  } else if (hash === '#/schedule') {
+    currentView = comingSoon;
+    comingSoon.render(app, 'schedule');
   } else {
     currentView = dashboard;
     dashboard.render(app);
