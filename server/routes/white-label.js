@@ -9,11 +9,11 @@ const { requireWorkspaceAdmin } = require('../lib/permissions');
 // Get current workspace's white-label config.
 router.get('/', (req, res) => {
   if (!req.workspaceId) {
-    return res.json({ brand_name: 'ScreenTinker', primary_color: '#3B82F6', secondary_color: '#1E293B', bg_color: '#111827', hide_branding: 0 });
+    return res.json({ brand_name: 'Media Control', primary_color: '#3B82F6', secondary_color: '#1E293B', bg_color: '#111827', hide_branding: 0 });
   }
   let wl = db.prepare('SELECT * FROM white_labels WHERE workspace_id = ?').get(req.workspaceId);
   if (!wl) {
-    wl = { brand_name: 'ScreenTinker', primary_color: '#3B82F6', secondary_color: '#1E293B', bg_color: '#111827', hide_branding: 0 };
+    wl = { brand_name: 'Media Control', primary_color: '#3B82F6', secondary_color: '#1E293B', bg_color: '#111827', hide_branding: 0 };
   }
   res.json(wl);
 });
@@ -23,7 +23,7 @@ router.get('/', (req, res) => {
 // globally-unique custom_domain column; no scope check.
 router.get('/domain/:domain', (req, res) => {
   const wl = db.prepare('SELECT * FROM white_labels WHERE custom_domain = ?').get(req.params.domain);
-  if (!wl) return res.json({ brand_name: 'ScreenTinker', primary_color: '#3B82F6' });
+  if (!wl) return res.json({ brand_name: 'Media Control', primary_color: '#3B82F6' });
   res.json(wl);
 });
 
@@ -53,7 +53,7 @@ router.post('/', requireWorkspaceAdmin, (req, res) => {
     const id = uuidv4();
     db.prepare(`INSERT INTO white_labels (id, user_id, workspace_id, brand_name, logo_url, favicon_url, primary_color, secondary_color, bg_color, custom_domain, custom_css, hide_branding)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      id, req.user.id, req.workspaceId, brand_name || 'ScreenTinker', logo_url || null, favicon_url || null,
+      id, req.user.id, req.workspaceId, brand_name || 'Media Control', logo_url || null, favicon_url || null,
       primary_color || '#3B82F6', secondary_color || '#1E293B', bg_color || '#111827',
       custom_domain || null, custom_css || null, hide_branding ? 1 : 0);
   }
