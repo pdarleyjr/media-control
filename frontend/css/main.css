@@ -1463,3 +1463,90 @@ body {
   .content-grid { grid-template-columns: 1fr; }
   .assign-content-grid { grid-template-columns: 1fr 1fr; }
 }
+
+/* ════════════════════════════════════════════════════════════════════════
+   Classroom-UX redesign (2026-05-29) — namespaced `mc-*` primitives.
+   New surfaces (Present, command bar, whiteboard, confirm dialog) use these;
+   legacy views are untouched. Touch-first at ALL widths.
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* Touch-sized button primitive. */
+.mc-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: var(--tap-min);
+  padding: 0 var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: var(--font-3);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+.mc-btn:hover { background: var(--bg-card-hover); }
+.mc-btn:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }
+.mc-btn-ghost { background: transparent; }
+.mc-btn-ghost:empty { display: none; }            /* alertDialog hides the cancel slot */
+.mc-btn-primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+.mc-btn-primary:hover { background: var(--primary-hover); }
+.mc-btn-cta { background: var(--cta); border-color: var(--cta); color: var(--cta-contrast); }
+.mc-btn-cta:hover { background: var(--cta-hover); }
+.mc-btn-confirm { background: var(--primary); border-color: var(--primary); color: #fff; position: relative; overflow: hidden; }
+.mc-btn-confirm:hover { background: var(--primary-hover); }
+.mc-btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.mc-btn-danger:hover { background: #dc2626; }
+/* Primary/large variant for the instructor surface — ~1cm targets. */
+.mc-btn-lg { min-height: var(--tap-primary); padding: 0 var(--space-5); font-size: var(--font-4); border-radius: var(--radius-lg); }
+
+/* Press-and-hold confirm (irreversible all-display blasts). The fill sweeps
+   left→right over the hold window; releasing early cancels via JS. */
+.mc-hold-fill {
+  position: absolute; inset: 0; left: 0; width: 0;
+  background: rgba(255,255,255,0.28);
+  pointer-events: none;
+}
+.mc-btn-hold .mc-btn-label { position: relative; z-index: 1; }
+.mc-hold-fill.active { width: 100%; transition: width 0.8s linear; }
+
+/* Native <dialog> confirm. */
+.mc-dialog {
+  border: none; padding: 0; background: transparent;
+  max-width: min(460px, 92vw);
+  color: var(--text-primary);
+}
+.mc-dialog::backdrop { background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); }
+.mc-dialog-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: var(--space-5);
+  display: flex; flex-direction: column; gap: var(--space-4);
+}
+.mc-dialog-title { font-size: var(--font-5); font-weight: 700; margin: 0; }
+.mc-dialog-msg { font-size: var(--font-3); color: var(--text-secondary); margin: 0; line-height: 1.5; }
+.mc-dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-3); margin-top: var(--space-2); }
+.mc-dialog-actions .mc-btn { min-width: 96px; }
+
+/* LIVE / status chip — color is always paired with a label (WCAG 1.4.1). */
+.mc-chip {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  padding: 2px var(--space-2); border-radius: var(--radius-pill);
+  font-size: var(--font-1); font-weight: 700; letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+.mc-chip-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.mc-chip-live { background: rgba(239,68,68,0.16); color: #fca5a5; }
+.mc-chip-live .mc-chip-dot { background: var(--live); box-shadow: 0 0 6px var(--live); }
+.mc-chip-standby { background: rgba(100,116,139,0.16); color: var(--text-secondary); }
+.mc-chip-standby .mc-chip-dot { background: var(--standby); }
+.mc-chip-offline { background: rgba(100,116,139,0.12); color: var(--text-muted); }
+.mc-chip-offline .mc-chip-dot { background: var(--text-muted); }
+.mc-chip-blank { background: rgba(15,23,42,0.6); color: #cbd5e1; }
+.mc-chip-blank .mc-chip-dot { background: #0f172a; border: 1px solid var(--border-light); }

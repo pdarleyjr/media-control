@@ -24,4 +24,55 @@
   --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3);
   --sidebar-width: 220px;
   --transition: 0.2s ease;
+
+  /* ── Classroom-UX redesign tokens (2026-05-29) ───────────────────────────
+     Added without disturbing the existing palette. `--primary` was referenced
+     across main.css (wall editor, progress bars) but never defined — define it
+     now so themed surfaces actually inherit a color. */
+  --primary: var(--accent);
+  --primary-hover: var(--accent-hover);
+  --primary-dim: var(--accent-dim);
+
+  /* Single disciplined call-to-action accent (orange), reserved for the ONE
+     dominant action on a surface (Go Live / Present). Distinct from --accent so
+     a future white-label can't dilute the CTA convention. Never status-coded. */
+  --cta: #f97316;
+  --cta-hover: #ea580c;
+  --cta-contrast: #ffffff;
+
+  /* LIVE / on-air semantics. Always paired with a label or icon in markup —
+     never color-alone (WCAG 1.4.1). --live is the only saturated red used for
+     "this is on the wall right now". */
+  --live: #ef4444;
+  --live-glow: 0 0 0 3px rgba(239, 68, 68, 0.35);
+  --standby: #64748b;     /* idle / nothing showing */
+  --frozen: #38bdf8;      /* held-frame state (future) */
+
+  /* Spacing scale — replaces the hundreds of inline magic numbers on new
+     surfaces. 4px base rhythm. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* Type scale (px to match the existing inline sizes already in the views). */
+  --font-1: 11px;
+  --font-2: 12px;
+  --font-3: 13px;
+  --font-4: 15px;
+  --font-5: 18px;
+  --font-6: 22px;
+  --font-7: 28px;
+  --font-8: 40px;   /* big glanceable status / room headers */
+
+  /* Touch targets. Apple HIG 44pt / Material 48dp floor; primary actions push
+     to ~1cm (NN/g). The instructor surface uses these at ALL widths (it's a
+     standing, possibly-gloved, non-technical user). */
+  --tap-min: 48px;
+  --tap-primary: 64px;
+  --radius-pill: 999px;
 }
