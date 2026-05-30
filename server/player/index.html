@@ -818,13 +818,20 @@
 
     // Create the fullscreen whiteboard overlay (idempotent). Does NOT disturb
     // the underlying playback — it overlays on top.
+    //
+    // Classroom-UX (2026-05-29): the overlay background is TRANSPARENT so the
+    // instructor annotates live OVER whatever is currently on the display (a
+    // slide, a video, a screen-share) — annotate-over-content, the signature
+    // capability a browser-client display has that dumb HDMI/cast sinks cannot.
+    // (Was an opaque #10151c blank board; if a clean board is wanted, Blank the
+    // display first, then draw.)
     function wbShow() {
       try {
         if (_wb.overlay) return; // already shown
         const ov = document.createElement('div');
         ov.id = 'smartboardOverlay';
         ov.style.cssText = 'position:fixed;inset:0;z-index:2147483646;' +
-          'background:#10151c;pointer-events:none;overflow:hidden';
+          'background:transparent;pointer-events:none;overflow:hidden';
 
         const canvas = document.createElement('canvas');
         canvas.id = 'smartboardCanvas';
@@ -834,10 +841,11 @@
         const label = document.createElement('div');
         label.id = 'smartboardLabel';
         label.style.cssText = 'position:absolute;top:14px;left:18px;' +
-          'font-family:-apple-system,sans-serif;font-size:14px;font-weight:700;' +
-          'letter-spacing:0.5px;color:rgba(255,255,255,0.55);' +
-          'pointer-events:none;user-select:none;text-shadow:0 1px 4px rgba(0,0,0,0.6)';
-        label.textContent = 'Smartboard';
+          'font-family:-apple-system,sans-serif;font-size:13px;font-weight:700;' +
+          'letter-spacing:0.5px;color:#fff;background:rgba(16,21,28,0.7);' +
+          'padding:4px 10px;border-radius:999px;' +
+          'pointer-events:none;user-select:none';
+        label.textContent = '✎ Annotating';
 
         ov.appendChild(canvas);
         ov.appendChild(label);
