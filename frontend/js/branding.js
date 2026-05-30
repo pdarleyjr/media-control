@@ -23,11 +23,13 @@ export async function applyBranding() {
 
   const root = document.documentElement;
   if (wl.primary_color) root.style.setProperty('--accent', wl.primary_color);
-  if (wl.bg_color) {
-    root.style.setProperty('--bg-primary', wl.bg_color);
-    const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute('content', wl.bg_color);
-  }
+  // NOTE (2026-05-30, light-everywhere): white-label must NOT repaint the
+  // structural page background. The old code set --bg-primary from wl.bg_color,
+  // whose default (#111827, dark) overrode the light theme at runtime and made
+  // the now-dark text unreadable on the now-dark page. Branding customizes the
+  // brand accent + name + logo + favicon only; the global light theme owns the
+  // background. (bg_color is left in the Settings form but no longer applied
+  // to --bg-primary.)
 
   if (wl.brand_name) {
     document.title = wl.brand_name;
