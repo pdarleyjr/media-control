@@ -465,6 +465,19 @@ function updateSidebarUser() {
   const user = getCurrentUser();
   if (!user) return;
 
+  // Classroom-UX (2026-05-29): the "Setup" nav group (Content, Layouts, Video
+  // Walls, Settings, Admin) is for admins who configure the room; plain
+  // instructors see only the "Present" group. Inclusive by design — hide Setup
+  // ONLY for known non-admin roles so we never lock a configurator out. The
+  // Admin item gets its own platform-admin gate immediately below (it carries
+  // the nav-setup-only class too, but the explicit line wins).
+  const role = String(user.role || '').toLowerCase();
+  const instructorOnly = !isPlatformAdmin(user) &&
+    ['workspace_viewer', 'workspace_editor', 'viewer', 'editor', 'member', 'instructor'].includes(role);
+  document.querySelectorAll('.nav-setup-only').forEach((el) => {
+    el.style.display = instructorOnly ? 'none' : '';
+  });
+
   // Show admin nav only for platform admins (legacy 'superadmin' or Phase 1 renamed 'platform_admin')
   const adminNav = document.getElementById('adminNavItem');
   if (adminNav) adminNav.style.display = isPlatformAdmin(user) ? '' : 'none';
@@ -503,8 +516,10 @@ function updateSidebarUser() {
 }
 
 // Initialize
-ensureScenesNav();
-ensureSmartboardNav();
+// Scenes + Smartboard nav links are now static markup in index.html (Present
+// group); the ensureScenesNav/ensureSmartboardNav injectors are no longer called
+// (left defined-but-dead, removed in P7 cleanup). Their idempotency guards would
+// no-op anyway since the static links already carry the matching data-view.
 renderNavLabels();
 translateStaticDom();
 window.addEventListener('language-changed', () => {

@@ -1470,6 +1470,19 @@ body {
    legacy views are untouched. Touch-first at ALL widths.
    ════════════════════════════════════════════════════════════════════════ */
 
+/* Sidebar nav section headers (Present / Setup grouping). */
+.nav-section {
+  font-size: var(--font-1);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
+  font-weight: 700;
+  padding: 14px 12px 4px;
+  pointer-events: none;
+  user-select: none;
+}
+.nav-links > li.nav-section:first-child { padding-top: 4px; }
+
 /* Touch-sized button primitive. */
 .mc-btn {
   display: inline-flex;
