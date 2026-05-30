@@ -21,6 +21,7 @@ import * as playlists from './views/playlists.js';
 import * as scenes from './views/scenes.js';
 import * as screenShare from './views/screen-share.js';
 import * as smartboard from './views/smartboard.js';
+import * as present from './views/present.js';
 import * as workspaceMembers from './views/workspace-members.js';
 import { applyBranding } from './branding.js';
 import { t } from './i18n.js';
@@ -318,9 +319,10 @@ function route() {
     return;
   }
 
-  // If authenticated and on login page, redirect to dashboard or onboarding
+  // If authenticated and on login page, redirect to the Present surface
+  // (the instructor home) or onboarding. Dashboard stays reachable at #/.
   if (isAuthenticated() && hash === '#/login') {
-    window.location.hash = localStorage.getItem('rd_onboarded') ? '#/' : '#/onboarding';
+    window.location.hash = localStorage.getItem('rd_onboarded') ? '#/present' : '#/onboarding';
     return;
   }
 
@@ -369,7 +371,8 @@ function route() {
   const navLinks = document.querySelectorAll('.nav-link');
   navLinks.forEach(link => {
     link.classList.remove('active');
-    if (hash === '#/' && link.dataset.view === 'dashboard') link.classList.add('active');
+    if (hash === '#/present' && link.dataset.view === 'present') link.classList.add('active');
+    else if (hash === '#/' && link.dataset.view === 'dashboard') link.classList.add('active');
     else if (hash.startsWith('#/content') && link.dataset.view === 'content') link.classList.add('active');
     else if (hash.startsWith('#/settings') && link.dataset.view === 'settings') link.classList.add('active');
     else if ((hash.startsWith('#/layout') || hash === '#/layouts') && link.dataset.view === 'layouts') link.classList.add('active');
@@ -389,7 +392,10 @@ function route() {
   });
 
   // Route to view
-  if (hash === '#/' || hash === '#' || hash === '') {
+  if (hash === '#/present') {
+    currentView = present;
+    present.render(app);
+  } else if (hash === '#/' || hash === '#' || hash === '') {
     currentView = dashboard;
     dashboard.render(app);
   } else if (hash === '#/screen-share') {

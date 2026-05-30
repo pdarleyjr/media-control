@@ -1563,3 +1563,51 @@ body {
 .mc-chip-offline .mc-chip-dot { background: var(--text-muted); }
 .mc-chip-blank { background: rgba(15,23,42,0.6); color: #cbd5e1; }
 .mc-chip-blank .mc-chip-dot { background: #0f172a; border: 1px solid var(--border-light); }
+
+/* ── Present surface (the instructor home) ─────────────────────────────── */
+.mc-present { max-width: 1100px; margin: 0 auto; }
+.mc-present-header { margin-bottom: var(--space-5); }
+.mc-present-title { font-size: var(--font-7); font-weight: 700; line-height: 1.1; }
+.mc-present-sub { color: var(--text-secondary); font-size: var(--font-4); margin-top: var(--space-1); }
+.mc-present-sub strong { color: var(--text-primary); }
+
+/* Target selector — "All displays" + one chip per display. */
+.mc-target-bar { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-bottom: var(--space-5); }
+.mc-target-chip {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  min-height: var(--tap-min); padding: 0 var(--space-4);
+  border: 1px solid var(--border); border-radius: var(--radius-pill);
+  background: var(--bg-card); color: var(--text-secondary);
+  font-size: var(--font-3); font-weight: 600; cursor: pointer;
+  touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+}
+.mc-target-chip:hover { background: var(--bg-card-hover); }
+.mc-target-chip.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+.mc-target-chip:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }
+.mc-target-chip .mc-chip-dot { width: 9px; height: 9px; border-radius: 50%; }
+
+/* Content tiles — "what do you want to show?" */
+.mc-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: var(--space-4); margin-bottom: var(--space-6); }
+.mc-tile {
+  display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-2);
+  min-height: 136px; padding: var(--space-4);
+  border: 1px solid var(--border); border-radius: var(--radius-lg);
+  background: var(--bg-card); color: var(--text-primary);
+  cursor: pointer; text-align: left;
+  transition: border-color var(--transition), background var(--transition), transform var(--transition);
+  touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+}
+.mc-tile:hover { border-color: var(--primary); background: var(--bg-card-hover); transform: translateY(-2px); }
+.mc-tile:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }
+.mc-tile svg { width: 34px; height: 34px; color: var(--primary); }
+.mc-tile-label { font-size: var(--font-5); font-weight: 700; }
+.mc-tile-sub { font-size: var(--font-2); color: var(--text-muted); }
+
+/* Display status grid. */
+.mc-section-h { font-size: var(--font-2); text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-muted); margin-bottom: var(--space-3); font-weight: 700; }
+.mc-display-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--space-3); }
+.mc-display-tile { border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-secondary); padding: var(--space-3) var(--space-4); }
+.mc-display-tile-top { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.mc-display-name { font-weight: 600; font-size: var(--font-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mc-display-meta { font-size: var(--font-1); color: var(--text-muted); margin-top: 2px; font-variant-numeric: tabular-nums; min-height: 14px; }
+.mc-yt-input { margin: 0; }
