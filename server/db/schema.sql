@@ -469,3 +469,127 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     id              TEXT PRIMARY KEY,
     ran_at          INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
+
+-- ===================== MBFD MEDIA CONTROL STUDIO (2026-05-30) =====================
+-- Presentation creation, AI generation, media variants, Nextcloud sync, downloads.
+-- All additive (IF NOT EXISTS); workspace-scoped for multitenancy. The canonical
+-- deck format is mbfd-deck-v1 stored in presentations.deck_json (the relational
+-- slides/assets tables back the visual editor in a later phase).
+
+CREATE TABLE IF NOT EXISTS presentations (
+    id                  TEXT PRIMARY KEY,
+    workspace_id        TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+    user_id             TEXT NOT NULL REFERENCES users(id),
+    title               TEXT NOT NULL,
+    description         TEXT,
+    theme               TEXT DEFAULT 'mbfd-command',
+    canvas_profile      TEXT DEFAULT '16x9',
+    deck_json           TEXT,                              -- canonical mbfd-deck-v1 document
+    status              TEXT NOT NULL DEFAULT 'draft',     -- draft | published
+    published_at        INTEGER,
+    published_snapshot  TEXT,
+    thumbnail_path      TEXT,
+    created_by          TEXT REFERENCES users(id),
+    created_at          INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    updated_at          INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE TABLE IF NOT EXISTS presentation_slides (
+    id               TEXT PRIMARY KEY,
+    presentation_id  TEXT NOT NULL REFERENCES presentations(id) ON DELETE CASCADE,
+    layout_id        TEXT REFERENCES layouts(id) ON DELETE SET NULL,
+    sort_order       INTEGER NOT NULL DEFAULT 0,
+    slide_json       TEXT,                                 -- per-slide mbfd-deck-v1 object
+    speaker_notes    TEXT,
+    duration_seconds INTEGER,
+    thumbnail_path   TEXT,
+    created_at       INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    updated_at       INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE TABLE IF NOT EXISTS presentation_assets (
+    id              TEXT PRIMARY KEY,
+    presentation_id TEXT NOT NULL REFERENCES presentations(id) ON DELETE CASCADE,
+    slide_id        TEXT REFERENCES presentation_slides(id) ON DELETE CASCADE,
+    content_id      TEXT REFERENCES content(id) ON DELETE SET NULL,
+    position_json   TEXT NOT NULL DEFAULT '{}',            -- {x,y,w,h,z}
+    fit_mode        TEXT DEFAULT 'contain',
+    created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE TABLE IF NOT EXISTS presentation_exports (
+    id              TEXT PRIMARY KEY,
+    presentation_id TEXT NOT NULL REFERENCES presentations(id) ON DELETE CASCADE,
+    export_format   TEXT NOT NULL,                         -- pdf | pptx | png | json | package
+    file_path       TEXT,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    error_msg       TEXT,
+    created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    completed_at    INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS asset_variants (
+    id               TEXT PRIMARY KEY,
+    content_id       TEXT NOT NULL REFERENCES content(id) ON DELETE CASCADE,
+    variant_type     TEXT NOT NULL,                        -- thumbnail | proxy | transcode
+    file_path        TEXT,
+    width            INTEGER,
+    height           INTEGER,
+    bitrate_kbps     INTEGER,
+    codec            TEXT,
+    duration_seconds REAL,
+    created_at       INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE TABLE IF NOT EXISTS ai_generation_jobs (
+    id              TEXT PRIMARY KEY,
+    workspace_id    TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+    user_id         TEXT NOT NULL REFERENCES users(id),
+    job_type        TEXT NOT NULL,                         -- outline|deck|rewrite_slide|speaker_notes|instructor|command|wall|repair
+    model           TEXT,
+    prompt          TEXT,
+    presentation_id TEXT REFERENCES presentations(id) ON DELETE SET NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',       -- pending|running|done|error
+    result_json     TEXT,
+    error_msg       TEXT,
+    created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    completed_at    INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS nextcloud_sync_jobs (
+    id              TEXT PRIMARY KEY,
+    workspace_id    TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+    user_id         TEXT REFERENCES users(id),
+    presentation_id TEXT REFERENCES presentations(id) ON DELETE SET NULL,
+    content_id      TEXT REFERENCES content(id) ON DELETE SET NULL,
+    nextcloud_path  TEXT NOT NULL,
+    sync_direction  TEXT NOT NULL DEFAULT 'push',          -- push | pull
+    status          TEXT NOT NULL DEFAULT 'pending',
+    error_msg       TEXT,
+    last_synced_at  INTEGER,
+    created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE TABLE IF NOT EXISTS download_jobs (
+    id              TEXT PRIMARY KEY,
+    workspace_id    TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+    user_id         TEXT NOT NULL REFERENCES users(id),
+    source_url      TEXT NOT NULL,
+    title           TEXT,
+    local_path      TEXT,
+    content_id      TEXT REFERENCES content(id) ON DELETE SET NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',       -- pending|downloading|done|error
+    progress_pct    INTEGER DEFAULT 0,
+    error_msg       TEXT,
+    started_at      INTEGER,
+    completed_at    INTEGER,
+    created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_presentations_workspace ON presentations(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_presentation_slides_presentation ON presentation_slides(presentation_id, sort_order);
+CREATE INDEX IF NOT EXISTS idx_presentation_assets_slide ON presentation_assets(slide_id);
+CREATE INDEX IF NOT EXISTS idx_asset_variants_content ON asset_variants(content_id);
+CREATE INDEX IF NOT EXISTS idx_ai_jobs_workspace ON ai_generation_jobs(workspace_id, status);
+CREATE INDEX IF NOT EXISTS idx_nextcloud_sync_workspace ON nextcloud_sync_jobs(workspace_id, status);
+CREATE INDEX IF NOT EXISTS idx_download_jobs_workspace ON download_jobs(workspace_id, status);

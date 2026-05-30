@@ -172,6 +172,17 @@ const migrations = [
   // column) remains an override. Resolution order in payload builder:
   //   playlist_items.fit_mode (override) > content.default_fit_mode > null (player default).
   "ALTER TABLE content ADD COLUMN default_fit_mode TEXT",
+  // 2026-05-30 MBFD Media Control Studio: content becomes a first-class
+  // content_item (presentation/video/image/webpage/...); metadata/tags/access.
+  "ALTER TABLE content ADD COLUMN content_type TEXT",
+  "ALTER TABLE content ADD COLUMN metadata_json TEXT",
+  "ALTER TABLE content ADD COLUMN tags_json TEXT",
+  "ALTER TABLE content ADD COLUMN access_level TEXT DEFAULT 'private'",
+  // Audit-log extension (reuse activity_log instead of a new table): capture
+  // resource type + before/after state for the Audit Log view.
+  "ALTER TABLE activity_log ADD COLUMN resource_type TEXT",
+  "ALTER TABLE activity_log ADD COLUMN before_state TEXT",
+  "ALTER TABLE activity_log ADD COLUMN after_state TEXT",
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (e) { /* already exists */ }
