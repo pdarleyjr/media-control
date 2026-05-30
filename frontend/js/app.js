@@ -18,6 +18,7 @@ import * as smartboard from './views/smartboard.js';
 import * as present from './views/present.js';
 import * as home from './views/home.js';
 import * as comingSoon from './views/coming-soon.js';
+import * as presentations from './views/presentations.js';
 import * as workspaceMembers from './views/workspace-members.js';
 import { applyBranding } from './branding.js';
 import { t } from './i18n.js';
@@ -399,8 +400,8 @@ function route() {
     currentView = settings;
     settings.render(app);
   } else if (hash === '#/presentations') {
-    currentView = comingSoon;
-    comingSoon.render(app, 'presentations');
+    currentView = presentations;
+    presentations.render(app);
   } else if (hash === '#/ai-deck') {
     currentView = comingSoon;
     comingSoon.render(app, 'ai-deck');

@@ -389,6 +389,8 @@ app.use('/api/reports', requireAuth, resolveTenancy, require('./routes/reports')
 app.use('/api/screen-share', requireAuth, require('./routes/screen-share'));  // screen-share REST: ICE/TURN credential issuance, JWT-gated
 app.use('/api/groups', requireAuth, resolveTenancy, require('./routes/device-groups'));
 app.use('/api/playlists', requireAuth, resolveTenancy, require('./routes/playlists'));
+// MBFD Media Control Studio: presentations (mbfd-deck-v1). Same auth+tenancy gate.
+app.use('/api/presentations', requireAuth, resolveTenancy, require('./routes/presentations'));
 // Phase 3: Operational Activities ("Scenes") + Fast Broadcast. Same
 // requireAuth + resolveTenancy gating as the other resource routes; handlers
 // scope by req.workspaceId and reuse the existing device-content-push path.

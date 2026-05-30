@@ -224,6 +224,17 @@ export const api = {
   // (instead of throwing) so the UI can prompt and retry with confirm_all:true.
   broadcast: (payload) => requestBroadcast(payload),
 
+  // ==================== MBFD Media Control Studio: Presentations ====================
+  presentations: {
+    list: () => request('/presentations'),
+    get: (id) => request(`/presentations/${id}`),
+    create: (data) => request('/presentations', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id, data) => request(`/presentations/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    remove: (id) => request(`/presentations/${id}`, { method: 'DELETE' }),
+    publish: (id) => request(`/presentations/${id}/publish`, { method: 'POST' }),
+    duplicate: (id) => request(`/presentations/${id}/duplicate`, { method: 'POST' }),
+  },
+
   // Current user
   getMe: () => request('/auth/me'),
   updateMe: (data) => request('/auth/me', { method: 'PUT', body: JSON.stringify(data) }),
