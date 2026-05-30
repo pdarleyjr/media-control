@@ -5,18 +5,12 @@ import * as contentLibrary from './views/content-library.js';
 import * as settings from './views/settings.js';
 import * as login from './views/login.js';
 import * as layoutEditor from './views/layout-editor.js';
-import * as schedule from './views/schedule.js';
-import * as widgets from './views/widgets.js';
 import * as videoWall from './views/video-wall.js';
-import * as reports from './views/reports.js';
 import * as activity from './views/activity.js';
-import * as kiosk from './views/kiosk.js';
 import * as onboarding from './views/onboarding.js';
 import * as help from './views/help.js';
-import * as teams from './views/teams.js';
 import * as admin from './views/admin.js';
 import * as adminPlayerDebug from './views/admin-player-debug.js';
-import * as designer from './views/designer.js';
 import * as playlists from './views/playlists.js';
 import * as scenes from './views/scenes.js';
 import * as screenShare from './views/screen-share.js';
@@ -163,14 +157,8 @@ const NAV_LABEL_KEYS = {
   content: 'nav.content',
   playlists: 'nav.playlists',
   layouts: 'nav.layouts',
-  widgets: 'nav.widgets',
-  schedule: 'nav.schedule',
   walls: 'nav.walls',
-  reports: 'nav.reports',
-  kiosk: 'nav.kiosk',
-  designer: 'nav.designer',
   activity: 'nav.activity',
-  teams: 'nav.teams',
   help: 'nav.help',
   settings: 'nav.settings',
   admin: 'nav.admin',
@@ -185,60 +173,7 @@ function renderNavLabels() {
   });
 }
 
-// Phase 3: inject the "Scenes" (Operational Activities) nav link. The static
-// nav lives in index.html; rather than touch that template, we insert the
-// nav item right after Playlists at boot. Idempotent — re-running is a no-op
-// once the link exists. Label is plain English (no i18n key) to match the
-// other Phase-3 features that ship before translations are wired up.
-function ensureScenesNav() {
-  if (document.querySelector('.nav-link[data-view="scenes"]')) return;
-  const playlistsLink = document.querySelector('.nav-link[data-view="playlists"]');
-  const playlistsLi = playlistsLink ? playlistsLink.closest('li') : null;
-  const navList = playlistsLi ? playlistsLi.parentElement : document.querySelector('.nav-links');
-  if (!navList) return;
-  const li = document.createElement('li');
-  li.innerHTML = `
-    <a href="#/scenes" class="nav-link" data-view="scenes">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-      </svg>
-      <span>Scenes</span>
-    </a>`;
-  if (playlistsLi && playlistsLi.nextSibling) {
-    navList.insertBefore(li, playlistsLi.nextSibling);
-  } else {
-    navList.appendChild(li);
-  }
-}
 
-// Phase 6: inject the "Smartboard" nav link. Like ensureScenesNav above, the
-// static nav lives in index.html; rather than touch that template we insert
-// the item at boot, right after the Screen Share link (both are "live to a
-// display" features). Idempotent — re-running is a no-op once the link exists.
-// Label is plain English (no i18n key) to match other features shipping
-// before translations are wired up.
-function ensureSmartboardNav() {
-  if (document.querySelector('.nav-link[data-view="smartboard"]')) return;
-  const ssLink = document.querySelector('.nav-link[data-view="screen-share"]');
-  const ssLi = ssLink ? ssLink.closest('li') : null;
-  const navList = ssLi ? ssLi.parentElement : document.querySelector('.nav-links');
-  if (!navList) return;
-  const li = document.createElement('li');
-  li.innerHTML = `
-    <a href="#/smartboard" class="nav-link" data-view="smartboard">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <rect x="3" y="4" width="18" height="13" rx="1"/>
-        <path d="M12 17v3"/><path d="M8 20h8"/>
-        <path d="M7 12c1.5-2 3-2 5 0s3.5 2 5 0"/>
-      </svg>
-      <span>Smartboard</span>
-    </a>`;
-  if (ssLi && ssLi.nextSibling) {
-    navList.insertBefore(li, ssLi.nextSibling);
-  } else {
-    navList.appendChild(li);
-  }
-}
 
 // Translate any element marked with data-i18n / data-i18n-placeholder /
 // data-i18n-html. Runs on init and on every language change. Used for static
@@ -420,30 +355,12 @@ function route() {
   } else if (hash === '#/layouts' || hash.startsWith('#/layout/')) {
     currentView = layoutEditor;
     layoutEditor.render(app);
-  } else if (hash === '#/schedule') {
-    currentView = schedule;
-    schedule.render(app);
-  } else if (hash === '#/widgets') {
-    currentView = widgets;
-    widgets.render(app);
   } else if (hash === '#/walls' || hash.startsWith('#/wall/')) {
     currentView = videoWall;
     videoWall.render(app);
-  } else if (hash === '#/reports') {
-    currentView = reports;
-    reports.render(app);
-  } else if (hash === '#/kiosk' || hash.startsWith('#/kiosk/')) {
-    currentView = kiosk;
-    kiosk.render(app);
-  } else if (hash === '#/designer') {
-    currentView = designer;
-    designer.render(app);
   } else if (hash === '#/activity') {
     currentView = activity;
     activity.render(app);
-  } else if (hash === '#/teams' || hash.startsWith('#/team/')) {
-    currentView = teams;
-    teams.render(app);
   } else if (hash.startsWith('#/workspace/') && hash.includes('/members')) {
     const wsId = hash.split('#/workspace/')[1].split('/')[0];
     currentView = workspaceMembers;
@@ -521,11 +438,7 @@ function updateSidebarUser() {
   });
 }
 
-// Initialize
-// Scenes + Smartboard nav links are now static markup in index.html (Present
-// group); the ensureScenesNav/ensureSmartboardNav injectors are no longer called
-// (left defined-but-dead, removed in P7 cleanup). Their idempotency guards would
-// no-op anyway since the static links already carry the matching data-view.
+// Initialize. (Scenes + Smartboard nav links are static markup in index.html.)
 renderNavLabels();
 translateStaticDom();
 window.addEventListener('language-changed', () => {
