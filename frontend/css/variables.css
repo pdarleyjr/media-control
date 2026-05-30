@@ -1,27 +1,38 @@
 :root {
-  --bg-primary: #111827;
-  --bg-secondary: #1f2937;
-  --bg-card: #1e293b;
-  --bg-card-hover: #283548;
-  --bg-input: #0f172a;
-  --accent: #3b82f6;
-  --accent-hover: #2563eb;
-  --accent-dim: #1d4ed8;
-  --text-primary: #f1f5f9;
-  --text-secondary: #94a3b8;
-  --text-muted: #64748b;
-  --success: #22c55e;
+  /* ── Light MBFD theme (2026-05-30, "light everywhere") ───────────────────
+     The whole app is now light/MBFD-branded. Existing token NAMES are kept and
+     re-pointed to light values, so the 367 token-driven rules across main.css
+     flip cohesively. Accent stays BLUE for "go"/interactive affordances;
+     saturated RED (--live/--danger) is reserved for on-air + destructive, so
+     the classroom UX's go-vs-live semantic survives. Surfaces white, page warm
+     off-white, text warm near-black. White button text (on colored bg) stays
+     correct. --*-dim variants kept as saturated chips. */
+  --bg-primary: #FAFAF8;
+  --bg-secondary: #F2EFEA;
+  --bg-card: #FFFFFF;
+  --bg-card-hover: #F5F3F0;
+  --bg-input: #FFFFFF;
+  --accent: #2563EB;
+  --accent-hover: #1D4ED8;
+  --accent-dim: #1E40AF;
+  --text-primary: #292524;
+  --text-secondary: #6B6660;
+  --text-muted: #8A847C;
+  --success: #16A34A;
   --success-dim: #15803d;
-  --danger: #ef4444;
+  --danger: #DC2626;
   --danger-dim: #991b1b;
-  --warning: #f59e0b;
+  --warning: #CA8A04;
   --warning-dim: #92400e;
-  --border: #334155;
-  --border-light: #475569;
+  --border: #E4E0DA;
+  --border-light: #D4D0CA;
+  /* screen-share.css references these with dark fallbacks — define them light */
+  --surface-default: #FFFFFF;
+  --surface-elevated: #F5F3F0;
   --radius: 8px;
   --radius-lg: 12px;
-  --shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
-  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow: 0 4px 16px rgba(41, 37, 36, 0.10);
+  --shadow-sm: 0 1px 3px rgba(41, 37, 36, 0.08);
   --sidebar-width: 220px;
   --transition: 0.2s ease;
 
