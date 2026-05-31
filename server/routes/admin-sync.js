@@ -10,6 +10,15 @@ const { db } = require('../db/database');
 
 const ADMIN_SYNC_TOKEN = process.env.MBFD_SYNC_TOKEN;
 
+// Valid global roles (mirrors middleware/auth.js). Any synced role MUST be one of
+// these; anything omitted or unrecognized falls back to the LEAST-privileged
+// 'user'. Previously this defaulted to 'platform_admin', which silently granted
+// full platform access to any synced user whose payload omitted a role — a
+// privilege-escalation footgun. The real caller (MBFD Hub's SyncToScreentinker
+// observer) always sends an explicit 'platform_admin' for admins it mirrors, so
+// this safe default changes nothing for the legitimate flow.
+const ALLOWED_SYNC_ROLES = new Set(['user', 'admin', 'superadmin', 'platform_admin']);
+
 function requireBearer(req, res, next) {
   if (!ADMIN_SYNC_TOKEN) {
     return res.status(503).json({ error: 'Sync endpoint not configured: MBFD_SYNC_TOKEN env var not set' });
@@ -55,7 +64,7 @@ router.post('/users/sync', requireBearer, (req, res) => {
   if (password.length < 4) return res.status(400).json({ error: 'password too short (min 4)' });
 
   const normalizedEmail = String(email).toLowerCase().trim();
-  const normalizedRole = role || 'platform_admin';
+  const normalizedRole = ALLOWED_SYNC_ROLES.has(role) ? role : 'user';
   const displayName = (name && String(name).trim()) || normalizedEmail.split('@')[0];
   const passwordHash = bcrypt.hashSync(password, 10);
 
