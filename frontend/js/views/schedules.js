@@ -7,8 +7,10 @@
 import { api } from '../api.js';
 import { showToast } from '../components/toast.js';
 import { confirmDialog } from '../components/confirm.js';
+import { renderWeekInto } from './schedule-week.js';
 
 let data = { schedules: [], devices: [], groups: [], content: [], playlists: [] };
+let mode = 'list'; // 'list' | 'week'
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
@@ -152,34 +154,15 @@ async function save() {
   } catch (e) { showToast(e.message || 'Could not create schedule', 'error'); if (btn) btn.disabled = false; }
 }
 
-export async function render(app) {
-  app.innerHTML = `
-    <div class="mc-studio-surface">
-      <div class="mc-studio-wrap" style="max-width:1300px">
-        <div style="margin-bottom:var(--mc-space-lg)">
-          <div class="mc-studio-title">Schedules</div>
-          <div class="mc-studio-sub">Plan content windows across displays and groups, with optional daily/weekly recurrence.</div>
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 380px;gap:var(--mc-space-lg);align-items:start">
-          <div class="mc-panel" id="schList" style="padding:var(--mc-space-md);overflow-x:auto"><div class="mc-panel-empty">Loading…</div></div>
-          <div class="mc-panel" id="schForm" style="padding:var(--mc-space-lg)"></div>
-        </div>
-      </div>
-    </div>`;
+function modeBtn(key, label) {
+  const on = mode === key;
+  return `<button type="button" data-mode="${key}" style="background:${on ? 'var(--mc-primary,#DC2626)' : 'var(--mc-surface)'};color:${on ? '#fff' : 'var(--mc-text-primary)'};border:1px solid ${on ? 'var(--mc-primary,#DC2626)' : 'var(--mc-border-medium)'};border-radius:var(--mc-radius-sm);padding:7px 16px;cursor:pointer;font-weight:var(--mc-fw-semibold);font-size:var(--mc-font-size-sm)">${label}</button>`;
+}
 
-  const [schedules, devices, groups, content, playlists] = await Promise.all([
-    api.schedules.list().catch(() => []),
-    api.getDevices().catch(() => []),
-    api.getGroups().catch(() => []),
-    api.getContent().catch(() => []),
-    api.getPlaylists().catch(() => []),
-  ]);
-  data = { schedules: asArray(schedules), devices: asArray(devices), groups: asArray(groups), content: asArray(content), playlists: asArray(playlists) };
-
-  renderList();
-  renderForm();
-
-  document.getElementById('schList').addEventListener('click', async (e) => {
+function attachListEvents() {
+  const list = document.getElementById('schList');
+  if (!list) return;
+  list.addEventListener('click', async (e) => {
     const del = e.target.closest('[data-del]');
     const tog = e.target.closest('[data-toggle]');
     if (del) {
@@ -194,6 +177,59 @@ export async function render(app) {
       try { const upd = await api.schedules.update(s.id, { enabled: s.enabled ? 0 : 1 }); Object.assign(s, { enabled: upd.enabled }); renderList(); }
       catch (err) { showToast(err.message || 'Update failed', 'error'); }
     }
+  });
+}
+
+function renderBody() {
+  const body = document.getElementById('schBody');
+  if (!body) return;
+  if (mode === 'week') {
+    body.innerHTML = '<div class="mc-panel" id="schWeekMount" style="padding:var(--mc-space-lg)"></div>';
+    renderWeekInto(document.getElementById('schWeekMount'), data.devices);
+    return;
+  }
+  body.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 380px;gap:var(--mc-space-lg);align-items:start">
+      <div class="mc-panel" id="schList" style="padding:var(--mc-space-md);overflow-x:auto"><div class="mc-panel-empty">Loading…</div></div>
+      <div class="mc-panel" id="schForm" style="padding:var(--mc-space-lg)"></div>
+    </div>`;
+  renderList();
+  renderForm();
+  attachListEvents();
+}
+
+export async function render(app) {
+  mode = 'list';
+  app.innerHTML = `
+    <div class="mc-studio-surface">
+      <div class="mc-studio-wrap" style="max-width:1300px">
+        <div style="display:flex;align-items:flex-end;gap:var(--mc-space-md);flex-wrap:wrap;margin-bottom:var(--mc-space-lg)">
+          <div style="flex:1;min-width:200px">
+            <div class="mc-studio-title">Schedules</div>
+            <div class="mc-studio-sub">Plan content windows across displays and groups, with optional daily/weekly recurrence.</div>
+          </div>
+          <div id="schModeToggle" style="display:flex;gap:6px">${modeBtn('list', 'List')}${modeBtn('week', 'Week')}</div>
+        </div>
+        <div id="schBody"><div class="mc-panel-empty">Loading…</div></div>
+      </div>
+    </div>`;
+
+  const [schedules, devices, groups, content, playlists] = await Promise.all([
+    api.schedules.list().catch(() => []),
+    api.getDevices().catch(() => []),
+    api.getGroups().catch(() => []),
+    api.getContent().catch(() => []),
+    api.getPlaylists().catch(() => []),
+  ]);
+  data = { schedules: asArray(schedules), devices: asArray(devices), groups: asArray(groups), content: asArray(content), playlists: asArray(playlists) };
+
+  renderBody();
+
+  document.getElementById('schModeToggle').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-mode]'); if (!b || b.dataset.mode === mode) return;
+    mode = b.dataset.mode;
+    document.getElementById('schModeToggle').innerHTML = modeBtn('list', 'List') + modeBtn('week', 'Week');
+    renderBody();
   });
 }
 

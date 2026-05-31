@@ -167,6 +167,20 @@
     else if(e.key==='f'||e.key==='F'){ if(document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen(); }
   });
   document.addEventListener('click', function(){ next(); });
+
+  // Remote transport from the Broadcast Center: the display's player forwards
+  // {__mc_transport:'next'|'prev'|'play_pause'|'restart'} to this deck (loaded
+  // in its content iframe) via postMessage. No origin trust needed — we only
+  // act on a small known set of slide-navigation actions.
+  window.addEventListener('message', function(e){
+    var a = e && e.data && e.data.__mc_transport;
+    if(!a) return;
+    if(a==='next') next();
+    else if(a==='prev') prev();
+    else if(a==='play_pause') togglePause();
+    else if(a==='restart') show(0);
+  });
+
   show(0);
 })();
 </script>

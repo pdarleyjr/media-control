@@ -262,6 +262,8 @@ export const api = {
     create: (data) => request('/schedules', { method: 'POST', body: JSON.stringify(data) }),
     update: (id, data) => request(`/schedules/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     remove: (id) => request(`/schedules/${id}`, { method: 'DELETE' }),
+    // Recurrence-expanded events for a device's week (server expands RRULEs).
+    week: (deviceId, date) => request(`/schedules/week?device_id=${encodeURIComponent(deviceId)}${date ? '&date=' + encodeURIComponent(date) : ''}`),
   },
 
   // Audit / activity log (workspace activity trail; admins see all).

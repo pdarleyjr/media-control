@@ -13,10 +13,12 @@
 import { api } from '../api.js';
 import { showToast } from '../components/toast.js';
 import { confirmDialog } from '../components/confirm.js';
+import { sendCommand } from '../socket.js';
 
 let data = { devices: [], groups: [], presentations: [], playlists: [], content: [] };
 let sel = { type: 'presentation', id: null, label: '' };
 let targets = new Set();
+let blanked = false;
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
@@ -91,6 +93,10 @@ function updateBar() {
   const info = document.getElementById('bcInfo');
   if (info) info.textContent = `${targets.size} display${targets.size === 1 ? '' : 's'} · ${sel.id ? '1 source' : 'no source'}`;
   if (btn) btn.disabled = !(sel.id && targets.size);
+  // Live-control buttons act on the selected displays (independent of source).
+  document.querySelectorAll('.bc-ctl').forEach((b) => { b.disabled = !targets.size; b.style.opacity = targets.size ? '1' : '.45'; b.style.cursor = targets.size ? 'pointer' : 'not-allowed'; });
+  const ci = document.getElementById('bcCtlInfo');
+  if (ci) ci.textContent = targets.size ? `${targets.size} display${targets.size === 1 ? '' : 's'} selected` : 'select displays above';
 }
 
 async function broadcast() {
@@ -142,6 +148,18 @@ export async function render(app) {
           <span id="bcInfo" style="color:var(--mc-text-secondary);font-size:var(--mc-font-size-sm)">no source · 0 displays</span>
           <button id="bcGo" class="mc-action-btn-primary" disabled style="margin-left:auto;border:none;border-radius:var(--mc-radius-sm);padding:11px 22px;font-weight:var(--mc-fw-bold);cursor:pointer">📡 Broadcast now</button>
         </div>
+        <div class="mc-panel" id="bcCtl" style="margin-top:var(--mc-space-md);padding:14px var(--mc-space-lg);display:flex;align-items:center;gap:var(--mc-space-md);flex-wrap:wrap">
+          <span style="font-weight:var(--mc-fw-bold);color:var(--mc-text-primary)">Live control</span>
+          <span id="bcCtlInfo" style="color:var(--mc-text-tertiary);font-size:var(--mc-font-size-sm)">select displays above</span>
+          <div style="display:flex;gap:8px;margin-left:auto;flex-wrap:wrap">
+            <button type="button" data-ctl="prev" class="bc-ctl">⏮ Prev</button>
+            <button type="button" data-ctl="play_pause" class="bc-ctl">⏯ Play / Pause</button>
+            <button type="button" data-ctl="next" class="bc-ctl">⏭ Next</button>
+            <button type="button" data-ctl="restart" class="bc-ctl">⟲ Restart</button>
+            <button type="button" data-ctl="blank" id="bcBlank" class="bc-ctl">⬛ Blank</button>
+          </div>
+        </div>
+        <p style="margin-top:10px;font-size:var(--mc-font-size-xs);color:var(--mc-text-tertiary)">Live control sends Next/Previous/Play-Pause to the selected displays. For a broadcast presentation it advances slides; for a playlist or video it steps items / pauses playback.</p>
       </div>
     </div>`;
 
@@ -195,6 +213,27 @@ export async function render(app) {
     }
   });
   document.getElementById('bcGo').addEventListener('click', broadcast);
+
+  // Live-control bar: base styling + send transport/blank to selected displays.
+  document.querySelectorAll('.bc-ctl').forEach((b) => {
+    b.style.cssText += ';background:var(--mc-surface);border:1px solid var(--mc-border-medium);border-radius:var(--mc-radius-sm);padding:8px 13px;color:var(--mc-text-primary);font-weight:var(--mc-fw-semibold);font-size:var(--mc-font-size-sm)';
+  });
+  document.getElementById('bcCtl').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-ctl]'); if (!b || b.disabled) return;
+    if (!targets.size) { showToast('Select one or more displays first', 'info'); return; }
+    const ids = [...targets];
+    const ctl = b.dataset.ctl;
+    if (ctl === 'blank') {
+      ids.forEach((id) => sendCommand(id, blanked ? 'screen_on' : 'screen_off'));
+      blanked = !blanked;
+      const bb = document.getElementById('bcBlank'); if (bb) bb.textContent = blanked ? '◻ Unblank' : '⬛ Blank';
+      showToast(`${blanked ? 'Blanked' : 'Unblanked'} ${ids.length} display(s)`, 'success');
+      return;
+    }
+    ids.forEach((id) => sendCommand(id, 'transport', { action: ctl }));
+    showToast(`Sent ${ctl.replace('_', '/')} to ${ids.length} display(s)`, 'success');
+  });
+  updateBar();
 }
 
 export function cleanup() { /* in-memory only */ }

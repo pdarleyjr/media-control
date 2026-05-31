@@ -1142,7 +1142,32 @@
         if (data.type === 'launch') { document.getElementById('screenOffOverlay')?.remove(); }
         if (data.type === 'screen_off') toggleScreenOff();
         if (data.type === 'screen_on') { document.getElementById('screenOffOverlay')?.remove(); }
+        if (data.type === 'transport') doTransport(data.payload && data.payload.action);
       });
+
+      // Transport (Broadcast Center control bar): next/prev/play_pause/restart.
+      // If the current item is a broadcast deck / external URL, forward the action
+      // to the content iframe via postMessage so the DECK advances its own slides
+      // (deck.html listens for window 'message'). Otherwise drive the local
+      // playlist + video, mirroring the device:remote-key handler. Never throws —
+      // playback must survive a malformed command.
+      function doTransport(action) {
+        try {
+          const item = playlist[currentIndex] || {};
+          if (item.remote_url) {
+            document.querySelectorAll('#playerContainer iframe, .zone iframe, .wall-stage iframe').forEach((f) => {
+              try { if (f.contentWindow) f.contentWindow.postMessage({ __mc_transport: action }, '*'); } catch (e) { /* cross-origin/none */ }
+            });
+            return;
+          }
+          const len = playlist.length || 0;
+          const video = document.querySelector('#playerContainer video');
+          if (action === 'next') { nextItem(); }
+          else if (action === 'prev') { if (len) { currentIndex = (currentIndex - 2 + len) % len; nextItem(); } }
+          else if (action === 'play_pause') { if (video) { video.paused ? video.play() : video.pause(); } }
+          else if (action === 'restart') { currentIndex = -1; nextItem(); }
+        } catch (e) { /* never break playback */ }
+      }
 
       // Phase 2: dashboard "Identify" action — flash a big high-contrast
       // marker on this display for ~5s. Does not disturb playback underneath.
