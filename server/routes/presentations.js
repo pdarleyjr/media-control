@@ -8,6 +8,7 @@ const { accessContext } = require('../lib/tenancy');
 const upload = require('../middleware/upload');
 const config = require('../config');
 const { sanitizeString } = require('../middleware/sanitize');
+const ncSync = require('../services/nextcloud-sync');
 
 // MBFD Media Control Studio — Presentations CRUD. Mirrors the workspace-scoped
 // access idiom from routes/playlists.js: list/create scope by req.workspaceId,
@@ -141,6 +142,8 @@ router.put('/:id', requireWrite, (req, res) => {
     values.push(req.params.id);
     db.prepare(`UPDATE presentations SET ${updates.join(', ')} WHERE id = ?`).run(...values);
   }
+  // Mirror the saved deck into the owner's own Nextcloud (best-effort, async).
+  if (deck_json !== undefined || title !== undefined) ncSync.syncSoon(req.params.id);
   res.json(shape(db.prepare('SELECT * FROM presentations WHERE id = ?').get(req.params.id)));
 });
 
@@ -148,6 +151,7 @@ router.put('/:id', requireWrite, (req, res) => {
 router.post('/:id/publish', requireWrite, (req, res) => {
   db.prepare(`UPDATE presentations SET status = 'published', published_at = strftime('%s','now'),
               published_snapshot = deck_json, updated_at = strftime('%s','now') WHERE id = ?`).run(req.params.id);
+  ncSync.syncSoon(req.params.id);
   res.json(shape(db.prepare('SELECT * FROM presentations WHERE id = ?').get(req.params.id)));
 });
 

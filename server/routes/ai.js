@@ -5,6 +5,7 @@ const { db } = require('../db/database');
 const { accessContext } = require('../lib/tenancy');
 const config = require('../config');
 const ai = require('../services/ai');
+const ncSync = require('../services/nextcloud-sync');
 
 // MBFD Media Control Studio — AI Deck Builder API (server-side Ollama bridge).
 // Generation is ASYNCHRONOUS: a 35B model can take longer than Cloudflare's
@@ -52,6 +53,8 @@ router.post('/generate-deck', (req, res) => {
         .run(presId, wsId, userId, userId, deck.title, `AI-generated · ${prompt.slice(0, 140)}`, canvasProfile, JSON.stringify(deck));
       db.prepare(`UPDATE ai_generation_jobs SET status = 'done', presentation_id = ?, result_json = ?, completed_at = strftime('%s','now') WHERE id = ?`)
         .run(presId, JSON.stringify({ presentation_id: presId, title: deck.title, slides: deck.slides.length }), jobId);
+      // Mirror the new AI deck into the user's own Nextcloud (best-effort).
+      ncSync.syncSoon(presId);
     } catch (e) {
       db.prepare(`UPDATE ai_generation_jobs SET status = 'error', error_msg = ?, completed_at = strftime('%s','now') WHERE id = ?`)
         .run(String(e.message || e).slice(0, 500), jobId);

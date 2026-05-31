@@ -85,11 +85,17 @@ module.exports = {
   ollamaBaseUrl: process.env.OLLAMA_BASE_URL || 'http://172.17.0.1:11434',
   ollamaModel: process.env.OLLAMA_MODEL || 'qwen3.6:35b',
   ollamaFallbackModel: process.env.OLLAMA_FALLBACK_MODEL || '',
-  // Nextcloud WebDAV (service-account; set in .env, NEVER committed).
+  // Nextcloud WebDAV. For per-user deck sync (services/nextcloud-sync.js) point
+  // NEXTCLOUD_URL at the INTERNAL origin (e.g. http://mbfd-nextcloud) so server-
+  // to-server calls bypass Cloudflare Access. sharedPassword is the common
+  // password every NC user logs in with (set in the box .env, NEVER committed);
+  // the NC uid is the work-email local-part. user/pass remain for the optional
+  // service-account Files browser (routes/files.js).
   nextcloud: {
     url: process.env.NEXTCLOUD_URL || 'https://cloud.mbfdhub.com',
     user: process.env.NEXTCLOUD_USER || '',
     pass: process.env.NEXTCLOUD_PASS || '',
+    sharedPassword: process.env.NEXTCLOUD_SHARED_PASSWORD || '',
     baseDir: process.env.NEXTCLOUD_BASE_DIR || 'MBFD Media Control',
   },
   // Feature flags — flip a module off without touching the core player/display
