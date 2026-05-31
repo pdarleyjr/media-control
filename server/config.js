@@ -77,4 +77,29 @@ module.exports = {
   // Redirect / -> /app instead of serving the marketing landing page.
   // For self-hosted internal deployments that don't want the public homepage.
   disableHomepage: ['true', '1'].includes(String(process.env.DISABLE_HOMEPAGE || '').toLowerCase()),
+
+  // ── MBFD Media Control Studio ────────────────────────────────────────────
+  // Local Ollama (server-side ONLY; the frontend never calls this). Reached
+  // from inside the container via the Docker bridge gateway. Bound localhost on
+  // the host — never exposed through Cloudflare.
+  ollamaBaseUrl: process.env.OLLAMA_BASE_URL || 'http://172.17.0.1:11434',
+  ollamaModel: process.env.OLLAMA_MODEL || 'qwen3.6:35b',
+  ollamaFallbackModel: process.env.OLLAMA_FALLBACK_MODEL || '',
+  // Nextcloud WebDAV (service-account; set in .env, NEVER committed).
+  nextcloud: {
+    url: process.env.NEXTCLOUD_URL || 'https://cloud.mbfdhub.com',
+    user: process.env.NEXTCLOUD_USER || '',
+    pass: process.env.NEXTCLOUD_PASS || '',
+    baseDir: process.env.NEXTCLOUD_BASE_DIR || 'MBFD Media Control',
+  },
+  // Feature flags — flip a module off without touching the core player/display
+  // system. Default ON; set ENABLE_*=false to disable.
+  features: {
+    presentationStudio: process.env.ENABLE_PRESENTATION_STUDIO !== 'false',
+    aiDeckBuilder: process.env.ENABLE_AI_DECK_BUILDER !== 'false',
+    mediaDownloader: process.env.ENABLE_MEDIA_DOWNLOADER !== 'false',
+    nextcloudSync: process.env.ENABLE_NEXTCLOUD_SYNC !== 'false',
+    videoWallStudio: process.env.ENABLE_VIDEO_WALL_STUDIO !== 'false',
+    broadcastCenter: process.env.ENABLE_BROADCAST_CENTER !== 'false',
+  },
 };

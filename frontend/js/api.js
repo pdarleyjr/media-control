@@ -235,6 +235,13 @@ export const api = {
     duplicate: (id) => request(`/presentations/${id}/duplicate`, { method: 'POST' }),
   },
 
+  // AI Deck Builder (server-side Ollama; async job → poll). Frontend never hits Ollama.
+  ai: {
+    health: () => request('/ai/health'),
+    generateDeck: (data) => request('/ai/generate-deck', { method: 'POST', body: JSON.stringify(data) }),
+    job: (id) => request(`/ai/jobs/${id}`),
+  },
+
   // Current user
   getMe: () => request('/auth/me'),
   updateMe: (data) => request('/auth/me', { method: 'PUT', body: JSON.stringify(data) }),

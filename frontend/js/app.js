@@ -19,6 +19,7 @@ import * as present from './views/present.js';
 import * as home from './views/home.js';
 import * as comingSoon from './views/coming-soon.js';
 import * as presentations from './views/presentations.js';
+import * as aiDeck from './views/ai-deck-builder.js';
 import * as workspaceMembers from './views/workspace-members.js';
 import { applyBranding } from './branding.js';
 import { t } from './i18n.js';
@@ -403,8 +404,8 @@ function route() {
     currentView = presentations;
     presentations.render(app);
   } else if (hash === '#/ai-deck') {
-    currentView = comingSoon;
-    comingSoon.render(app, 'ai-deck');
+    currentView = aiDeck;
+    aiDeck.render(app);
   } else if (hash === '#/slide-editor') {
     currentView = comingSoon;
     comingSoon.render(app, 'slide-editor');
