@@ -1,8 +1,13 @@
 const express = require('express');
 const router = express.Router();
+const path = require('path');
+const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const { db } = require('../db/database');
 const { accessContext } = require('../lib/tenancy');
+const upload = require('../middleware/upload');
+const config = require('../config');
+const { sanitizeString } = require('../middleware/sanitize');
 
 // MBFD Media Control Studio — Presentations CRUD. Mirrors the workspace-scoped
 // access idiom from routes/playlists.js: list/create scope by req.workspaceId,
@@ -159,9 +164,95 @@ router.post('/:id/duplicate', requireWrite, (req, res) => {
   res.status(201).json(shape(db.prepare('SELECT * FROM presentations WHERE id = ?').get(id)));
 });
 
-// Delete.
+// ── Slide image upload ──────────────────────────────────────────────────────
+// Upload an image to use on a slide. The binary is stored in the shared content
+// table (content_type='presentation_image') + a presentation_assets row links it
+// to this presentation. The public player fetches it at /player/asset/:contentId
+// (that route only serves rows that have a presentation_assets link, so arbitrary
+// content can't be enumerated). Placement (x/y/w/h/fit/effects) is NOT stored
+// here — it lives in the slide's `images[]` inside deck_json, edited client-side.
+const IMG_MIME = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp']);
+
+function safeName(name) { return sanitizeString((name || 'image').normalize('NFC')); }
+
+router.post('/:id/assets', requireWrite, upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const isImage = req.file.mimetype && (req.file.mimetype.startsWith('image/') || IMG_MIME.has(req.file.mimetype));
+    if (!isImage) {
+      // Drop the non-image multer wrote to disk before bailing.
+      try { fs.unlinkSync(req.file.path); } catch { /* best effort */ }
+      return res.status(400).json({ error: 'Only image files can be added to slides' });
+    }
+    const filepath = req.file.filename;
+    let width = null, height = null, thumbnailPath = null;
+    // Best-effort metadata + thumbnail (mirrors routes/content.js; never fatal).
+    try {
+      const sharp = require('sharp');
+      const sharpOpts = { limitInputPixels: false, failOn: 'none' };
+      try { const m = await sharp(req.file.path, sharpOpts).metadata(); width = m.width; height = m.height; }
+      catch (e) { console.warn('[pres-asset] sharp metadata failed:', e.message); }
+      try {
+        thumbnailPath = `thumb_${filepath}`;
+        await sharp(req.file.path, sharpOpts).resize(config.thumbnailWidth).jpeg({ quality: 70 })
+          .toFile(path.join(config.contentDir, thumbnailPath));
+      } catch (e) { console.warn('[pres-asset] sharp thumbnail failed:', e.message); thumbnailPath = null; }
+    } catch (e) { console.warn('[pres-asset] sharp unavailable:', e.message); }
+
+    const contentId = uuidv4();
+    db.prepare(`
+      INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, thumbnail_path, width, height, content_type, access_level)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'presentation_image', 'private')
+    `).run(contentId, req.user.id, req.presentation.workspace_id, safeName(req.file.originalname),
+           filepath, req.file.mimetype, req.file.size, thumbnailPath, width, height);
+
+    const assetId = uuidv4();
+    db.prepare(`
+      INSERT INTO presentation_assets (id, presentation_id, content_id, position_json, fit_mode)
+      VALUES (?, ?, ?, '{}', 'contain')
+    `).run(assetId, req.params.id, contentId);
+
+    res.status(201).json({
+      asset_id: assetId,
+      content_id: contentId,
+      url: `/player/asset/${contentId}`,
+      thumbnail_url: thumbnailPath ? `/api/content/${contentId}/thumbnail` : `/player/asset/${contentId}`,
+      filename: safeName(req.file.originalname),
+      width, height,
+    });
+  } catch (err) {
+    console.error('[pres-asset] upload error:', err);
+    res.status(500).json({ error: 'Image upload failed' });
+  }
+});
+
+// Delete. Also best-effort prunes presentation_image content that this deck
+// uniquely owned (not referenced by any other presentation_asset, playlist
+// item, or widget), so removing a deck reclaims its uploaded images + files.
 router.delete('/:id', requireWrite, (req, res) => {
+  // Gather this presentation's image asset content rows BEFORE the cascade.
+  let assetContentIds = [];
+  try {
+    assetContentIds = db.prepare('SELECT DISTINCT content_id FROM presentation_assets WHERE presentation_id = ? AND content_id IS NOT NULL')
+      .all(req.params.id).map((r) => r.content_id);
+  } catch { /* table/edge — skip cleanup */ }
+
   db.prepare('DELETE FROM presentations WHERE id = ?').run(req.params.id);
+
+  // Orphan prune (best-effort, scoped to presentation_image rows only).
+  for (const cid of assetContentIds) {
+    try {
+      const row = db.prepare("SELECT id, filepath, thumbnail_path FROM content WHERE id = ? AND content_type = 'presentation_image'").get(cid);
+      if (!row) continue;
+      const stillAsset = db.prepare('SELECT 1 FROM presentation_assets WHERE content_id = ? LIMIT 1').get(cid);
+      const inPlaylist = db.prepare('SELECT 1 FROM playlist_items WHERE content_id = ? LIMIT 1').get(cid);
+      const inWidget = db.prepare('SELECT 1 FROM widgets WHERE config LIKE ? LIMIT 1').get(`%/api/content/${cid}/%`);
+      if (stillAsset || inPlaylist || inWidget) continue;
+      if (row.filepath) { try { fs.unlinkSync(path.join(config.contentDir, path.basename(row.filepath))); } catch { /* gone */ } }
+      if (row.thumbnail_path) { try { fs.unlinkSync(path.join(config.contentDir, path.basename(row.thumbnail_path))); } catch { /* gone */ } }
+      db.prepare('DELETE FROM content WHERE id = ?').run(cid);
+    } catch (e) { console.warn('[pres-asset] orphan prune skipped for', cid, e.message); }
+  }
   res.json({ success: true });
 });
 

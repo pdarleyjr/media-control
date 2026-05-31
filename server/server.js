@@ -226,6 +226,28 @@ app.get('/player/deck/:id', (req, res) => {
   });
 });
 
+// MBFD Media Control Studio — public slide-image serving. Under /player/* so it
+// inherits the Cloudflare-Access + CSP bypass: deck images load on unattended
+// displays with no OTP, exactly like the deck HTML itself. ONLY rows that are
+// (a) an image and (b) linked by a presentation_assets row are served — so this
+// can't be used to enumerate arbitrary private content. UUIDs are unguessable,
+// matching the public deck threat model (anyone with a deck URL can already see
+// the deck + its images). Path-traversal guarded; CORS-open + long cache.
+app.get('/player/asset/:id', (req, res) => {
+  const { db } = require('./db/database');
+  const c = db.prepare('SELECT id, filepath, mime_type FROM content WHERE id = ?').get(req.params.id);
+  if (!c || !c.filepath) return res.status(404).type('text/plain').send('not found');
+  if (!c.mime_type || !c.mime_type.startsWith('image/')) return res.status(404).type('text/plain').send('not found');
+  const linked = db.prepare('SELECT 1 FROM presentation_assets WHERE content_id = ? LIMIT 1').get(req.params.id);
+  if (!linked) return res.status(403).type('text/plain').send('not a presentation asset');
+  const safePath = path.resolve(config.contentDir, path.basename(c.filepath));
+  if (!safePath.startsWith(path.resolve(config.contentDir))) return res.status(403).type('text/plain').send('invalid path');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  res.setHeader('Cache-Control', 'public, max-age=2592000, immutable');
+  res.sendFile(safePath);
+});
+
 // Serve web player at /player (same no-cache for JS/HTML). The index.html
 // route above intercepts the HTML requests; everything else still falls
 // through to this static handler (debug-overlay.js, sw.js, manifest, etc).

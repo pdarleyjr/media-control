@@ -233,6 +233,23 @@ export const api = {
     remove: (id) => request(`/presentations/${id}`, { method: 'DELETE' }),
     publish: (id) => request(`/presentations/${id}/publish`, { method: 'POST' }),
     duplicate: (id) => request(`/presentations/${id}/duplicate`, { method: 'POST' }),
+    // Upload an image for use on a slide. Returns { content_id, url, thumbnail_url, width, height, filename }.
+    // url is the public /player/asset/:id path the deck player loads. Multipart via XHR for progress.
+    uploadAsset: (presId, file, onProgress) => new Promise((resolve, reject) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${API_BASE}/presentations/${presId}/assets`);
+      const token = localStorage.getItem('token');
+      if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+      if (onProgress) xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100)); };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) { try { resolve(JSON.parse(xhr.responseText)); } catch { reject(new Error('Bad response')); } }
+        else { let m = 'Upload failed'; try { m = JSON.parse(xhr.responseText).error || m; } catch {} reject(new Error(m)); }
+      };
+      xhr.onerror = () => reject(new Error('Upload failed'));
+      xhr.send(fd);
+    }),
   },
 
   // Audit / activity log (workspace activity trail; admins see all).

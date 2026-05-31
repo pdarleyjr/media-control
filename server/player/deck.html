@@ -20,9 +20,16 @@
     color:var(--ink); font-family:'Plus Jakarta Sans','Figtree',system-ui,-apple-system,'Segoe UI',sans-serif;
     overflow:hidden; cursor:default;
   }
-  #stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:6vh 8vw}
-  .slide{width:100%;max-width:1500px;opacity:0;transition:opacity .35s ease;display:none;flex-direction:column}
-  .slide.show{opacity:1;display:flex}
+  #stage{position:fixed;inset:0}
+  .slide{position:absolute;inset:0;opacity:0;transition:opacity .35s ease;display:none}
+  .slide.show{opacity:1;display:block}
+  .deck-body{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:6vh 8vw;z-index:2}
+  .deck-col{width:100%;max-width:1500px;display:flex;flex-direction:column}
+  /* Image layers: behind (z1) and in front of (z3) the text body (z2). */
+  .imglayer{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+  .imglayer.back{z-index:1}
+  .imglayer.front{z-index:3}
+  .imglayer img{position:absolute;display:block}
   .kicker{display:inline-flex;align-items:center;gap:10px;color:var(--red);font-weight:700;letter-spacing:.08em;text-transform:uppercase;font-size:1.1vw;margin-bottom:2.2vh}
   .kicker::before{content:'';width:34px;height:4px;border-radius:3px;background:var(--red)}
   h1{font-size:5.2vw;line-height:1.05;font-weight:800;letter-spacing:-.02em}
@@ -65,27 +72,62 @@
   var slides = deck.slides;
   function esc(s){return String(s==null?'':s).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
 
+  // Only allow image URLs the server actually serves; never javascript:/data: from
+  // user-authored deck JSON. Relative app paths + http(s) only.
+  function safeUrl(u){
+    u = String(u==null?'':u);
+    if(/^\/player\/asset\//.test(u) || /^\/uploads\//.test(u) || /^\/api\/content\//.test(u) || /^https?:\/\//i.test(u)) return u;
+    return '';
+  }
+  function num(v, d){ var n = Number(v); return isFinite(n) ? Math.max(0, Math.min(100, n)) : d; }
+
   function buildSlide(s){
     var el = document.createElement('div');
     el.className = 'slide';
+    var back = document.createElement('div'); back.className = 'imglayer back';
+    var front = document.createElement('div'); front.className = 'imglayer front';
+    var body = document.createElement('div'); body.className = 'deck-body';
+    var col = document.createElement('div'); col.className = 'deck-col';
     var layout = s.layout||'content';
     var bullets = Array.isArray(s.bullets)?s.bullets:[];
     if(layout==='title'){
-      el.classList.add('title-slide');
-      el.innerHTML = '<div class="kicker">Media Control Studio</div>'+
+      col.classList.add('title-slide');
+      col.innerHTML = '<div class="kicker">Media Control Studio</div>'+
         '<h1>'+esc(s.title)+'</h1>'+ (s.subtitle?'<div class="subtitle">'+esc(s.subtitle)+'</div>':'');
     } else if(layout==='section'){
-      el.classList.add('section');
-      el.innerHTML = '<div class="bar"></div><h1>'+esc(s.title)+'</h1>'+(s.subtitle?'<div class="subtitle">'+esc(s.subtitle)+'</div>':'');
+      col.classList.add('section');
+      col.innerHTML = '<div class="bar"></div><h1>'+esc(s.title)+'</h1>'+(s.subtitle?'<div class="subtitle">'+esc(s.subtitle)+'</div>':'');
     } else if(layout==='quote'){
-      el.classList.add('quote');
-      el.innerHTML = '<div class="q">"'+esc(s.body||s.title)+'"</div>'+(s.subtitle?'<div class="subtitle">'+esc(s.subtitle)+'</div>':'');
+      col.classList.add('quote');
+      col.innerHTML = '<div class="q">"'+esc(s.body||s.title)+'"</div>'+(s.subtitle?'<div class="subtitle">'+esc(s.subtitle)+'</div>':'');
     } else {
       var inner = '<div class="kicker">'+esc(deck.title||'')+'</div><h2>'+esc(s.title)+'</h2>';
       if(bullets.length){ inner += '<ul>'+bullets.map(function(b){return '<li>'+esc(b)+'</li>';}).join('')+'</ul>'; }
       else if(s.body){ inner += '<div class="body">'+esc(s.body)+'</div>'; }
-      el.innerHTML = inner;
+      col.innerHTML = inner;
     }
+    body.appendChild(col);
+
+    // Image overlays (mbfd-deck-v1 slide.images[]). Percentages of the stage,
+    // so they map 1:1 onto a 16:9 display. object-fit keeps them undistorted.
+    (Array.isArray(s.images)?s.images:[]).forEach(function(im){
+      var url = safeUrl(im && im.url);
+      if(!url) return;
+      var pic = document.createElement('img');
+      pic.src = url;
+      pic.alt = '';
+      var op = (im.opacity!=null && isFinite(Number(im.opacity))) ? Math.max(0, Math.min(1, Number(im.opacity))) : 1;
+      var css = 'left:'+num(im.x,0)+'%;top:'+num(im.y,0)+'%;width:'+num(im.w,40)+'%;height:'+num(im.h,40)+'%;'+
+        'object-fit:'+(im.fit==='cover'?'cover':'contain')+';opacity:'+op+';';
+      if(im.rounded){ css += 'border-radius:1.4vw;'; }
+      if(im.shadow){ css += 'filter:drop-shadow(0 1vw 2.4vw rgba(0,0,0,.55));'; }
+      pic.style.cssText = css;
+      (im.layer==='back'?back:front).appendChild(pic);
+    });
+
+    el.appendChild(back);
+    el.appendChild(body);
+    el.appendChild(front);
     return el;
   }
 

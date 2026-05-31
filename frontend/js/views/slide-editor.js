@@ -9,11 +9,13 @@
 import { api } from '../api.js';
 import { confirmDialog } from '../components/confirm.js';
 import { showToast } from '../components/toast.js';
+import { createImageEditor } from './slide-image-canvas.js';
 
 let deck = null;
 let presId = null;
 let sel = 0;
 let dirty = false;
+let imgEditor = null;
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
@@ -69,6 +71,7 @@ function renderList() {
 function renderForm() {
   const wrap = document.getElementById('seForm');
   if (!wrap) return;
+  if (imgEditor) { imgEditor.destroy(); imgEditor = null; }
   const s = deck.slides[sel];
   if (!s) { wrap.innerHTML = '<div class="mc-panel-empty">No slide selected.</div>'; return; }
   wrap.innerHTML = `
@@ -90,6 +93,10 @@ function renderForm() {
       <textarea id="fBody" rows="3" style="${FIELD};resize:vertical">${esc(s.body || '')}</textarea></div>
     <div style="margin-bottom:var(--mc-space-lg)"><label style="${LABEL}">Speaker notes</label>
       <textarea id="fNotes" rows="3" style="${FIELD};resize:vertical">${esc(s.speaker_notes || '')}</textarea></div>
+    <div style="margin-bottom:var(--mc-space-lg);border-top:1px solid var(--mc-border-light);padding-top:var(--mc-space-lg)">
+      <label style="${LABEL}">Images</label>
+      <div id="seImagesMount"></div>
+    </div>
     <div style="display:flex;gap:var(--mc-space-sm);border-top:1px solid var(--mc-border-light);padding-top:var(--mc-space-lg)">
       <button id="seUp" style="background:var(--mc-surface);border:1px solid var(--mc-border-medium);border-radius:var(--mc-radius-sm);padding:7px 12px;cursor:pointer;color:var(--mc-text-primary)">↑ Move up</button>
       <button id="seDown" style="background:var(--mc-surface);border:1px solid var(--mc-border-medium);border-radius:var(--mc-radius-sm);padding:7px 12px;cursor:pointer;color:var(--mc-text-primary)">↓ Move down</button>
@@ -113,6 +120,10 @@ function renderForm() {
     if (!ok) return;
     deck.slides.splice(sel, 1); sel = Math.max(0, sel - 1); mark(); renderList(); renderForm();
   });
+
+  // Image placement canvas for this slide (drag/resize, mutates s.images[]).
+  const imgMount = document.getElementById('seImagesMount');
+  if (imgMount && presId) imgEditor = createImageEditor({ mount: imgMount, slide: s, presId, onChange: mark });
 }
 
 function setStatus(msg) { const el = document.getElementById('seStatus'); if (el) el.textContent = msg; }
@@ -164,4 +175,4 @@ export async function render(app) {
   });
 }
 
-export function cleanup() { /* in-memory only; nothing to tear down */ }
+export function cleanup() { if (imgEditor) { imgEditor.destroy(); imgEditor = null; } }
