@@ -238,6 +238,18 @@ export const api = {
   // Audit / activity log (workspace activity trail; admins see all).
   getActivity: (limit = 100) => request(`/activity?limit=${encodeURIComponent(limit)}`),
 
+  // Files (Nextcloud WebDAV proxy).
+  files: {
+    health: () => request('/files/health'),
+    list: (path = '') => request('/files' + (path ? ('?path=' + encodeURIComponent(path)) : '')),
+  },
+  // Media downloads (by URL).
+  downloads: {
+    health: () => request('/downloads/health'),
+    list: () => request('/downloads'),
+    create: (url, title) => request('/downloads', { method: 'POST', body: JSON.stringify({ url, title }) }),
+  },
+
   // AI Deck Builder (server-side Ollama; async job → poll). Frontend never hits Ollama.
   ai: {
     health: () => request('/ai/health'),

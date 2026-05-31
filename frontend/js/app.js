@@ -22,6 +22,8 @@ import * as presentations from './views/presentations.js';
 import * as aiDeck from './views/ai-deck-builder.js';
 import * as auditLog from './views/audit-log.js';
 import * as slideEditor from './views/slide-editor.js';
+import * as filesView from './views/files.js';
+import * as downloadsView from './views/downloads.js';
 import * as workspaceMembers from './views/workspace-members.js';
 import { applyBranding } from './branding.js';
 import { t } from './i18n.js';
@@ -412,14 +414,14 @@ function route() {
     currentView = slideEditor;
     slideEditor.render(app);
   } else if (hash === '#/downloads') {
-    currentView = comingSoon;
-    comingSoon.render(app, 'downloads');
+    currentView = downloadsView;
+    downloadsView.render(app);
   } else if (hash === '#/broadcast') {
     currentView = comingSoon;
     comingSoon.render(app, 'broadcast');
   } else if (hash === '#/files') {
-    currentView = comingSoon;
-    comingSoon.render(app, 'files');
+    currentView = filesView;
+    filesView.render(app);
   } else if (hash === '#/audit') {
     currentView = auditLog;
     auditLog.render(app);

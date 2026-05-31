@@ -416,6 +416,9 @@ app.use('/api/playlists', requireAuth, resolveTenancy, require('./routes/playlis
 app.use('/api/presentations', requireAuth, resolveTenancy, require('./routes/presentations'));
 // AI Deck Builder (server-side Ollama bridge; async jobs). AI never called from the browser.
 app.use('/api/ai', requireAuth, resolveTenancy, require('./routes/ai'));
+// Files (Nextcloud WebDAV proxy) + media downloads. Feature-flag + env gated.
+app.use('/api/files', requireAuth, resolveTenancy, require('./routes/files'));
+app.use('/api/downloads', requireAuth, resolveTenancy, require('./routes/downloads'));
 // Phase 3: Operational Activities ("Scenes") + Fast Broadcast. Same
 // requireAuth + resolveTenancy gating as the other resource routes; handlers
 // scope by req.workspaceId and reuse the existing device-content-push path.
