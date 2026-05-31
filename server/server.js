@@ -203,6 +203,29 @@ app.get(['/player', '/player/', '/player/index.html'], (req, res) => {
   });
 });
 
+// MBFD Media Control Studio — public deck player. Served UNDER /player/* so it
+// inherits the existing Cloudflare-Access + CSP bypass (displays load it with
+// no OTP). The mbfd-deck-v1 document is inlined into the HTML (no authenticated
+// API call needed). Published snapshot is preferred; falls back to the working
+// deck. The deck JSON is `<`-escaped so AI/user content containing "</script>"
+// can't break out of the inline script tag.
+app.get('/player/deck/:id', (req, res) => {
+  const { db } = require('./db/database');
+  const p = db.prepare('SELECT id, title, deck_json, status, published_snapshot FROM presentations WHERE id = ?').get(req.params.id);
+  const deckHtmlPath = path.join(__dirname, 'player', 'deck.html');
+  fs.readFile(deckHtmlPath, 'utf8', (err, html) => {
+    if (err) return res.status(500).type('text/plain').send('deck player unavailable');
+    let deckJson = 'null';
+    if (p) {
+      const raw = p.published_snapshot || p.deck_json || 'null';
+      try { JSON.parse(raw); deckJson = raw; } catch { deckJson = 'null'; }
+    }
+    const safe = deckJson.replace(/</g, '\\u003c');
+    const inject = '<script>window.__deck = ' + safe + ';</script>\n';
+    res.type('html').setHeader('Cache-Control', 'no-cache').send(html.replace('</head>', inject + '</head>'));
+  });
+});
+
 // Serve web player at /player (same no-cache for JS/HTML). The index.html
 // route above intercepts the HTML requests; everything else still falls
 // through to this static handler (debug-overlay.js, sw.js, manifest, etc).

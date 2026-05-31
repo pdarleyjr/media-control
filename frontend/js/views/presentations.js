@@ -30,8 +30,9 @@ function deckCard(p) {
       </div>
       <div style="font-size:var(--mc-font-size-sm);color:var(--mc-text-secondary)">${p.slide_count || 0} slide${(p.slide_count || 0) === 1 ? '' : 's'} · ${esc(p.canvas_profile || '16x9')}${p.updated_at ? ' · ' + esc(fmtDate(p.updated_at)) : ''}</div>
       ${p.description ? `<div style="font-size:var(--mc-font-size-sm);color:var(--mc-text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.description)}</div>` : ''}
-      <div style="display:flex;gap:var(--mc-space-sm);margin-top:auto;padding-top:var(--mc-space-sm)">
-        <button class="mc-action-btn-primary" data-open="${esc(p.id)}" style="border:none;border-radius:var(--mc-radius-sm);padding:6px 14px;font-weight:var(--mc-fw-semibold);font-size:var(--mc-font-size-sm);cursor:pointer">Open</button>
+      <div style="display:flex;flex-wrap:wrap;gap:var(--mc-space-sm);margin-top:auto;padding-top:var(--mc-space-sm)">
+        <button class="mc-action-btn-primary" data-present="${esc(p.id)}" style="border:none;border-radius:var(--mc-radius-sm);padding:6px 14px;font-weight:var(--mc-fw-semibold);font-size:var(--mc-font-size-sm);cursor:pointer">▶ Present</button>
+        <button data-preview="${esc(p.id)}" style="background:var(--mc-surface);border:1px solid var(--mc-border-medium);border-radius:var(--mc-radius-sm);padding:6px 12px;font-size:var(--mc-font-size-sm);cursor:pointer;color:var(--mc-text-primary)">Preview</button>
         <button data-dup="${esc(p.id)}" style="background:var(--mc-surface);border:1px solid var(--mc-border-medium);border-radius:var(--mc-radius-sm);padding:6px 12px;font-size:var(--mc-font-size-sm);cursor:pointer;color:var(--mc-text-primary)">Duplicate</button>
         <button data-del="${esc(p.id)}" style="background:var(--mc-surface);border:1px solid var(--mc-border-medium);border-radius:var(--mc-radius-sm);padding:6px 12px;font-size:var(--mc-font-size-sm);cursor:pointer;color:var(--mc-danger);margin-left:auto">Delete</button>
       </div>
@@ -87,10 +88,33 @@ async function load(app) {
 
   // Card actions (event delegation)
   app.querySelector('.mc-studio-wrap')?.addEventListener('click', async (e) => {
-    const open = e.target.closest('[data-open]');
+    const present = e.target.closest('[data-present]');
+    const preview = e.target.closest('[data-preview]');
     const dup = e.target.closest('[data-dup]');
     const del = e.target.closest('[data-del]');
-    if (open) { window.location.hash = `#/slide-editor?id=${encodeURIComponent(open.dataset.open)}`; return; }
+    if (preview) { window.open(`/player/deck/${encodeURIComponent(preview.dataset.preview)}`, '_blank', 'noopener'); return; }
+    if (present) {
+      const pid = present.dataset.present;
+      let devices = [];
+      try { devices = await api.getDevices(); if (!Array.isArray(devices)) devices = []; } catch (_) { /* */ }
+      const ids = devices.map((d) => d.id);
+      if (!ids.length) { showToast('No displays paired yet — pair one from Displays first.', 'info'); return; }
+      const url = `${location.origin}/player/deck/${pid}`;
+      try {
+        let r = await api.broadcast({ device_ids: ids, remote_url: url });
+        if (r && r.code === 'CONFIRM_ALL_REQUIRED') {
+          const ok = await confirmDialog({
+            title: 'Present to ALL displays?',
+            message: `This takes over all ${r.count} display(s) in this workspace with the presentation.`,
+            confirmLabel: 'Present to all', cancelLabel: 'Cancel', tone: 'danger',
+          });
+          if (!ok) return;
+          r = await api.broadcast({ device_ids: ids, remote_url: url, confirm_all: true });
+        }
+        showToast(`Presenting to ${r.sent != null ? r.sent : ids.length} display(s)`, 'success');
+      } catch (err) { showToast(err.message || 'Broadcast failed', 'error'); }
+      return;
+    }
     if (dup) {
       try { await api.presentations.duplicate(dup.dataset.dup); showToast('Duplicated', 'success'); await load(app); }
       catch (err) { showToast(err.message || 'Duplicate failed', 'error'); }
