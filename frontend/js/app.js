@@ -24,6 +24,8 @@ import * as auditLog from './views/audit-log.js';
 import * as slideEditor from './views/slide-editor.js';
 import * as filesView from './views/files.js';
 import * as downloadsView from './views/downloads.js';
+import * as broadcastCenter from './views/broadcast-center.js';
+import * as schedules from './views/schedules.js';
 import * as workspaceMembers from './views/workspace-members.js';
 import { applyBranding } from './branding.js';
 import { t } from './i18n.js';
@@ -417,8 +419,8 @@ function route() {
     currentView = downloadsView;
     downloadsView.render(app);
   } else if (hash === '#/broadcast') {
-    currentView = comingSoon;
-    comingSoon.render(app, 'broadcast');
+    currentView = broadcastCenter;
+    broadcastCenter.render(app);
   } else if (hash === '#/files') {
     currentView = filesView;
     filesView.render(app);
@@ -426,8 +428,8 @@ function route() {
     currentView = auditLog;
     auditLog.render(app);
   } else if (hash === '#/schedule') {
-    currentView = comingSoon;
-    comingSoon.render(app, 'schedule');
+    currentView = schedules;
+    schedules.render(app);
   } else {
     currentView = dashboard;
     dashboard.render(app);

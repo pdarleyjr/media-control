@@ -26,14 +26,10 @@ const STUBS = {
     desc: 'Compose slides on a canvas: text, media, charts, and layout blocks with a live properties inspector and speaker notes.' },
   downloads: { icon: 'download', tag: 'Phase 7', title: 'Downloads',
     desc: 'Pull media in by URL (YouTube and more) and track exported decks (PDF / images / packages) right inside the app.' },
-  broadcast: { icon: 'broadcast', tag: 'Phase 4', title: 'Broadcast Center',
-    desc: 'Pick content, choose target displays or the video wall, set the mode (Present / Loop / Schedule), and run transport controls from one screen.' },
   files: { icon: 'files', tag: 'Phase 6', title: 'Files',
     desc: 'Browse and sync to your MBFD Nextcloud — exported decks and assets land in your own cloud folders automatically.' },
   audit: { icon: 'audit', tag: 'Phase 9', title: 'Audit Log',
     desc: 'A full activity trail: who broadcast what, where, and when — AI generations, media actions, exports, and admin changes.' },
-  schedule: { icon: 'schedule', tag: 'Phase 8', title: 'Schedules',
-    desc: 'Plan class sessions and content windows across displays and the video wall on a weekly calendar.' },
 };
 
 export function render(app, key) {

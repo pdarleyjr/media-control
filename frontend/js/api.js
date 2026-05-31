@@ -256,6 +256,14 @@ export const api = {
     }),
   },
 
+  // Schedules (content/playlist windows per display or group; RRULE recurrence).
+  schedules: {
+    list: () => request('/schedules'),
+    create: (data) => request('/schedules', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id, data) => request(`/schedules/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    remove: (id) => request(`/schedules/${id}`, { method: 'DELETE' }),
+  },
+
   // Audit / activity log (workspace activity trail; admins see all).
   getActivity: (limit = 100) => request(`/activity?limit=${encodeURIComponent(limit)}`),
 

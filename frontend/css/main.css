@@ -189,6 +189,8 @@ body {
 
 .nav-links {
   flex: 1;
+  min-height: 0;        /* allow shrink in the flex column so overflow-y can engage */
+  overflow-y: auto;     /* scroll ONLY when the nav is taller than the viewport (no scrollbar when it fits) */
   padding: 12px 8px;
 }
 
