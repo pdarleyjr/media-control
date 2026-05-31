@@ -235,6 +235,9 @@ export const api = {
     duplicate: (id) => request(`/presentations/${id}/duplicate`, { method: 'POST' }),
   },
 
+  // Audit / activity log (workspace activity trail; admins see all).
+  getActivity: (limit = 100) => request(`/activity?limit=${encodeURIComponent(limit)}`),
+
   // AI Deck Builder (server-side Ollama; async job → poll). Frontend never hits Ollama.
   ai: {
     health: () => request('/ai/health'),

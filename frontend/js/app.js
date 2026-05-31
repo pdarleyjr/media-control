@@ -20,6 +20,8 @@ import * as home from './views/home.js';
 import * as comingSoon from './views/coming-soon.js';
 import * as presentations from './views/presentations.js';
 import * as aiDeck from './views/ai-deck-builder.js';
+import * as auditLog from './views/audit-log.js';
+import * as slideEditor from './views/slide-editor.js';
 import * as workspaceMembers from './views/workspace-members.js';
 import { applyBranding } from './branding.js';
 import { t } from './i18n.js';
@@ -322,7 +324,7 @@ function route() {
     else if ((hash === '#/' || hash === '#/displays') && link.dataset.view === 'dashboard') link.classList.add('active');
     else if (hash === '#/presentations' && link.dataset.view === 'presentations') link.classList.add('active');
     else if (hash === '#/ai-deck' && link.dataset.view === 'ai-deck') link.classList.add('active');
-    else if (hash === '#/slide-editor' && link.dataset.view === 'slide-editor') link.classList.add('active');
+    else if (hash.startsWith('#/slide-editor') && link.dataset.view === 'slide-editor') link.classList.add('active');
     else if (hash === '#/downloads' && link.dataset.view === 'downloads') link.classList.add('active');
     else if (hash === '#/broadcast' && link.dataset.view === 'broadcast') link.classList.add('active');
     else if (hash === '#/files' && link.dataset.view === 'files') link.classList.add('active');
@@ -406,9 +408,9 @@ function route() {
   } else if (hash === '#/ai-deck') {
     currentView = aiDeck;
     aiDeck.render(app);
-  } else if (hash === '#/slide-editor') {
-    currentView = comingSoon;
-    comingSoon.render(app, 'slide-editor');
+  } else if (hash.startsWith('#/slide-editor')) {
+    currentView = slideEditor;
+    slideEditor.render(app);
   } else if (hash === '#/downloads') {
     currentView = comingSoon;
     comingSoon.render(app, 'downloads');
@@ -419,8 +421,8 @@ function route() {
     currentView = comingSoon;
     comingSoon.render(app, 'files');
   } else if (hash === '#/audit') {
-    currentView = comingSoon;
-    comingSoon.render(app, 'audit');
+    currentView = auditLog;
+    auditLog.render(app);
   } else if (hash === '#/schedule') {
     currentView = comingSoon;
     comingSoon.render(app, 'schedule');

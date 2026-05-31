@@ -32,6 +32,7 @@ function deckCard(p) {
       ${p.description ? `<div style="font-size:var(--mc-font-size-sm);color:var(--mc-text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.description)}</div>` : ''}
       <div style="display:flex;flex-wrap:wrap;gap:var(--mc-space-sm);margin-top:auto;padding-top:var(--mc-space-sm)">
         <button class="mc-action-btn-primary" data-present="${esc(p.id)}" style="border:none;border-radius:var(--mc-radius-sm);padding:6px 14px;font-weight:var(--mc-fw-semibold);font-size:var(--mc-font-size-sm);cursor:pointer">▶ Present</button>
+        <button data-edit="${esc(p.id)}" style="background:var(--mc-surface);border:1px solid var(--mc-border-medium);border-radius:var(--mc-radius-sm);padding:6px 12px;font-size:var(--mc-font-size-sm);cursor:pointer;color:var(--mc-text-primary)">Edit</button>
         <button data-preview="${esc(p.id)}" style="background:var(--mc-surface);border:1px solid var(--mc-border-medium);border-radius:var(--mc-radius-sm);padding:6px 12px;font-size:var(--mc-font-size-sm);cursor:pointer;color:var(--mc-text-primary)">Preview</button>
         <button data-dup="${esc(p.id)}" style="background:var(--mc-surface);border:1px solid var(--mc-border-medium);border-radius:var(--mc-radius-sm);padding:6px 12px;font-size:var(--mc-font-size-sm);cursor:pointer;color:var(--mc-text-primary)">Duplicate</button>
         <button data-del="${esc(p.id)}" style="background:var(--mc-surface);border:1px solid var(--mc-border-medium);border-radius:var(--mc-radius-sm);padding:6px 12px;font-size:var(--mc-font-size-sm);cursor:pointer;color:var(--mc-danger);margin-left:auto">Delete</button>
@@ -89,9 +90,11 @@ async function load(app) {
   // Card actions (event delegation)
   app.querySelector('.mc-studio-wrap')?.addEventListener('click', async (e) => {
     const present = e.target.closest('[data-present]');
+    const edit = e.target.closest('[data-edit]');
     const preview = e.target.closest('[data-preview]');
     const dup = e.target.closest('[data-dup]');
     const del = e.target.closest('[data-del]');
+    if (edit) { window.location.hash = `#/slide-editor?id=${encodeURIComponent(edit.dataset.edit)}`; return; }
     if (preview) { window.open(`/player/deck/${encodeURIComponent(preview.dataset.preview)}`, '_blank', 'noopener'); return; }
     if (present) {
       const pid = present.dataset.present;
