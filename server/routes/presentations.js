@@ -182,11 +182,13 @@ function safeName(name) { return sanitizeString((name || 'image').normalize('NFC
 router.post('/:id/assets', requireWrite, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-    const isImage = req.file.mimetype && (req.file.mimetype.startsWith('image/') || IMG_MIME.has(req.file.mimetype));
+    // Allow ONLY the raster set (IMG_MIME) — explicitly NOT image/svg+xml, which is
+    // a script-capable XSS vector when served directly to a browser.
+    const isImage = req.file.mimetype && IMG_MIME.has(req.file.mimetype);
     if (!isImage) {
-      // Drop the non-image multer wrote to disk before bailing.
+      // Drop the rejected upload multer wrote to disk before bailing.
       try { fs.unlinkSync(req.file.path); } catch { /* best effort */ }
-      return res.status(400).json({ error: 'Only image files can be added to slides' });
+      return res.status(400).json({ error: 'Only JPEG, PNG, GIF, WebP, or BMP images can be added to slides' });
     }
     const filepath = req.file.filename;
     let width = null, height = null, thumbnailPath = null;
@@ -226,6 +228,11 @@ router.post('/:id/assets', requireWrite, upload.single('file'), async (req, res)
     });
   } catch (err) {
     console.error('[pres-asset] upload error:', err);
+    // Don't leak the uploaded file (or its thumbnail) on a failed insert.
+    if (req.file) {
+      if (req.file.path) { try { fs.unlinkSync(req.file.path); } catch { /* */ } }
+      if (req.file.filename) { try { fs.unlinkSync(path.join(config.contentDir, 'thumb_' + req.file.filename)); } catch { /* */ } }
+    }
     res.status(500).json({ error: 'Image upload failed' });
   }
 });
@@ -241,12 +248,17 @@ router.delete('/:id', requireWrite, (req, res) => {
       .all(req.params.id).map((r) => r.content_id);
   } catch { /* table/edge — skip cleanup */ }
 
+  const presWorkspaceId = req.presentation.workspace_id;
   db.prepare('DELETE FROM presentations WHERE id = ?').run(req.params.id);
 
-  // Orphan prune (best-effort, scoped to presentation_image rows only).
+  // Orphan prune (best-effort): only presentation_image rows IN THIS PRESENTATION'S
+  // OWN WORKSPACE, never referenced elsewhere. Workspace-scoping + a UUID guard
+  // ensure we can never touch another workspace's content or mis-fire the LIKE.
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   for (const cid of assetContentIds) {
     try {
-      const row = db.prepare("SELECT id, filepath, thumbnail_path FROM content WHERE id = ? AND content_type = 'presentation_image'").get(cid);
+      if (!UUID_RE.test(cid)) continue;
+      const row = db.prepare("SELECT id, filepath, thumbnail_path FROM content WHERE id = ? AND workspace_id = ? AND content_type = 'presentation_image'").get(cid, presWorkspaceId);
       if (!row) continue;
       const stillAsset = db.prepare('SELECT 1 FROM presentation_assets WHERE content_id = ? LIMIT 1').get(cid);
       const inPlaylist = db.prepare('SELECT 1 FROM playlist_items WHERE content_id = ? LIMIT 1').get(cid);

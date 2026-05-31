@@ -245,6 +245,11 @@ app.get('/player/asset/:id', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   res.setHeader('Cache-Control', 'public, max-age=2592000, immutable');
+  // Force the stored (image/*) MIME — never let the on-disk extension drive the
+  // Content-Type (an attacker could upload a raster file named ".html"). nosniff
+  // stops browsers MIME-sniffing the bytes into something executable.
+  res.setHeader('Content-Type', c.mime_type);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   res.sendFile(safePath);
 });
 

@@ -25,35 +25,41 @@ const FONT = 'Segoe UI';
 function pct(v, d) { const n = Number(v); return isFinite(n) ? Math.max(0, Math.min(100, n)) : d; }
 
 // Resolve a slide image's content row → a data URI we can embed in the pptx.
-function imageData(contentId) {
+// Async (fs.promises) so a deck with many/large images doesn't block the event
+// loop — this runs in the background sync path.
+async function imageData(contentId) {
   try {
     const c = db.prepare('SELECT filepath, mime_type FROM content WHERE id = ?').get(contentId);
     if (!c || !c.filepath || !c.mime_type || !c.mime_type.startsWith('image/')) return null;
     const safe = path.resolve(config.contentDir, path.basename(c.filepath));
-    if (!safe.startsWith(path.resolve(config.contentDir)) || !fs.existsSync(safe)) return null;
-    const b64 = fs.readFileSync(safe).toString('base64');
-    return `data:${c.mime_type};base64,${b64}`;
+    if (!safe.startsWith(path.resolve(config.contentDir))) return null;
+    const buf = await fs.promises.readFile(safe).catch(() => null);
+    if (!buf) return null;
+    return `data:${c.mime_type};base64,${buf.toString('base64')}`;
   } catch { return null; }
 }
 
-function addImages(slide, images, layer) {
-  (Array.isArray(images) ? images : []).filter((im) => (im.layer === 'back' ? 'back' : 'front') === layer).forEach((im) => {
-    const data = im.content_id ? imageData(im.content_id) : null;
-    if (!data) return;
+async function addImages(slide, images, layer) {
+  const list = (Array.isArray(images) ? images : []).filter((im) => (im.layer === 'back' ? 'back' : 'front') === layer);
+  for (const im of list) {
+    const data = im.content_id ? await imageData(im.content_id) : null;
+    if (!data) continue;
     const x = (pct(im.x, 0) / 100) * W;
     const y = (pct(im.y, 0) / 100) * H;
-    const w = (pct(im.w, 40) / 100) * W;
-    const h = (pct(im.h, 40) / 100) * H;
+    // Guard against a 0-dimension box (manual/AI deck); pptxgenjs dislikes 0 w/h.
+    const w = (Math.max(1, pct(im.w, 40)) / 100) * W;
+    const h = (Math.max(1, pct(im.h, 40)) / 100) * H;
     const opt = {
       data, x, y, w, h,
       sizing: { type: im.fit === 'cover' ? 'cover' : 'contain', w, h },
     };
-    if (im.rounded) opt.rounding = true;
+    // NB: pptxgenjs `rounding:true` crops to a CIRCLE (not rounded corners), so we
+    // deliberately don't map `im.rounded` here — it's a screen-only aesthetic.
     if (im.shadow) opt.shadow = { type: 'outer', blur: 8, offset: 4, angle: 90, color: '000000', opacity: 0.55 };
     const op = (im.opacity != null && isFinite(Number(im.opacity))) ? Math.max(0, Math.min(1, Number(im.opacity))) : 1;
     if (op < 1) opt.transparency = Math.round((1 - op) * 100);
     slide.addImage(opt);
-  });
+  }
 }
 
 function addText(slide, s, deckTitle) {
@@ -99,9 +105,9 @@ async function renderDeckToPptxBuffer(deck) {
   for (const sl of slides) {
     const slide = pptx.addSlide();
     slide.background = { color: SLATE };
-    addImages(slide, sl.images, 'back'); // behind text
+    await addImages(slide, sl.images, 'back'); // behind text
     addText(slide, sl, deck.title);
-    addImages(slide, sl.images, 'front'); // in front of text
+    await addImages(slide, sl.images, 'front'); // in front of text
     if (sl.speaker_notes) { try { slide.addNotes(String(sl.speaker_notes)); } catch { /* notes optional */ } }
   }
   // nodebuffer output (no filesystem write).

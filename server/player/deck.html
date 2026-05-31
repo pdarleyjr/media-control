@@ -76,7 +76,7 @@
   // user-authored deck JSON. Relative app paths + http(s) only.
   function safeUrl(u){
     u = String(u==null?'':u);
-    if(/^\/player\/asset\//.test(u) || /^\/uploads\//.test(u) || /^\/api\/content\//.test(u) || /^https?:\/\//i.test(u)) return u;
+    if(/^\/player\/asset\//.test(u) || /^\/uploads\/content\//.test(u) || /^\/api\/content\//.test(u) || /^https?:\/\//i.test(u)) return u;
     return '';
   }
   function num(v, d){ var n = Number(v); return isFinite(n) ? Math.max(0, Math.min(100, n)) : d; }

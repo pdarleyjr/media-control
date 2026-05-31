@@ -25,6 +25,14 @@ function rid() {
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
+// Only allow URLs the server actually serves (mirrors the deck player). Never
+// assign javascript:/data: from persisted deck_json to an <img src>.
+function safeUrl(u) {
+  u = String(u == null ? '' : u);
+  if (/^\/player\/asset\//.test(u) || /^\/uploads\/content\//.test(u) || /^\/api\/content\//.test(u) || /^https?:\/\//i.test(u)) return u;
+  return '';
+}
+
 // Default placement for a freshly uploaded image: a centered box that matches
 // the image's aspect ratio inside the 16:9 stage (so `contain` shows no bars).
 function defaultPlacement(natW, natH) {
@@ -110,6 +118,7 @@ export function createImageEditor({ mount, slide, presId, onChange }) {
   ensureStyles();
   let selectedId = null;
   let activeMove = null; // teardown fn for an in-flight drag/resize
+  let uploading = false; // guards against concurrent upload (button + drop)
 
   function imgs() { return Array.isArray(slide.images) ? slide.images : []; }
   function setImgs(arr) {
@@ -146,6 +155,9 @@ export function createImageEditor({ mount, slide, presId, onChange }) {
   }
 
   function renderBoxes() {
+    // Tear down any in-flight drag BEFORE rebuilding — otherwise the dragged
+    // node gets detached and the move closure mutates a dead element.
+    if (activeMove) activeMove();
     // Remove existing boxes (keep text + empty layers).
     canvas.querySelectorAll('.mc-imgbox').forEach((n) => n.remove());
     const list = imgs();
@@ -156,7 +168,7 @@ export function createImageEditor({ mount, slide, presId, onChange }) {
       box.dataset.id = im.id;
       box.setAttribute('style', styleFor(im));
       const pic = document.createElement('img');
-      pic.src = im.url;
+      pic.src = safeUrl(im.url);
       pic.alt = '';
       pic.style.objectFit = im.fit === 'cover' ? 'cover' : 'contain';
       box.appendChild(pic);
@@ -170,14 +182,23 @@ export function createImageEditor({ mount, slide, presId, onChange }) {
 
   function select(id) { selectedId = id; renderBoxes(); renderTools(); }
 
+  // Lightweight selection used during drag/resize: toggles the .sel class on the
+  // EXISTING boxes + refreshes the toolbar, WITHOUT rebuilding the DOM (rebuilding
+  // would detach the element being dragged, so the drag would move a dead node).
+  function markSelected(id) {
+    selectedId = id;
+    canvas.querySelectorAll('.mc-imgbox').forEach((b) => b.classList.toggle('sel', b.dataset.id === id));
+    renderTools();
+  }
+
   function wireBox(box, im, handle) {
     box.addEventListener('pointerdown', (e) => {
       if (e.target === handle) return; // resize handled separately
       e.preventDefault();
-      select(im.id);
-      const rect = canvas.getBoundingClientRect();
+      markSelected(im.id);
       const sx = e.clientX, sy = e.clientY, x0 = im.x, y0 = im.y;
       const onMove = (ev) => {
+        const rect = canvas.getBoundingClientRect(); // live: survives scroll/reflow mid-drag
         const dx = ((ev.clientX - sx) / rect.width) * 100;
         const dy = ((ev.clientY - sy) / rect.height) * 100;
         im.x = clamp(x0 + dx, 0, 100 - im.w);
@@ -190,10 +211,10 @@ export function createImageEditor({ mount, slide, presId, onChange }) {
     handle.addEventListener('pointerdown', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      select(im.id);
-      const rect = canvas.getBoundingClientRect();
+      markSelected(im.id);
       const sx = e.clientX, sy = e.clientY, w0 = im.w, h0 = im.h;
       const onMove = (ev) => {
+        const rect = canvas.getBoundingClientRect();
         const dw = ((ev.clientX - sx) / rect.width) * 100;
         const dh = ((ev.clientY - sy) / rect.height) * 100;
         im.w = clamp(w0 + dw, 5, 100 - im.x);
@@ -207,15 +228,17 @@ export function createImageEditor({ mount, slide, presId, onChange }) {
 
   function beginDrag(onMove) {
     if (activeMove) activeMove();
-    const up = () => {
+    const teardown = () => {
       document.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerup', up);
+      document.removeEventListener('pointercancel', up);
       activeMove = null;
-      mark();
     };
+    const up = () => { teardown(); mark(); };
     document.addEventListener('pointermove', onMove);
     document.addEventListener('pointerup', up);
-    activeMove = () => { document.removeEventListener('pointermove', onMove); document.removeEventListener('pointerup', up); activeMove = null; };
+    document.addEventListener('pointercancel', up); // touch interruption won't leak listeners
+    activeMove = teardown;
   }
 
   // Deselect when clicking empty canvas.
@@ -271,8 +294,9 @@ export function createImageEditor({ mount, slide, presId, onChange }) {
   }
 
   async function doUpload(file) {
-    if (!file) return;
+    if (!file || uploading) return;
     if (!file.type || !file.type.startsWith('image/')) { showToast('Only image files can be added to slides', 'info'); return; }
+    uploading = true;
     addBtn.disabled = true;
     const prevLabel = addBtn.textContent;
     addBtn.textContent = 'Uploading…';
@@ -288,6 +312,7 @@ export function createImageEditor({ mount, slide, presId, onChange }) {
     } catch (e) {
       showToast(e.message || 'Upload failed', 'error');
     } finally {
+      uploading = false;
       addBtn.disabled = false;
       addBtn.textContent = prevLabel;
     }

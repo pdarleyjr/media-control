@@ -22,8 +22,11 @@ const PPTX_MIME = 'application/vnd.openxmlformats-officedocument.presentationml.
 function nc() { return config.nextcloud || {}; }
 function enabled() { const c = nc(); return !!(config.features && config.features.nextcloudSync && c.url && c.sharedPassword); }
 
+// Local-part restricted to safe identifier chars (no '/', ':', whitespace) so a
+// crafted email can never inject a WebDAV path segment or a Basic-auth separator.
+const UID_RE = new RegExp('^([a-z0-9._-]+)@' + USER_DOMAIN.replace(/\./g, '\\.') + '$', 'i');
 function uidFromEmail(email) {
-  const m = new RegExp('^([^@\\s]+)@' + USER_DOMAIN.replace(/\./g, '\\.') + '$', 'i').exec(String(email || '').trim());
+  const m = UID_RE.exec(String(email || '').trim());
   return m ? m[1].toLowerCase() : null;
 }
 function authHeader(uid) { return 'Basic ' + Buffer.from(`${uid}:${nc().sharedPassword}`).toString('base64'); }
@@ -68,12 +71,17 @@ async function deleteFile(uid, relPath) {
   } catch { /* best-effort */ }
 }
 
-// Upsert the single tracking row per presentation.
+// Upsert the single tracking row per presentation. Column names are allowlisted
+// (never interpolate caller-supplied keys into SQL, even though all callers here
+// pass literals — defense against a future caller passing a user-controlled key).
+const JOB_COLS = new Set(['nextcloud_path', 'status', 'error_msg', 'last_synced_at']);
 function recordJob(pres, uid, fields) {
+  const keys = Object.keys(fields).filter((k) => JOB_COLS.has(k));
   const existing = db.prepare('SELECT id FROM nextcloud_sync_jobs WHERE presentation_id = ?').get(pres.id);
   if (existing) {
-    const sets = Object.keys(fields).map((k) => `${k} = ?`).join(', ');
-    db.prepare(`UPDATE nextcloud_sync_jobs SET ${sets} WHERE id = ?`).run(...Object.values(fields), existing.id);
+    if (!keys.length) return existing.id;
+    const sets = keys.map((k) => `${k} = ?`).join(', ');
+    db.prepare(`UPDATE nextcloud_sync_jobs SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), existing.id);
     return existing.id;
   }
   const { v4: uuidv4 } = require('uuid');

@@ -245,7 +245,11 @@ export const api = {
       if (onProgress) xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100)); };
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) { try { resolve(JSON.parse(xhr.responseText)); } catch { reject(new Error('Bad response')); } }
-        else { let m = 'Upload failed'; try { m = JSON.parse(xhr.responseText).error || m; } catch {} reject(new Error(m)); }
+        else if (xhr.status === 401) {
+          localStorage.removeItem('token'); localStorage.removeItem('user');
+          window.location.hash = '#/login'; window.location.reload();
+          reject(new Error('Session expired'));
+        } else { let m = 'Upload failed'; try { m = JSON.parse(xhr.responseText).error || m; } catch {} reject(new Error(m)); }
       };
       xhr.onerror = () => reject(new Error('Upload failed'));
       xhr.send(fd);
