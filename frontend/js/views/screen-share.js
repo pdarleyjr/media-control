@@ -190,7 +190,7 @@ export async function render(container) {
 
   // Repaint the session list on every engine state change, even those caused
   // by another view / the broadcast chip.
-  engineUnsub = engine.onChange(() => refreshSessionList());
+  engineUnsub = engine.onChange(() => { refreshSessionList(); syncTargetChecksFromEngine(); });
   // If the browser "Stop sharing" pill ends capture, sync this view's UI.
   captureEndedUnsub = engine.onCaptureEnded(() => syncCaptureStoppedUI());
 

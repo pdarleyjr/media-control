@@ -48,7 +48,13 @@ function ensureWired() {
     if (d.screen_on !== undefined) patch.screen_on = !!d.screen_on;
     merge(d.device_id || d.id, patch);
   });
-  onSocket('screenshot-ready', (d) => { const id = d.device_id || d.id; const cur = displays.get(id); if (cur) { cur.screenshot_url = withToken(`/api/devices/${id}/screenshot?t=${Date.now()}`); cur.screenshot_at = Math.floor(Date.now()/1000); notify(); } });
+  onSocket('screenshot-ready', (d) => {
+    const id = d.device_id || d.id;
+    merge(id, {
+      screenshot_url: withToken(`/api/devices/${id}/screenshot?t=${Date.now()}`),
+      screenshot_at: Math.floor(Date.now() / 1000),
+    });
+  });
   onSocket('playback-progress', (d) => { merge(d.device_id || d.id, { progress: d }); });
   onSocket('wall-changed', () => { refresh().catch(() => {}); });
 }

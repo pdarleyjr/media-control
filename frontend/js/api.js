@@ -65,6 +65,11 @@ export const api = {
   deleteDevice: (id) => request(`/devices/${id}`, { method: 'DELETE' }),
   identify: (deviceId) => request(`/devices/${deviceId}/identify`, { method: 'POST' }),
 
+  // Displays
+  getDisplaysState: () => request('/displays/state'),
+  getDisplaysSelection: () => request('/displays/selection'),
+  putDisplaysSelection: (device_ids) => request('/displays/selection', { method: 'PUT', body: JSON.stringify({ device_ids }) }),
+
   // Provisioning
   pairDevice: (pairing_code, name) => request('/provision/pair', {
     method: 'POST',
