@@ -36,6 +36,15 @@ function mockFetch(handler) {
 function jsonResp(status, obj) {
   return { ok: status >= 200 && status < 300, status, json: async () => obj };
 }
+function binaryResp(status, bytes, contentType) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: (k) => String(k).toLowerCase() === 'content-type' ? (contentType || 'application/octet-stream') : null },
+    arrayBuffer: async () => { const b = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes); return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); },
+    json: async () => ({}),
+  };
+}
 function restoreReal() { global.fetch = realFetch; }
 
 // ---- minimal Express-like req/res/next helpers for invoking route handlers ----
@@ -236,7 +245,7 @@ test('two members listing the same path read two DIFFERENT email-scoped trees', 
 // ══════════════════════════════════════════════════════════════════════════════
 
 test('GET /download streams buffer with correct Content-Type and Content-Disposition', async () => {
-  mockFetch(() => jsonResp(200, { path: 'images/banner.png', size: 10, content: 'PNGDATA' }));
+  mockFetch(() => binaryResp(200, Buffer.from('filedata'), 'image/png'));
   const router = loadRouter();
   const handler = getHandler(router, 'GET', '/download');
   const req = makeReq({ query: { path: 'images/banner.png' }, user: { id: 'u1', email: 'alice@miamibeachfl.gov' } });

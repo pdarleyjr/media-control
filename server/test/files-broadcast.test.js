@@ -43,6 +43,15 @@ function mockFetch(handler) {
 function jsonResp(status, obj) {
   return { ok: status >= 200 && status < 300, status, json: async () => obj };
 }
+function binaryResp(status, bytes, contentType) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: (k) => String(k).toLowerCase() === 'content-type' ? (contentType || 'application/octet-stream') : null },
+    arrayBuffer: async () => { const b = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes); return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); },
+    json: async () => ({}),
+  };
+}
 
 // ---- fs patch (never write real bytes during a unit test) ----
 const realWrite = fs.writeFileSync;
@@ -150,7 +159,7 @@ const DEVS = { d1: { id: 'd1', workspace_id: 'ws1' }, d2: { id: 'd2', workspace_
 // ══════════════════════════════════════════════════════════════════════════════
 
 test('imports an image and broadcasts it to the selected display', async () => {
-  mockFetch(() => jsonResp(200, { path: 'Photos/welcome.png', size: 7, content: 'PNGDATA' }));
+  mockFetch(() => binaryResp(200, Buffer.from([0x89, 0x50, 0x4e, 0x47]), 'image/png'));
   patchFs();
   const db = makeDb({ devices: DEVS, total: 5 });        // total>targets -> no all-gate
   const se = makeSceneEngine();
@@ -192,7 +201,7 @@ test('imports an image and broadcasts it to the selected display', async () => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 test('reads with req.user.email — a spoofed X-OpenWebUI-User-Email header is ignored', async () => {
-  mockFetch(() => jsonResp(200, { path: 'a/clip.mp4', size: 3, content: 'MP4' }));
+  mockFetch(() => binaryResp(200, Buffer.from([0x00, 0x00, 0x00, 0x18]), 'video/mp4'));
   patchFs();
   const db = makeDb({ devices: DEVS, total: 5 });
   const router = loadRouter({ db, sceneEngine: makeSceneEngine() });
@@ -209,7 +218,7 @@ test('reads with req.user.email — a spoofed X-OpenWebUI-User-Email header is i
     'bob@miamibeachfl.gov',
     'email MUST come from the JWT, never from a client-supplied header'
   );
-  assert.match(fetchCalls[0].url, /\/read_file$/);
+  assert.match(fetchCalls[0].url, /\/read_file_raw$/);
   assert.deepEqual(fetchCalls[0].body, { path: 'a/clip.mp4' });
 });
 
@@ -218,7 +227,7 @@ test('reads with req.user.email — a spoofed X-OpenWebUI-User-Email header is i
 // ══════════════════════════════════════════════════════════════════════════════
 
 test('rejects a non-image/video file with 415 (no insert, no push)', async () => {
-  mockFetch(() => jsonResp(200, { path: 'docs/brief.pdf', size: 4, content: 'PDF!' }));
+  mockFetch(() => binaryResp(200, Buffer.from('PDF!'), 'application/pdf'));
   patchFs();
   const db = makeDb({ devices: DEVS, total: 5 });
   const se = makeSceneEngine();
@@ -288,7 +297,7 @@ test('returns 409 CONFIRM_ALL_REQUIRED when targeting all displays without confi
 });
 
 test('proceeds when targeting all displays WITH confirm_all:true', async () => {
-  mockFetch(() => jsonResp(200, { path: 'ok.png', size: 3, content: 'PNG' }));
+  mockFetch(() => binaryResp(200, Buffer.from([0x89, 0x50, 0x4e, 0x47]), 'image/png'));
   patchFs();
   const db = makeDb({ devices: DEVS, total: 2 });
   const se = makeSceneEngine();
