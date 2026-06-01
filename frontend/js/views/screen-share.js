@@ -5,25 +5,33 @@
  * their screen / window / browser tab live via WebRTC. Designed for
  * sub-300ms glass-to-glass latency.
  *
- * Architecture:
- *   1. Fetch ICE servers (STUN + OpenRelay TURN by default, CF Calls TURN
- *      when configured) from /api/screen-share/turn-credentials.
- *   2. getDisplayMedia() with feature-detected modern constraints.
- *   3. For each selected target device, create an RTCPeerConnection,
- *      addTransceiver() the captured tracks with a hard bitrate cap,
- *      generate SDP offer, push through Socket.IO signaling.
- *   4. Receive SDP answer + ICE candidates from the device. Device-side
- *      ICE candidates are buffered on the broadcaster until the answer
- *      has been applied (race-safe).
- *   5. On `connectionState === 'failed'`, eagerly notify the server so
- *      activeSessions is cleared and the user can immediately retry.
+ * As of the unified-Media-Control refactor, the WebRTC engine (stream /
+ * peerConnections / iceConfig + signaling) lives in a PERSISTENT singleton,
+ * frontend/js/services/screen-share-engine.js, that is NOT tied to this view.
+ * This view is now a thin PRESENTER: it owns the capture/target UI, but every
+ * broadcast operation delegates to the engine, and the engine outlives view
+ * navigation. Consequently unmount() no longer stops the broadcast — a live
+ * share survives navigating away and back (the bug that motivated the hoist).
+ *
+ * Architecture (now split engine / view):
+ *   1. The engine fetches ICE servers (STUN + OpenRelay TURN by default, CF
+ *      Calls TURN when configured) from /api/screen-share/turn-credentials.
+ *   2. The view captures via engine.startCapture() (getDisplayMedia w/ modern
+ *      feature-detected constraints) and renders the local preview.
+ *   3. For each selected target the engine creates an RTCPeerConnection,
+ *      addTransceiver()s the captured tracks with the adaptive bitrate cap,
+ *      generates the SDP offer, and pushes it through Socket.IO signaling.
+ *   4. The engine receives SDP answer + ICE candidates from the device,
+ *      buffering device ICE until the answer is applied (race-safe).
+ *   5. On `connectionState === 'failed'`, the engine eagerly notifies the
+ *      server so activeSessions is cleared and the user can retry.
  *   6. Local preview <video> shows what's being shared.
- *   7. Stop button: signal stop, close peer connection, stop tracks.
- *   8. unmount() (called by router on view nav) tears everything down so
- *      the broadcast does not silently continue in the background.
+ *   7. Stop button: engine.stopAll() (signal stop, close peers, stop tracks).
+ *   8. unmount() (router nav) ONLY detaches this view's subscriptions — the
+ *      engine keeps broadcasting in the background.
  */
 
-import { getSocket } from '../socket.js';
+import * as engine from '../services/screen-share-engine.js';
 
 // ----------------------------------------------------------------------
 // Debug logger - opt-in via localStorage.SCREEN_SHARE_DEBUG='1'. Keeps the
@@ -103,74 +111,25 @@ function computeWallTiles(wall) {
 }
 
 // ----------------------------------------------------------------------
-// State, scoped per view mount. resetState() is called at the top of
-// every render() so re-entering the route does not inherit zombie objects
-// from a previous mount.
+// View-scoped UI state. The WebRTC engine state lives in the engine singleton;
+// here we only track view-local presentation bits + subscriptions, reset at
+// the top of every render() so re-entering the route is clean.
 // ----------------------------------------------------------------------
-let stream = null;                    // MediaStream from getDisplayMedia
-let peerConnections = new Map();      // device_id -> RTCPeerConnection
-let pendingDeviceCandidates = new Map(); // device_id -> RTCIceCandidateInit[]
-let connectionTimeouts = new Map();   // device_id -> setTimeout handle
-let iceConfig = null;                 // cached from /api/screen-share/turn-credentials
-let currentContentHint = 'detail';    // 'detail' | 'motion'
+let currentContentHint = 'detail';    // 'detail' | 'motion' (UI radio mirror)
 let activeContainer = null;           // bound at render time for DOM lookups
+let engineUnsub = null;               // engine.onChange unsubscribe
+let captureEndedUnsub = null;         // engine.onCaptureEnded unsubscribe
 
-// Adaptive per-receiver video bitrate. There is NO fixed cap: the encoder target
-// is derived from the ACTUAL captured resolution + frame rate (a bits-per-pixel
-// heuristic) and bounded only by a high, operator-tunable CEILING. Resolution of
-// the ceiling, in priority order:
-//   1) server-provided iceConfig.maxBitrateKbps (env SCREEN_SHARE_MAX_BITRATE_KBPS
-//      on the box — the real, deployment-time knob),
-//   2) a localStorage override (SCREEN_SHARE_MAX_BITRATE_KBPS, mirroring the
-//      SCREEN_SHARE_DEBUG idiom above) for per-display field tuning,
-//   3) DEFAULT_MAX_BITRATE_KBPS.
-// (process.env is intentionally NOT used — this module runs in the browser.)
-const DEFAULT_MAX_BITRATE_KBPS = 50000; // 50 Mbps ceiling (replaces the old fixed 2500 cap).
-function bitrateCeilingKbps() {
-  const fromServer = iceConfig && Number(iceConfig.maxBitrateKbps);
-  if (fromServer && fromServer > 0) return fromServer;
-  try {
-    const ls = parseInt(localStorage.getItem('SCREEN_SHARE_MAX_BITRATE_KBPS') || '', 10);
-    if (ls > 0) return ls;
-  } catch (_) { /* ignore */ }
-  return DEFAULT_MAX_BITRATE_KBPS;
-}
-// Adaptive encoder target from the captured geometry. ~0.08 bits per pixel per
-// frame is a high-fidelity target for screen content:
-//   1080p@30 ~5 Mbps, 1080p@60 ~10 Mbps, 4K@30 ~20 Mbps, 4K@60 ~40 Mbps; ultra-wide
-//   scales by area. Floored at 1.5 Mbps, ceilinged by bitrateCeilingKbps().
-function computeAdaptiveBitrate(width, height, fps) {
-  const pixels = (width || 1920) * (height || 1080);
-  const f = fps && fps > 0 ? fps : 30;
-  const targetKbps = Math.round((pixels * f * 0.08) / 1000);
-  return Math.max(1500, Math.min(targetKbps, bitrateCeilingKbps()));
-}
-const CONNECT_TIMEOUT_MS = 30_000;    // Mark a session failed if it doesn't reach 'connected'.
-const ACK_TIMEOUT_MS = 5_000;         // Socket ack budget for screen-share:start/offer/stop.
-
-// Cached feature detection for getDisplayMedia hints that Firefox rejects.
-let SUPPORTED_CONSTRAINTS = null;
-
-function resetState() {
-  // Tear down any leftover peers (defensive - unmount() should have already done this).
-  for (const [, pc] of peerConnections) {
-    try { pc.close(); } catch (_) { /* ignore */ }
-  }
-  peerConnections.clear();
-  pendingDeviceCandidates.clear();
-  for (const [, h] of connectionTimeouts) clearTimeout(h);
-  connectionTimeouts.clear();
-  if (stream) {
-    try { stream.getTracks().forEach(t => t.stop()); } catch (_) { /* ignore */ }
-    stream = null;
-  }
+function resetViewSubscriptions() {
+  if (engineUnsub) { try { engineUnsub(); } catch (_) { /* */ } engineUnsub = null; }
+  if (captureEndedUnsub) { try { captureEndedUnsub(); } catch (_) { /* */ } captureEndedUnsub = null; }
 }
 
 // ----------------------------------------------------------------------
 // Lifecycle
 // ----------------------------------------------------------------------
 export async function render(container) {
-  resetState(); // CRITICAL: re-render must not inherit stale peer connections.
+  resetViewSubscriptions(); // CRITICAL: re-render must not stack duplicate subscriptions.
   activeContainer = container;
 
   container.innerHTML = `
@@ -226,45 +185,58 @@ export async function render(container) {
     </div>
   `;
 
-  // Wire listeners IMMEDIATELY so a click during async fetches isn't lost.
-  wireSocketListeners();
+  // Bring up the engine (idempotent): primes ICE + wires signaling once.
+  engine.init().then(() => paintDiagnostics()).catch(() => paintDiagnostics());
+
+  // Repaint the session list on every engine state change, even those caused
+  // by another view / the broadcast chip.
+  engineUnsub = engine.onChange(() => refreshSessionList());
+  // If the browser "Stop sharing" pill ends capture, sync this view's UI.
+  captureEndedUnsub = engine.onCaptureEnded(() => syncCaptureStoppedUI());
+
   container.querySelector('#ss-start-capture').addEventListener('click', () => startCapture());
-  container.querySelector('#ss-stop-capture').addEventListener('click', () => stopCapture());
+  container.querySelector('#ss-stop-capture').addEventListener('click', () => engine.stopAll());
   container.querySelectorAll('input[name="content-hint"]').forEach(el => {
     el.addEventListener('change', (e) => applyContentHint(e.target.value));
   });
 
   // Fire-and-forget. The router does not await render().
-  primeIceServers();
   populateTargetList();
+  // If a broadcast is already live (engine survived a prior navigation),
+  // reflect it immediately + re-attach the preview to the live stream.
+  rehydrateFromEngine();
 }
 
 export function unmount() {
-  // Called by the router when navigating away. Tear down all peer connections
-  // and stop tracks - leaving them running would keep broadcasting silently.
-  dbg('unmount: cleaning up active broadcasts');
-  stopCapture();
+  // Called by the router when navigating away. The broadcast lives in the
+  // engine singleton, NOT this view, so we DO NOT stop capture here — the
+  // share must survive navigation. Only detach this view's subscriptions and
+  // drop the container reference.
+  dbg('unmount: detaching view subscriptions (broadcast persists in engine)');
+  resetViewSubscriptions();
   activeContainer = null;
 }
 
-// ----------------------------------------------------------------------
-// ICE config fetch
-// ----------------------------------------------------------------------
-async function primeIceServers() {
-  try {
-    iceConfig = await apiGet('/api/screen-share/turn-credentials');
-  } catch (e) {
-    warnLog('failed to fetch ICE servers, using STUN-only fallback:', e);
-    iceConfig = {
-      iceServers: [
-        { urls: 'stun:stun.cloudflare.com:3478' },
-        { urls: 'stun:stun.l.google.com:19302' },
-      ],
-      turnEnabled: false,
-      turnProvider: 'fallback-stun',
-      iceTransportPolicy: 'all',
-    };
+// Reflect an already-live engine broadcast when (re)mounting the view: show the
+// preview + target sections, re-attach the live stream to the <video>, mark the
+// active target checkboxes, and paint the session list.
+function rehydrateFromEngine() {
+  const liveStream = engine.getStream();
+  if (liveStream && activeContainer) {
+    const videoEl = activeContainer.querySelector('#ss-preview');
+    if (videoEl) videoEl.srcObject = liveStream;
+    const previewCard = activeContainer.querySelector('#ss-preview-card');
+    if (previewCard) previewCard.hidden = false;
+    const targets = activeContainer.querySelector('#ss-targets-section');
+    if (targets) targets.hidden = false;
+    setSourceStatus('Broadcast in progress (re-attached from background).');
   }
+  refreshSessionList();
+}
+
+function paintDiagnostics() {
+  const iceConfig = engine.getIceConfig();
+  if (!iceConfig) return;
   const diag = document.getElementById('ss-diag-ice');
   const turn = document.getElementById('ss-diag-turn');
   if (diag) {
@@ -346,6 +318,11 @@ async function populateTargetList() {
       return;
     }
     listEl.innerHTML = html;
+
+    // If a broadcast is already live, pre-check the matching boxes + wire
+    // change handlers (mirrors the post-capture wiring done in startCapture).
+    syncTargetChecksFromEngine();
+    wireTargetCheckboxHandlers();
   } catch (e) {
     listEl.innerHTML = `<div class="muted">Could not load displays: ${escapeHtml(e.message || String(e))}</div>`;
   }
@@ -368,95 +345,28 @@ function resolveWallTargets(wallId) {
 }
 
 // ----------------------------------------------------------------------
-// 1. Capture
+// 1. Capture (delegates to the engine; this view owns the preview UI).
 // ----------------------------------------------------------------------
 async function startCapture() {
-  if (stream) {
-    setSourceStatus('Already capturing. Stop the current capture first.');
+  const res = await engine.startCapture(currentContentHint);
+  if (!res.ok) {
+    setSourceStatus(res.status || 'Could not start capture.');
     return;
   }
 
-  // Strict secure-context guard.
-  if (!window.isSecureContext) {
-    setSourceStatus('Screen sharing requires HTTPS. This page is not in a secure context.');
-    return;
-  }
-
-  if (!navigator.mediaDevices || typeof navigator.mediaDevices.getDisplayMedia !== 'function') {
-    setSourceStatus('Your browser does not support getDisplayMedia. Use Chrome / Edge / Firefox latest.');
-    return;
-  }
-
-  // Feature-detect once. Firefox rejects some Chromium-only top-level keys
-  // outright instead of ignoring them; spread only known-supported keys.
-  if (!SUPPORTED_CONSTRAINTS) {
-    SUPPORTED_CONSTRAINTS = navigator.mediaDevices.getSupportedConstraints
-      ? navigator.mediaDevices.getSupportedConstraints()
-      : {};
-  }
-
-  const baseConstraints = {
-    video: {
-      frameRate: { ideal: currentContentHint === 'motion' ? 60 : 30, max: 60 },
-      // Adaptive resolution: 'ideal' targets at 4K scale with NO hard max, so the
-      // browser captures the source's absolute native resolution (4K, ultra-wide,
-      // even the full 12372x2160 wall canvas where the source supports it). The
-      // browser gracefully falls back to whatever the source can actually provide;
-      // adaptive bitrate (computeAdaptiveBitrate) sizes the encoder to the real
-      // captured geometry, and the receiver scales via object-fit.
-      width: { ideal: 3840 },
-      height: { ideal: 2160 },
-    },
-    audio: {
-      echoCancellation: false,
-      noiseSuppression: false,
-      autoGainControl: false,
-    },
-  };
-  // Conditional hints — these are Chromium 105+ / partial in newer Firefox.
-  if ('systemAudio' in SUPPORTED_CONSTRAINTS || true) {
-    baseConstraints.systemAudio = 'include';
-  }
-  if ('selfBrowserSurface' in SUPPORTED_CONSTRAINTS || true) {
-    baseConstraints.selfBrowserSurface = 'exclude';
-  }
-  if ('surfaceSwitching' in SUPPORTED_CONSTRAINTS || true) {
-    baseConstraints.surfaceSwitching = 'include';
-  }
-
-  try {
-    stream = await navigator.mediaDevices.getDisplayMedia(baseConstraints);
-  } catch (e) {
-    if (e && e.name === 'NotAllowedError') {
-      setSourceStatus('Capture cancelled. Click the button to try again.');
-      return;
-    }
-    errLog('getDisplayMedia failed:', e);
-    setSourceStatus(`Failed to start capture: ${e.message || e.name || 'unknown'}`);
-    return;
-  }
-
-  applyContentHint(currentContentHint);
-
-  const videoTrack = stream.getVideoTracks()[0];
-  // Capture container reference - this handler outlives synchronous scope.
-  const containerRef = activeContainer;
-  videoTrack.addEventListener('ended', () => {
-    // User clicked the browser's "Stop sharing" pill.
-    if (containerRef === activeContainer) stopCapture();
-  });
-
+  const liveStream = res.stream;
   if (!activeContainer) return; // View was unmounted between async hops.
 
   const videoEl = activeContainer.querySelector('#ss-preview');
-  if (videoEl) videoEl.srcObject = stream;
+  if (videoEl) videoEl.srcObject = liveStream;
   activeContainer.querySelector('#ss-preview-card').hidden = false;
   activeContainer.querySelector('#ss-targets-section').hidden = false;
   setSourceStatus('Captured. Pick destinations below to start broadcasting.');
 
   const meta = activeContainer.querySelector('#ss-preview-meta');
-  const settings = videoTrack.getSettings ? videoTrack.getSettings() : {};
-  const audioOn = stream.getAudioTracks().length > 0;
+  const videoTrack = liveStream.getVideoTracks()[0];
+  const settings = videoTrack && videoTrack.getSettings ? videoTrack.getSettings() : {};
+  const audioOn = liveStream.getAudioTracks().length > 0;
   if (meta) {
     meta.innerHTML = `
       <span><strong>Surface:</strong> ${escapeHtml(settings.displaySurface || 'unknown')}</span>
@@ -466,10 +376,23 @@ async function startCapture() {
     `;
   }
 
-  // Wire up checkbox handlers. A wall checkbox starts/stops broadcasts to all
-  // its members in lockstep; a device checkbox starts/stops one peer. Wall
-  // members carry the computed wall_tile so each receiver clips to its slice.
+  // Wire up checkbox handlers (idempotent-ish: populateTargetList already wires
+  // them, but capture may complete before/after that fetch resolves, so ensure
+  // they're attached here too).
+  wireTargetCheckboxHandlers();
+}
+
+function applyContentHint(hint) {
+  currentContentHint = hint;
+  engine.applyContentHint(hint);
+}
+
+// Attach change handlers to the target checkboxes. Guarded by a per-element
+// sentinel so repeated calls (populateTargetList + startCapture) don't stack.
+function wireTargetCheckboxHandlers() {
   document.querySelectorAll('#ss-target-list input[type=checkbox]').forEach(cb => {
+    if (cb.__ssWired) return;
+    cb.__ssWired = true;
     cb.addEventListener('change', async (e) => {
       const wallId = e.target.dataset.wallId;
       const deviceId = e.target.dataset.deviceId;
@@ -484,7 +407,7 @@ async function startCapture() {
             // (the user sees per-tile status in the Active broadcasts list
             // and can stop the wall to roll back).
             const settled = await Promise.allSettled(
-              targets.map(t => startBroadcastTo(t.device_id, t.wall_tile))
+              targets.map(t => engine.startBroadcastTo(t.device_id, { wallTile: t.wall_tile }))
             );
             const failures = settled.filter(s => s.status === 'rejected');
             if (failures.length === targets.length) {
@@ -495,8 +418,11 @@ async function startCapture() {
               alert(`Broadcasting to ${targets.length - failures.length} of ${targets.length} wall tiles. Check the Active broadcasts list for which tile failed.`);
             }
           } else {
-            await startBroadcastTo(deviceId);
+            await engine.startBroadcastTo(deviceId);
           }
+          // First successful broadcast may have triggered capture-on-demand;
+          // reflect the preview if it's not already showing.
+          rehydratePreviewIfNeeded();
         } catch (err) {
           errLog('start broadcast failed:', err);
           alert(`Could not broadcast to that target:\n${err.message || err}`);
@@ -507,9 +433,9 @@ async function startCapture() {
       } else {
         if (isWall) {
           const targets = resolveWallTargets(wallId);
-          await Promise.allSettled(targets.map(t => stopBroadcastTo(t.device_id)));
+          await Promise.allSettled(targets.map(t => engine.stopBroadcastTo(t.device_id)));
         } else {
-          await stopBroadcastTo(deviceId);
+          await engine.stopBroadcastTo(deviceId);
         }
       }
       refreshSessionList();
@@ -517,25 +443,37 @@ async function startCapture() {
   });
 }
 
-function applyContentHint(hint) {
-  currentContentHint = hint;
-  if (!stream) return;
-  const track = stream.getVideoTracks()[0];
-  if (track && 'contentHint' in track) {
-    track.contentHint = hint; // 'detail' or 'motion'
+// Pre-check the boxes for targets the engine is already broadcasting to.
+function syncTargetChecksFromEngine() {
+  const active = new Set(engine.getActiveTargets());
+  document.querySelectorAll('#ss-target-list input[data-device-id]').forEach(cb => {
+    cb.checked = active.has(cb.dataset.deviceId);
+  });
+  // A wall checkbox is "on" only if all its broadcastable members are active.
+  document.querySelectorAll('#ss-target-list input[data-wall-id]').forEach(cb => {
+    const targets = resolveWallTargets(cb.dataset.wallId);
+    cb.checked = targets.length > 0 && targets.every(t => active.has(t.device_id));
+  });
+}
+
+// If the engine has a live stream but the preview isn't showing it yet
+// (broadcast started via capture-on-demand from a checkbox click), attach it.
+function rehydratePreviewIfNeeded() {
+  if (!activeContainer) return;
+  const liveStream = engine.getStream();
+  if (!liveStream) return;
+  const previewCard = activeContainer.querySelector('#ss-preview-card');
+  if (previewCard && previewCard.hidden) {
+    const videoEl = activeContainer.querySelector('#ss-preview');
+    if (videoEl && !videoEl.srcObject) videoEl.srcObject = liveStream;
+    previewCard.hidden = false;
+    activeContainer.querySelector('#ss-targets-section').hidden = false;
   }
 }
 
-function stopCapture() {
-  // Snapshot keys before iteration; stopBroadcastTo mutates the map.
-  const deviceIds = Array.from(peerConnections.keys());
-  for (const deviceId of deviceIds) {
-    stopBroadcastTo(deviceId).catch(() => { /* swallow during teardown */ });
-  }
-  if (stream) {
-    stream.getTracks().forEach(t => { try { t.stop(); } catch (_) { /* */ } });
-    stream = null;
-  }
+// Sync this view's UI back to the idle state after the engine stops capture
+// (browser "Stop sharing" pill, stopAll, or last-peer drop).
+function syncCaptureStoppedUI() {
   if (activeContainer) {
     const previewCard = activeContainer.querySelector('#ss-preview-card');
     if (previewCard) previewCard.hidden = true;
@@ -549,266 +487,7 @@ function stopCapture() {
       cb.disabled = false;
     });
   }
-  for (const [, h] of connectionTimeouts) clearTimeout(h);
-  connectionTimeouts.clear();
-  pendingDeviceCandidates.clear();
-}
-
-// ----------------------------------------------------------------------
-// 2. Per-device broadcast (one RTCPeerConnection per target device)
-// ----------------------------------------------------------------------
-async function startBroadcastTo(deviceId, wallTile = null) {
-  if (!stream) throw new Error('No active capture stream');
-  if (peerConnections.has(deviceId)) {
-    dbg(`broadcast to ${deviceId} already running`);
-    return;
-  }
-
-  const sock = getSocket();
-  if (!sock || !sock.connected) throw new Error('Dashboard socket not connected');
-
-  // Server-side session setup. wall_tile is optional - when present, the
-  // server forwards it to the receiver so it can render this device's
-  // slice of the wall canvas instead of a fullscreen overlay.
-  const startPayload = wallTile
-    ? { device_id: deviceId, wall_tile: wallTile }
-    : { device_id: deviceId };
-  const startAck = await emitWithAck(sock, 'screen-share:start', startPayload);
-  if (!startAck || !startAck.ok) {
-    throw new Error(startAck && startAck.error ? startAck.error : 'server refused screen-share:start');
-  }
-
-  const pc = new RTCPeerConnection({
-    iceServers: iceConfig.iceServers,
-    iceTransportPolicy: iceConfig.iceTransportPolicy || 'all',
-    bundlePolicy: 'max-bundle',
-  });
-  peerConnections.set(deviceId, pc);
-  pendingDeviceCandidates.set(deviceId, []);
-
-  // Compute the adaptive per-receiver bitrate from the ACTUAL captured geometry
-  // (resolution + frame rate). No fixed cap — see computeAdaptiveBitrate above.
-  // Captured once here and reused by applyBitrateCap() below (closure scope).
-  let adaptiveBitrateKbps = bitrateCeilingKbps();
-  const capturedTrack = stream.getVideoTracks()[0];
-  const capturedSettings = capturedTrack && capturedTrack.getSettings ? capturedTrack.getSettings() : {};
-  if (capturedSettings.width && capturedSettings.height) {
-    adaptiveBitrateKbps = computeAdaptiveBitrate(capturedSettings.width, capturedSettings.height, capturedSettings.frameRate);
-  }
-  dbg(`adaptive bitrate ${adaptiveBitrateKbps} kbps for ${capturedSettings.width || '?'}x${capturedSettings.height || '?'}@${capturedSettings.frameRate || '?'}`);
-
-  // Add tracks via transceivers with explicit sendonly direction + the adaptive
-  // bitrate target baked in via sendEncodings. This is the modern API and is
-  // the only way to clamp encoder bitrate BEFORE negotiation. The deprecated
-  // sender.setParameters() post-negotiation path silently no-ops in many
-  // browsers because the encoder isn't bound yet at addTrack time.
-  for (const track of stream.getTracks()) {
-    const initEncoding = track.kind === 'video'
-      ? [{ maxBitrate: adaptiveBitrateKbps * 1000, networkPriority: 'high' }]
-      : undefined;
-    try {
-      pc.addTransceiver(track, {
-        direction: 'sendonly',
-        streams: [stream],
-        ...(initEncoding ? { sendEncodings: initEncoding } : {}),
-      });
-    } catch (e) {
-      // Fallback for ancient browsers without addTransceiver(sendEncodings).
-      warnLog('addTransceiver with sendEncodings failed, falling back to addTrack:', e);
-      pc.addTrack(track, stream);
-    }
-  }
-
-  // Belt-and-suspenders: re-apply the bitrate cap post-negotiation in case
-  // the browser ignored sendEncodings (older Chromium variants).
-  const applyBitrateCap = async () => {
-    for (const sender of pc.getSenders()) {
-      if (!sender.track || sender.track.kind !== 'video') continue;
-      try {
-        const params = sender.getParameters();
-        if (!params.encodings || params.encodings.length === 0) {
-          params.encodings = [{}];
-        }
-        params.encodings[0].maxBitrate = adaptiveBitrateKbps * 1000;
-        await sender.setParameters(params);
-      } catch (_) { /* tolerate older browsers */ }
-    }
-  };
-
-  pc.onicecandidate = (ev) => {
-    if (ev.candidate && sock.connected) {
-      sock.emit('screen-share:ice-candidate', {
-        device_id: deviceId,
-        candidate: ev.candidate.toJSON ? ev.candidate.toJSON() : ev.candidate,
-      });
-    }
-  };
-
-  pc.onconnectionstatechange = () => {
-    dbg(`pc(${deviceId}) state:`, pc.connectionState);
-    refreshSessionList();
-    const state = pc.connectionState;
-    if (state === 'connected') {
-      clearConnectTimeout(deviceId);
-      applyBitrateCap();
-    } else if (state === 'failed') {
-      // CRITICAL: notify server so activeSessions is cleared and the user
-      // can restart immediately. Without this, the next start attempt fails.
-      warnLog(`pc(${deviceId}) connection failed; notifying server`);
-      stopBroadcastTo(deviceId).catch(() => {});
-    } else if (state === 'closed') {
-      peerConnections.delete(deviceId);
-      pendingDeviceCandidates.delete(deviceId);
-      clearConnectTimeout(deviceId);
-    }
-  };
-
-  // 30-second connect timeout: if we don't reach 'connected' in time, treat
-  // as failed. ICE 'failed' often takes >30s to fire on its own; this gives
-  // the user feedback faster.
-  const timeoutHandle = setTimeout(() => {
-    if (pc.connectionState !== 'connected' && pc.connectionState !== 'closed') {
-      warnLog(`pc(${deviceId}) connect timeout after ${CONNECT_TIMEOUT_MS}ms; tearing down`);
-      stopBroadcastTo(deviceId).catch(() => {});
-    }
-  }, CONNECT_TIMEOUT_MS);
-  connectionTimeouts.set(deviceId, timeoutHandle);
-
-  // The offer-direction args are deprecated but harmless. The actual
-  // direction is determined by the transceivers we added above.
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-
-  const offerAck = await emitWithAck(sock, 'screen-share:offer', {
-    device_id: deviceId,
-    sdp: pc.localDescription,
-  });
-  if (!offerAck || !offerAck.ok) {
-    try { pc.close(); } catch (_) { /* */ }
-    peerConnections.delete(deviceId);
-    pendingDeviceCandidates.delete(deviceId);
-    clearConnectTimeout(deviceId);
-    throw new Error(offerAck && offerAck.error ? offerAck.error : 'server refused screen-share:offer');
-  }
-}
-
-async function stopBroadcastTo(deviceId) {
-  const pc = peerConnections.get(deviceId);
-  if (pc) {
-    try { pc.close(); } catch (_) { /* */ }
-    peerConnections.delete(deviceId);
-  }
-  pendingDeviceCandidates.delete(deviceId);
-  clearConnectTimeout(deviceId);
-  const sock = getSocket();
-  if (sock && sock.connected) {
-    await emitWithAck(sock, 'screen-share:stop', { device_id: deviceId }).catch(() => {});
-  }
-  // Sync UI: uncheck the corresponding checkbox.
-  const cb = document.querySelector(`#ss-target-list input[data-device-id="${cssEscape(deviceId)}"]`);
-  if (cb) cb.checked = false;
   refreshSessionList();
-}
-
-function clearConnectTimeout(deviceId) {
-  const h = connectionTimeouts.get(deviceId);
-  if (h) {
-    clearTimeout(h);
-    connectionTimeouts.delete(deviceId);
-  }
-}
-
-// ----------------------------------------------------------------------
-// Socket listeners (idempotent: wired once per socket instance via a
-// sentinel property. Re-wires automatically if the underlying socket
-// reconnects with a new connection.)
-// ----------------------------------------------------------------------
-function wireSocketListeners() {
-  const sock = getSocket();
-  if (!sock) {
-    // Socket not ready yet (login race); retry on next tick.
-    setTimeout(wireSocketListeners, 250);
-    return;
-  }
-  if (sock.__screenShareDashboardWired) return;
-  sock.__screenShareDashboardWired = true;
-
-  // Device answered our offer - apply remote description, then drain any
-  // buffered ICE candidates that arrived while we were waiting.
-  sock.on('screen-share:answer', async ({ device_id, sdp }) => {
-    const pc = peerConnections.get(device_id);
-    if (!pc) return;
-    try {
-      await pc.setRemoteDescription(sdp);
-      const buffered = pendingDeviceCandidates.get(device_id) || [];
-      pendingDeviceCandidates.set(device_id, []);
-      for (const c of buffered) {
-        try { await pc.addIceCandidate(c); } catch (e) { warnLog('drained addIceCandidate failed:', e); }
-      }
-    } catch (e) {
-      errLog('setRemoteDescription failed:', e);
-      stopBroadcastTo(device_id).catch(() => {});
-    }
-  });
-
-  // Device's ICE candidates. Buffer if remote description not yet set
-  // (race: candidate can arrive before answer event on lossy networks).
-  sock.on('screen-share:device-ice-candidate', async ({ device_id, candidate }) => {
-    const pc = peerConnections.get(device_id);
-    if (!pc) return;
-    if (!pc.remoteDescription) {
-      const buf = pendingDeviceCandidates.get(device_id) || [];
-      buf.push(candidate);
-      pendingDeviceCandidates.set(device_id, buf);
-      return;
-    }
-    try {
-      await pc.addIceCandidate(candidate);
-    } catch (e) {
-      warnLog('addIceCandidate failed:', e);
-    }
-  });
-
-  // Server tells us another broadcaster preempted our session.
-  sock.on('screen-share:preempted', ({ device_id }) => {
-    warnLog(`preempted on device ${device_id}`);
-    const pc = peerConnections.get(device_id);
-    if (pc) {
-      try { pc.close(); } catch (_) { /* */ }
-      peerConnections.delete(device_id);
-    }
-    pendingDeviceCandidates.delete(device_id);
-    clearConnectTimeout(device_id);
-    const cb = document.querySelector(`#ss-target-list input[data-device-id="${cssEscape(device_id)}"]`);
-    if (cb) cb.checked = false;
-    refreshSessionList();
-  });
-
-  // Device ended the session on its end.
-  sock.on('screen-share:ended-by-device', ({ device_id }) => {
-    dbg(`device ${device_id} ended session`);
-    const pc = peerConnections.get(device_id);
-    if (pc) {
-      try { pc.close(); } catch (_) { /* */ }
-      peerConnections.delete(device_id);
-    }
-    pendingDeviceCandidates.delete(device_id);
-    clearConnectTimeout(device_id);
-    const cb = document.querySelector(`#ss-target-list input[data-device-id="${cssEscape(device_id)}"]`);
-    if (cb) cb.checked = false;
-    refreshSessionList();
-  });
-
-  // Re-wire on socket reconnect: the sentinel lives on the socket instance,
-  // so a fresh socket gets a fresh wiring pass via getSocket().
-  if (sock.io && typeof sock.io.on === 'function') {
-    sock.io.on('reconnect', () => {
-      dbg('socket reconnected; re-wiring screen-share listeners');
-      // The reconnected manager reuses the same socket object - the sentinel
-      // remains set and listeners are intact. This handler exists for
-      // observability; explicit re-wiring would create duplicates.
-    });
-  }
 }
 
 // ----------------------------------------------------------------------
@@ -818,9 +497,13 @@ function refreshSessionList() {
   const list = document.getElementById('ss-session-list');
   const section = document.getElementById('ss-sessions-section');
   if (!list || !section) return;
-  if (peerConnections.size === 0) {
+  const states = engine.getTargetStates();
+  if (states.size === 0) {
     section.hidden = true;
     list.innerHTML = '';
+    // No active broadcast: also collapse the preview/targets if the engine
+    // released capture (e.g. last peer stopped from another view / the chip).
+    if (!engine.getStream()) syncCaptureStoppedUI();
     return;
   }
   section.hidden = false;
@@ -834,9 +517,8 @@ function refreshSessionList() {
   });
 
   const seen = new Set();
-  for (const [deviceId, pc] of peerConnections) {
+  for (const [deviceId, state] of states) {
     seen.add(deviceId);
-    const state = pc.connectionState || 'new';
     let row = existingRows.get(deviceId);
     if (!row) {
       row = document.createElement('div');
@@ -849,7 +531,9 @@ function refreshSessionList() {
       `;
       row.querySelector('.ss-session-device').textContent = deviceId;
       row.querySelector('button').addEventListener('click', () => {
-        stopBroadcastTo(deviceId);
+        engine.stopBroadcastTo(deviceId);
+        const cb = document.querySelector(`#ss-target-list input[data-device-id="${cssEscape(deviceId)}"]`);
+        if (cb) cb.checked = false;
       });
       list.appendChild(row);
     }
@@ -875,13 +559,4 @@ function escapeHtml(s) {
 
 function cssEscape(s) {
   return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/"/g, '\\"');
-}
-
-function emitWithAck(socket, event, payload, timeoutMs = ACK_TIMEOUT_MS) {
-  return new Promise((resolve) => {
-    socket.timeout(timeoutMs).emit(event, payload, (err, ack) => {
-      if (err) resolve({ ok: false, error: 'no_ack' });
-      else resolve(ack || { ok: false, error: 'no_ack' });
-    });
-  });
 }
