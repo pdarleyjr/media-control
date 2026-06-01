@@ -194,7 +194,12 @@ async function handleFiles(files) {
     progressText.textContent = t('content.upload_progress_named', { name: file.name });
 
     try {
-      await api.uploadContent(file, (pct) => {
+      // Large files (>90MB) go through the resumable tus path so they clear
+      // Cloudflare's ~100MB per-request edge limit; smaller files use the
+      // simple multipart POST. Falls back to multipart if tus isn't loaded.
+      const useResumable = !!(window.tus && window.tus.Upload) && file.size > 90 * 1024 * 1024;
+      const uploader = useResumable ? api.uploadContentResumable : api.uploadContent;
+      await uploader(file, (pct) => {
         progressFill.style.width = pct + '%';
         progressText.textContent = t('content.upload_progress_named_pct', { name: file.name, pct });
       });

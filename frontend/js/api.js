@@ -126,6 +126,36 @@ export const api = {
     });
   },
 
+  // Resumable chunked upload (tus) for large files. Splits the file into 32MB
+  // PATCH requests so each stays under Cloudflare's ~100MB edge body limit and
+  // the upload survives connection drops (Starlink). Requires the vendored
+  // tus-js-client (window.tus, loaded in index.html). The server finalize hook
+  // creates the content row and returns its id in the X-Content-Id header.
+  uploadContentResumable: (file, onProgress) => new Promise((resolve, reject) => {
+    if (!window.tus || !window.tus.Upload) return reject(new Error('Resumable uploader not loaded'));
+    const token = localStorage.getItem('token');
+    let contentId = null;
+    const upload = new window.tus.Upload(file, {
+      endpoint: `${API_BASE}/tus`,
+      chunkSize: 32 * 1024 * 1024, // 32MB < Cloudflare 100MB edge limit
+      retryDelays: [0, 1000, 3000, 5000, 10000, 20000],
+      removeFingerprintOnSuccess: true,
+      metadata: { filename: file.name, filetype: file.type || 'application/octet-stream' },
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      onError: (err) => reject(err),
+      onProgress: (sent, total) => { if (onProgress && total) onProgress(Math.round((sent / total) * 100)); },
+      onAfterResponse: (req, res) => {
+        try { const id = res.getHeader && res.getHeader('X-Content-Id'); if (id) contentId = id; } catch { /* ignore */ }
+      },
+      onSuccess: () => resolve(contentId ? { id: contentId } : {}),
+    });
+    // Resume an interrupted upload of the same file if one exists.
+    upload.findPreviousUploads().then((prev) => {
+      if (prev && prev.length) upload.resumeFromPreviousUpload(prev[0]);
+      upload.start();
+    }).catch(() => upload.start());
+  }),
+
   addRemoteContent: (url, name, mime_type) => request('/content/remote', {
     method: 'POST',
     body: JSON.stringify({ url, name, mime_type })

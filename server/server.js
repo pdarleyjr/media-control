@@ -423,6 +423,14 @@ app.use('/api/workspaces', requireAuth, require('./routes/workspaces'));
 
 app.use('/api/devices', requireAuth, resolveTenancy, require('./routes/devices'));
 app.use('/api/content', requireAuth, resolveTenancy, require('./routes/content'));
+// Resumable chunked uploads (tus) — for multi-GB files that exceed Cloudflare's
+// ~100MB per-request edge limit. app.all (not app.use) so req.url keeps the
+// /api/tus prefix the tus Server matches on; auth runs first so onUploadFinish
+// sees req.user / req.workspaceId. No rate-limit (a 20GB file is hundreds of PATCHes).
+const tusServer = require('./routes/tus');
+const tusHandle = (req, res) => tusServer.handle(req, res);
+app.all('/api/tus', requireAuth, resolveTenancy, tusHandle);
+app.all('/api/tus/*', requireAuth, resolveTenancy, tusHandle);
 app.use('/api/folders', requireAuth, resolveTenancy, require('./routes/folders'));
 app.use('/api/assignments', requireAuth, resolveTenancy, require('./routes/assignments'));
 app.use('/api/provision', requireAuth, resolveTenancy, require('./routes/provisioning'));
