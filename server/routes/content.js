@@ -11,6 +11,7 @@ const { sanitizeString } = require('../middleware/sanitize');
 const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
 // Phase 2.2b: workspace-aware access. Mirrors the pattern from devices.js.
 const { accessContext } = require('../lib/tenancy');
+const { ownedContentScope } = require('../lib/content-scope');
 
 // Multer captures file.originalname directly from the multipart filename header,
 // bypassing sanitizeBody. Apply the same HTML-escape here so a filename like
@@ -59,8 +60,9 @@ router.get('/', (req, res) => {
   if (!req.workspaceId) return res.json([]);
   const folder = req.query.folder;
   const folderId = req.query.folder_id;
-  let sql = 'SELECT * FROM content WHERE (workspace_id = ? OR workspace_id IS NULL)';
-  const params = [req.workspaceId];
+  const scope = ownedContentScope(req.workspaceId, req.user.id);
+  let sql = `SELECT * FROM content WHERE ${scope.clause}`;
+  const params = [...scope.params];
   if (folder) { sql += ' AND folder = ?'; params.push(folder); }
   if (folderId !== undefined) {
     if (folderId === 'root' || folderId === '') {
@@ -79,9 +81,10 @@ router.get('/', (req, res) => {
 // Get folders list for the caller's current workspace.
 router.get('/folders', (req, res) => {
   if (!req.workspaceId) return res.json([]);
+  const scope = ownedContentScope(req.workspaceId, req.user.id);
   const folders = db.prepare(
-    'SELECT folder, COUNT(*) as count FROM content WHERE folder IS NOT NULL AND (workspace_id = ? OR workspace_id IS NULL) GROUP BY folder ORDER BY folder'
-  ).all(req.workspaceId);
+    `SELECT folder, COUNT(*) as count FROM content WHERE folder IS NOT NULL AND ${scope.clause} GROUP BY folder ORDER BY folder`
+  ).all(...scope.params);
   res.json(folders);
 });
 
@@ -363,6 +366,11 @@ function checkContentWrite(req, res) {
   // Workspace_viewer is read-only; acting-as (platform_admin or org owner/admin) and editor/admin pass.
   if (!ctx.actingAs && ctx.workspaceRole === 'workspace_viewer') {
     res.status(403).json({ error: 'Read-only access' }); return null;
+  }
+  // Per-user ownership: non-platform-admin users may only update/delete their own content.
+  // Platform admins acting-as pass through (ctx.actingAs is set for elevated impersonation).
+  if (!ctx.actingAs && !ELEVATED_ROLES.includes(req.user.role) && content.user_id && content.user_id !== req.user.id) {
+    res.status(403).json({ error: 'You can only modify your own content' }); return null;
   }
   return content;
 }
