@@ -1205,9 +1205,17 @@ Make the Files page work per-user and bidirectional, using the box's **existing 
 - [ ] **Security pass:** the email is ALWAYS `req.user.email`, never a client header (header-spoofing test). Path-traversal clamp at the media-control boundary.
 - [ ] Regression: presentation save survives `:8005` unreachable. Then full staging loop as a real member.
 
-## Deployment (after the branch is verified)
+## Deployment (after the branch is verified) — single all-at-once deploy
 
-CI is billing-blocked — deploy manually on the GMKtec box (`mbfd@/opt/...` per the deploy runbook): merge to `main`, on the box `git pull` (read-only deploy key), then rebuild the `app/` build context and `docker compose up -d`. The player and all socket event names are unchanged, so deployed TVs need no update and currently-connected displays stay connected.
+CI is billing-blocked — deploy manually on the GMKtec box. The player and all socket event names are unchanged, so deployed TVs need no update and currently-connected displays stay connected. Do these in order, then run the post-deploy E2E:
+
+1. **Binary read endpoint for Nextcloud media (REQUIRED for broadcast-from-NC to work).** The existing `nextcloud-user-fs` service `/read_file` returns **text only, ~2 MB cap** — broadcasting binary media (image/video) through it produces **corrupted** files. At deploy: read that service's source on the box, add an **additive** binary endpoint (e.g. `POST /read_file_b64` returning `{ base64, mime, name, size }`, same `X-OpenWebUI-User-Email` scoping + bearer token, traversal-safe, raise the size cap for media), rebuild **only** that container (it's shared with OpenWebUI — an additive endpoint won't break existing OWUI tools). Then update `server/services/nextcloud-fs.js readFile()` to call `/read_file_b64` and `Buffer.from(base64,'base64')` (the Files `/download` + `/api/files/broadcast` paths inherit it). Verify a real JPEG round-trips byte-identical.
+2. **Join media-control to the `mbfd-ai` network** so it can reach `nextcloud-user-fs:8000` / `nextcloud-write:8000` by name (compose `networks: [..., mbfd-ai]` + `mbfd-ai: { external: true }`; survives recreate).
+3. **Set container env:** `NC_USERFS_URL=http://nextcloud-user-fs:8000`, `NC_WRITE_URL=http://nextcloud-write:8000`, and the **service bearer tokens** `NC_USERFS_TOKEN` / `NC_WRITE_TOKEN` (read the real values from the `nextcloud-user-fs` / `nextcloud-write` container envs). Without the tokens every call 401s.
+4. **Ship the branch:** merge `feature/unified-media-control-dashboard` → `main`, on the box `git pull` (read-only deploy key) at `mbfd@/opt` (verify the current host/path first), rebuild the `app/` build context, `docker compose up -d`. (The DB is the live one — additive migrations only; **never wipe**.)
+5. **Run the shared-workspace migration:** `docker exec media-control node /app/server/scripts/share-workspace-migration.js` — puts all 14 members into the shared workspace (admins→workspace_admin, rest→workspace_editor) so everyone sees/broadcasts every display while files stay per-user.
+6. **In-container verify:** `nextcloud-user-fs` list returns Peter's files with the email header + bearer; `/api/version` 200 through the public URL.
+7. **Post-deploy E2E** (laptop test display online): login as Peter → `#/control` renders → broadcast media to the laptop display → split a display into regions → whiteboard → share-screen survives navigation → broadcast a Nextcloud file to the laptop display → create a presentation and confirm a `.pptx` lands in that user's Nextcloud. Confirm a second member sees the displays but only their own files. Confirm the landing now lands on `#/control` for all roles, and old tabs still load.
 
 ---
 
