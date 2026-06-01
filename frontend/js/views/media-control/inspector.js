@@ -11,9 +11,11 @@
 // membership (it already builds the wallMemberIds set) and passes isWallMember.
 
 import { api } from '../../api.js';
-import { FIT_MODES } from '../../player-protocol.js';
+import { WB, FIT_MODES } from '../../player-protocol.js';
 import { showToast } from '../../components/toast.js';
 import { renderRegionEditor } from './region-editor.js';
+import { getSocket } from '../../socket.js';
+import * as engine from '../../services/screen-share-engine.js';
 
 function esc(s) {
   return String(s == null ? '' : s)
@@ -85,6 +87,15 @@ export async function renderInspector(container, { display, isWallMember = false
           : `<button type="button" class="mc-btn mc-btn-primary mc-insp-partition" data-insp-partition>Partition into regions</button>`}
       </section>
 
+      <section class="mc-insp-section mc-insp-actions" id="mc-insp-actions">
+        <h3 class="mc-insp-subhead">Display actions</h3>
+        <div class="mc-insp-action-row">
+          <button type="button" class="mc-btn mc-btn-secondary" data-insp-wb-start>Turn into Whiteboard</button>
+          <button type="button" class="mc-btn mc-btn-secondary" data-insp-ss-start>Share My Screen here</button>
+          <button type="button" class="mc-btn mc-btn-danger-sm" data-insp-ss-stop hidden>Stop broadcast</button>
+        </div>
+      </section>
+
       <section class="mc-insp-section mc-insp-audio" id="mc-insp-audio" hidden>
         <h3 class="mc-insp-subhead">Region audio</h3>
         <p class="mc-insp-hint">Only one region plays audio at a time.</p>
@@ -111,6 +122,77 @@ export async function renderInspector(container, { display, isWallMember = false
       // Persisted per-zone inside the region editor; at display level this is a
       // hint surfaced for the next broadcast. No server call here by design.
       showToast(`Fit set to "${fitSel.value}" for the next send.`, 'success');
+    });
+  }
+
+  // ---- Whiteboard + Screen-share per-display actions ----
+  //
+  // "Turn into Whiteboard": emits WB.START to the display via the dashboard
+  // socket, reusing the same smartboard emit flow (no re-implementation needed;
+  // the server relays dashboard:wb-start → device:wb-show to the player).
+  //
+  // "Share My Screen here": starts a screen-share broadcast via the persistent
+  // engine singleton (capture is demand-triggered inside startBroadcastTo).
+  // The Stop button tears down just this display's peer connection.
+
+  const wbStartBtn = container.querySelector('[data-insp-wb-start]');
+  const ssStartBtn = container.querySelector('[data-insp-ss-start]');
+  const ssStopBtn  = container.querySelector('[data-insp-ss-stop]');
+
+  // Sync the Start/Stop button visibility to the engine state for this display.
+  function syncSsButtons() {
+    const active = engine.isActive() && engine.getActiveTargets().includes(display.id);
+    if (ssStartBtn) ssStartBtn.hidden = active;
+    if (ssStopBtn)  ssStopBtn.hidden  = !active;
+  }
+  syncSsButtons();
+
+  // Subscribe to engine changes so the buttons update if the broadcast
+  // starts/stops from another surface (chip Stop-all, screen-share view, etc.).
+  const unsubEngine = engine.onChange(() => syncSsButtons());
+  // Store on container so renderInspector can clean up on subsequent opens.
+  if (container.__unsubEngine) { container.__unsubEngine(); }
+  container.__unsubEngine = unsubEngine;
+
+  if (wbStartBtn) {
+    wbStartBtn.addEventListener('click', () => {
+      const sock = getSocket();
+      if (!sock || !sock.connected) {
+        showToast('Not connected — cannot start whiteboard.', 'error');
+        return;
+      }
+      // Emit dashboard:wb-start with device_id payload; the server relays this
+      // to the player as device:wb-show (asymmetric naming in the protocol).
+      sock.emit(WB.START, { device_id: display.id });
+      showToast(`Whiteboard started on "${display.name}".`, 'success');
+    });
+  }
+
+  if (ssStartBtn) {
+    ssStartBtn.addEventListener('click', async () => {
+      ssStartBtn.disabled = true;
+      try {
+        await engine.startBroadcastTo(display.id);
+        syncSsButtons();
+      } catch (e) {
+        showToast(e?.message || 'Could not start screen share.', 'error');
+      } finally {
+        ssStartBtn.disabled = false;
+      }
+    });
+  }
+
+  if (ssStopBtn) {
+    ssStopBtn.addEventListener('click', async () => {
+      ssStopBtn.disabled = true;
+      try {
+        await engine.stopBroadcastTo(display.id);
+        syncSsButtons();
+      } catch (e) {
+        showToast(e?.message || 'Could not stop screen share.', 'error');
+      } finally {
+        ssStopBtn.disabled = false;
+      }
     });
   }
 
@@ -183,6 +265,12 @@ async function ensureDisplayLayout(display) {
 /** Hide + clear the inspector (used by the caller when selection is cleared). */
 export function closeInspector(container) {
   if (!container) return;
+  // Unsubscribe the engine onChange listener installed by Task 4.5 so it does
+  // not accumulate across repeated inspector opens.
+  if (typeof container.__unsubEngine === 'function') {
+    container.__unsubEngine();
+    container.__unsubEngine = null;
+  }
   container.hidden = true;
   container.innerHTML = '';
 }

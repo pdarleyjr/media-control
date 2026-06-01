@@ -4,8 +4,10 @@ import { renderStage } from './media-control/stage.js';
 import { renderToolbox, refreshToolbox } from './media-control/toolbox.js';
 import { sendToDisplays } from './media-control/send.js';
 import { renderInspector, closeInspector } from './media-control/inspector.js';
+import { mountBroadcastChip } from './media-control/broadcast-chip.js';
 
 let unsub = null;
+let unsubChip = null;   // broadcast-chip unsubscribe (Task 4.5)
 let selectedIds = [];   // ids on the stage; re-hydrated from the server, persisted on change
 let wallMemberIds = new Set();   // device ids owned by a video wall (never their own card)
 let walls = [];
@@ -186,6 +188,11 @@ export async function render() {
 
   attachSendToAll(document.querySelector('.mc-topbar'));
 
+  // Mount the persistent live-broadcast chip (Task 4.5). The chip subscribes to
+  // the engine singleton so it reflects broadcast state even after navigation.
+  if (unsubChip) { unsubChip(); unsubChip = null; }
+  unsubChip = mountBroadcastChip(document.getElementById('mc-broadcast-chip'));
+
   // Fresh data (status, screenshots, wall changes) repaints the stage. The
   // store re-fetches walls-affecting changes via its own 'wall-changed' refresh;
   // we re-derive wall membership opportunistically on each repaint cycle.
@@ -199,6 +206,7 @@ export function unmount() {
   // The view owns NO live broadcast resource (that's the engine singleton),
   // so unmount only detaches this view's subscriptions. Broadcasts persist.
   if (unsub) { unsub(); unsub = null; }
+  if (unsubChip) { unsubChip(); unsubChip = null; }
   // Close the inspector so a stale panel can't linger across navigations.
   closeInspector(inspectorEl());
 }
