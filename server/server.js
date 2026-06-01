@@ -422,6 +422,7 @@ app.use(activityLogger);
 app.use('/api/workspaces', requireAuth, require('./routes/workspaces'));
 
 app.use('/api/devices', requireAuth, resolveTenancy, require('./routes/devices'));
+app.use('/api/displays', requireAuth, resolveTenancy, require('./routes/displays'));
 app.use('/api/content', requireAuth, resolveTenancy, require('./routes/content'));
 // Resumable chunked uploads (tus) — for multi-GB files that exceed Cloudflare's
 // ~100MB per-request edge limit. app.all (not app.use) so req.url keeps the
