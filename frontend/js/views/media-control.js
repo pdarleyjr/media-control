@@ -3,6 +3,7 @@ import * as displayState from '../services/display-state.js';
 import { renderStage } from './media-control/stage.js';
 import { renderToolbox, refreshToolbox } from './media-control/toolbox.js';
 import { sendToDisplays } from './media-control/send.js';
+import { renderInspector, closeInspector } from './media-control/inspector.js';
 
 let unsub = null;
 let selectedIds = [];   // ids on the stage; re-hydrated from the server, persisted on change
@@ -35,8 +36,9 @@ function pruneSelection() {
   }
 }
 
-function stageEl()   { return document.getElementById('mc-stage'); }
-function toolboxEl() { return document.getElementById('mc-toolbox'); }
+function stageEl()    { return document.getElementById('mc-stage'); }
+function toolboxEl()  { return document.getElementById('mc-toolbox'); }
+function inspectorEl() { return document.getElementById('mc-inspector'); }
 
 function paintStage() {
   const el = stageEl();
@@ -59,10 +61,21 @@ function paintToolbox() {
   renderToolbox(el, { selectedIds, onAfterSend: paintStage });
 }
 
-// Selecting a stage card opens the inspector (wired fully in Task 4.4); for now
-// it is a no-op hook so the click contract exists.
-function openInspector(/* deviceId */) {
-  // Inspector behavior arrives in Task 4.4. Intentionally inert here.
+// Selecting a stage card opens the inspector for that display (Task 4.4):
+// display info, "Partition into regions", per-region audio + fit. Closing the
+// panel hides it. Wall members never render as their own card, but we still pass
+// the (defensive) wall-member flag so the inspector's Partition guard is correct
+// even if a selected display was just promoted into a wall.
+function openInspector(deviceId) {
+  const el = inspectorEl();
+  if (!el) return;
+  const display = displayState.get(deviceId);
+  if (!display) { closeInspector(el); return; }
+  renderInspector(el, {
+    display,
+    isWallMember: wallMemberIds.has(deviceId),
+    onClose: () => { /* panel hides itself; nothing else to tear down */ },
+  });
 }
 
 // "Add display" — pick from all known displays not already on the stage and not
@@ -186,4 +199,6 @@ export function unmount() {
   // The view owns NO live broadcast resource (that's the engine singleton),
   // so unmount only detaches this view's subscriptions. Broadcasts persist.
   if (unsub) { unsub(); unsub = null; }
+  // Close the inspector so a stale panel can't linger across navigations.
+  closeInspector(inspectorEl());
 }

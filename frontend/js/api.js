@@ -229,9 +229,23 @@ export const api = {
   // forwards the chosen key. Follows the same request()/Bearer pattern as the
   // rest of the API surface.
   layouts: {
+    // Fetch a single layout WITH its zones (server attaches layout.zones).
+    get: (layoutId) => request(`/layouts/${layoutId}`),
+    // Create a layout in the caller's current workspace. Returns { id, zones, ... }.
+    create: (data) => request('/layouts', { method: 'POST', body: JSON.stringify(data) }),
     applyPreset: (layoutId, preset) => request(`/layouts/${layoutId}/apply-preset`, {
       method: 'POST',
       body: JSON.stringify({ preset }),
+    }),
+    // Update a zone IN PLACE (preserves its id, so content→zone bindings survive).
+    updateZone: (layoutId, zoneId, data) => request(`/layouts/${layoutId}/zones/${zoneId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+    // Assign (or clear) a layout on a device. Pass { layout_id: null } to clear.
+    assignToDevice: (deviceId, layout_id) => request(`/layouts/device/${deviceId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ layout_id }),
     }),
   },
 
