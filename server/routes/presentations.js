@@ -118,6 +118,18 @@ router.get('/:id', requireRead, (req, res) => {
   res.json(shape(req.presentation));
 });
 
+// Nextcloud sync status for this deck — lets the editor show "Saved to your
+// Nextcloud". requireRead enforces the same per-user authorization as the deck
+// itself, so a member only ever sees their own sync state. Returns null when no
+// sync has been attempted (or the feature is off).
+router.get('/:id/sync-job', requireRead, (req, res) => {
+  if (!ncSync.enabled()) return res.json({ enabled: false, job: null });
+  const row = db.prepare(
+    'SELECT status, nextcloud_path, error_msg, last_synced_at FROM nextcloud_sync_jobs WHERE presentation_id = ?'
+  ).get(req.params.id);
+  res.json({ enabled: true, job: row || null });
+});
+
 // Update — title/description/theme/canvas_profile/deck_json/status.
 router.put('/:id', requireWrite, (req, res) => {
   const updates = [];

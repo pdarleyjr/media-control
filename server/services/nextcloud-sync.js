@@ -1,36 +1,42 @@
 // MBFD Media Control Studio — per-user Nextcloud deck sync (server-side).
-// When a user saves a presentation, we render it to .pptx and PUT it into THAT
-// user's OWN Nextcloud Files over the internal origin (no Cloudflare Access).
+// When a user saves a presentation, we render it to .pptx and write it into THAT
+// user's OWN Nextcloud Files via the box's `nextcloud-write` raw-FS microservice
+// (services/nextcloud-fs.js), scoped by the owner's email header. No WebDAV, no
+// shared password.
 //
-// Auth model (per the deployment): every NC user logs in with their work email
-// and a shared password; the NC user id (uid) is the email's local-part. So a
-// Media Control user with email <uid>@miamibeachfl.gov maps to NC uid <uid>, and
-// we authenticate to WebDAV as <uid>:<shared-password>. Only @miamibeachfl.gov
-// accounts are synced; everyone else is skipped silently. The shared password
-// lives in the box .env (NEXTCLOUD_SHARED_PASSWORD), never in the repo.
+// TRUST BOUNDARY: the scoping email is the presentation OWNER's address, loaded
+// server-side from the `users` row (`users.email` for `presentations.user_id`) —
+// NEVER a client-supplied header. This is a server-initiated push to the owner's
+// own tree; media-control is the trust boundary the microservice trusts.
+//
+// Only @miamibeachfl.gov accounts are synced (everyone else is skipped silently),
+// matching the deployment's NC-account population. uidFromEmail() is used ONLY as
+// that skip-guard now — the microservice does its own per-user path scoping.
 //
 // All failures are best-effort + recorded in nextcloud_sync_jobs; a Nextcloud
-// hiccup must never break saving a presentation.
+// hiccup must never break saving a presentation (syncSoon is fire-and-forget).
 
 const config = require('../config');
 const { db } = require('../db/database');
 const { renderDeckToPptxBuffer } = require('./pptx');
+const ncfs = require('./nextcloud-fs');
 
 const USER_DOMAIN = 'miamibeachfl.gov';
 const PPTX_MIME = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
 
 function nc() { return config.nextcloud || {}; }
-function enabled() { const c = nc(); return !!(config.features && config.features.nextcloudSync && c.url && c.sharedPassword); }
+// Gate on the feature flag + the write microservice URL (the per-user transport).
+// The old sharedPassword requirement is gone — WebDAV is no longer the transport.
+function enabled() { const c = nc(); return !!(config.features && config.features.nextcloudSync && c.writeUrl); }
 
-// Local-part restricted to safe identifier chars (no '/', ':', whitespace) so a
-// crafted email can never inject a WebDAV path segment or a Basic-auth separator.
+// Skip-guard ONLY: confirm the owner has an @miamibeachfl.gov address (= a NC
+// account). The local-part is restricted to safe identifier chars so a crafted
+// email can never smuggle anything; we no longer build WebDAV paths from it.
 const UID_RE = new RegExp('^([a-z0-9._-]+)@' + USER_DOMAIN.replace(/\./g, '\\.') + '$', 'i');
 function uidFromEmail(email) {
   const m = UID_RE.exec(String(email || '').trim());
   return m ? m[1].toLowerCase() : null;
 }
-function authHeader(uid) { return 'Basic ' + Buffer.from(`${uid}:${nc().sharedPassword}`).toString('base64'); }
-function davBase(uid) { return nc().url.replace(/\/+$/, '') + '/remote.php/dav/files/' + encodeURIComponent(uid); }
 
 // Filesystem-safe Nextcloud filename (preserve unicode; strip path/illegal chars).
 function safeFileBase(title) {
@@ -39,43 +45,11 @@ function safeFileBase(title) {
   return s || 'Presentation';
 }
 
-async function mkcolChain(uid, segments) {
-  // Create each folder level idempotently (405 = already exists).
-  let rel = '';
-  for (const seg of segments) {
-    rel += '/' + seg;
-    const url = davBase(uid) + rel.split('/').map(encodeURIComponent).join('/');
-    const res = await fetch(url, { method: 'MKCOL', headers: { Authorization: authHeader(uid) }, signal: AbortSignal.timeout(15000) });
-    if (!res.ok && res.status !== 405 && res.status !== 301) {
-      throw new Error(`MKCOL ${seg} -> ${res.status}`);
-    }
-  }
-}
-
-async function putFile(uid, relPath, buffer, contentType) {
-  const url = davBase(uid) + '/' + relPath.split('/').map(encodeURIComponent).join('/');
-  const res = await fetch(url, {
-    method: 'PUT',
-    headers: { Authorization: authHeader(uid), 'Content-Type': contentType || 'application/octet-stream' },
-    body: buffer,
-    signal: AbortSignal.timeout(60000),
-  });
-  if (!res.ok) throw new Error(`PUT ${res.status}`);
-  return true;
-}
-
-async function deleteFile(uid, relPath) {
-  try {
-    const url = davBase(uid) + '/' + relPath.split('/').map(encodeURIComponent).join('/');
-    await fetch(url, { method: 'DELETE', headers: { Authorization: authHeader(uid) }, signal: AbortSignal.timeout(15000) });
-  } catch { /* best-effort */ }
-}
-
 // Upsert the single tracking row per presentation. Column names are allowlisted
 // (never interpolate caller-supplied keys into SQL, even though all callers here
 // pass literals — defense against a future caller passing a user-controlled key).
 const JOB_COLS = new Set(['nextcloud_path', 'status', 'error_msg', 'last_synced_at']);
-function recordJob(pres, uid, fields) {
+function recordJob(pres, fields) {
   const keys = Object.keys(fields).filter((k) => JOB_COLS.has(k));
   const existing = db.prepare('SELECT id FROM nextcloud_sync_jobs WHERE presentation_id = ?').get(pres.id);
   if (existing) {
@@ -102,36 +76,38 @@ async function syncPresentation(presId) {
   } catch (e) { return { error: 'load failed: ' + e.message }; }
   if (!pres) return { error: 'presentation not found' };
 
+  // OWNER email — loaded server-side from the users row, NEVER a client header.
   const owner = db.prepare('SELECT email FROM users WHERE id = ?').get(pres.user_id);
-  const uid = owner && uidFromEmail(owner.email);
-  if (!uid) return { skipped: 'owner has no @' + USER_DOMAIN + ' Nextcloud account' };
+  const email = owner && owner.email;
+  // Skip-guard: only @miamibeachfl.gov owners have a Nextcloud account.
+  if (!uidFromEmail(email)) return { skipped: 'owner has no @' + USER_DOMAIN + ' Nextcloud account' };
 
   let deck;
   try { deck = JSON.parse(pres.deck_json || '{}'); } catch { deck = { slides: [] }; }
 
   const folder = [nc().baseDir || 'MBFD Media Control', 'Presentations'];
-  const relDir = folder.map((s) => s).join('/');
+  const relDir = folder.join('/');
   const fileBase = safeFileBase(pres.title);
   const relPath = `${relDir}/${fileBase}.pptx`;
 
   try {
     const buffer = await renderDeckToPptxBuffer(deck);
-    await mkcolChain(uid, folder);
+    await ncfs.createFolder(email, relDir);
 
     // If the title changed since last sync, remove the stale file.
     const prior = db.prepare('SELECT nextcloud_path FROM nextcloud_sync_jobs WHERE presentation_id = ?').get(pres.id);
     if (prior && prior.nextcloud_path && prior.nextcloud_path !== relPath) {
-      await deleteFile(uid, prior.nextcloud_path);
+      try { await ncfs.deleteFile(email, prior.nextcloud_path); } catch { /* best-effort */ }
     }
 
-    await putFile(uid, relPath, buffer, PPTX_MIME);
-    recordJob(pres, uid, { nextcloud_path: relPath, status: 'done', error_msg: null, last_synced_at: Math.floor(Date.now() / 1000) });
-    console.log(`[nc-sync] ${pres.id} -> ${uid}:/${relPath} (${buffer.length} bytes)`);
-    return { ok: true, uid, path: relPath, bytes: buffer.length };
+    await ncfs.writeBase64(email, relPath, buffer.toString('base64'), PPTX_MIME);
+    recordJob(pres, { nextcloud_path: relPath, status: 'done', error_msg: null, last_synced_at: Math.floor(Date.now() / 1000) });
+    console.log(`[nc-sync] ${pres.id} -> ${email}:/${relPath} (${buffer.length} bytes)`);
+    return { ok: true, email, path: relPath, bytes: buffer.length };
   } catch (e) {
     const msg = String(e.message || e).slice(0, 300);
-    try { recordJob(pres, uid, { status: 'error', error_msg: msg }); } catch { /* */ }
-    console.warn(`[nc-sync] ${pres.id} -> ${uid} FAILED: ${msg}`);
+    try { recordJob(pres, { status: 'error', error_msg: msg }); } catch { /* */ }
+    console.warn(`[nc-sync] ${pres.id} -> ${email} FAILED: ${msg}`);
     return { error: msg };
   }
 }
@@ -142,4 +118,4 @@ function syncSoon(presId) {
   setImmediate(() => { syncPresentation(presId).catch(() => {}); });
 }
 
-module.exports = { syncPresentation, syncSoon, enabled, uidFromEmail };
+module.exports = { syncPresentation, syncSoon, enabled, uidFromEmail, safeFileBase };
