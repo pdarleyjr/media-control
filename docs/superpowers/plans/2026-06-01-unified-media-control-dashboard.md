@@ -570,6 +570,66 @@ git commit -m "fix(layouts): apply-preset reconciles zones in place (preserve zo
 
 ---
 
+## Phase 2.5 — Shared displays / per-user files (tenancy)
+
+Delivers the model: every member sees + broadcasts to **all displays** (shared), but each member's **files are private**. Implementation = keep devices/walls/layouts/scenes workspace-shared (no change) + add `user_id` scoping to the **owned-content list/management surfaces** + a deploy-time migration putting all members in one shared workspace. See spec §13.
+
+> **CRITICAL guardrail:** scope ONLY the authenticated dashboard list/get/update/delete surfaces by `user_id`. **Never** scope the server→player push path or the media-serving paths (`/uploads/...`, `GET /api/content/:id/thumbnail`, the player's content fetch, and `sceneEngine.pushSourceToDevice`'s server-side lookup) — the player has no user identity, so user-scoping those would blank the displays. Keep `workspace_id IS NULL` platform templates visible to all.
+
+### Task 2.5.1: Per-user scoping for `content` list/folders (TDD where possible)
+
+**Files:** Modify `server/routes/content.js`; Test `server/test/content-scope.test.js`
+
+- [ ] **Step 1: Failing test for a pure scoping-clause helper**
+
+Create `server/lib/content-scope.js` with a pure helper and test it. Helper:
+```js
+// Returns { clause, params } scoping owned content to the caller while keeping
+// platform templates (workspace_id IS NULL) visible to all.
+function ownedContentScope(workspaceId, userId) {
+  return { clause: '((workspace_id = ? AND user_id = ?) OR workspace_id IS NULL)', params: [workspaceId, userId] };
+}
+module.exports = { ownedContentScope };
+```
+Test (`server/test/content-scope.test.js`):
+```js
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const { ownedContentScope } = require('../lib/content-scope');
+test('scopes to workspace+user, keeps NULL templates', () => {
+  const s = ownedContentScope('ws1', 'u1');
+  assert.match(s.clause, /workspace_id = \? AND user_id = \?/);
+  assert.match(s.clause, /workspace_id IS NULL/);
+  assert.deepEqual(s.params, ['ws1', 'u1']);
+});
+```
+Run: `cd server && npm test -- test/content-scope.test.js` → fails, then implement, then passes.
+
+- [ ] **Step 2: Apply to content.js list (`GET /`, ~line 62)** — replace the `WHERE (workspace_id = ? OR workspace_id IS NULL)` with the helper's clause, binding `[req.workspaceId, req.user.id]`. Apply the same to the folders aggregate (`~line 83`).
+
+- [ ] **Step 3: Owner check in `checkContentRead`/`checkContentWrite` (~337–360)** — after the existing workspace access check, for owned rows (`content.workspace_id` not null) ALSO require `content.user_id === req.user.id` (platform templates `workspace_id IS NULL` stay readable by all). Do NOT touch `/api/content/:id/thumbnail` or any player/media-serving route.
+
+- [ ] **Step 4: Run full suite + boot check; commit** `feat(tenancy): scope content list/management per-user (private files)`
+
+### Task 2.5.2: Same per-user scoping for presentations, playlists, folders, downloads/ai lists
+
+**Files:** Modify `server/routes/presentations.js`, `server/routes/playlists.js`, `server/routes/folders.js`, `server/routes/downloads.js`, `server/routes/ai.js`
+
+- [ ] **Step 1:** For each list/get/update/delete that currently filters by `workspace_id`, add `AND user_id = ?` (bind `req.user.id`), preserving any `workspace_id IS NULL` template path. Read each file first; mirror the content.js pattern. **Leave `scenes.js`, `layouts.js`, `devices.js`, `video-walls.js` workspace-shared (do NOT scope them).**
+- [ ] **Step 2:** Boot check each route (`node -e "require('./routes/<x>')"`); commit `feat(tenancy): scope presentations/playlists/folders/downloads/ai per-user`.
+
+> Confirm with the user at review whether **playlists** should be private (default: yes) vs shared — if shared, revert playlists.js here.
+
+### Task 2.5.3: Deploy-time shared-workspace membership migration (idempotent)
+
+**Files:** Create `server/scripts/share-workspace-migration.js` (run manually at deploy, NOT on boot, NOT in tests)
+
+- [ ] **Step 1:** Write a one-shot script that adds **every user** as a member of the shared workspace `dd3e4549-7c7b-441e-b515-ef39a5096402` (the one holding the displays): `workspace_admin` for `role='platform_admin'` users, else `workspace_editor`. Use `INSERT OR IGNORE` (respect the `UNIQUE(workspace_id,user_id)`), and set `joined_at = 1` on inserted rows so the shared workspace is each user's earliest membership (→ default at login per `firstAccessibleWorkspace`). Back up via `VACUUM INTO` first. Print before/after membership counts. Path inside the container: `/app/data/db/remote_display.db`.
+- [ ] **Step 2:** Document in the script header that it is run via `docker exec media-control node /app/server/scripts/share-workspace-migration.js` after deploy. Commit `feat(tenancy): shared-workspace membership migration script`.
+- [ ] **Step 3 (at deploy only):** run it on the box and verify a non-admin member's token resolves to the shared workspace and lists the 3 devices (mint a token with the app's `generateToken` for one staff user + call `/api/devices`).
+
+> Note: `frontend/js/api.js` display methods (`getDisplaysState`/`getDisplaysSelection`/`putDisplaysSelection`) were pulled forward into the Phase-3 fix commit, so Task 4.1 Step 1 is already done — skip it there.
+
 ## Phase 3 — Frontend shared services
 
 ### Task 3.1: Player-protocol constants

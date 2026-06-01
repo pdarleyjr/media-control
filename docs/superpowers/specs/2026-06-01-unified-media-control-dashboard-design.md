@@ -157,7 +157,21 @@ Player connects on Socket.IO namespace `/device`. The dashboard is a controller 
 
 Build at `#/control` alongside everything; verify live with real displays; then **flip the post-login landing to it** in the same release. Old tabs remain reachable as deep links. Deploy manually on the box (CI billing-blocked): `git reset --hard origin/main` equivalent → rebuild `app/` build context → `docker compose up -d`.
 
-## 13. Out of scope
+## 13. Tenancy model — shared displays, private files (added 2026-06-01)
+
+**Requirement (from the user):** every member logs in and can **see + broadcast to all displays** (displays are a shared org resource); but **each member's files/content are private to them** ("what should be user-specific should be their files"). Anything the admin adds (displays) is available to all.
+
+**Why this needs a change:** today the app couples *both* devices AND content to a single `workspace` tenant (devices: `WHERE workspace_id = ?`; content: `WHERE (workspace_id = ? OR workspace_id IS NULL)`). There is no built-in "share displays but keep files private" mode. Verified in `routes/devices.js:38` and `routes/content.js:62`.
+
+**Approach (one shared workspace + per-user content scoping):**
+- **Shared (stay workspace-scoped, no change):** `devices`, `video_walls` + `video_wall_devices`, `layouts`/`layout_zones`, `scenes` (`operational_activities`) — these describe the shared displays and how to drive them.
+- **Private (add `AND user_id = ?` to the workspace filter on list/get/update/delete):** `content` (uploads/media/YouTube), `presentations`, `playlists` + `playlist_items`, `content_folders`, and the per-user `download_jobs` / `ai_generation_jobs` lists. Platform templates (`workspace_id IS NULL`) remain visible to all. Each member sees only their own files.
+- **Broadcast still works across the boundary:** a member broadcasts their *own* (private) content to a *shared* display. The server pushes by `content_id` (not user-scoped) and the player fetches by id with no user check, so private files render fine on shared displays. The per-user filter applies only to the **authoring/list UI surfaces**, never the server→player push path or `GET /api/content/:id` used by the player.
+- **Membership (deploy-time data migration, idempotent):** add **all org users** to the single shared workspace (`dd3e4549-7c7b-441e-b515-ef39a5096402`, which already holds the displays) as broadcast-capable members — `workspace_admin` for platform-admins (Peter, Juan, Shari), `workspace_editor` for the rest (can broadcast: `canWrite` allows editor). Set their `joined_at` so the shared workspace is each user's **default** at login (`firstAccessibleWorkspace` orders by `joined_at ASC`). Users with a pre-existing personal workspace (e.g. Daniel Gato) keep it but default into the shared one.
+
+**Zero-regression notes:** the `user_id` column already exists on `content` (and the owned tables), so scoping is additive — no migration to add columns. Existing live workspaces (Peter's, Daniel's) keep working; per-user scoping simply narrows each list to the caller's own rows. The shared-workspace membership migration runs at deploy (not in unit tests). Confirm the exact private/shared split for **playlists** and **scenes** with the user during review (current default: playlists private, scenes shared).
+
+## 14. Out of scope
 
 - No changes to Walls / Layouts / Playlists / Schedules / Admin pages themselves.
 - No player code changes beyond what's strictly required to render existing capabilities (ideally none).
