@@ -100,6 +100,23 @@ module.exports = {
     pass: process.env.NEXTCLOUD_PASS || '',
     sharedPassword: process.env.NEXTCLOUD_SHARED_PASSWORD || '',
     baseDir: process.env.NEXTCLOUD_BASE_DIR || 'MBFD Media Control',
+    // Per-user raw-FS microservices (mbfd-ai Docker network).
+    // container defaults work when media-control is on the mbfd-ai network;
+    // override with NC_USERFS_URL / NC_WRITE_URL in the container env for
+    // non-default placements. WebDAV vars above remain as disabled fallback.
+    //
+    // DEPLOY-TIME TODOs (not in this repo — perform on the GMKtec box):
+    //   1. docker network connect mbfd-ai <media-control-container>
+    //      (or add networks: [mbfd-ai] to the compose service + networks:
+    //       { mbfd-ai: { external: true } } in the compose file)
+    //   2. Set NC_USERFS_URL=http://nextcloud-user-fs:8000 in container env
+    //   3. Set NC_WRITE_URL=http://nextcloud-write:8000 in container env
+    //   4. Verify: docker exec <container> curl -s \
+    //        -H 'X-OpenWebUI-User-Email: peterdarley@miamibeachfl.gov' \
+    //        http://nextcloud-user-fs:8000/list_directory -d '{"path":""}' \
+    //      should return peterdarley's NC files.
+    userfsUrl: process.env.NC_USERFS_URL || 'http://nextcloud-user-fs:8000',
+    writeUrl: process.env.NC_WRITE_URL || 'http://nextcloud-write:8000',
   },
   // Feature flags — flip a module off without touching the core player/display
   // system. Default ON; set ENABLE_*=false to disable.
