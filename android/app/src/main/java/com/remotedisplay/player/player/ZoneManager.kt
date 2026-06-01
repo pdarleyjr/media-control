@@ -152,6 +152,15 @@ class ZoneManager(
                         .inflate(com.remotedisplay.player.R.layout.zone_player, null) as PlayerView).apply {
                         useController = false
                         layoutParams = params
+                        // Honor the zone's fit mode for video, mirroring the ImageView
+                        // scaleType mapping below: contain = letterbox (preserve aspect),
+                        // fill = stretch to the tile, cover (default) = zoom-crop to fill
+                        // without black bars — the right default for walls/signage.
+                        resizeMode = when (zone.fitMode) {
+                            "contain" -> androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                            "fill" -> androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FILL
+                            else -> androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                        }
                     }
                     val exoPlayer = ExoPlayer.Builder(context).build().apply {
                         setMediaItem(MediaItem.fromUri(src))

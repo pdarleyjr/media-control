@@ -28,14 +28,17 @@ module.exports = {
   // Worst-case dead-socket detection: pingInterval + pingTimeout = 60s.
   pingInterval: parseInt(process.env.PING_INTERVAL) || 30000,
   pingTimeout:  parseInt(process.env.PING_TIMEOUT)  || 30000,
-  // Generous file-size ceiling for video-wall content. Triple-4K wallpapers
-  // as PNG can easily land at 100-300MB; long-form training videos can run
-  // to a couple of GB. NOTE: Cloudflare's edge enforces its own body-size
-  // ceiling (100MB Free, 100MB Pro, 200MB Business, 500MB Enterprise) so
-  // anything above the CF tier won't ever reach this limit and the user
-  // sees a 413 from the edge, not us. Prefer JPEG/WebP for wallpapers to
-  // stay comfortably under all tiers.
-  maxFileSize: 2 * 1024 * 1024 * 1024, // 2GB
+  // File-size ceiling for uploaded content. Env-configurable (MAX_FILE_SIZE_BYTES)
+  // with a high default for massive ultra-wide master files / long-form video.
+  // IMPORTANT: when this app is reached THROUGH Cloudflare (the orange-cloud proxy
+  // or a cloudflared tunnel — which is how media-control.mbfdhub.com is served),
+  // CF enforces its OWN request-body ceiling (100MB Free/Pro, 200MB Business,
+  // 500MB Enterprise) BEFORE the request ever reaches us — uploads above the CF
+  // tier get a 413 at the edge regardless of this value. To actually ingest
+  // multi-GB files, either upload over a path that bypasses CF (e.g. the box's
+  // tailnet address directly to the Node port) or use a chunked/resumable (tus)
+  // flow that keeps each chunk under the CF limit.
+  maxFileSize: parseInt(process.env.MAX_FILE_SIZE_BYTES, 10) || (20 * 1024 * 1024 * 1024), // 20GB default
   thumbnailWidth: 320,
   screenshotQuality: 70,
   // SSL: drop your Cloudflare Origin cert + key in certs/ folder

@@ -116,6 +116,11 @@ CREATE TABLE IF NOT EXISTS screenshots (
 CREATE INDEX IF NOT EXISTS idx_screenshots_device ON screenshots(device_id, captured_at DESC);
 
 -- ===================== LAYOUTS & ZONES =====================
+-- Zones are stored as PERCENTAGES of the layout canvas (x_percent, y_percent,
+-- width_percent, height_percent in 0..100), NOT pixels. The player renders them
+-- as CSS percentages, so a single layout / split-screen template auto-scales and
+-- snaps to ANY target geometry — a 1080p TV or the ultra-wide video-wall canvas —
+-- with no per-display overrides. Keep new layout features percentage-based.
 
 CREATE TABLE IF NOT EXISTS layouts (
     id              TEXT PRIMARY KEY,

@@ -133,10 +133,25 @@ a 1-hour TTL. No code change required &mdash; just env + restart.
 
 ## Bandwidth budget
 
-Outgoing video is capped at 2.5 Mbps per receiver (1080p text-heavy
-configuration). Three simultaneous receivers ~= 7.5 Mbps upstream from
-the broadcaster's network. Adjust `VIDEO_BITRATE_KBPS` in
-`frontend/js/views/screen-share.js` to change.
+Outgoing video bitrate is **adaptive**: the broadcaster computes a per-receiver
+target from the **actual captured resolution + frame rate** (~0.08 bits per pixel
+per frame — roughly 5 Mbps for 1080p30, 10 Mbps for 1080p60, 20 Mbps for 4K30,
+40 Mbps for 4K60), bounded by a tunable ceiling. There is no fixed cap.
+
+The ceiling defaults to **50 Mbps** and is resolved, in priority order:
+
+1. `SCREEN_SHARE_MAX_BITRATE_KBPS` env var on the server (surfaced to the client
+   in the `/api/screen-share/turn-credentials` response) — the real deployment knob.
+2. a `localStorage.SCREEN_SHARE_MAX_BITRATE_KBPS` override (per-display field tuning).
+3. the built-in default (50000 kbps).
+
+**Capacity planning:** the broadcast is peer-to-peer from the *broadcaster's*
+uplink, and bitrate is paid **per receiver**. On a constrained/asymmetric link
+(e.g. a remote Starlink broadcaster with ~10–40 Mbps upstream), `target × N
+receivers` can saturate the uplink — e.g. 4 receivers at 20 Mbps each = 80 Mbps.
+Lower `SCREEN_SHARE_MAX_BITRATE_KBPS` to cap fidelity for that scenario. On a LAN
+(broadcaster and displays on the same gigabit network) P2P never touches the WAN,
+so the full ceiling is usable.
 
 ## Troubleshooting
 

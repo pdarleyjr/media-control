@@ -198,32 +198,39 @@ router.post('/remote', checkRemoteUrl, (req, res) => {
   }
 });
 
-// Background YouTube transcode via yt-dlp. Caps height at 1080 so the result
-// stays within Fire TV decode limits (older sticks max out around 4K texture
-// width — the transcoded MP4 is rendered through the HTML5 video path which
-// works correctly across multi-tile walls, unlike the YouTube iframe which
-// can only render the video pixels in a centered portion of its own frame).
-// Best-effort: if yt-dlp is missing OR transcode fails, the content row keeps
-// `mime_type='video/youtube'` so the player falls back to iframe embed.
+// Background YouTube transcode via yt-dlp. Pulls the HIGHEST available quality
+// (4K/8K when offered) so content looks crisp on large displays and the ultra-
+// wide video-wall canvas. The transcoded file is rendered through the HTML5
+// video path, which works correctly across multi-tile walls — unlike the YouTube
+// iframe, which can only render the video pixels in a centered portion of its
+// own frame. Best-effort: if yt-dlp is missing OR transcode fails, the content
+// row keeps `mime_type='video/youtube'` so the player falls back to iframe embed.
 function transcodeYouTubeInBackground(contentId, videoId) {
   const { execFile } = require('child_process');
   const fs = require('fs');
   const ext = 'mp4';
   const outFilename = `${uuidv4()}.${ext}`;
   const outPath = path.join(config.contentDir, outFilename);
-  // -f best[height<=1080] picks the highest available stream up to 1080p.
-  // --no-warnings + --no-progress keeps stderr quiet so we can detect real
-  // errors. --merge-output-format mp4 ensures muxed mp4 output regardless of
-  // upstream split-stream availability.
+  // -f bestvideo+bestaudio/best pulls the best separate video + audio streams
+  // (4K/8K) and muxes them, falling back to a single progressive stream when
+  // separate tracks aren't offered. --merge-output-format mp4 keeps one playable
+  // file. --no-warnings + --no-progress keeps stderr quiet so we can detect real
+  // errors. NOTE: 4K+ on YouTube is typically VP9/AV1 — modern Chromium players
+  // and ExoPlayer decode these; only very old TV WebKits may need a 1080p source.
   const args = [
-    '-f', 'best[height<=1080][ext=mp4]/best[height<=1080]',
+    '-f', 'bestvideo+bestaudio/best',
     '--no-warnings', '--no-progress', '--no-playlist',
     '--merge-output-format', 'mp4',
     '-o', outPath,
     `https://www.youtube.com/watch?v=${videoId}`,
   ];
-  // 10-minute hard timeout — any clip we care about should fit; runaway downloads die.
-  execFile('yt-dlp', args, { timeout: 10 * 60 * 1000 }, (err, stdout, stderr) => {
+  // Download + mux can take a while for 4K/8K. Default 30-minute timeout, tunable
+  // via YDLP_TIMEOUT_MS; runaway downloads still die at the cap.
+  const ydlpTimeoutMs = (() => {
+    const v = parseInt(process.env.YDLP_TIMEOUT_MS, 10);
+    return Number.isFinite(v) && v > 0 ? v : 30 * 60 * 1000;
+  })();
+  execFile('yt-dlp', args, { timeout: ydlpTimeoutMs }, (err, stdout, stderr) => {
     if (err) {
       console.warn(`yt-dlp transcode failed for ${videoId}: ${err.message}${stderr ? ' | stderr: ' + String(stderr).slice(0, 200) : ''}`);
       // Mark transcode as failed in the existing row so the dashboard can show status.

@@ -24,14 +24,16 @@
   .slide{position:absolute;inset:0;opacity:0;transition:opacity .35s ease;display:none}
   .slide.show{opacity:1;display:block}
   .deck-body{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:6vh 8vw;z-index:2}
-  .deck-col{width:100%;max-width:1500px;display:flex;flex-direction:column}
+  /* No fixed max-width: the column fills the padded stage on any display, from a
+     1080p TV to the full ultra-wide wall canvas (font sizes are already vw-based). */
+  .deck-col{width:100%;max-width:none;display:flex;flex-direction:column}
   /* Image layers: behind (z1) and in front of (z3) the text body (z2). */
   .imglayer{position:absolute;inset:0;pointer-events:none;overflow:hidden}
   .imglayer.back{z-index:1}
   .imglayer.front{z-index:3}
   .imglayer img{position:absolute;display:block}
   .kicker{display:inline-flex;align-items:center;gap:10px;color:var(--red);font-weight:700;letter-spacing:.08em;text-transform:uppercase;font-size:1.1vw;margin-bottom:2.2vh}
-  .kicker::before{content:'';width:34px;height:4px;border-radius:3px;background:var(--red)}
+  .kicker::before{content:'';width:clamp(24px,3.5vw,48px);height:clamp(2px,0.4vw,6px);border-radius:max(2px,0.3vmin);background:var(--red)}
   h1{font-size:5.2vw;line-height:1.05;font-weight:800;letter-spacing:-.02em}
   h2{font-size:3.6vw;line-height:1.1;font-weight:800;letter-spacing:-.01em;margin-bottom:3vh}
   .subtitle{font-size:2vw;color:var(--muted);margin-top:2.5vh;font-weight:500}
@@ -40,18 +42,18 @@
   li::before{content:'';flex:0 0 auto;width:.9vw;height:.9vw;border-radius:50%;background:var(--red);margin-top:1.1vh}
   .body{font-size:2vw;line-height:1.5;color:#E2E8F0;max-width:70%}
   .section{align-items:center;text-align:center}
-  .section .bar{width:90px;height:6px;border-radius:4px;background:var(--red);margin:0 auto 4vh}
+  .section .bar{width:clamp(60px,9vw,150px);height:clamp(4px,0.5vw,8px);border-radius:max(3px,0.4vmin);background:var(--red);margin:0 auto 4vh}
   .quote{align-items:center;text-align:center}
   .quote .q{font-size:3.4vw;line-height:1.3;font-style:italic;font-weight:600;max-width:80%}
   .title-slide{align-items:flex-start}
   .brand{position:fixed;top:4vh;left:8vw;display:flex;align-items:center;gap:12px;color:var(--muted);font-weight:700;font-size:1.1vw;letter-spacing:.04em}
-  .brand .dot{width:14px;height:14px;border-radius:4px;background:var(--red)}
+  .brand .dot{width:clamp(10px,1.2vw,20px);height:clamp(10px,1.2vw,20px);border-radius:max(3px,0.3vmin);background:var(--red)}
   /* footer / controls */
-  #bar{position:fixed;left:0;right:0;bottom:0;height:6px;background:rgba(255,255,255,.08)}
+  #bar{position:fixed;left:0;right:0;bottom:0;height:max(4px,0.4vh);background:rgba(255,255,255,.08)}
   #fill{height:100%;width:0;background:var(--red);transition:width .25s linear}
   #hud{position:fixed;bottom:2.2vh;right:8vw;color:var(--muted);font-size:1vw;font-variant-numeric:tabular-nums;opacity:.7}
   #dots{position:fixed;bottom:2.2vh;left:8vw;display:flex;gap:8px}
-  #dots .d{width:9px;height:9px;border-radius:50%;background:rgba(255,255,255,.22)}
+  #dots .d{width:clamp(6px,0.8vw,14px);height:clamp(6px,0.8vw,14px);border-radius:50%;background:rgba(255,255,255,.22)}
   #dots .d.on{background:var(--red)}
   #err{position:fixed;inset:0;display:none;align-items:center;justify-content:center;font-size:1.6vw;color:var(--muted);text-align:center;padding:10vw}
 </style>

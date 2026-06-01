@@ -185,7 +185,7 @@ router.get('/export', (req, res) => {
 
 // User data import (JSON or ZIP with files)
 const multer = require('multer');
-const importUpload = multer({ dest: path.join(os.tmpdir(), 'screentinker-import'), limits: { fileSize: 2 * 1024 * 1024 * 1024 } }); // 2GB max
+const importUpload = multer({ dest: path.join(os.tmpdir(), 'screentinker-import'), limits: { fileSize: config.maxFileSize } }); // env-configurable (MAX_FILE_SIZE_BYTES), default 20GB
 
 router.post('/import', importUpload.single('file'), async (req, res) => {
   const authHeader = req.headers.authorization;

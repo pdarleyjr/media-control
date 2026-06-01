@@ -115,7 +115,36 @@ let iceConfig = null;                 // cached from /api/screen-share/turn-cred
 let currentContentHint = 'detail';    // 'detail' | 'motion'
 let activeContainer = null;           // bound at render time for DOM lookups
 
-const VIDEO_BITRATE_KBPS = 2500;      // Hard cap per receiver. 1080p text ~1.8 Mbps, motion ~2.3 Mbps.
+// Adaptive per-receiver video bitrate. There is NO fixed cap: the encoder target
+// is derived from the ACTUAL captured resolution + frame rate (a bits-per-pixel
+// heuristic) and bounded only by a high, operator-tunable CEILING. Resolution of
+// the ceiling, in priority order:
+//   1) server-provided iceConfig.maxBitrateKbps (env SCREEN_SHARE_MAX_BITRATE_KBPS
+//      on the box — the real, deployment-time knob),
+//   2) a localStorage override (SCREEN_SHARE_MAX_BITRATE_KBPS, mirroring the
+//      SCREEN_SHARE_DEBUG idiom above) for per-display field tuning,
+//   3) DEFAULT_MAX_BITRATE_KBPS.
+// (process.env is intentionally NOT used — this module runs in the browser.)
+const DEFAULT_MAX_BITRATE_KBPS = 50000; // 50 Mbps ceiling (replaces the old fixed 2500 cap).
+function bitrateCeilingKbps() {
+  const fromServer = iceConfig && Number(iceConfig.maxBitrateKbps);
+  if (fromServer && fromServer > 0) return fromServer;
+  try {
+    const ls = parseInt(localStorage.getItem('SCREEN_SHARE_MAX_BITRATE_KBPS') || '', 10);
+    if (ls > 0) return ls;
+  } catch (_) { /* ignore */ }
+  return DEFAULT_MAX_BITRATE_KBPS;
+}
+// Adaptive encoder target from the captured geometry. ~0.08 bits per pixel per
+// frame is a high-fidelity target for screen content:
+//   1080p@30 ~5 Mbps, 1080p@60 ~10 Mbps, 4K@30 ~20 Mbps, 4K@60 ~40 Mbps; ultra-wide
+//   scales by area. Floored at 1.5 Mbps, ceilinged by bitrateCeilingKbps().
+function computeAdaptiveBitrate(width, height, fps) {
+  const pixels = (width || 1920) * (height || 1080);
+  const f = fps && fps > 0 ? fps : 30;
+  const targetKbps = Math.round((pixels * f * 0.08) / 1000);
+  return Math.max(1500, Math.min(targetKbps, bitrateCeilingKbps()));
+}
 const CONNECT_TIMEOUT_MS = 30_000;    // Mark a session failed if it doesn't reach 'connected'.
 const ACK_TIMEOUT_MS = 5_000;         // Socket ack budget for screen-share:start/offer/stop.
 
@@ -369,8 +398,14 @@ async function startCapture() {
   const baseConstraints = {
     video: {
       frameRate: { ideal: currentContentHint === 'motion' ? 60 : 30, max: 60 },
-      width: { max: 1920 },
-      height: { max: 1080 },
+      // Adaptive resolution: 'ideal' targets at 4K scale with NO hard max, so the
+      // browser captures the source's absolute native resolution (4K, ultra-wide,
+      // even the full 12372x2160 wall canvas where the source supports it). The
+      // browser gracefully falls back to whatever the source can actually provide;
+      // adaptive bitrate (computeAdaptiveBitrate) sizes the encoder to the real
+      // captured geometry, and the receiver scales via object-fit.
+      width: { ideal: 3840 },
+      height: { ideal: 2160 },
     },
     audio: {
       echoCancellation: false,
@@ -551,14 +586,25 @@ async function startBroadcastTo(deviceId, wallTile = null) {
   peerConnections.set(deviceId, pc);
   pendingDeviceCandidates.set(deviceId, []);
 
-  // Add tracks via transceivers with explicit sendonly direction + a hard
-  // bitrate cap baked in via sendEncodings. This is the modern API and is
+  // Compute the adaptive per-receiver bitrate from the ACTUAL captured geometry
+  // (resolution + frame rate). No fixed cap — see computeAdaptiveBitrate above.
+  // Captured once here and reused by applyBitrateCap() below (closure scope).
+  let adaptiveBitrateKbps = bitrateCeilingKbps();
+  const capturedTrack = stream.getVideoTracks()[0];
+  const capturedSettings = capturedTrack && capturedTrack.getSettings ? capturedTrack.getSettings() : {};
+  if (capturedSettings.width && capturedSettings.height) {
+    adaptiveBitrateKbps = computeAdaptiveBitrate(capturedSettings.width, capturedSettings.height, capturedSettings.frameRate);
+  }
+  dbg(`adaptive bitrate ${adaptiveBitrateKbps} kbps for ${capturedSettings.width || '?'}x${capturedSettings.height || '?'}@${capturedSettings.frameRate || '?'}`);
+
+  // Add tracks via transceivers with explicit sendonly direction + the adaptive
+  // bitrate target baked in via sendEncodings. This is the modern API and is
   // the only way to clamp encoder bitrate BEFORE negotiation. The deprecated
   // sender.setParameters() post-negotiation path silently no-ops in many
   // browsers because the encoder isn't bound yet at addTrack time.
   for (const track of stream.getTracks()) {
     const initEncoding = track.kind === 'video'
-      ? [{ maxBitrate: VIDEO_BITRATE_KBPS * 1000, networkPriority: 'high' }]
+      ? [{ maxBitrate: adaptiveBitrateKbps * 1000, networkPriority: 'high' }]
       : undefined;
     try {
       pc.addTransceiver(track, {
@@ -583,7 +629,7 @@ async function startBroadcastTo(deviceId, wallTile = null) {
         if (!params.encodings || params.encodings.length === 0) {
           params.encodings = [{}];
         }
-        params.encodings[0].maxBitrate = VIDEO_BITRATE_KBPS * 1000;
+        params.encodings[0].maxBitrate = adaptiveBitrateKbps * 1000;
         await sender.setParameters(params);
       } catch (_) { /* tolerate older browsers */ }
     }
