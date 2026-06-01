@@ -1,0 +1,5 @@
+.mc-control { display: flex; flex-direction: column; gap: var(--mc-space-md, 16px); padding: var(--mc-space-md, 16px); }
+.mc-topbar { display: flex; align-items: center; gap: 16px; }
+.mc-stage { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+.mc-toolbox { border-top: 1px solid var(--mc-border-light, #243044); padding-top: 12px; }
+.mc-inspector { position: fixed; right: 0; top: 0; height: 100%; width: 340px; background: var(--mc-surface, #0f172a); box-shadow: -8px 0 24px rgba(0,0,0,.4); }

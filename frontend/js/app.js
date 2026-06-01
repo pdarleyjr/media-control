@@ -27,6 +27,7 @@ import * as downloadsView from './views/downloads.js';
 import * as broadcastCenter from './views/broadcast-center.js';
 import * as schedules from './views/schedules.js';
 import * as workspaceMembers from './views/workspace-members.js';
+import * as mediaControl from './views/media-control.js';
 import { applyBranding } from './branding.js';
 import { t } from './i18n.js';
 import { isPlatformAdmin } from './utils.js';
@@ -230,7 +231,7 @@ async function refreshCurrentUser() {
   } catch {}
 }
 
-function route() {
+async function route() {
   // Cleanup previous view. Call BOTH cleanup() and unmount() because
   // older views use cleanup() while screen-share (and any view that holds
   // background resources like a WebRTC peer connection) uses unmount().
@@ -323,7 +324,8 @@ function route() {
   const navLinks = document.querySelectorAll('.nav-link');
   navLinks.forEach(link => {
     link.classList.remove('active');
-    if (hash === '#/present' && link.dataset.view === 'present') link.classList.add('active');
+    if (hash === '#/control' && link.dataset.view === 'control') link.classList.add('active');
+    else if (hash === '#/present' && link.dataset.view === 'present') link.classList.add('active');
     else if (hash === '#/home' && link.dataset.view === 'home') link.classList.add('active');
     else if ((hash === '#/' || hash === '#/displays') && link.dataset.view === 'dashboard') link.classList.add('active');
     else if (hash === '#/presentations' && link.dataset.view === 'presentations') link.classList.add('active');
@@ -352,7 +354,10 @@ function route() {
   });
 
   // Route to view
-  if (hash === '#/present') {
+  if (hash === '#/control') {
+    currentView = mediaControl;
+    await mediaControl.render();
+  } else if (hash === '#/present') {
     currentView = present;
     present.render(app);
   } else if (hash === '#/home') {
