@@ -111,12 +111,20 @@ module.exports = {
     //       { mbfd-ai: { external: true } } in the compose file)
     //   2. Set NC_USERFS_URL=http://nextcloud-user-fs:8000 in container env
     //   3. Set NC_WRITE_URL=http://nextcloud-write:8000 in container env
-    //   4. Verify: docker exec <container> curl -s \
+    //   4. Set NC_USERFS_TOKEN / NC_WRITE_TOKEN in container env — both services
+    //      ALSO require a service-level bearer token (NEXTCLOUD_FS_TOKEN /
+    //      NEXTCLOUD_WRITE_TOKEN on the box) in addition to the per-user email
+    //      header, so any other container on mbfd-ai can't impersonate users.
+    //      Get the values from the box .env for nextcloud-user-fs / nextcloud-write.
+    //   5. Verify: docker exec <container> curl -s \
+    //        -H 'Authorization: Bearer <NC_USERFS_TOKEN>' \
     //        -H 'X-OpenWebUI-User-Email: peterdarley@miamibeachfl.gov' \
     //        http://nextcloud-user-fs:8000/list_directory -d '{"path":""}' \
     //      should return peterdarley's NC files.
     userfsUrl: process.env.NC_USERFS_URL || 'http://nextcloud-user-fs:8000',
     writeUrl: process.env.NC_WRITE_URL || 'http://nextcloud-write:8000',
+    userfsToken: process.env.NC_USERFS_TOKEN || '',
+    writeToken: process.env.NC_WRITE_TOKEN || '',
   },
   // Feature flags — flip a module off without touching the core player/display
   // system. Default ON; set ENABLE_*=false to disable.
