@@ -27,6 +27,19 @@ function mockFetch(responder) {
 function jsonResponse(status, obj) {
   return { ok: status >= 200 && status < 300, status, json: async () => obj };
 }
+// Binary response for the /read_file_raw endpoint: exposes arrayBuffer() + a
+// headers.get('content-type'), plus json() so postRaw's error path can parse a
+// detail body on a non-2xx.
+function binaryResponse(status, bytes, contentType) {
+  const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: (k) => (String(k).toLowerCase() === 'content-type' ? (contentType || 'application/octet-stream') : null) },
+    arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+    json: async () => ({}),
+  };
+}
 afterEach(() => { global.fetch = realFetch; });
 
 // ---- header wiring (the trust boundary) ----
@@ -117,14 +130,26 @@ test('listDir tolerates a response missing entries', async () => {
 
 // ---- readFile shape + mime inference ----
 
-test('readFile returns { buffer, mime, name, size } and infers mime from extension', async () => {
-  mockFetch(() => jsonResponse(200, { path: 'notes/today.md', size: 5, content: 'hello' }));
+test('readFile streams raw bytes from /read_file_raw with the read bearer + email header', async () => {
+  mockFetch(() => binaryResponse(200, Buffer.from('hello'), 'text/markdown'));
   const r = await ncfs.readFile('user@miamibeachfl.gov', 'notes/today.md');
   assert.ok(Buffer.isBuffer(r.buffer));
   assert.equal(r.buffer.toString('utf-8'), 'hello');
   assert.equal(r.name, 'today.md');
-  assert.equal(r.mime, 'text/markdown');
+  assert.equal(r.mime, 'text/markdown'); // from the service Content-Type
   assert.equal(r.size, 5);
+  assert.match(calls[0].url, /\/read_file_raw$/);
+  assert.equal(calls[0].opts.headers['X-OpenWebUI-User-Email'], 'user@miamibeachfl.gov');
+  assert.equal(calls[0].opts.headers.Authorization, 'Bearer read-token');
+});
+
+test('readFile preserves binary bytes intact and falls back to extension mime on octet-stream', async () => {
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+  mockFetch(() => binaryResponse(200, jpeg, 'application/octet-stream'));
+  const r = await ncfs.readFile('user@miamibeachfl.gov', 'pics/photo.jpg');
+  assert.deepEqual([...r.buffer], [...jpeg]); // not UTF-8 mangled
+  assert.equal(r.mime, 'image/jpeg');
+  assert.equal(r.size, 6);
 });
 
 test('mimeForName falls back to octet-stream for unknown/no extension', () => {

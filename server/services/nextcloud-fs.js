@@ -17,12 +17,13 @@
 // Both services ALSO require a service-level bearer token (config.nextcloud
 // userfsToken / writeToken) so a rogue container can't reach them at all.
 //
-// Read is text-only (the :8003 /read_file returns a UTF-8 string capped at the
-// service's MAX_READ_BYTES) — see readFile() for the binary caveat.
+// readFile() uses the binary-safe /read_file_raw endpoint (streams raw bytes,
+// no text/2MB mangling) so image/video/pptx import intact for broadcast.
 
 const config = require('../config');
 
 const READ_TIMEOUT_MS = 15000;
+const BINARY_READ_TIMEOUT_MS = 120000; // raw media reads can be large; allow streaming
 const WRITE_TIMEOUT_MS = 60000;
 
 // Minimal extension -> mime map for readFile()'s best-effort mime. The raw-FS
@@ -100,6 +101,36 @@ async function post(base, token, path, email, body, timeoutMs) {
   return res.json();
 }
 
+// Like post() but returns the raw ok Response (no JSON parse) for binary
+// endpoints; the caller reads res.arrayBuffer(). Same two gates + error mapping.
+async function postRaw(base, token, path, email, body, timeoutMs) {
+  if (!base) throw new NextcloudNotConnectedError('Nextcloud microservice URL not configured');
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-OpenWebUI-User-Email': requireEmail(email),
+  };
+  if (token) headers.Authorization = 'Bearer ' + token;
+  let res;
+  try {
+    res = await fetch(base.replace(/\/+$/, '') + path, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body || {}),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (e) {
+    throw new NextcloudNotConnectedError('Nextcloud microservice unreachable: ' + (e && e.message ? e.message : e));
+  }
+  if (!res.ok) {
+    let detail = '';
+    try { const j = await res.json(); detail = j && j.detail ? j.detail : ''; } catch { /* non-JSON body */ }
+    const err = new Error(`Nextcloud ${path} -> ${res.status}${detail ? ': ' + detail : ''}`);
+    err.status = res.status;
+    throw err;
+  }
+  return res;
+}
+
 function postRead(path, email, body, timeoutMs) {
   return post(nc().userfsUrl, nc().userfsToken, path, email, body, timeoutMs || READ_TIMEOUT_MS);
 }
@@ -138,23 +169,17 @@ async function listDir(email, relPath) {
   return entries.map(normalizeEntry);
 }
 
-// Read a file. NOTE: the :8003 read service is TEXT-ONLY — it returns a UTF-8
-// decoded string (errors replaced) capped at its MAX_READ_BYTES (~2MB), with NO
-// content-type. We surface the plan's documented { buffer, mime, name, size }
-// shape by re-encoding the returned text and inferring mime from the name. This
-// is fine for text; it is LOSSY for binary (image/video/pptx) because the bytes
-// were already mangled by the upstream UTF-8 replace. Broadcasting binary media
-// (Task P6-5) therefore needs a binary read endpoint on the service — flagged.
+// Read a file's RAW bytes via the binary-safe /read_file_raw endpoint, which
+// streams the file (no UTF-8 decode, no ~2MB text cap) so image/video/pptx
+// import intact. Returns { buffer, mime, name, size }. mime comes from the
+// service's Content-Type, falling back to extension inference.
 async function readFile(email, relPath) {
-  const data = await postRead('/read_file', email, { path: relPath || '' });
+  const res = await postRaw(nc().userfsUrl, nc().userfsToken, '/read_file_raw', email, { path: relPath || '' }, BINARY_READ_TIMEOUT_MS);
+  const buffer = Buffer.from(await res.arrayBuffer());
   const name = String(relPath || '').split('/').pop() || 'file';
-  const buffer = Buffer.from(data && typeof data.content === 'string' ? data.content : '', 'utf-8');
-  return {
-    buffer,
-    mime: mimeForName(name),
-    name,
-    size: data && typeof data.size === 'number' ? data.size : buffer.length,
-  };
+  const ctype = String(res.headers.get('content-type') || '').split(';')[0].trim();
+  const mime = ctype && ctype !== 'application/octet-stream' ? ctype : mimeForName(name);
+  return { buffer, mime, name, size: buffer.length };
 }
 
 // Metadata for one file/dir.
