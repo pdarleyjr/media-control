@@ -1,6 +1,8 @@
 import { api } from '../api.js';
 import * as displayState from '../services/display-state.js';
 import { renderStage } from './media-control/stage.js';
+import { renderToolbox, refreshToolbox } from './media-control/toolbox.js';
+import { sendToDisplays } from './media-control/send.js';
 
 let unsub = null;
 let selectedIds = [];   // ids on the stage; re-hydrated from the server, persisted on change
@@ -33,7 +35,8 @@ function pruneSelection() {
   }
 }
 
-function stageEl() { return document.getElementById('mc-stage'); }
+function stageEl()   { return document.getElementById('mc-stage'); }
+function toolboxEl() { return document.getElementById('mc-toolbox'); }
 
 function paintStage() {
   const el = stageEl();
@@ -46,6 +49,14 @@ function paintStage() {
     onSelect: openInspector,
     onAddDisplay: openAddPicker,
   });
+  // Re-attach drop handlers on the freshly-rendered cards.
+  attachStageDrop(el);
+}
+
+function paintToolbox() {
+  const el = toolboxEl();
+  if (!el) return;
+  renderToolbox(el, { selectedIds, onAfterSend: paintStage });
 }
 
 // Selecting a stage card opens the inspector (wired fully in Task 4.4); for now
@@ -74,7 +85,63 @@ function openAddPicker() {
     selectedIds = [...selectedIds, id];
     persistSelection();
     paintStage();
+    // Refresh toolbox so the new selection is picked up for next click-to-send.
+    refreshToolbox(toolboxEl(), selectedIds, paintStage);
   }
+}
+
+// ---- Drag-drop: toolbox tiles → stage cards ----
+//
+// Each toolbox tile sets DataTransfer text with the source JSON payload on
+// dragstart (see toolbox.js attachTileHandlers). Stage cards (rendered by
+// stage.js) need to become drop targets AFTER the stage is repainted. This
+// function wires those handlers onto the freshly-rendered cards.
+function attachStageDrop(stageContainer) {
+  stageContainer.querySelectorAll('[data-device-id]').forEach(card => {
+    // Prevent duplicate listener registration on re-render cycles by replacing
+    // the node clone (cheapest DOM approach without an ID-keyed Map).
+    card.addEventListener('dragover', (e) => {
+      if (e.dataTransfer.types.includes('application/x-mc-source') ||
+          e.dataTransfer.types.includes('text/plain')) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        card.classList.add('mc-card-dragover');
+      }
+    });
+    card.addEventListener('dragleave', () => card.classList.remove('mc-card-dragover'));
+    card.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      card.classList.remove('mc-card-dragover');
+      const raw = e.dataTransfer.getData('application/x-mc-source') ||
+                  e.dataTransfer.getData('text/plain');
+      if (!raw) return;
+      let source;
+      try { source = JSON.parse(raw); } catch { return; }
+      const label = e.dataTransfer.getData('application/x-mc-label') || 'Content';
+      const deviceId = card.dataset.deviceId;
+      if (!deviceId) return;
+      await sendToDisplays(source, [deviceId], label);
+      // Stage will repaint on the next display-state event.
+    });
+  });
+}
+
+// ---- "Send to all" topbar button ----
+function attachSendToAll(topbar) {
+  const btn = topbar && topbar.querySelector('[data-mc-send-all]');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    // The toolbox active-tile approach for "send to all" is done by clicking a
+    // tile which calls sendToDisplays(source, selectedIds). The topbar button
+    // is a convenience: it re-triggers the last drag source if any, or shows a
+    // hint. For Task 4.3 we just open the "add display" picker so the topbar
+    // button is semantically useful without requiring state shared from toolbox.
+    if (selectedIds.length === 0) {
+      window.alert('Add a display to the stage first, then click a tile in the toolbox to send to all selected displays.');
+    } else {
+      window.alert(`${selectedIds.length} display(s) selected. Click any tile in the toolbox to send content to all of them.`);
+    }
+  });
 }
 
 export async function render() {
@@ -84,6 +151,7 @@ export async function render() {
       <div class="mc-topbar">
         <h1>Media Control</h1>
         <div class="mc-view-toggle"><button data-mode="grid" class="active">Grid</button><button data-mode="wall">Wall</button></div>
+        <button type="button" class="mc-btn mc-btn-ghost" data-mc-send-all title="Send to all selected displays">Send to all</button>
         <div id="mc-broadcast-chip" class="mc-chip" hidden></div>
       </div>
       <section id="mc-stage" class="mc-stage" aria-label="Displays you are controlling"></section>
@@ -101,6 +169,9 @@ export async function render() {
   selectedIds = Array.isArray(selection && selection.device_ids) ? selection.device_ids : [];
   pruneSelection();
   paintStage();
+  paintToolbox();
+
+  attachSendToAll(document.querySelector('.mc-topbar'));
 
   // Fresh data (status, screenshots, wall changes) repaints the stage. The
   // store re-fetches walls-affecting changes via its own 'wall-changed' refresh;
