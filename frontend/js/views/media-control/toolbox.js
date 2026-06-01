@@ -31,6 +31,7 @@ const TABS = [
   { id: 'presentations', label: 'Presentations' },
   { id: 'youtube',       label: 'YouTube / URL' },
   { id: 'scenes',        label: 'Scenes' },
+  { id: 'nextcloud',     label: 'Nextcloud' },
 ];
 
 // ---- tab content renderers ----
@@ -120,6 +121,118 @@ function renderYouTubeTab(container, { selectedIds, onAfterSend }) {
   });
 }
 
+// ---- Nextcloud tab ----
+// Lists the signed-in member's own NC files via api.files.list(path), with
+// folder navigation. image/* and video/* rows get a "Broadcast" tile button;
+// clicking calls api.files.broadcast using the shared confirm-all 409 gate.
+// Presentations (deck player path) are intentionally NOT shown here — use the
+// Presentations tab. The email comes from the JWT (server-enforced); the client
+// never sends it.
+async function renderNextcloudTab(container, { selectedIds, onAfterSend }, path = '') {
+  container.innerHTML = '<div class="mc-tb-loading">Connecting to Nextcloud…</div>';
+  let health;
+  try { health = await api.files.health(); } catch { health = { enabled: true, connected: false, error: 'unreachable' }; }
+  if (health.enabled === false) {
+    container.innerHTML = '<div class="mc-tb-error">Files module is disabled on this server.</div>';
+    return;
+  }
+  if (!health.connected) {
+    container.innerHTML = `<div class="mc-tb-error">Could not connect to your Nextcloud files.<br><small>${escHtml(health.error || 'Microservice may be unreachable.')}</small></div>`;
+    return;
+  }
+
+  let items = [];
+  try {
+    items = await api.files.list(path);
+    if (!Array.isArray(items)) items = [];
+  } catch (e) {
+    container.innerHTML = `<div class="mc-tb-error">Could not list folder: ${escHtml(e?.message || '')}</div>`;
+    return;
+  }
+
+  // Breadcrumb back-navigation
+  const parts = path.split('/').filter(Boolean);
+  const crumbs = ['<span class="mc-nc-crumb" data-nc-path="">Files</span>'];
+  let acc = '';
+  parts.forEach((p) => { acc += '/' + p; crumbs.push(`<span class="mc-nc-crumb" data-nc-path="${escHtml(acc)}">${escHtml(p)}</span>`); });
+
+  const mediaTypes = /^(image|video)\//;
+
+  const rows = items.length
+    ? items.map((it) => {
+        const isBroadcastable = !it.is_dir && mediaTypes.test(it.mime_type || '');
+        return `<div class="mc-nc-row" ${it.is_dir ? `data-nc-dir="${escHtml(it.path)}"` : ''}>
+          <span class="mc-nc-icon">${it.is_dir ? '📁' : '📄'}</span>
+          <span class="mc-nc-name" title="${escHtml(it.path)}">${escHtml(it.name)}</span>
+          ${isBroadcastable
+            ? `<button type="button" class="mc-btn mc-btn-sm mc-nc-broadcast" data-nc-path="${escHtml(it.path)}" data-nc-label="${escHtml(it.name)}" title="Broadcast to selected displays">Broadcast</button>`
+            : ''}
+        </div>`;
+      }).join('')
+    : '<div class="mc-tb-empty">This folder is empty.</div>';
+
+  container.innerHTML = `
+    <div class="mc-nc-crumbs">${crumbs.join('<span class="mc-nc-sep">/</span>')}</div>
+    <div class="mc-nc-list">${rows}</div>`;
+
+  // Breadcrumb navigation
+  container.querySelectorAll('.mc-nc-crumb').forEach((el) => {
+    el.style.cursor = 'pointer';
+    el.addEventListener('click', () => {
+      renderNextcloudTab(container, { selectedIds, onAfterSend }, el.dataset.ncPath || '');
+    });
+  });
+
+  // Folder drill-down
+  container.querySelectorAll('[data-nc-dir]').forEach((el) => {
+    el.style.cursor = 'pointer';
+    el.addEventListener('click', () => {
+      renderNextcloudTab(container, { selectedIds, onAfterSend }, el.dataset.ncDir);
+    });
+  });
+
+  // Broadcast buttons — import NC bytes to a content row, then push to displays.
+  // GUARDRAIL: email comes from req.user.email server-side, never from the client.
+  container.querySelectorAll('.mc-nc-broadcast').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!Array.isArray(selectedIds) || selectedIds.length === 0) {
+        showToast('No displays selected — add a display to the stage first.', 'error');
+        return;
+      }
+      btn.disabled = true; btn.textContent = '…';
+      const ncPath = btn.dataset.ncPath;
+      const label = btn.dataset.ncLabel || ncPath;
+      try {
+        let result = await api.files.broadcast(ncPath, selectedIds);
+        if (result && result.code === 'CONFIRM_ALL_REQUIRED') {
+          const { confirmDialog } = await import('../../components/confirm.js');
+          const ok = await confirmDialog({
+            title: `Show on ALL ${result.count} displays?`,
+            message: `This puts "${escHtml(label)}" on every display in the room.`,
+            confirmLabel: 'Show on all',
+            tone: 'default',
+          });
+          if (!ok) { btn.disabled = false; btn.textContent = 'Broadcast'; return; }
+          result = await api.files.broadcast(ncPath, selectedIds, { confirm_all: true });
+        }
+        if (result && result.success) {
+          const offline = (result.total || 0) - (result.sent || 0);
+          showToast(
+            `${escHtml(label)} → ${result.sent} display${result.sent === 1 ? '' : 's'}${offline > 0 ? ` (${offline} offline)` : ''}`,
+            'success'
+          );
+          if (typeof onAfterSend === 'function') onAfterSend();
+        }
+      } catch (err) {
+        showToast(err?.message || 'Broadcast failed.', 'error');
+      } finally {
+        btn.disabled = false; btn.textContent = 'Broadcast';
+      }
+    });
+  });
+}
+
 async function renderScenesTab(container, { onAfterSend }) {
   container.innerHTML = '<div class="mc-tb-loading">Loading scenes…</div>';
   let scenes = [];
@@ -196,6 +309,9 @@ async function loadTab(tabId, tabBody, { selectedIds, onAfterSend }) {
       break;
     case 'scenes':
       await renderScenesTab(tabBody, { onAfterSend });
+      break;
+    case 'nextcloud':
+      await renderNextcloudTab(tabBody, { selectedIds, onAfterSend });
       break;
     default:
       tabBody.innerHTML = '';

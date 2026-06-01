@@ -15,7 +15,7 @@ import { showToast } from '../components/toast.js';
 import { confirmDialog } from '../components/confirm.js';
 import { sendCommand } from '../socket.js';
 
-let data = { devices: [], groups: [], presentations: [], playlists: [], content: [] };
+let data = { devices: [], groups: [], presentations: [], playlists: [], content: [], ncFiles: [], ncPath: '' };
 let sel = { type: 'presentation', id: null, label: '' };
 let targets = new Set();
 let blanked = false;
@@ -35,18 +35,98 @@ const SOURCE_TABS = [
   { key: 'presentation', label: 'Presentations' },
   { key: 'playlist', label: 'Playlists' },
   { key: 'media', label: 'Media' },
+  { key: 'nc_file', label: 'Nextcloud' },
 ];
 
+// MIME types broadcastable from Nextcloud (image/* and video/* only — per plan spec).
+const NC_BROADCASTABLE = /^(image|video)\//;
+
+// Load the current NC directory into data.ncFiles (called when switching to the
+// Nextcloud tab or navigating within it). Silently sets an error row on failure.
+async function loadNcFiles() {
+  const wrap = document.getElementById('bcSources');
+  if (wrap) wrap.innerHTML = '<div class="mc-panel-empty">Loading Nextcloud files…</div>';
+  try {
+    let health;
+    try { health = await api.files.health(); } catch { health = { enabled: true, connected: false, error: 'unreachable' }; }
+    if (health.enabled === false || !health.connected) {
+      data.ncFiles = [];
+      if (wrap) wrap.innerHTML = `<div class="mc-panel-empty">${esc(health.error || 'Nextcloud is not connected.')}</div>`;
+      return;
+    }
+    const items = await api.files.list(data.ncPath || '');
+    data.ncFiles = Array.isArray(items) ? items : [];
+  } catch (e) {
+    data.ncFiles = [];
+    if (wrap) wrap.innerHTML = `<div class="mc-panel-empty">Could not load Nextcloud files: ${esc(e?.message || '')}</div>`;
+  }
+}
+
 function sourceItems() {
-  if (sel.type === 'presentation') return data.presentations.map((p) => ({ id: p.id, label: p.title || '(untitled)', sub: (p.slide_count != null ? p.slide_count + ' slides' : '') }));
-  if (sel.type === 'playlist') return data.playlists.map((p) => ({ id: p.id, label: p.name || '(untitled)', sub: p.description || '' }));
-  return data.content.map((c) => ({ id: c.id, label: c.filename || '(file)', sub: c.mime_type || '' }));
+  if (sel.type === 'presentation') return data.presentations.map((p) => ({ id: p.id, label: p.title || '(untitled)', sub: (p.slide_count != null ? p.slide_count + ' slides' : ''), isDir: false }));
+  if (sel.type === 'playlist') return data.playlists.map((p) => ({ id: p.id, label: p.name || '(untitled)', sub: p.description || '', isDir: false }));
+  if (sel.type === 'nc_file') {
+    // NC items include folders (for navigation) + broadcastable files.
+    return data.ncFiles.map((f) => ({
+      id: f.path,
+      label: f.name,
+      sub: f.is_dir ? 'Folder' : (f.mime_type || ''),
+      isDir: !!f.is_dir,
+      isBroadcastable: !f.is_dir && NC_BROADCASTABLE.test(f.mime_type || ''),
+    }));
+  }
+  return data.content.map((c) => ({ id: c.id, label: c.filename || '(file)', sub: c.mime_type || '', isDir: false }));
 }
 
 function renderSources() {
   const wrap = document.getElementById('bcSources');
   if (!wrap) return;
   const items = sourceItems();
+
+  // Nextcloud tab: show breadcrumb + file list (folders navigable, files selectable).
+  if (sel.type === 'nc_file') {
+    const parts = (data.ncPath || '').split('/').filter(Boolean);
+    let acc = '';
+    const crumbs = ['<span data-bc-nc-nav="" style="color:var(--mc-primary);cursor:pointer">Files</span>']
+      .concat(parts.map((p) => { acc += '/' + p; return `<span data-bc-nc-nav="${esc(acc)}" style="color:var(--mc-primary);cursor:pointer">${esc(p)}</span>`; }));
+    const crumbHtml = `<div style="font-size:var(--mc-font-size-xs);color:var(--mc-text-secondary);margin-bottom:8px">${crumbs.join('<span style="margin:0 4px;color:var(--mc-text-tertiary)">/</span>')}</div>`;
+
+    if (!items.length) {
+      wrap.innerHTML = crumbHtml + '<div class="mc-panel-empty">This folder is empty.</div>';
+    } else {
+      wrap.innerHTML = crumbHtml + items.map((it) => {
+        const isSelected = !it.isDir && sel.id === it.id;
+        const style = isSelected ? ROW_SEL : ROW;
+        const icon = it.isDir ? '📁' : (NC_BROADCASTABLE.test(it.sub) ? '🖼' : '📄');
+        const notBroadcastableHint = !it.isDir && !it.isBroadcastable ? '<span style="font-size:var(--mc-font-size-xs);color:var(--mc-text-tertiary)">(not broadcastable)</span>' : '';
+        return `<div ${it.isDir ? `data-bc-nc-dir="${esc(it.id)}"` : (it.isBroadcastable ? `data-src="${esc(it.id)}" data-label="${esc(it.label)}"` : '')} style="${style};${it.isDir ? 'cursor:pointer' : ''};${!it.isBroadcastable && !it.isDir ? 'opacity:.5' : ''}">
+          <span style="flex:0 0 auto">${icon}</span>
+          <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:var(--mc-fw-semibold);color:var(--mc-text-primary)">${esc(it.label)}</span>
+          ${notBroadcastableHint}
+          <span style="font-size:var(--mc-font-size-xs);color:var(--mc-text-tertiary);white-space:nowrap">${esc(it.sub)}</span>
+        </div>`;
+      }).join('');
+    }
+
+    // Breadcrumb nav
+    wrap.querySelectorAll('[data-bc-nc-nav]').forEach((el) => {
+      el.addEventListener('click', () => {
+        data.ncPath = el.dataset.bcNcNav || '';
+        sel.id = null; sel.label = '';
+        loadNcFiles().then(() => { renderSources(); updateBar(); });
+      });
+    });
+    // Folder drill-down
+    wrap.querySelectorAll('[data-bc-nc-dir]').forEach((el) => {
+      el.addEventListener('click', () => {
+        data.ncPath = el.dataset.bcNcDir;
+        sel.id = null; sel.label = '';
+        loadNcFiles().then(() => { renderSources(); updateBar(); });
+      });
+    });
+    return;
+  }
+
   if (!items.length) {
     const where = sel.type === 'presentation' ? 'Presentations' : sel.type === 'playlist' ? 'Playlists' : 'Media Library';
     wrap.innerHTML = `<div class="mc-panel-empty">No ${sel.type === 'media' ? 'media' : sel.type + 's'} yet. Add some in <b>${where}</b>.</div>`;
@@ -104,18 +184,33 @@ async function broadcast() {
   const btn = document.getElementById('bcGo');
   if (btn) btn.disabled = true;
   const device_ids = [...targets];
-  const payload = { device_ids };
-  if (sel.type === 'presentation') payload.remote_url = `${location.origin}/player/deck/${sel.id}`;
-  else if (sel.type === 'playlist') payload.playlist_id = sel.id;
-  else payload.content_id = sel.id;
+
   try {
+    // Nextcloud file: import bytes → content row → broadcast via /api/files/broadcast.
+    // GUARDRAIL: sel.id is the NC path (string); email comes from req.user.email
+    // server-side — never sent from the client.
+    if (sel.type === 'nc_file') {
+      let r = await api.files.broadcast(sel.id, device_ids);
+      if (r && r.code === 'CONFIRM_ALL_REQUIRED') {
+        const ok = await confirmDialog({ title: 'Broadcast to ALL displays?', message: `This takes over all ${r.count} displays in this workspace.`, confirmLabel: 'Broadcast to all', tone: 'danger' });
+        if (!ok) { updateBar(); return; }
+        r = await api.files.broadcast(sel.id, device_ids, { confirm_all: true });
+      }
+      showToast(`Broadcasting "${esc(sel.label)}" to ${r.sent != null ? r.sent : device_ids.length} display(s)`, 'success');
+      return;
+    }
+
+    const payload = { device_ids };
+    if (sel.type === 'presentation') payload.remote_url = `${location.origin}/player/deck/${sel.id}`;
+    else if (sel.type === 'playlist') payload.playlist_id = sel.id;
+    else payload.content_id = sel.id;
     let r = await api.broadcast(payload);
     if (r && r.code === 'CONFIRM_ALL_REQUIRED') {
       const ok = await confirmDialog({ title: 'Broadcast to ALL displays?', message: `This takes over all ${r.count} displays in this workspace.`, confirmLabel: 'Broadcast to all', tone: 'danger' });
       if (!ok) { updateBar(); return; }
       r = await api.broadcast({ ...payload, confirm_all: true });
     }
-    showToast(`Broadcasting "${sel.label}" to ${r.sent != null ? r.sent : device_ids.length} display(s)`, 'success');
+    showToast(`Broadcasting "${esc(sel.label)}" to ${r.sent != null ? r.sent : device_ids.length} display(s)`, 'success');
   } catch (e) {
     showToast(e.message || 'Broadcast failed', 'error');
   } finally {
@@ -180,10 +275,15 @@ export async function render(app) {
   renderTargets();
   updateBar();
 
-  document.getElementById('bcTabs').addEventListener('click', (e) => {
+  document.getElementById('bcTabs').addEventListener('click', async (e) => {
     const b = e.target.closest('[data-tab]'); if (!b) return;
     sel = { type: b.dataset.tab, id: null, label: '' };
-    renderTabs(); renderSources(); updateBar();
+    renderTabs(); updateBar();
+    if (b.dataset.tab === 'nc_file') {
+      data.ncPath = '';
+      await loadNcFiles();
+    }
+    renderSources(); updateBar();
   });
   document.getElementById('bcSources').addEventListener('click', (e) => {
     const row = e.target.closest('[data-src]'); if (!row) return;
