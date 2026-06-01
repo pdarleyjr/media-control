@@ -1,6 +1,7 @@
-// MBFD Media Control Studio — Files (Nextcloud browser). Phase 6.
-// Lists the MBFD Nextcloud over the server-side WebDAV proxy. Inert with a clear
-// message until the operator sets the service account in .env. CSP-safe.
+// MBFD Media Control Studio — Files (per-user Nextcloud). Phase 6.
+// Browses the signed-in member's own Nextcloud files over the server-side
+// raw-FS proxy (routes/files.js → services/nextcloud-fs.js). Each member
+// sees only THEIR own tree; the server enforces isolation via JWT email.
 
 import { api } from '../api.js';
 import { showToast } from '../components/toast.js';
@@ -33,7 +34,7 @@ async function load(app) {
       <div class="mc-studio-wrap">
         <div class="mc-studio-header">
           <div class="mc-studio-title">Files</div>
-          <div class="mc-studio-sub">Browse your MBFD Nextcloud — exported decks and shared assets.</div>
+          <div class="mc-studio-sub">Browse <strong>your</strong> Nextcloud files — exported decks and shared assets.</div>
         </div>
         <div id="filesBody"><div class="mc-panel"><div class="mc-panel-empty">Connecting to Nextcloud…</div></div></div>
       </div>
@@ -41,16 +42,18 @@ async function load(app) {
   const body = document.getElementById('filesBody');
 
   let health;
-  try { health = await api.files.health(); } catch { health = { enabled: true, ok: false, error: 'unreachable' }; }
-  if (health.enabled === false) { body.innerHTML = `<div class="mc-panel"><div class="mc-panel-empty">The Files module is disabled on this server.</div></div>`; return; }
-  if (!health.configured) {
-    body.innerHTML = `<div class="mc-panel"><div class="mc-panel-empty" style="text-align:left;line-height:1.6">
-      <strong>Nextcloud isn't connected yet.</strong><br>
-      Set <code>NEXTCLOUD_URL</code>, <code>NEXTCLOUD_USER</code>, and <code>NEXTCLOUD_PASS</code> (a Nextcloud app-password) in the server <code>.env</code>, then restart the container. Because Nextcloud is behind Cloudflare Access, point <code>NEXTCLOUD_URL</code> at an internal origin or add an Access service-token bypass for <code>/remote.php/dav</code>.
+  try { health = await api.files.health(); } catch { health = { enabled: true, connected: false, error: 'unreachable' }; }
+  if (health.enabled === false) {
+    body.innerHTML = `<div class="mc-panel"><div class="mc-panel-empty">The Files module is disabled on this server.</div></div>`;
+    return;
+  }
+  if (!health.connected) {
+    body.innerHTML = `<div class="mc-panel"><div class="mc-panel-empty">
+      <strong>Could not connect to your Nextcloud files.</strong><br>
+      ${esc(health.error || 'The Nextcloud microservice may be unreachable.')}
     </div></div>`;
     return;
   }
-  if (!health.ok) { body.innerHTML = `<div class="mc-panel"><div class="mc-panel-empty">Nextcloud is configured but unreachable:<br>${esc(health.error || '')}</div></div>`; return; }
 
   let items = [];
   try { items = await api.files.list(cur); if (!Array.isArray(items)) items = []; }
