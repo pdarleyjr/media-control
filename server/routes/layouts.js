@@ -11,6 +11,7 @@ const { accessContext } = require('../lib/tenancy');
 // Main+Sidebars, Six). Generates standard zones using the existing
 // layout_zones percentage shape.
 const { buildPresetZones, presetKeys } = require('../lib/layout-presets');
+const { reconcileZones } = require('../lib/reconcile-zones');
 
 // List layouts in the caller's current workspace plus all templates.
 // Phase 2.2h: workspace-scoped. Templates (is_template=1) remain visible to
@@ -215,14 +216,20 @@ router.post('/:id/apply-preset', (req, res) => {
     INSERT INTO layout_zones (id, layout_id, name, x_percent, y_percent, width_percent, height_percent, z_index, zone_type, fit_mode, background_color, sort_order)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
+  const updateStmt = db.prepare(`
+    UPDATE layout_zones SET name=?, x_percent=?, y_percent=?, width_percent=?, height_percent=?, z_index=?, zone_type=?, fit_mode=?, sort_order=? WHERE id=?
+  `);
+  const delStmt = db.prepare('DELETE FROM layout_zones WHERE id = ?');
 
   const applyPreset = db.transaction((layoutId, zoneList) => {
-    db.prepare('DELETE FROM layout_zones WHERE layout_id = ?').run(layoutId);
-    zoneList.forEach((z, i) => {
-      insertStmt.run(uuidv4(), layoutId, z.name, z.x_percent, z.y_percent,
-        z.width_percent, z.height_percent, z.z_index,
-        z.zone_type, z.fit_mode, '#000000', z.sort_order != null ? z.sort_order : i);
-    });
+    const existing = db.prepare('SELECT * FROM layout_zones WHERE layout_id = ? ORDER BY sort_order').all(layoutId);
+    const { updates, inserts, deleteIds } = reconcileZones(existing, zoneList);
+    updates.forEach((z, i) => updateStmt.run(z.name, z.x_percent, z.y_percent, z.width_percent,
+      z.height_percent, z.z_index, z.zone_type, z.fit_mode, z.sort_order != null ? z.sort_order : i, z.id));
+    inserts.forEach((z, i) => insertStmt.run(uuidv4(), layoutId, z.name, z.x_percent, z.y_percent,
+      z.width_percent, z.height_percent, z.z_index, z.zone_type, z.fit_mode, '#000000',
+      z.sort_order != null ? z.sort_order : (updates.length + i)));
+    deleteIds.forEach(id => delStmt.run(id));
     db.prepare("UPDATE layouts SET updated_at = strftime('%s','now') WHERE id = ?").run(layoutId);
   });
 
