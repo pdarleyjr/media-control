@@ -3,6 +3,7 @@ const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const { db } = require('../db/database');
 const { accessContext } = require('../lib/tenancy');
+const { ELEVATED_ROLES } = require('../middleware/auth');
 const config = require('../config');
 const ai = require('../services/ai');
 const ncSync = require('../services/nextcloud-sync');
@@ -62,11 +63,18 @@ router.post('/generate-deck', (req, res) => {
   })();
 });
 
-// Poll a job. Workspace-scoped.
+// Poll a job. Workspace-scoped + per-user (Phase 2.5): a caller may only poll
+// their own generation jobs. Acting-as impersonation and elevated roles pass.
 router.get('/jobs/:id', (req, res) => {
   const job = db.prepare('SELECT * FROM ai_generation_jobs WHERE id = ?').get(req.params.id);
   if (!job) return res.status(404).json({ error: 'job not found' });
   if (job.workspace_id !== req.workspaceId) return res.status(403).json({ error: 'Access denied' });
+  const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(job.workspace_id);
+  const ctx = ws && accessContext(req.user.id, req.user.role, ws);
+  if (!ctx) return res.status(403).json({ error: 'Access denied' });
+  if (!ctx.actingAs && !ELEVATED_ROLES.includes(req.user.role) && job.user_id && job.user_id !== req.user.id) {
+    return res.status(403).json({ error: 'You can only access your own AI jobs' });
+  }
   let result = null;
   if (job.result_json) { try { result = JSON.parse(job.result_json); } catch { /* */ } }
   res.json({ id: job.id, status: job.status, job_type: job.job_type, presentation_id: job.presentation_id || null, result, error: job.error_msg || null, created_at: job.created_at, completed_at: job.completed_at });

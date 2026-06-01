@@ -7,6 +7,8 @@ const config = require('../config');
 // Phase 2.2k: workspace-aware access. requirePlaylistOwnership is replaced
 // by read/write helpers gated on the playlist's workspace_id.
 const { accessContext } = require('../lib/tenancy');
+const { ELEVATED_ROLES } = require('../middleware/auth');
+const { ownedContentScope } = require('../lib/content-scope');
 
 // Re-probe video duration with ffprobe if content.duration_sec is missing
 async function probeAndUpdateDuration(content) {
@@ -47,6 +49,11 @@ function loadPlaylistAccess(req, res, requireWrite) {
   if (!ctx) { res.status(403).json({ error: 'Access denied' }); return null; }
   if (requireWrite && !ctx.actingAs && ctx.workspaceRole === 'workspace_viewer') {
     res.status(403).json({ error: 'Read-only access' }); return null;
+  }
+  // Phase 2.5: per-user ownership. Non-elevated users may only access their own
+  // playlists (read + write). Acting-as impersonation and elevated roles pass.
+  if (!ctx.actingAs && !ELEVATED_ROLES.includes(req.user.role) && playlist.user_id && playlist.user_id !== req.user.id) {
+    res.status(403).json({ error: 'You can only access your own playlists' }); return null;
   }
   req.playlist = playlist;
   req.playlistCtx = ctx;
@@ -117,6 +124,10 @@ function pushToDevices(playlistId, req) {
 // Phase 2.2k: list scoped to caller's current workspace. No platform_admin
 // bypass - cross-workspace view comes from switch-workspace, matching the
 // precedent established across all other migrated routes.
+// Phase 2.5: playlists are private per-user. Scope to the caller's own rows in
+// their current workspace; platform templates (workspace_id IS NULL) stay
+// visible to all. The query aliases playlists as `p`, so the scope columns are
+// prefixed to match (mirrors ownedContentScope).
 router.get('/', (req, res) => {
   if (!req.workspaceId) return res.json([]);
   const playlists = db.prepare(`
@@ -124,10 +135,10 @@ router.get('/', (req, res) => {
     FROM playlists p
     LEFT JOIN playlist_items pi ON p.id = pi.playlist_id
     LEFT JOIN devices d ON d.playlist_id = p.id
-    WHERE p.workspace_id = ?
+    WHERE ((p.workspace_id = ? AND p.user_id = ?) OR p.workspace_id IS NULL)
     GROUP BY p.id
     ORDER BY p.name ASC
-  `).all(req.workspaceId);
+  `).all(req.workspaceId, req.user.id);
   res.json(playlists);
 });
 

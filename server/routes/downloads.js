@@ -5,6 +5,7 @@ const { v4: uuidv4 } = require('uuid');
 const { execFile } = require('child_process');
 const { db } = require('../db/database');
 const { accessContext } = require('../lib/tenancy');
+const { ownedContentScope } = require('../lib/content-scope');
 const config = require('../config');
 
 // MBFD Media Control Studio — media downloads by URL (Phase 7). Records jobs in
@@ -41,9 +42,13 @@ router.get('/health', async (req, res) => {
   res.json({ enabled: true, available: !!ytdlpPath });
 });
 
+// Phase 2.5: per-user — a caller sees only their own download jobs in the
+// current workspace (no platform-template download jobs exist, but the shared
+// scope helper keeps the pattern consistent with content/presentations).
 router.get('/', (req, res) => {
   if (!req.workspaceId) return res.json([]);
-  res.json(db.prepare('SELECT * FROM download_jobs WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 100').all(req.workspaceId));
+  const scope = ownedContentScope(req.workspaceId, req.user.id);
+  res.json(db.prepare(`SELECT * FROM download_jobs WHERE ${scope.clause} ORDER BY created_at DESC LIMIT 100`).all(...scope.params));
 });
 
 router.post('/', async (req, res) => {

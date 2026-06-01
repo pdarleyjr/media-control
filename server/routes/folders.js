@@ -2,9 +2,10 @@ const express = require('express');
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const { db } = require('../db/database');
-const { PLATFORM_ROLES } = require('../middleware/auth');
+const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
 // Phase 2.2c: workspace-aware access. Mirrors devices.js / content.js.
 const { accessContext } = require('../lib/tenancy');
+const { ownedContentScope } = require('../lib/content-scope');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -36,16 +37,21 @@ function accessibleFolder(req, folderId, requireWrite = false) {
   const ctx = ws && accessContext(req.user.id, req.user.role, ws);
   if (!ctx) return null;
   if (requireWrite && !ctx.actingAs && ctx.workspaceRole === 'workspace_viewer') return null;
+  // Phase 2.5: per-user ownership for owned folders. Non-elevated users may only
+  // touch their own folders; acting-as and elevated roles pass through.
+  if (!ctx.actingAs && !ELEVATED_ROLES.includes(req.user.role) && row.user_id && row.user_id !== req.user.id) return null;
   return { row, ctx };
 }
 
 // List folders accessible to the caller in their current workspace.
-// Includes platform-template folders (workspace_id IS NULL) for everyone.
+// Phase 2.5: per-user — only the caller's own folders, plus platform-template
+// folders (workspace_id IS NULL) which stay visible to everyone.
 router.get('/', (req, res) => {
   if (!req.workspaceId) return res.json([]);
+  const scope = ownedContentScope(req.workspaceId, req.user.id);
   const rows = db.prepare(
-    'SELECT * FROM content_folders WHERE (workspace_id = ? OR workspace_id IS NULL) ORDER BY name COLLATE NOCASE'
-  ).all(req.workspaceId);
+    `SELECT * FROM content_folders WHERE ${scope.clause} ORDER BY name COLLATE NOCASE`
+  ).all(...scope.params);
   res.json(rows);
 });
 

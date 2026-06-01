@@ -5,6 +5,8 @@ const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const { db } = require('../db/database');
 const { accessContext } = require('../lib/tenancy');
+const { ELEVATED_ROLES } = require('../middleware/auth');
+const { ownedContentScope } = require('../lib/content-scope');
 const upload = require('../middleware/upload');
 const config = require('../config');
 const { sanitizeString } = require('../middleware/sanitize');
@@ -48,6 +50,11 @@ function loadAccess(req, res, requireWrite) {
   if (requireWrite && !ctx.actingAs && ctx.workspaceRole === 'workspace_viewer') {
     res.status(403).json({ error: 'Read-only access' }); return null;
   }
+  // Phase 2.5: per-user ownership. Non-elevated users may only access their own
+  // presentations (read + write). Acting-as impersonation and elevated roles pass.
+  if (!ctx.actingAs && !ELEVATED_ROLES.includes(req.user.role) && p.user_id && p.user_id !== req.user.id) {
+    res.status(403).json({ error: 'You can only access your own presentations' }); return null;
+  }
   req.presentation = p;
   req.presentationCtx = ctx;
   return p;
@@ -60,14 +67,17 @@ function shape(p) {
   return { ...p, slide_count: slideCount(p.deck_json) };
 }
 
-// List — scoped to the caller's current workspace.
+// List — scoped to the caller's current workspace AND their own rows.
+// Phase 2.5: presentations are private per-user; platform templates
+// (workspace_id IS NULL) stay visible to all via the shared scope helper.
 router.get('/', (req, res) => {
   if (!req.workspaceId) return res.json([]);
+  const scope = ownedContentScope(req.workspaceId, req.user.id);
   const rows = db.prepare(`
     SELECT id, workspace_id, user_id, title, description, theme, canvas_profile,
            deck_json, status, published_at, thumbnail_path, created_by, created_at, updated_at
-    FROM presentations WHERE workspace_id = ? ORDER BY updated_at DESC
-  `).all(req.workspaceId);
+    FROM presentations WHERE ${scope.clause} ORDER BY updated_at DESC
+  `).all(...scope.params);
   res.json(rows.map(shape));
 });
 
