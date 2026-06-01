@@ -177,6 +177,15 @@ module.exports = function setupDashboardSocket(io) {
         deviceNs.to(device_id).emit('device:command', { type, payload });
         console.log(`Command delivered to device ${device_id}: ${type}`);
         if (typeof ack === 'function') ack({ delivered: true });
+        // Unified dashboard: record authoritative on/off ONLY when actually delivered
+        // to a live display. Never write it for a merely-queued command — that would
+        // make the dashboard lie about reality.
+        if (type === 'screen_off' || type === 'screen_on') {
+          try {
+            db.prepare("UPDATE devices SET screen_on = ?, updated_at = strftime('%s','now') WHERE id = ?")
+              .run(type === 'screen_on' ? 1 : 0, device_id);
+          } catch (_) { /* non-fatal */ }
+        }
         return;
       }
       // Device offline at emit time. Try to queue (lazy require so reverting
