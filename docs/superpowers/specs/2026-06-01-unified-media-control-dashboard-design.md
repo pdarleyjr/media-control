@@ -178,3 +178,17 @@ Build at `#/control` alongside everything; verify live with real displays; then 
 - Live video preview streaming to the browser (stick to server-generated screenshots; live preview only on a focused tile is a possible future enhancement).
 - Take/preview buffer (instant hot-cut chosen for V1).
 - Behaviors/macros are a stretch goal; ship the routing-mode presets (Lecture/Group Share/Mirror) first.
+
+## 15. Phase 6 — per-user Nextcloud ↔ Media Control (added 2026-06-01)
+
+**Requirement (from the user):** a member can broadcast files/presentations from their **own** Nextcloud through Media Control, and presentations created in Media Control save both in-app **and** to that member's **own** Nextcloud.
+
+**Why the Files page is "not connected":** media-control's `services/nextcloud.js` uses **WebDAV** with a service account (`NEXTCLOUD_USER/PASS`), which needs per-user passwords and is blocked by Cloudflare Access. Not the path.
+
+**Approach (reuse the box's working per-user services):** integrate with the existing raw-FS microservices **`nextcloud-user-fs`** (read, `:8003`) and **`nextcloud-write`** (write, `:8005`), both scoped by header `X-OpenWebUI-User-Email`, reading/writing the raw NC filesystem (`/data/nextcloud/<ncuser>/files`), bypassing CF Access and per-user passwords. NC username = email local-part; all 14 members have NC accounts. media-control joins the `mbfd-ai` docker network to reach them by name.
+- **Read/broadcast:** `routes/files.js` lists/streams the caller's own NC files via `:8003`; a new `POST /api/files/broadcast` materializes the chosen NC file's bytes into a local, per-user `content` row and broadcasts it through the existing path (the shared display pulls from media-control's own `/uploads` origin — never from NC).
+- **Write-back:** the existing `ncSync.syncSoon()` hook (already called on presentation create/update/publish) keeps its deck-render + job-tracking; only its transport switches from WebDAV to `nextcloud-write` (`/save_base64_file`), keyed by the owner's email. Stays fire-and-forget so a slow/failed NC scan never blocks a save.
+
+**Two hard guardrails:** (1) the per-user email is ALWAYS `req.user.email` (JWT), never a client header — media-control is the trust boundary. (2) Displays never fetch from NC; broadcasting copies bytes to media-control's origin. Fits the §13 private-files model (read/import is per-user; the shared display is the "I chose to show this" boundary).
+
+**Defaults (confirmable):** Files-page Broadcast = image/video only; presentations broadcast via the deck player; `.pptx`-only sync; WebDAV code kept as a disabled fallback during rollout. Full task breakdown (P6-1..P6-7) in the implementation plan.

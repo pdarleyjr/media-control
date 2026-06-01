@@ -1143,6 +1143,68 @@ git push -u origin feature/unified-media-control-dashboard
 
 ---
 
+## Phase 6 — Per-user Nextcloud ↔ Media Control integration
+
+Make the Files page work per-user and bidirectional, using the box's **existing raw-FS microservices** (not WebDAV): `nextcloud-user-fs` (read, container `nextcloud-user-fs:8000`, host :8003) and `nextcloud-write` (write, `nextcloud-write:8000`, host :8005), both scoped by the header `X-OpenWebUI-User-Email`. NC username = email local-part; all 14 members have NC accounts. This fits the Phase 2.5 private-files model: each member only ever reads/writes **their own** NC files; displays stay shared (broadcasting copies bytes to media-control's own origin).
+
+**Decisions baked in (defaults — confirmable):** Files-page **Broadcast** supports **image/video only**; presentations broadcast via the existing **deck player** (`/player/deck/:id`), not by re-importing a .pptx. Presentation→NC sync stays **.pptx-only**, fire-and-forget. Keep the old WebDAV code (`services/nextcloud.js` + `NEXTCLOUD_USER/PASS/SHARED_PASSWORD`) in the tree as a **disabled fallback** during rollout; remove only after staging-verified. PDF-alongside-pptx, server-side Office→image conversion, and `nextcloud_import` TTL pruning are deferred to v2.
+
+> **TWO HARD GUARDRAILS:** (1) The per-user email **MUST** come from `req.user.email` (set by `requireAuth` from the JWT) — **never** from a client-supplied header; media-control is the trust boundary (the microservices trust the header blindly). (2) **Never** make a display fetch from Nextcloud — broadcasting materializes the NC bytes into a local `content` row served from media-control's own `/uploads/content` origin (displays can't reach NC: CF Access + raw-FS only). Per-user scoping applies to read/import, not to what a shared display shows.
+
+### Task P6-1: Join media-control to `mbfd-ai` network + NC microservice env
+**Files:** media-control compose file (on box); `server/config.js`
+- [ ] Identify the media-control compose service/container name on the box (currently on `mbfd-workspace-edge` + `media-control_default`).
+- [ ] Add the service to the `mbfd-ai` network (compose `networks: [media-control_default, mbfd-workspace-edge, mbfd-ai]` + `networks: { mbfd-ai: { external: true } }`). Stopgap: `docker network connect mbfd-ai <container>` (but compose is required so it survives recreate).
+- [ ] `config.js` nextcloud block: add `userfsUrl: process.env.NC_USERFS_URL || 'http://nextcloud-user-fs:8000'` and `writeUrl: process.env.NC_WRITE_URL || 'http://nextcloud-write:8000'`. Keep `NEXTCLOUD_BASE_DIR='MBFD Media Control'`; leave old WebDAV vars in place.
+- [ ] Set `NC_USERFS_URL`/`NC_WRITE_URL` in the container env.
+- [ ] **Verify:** from inside the container, `curl -s -H 'X-OpenWebUI-User-Email: peterdarley@miamibeachfl.gov' http://nextcloud-user-fs:8000/list_directory -d '{"path":""}'` returns peterdarley's files.
+
+### Task P6-2: `server/services/nextcloud-fs.js` (raw-FS microservice client)
+**Files:** Create `server/services/nextcloud-fs.js`
+- [ ] Wrap both services; every call sends header `X-OpenWebUI-User-Email: <email>` + JSON body. Throw a typed error if `email` is falsy (routes surface "not connected").
+- [ ] READ (`config.nextcloud.userfsUrl`): `listDir(email, relPath)` → POST `/list_directory {path}`; `readFile(email, relPath)` → POST `/read_file {path}` → `{buffer, mime, name, size}`; plus `getInfo`/`search`/`tree` only as routes need them.
+- [ ] WRITE (`config.nextcloud.writeUrl`): `writeBase64(email, relPath, base64, mime)` → `/save_base64_file`; `createFolder(email, relPath)` → `/create_folder`; `moveFile`, `deleteFile`.
+- [ ] `health(email)` → light `list_directory('')` → `{connected, error?}`. Use `AbortSignal.timeout` (15s read / 60s write).
+- [ ] Normalize the :8003 list response into the frontend's existing `{name,is_dir,size,modified,path}` shape.
+- [ ] **Verify (unit, mocked fetch):** sends the email header, throws without email, normalizes list shape, base64-encodes writes.
+
+### Task P6-3: Rewrite `routes/files.js` to per-user reads
+**Files:** `server/routes/files.js`, `frontend/js/views/files.js`
+- [ ] Swap `require('../services/nextcloud')` → `nextcloud-fs` (`ncfs`).
+- [ ] `GET /health` → `ncfs.health(req.user.email)` → `{enabled, connected, mode:'per-user'}` (replaces the NEXTCLOUD_URL/USER/PASS message). `GET /?path=` → `ncfs.listDir(req.user.email, path)`. `GET /download?path=` → `ncfs.readFile` → stream with `Content-Type`/`Content-Disposition`.
+- [ ] Frontend `files.js`: drop the "Set NEXTCLOUD_URL/USER/PASS" copy; use `health.connected`; subtitle → "Browse **your** Nextcloud files".
+- [ ] **Verify:** two members each see only their OWN files; download streams correct bytes.
+
+### Task P6-4: Swap `nextcloud-sync.js` transport to `nextcloud-write` (keep render + hooks + job tracking)
+**Files:** `server/services/nextcloud-sync.js`
+- [ ] Replace `mkcolChain()` → `ncfs.createFolder(email, relDir)`; `putFile()` → `ncfs.writeBase64(email, relPath, buf.toString('base64'), PPTX_MIME)`; `deleteFile()` → `ncfs.deleteFile`.
+- [ ] Pass the OWNER email (already loaded ~line 105) as the header; keep `uidFromEmail()` ONLY as the `@miamibeachfl.gov` skip-guard. Update `enabled()` to gate on `features.nextcloudSync` + `writeUrl` (drop sharedPassword requirement).
+- [ ] Leave `renderDeckToPptxBuffer`, `safeFileBase`, stale-title delete, `recordJob` into `nextcloud_sync_jobs`, and `syncSoon` fire-and-forget **unchanged**.
+- [ ] (Stretch) `GET /api/presentations/:id/sync-job` reading `nextcloud_sync_jobs` so the editor can show "Saved to your Nextcloud".
+- [ ] **Verify:** edit a presentation as a member → a `.pptx` appears at NC `/MBFD Media Control/Presentations/<title>.pptx` for that member only; `nextcloud_sync_jobs` row `status='done'`; rename → stale file removed. **Regression:** with `:8005` down, the save still succeeds (fire-and-forget never breaks saves).
+
+### Task P6-5: `POST /api/files/broadcast` (import NC file → content row → existing broadcast)
+**Files:** `server/routes/files.js`, `frontend/js/api.js`
+- [ ] Route `POST /broadcast` on the files router (already `requireAuth`+`resolveTenancy`). Body `{ path, device_ids[], fit_mode?, confirm_all? }`. Deny `workspace_viewer` (mirror `broadcast.js:23`); validate `device_ids` in `req.workspaceId` (mirror `broadcast.js:42-51`).
+- [ ] `ncfs.readFile(req.user.email, path)` → buffer+mime. Allow **image/* and video/* only** (else 415). Normalize/clamp `path` (reject `..`/absolute) before passing on.
+- [ ] Write bytes to `config.contentDir` as `<uuid><ext>`; INSERT a `content` row (content.js:166 shape) `user_id=req.user.id, workspace_id=req.workspaceId, content_type='nextcloud_import', access_level='private'`.
+- [ ] Honor the all-displays gate (`409 CONFIRM_ALL_REQUIRED`, like `broadcast.js:54-60`); then per device `sceneEngine.pushSourceToDevice(io, deviceId, { content_id, fit_mode }, { workspaceId, userId })`; `logActivity`.
+- [ ] `api.js`: `files.broadcast(path, device_ids, opts)` reusing the 409 confirm-and-retry pattern.
+- [ ] **Verify:** a member broadcasts their own image and video → the display pulls `/uploads/content/<filepath>`. A different member cannot import that file (401/404 from :8003).
+
+### Task P6-6: Wire the "Nextcloud" source into the unified dashboard toolbox + Files Broadcast button
+**Files:** `frontend/js/views/media-control/toolbox.js` (and/or `broadcast-center.js`), `frontend/js/views/files.js`
+- [ ] Add a **Nextcloud** source tab to the Phase-4 toolbox (and the legacy Broadcast Center `SOURCE_TABS`): lists the caller's NC files via `api.files.list(path)` with folder navigation; on send, `api.files.broadcast(path, [...targets], { fit_mode })`.
+- [ ] `files.js`: add a per-row **Broadcast** button (next to Download) for image/video rows → display multiselect → `api.files.broadcast`.
+- [ ] Keep presentation broadcast on `/player/deck/:id` (do NOT route decks through import).
+- [ ] **Verify (Playwright):** Broadcast Center → Nextcloud → file → display → Go shows it; Files Broadcast button works; all-displays gate prompts.
+
+### Task P6-7: Tests + adversarial security review + staging verify
+**Files:** `server/services/nextcloud-fs.js`, `server/routes/files.js`, `server/services/nextcloud-sync.js`
+- [ ] Unit (mock fetch): email-header sent, throws without email, list normalization, base64 writes. Integration: per-email scoping (two users → different trees); `/files/broadcast` tenancy guards (foreign device 403, foreign NC path 404/401, non-media 415, all-displays 409→200).
+- [ ] **Security pass:** the email is ALWAYS `req.user.email`, never a client header (header-spoofing test). Path-traversal clamp at the media-control boundary.
+- [ ] Regression: presentation save survives `:8005` unreachable. Then full staging loop as a real member.
+
 ## Deployment (after the branch is verified)
 
 CI is billing-blocked — deploy manually on the GMKtec box (`mbfd@/opt/...` per the deploy runbook): merge to `main`, on the box `git pull` (read-only deploy key), then rebuild the `app/` build context and `docker compose up -d`. The player and all socket event names are unchanged, so deployed TVs need no update and currently-connected displays stay connected.
