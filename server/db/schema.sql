@@ -598,3 +598,12 @@ CREATE INDEX IF NOT EXISTS idx_asset_variants_content ON asset_variants(content_
 CREATE INDEX IF NOT EXISTS idx_ai_jobs_workspace ON ai_generation_jobs(workspace_id, status);
 CREATE INDEX IF NOT EXISTS idx_nextcloud_sync_workspace ON nextcloud_sync_jobs(workspace_id, status);
 CREATE INDEX IF NOT EXISTS idx_download_jobs_workspace ON download_jobs(workspace_id, status);
+
+-- 2026-06-01 Unified Media Control dashboard
+CREATE TABLE IF NOT EXISTS dashboard_state (
+    user_id        TEXT NOT NULL,
+    workspace_id   TEXT NOT NULL,
+    selection_json TEXT NOT NULL DEFAULT '[]',
+    updated_at     INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    PRIMARY KEY (user_id, workspace_id)
+);

@@ -183,6 +183,10 @@ const migrations = [
   "ALTER TABLE activity_log ADD COLUMN resource_type TEXT",
   "ALTER TABLE activity_log ADD COLUMN before_state TEXT",
   "ALTER TABLE activity_log ADD COLUMN after_state TEXT",
+  // 2026-06-01 Unified Media Control dashboard: authoritative blank/on state
+  // per display (written only on ACKED device-command delivery), and a tiny
+  // per-user "what was I controlling" selection so the unified stage re-hydrates.
+  "ALTER TABLE devices ADD COLUMN screen_on INTEGER NOT NULL DEFAULT 1",
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (e) { /* already exists */ }
@@ -718,6 +722,23 @@ function migrateScenes() {
 }
 
 migrateScenes();
+
+function migrateDashboardState() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS dashboard_state (
+        user_id        TEXT NOT NULL,
+        workspace_id   TEXT NOT NULL,
+        selection_json TEXT NOT NULL DEFAULT '[]',
+        updated_at     INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        PRIMARY KEY (user_id, workspace_id)
+      );
+    `);
+  } catch (e) {
+    console.error('[dashboard_state] migration failed:', e.message);
+  }
+}
+migrateDashboardState();
 
 // Prune old telemetry (keep last 24h worth at 15s intervals = ~5760, cap at 6000)
 function pruneTelemetry(deviceId) {
