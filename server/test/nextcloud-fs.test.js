@@ -88,12 +88,25 @@ test('listDir normalizes type->is_dir and mtime(seconds)->ISO modified, keeping 
   const list = await ncfs.listDir('user@miamibeachfl.gov', '');
   assert.equal(list.length, 2);
   assert.deepEqual(list[0], {
-    name: 'Folder', is_dir: true, size: 0, modified: new Date(1700000000 * 1000).toISOString(), path: 'Folder',
+    name: 'Folder', is_dir: true, size: 0, modified: new Date(1700000000 * 1000).toISOString(), path: 'Folder', mime_type: '',
   });
   assert.equal(list[1].is_dir, false);
   assert.equal(list[1].size, 2048);
   assert.equal(list[1].path, 'photo.jpg');
   assert.match(list[1].modified, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(list[1].mime_type, 'image/jpeg');
+});
+
+test('normalizeEntry includes mime_type: image/jpeg for .jpg, video/mp4 for .mp4, empty string for directory', () => {
+  const jpg = ncfs.normalizeEntry({ name: 'photo.jpg', path: 'photo.jpg', type: 'file', size: 1024, mtime: 1700000000 });
+  assert.equal(jpg.mime_type, 'image/jpeg');
+
+  const mp4 = ncfs.normalizeEntry({ name: 'clip.mp4', path: 'clip.mp4', type: 'file', size: 4096, mtime: 1700000000 });
+  assert.equal(mp4.mime_type, 'video/mp4');
+
+  const dir = ncfs.normalizeEntry({ name: 'Photos', path: 'Photos', type: 'directory', size: null, mtime: 1700000000 });
+  assert.equal(dir.mime_type, '');
+  assert.equal(dir.is_dir, true);
 });
 
 test('listDir tolerates a response missing entries', async () => {

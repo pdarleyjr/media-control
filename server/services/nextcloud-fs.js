@@ -123,6 +123,7 @@ function normalizeEntry(e) {
     size: e && typeof e.size === 'number' ? e.size : 0,
     modified,
     path: e && e.path ? e.path : '',
+    mime_type: isDir ? '' : mimeForName(e && e.name ? e.name : ''),
   };
 }
 
