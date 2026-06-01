@@ -34,14 +34,16 @@ const tusServer = new Server({
   respectForwardedHeaders: true, // we sit behind the Cloudflare tunnel
   maxSize: MAX_SIZE,
   namingFunction: () => uuidv4(),
+  // @tus/server 1.x contract: return the (mutated) res plus optional
+  // status_code/headers/body. The `res` key is REQUIRED in this major — omitting
+  // it (the 2.x shape) makes the server deref an undefined res (writeHead crash).
   async onUploadFinish(req, res, upload) {
     const md = upload.metadata || {};
     const absPath = (upload.storage && upload.storage.path)
       ? upload.storage.path
       : path.join(TUS_DIR, upload.id);
-    let content;
     try {
-      content = await finalizeUpload({
+      const content = await finalizeUpload({
         absPath,
         originalName: md.filename || `upload-${upload.id}`,
         mimeType: md.filetype || 'application/octet-stream',
@@ -49,17 +51,23 @@ const tusServer = new Server({
         userId: req.user && req.user.id,
         workspaceId: req.workspaceId,
       });
+      // finalizeUpload moved the data file out; drop the tus .json sidecar too.
+      try { fs.unlinkSync(absPath + '.json'); } catch { /* ignore */ }
+      return {
+        res,
+        status_code: 200,
+        headers: { 'X-Content-Id': content.id, 'Access-Control-Expose-Headers': 'X-Content-Id' },
+        body: JSON.stringify(content),
+      };
     } catch (e) {
-      // tus surfaces a thrown {status_code, body} to the client.
-      throw { status_code: e.status || 500, body: JSON.stringify({ error: e.message || 'Finalize failed' }) };
+      console.error('[tus] finalize failed:', e && e.message);
+      return {
+        res,
+        status_code: e.status || 500,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ error: (e && e.message) || 'Finalize failed' }),
+      };
     }
-    // finalizeUpload moved the data file out; drop the tus .json sidecar too.
-    try { fs.unlinkSync(absPath + '.json'); } catch { /* ignore */ }
-    return {
-      status_code: 200,
-      headers: { 'X-Content-Id': content.id, 'Access-Control-Expose-Headers': 'X-Content-Id' },
-      body: JSON.stringify(content),
-    };
   },
 });
 
