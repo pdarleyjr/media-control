@@ -307,7 +307,18 @@ test('proceeds when targeting all displays WITH confirm_all:true', async () => {
 // Path traversal clamp at the trust boundary
 // ══════════════════════════════════════════════════════════════════════════════
 
-for (const bad of ['../../etc/passwd', '/etc/passwd', 'a/../../b.png', 'C:/Windows/x.png', '']) {
+// Each of these must be rejected at the media-control boundary (400, no NC read):
+//   - '..' traversal (unix-style and backslash-style),
+//   - absolute paths (unix, windows drive, UNC),
+//   - a single '.' segment,
+//   - a control character (NUL / CR / LF) that could confuse the downstream
+//     service's path handling,
+//   - empty / whitespace-only.
+for (const bad of [
+  '../../etc/passwd', '/etc/passwd', 'a/../../b.png', 'C:/Windows/x.png', '',
+  '..\\..\\windows\\x.png', '\\\\server\\share\\x.png', 'a/./b.png', 'a/..',
+  'evil .png', 'line\nbreak.png', 'cr\rinject.png', '   ',
+]) {
   test(`rejects unsafe path ${JSON.stringify(bad)} with 400 (no fetch)`, async () => {
     mockFetch(() => { throw new Error('fetch must not run for an unsafe path'); });
     patchFs();
@@ -321,6 +332,36 @@ for (const bad of ['../../etc/passwd', '/etc/passwd', 'a/../../b.png', 'C:/Windo
     assert.equal(fetchCalls.length, 0);
   });
 }
+
+// Adversarial: a URL-ENCODED traversal string is NOT decoded by the clamp, so it
+// passes through as a LITERAL directory name (e.g. '%2e%2e'). This is SAFE: the
+// real trust boundary is the per-user email header, and the read microservice
+// path-joins '%2e%2e' under the CALLER'S OWN root (a literal folder that does not
+// exist) — it cannot escape the tree. We assert the request reached the service
+// with the literal path AND the caller's JWT email (not a traversal of the host).
+test('a URL-encoded traversal string is passed through LITERALLY and stays email-scoped', async () => {
+  mockFetch(() => jsonResp(404, { detail: 'No such file' })); // literal '%2e%2e' dir -> 404
+  patchFs();
+  const db = makeDb({ devices: DEVS, total: 5 });
+  const se = makeSceneEngine();
+  const router = loadRouter({ db, sceneEngine: se });
+  const handler = getHandler(router, 'POST', '/broadcast');
+  const req = makeReq({
+    body: { path: '%2e%2e/%2e%2e/secret.png', device_ids: ['d1'] },
+    user: { id: 'u1', email: 'alice@miamibeachfl.gov' },
+  });
+  const res = makeRes();
+  await handler(req, res);
+
+  // The clamp let it through (no '..' segment literally present), so a read was
+  // attempted — but scoped to alice and as a literal (harmless) path -> 404.
+  assert.equal(fetchCalls.length, 1);
+  assert.equal(fetchCalls[0].opts.headers['X-OpenWebUI-User-Email'], 'alice@miamibeachfl.gov');
+  assert.deepEqual(fetchCalls[0].body, { path: '%2e%2e/%2e%2e/secret.png' });
+  assert.equal(res._status, 404, 'literal encoded path resolves to nothing -> safe 404');
+  assert.equal(db._inserts.length, 0);
+  assert.equal(se._pushes.length, 0);
+});
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Foreign / missing NC path -> the read microservice 404 propagates as 404

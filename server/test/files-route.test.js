@@ -203,6 +203,34 @@ test('GET / returns 502 on an upstream non-2xx error', async () => {
   assert.ok(res._json.error);
 });
 
+// Integration (per-email scoping): two different JWT users listing the SAME
+// query path each produce a read scoped to THEIR OWN email — never each other's.
+// The microservice returns a per-user tree; here we assert the email header that
+// determines that tree is taken from req.user.email, distinctly, for each user.
+test('two members listing the same path read two DIFFERENT email-scoped trees', async () => {
+  const trees = {
+    'alice@miamibeachfl.gov': [{ name: 'alice.png', path: 'alice.png', type: 'file', size: 1, mtime: 1700000000 }],
+    'bob@miamibeachfl.gov': [{ name: 'bob.png', path: 'bob.png', type: 'file', size: 1, mtime: 1700000000 }],
+  };
+  mockFetch((url, opts) => jsonResp(200, { entries: trees[opts.headers['X-OpenWebUI-User-Email']] || [] }));
+  const router = loadRouter();
+  const handler = getHandler(router, 'GET', '/');
+
+  const resA = makeRes();
+  await handler(makeReq({ query: { path: '' }, user: { id: 'a', email: 'alice@miamibeachfl.gov' } }), resA);
+  const aCallEmail = fetchCalls[fetchCalls.length - 1].opts.headers['X-OpenWebUI-User-Email'];
+
+  const resB = makeRes();
+  await handler(makeReq({ query: { path: '' }, user: { id: 'b', email: 'bob@miamibeachfl.gov' } }), resB);
+  const bCallEmail = fetchCalls[fetchCalls.length - 1].opts.headers['X-OpenWebUI-User-Email'];
+  restoreReal();
+
+  assert.equal(aCallEmail, 'alice@miamibeachfl.gov');
+  assert.equal(bCallEmail, 'bob@miamibeachfl.gov');
+  assert.equal(resA._json[0].name, 'alice.png', 'alice sees ONLY her tree');
+  assert.equal(resB._json[0].name, 'bob.png', 'bob sees ONLY his tree');
+});
+
 // ══════════════════════════════════════════════════════════════════════════════
 // GET /download
 // ══════════════════════════════════════════════════════════════════════════════

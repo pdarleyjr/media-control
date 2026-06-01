@@ -99,11 +99,18 @@ const MIME_EXT = Object.freeze({
 });
 
 // Clamp a caller-supplied NC path to a safe RELATIVE path before passing it to
-// the read microservice (defense in depth — the service also scopes by email).
-// Rejects absolute paths and any '..' traversal segment.
+// the read microservice (defense in depth — the email header is the real trust
+// boundary, but we still reject obvious abuse here so a foreign read can't even
+// be attempted). Rejects: empty, absolute (unix/windows), any '..'/'.' segment,
+// and any control character (NUL/newline) that could confuse the downstream
+// service's path handling. NOTE: this does NOT URL-decode — values like '%2e%2e'
+// reach the service as the literal directory name '%2e%2e' (not traversal), and
+// the service path-joins them under the caller's OWN root, so they cannot escape
+// the per-user tree even if they pass this clamp.
 function clampRelPath(raw) {
   const p = String(raw == null ? '' : raw).trim();
   if (!p) return null;
+  if (/[\x00-\x1f]/.test(p)) return null; // control chars (NUL, CR/LF, ...)
   if (p.startsWith('/') || p.startsWith('\\')) return null;
   if (/^[A-Za-z]:[\\/]/.test(p)) return null; // windows drive-absolute
   const norm = p.replace(/\\/g, '/');
