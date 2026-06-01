@@ -264,18 +264,14 @@ async function route() {
     return;
   }
 
-  // If authenticated and on login page, redirect to the Present surface
-  // (the instructor home) or onboarding. Dashboard stays reachable at #/.
+  // If authenticated and on login page, land on the unified Media Control
+  // dashboard (the home for everyone) or onboarding. The old per-role split
+  // (instructors -> #/present, others -> #/home) is collapsed; role PERMISSIONS
+  // are unchanged (Setup-nav gating in updateSidebarUser, what is editable,
+  // workspace_viewer can't broadcast). #/home and #/present stay reachable by hash.
   if (isAuthenticated() && hash === '#/login') {
     if (!localStorage.getItem('rd_onboarded')) { window.location.hash = '#/onboarding'; return; }
-    // Instructors land on the classroom Present surface; editors / admins /
-    // owners land on the studio Home dashboard. Same role taxonomy as the
-    // Setup-nav gate in updateSidebarUser().
-    const u = getCurrentUser();
-    const role = String(u?.role || '').toLowerCase();
-    const instructorOnly = !isPlatformAdmin(u) &&
-      ['workspace_viewer', 'workspace_editor', 'viewer', 'editor', 'member', 'instructor'].includes(role);
-    window.location.hash = instructorOnly ? '#/present' : '#/home';
+    window.location.hash = '#/control';
     return;
   }
 
