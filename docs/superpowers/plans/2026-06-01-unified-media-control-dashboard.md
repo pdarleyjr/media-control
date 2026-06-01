@@ -703,9 +703,20 @@ let wired = false;
 
 function notify() { const list = [...displays.values()]; subs.forEach(cb => cb(list)); }
 
+// The screenshot endpoint accepts the JWT via Authorization header OR ?token=.
+// Browser <img src> sends neither header, so it needs ?token= in the URL
+// (same convention as dashboard.js). We append it HERE, centrally, so every
+// consumer (stage, inspector) can use display.screenshot_url verbatim and the
+// SERVER never has to bake the token into its response.
+function withToken(url) {
+  if (!url) return url;
+  const tok = localStorage.getItem('token') || '';
+  return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(tok);
+}
+
 export async function refresh() {
-  const { displays: list } = await api.getDisplaysState();   // added in Task 4.x api.js
-  displays = new Map(list.map(d => [d.id, d]));
+  const { displays: list } = await api.getDisplaysState();   // added in Task 4.1 api.js
+  displays = new Map(list.map(d => [d.id, { ...d, screenshot_url: withToken(d.screenshot_url) }]));
   notify();
 }
 
@@ -729,7 +740,7 @@ function ensureWired() {
     if (d.screen_on !== undefined) patch.screen_on = !!d.screen_on;
     merge(d.device_id || d.id, patch);
   });
-  onSocket('screenshot-ready', (d) => { const id = d.device_id || d.id; const cur = displays.get(id); if (cur) { cur.screenshot_url = `/api/devices/${id}/screenshot?t=${Date.now()}`; cur.screenshot_at = Math.floor(Date.now()/1000); notify(); } });
+  onSocket('screenshot-ready', (d) => { const id = d.device_id || d.id; const cur = displays.get(id); if (cur) { cur.screenshot_url = withToken(`/api/devices/${id}/screenshot?t=${Date.now()}`); cur.screenshot_at = Math.floor(Date.now()/1000); notify(); } });
   onSocket('playback-progress', (d) => { merge(d.device_id || d.id, { progress: d }); });
   onSocket('wall-changed', () => { refresh().catch(() => {}); });
 }

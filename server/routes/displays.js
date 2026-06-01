@@ -42,6 +42,9 @@ router.get('/state', (req, res) => {
       height: r.screen_height || null,
       layout_id: r.layout_id || null,
       now_playing: np,
+      // Token-less by design: the screenshot endpoint needs the JWT via
+      // ?token= for browser <img> tags (no Authorization header). The client
+      // display-state store appends &token= centrally; do NOT bake it in here.
       screenshot_url: r.shot_at ? `/api/devices/${r.id}/screenshot?t=${r.shot_at}` : null,
       screenshot_at: r.shot_at || null,
     };
