@@ -1,7 +1,13 @@
 const express = require('express');
+const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
 const router = express.Router();
 const config = require('../config');
 const ncfs = require('../services/nextcloud-fs');
+const { db } = require('../db/database');
+const sceneEngine = require('../services/scene-engine');
+const { logActivity, getClientIp } = require('../services/activity');
 
 // MBFD Media Control Studio — Files (Nextcloud per-user raw-FS) API.
 //
@@ -54,6 +60,162 @@ router.get('/download', async (req, res) => {
     const status = e && e.status ? e.status : 502;
     res.status(status).json({ error: e.message || String(e) });
   }
+});
+
+// POST /broadcast — import ONE of the caller's own Nextcloud files into a local
+// content row, then broadcast it to a selection of displays using the EXISTING
+// device-push path (scene-engine.pushSourceToDevice). Body:
+//   { path, device_ids[], fit_mode?, confirm_all? }
+//
+// GUARDRAIL 1 (trust boundary): the per-user email is ALWAYS req.user.email
+// (from the JWT) — never a client header. The read is scoped to the caller's
+// own tree, so a member can only import THEIR OWN files (a foreign path 404s
+// at the microservice).
+//
+// GUARDRAIL 2 (displays never fetch from NC): broadcasting MATERIALIZES the NC
+// bytes into a local content row written to config.contentDir and served from
+// media-control's own /uploads/content origin. The display pulls from us, never
+// from Nextcloud. pushSourceToDevice is the unmodified shared push — it is NOT
+// user-scoped (displays have no user identity).
+//
+// Mirrors routes/broadcast.js for the write gate, the workspace-membership
+// device validation, and the 409 CONFIRM_ALL_REQUIRED all-displays gate.
+
+// Allow only image/* and video/* imports (a display can render those). The mime
+// is inferred from the file extension by nextcloud-fs (the read service returns
+// no content-type). Everything else (pptx/pdf/text) is rejected with 415 —
+// presentations broadcast via the deck player, not by re-importing bytes.
+function isBroadcastableMime(mime) {
+  const m = String(mime || '');
+  return m.startsWith('image/') || m.startsWith('video/');
+}
+
+// Map a broadcastable mime to a safe file extension for the local content file.
+const MIME_EXT = Object.freeze({
+  'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif',
+  'image/webp': '.webp', 'image/svg+xml': '.svg', 'image/bmp': '.bmp',
+  'video/mp4': '.mp4', 'video/webm': '.webm', 'video/quicktime': '.mov',
+  'video/x-m4v': '.m4v',
+});
+
+// Clamp a caller-supplied NC path to a safe RELATIVE path before passing it to
+// the read microservice (defense in depth — the service also scopes by email).
+// Rejects absolute paths and any '..' traversal segment.
+function clampRelPath(raw) {
+  const p = String(raw == null ? '' : raw).trim();
+  if (!p) return null;
+  if (p.startsWith('/') || p.startsWith('\\')) return null;
+  if (/^[A-Za-z]:[\\/]/.test(p)) return null; // windows drive-absolute
+  const norm = p.replace(/\\/g, '/');
+  const segments = norm.split('/');
+  if (segments.some((s) => s === '..' || s === '.')) return null;
+  return norm;
+}
+
+router.post('/broadcast', async (req, res) => {
+  if (!config.features.nextcloudSync) return res.status(503).json({ error: 'Files is disabled' });
+  if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
+  // Deny read-only members (mirrors broadcast.js:23).
+  if (!req.actingAs && req.workspaceRole === 'workspace_viewer') {
+    return res.status(403).json({ error: 'Read-only access' });
+  }
+
+  const { path: rawPath, device_ids, fit_mode, confirm_all } = req.body || {};
+
+  // Validate the source path (and clamp traversal at this trust boundary).
+  const relPath = clampRelPath(rawPath);
+  if (!relPath) return res.status(400).json({ error: 'path is required and must be a relative file path' });
+
+  // Validate the target selection (mirrors broadcast.js:32-34).
+  if (!Array.isArray(device_ids) || device_ids.length === 0) {
+    return res.status(400).json({ error: 'device_ids must be a non-empty array' });
+  }
+
+  // De-dupe and confirm every target device is in this workspace (broadcast.js:42-51).
+  const requested = [...new Set(device_ids.map(String))];
+  const targets = [];
+  for (const id of requested) {
+    const device = db.prepare('SELECT id, workspace_id FROM devices WHERE id = ?').get(id);
+    if (!device) return res.status(404).json({ error: `Device ${id} not found` });
+    if (device.workspace_id !== req.workspaceId) {
+      return res.status(403).json({ error: `Device ${id} is not in this workspace` });
+    }
+    targets.push(id);
+  }
+
+  // Confirmation gate when targeting ALL displays in the workspace (broadcast.js:54-60).
+  const totalInWorkspace = db.prepare(
+    'SELECT COUNT(*) AS c FROM devices WHERE workspace_id = ?'
+  ).get(req.workspaceId).c;
+  const targetingAll = totalInWorkspace > 0 && targets.length === totalInWorkspace;
+  if (targetingAll && confirm_all !== true) {
+    return res.status(409).json({ code: 'CONFIRM_ALL_REQUIRED', count: totalInWorkspace });
+  }
+
+  // Read the caller's OWN file (email from the JWT — GUARDRAIL 1).
+  let file;
+  try {
+    file = await ncfs.readFile(req.user.email, relPath);
+  } catch (e) {
+    if (e && e.code === 'NC_NOT_CONNECTED') return res.status(503).json({ error: e.message, connected: false });
+    const status = e && e.status ? e.status : 502;
+    return res.status(status).json({ error: e.message || String(e) });
+  }
+
+  // Only image/video can be broadcast as bytes (else 415).
+  if (!isBroadcastableMime(file.mime)) {
+    return res.status(415).json({ error: 'Only image and video files can be broadcast', mime: file.mime });
+  }
+
+  // Materialize the NC bytes into a local content file under config.contentDir
+  // (GUARDRAIL 2: the display serves from our origin, never from Nextcloud).
+  const id = crypto.randomUUID();
+  const ext = MIME_EXT[file.mime] || path.extname(relPath).toLowerCase() || '';
+  const localName = `${id}${ext}`;
+  try {
+    fs.mkdirSync(config.contentDir, { recursive: true });
+    fs.writeFileSync(path.join(config.contentDir, localName), file.buffer);
+  } catch (e) {
+    return res.status(500).json({ error: 'Failed to materialize file for broadcast' });
+  }
+
+  // INSERT a content row (content.js:166 shape) owned by the importer and marked
+  // private — this is the caller's imported copy, not a shared template.
+  db.prepare(`
+    INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, content_type, access_level)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'nextcloud_import', 'private')
+  `).run(
+    id, req.user.id, req.workspaceId,
+    file.name || relPath.split('/').pop() || 'nextcloud_file',
+    localName, file.mime, file.buffer.length
+  );
+
+  // Push to each target via the UNMODIFIED shared push path (broadcast.js:62-73).
+  const source = { content_id: id, fit_mode: typeof fit_mode === 'string' ? fit_mode : null };
+  const io = req.app.get('io');
+  let sent = 0;
+  const failed = [];
+  for (const deviceId of targets) {
+    const ok = sceneEngine.pushSourceToDevice(io, deviceId, source, {
+      workspaceId: req.workspaceId,
+      userId: req.user.id,
+    });
+    if (ok) sent++; else failed.push(deviceId);
+  }
+
+  // Explicit summary log (a broadcast touches many devices).
+  try {
+    logActivity(
+      req.user.id,
+      'POST /api/files/broadcast',
+      `broadcast nextcloud:${relPath} (content:${id}) to ${sent}/${targets.length} display(s)${targetingAll ? ' (ALL)' : ''}`,
+      null,
+      getClientIp(req),
+      req.workspaceId
+    );
+  } catch (e) { /* logging best-effort */ }
+
+  res.json({ success: true, content_id: id, sent, failed, total: targets.length });
 });
 
 module.exports = router;

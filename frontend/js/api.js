@@ -33,8 +33,8 @@ async function request(url, options = {}) {
 // with the parsed body so the UI can detect CONFIRM_ALL_REQUIRED, prompt the
 // operator, and retry with confirm_all:true. All other non-2xx responses still
 // throw (matching request()).
-async function requestBroadcast(payload) {
-  const res = await fetch(API_BASE + '/broadcast', {
+async function requestBroadcast(payload, endpoint = '/broadcast') {
+  const res = await fetch(API_BASE + endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
     body: JSON.stringify(payload),
@@ -318,10 +318,17 @@ export const api = {
   // Audit / activity log (workspace activity trail; admins see all).
   getActivity: (limit = 100) => request(`/activity?limit=${encodeURIComponent(limit)}`),
 
-  // Files (Nextcloud WebDAV proxy).
+  // Files (per-user Nextcloud raw-FS proxy).
   files: {
     health: () => request('/files/health'),
     list: (path = '') => request('/files' + (path ? ('?path=' + encodeURIComponent(path)) : '')),
+    // Import an image/video from the caller's OWN Nextcloud into a local content
+    // row, then broadcast it to displays. Reuses the 409 CONFIRM_ALL_REQUIRED
+    // resolve-not-throw contract: when targeting every display, the returned body
+    // is { code:'CONFIRM_ALL_REQUIRED', count } so the UI can prompt and retry
+    // with confirm_all:true (same as api.broadcast).
+    broadcast: (path, device_ids, opts = {}) =>
+      requestBroadcast({ path, device_ids, fit_mode: opts.fit_mode, confirm_all: opts.confirm_all }, '/files/broadcast'),
   },
   // Media downloads (by URL).
   downloads: {
