@@ -1,5 +1,6 @@
 // toolbox.js — the segmented source-dock below the stage in the unified Media
-// Control dashboard. Five tabs: Templates · Media · Presentations · YouTube/URL · Scenes.
+// Control dashboard. Six tabs: Templates · Media · Presentations · YouTube/URL ·
+// Scenes · Nextcloud.
 //
 // Clicking a tile (or dropping it on a stage card) calls sendToDisplays() — the
 // shared send funnel — which handles the 409 confirm-all gate and toasts.
@@ -11,63 +12,71 @@
 //
 // The Templates tab is handled by the inspector (Task 4.4); here we show a hint.
 
+import { esc } from '../../utils.js';
+import { t, tn } from '../../i18n.js';
 import { api } from '../../api.js';
-import { sendToDisplays } from './send.js';
+import { sendToDisplays, sentToast } from './send.js';
 import { showToast } from '../../components/toast.js';
-
-function escHtml(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
+import { confirmDialog } from '../../components/confirm.js';
 
 // Active tab id (persisted only for the lifetime of the rendered toolbox).
 let activeTab = 'media';
 
-// ---- tab definitions ----
+// ---- tab definitions (labels resolved through t() at render time) ----
 const TABS = [
-  { id: 'templates',     label: 'Templates' },
-  { id: 'media',         label: 'Media' },
-  { id: 'presentations', label: 'Presentations' },
-  { id: 'youtube',       label: 'YouTube / URL' },
-  { id: 'scenes',        label: 'Scenes' },
-  { id: 'nextcloud',     label: 'Nextcloud' },
+  { id: 'templates',     key: 'mc.tab.templates' },
+  { id: 'media',         key: 'mc.tab.media' },
+  { id: 'presentations', key: 'mc.tab.presentations' },
+  { id: 'youtube',       key: 'mc.tab.youtube' },
+  { id: 'scenes',        key: 'mc.tab.scenes' },
+  { id: 'nextcloud',     key: 'mc.tab.nextcloud' },
 ];
+
+// ---- composed state blocks (never a bare sentence) ----
+const ICON_EMPTY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><path d="M3 9h18M9 21V9"></path></svg>';
+const ICON_ERROR = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v5M12 16h.01"></path></svg>';
+
+function loadingState(msg) {
+  return `<div class="mc-tb-state mc-tb-loading"><span class="mc-tb-spin" aria-hidden="true"></span><span>${esc(msg)}</span></div>`;
+}
+function emptyState(msg) {
+  return `<div class="mc-tb-state mc-tb-empty"><span class="mc-tb-state-ico" aria-hidden="true">${ICON_EMPTY}</span><span>${esc(msg)}</span></div>`;
+}
+function errorState(msg) {
+  return `<div class="mc-tb-state mc-tb-error" role="alert"><span class="mc-tb-state-ico" aria-hidden="true">${ICON_ERROR}</span><span>${esc(msg)}</span></div>`;
+}
 
 // ---- tab content renderers ----
 
 function renderTemplatesTab(container) {
-  container.innerHTML = `
-    <div class="mc-tb-hint">
-      <p>Select a display on the stage above, then click <strong>Partition into regions</strong>
-      in the inspector to apply a layout template to that display.</p>
-    </div>`;
+  container.innerHTML = `<div class="mc-tb-hint"><p>${esc(t('mc.tb.templates_hint'))}</p></div>`;
 }
 
 async function renderMediaTab(container, { selectedIds, onAfterSend }) {
-  container.innerHTML = '<div class="mc-tb-loading">Loading media…</div>';
+  container.innerHTML = loadingState(t('mc.tb.loading_media'));
   let items = [];
   try {
     const result = await api.getContent();
     // api.getContent returns an object with a 'content' array or an array directly
     items = Array.isArray(result) ? result : (result && Array.isArray(result.content) ? result.content : []);
   } catch (e) {
-    container.innerHTML = `<div class="mc-tb-error">Could not load media: ${escHtml(e?.message)}</div>`;
+    container.innerHTML = errorState(t('mc.media.error', { error: e?.message || '' }));
     return;
   }
   if (items.length === 0) {
-    container.innerHTML = '<div class="mc-tb-empty">No media yet — upload some in the Content Library.</div>';
+    container.innerHTML = emptyState(t('mc.media.empty'));
     return;
   }
   const tiles = items.slice(0, 48).map(item => {
     const src = JSON.stringify({ content_id: item.id });
-    const thumb = item.thumbnail_url ? `<img class="mc-tile-thumb" src="${escHtml(item.thumbnail_url)}" alt="" loading="lazy">` : `<span class="mc-tile-icon">🖼</span>`;
+    const name = item.filename || item.name || t('mc.tile.content_fallback');
+    const thumb = item.thumbnail_url ? `<img class="mc-tile-thumb" src="${esc(item.thumbnail_url)}" alt="" loading="lazy">` : `<span class="mc-tile-icon">🖼</span>`;
     return `<button type="button" class="mc-tile" draggable="true"
-      data-drag-source='${escHtml(src)}'
-      data-label="${escHtml(item.filename || item.name || 'Content')}"
-      title="${escHtml(item.filename || item.name || 'Content')}">
+      data-drag-source='${esc(src)}'
+      data-label="${esc(name)}"
+      title="${esc(name)}">
       ${thumb}
-      <span class="mc-tile-label">${escHtml(item.filename || item.name || 'Content')}</span>
+      <span class="mc-tile-label">${esc(name)}</span>
     </button>`;
   }).join('');
   container.innerHTML = `<div class="mc-tile-grid">${tiles}</div>`;
@@ -75,27 +84,28 @@ async function renderMediaTab(container, { selectedIds, onAfterSend }) {
 }
 
 async function renderPresentationsTab(container, { selectedIds, onAfterSend }) {
-  container.innerHTML = '<div class="mc-tb-loading">Loading presentations…</div>';
+  container.innerHTML = loadingState(t('mc.tb.loading_presentations'));
   let items = [];
   try {
     const result = await api.presentations.list();
     items = Array.isArray(result) ? result : (result && Array.isArray(result.presentations) ? result.presentations : []);
   } catch (e) {
-    container.innerHTML = `<div class="mc-tb-error">Could not load presentations: ${escHtml(e?.message)}</div>`;
+    container.innerHTML = errorState(t('mc.presentations.error', { error: e?.message || '' }));
     return;
   }
   if (items.length === 0) {
-    container.innerHTML = '<div class="mc-tb-empty">No presentations yet — create one in the Presentations page.</div>';
+    container.innerHTML = emptyState(t('mc.presentations.empty'));
     return;
   }
   const tiles = items.slice(0, 48).map(item => {
     const src = JSON.stringify({ presentation_id: item.id });
+    const name = item.title || t('mc.tile.presentation_fallback');
     return `<button type="button" class="mc-tile" draggable="true"
-      data-drag-source='${escHtml(src)}'
-      data-label="${escHtml(item.title || 'Presentation')}"
-      title="${escHtml(item.title || 'Presentation')}">
+      data-drag-source='${esc(src)}'
+      data-label="${esc(name)}"
+      title="${esc(name)}">
       <span class="mc-tile-icon">📊</span>
-      <span class="mc-tile-label">${escHtml(item.title || 'Presentation')}</span>
+      <span class="mc-tile-label">${esc(name)}</span>
     </button>`;
   }).join('');
   container.innerHTML = `<div class="mc-tile-grid">${tiles}</div>`;
@@ -105,17 +115,17 @@ async function renderPresentationsTab(container, { selectedIds, onAfterSend }) {
 function renderYouTubeTab(container, { selectedIds, onAfterSend }) {
   container.innerHTML = `
     <form class="mc-yt-form" data-yt-form>
-      <label class="mc-tb-label" for="mc-yt-url">YouTube link or web URL</label>
+      <label class="mc-tb-label" for="mc-yt-url">${esc(t('mc.youtube.label'))}</label>
       <div class="mc-yt-row">
         <input class="mc-yt-input" id="mc-yt-url" type="url" inputmode="url"
-               placeholder="https://www.youtube.com/watch?v=…" autocomplete="off">
-        <button type="submit" class="mc-btn mc-btn-primary">Send</button>
+               placeholder="${esc(t('mc.youtube.placeholder'))}" autocomplete="off">
+        <button type="submit" class="mc-btn mc-btn-primary">${esc(t('mc.youtube.send'))}</button>
       </div>
     </form>`;
   container.querySelector('[data-yt-form]').addEventListener('submit', async (e) => {
     e.preventDefault();
     const url = (container.querySelector('.mc-yt-input').value || '').trim();
-    if (!url) { showToast('Paste a YouTube or web URL first.', 'error'); return; }
+    if (!url) { showToast(t('mc.youtube.need_url'), 'error'); return; }
     const ok = await sendToDisplays({ remote_url: url }, selectedIds, url);
     if (ok && typeof onAfterSend === 'function') onAfterSend();
   });
@@ -129,15 +139,16 @@ function renderYouTubeTab(container, { selectedIds, onAfterSend }) {
 // Presentations tab. The email comes from the JWT (server-enforced); the client
 // never sends it.
 async function renderNextcloudTab(container, { selectedIds, onAfterSend }, path = '') {
-  container.innerHTML = '<div class="mc-tb-loading">Connecting to Nextcloud…</div>';
+  container.innerHTML = loadingState(t('mc.tb.loading_nextcloud'));
   let health;
-  try { health = await api.files.health(); } catch { health = { enabled: true, connected: false, error: 'unreachable' }; }
+  // error:null (not a literal) so the localized t('mc.nc.unreachable') tail fires.
+  try { health = await api.files.health(); } catch { health = { enabled: true, connected: false, error: null }; }
   if (health.enabled === false) {
-    container.innerHTML = '<div class="mc-tb-error">Files module is disabled on this server.</div>';
+    container.innerHTML = errorState(t('mc.nc.disabled'));
     return;
   }
   if (!health.connected) {
-    container.innerHTML = `<div class="mc-tb-error">Could not connect to your Nextcloud files.<br><small>${escHtml(health.error || 'Microservice may be unreachable.')}</small></div>`;
+    container.innerHTML = errorState(`${t('mc.nc.not_connected')} ${health.error || t('mc.nc.unreachable')}`);
     return;
   }
 
@@ -146,30 +157,30 @@ async function renderNextcloudTab(container, { selectedIds, onAfterSend }, path 
     items = await api.files.list(path);
     if (!Array.isArray(items)) items = [];
   } catch (e) {
-    container.innerHTML = `<div class="mc-tb-error">Could not list folder: ${escHtml(e?.message || '')}</div>`;
+    container.innerHTML = errorState(t('mc.nc.list_error', { error: e?.message || '' }));
     return;
   }
 
   // Breadcrumb back-navigation
   const parts = path.split('/').filter(Boolean);
-  const crumbs = ['<span class="mc-nc-crumb" data-nc-path="">Files</span>'];
+  const crumbs = [`<span class="mc-nc-crumb" data-nc-path="">${esc(t('mc.nc.root'))}</span>`];
   let acc = '';
-  parts.forEach((p) => { acc += '/' + p; crumbs.push(`<span class="mc-nc-crumb" data-nc-path="${escHtml(acc)}">${escHtml(p)}</span>`); });
+  parts.forEach((p) => { acc += '/' + p; crumbs.push(`<span class="mc-nc-crumb" data-nc-path="${esc(acc)}">${esc(p)}</span>`); });
 
   const mediaTypes = /^(image|video)\//;
 
   const rows = items.length
     ? items.map((it) => {
         const isBroadcastable = !it.is_dir && mediaTypes.test(it.mime_type || '');
-        return `<div class="mc-nc-row" ${it.is_dir ? `data-nc-dir="${escHtml(it.path)}"` : ''}>
+        return `<div class="mc-nc-row" ${it.is_dir ? `data-nc-dir="${esc(it.path)}"` : ''}>
           <span class="mc-nc-icon">${it.is_dir ? '📁' : '📄'}</span>
-          <span class="mc-nc-name" title="${escHtml(it.path)}">${escHtml(it.name)}</span>
+          <span class="mc-nc-name" title="${esc(it.path)}">${esc(it.name)}</span>
           ${isBroadcastable
-            ? `<button type="button" class="mc-btn mc-btn-sm mc-nc-broadcast" data-nc-path="${escHtml(it.path)}" data-nc-label="${escHtml(it.name)}" title="Broadcast to selected displays">Broadcast</button>`
+            ? `<button type="button" class="mc-btn mc-btn-sm mc-nc-broadcast" data-nc-path="${esc(it.path)}" data-nc-label="${esc(it.name)}" title="${esc(t('mc.nc.broadcast_title'))}">${esc(t('mc.nc.broadcast'))}</button>`
             : ''}
         </div>`;
       }).join('')
-    : '<div class="mc-tb-empty">This folder is empty.</div>';
+    : emptyState(t('mc.nc.empty'));
 
   container.innerHTML = `
     <div class="mc-nc-crumbs">${crumbs.join('<span class="mc-nc-sep">/</span>')}</div>
@@ -177,7 +188,6 @@ async function renderNextcloudTab(container, { selectedIds, onAfterSend }, path 
 
   // Breadcrumb navigation
   container.querySelectorAll('.mc-nc-crumb').forEach((el) => {
-    el.style.cursor = 'pointer';
     el.addEventListener('click', () => {
       renderNextcloudTab(container, { selectedIds, onAfterSend }, el.dataset.ncPath || '');
     });
@@ -185,7 +195,6 @@ async function renderNextcloudTab(container, { selectedIds, onAfterSend }, path 
 
   // Folder drill-down
   container.querySelectorAll('[data-nc-dir]').forEach((el) => {
-    el.style.cursor = 'pointer';
     el.addEventListener('click', () => {
       renderNextcloudTab(container, { selectedIds, onAfterSend }, el.dataset.ncDir);
     });
@@ -194,10 +203,11 @@ async function renderNextcloudTab(container, { selectedIds, onAfterSend }, path 
   // Broadcast buttons — import NC bytes to a content row, then push to displays.
   // GUARDRAIL: email comes from req.user.email server-side, never from the client.
   container.querySelectorAll('.mc-nc-broadcast').forEach((btn) => {
+    const restore = () => { btn.disabled = false; btn.textContent = t('mc.nc.broadcast'); };
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
       if (!Array.isArray(selectedIds) || selectedIds.length === 0) {
-        showToast('No displays selected — add a display to the stage first.', 'error');
+        showToast(t('mc.nc.no_displays'), 'error');
         return;
       }
       btn.disabled = true; btn.textContent = '…';
@@ -206,63 +216,62 @@ async function renderNextcloudTab(container, { selectedIds, onAfterSend }, path 
       try {
         let result = await api.files.broadcast(ncPath, selectedIds);
         if (result && result.code === 'CONFIRM_ALL_REQUIRED') {
-          const { confirmDialog } = await import('../../components/confirm.js');
           const ok = await confirmDialog({
-            title: `Show on ALL ${result.count} displays?`,
-            message: `This puts "${escHtml(label)}" on every display in the room.`,
-            confirmLabel: 'Show on all',
+            title: t('mc.send.confirm_all_title', { n: result.count }),
+            message: t('mc.send.confirm_all_msg', { label }),
+            confirmLabel: t('mc.send.confirm_all_ok'),
             tone: 'default',
           });
-          if (!ok) { btn.disabled = false; btn.textContent = 'Broadcast'; return; }
+          if (!ok) { restore(); return; }
           result = await api.files.broadcast(ncPath, selectedIds, { confirm_all: true });
         }
         if (result && result.success) {
-          const offline = (result.total || 0) - (result.sent || 0);
-          showToast(
-            `${escHtml(label)} → ${result.sent} display${result.sent === 1 ? '' : 's'}${offline > 0 ? ` (${offline} offline)` : ''}`,
-            'success'
-          );
+          sentToast(label, result.sent, result.total);
           if (typeof onAfterSend === 'function') onAfterSend();
         }
       } catch (err) {
-        showToast(err?.message || 'Broadcast failed.', 'error');
+        showToast(err?.message || t('mc.send.failed'), 'error');
       } finally {
-        btn.disabled = false; btn.textContent = 'Broadcast';
+        restore();
       }
     });
   });
 }
 
 async function renderScenesTab(container, { onAfterSend }) {
-  container.innerHTML = '<div class="mc-tb-loading">Loading scenes…</div>';
+  container.innerHTML = loadingState(t('mc.tb.loading_scenes'));
   let scenes = [];
   try {
     const result = await api.scenes.list();
     scenes = Array.isArray(result) ? result : (result && Array.isArray(result.scenes) ? result.scenes : []);
   } catch (e) {
-    container.innerHTML = `<div class="mc-tb-error">Could not load scenes: ${escHtml(e?.message)}</div>`;
+    container.innerHTML = errorState(t('mc.scenes.error', { error: e?.message || '' }));
     return;
   }
   if (scenes.length === 0) {
-    container.innerHTML = '<div class="mc-tb-empty">No scenes yet — create one in the Scenes page.</div>';
+    container.innerHTML = emptyState(t('mc.scenes.empty'));
     return;
   }
-  const tiles = scenes.slice(0, 48).map(sc => `
-    <button type="button" class="mc-tile mc-scene-tile" data-scene-id="${escHtml(sc.id)}"
-            title="${escHtml(sc.name || 'Scene')}">
+  const tiles = scenes.slice(0, 48).map(sc => {
+    const name = sc.name || t('mc.tile.scene_fallback');
+    return `
+    <button type="button" class="mc-tile mc-scene-tile" data-scene-id="${esc(sc.id)}"
+            data-scene-name="${esc(name)}" title="${esc(name)}">
       <span class="mc-tile-icon">🎬</span>
-      <span class="mc-tile-label">${escHtml(sc.name || 'Scene')}</span>
-    </button>`).join('');
+      <span class="mc-tile-label">${esc(name)}</span>
+    </button>`;
+  }).join('');
   container.innerHTML = `<div class="mc-tile-grid">${tiles}</div>`;
   container.querySelectorAll('[data-scene-id]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const id = btn.dataset.sceneId;
+      const name = btn.dataset.sceneName || t('mc.tile.scene_fallback');
       try {
         await api.scenes.trigger(id);
-        showToast(`Scene "${escHtml(btn.title)}" triggered.`, 'success');
+        showToast(t('mc.scenes.triggered', { name }), 'success');
         if (typeof onAfterSend === 'function') onAfterSend();
       } catch (e) {
-        showToast(e?.message || 'Could not trigger the scene.', 'error');
+        showToast(e?.message || t('mc.scenes.trigger_failed'), 'error');
       }
     });
   });
@@ -275,7 +284,7 @@ function attachTileHandlers(container, selectedIds, onAfterSend) {
     tile.addEventListener('click', async () => {
       let source;
       try { source = JSON.parse(tile.dataset.dragSource); } catch { return; }
-      const label = tile.dataset.label || 'Content';
+      const label = tile.dataset.label || t('mc.tile.content_fallback');
       const ok = await sendToDisplays(source, selectedIds, label);
       if (ok && typeof onAfterSend === 'function') onAfterSend();
     });
@@ -286,14 +295,14 @@ function attachTileHandlers(container, selectedIds, onAfterSend) {
       e.dataTransfer.effectAllowed = 'copy';
       e.dataTransfer.setData('text/plain', tile.dataset.dragSource);
       e.dataTransfer.setData('application/x-mc-source', tile.dataset.dragSource);
-      e.dataTransfer.setData('application/x-mc-label', tile.dataset.label || 'Content');
+      e.dataTransfer.setData('application/x-mc-label', tile.dataset.label || t('mc.tile.content_fallback'));
     });
   });
 }
 
 // Load and render the given tab into the tab-body container.
 async function loadTab(tabId, tabBody, { selectedIds, onAfterSend }) {
-  tabBody.innerHTML = '<div class="mc-tb-loading">Loading…</div>';
+  tabBody.innerHTML = loadingState(t('mc.tb.loading'));
   switch (tabId) {
     case 'templates':
       renderTemplatesTab(tabBody);
@@ -329,13 +338,14 @@ async function loadTab(tabId, tabBody, { selectedIds, onAfterSend }) {
 export function renderToolbox(container, { selectedIds = [], onAfterSend } = {}) {
   if (!container) return;
 
-  const tabHtml = TABS.map(t =>
-    `<button type="button" class="mc-tb-tab${t.id === activeTab ? ' active' : ''}"
-             data-tab="${escHtml(t.id)}">${escHtml(t.label)}</button>`
+  const tabHtml = TABS.map(tab =>
+    `<button type="button" class="mc-tb-tab${tab.id === activeTab ? ' active' : ''}"
+             role="tab" aria-selected="${tab.id === activeTab ? 'true' : 'false'}"
+             data-tab="${esc(tab.id)}">${esc(t(tab.key))}</button>`
   ).join('');
 
   container.innerHTML = `
-    <div class="mc-tb-bar">${tabHtml}</div>
+    <div class="mc-tb-bar" role="tablist">${tabHtml}</div>
     <div class="mc-tb-body" id="mc-tb-body"></div>`;
 
   const tabBody = container.querySelector('#mc-tb-body');
@@ -344,7 +354,11 @@ export function renderToolbox(container, { selectedIds = [], onAfterSend } = {})
   container.querySelectorAll('.mc-tb-tab').forEach(btn => {
     btn.addEventListener('click', async () => {
       activeTab = btn.dataset.tab;
-      container.querySelectorAll('.mc-tb-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === activeTab));
+      container.querySelectorAll('.mc-tb-tab').forEach(b => {
+        const on = b.dataset.tab === activeTab;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
       await loadTab(activeTab, tabBody, { selectedIds, onAfterSend });
     });
   });

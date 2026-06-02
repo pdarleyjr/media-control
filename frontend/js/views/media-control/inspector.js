@@ -11,21 +11,17 @@
 // membership (it already builds the wallMemberIds set) and passes isWallMember.
 
 import { api } from '../../api.js';
+import { esc } from '../../utils.js';
+import { t } from '../../i18n.js';
 import { WB, FIT_MODES } from '../../player-protocol.js';
 import { showToast } from '../../components/toast.js';
 import { renderRegionEditor } from './region-editor.js';
 import { getSocket } from '../../socket.js';
 import * as engine from '../../services/screen-share-engine.js';
 
-function esc(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-
 function geometryLabel(display) {
   if (display.width && display.height) return `${display.width} × ${display.height}`;
-  return 'unknown resolution';
+  return t('mc.insp.unknown_res');
 }
 
 function fitOptionsHtml(selected) {
@@ -42,8 +38,8 @@ function audioRowHtml(zone, unmutedZoneId) {
   return `
     <label class="mc-insp-audio-row">
       <input type="checkbox" class="mc-insp-audio" data-zone-id="${esc(zone.id)}" ${on ? 'checked' : ''}>
-      <span>${esc(zone.name || 'Region')}</span>
-      <span class="mc-insp-audio-state">${on ? '🔊 audio' : '🔇 muted'}</span>
+      <span>${esc(zone.name || t('mc.insp.region_fallback'))}</span>
+      <span class="mc-insp-audio-state">${on ? '🔊' : '🔇'} ${esc(on ? t('mc.insp.audio_on') : t('mc.insp.audio_muted'))}</span>
     </label>`;
 }
 
@@ -71,34 +67,34 @@ export async function renderInspector(container, { display, isWallMember = false
           <h2 class="mc-insp-title">${esc(display.name)}</h2>
           <p class="mc-insp-geo">${esc(geometryLabel(display))}</p>
         </div>
-        <button type="button" class="mc-insp-close" data-insp-close aria-label="Close inspector">×</button>
+        <button type="button" class="mc-insp-close" data-insp-close aria-label="${esc(t('mc.insp.close'))}">×</button>
       </header>
 
       <section class="mc-insp-section">
         <label class="mc-insp-field">
-          <span>Display fit</span>
+          <span>${esc(t('mc.insp.fit_label'))}</span>
           <select class="mc-insp-fit">${fitOptionsHtml('contain')}</select>
         </label>
       </section>
 
       <section class="mc-insp-section">
         ${isWallMember
-          ? `<p class="mc-insp-walled">This display is part of a video wall — partitioning is unavailable.</p>`
-          : `<button type="button" class="mc-btn mc-btn-primary mc-insp-partition" data-insp-partition>Partition into regions</button>`}
+          ? `<p class="mc-insp-walled">${esc(t('mc.insp.walled'))}</p>`
+          : `<button type="button" class="mc-btn mc-btn-primary mc-insp-partition" data-insp-partition>${esc(t('mc.insp.partition'))}</button>`}
       </section>
 
       <section class="mc-insp-section mc-insp-actions" id="mc-insp-actions">
-        <h3 class="mc-insp-subhead">Display actions</h3>
+        <h3 class="mc-insp-subhead">${esc(t('mc.insp.actions'))}</h3>
         <div class="mc-insp-action-row">
-          <button type="button" class="mc-btn mc-btn-secondary" data-insp-wb-start>Turn into Whiteboard</button>
-          <button type="button" class="mc-btn mc-btn-secondary" data-insp-ss-start>Share My Screen here</button>
-          <button type="button" class="mc-btn mc-btn-danger-sm" data-insp-ss-stop hidden>Stop broadcast</button>
+          <button type="button" class="mc-btn mc-btn-secondary" data-insp-wb-start>${esc(t('mc.insp.wb_start'))}</button>
+          <button type="button" class="mc-btn mc-btn-secondary" data-insp-ss-start>${esc(t('mc.insp.ss_start'))}</button>
+          <button type="button" class="mc-btn mc-btn-danger-sm" data-insp-ss-stop hidden>${esc(t('mc.insp.ss_stop'))}</button>
         </div>
       </section>
 
       <section class="mc-insp-section mc-insp-audio" id="mc-insp-audio" hidden>
-        <h3 class="mc-insp-subhead">Region audio</h3>
-        <p class="mc-insp-hint">Only one region plays audio at a time.</p>
+        <h3 class="mc-insp-subhead">${esc(t('mc.insp.audio'))}</h3>
+        <p class="mc-insp-hint">${esc(t('mc.insp.audio_hint'))}</p>
         <div id="mc-insp-audio-list"></div>
       </section>
 
@@ -121,7 +117,7 @@ export async function renderInspector(container, { display, isWallMember = false
     fitSel.addEventListener('change', () => {
       // Persisted per-zone inside the region editor; at display level this is a
       // hint surfaced for the next broadcast. No server call here by design.
-      showToast(`Fit set to "${fitSel.value}" for the next send.`, 'success');
+      showToast(t('mc.insp.fit_set', { mode: fitSel.value }), 'success');
     });
   }
 
@@ -158,13 +154,13 @@ export async function renderInspector(container, { display, isWallMember = false
     wbStartBtn.addEventListener('click', () => {
       const sock = getSocket();
       if (!sock || !sock.connected) {
-        showToast('Not connected — cannot start whiteboard.', 'error');
+        showToast(t('mc.insp.wb_not_connected'), 'error');
         return;
       }
       // Emit dashboard:wb-start with device_id payload; the server relays this
       // to the player as device:wb-show (asymmetric naming in the protocol).
       sock.emit(WB.START, { device_id: display.id });
-      showToast(`Whiteboard started on "${display.name}".`, 'success');
+      showToast(t('mc.insp.wb_started', { name: display.name }), 'success');
     });
   }
 
@@ -175,7 +171,7 @@ export async function renderInspector(container, { display, isWallMember = false
         await engine.startBroadcastTo(display.id);
         syncSsButtons();
       } catch (e) {
-        showToast(e?.message || 'Could not start screen share.', 'error');
+        showToast(e?.message || t('mc.insp.ss_failed'), 'error');
       } finally {
         ssStartBtn.disabled = false;
       }
@@ -189,7 +185,7 @@ export async function renderInspector(container, { display, isWallMember = false
         await engine.stopBroadcastTo(display.id);
         syncSsButtons();
       } catch (e) {
-        showToast(e?.message || 'Could not stop screen share.', 'error');
+        showToast(e?.message || t('mc.insp.ss_stop_failed'), 'error');
       } finally {
         ssStopBtn.disabled = false;
       }
@@ -210,7 +206,7 @@ export async function renderInspector(container, { display, isWallMember = false
         const zoneId = cb.dataset.zoneId;
         if (cb.checked) {
           if (unmutedZoneId != null && String(unmutedZoneId) !== String(zoneId)) {
-            showToast('Another region already has audio — only one region plays sound at a time. Switching audio to this region.', 'info');
+            showToast(t('mc.insp.audio_switch'), 'info');
           }
           unmutedZoneId = zoneId;
         } else if (String(unmutedZoneId) === String(zoneId)) {
@@ -238,7 +234,7 @@ export async function renderInspector(container, { display, isWallMember = false
           },
         });
       } catch (e) {
-        showToast(e?.message || 'Could not partition this display.', 'error');
+        showToast(e?.message || t('mc.insp.partition_failed'), 'error');
       } finally {
         partitionBtn.disabled = false;
       }
@@ -253,11 +249,11 @@ export async function renderInspector(container, { display, isWallMember = false
 async function ensureDisplayLayout(display) {
   if (display.layout_id) return display.layout_id;
   const created = await api.layouts.create({
-    name: `${display.name} — regions`,
+    name: t('mc.insp.layout_name', { name: display.name }),
     width: display.width || 1920,
     height: display.height || 1080,
   });
-  if (!created || !created.id) throw new Error('Layout could not be created.');
+  if (!created || !created.id) throw new Error(t('mc.insp.layout_create_failed'));
   await api.layouts.assignToDevice(display.id, created.id);
   return created.id;
 }

@@ -12,13 +12,9 @@
 // The caller MUST save the return value and call it from the view's unmount()
 // so subscriptions don't accumulate across re-renders.
 
+import { esc } from '../../utils.js';
+import { t, tn } from '../../i18n.js';
 import * as engine from '../../services/screen-share-engine.js';
-
-function esc(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
 
 /**
  * Mount the broadcast chip into `el` (#mc-broadcast-chip).
@@ -38,9 +34,9 @@ export function mountBroadcastChip(el) {
     const n = targets.length;
     el.hidden = false;
     el.innerHTML = `
-      <span class="mc-chip-dot" aria-hidden="true">●</span>
-      <span class="mc-chip-label">Live broadcast → ${esc(String(n))} display${n === 1 ? '' : 's'}</span>
-      <button type="button" class="mc-chip-stop mc-btn mc-btn-danger-sm" data-chip-stop>Stop all</button>`;
+      <span class="mc-chip-dot" aria-hidden="true"></span>
+      <span class="mc-chip-label">${esc(tn('mc.chip.live', n))}</span>
+      <button type="button" class="mc-chip-stop mc-btn mc-btn-danger-sm" data-chip-stop>${esc(t('mc.chip.stop'))}</button>`;
 
     const stopBtn = el.querySelector('[data-chip-stop]');
     if (stopBtn) {

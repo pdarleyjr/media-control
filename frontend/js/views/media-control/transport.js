@@ -13,22 +13,19 @@
 //       The `onScreenOnChange` callback is invoked with the new boolean value
 //       once the device acks the blank/unblank command so callers can repaint.
 
+import { esc } from '../../utils.js';
+import { t } from '../../i18n.js';
 import { sendCommand } from '../../socket.js';
 import { COMMAND_TYPES, TRANSPORT_ACTIONS } from '../../player-protocol.js';
 import { showToast } from '../../components/toast.js';
 
-function esc(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-
-// Button definitions for the four transport actions.
+// Button definitions for the four transport actions. Glyph labels stay literal;
+// the accessible name (title/aria) is localized at render time via titleKey.
 const TRANSPORT_BTNS = [
-  { action: TRANSPORT_ACTIONS[1], label: '⏮', title: 'Previous' },   // 'prev'
-  { action: TRANSPORT_ACTIONS[3], label: '↺', title: 'Restart' },    // 'restart'
-  { action: TRANSPORT_ACTIONS[2], label: '⏯', title: 'Play / Pause' }, // 'play_pause'
-  { action: TRANSPORT_ACTIONS[0], label: '⏭', title: 'Next' },       // 'next'
+  { action: TRANSPORT_ACTIONS[1], label: '⏮', titleKey: 'mc.tp.prev' },        // 'prev'
+  { action: TRANSPORT_ACTIONS[3], label: '↺', titleKey: 'mc.tp.restart' },     // 'restart'
+  { action: TRANSPORT_ACTIONS[2], label: '⏯', titleKey: 'mc.tp.play_pause' },  // 'play_pause'
+  { action: TRANSPORT_ACTIONS[0], label: '⏭', titleKey: 'mc.tp.next' },        // 'next'
 ];
 
 /**
@@ -46,19 +43,21 @@ const TRANSPORT_BTNS = [
 export function renderTransportBar(container, { deviceId, screenOn = true, onScreenOnChange } = {}) {
   if (!container) return;
 
-  const transportHtml = TRANSPORT_BTNS.map(b =>
-    `<button type="button" class="mc-tp-btn" data-tp-action="${esc(b.action)}" title="${esc(b.title)}" aria-label="${esc(b.title)}">${b.label}</button>`
-  ).join('');
+  const transportHtml = TRANSPORT_BTNS.map(b => {
+    const title = t(b.titleKey);
+    return `<button type="button" class="mc-tp-btn" data-tp-action="${esc(b.action)}" title="${esc(title)}" aria-label="${esc(title)}">${b.label}</button>`;
+  }).join('');
 
-  const blankLabel = screenOn ? 'Blank' : 'Unblank';
+  const blankLabel = screenOn ? t('mc.tp.blank') : t('mc.tp.unblank');
+  const blankTitle = screenOn ? t('mc.tp.blank_title') : t('mc.tp.unblank_title');
   const blankClass = screenOn ? 'mc-tp-blank' : 'mc-tp-blank mc-tp-blank-active';
 
   container.innerHTML = `
-    <div class="mc-transport-bar" role="toolbar" aria-label="Transport controls">
+    <div class="mc-transport-bar" role="toolbar" aria-label="${esc(t('mc.tp.toolbar'))}">
       <div class="mc-tp-group">${transportHtml}</div>
       <button type="button" class="${blankClass}" data-tp-blank
-              title="${screenOn ? 'Blank this display' : 'Unblank this display'}"
-              aria-pressed="${screenOn ? 'false' : 'true'}">${blankLabel}</button>
+              title="${esc(blankTitle)}"
+              aria-pressed="${screenOn ? 'false' : 'true'}">${esc(blankLabel)}</button>
     </div>`;
 
   // Stop event propagation so clicks on transport buttons do NOT bubble up to
@@ -87,15 +86,15 @@ export function renderTransportBar(container, { deviceId, screenOn = true, onScr
       sendCommand(deviceId, type, {}, (ack) => {
         blankBtn.disabled = false;
         if (!ack || (!ack.delivered && !ack.queued)) {
-          showToast(`Could not ${turningOn ? 'unblank' : 'blank'} the display — device offline or not responding.`, 'error');
+          showToast(turningOn ? t('mc.tp.unblank_failed') : t('mc.tp.blank_failed'), 'error');
           return;
         }
         // Ack received: update the button label to reflect the new state
         // immediately so the operator gets visual feedback even before the
         // next full display-state refresh paints the status dot.
         const newScreenOn = turningOn;   // screen_on = true means screen is ON
-        blankBtn.textContent = newScreenOn ? 'Blank' : 'Unblank';
-        blankBtn.title = newScreenOn ? 'Blank this display' : 'Unblank this display';
+        blankBtn.textContent = newScreenOn ? t('mc.tp.blank') : t('mc.tp.unblank');
+        blankBtn.title = newScreenOn ? t('mc.tp.blank_title') : t('mc.tp.unblank_title');
         blankBtn.setAttribute('aria-pressed', newScreenOn ? 'false' : 'true');
         if (newScreenOn) {
           blankBtn.classList.remove('mc-tp-blank-active');

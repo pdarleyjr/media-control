@@ -1,4 +1,7 @@
 import { api } from '../api.js';
+import { esc } from '../utils.js';
+import { t, tn } from '../i18n.js';
+import { showToast } from '../components/toast.js';
 import * as displayState from '../services/display-state.js';
 import { renderStage } from './media-control/stage.js';
 import { renderToolbox } from './media-control/toolbox.js';
@@ -49,6 +52,38 @@ function pruneSelection() {
 function stageEl()    { return document.getElementById('mc-stage'); }
 function toolboxEl()  { return document.getElementById('mc-toolbox'); }
 function inspectorEl() { return document.getElementById('mc-inspector'); }
+function summaryEl()  { return document.getElementById('mc-summary'); }
+
+// A display is "live" (on-air) when it is online, not blanked, and resolving a
+// real source — not idle. Mirrors the stage card's own status logic.
+function isLive(d) {
+  return !!(d && d.online && d.screen_on !== false &&
+            d.now_playing && d.now_playing.kind && d.now_playing.kind !== 'idle');
+}
+
+// Glanceable header summary computed from the live store + selection. Real data
+// only: "{n} displays · {m} online" plus a red on-air chip when any are live.
+function paintSummary() {
+  const el = summaryEl();
+  if (!el) return;
+  const onStage = displayState.getAll().filter(d => selectedIds.includes(d.id) && !wallMemberIds.has(d.id));
+  const total = onStage.length + (Array.isArray(walls) ? walls.length : 0);
+  if (total === 0) {
+    el.innerHTML = `<span class="mc-summary-item mc-summary-muted">${esc(t('mc.summary.empty'))}</span>`;
+    return;
+  }
+  const online = onStage.filter(d => d.online).length;
+  const live = onStage.filter(isLive).length;
+  const parts = [
+    `<span class="mc-summary-item">${esc(tn('mc.summary.displays', total))}</span>`,
+    `<span class="mc-summary-dot" aria-hidden="true">·</span>`,
+    `<span class="mc-summary-item">${esc(t('mc.summary.online', { n: online }))}</span>`,
+  ];
+  if (live > 0) {
+    parts.push(`<span class="mc-chip mc-chip-live mc-summary-live"><span class="mc-chip-dot" aria-hidden="true"></span>${esc(tn('mc.summary.live', live))}</span>`);
+  }
+  el.innerHTML = parts.join('');
+}
 
 // Called when a blank/unblank command ack updates a display's screen_on value.
 // We patch the display-state store client-side so the status dot repaints
@@ -118,32 +153,77 @@ function openInspector(deviceId) {
   });
 }
 
+// Composed, touch-first add-display picker built on the native <dialog> (CSP-safe:
+// wired with addEventListener, no inline handlers). Replaces window.prompt — the
+// classroom controller must never use prompt()/alert(). Resolves to a device id
+// or null. The dialog is created once and reused.
+let pickerEl = null;
+function pickDisplayDialog(candidates) {
+  if (!pickerEl || !document.body.contains(pickerEl)) {
+    pickerEl = document.createElement('dialog');
+    pickerEl.className = 'mc-dialog mc-pick';
+    pickerEl.setAttribute('aria-labelledby', 'mcPickTitle');
+    document.body.appendChild(pickerEl);
+  }
+  const d = pickerEl;
+  const options = candidates.map(c =>
+    `<button type="button" class="mc-pick-item" data-pick-id="${esc(c.id)}">
+       <span class="mc-pick-name">${esc(c.name)}</span>
+       ${c.online ? '' : `<span class="mc-pick-offline">${esc(t('mc.add.offline'))}</span>`}
+     </button>`).join('');
+  d.innerHTML = `
+    <div class="mc-dialog-card">
+      <h3 id="mcPickTitle" class="mc-dialog-title">${esc(t('mc.add.title'))}</h3>
+      <p class="mc-dialog-msg">${esc(t('mc.add.message'))}</p>
+      <div class="mc-pick-list" role="listbox" aria-label="${esc(t('mc.add.title'))}">${options}</div>
+      <div class="mc-dialog-actions">
+        <button type="button" class="mc-btn mc-btn-ghost" data-pick-cancel>${esc(t('mc.add.cancel'))}</button>
+      </div>
+    </div>`;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (val) => {
+      if (settled) return;
+      settled = true;
+      d.querySelectorAll('[data-pick-id]').forEach(b => b.removeEventListener('click', onPick));
+      cancelBtn.removeEventListener('click', onCancel);
+      d.removeEventListener('cancel', onCancel);
+      d.removeEventListener('close', onCancel);
+      if (d.open) d.close();
+      resolve(val);
+    };
+    const onPick = (e) => finish(e.currentTarget.dataset.pickId);
+    const onCancel = () => finish(null);
+    const cancelBtn = d.querySelector('[data-pick-cancel]');
+    d.querySelectorAll('[data-pick-id]').forEach(b => b.addEventListener('click', onPick));
+    cancelBtn.addEventListener('click', onCancel);
+    d.addEventListener('cancel', onCancel);
+    d.addEventListener('close', onCancel);
+    d.showModal();
+  });
+}
+
 // "Add display" — pick from all known displays not already on the stage and not
-// owned by a wall. Minimal native picker; the richer toolbox lands in Task 4.3.
-function openAddPicker() {
+// owned by a wall, via the composed picker.
+async function openAddPicker() {
   const selected = new Set(selectedIds);
   const candidates = displayState.getAll()
     .filter(d => !selected.has(d.id) && !wallMemberIds.has(d.id));
   if (candidates.length === 0) {
-    window.alert('No more displays to add — every display is already on the stage.');
+    showToast(t('mc.add.none'), 'info');
     return;
   }
-  const lines = candidates.map((d, i) => `${i + 1}. ${d.name}${d.online ? '' : ' (offline)'}`).join('\n');
-  const pick = window.prompt(`Add a display to the stage:\n\n${lines}\n\nEnter a number:`);
-  if (pick == null) return;
-  const idx = parseInt(pick, 10) - 1;
-  if (Number.isNaN(idx) || idx < 0 || idx >= candidates.length) return;
-  const id = candidates[idx].id;
-  if (!selectedIds.includes(id)) {
-    selectedIds = [...selectedIds, id];
-    persistSelection();
-    paintStage();
-    // Full toolbox re-render so BOTH the tile-click handlers AND the tab-switch
-    // handlers re-bind to the new selection (refreshToolbox only re-rendered the
-    // active tab body, leaving the tab-switch buttons closed over a stale
-    // selection — so switching tabs then clicking a tile sent to nothing).
-    paintToolbox();
-  }
+  const id = await pickDisplayDialog(candidates);
+  if (!id || selectedIds.includes(id)) return;
+  selectedIds = [...selectedIds, id];
+  persistSelection();
+  paintStage();
+  // Full toolbox re-render so BOTH the tile-click handlers AND the tab-switch
+  // handlers re-bind to the new selection (refreshToolbox only re-rendered the
+  // active tab body, leaving the tab-switch buttons closed over a stale
+  // selection — so switching tabs then clicking a tile sent to nothing).
+  paintToolbox();
+  paintSummary();
 }
 
 // ---- Drag-drop: toolbox tiles → stage cards ----
@@ -173,30 +253,12 @@ function attachStageDrop(stageContainer) {
       if (!raw) return;
       let source;
       try { source = JSON.parse(raw); } catch { return; }
-      const label = e.dataTransfer.getData('application/x-mc-label') || 'Content';
+      const label = e.dataTransfer.getData('application/x-mc-label') || t('mc.tile.content_fallback');
       const deviceId = card.dataset.deviceId;
       if (!deviceId) return;
       await sendToDisplays(source, [deviceId], label);
       refreshAfterSend(); // re-fetch state so the card's now-playing updates now
     });
-  });
-}
-
-// ---- "Send to all" topbar button ----
-function attachSendToAll(topbar) {
-  const btn = topbar && topbar.querySelector('[data-mc-send-all]');
-  if (!btn) return;
-  btn.addEventListener('click', async () => {
-    // The toolbox active-tile approach for "send to all" is done by clicking a
-    // tile which calls sendToDisplays(source, selectedIds). The topbar button
-    // is a convenience: it re-triggers the last drag source if any, or shows a
-    // hint. For Task 4.3 we just open the "add display" picker so the topbar
-    // button is semantically useful without requiring state shared from toolbox.
-    if (selectedIds.length === 0) {
-      window.alert('Add a display to the stage first, then click a tile in the toolbox to send to all selected displays.');
-    } else {
-      window.alert(`${selectedIds.length} display(s) selected. Click any tile in the toolbox to send content to all of them.`);
-    }
   });
 }
 
@@ -215,21 +277,21 @@ function attachSendToAll(topbar) {
 
 async function activateLecture() {
   if (selectedIds.length === 0) {
-    window.alert('Add displays to the stage first, then switch to Lecture mode to send one source to all of them.');
+    showToast(t('mc.routing.lecture_hint_empty'), 'info');
     return;
   }
-  window.alert(`Lecture mode: click any toolbox tile to send it to all ${selectedIds.length} selected display(s) simultaneously.`);
+  showToast(t('mc.routing.lecture_hint', { n: selectedIds.length }), 'info');
 }
 
 async function activateMirror() {
   if (selectedIds.length < 2) {
-    window.alert('Mirror requires at least 2 displays on the stage. Add more displays first.');
+    showToast(t('mc.routing.mirror_need_two'), 'info');
     return;
   }
   // Find the first selected display's current source.
   const sourceDisplay = displayState.get(selectedIds[0]);
   if (!sourceDisplay || !sourceDisplay.now_playing || sourceDisplay.now_playing.kind === 'idle') {
-    window.alert('The first display on the stage has nothing playing. Start playback on it first, then switch to Mirror mode.');
+    showToast(t('mc.routing.mirror_no_source'), 'info');
     return;
   }
   // Mirror: re-broadcast whatever is "now playing" on display[0] to the others.
@@ -238,8 +300,8 @@ async function activateMirror() {
   const targets = selectedIds.slice(1);
   let source = null;
   if (sourceDisplay.layout_id) {
-    // Complex layout — cannot mirror at content level; guide the user.
-    window.alert('The first display is using a multi-region layout. To mirror it, assign the same layout to the other displays via Partition → Region editor.');
+    // Complex layout — cannot mirror at content level; guide the operator.
+    showToast(t('mc.routing.mirror_layout'), 'info');
     return;
   }
   // Use the playlist_id from the display state if present.
@@ -247,10 +309,10 @@ async function activateMirror() {
     source = { playlist_id: sourceDisplay.playlist_id };
   }
   if (!source) {
-    window.alert('Cannot determine the source to mirror. Use the toolbox to manually send the same content to all displays.');
+    showToast(t('mc.routing.mirror_unknown'), 'info');
     return;
   }
-  const label = sourceDisplay.now_playing.label || 'mirrored content';
+  const label = sourceDisplay.now_playing.label || t('mc.tile.content_fallback');
   await sendToDisplays(source, targets, label);
 }
 
@@ -273,21 +335,40 @@ function attachRoutingModes(topbar) {
 export async function render() {
   const app = document.getElementById('app');
   app.innerHTML = `
-    <div class="mc-control">
-      <div class="mc-topbar">
-        <h1>Media Control</h1>
-        <div class="mc-view-toggle"><button data-mode="grid" class="active">Grid</button><button data-mode="wall">Wall</button></div>
-        <button type="button" class="mc-btn mc-btn-ghost" data-mc-send-all title="Send to all selected displays">Send to all</button>
-        <div class="mc-routing-modes" role="group" aria-label="Routing mode">
-          <button type="button" class="mc-btn mc-routing-btn mc-routing-active" data-routing="group" title="Each display shows independent content (default)">Group Share</button>
-          <button type="button" class="mc-btn mc-routing-btn" data-routing="lecture" title="Send one source to all selected displays at once">Lecture</button>
-          <button type="button" class="mc-btn mc-routing-btn" data-routing="mirror" title="Clone the first selected display to all others">Mirror</button>
-        </div>
-        <div id="mc-broadcast-chip" class="mc-chip" hidden></div>
+    <div class="mc-studio-surface">
+      <div class="mc-studio-wrap mc-control">
+        <header class="mc-control-head">
+          <div class="mc-control-id">
+            <h1 class="mc-control-title">${esc(t('mc.title'))}</h1>
+            <div id="mc-summary" class="mc-control-summary" aria-live="polite"></div>
+          </div>
+          <div class="mc-control-controls">
+            <div id="mc-broadcast-chip" class="mc-chip mc-chip-live" hidden></div>
+            <div class="mc-routing-modes" role="group" aria-label="${esc(t('mc.routing.label'))}">
+              <button type="button" class="mc-btn mc-routing-btn mc-routing-active" data-routing="group" title="${esc(t('mc.routing.group_title'))}">${esc(t('mc.routing.group'))}</button>
+              <button type="button" class="mc-btn mc-routing-btn" data-routing="lecture" title="${esc(t('mc.routing.lecture_title'))}">${esc(t('mc.routing.lecture'))}</button>
+              <button type="button" class="mc-btn mc-routing-btn" data-routing="mirror" title="${esc(t('mc.routing.mirror_title'))}">${esc(t('mc.routing.mirror'))}</button>
+            </div>
+          </div>
+        </header>
+
+        <section class="mc-control-zone" aria-labelledby="mc-stage-head">
+          <div class="mc-section-head">
+            <h2 id="mc-stage-head" class="mc-section-title">${esc(t('mc.section.displays'))}</h2>
+            <p class="mc-section-hint">${esc(t('mc.section.displays_hint'))}</p>
+          </div>
+          <section id="mc-stage" class="mc-stage" aria-label="${esc(t('mc.section.displays'))}"></section>
+        </section>
+
+        <section class="mc-control-zone" aria-labelledby="mc-sources-head">
+          <div class="mc-section-head">
+            <h2 id="mc-sources-head" class="mc-section-title">${esc(t('mc.section.sources'))}</h2>
+          </div>
+          <section id="mc-toolbox" class="mc-toolbox" aria-label="${esc(t('mc.section.sources'))}"></section>
+        </section>
+
+        <aside id="mc-inspector" class="mc-inspector" hidden></aside>
       </div>
-      <section id="mc-stage" class="mc-stage" aria-label="Displays you are controlling"></section>
-      <section id="mc-toolbox" class="mc-toolbox" aria-label="Sources and actions"></section>
-      <aside id="mc-inspector" class="mc-inspector" hidden></aside>
     </div>`;
 
   // Re-hydrate the last-controlled selection, learn which devices are wall-owned,
@@ -301,9 +382,9 @@ export async function render() {
   pruneSelection();
   paintStage();
   paintToolbox();
+  paintSummary();
 
-  attachSendToAll(document.querySelector('.mc-topbar'));
-  attachRoutingModes(document.querySelector('.mc-topbar'));
+  attachRoutingModes(document.querySelector('.mc-control-head'));
 
   // Reset routing mode back to 'group' on fresh render (navigating away and
   // back starts a clean session; the state is UI-only, not persisted).
@@ -320,6 +401,7 @@ export async function render() {
   unsub = displayState.subscribe(() => {
     pruneSelection();
     paintStage();
+    paintSummary();
   });
 }
 
@@ -330,4 +412,6 @@ export function unmount() {
   if (unsubChip) { unsubChip(); unsubChip = null; }
   // Close the inspector so a stale panel can't linger across navigations.
   closeInspector(inspectorEl());
+  // Dismiss the add-display picker if it was left open during navigation.
+  if (pickerEl && pickerEl.open) { try { pickerEl.close(); } catch { /* */ } }
 }

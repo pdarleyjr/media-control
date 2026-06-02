@@ -11,33 +11,29 @@
 // The caller (media-control.js) owns selection persistence + wall de-dup and
 // hands us the already-filtered data; we are a pure render function.
 
+import { esc } from '../../utils.js';
+import { t, tn } from '../../i18n.js';
 import { renderTransportBar } from './transport.js';
 
-function escapeHtml(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-
-// "updated Ns ago" from a unix-seconds timestamp. > 30s is considered stale.
+// "Updated Ns ago" from a unix-seconds timestamp. > 30s is considered stale.
 const STALE_AFTER_S = 30;
 function freshness(screenshotAt) {
-  if (!screenshotAt) return { text: 'no preview yet', stale: true };
+  if (!screenshotAt) return { text: t('mc.fresh.none'), stale: true };
   const age = Math.max(0, Math.floor(Date.now() / 1000) - screenshotAt);
   const stale = age > STALE_AFTER_S;
   let text;
-  if (age < 5) text = 'updated just now';
-  else if (age < 60) text = `updated ${age}s ago`;
-  else if (age < 3600) text = `updated ${Math.floor(age / 60)}m ago`;
-  else text = `updated ${Math.floor(age / 3600)}h ago`;
+  if (age < 5) text = t('mc.fresh.just_now');
+  else if (age < 60) text = t('mc.fresh.seconds_ago', { n: age });
+  else if (age < 3600) text = t('mc.fresh.minutes_ago', { n: Math.floor(age / 60) });
+  else text = t('mc.fresh.hours_ago', { n: Math.floor(age / 3600) });
   return { text, stale };
 }
 
 // online -> green, offline -> grey, screen blanked -> amber "Blanked".
 function statusOf(display) {
-  if (!display.online) return { cls: 'mc-status-offline', dot: 'var(--mc-standby)', label: 'Offline' };
-  if (display.screen_on === false) return { cls: 'mc-status-blanked', dot: 'var(--mc-warning)', label: 'Blanked' };
-  return { cls: 'mc-status-online', dot: 'var(--mc-success)', label: 'Online' };
+  if (!display.online) return { cls: 'mc-status-offline', dot: 'var(--mc-standby)', label: t('mc.status.offline') };
+  if (display.screen_on === false) return { cls: 'mc-status-blanked', dot: 'var(--mc-warning)', label: t('mc.status.blanked') };
+  return { cls: 'mc-status-online', dot: 'var(--mc-success)', label: t('mc.status.online') };
 }
 
 // Real aspect from geometry; fall back to 16/9 when unknown.
@@ -50,30 +46,30 @@ function displayCard(display) {
   const s = statusOf(display);
   const f = freshness(display.screenshot_at);
   const nowPlaying = display.now_playing && display.now_playing.label
-    ? escapeHtml(display.now_playing.label)
-    : 'Nothing playing';
+    ? esc(display.now_playing.label)
+    : esc(t('mc.card.nothing_playing'));
   const ar = aspectRatio(display.width, display.height);
   const offline = !display.online;
   const preview = display.screenshot_url
-    ? `<img class="mc-card-shot${(f.stale || offline) ? ' mc-shot-stale' : ''}" src="${escapeHtml(display.screenshot_url)}" alt="${escapeHtml(display.name)} preview" loading="lazy">`
-    : `<div class="mc-card-shot mc-card-shot-empty">No preview</div>`;
+    ? `<img class="mc-card-shot${(f.stale || offline) ? ' mc-shot-stale' : ''}" src="${esc(display.screenshot_url)}" alt="${esc(t('mc.card.preview_alt', { name: display.name }))}" loading="lazy">`
+    : `<div class="mc-card-shot mc-card-shot-empty">${esc(t('mc.card.no_preview'))}</div>`;
 
   // data-tp-host is populated after innerHTML injection by mountCardTransport.
   return `
     <button type="button" class="mc-card mc-display-card ${s.cls}"
-            data-device-id="${escapeHtml(display.id)}"
-            aria-label="Inspect ${escapeHtml(display.name)}">
+            data-device-id="${esc(display.id)}"
+            aria-label="${esc(t('mc.card.inspect_aria', { name: display.name }))}">
       <div class="mc-card-media" style="aspect-ratio:${ar}">
         ${preview}
-        <span class="mc-card-caption${f.stale ? ' mc-stale' : ''}">${escapeHtml(f.text)}</span>
+        <span class="mc-card-caption${f.stale ? ' mc-stale' : ''}">${esc(f.text)}</span>
       </div>
       <div class="mc-card-foot">
         <span class="mc-status-dot" style="background:${s.dot}" aria-hidden="true"></span>
-        <span class="mc-card-title">${escapeHtml(display.name)}</span>
-        <span class="mc-card-status">${escapeHtml(s.label)}</span>
+        <span class="mc-card-title">${esc(display.name)}</span>
+        <span class="mc-card-status">${esc(s.label)}</span>
       </div>
       <div class="mc-card-nowplaying" title="${nowPlaying}">${nowPlaying}</div>
-      <div class="mc-card-transport" data-tp-host data-device-id="${escapeHtml(display.id)}"></div>
+      <div class="mc-card-transport" data-tp-host data-device-id="${esc(display.id)}"></div>
     </button>`;
 }
 
@@ -82,26 +78,44 @@ function displayCard(display) {
 function wallCard(wall) {
   const tiles = (wall.devices || []).length;
   return `
-    <a class="mc-card mc-wall-card" href="#/walls" data-wall-id="${escapeHtml(wall.id)}"
-       aria-label="Video wall ${escapeHtml(wall.name)} — open wall controls">
+    <a class="mc-card mc-wall-card" href="#/walls" data-wall-id="${esc(wall.id)}"
+       aria-label="${esc(t('mc.wall.aria', { name: wall.name }))}">
       <div class="mc-card-media" style="aspect-ratio:16/9">
-        <div class="mc-card-shot mc-card-shot-empty mc-wall-badge">Video Wall</div>
+        <div class="mc-card-shot mc-card-shot-empty mc-wall-badge">${esc(t('mc.wall.badge'))}</div>
       </div>
       <div class="mc-card-foot">
         <span class="mc-status-dot" style="background:var(--mc-broadcasting)" aria-hidden="true"></span>
-        <span class="mc-card-title">${escapeHtml(wall.name)}</span>
-        <span class="mc-card-status">${tiles} ${tiles === 1 ? 'tile' : 'tiles'}</span>
+        <span class="mc-card-title">${esc(wall.name)}</span>
+        <span class="mc-card-status">${esc(tn('mc.wall.tiles', tiles))}</span>
       </div>
-      <div class="mc-card-nowplaying">Open wall controls →</div>
+      <div class="mc-card-nowplaying">${esc(t('mc.wall.open'))}</div>
     </a>`;
 }
 
+// Plus tile shown alongside the populated stage to add another display.
 function addTile() {
   return `
-    <button type="button" class="mc-card mc-add-tile" data-mc-add aria-label="Add a display to the stage">
+    <button type="button" class="mc-card mc-add-tile" data-mc-add aria-label="${esc(t('mc.stage.add_aria'))}">
       <span class="mc-add-plus" aria-hidden="true">+</span>
-      <span class="mc-add-label">Add display</span>
+      <span class="mc-add-label">${esc(t('mc.stage.add'))}</span>
     </button>`;
+}
+
+// Composed empty state — icon + heading + the primary "Add display" action
+// (orange CTA). Never a bare sentence. The CTA reuses [data-mc-add] wiring.
+function emptyState() {
+  return `
+    <div class="mc-stage-empty">
+      <span class="mc-empty-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="3" width="20" height="14" rx="2"></rect>
+          <path d="M8 21h8M12 17v4"></path>
+        </svg>
+      </span>
+      <h3 class="mc-empty-title">${esc(t('mc.stage.empty_title'))}</h3>
+      <p class="mc-empty-desc">${esc(t('mc.stage.empty_desc'))}</p>
+      <button type="button" class="mc-btn mc-btn-cta mc-btn-lg" data-mc-add>${esc(t('mc.stage.add'))}</button>
+    </div>`;
 }
 
 /**
@@ -131,8 +145,9 @@ export function renderStage(container, { displays = [], walls = [], selectedIds 
   const wallCards = (walls || []).map(wallCard).join('');
 
   const isEmpty = !cards && !wallCards;
+  container.classList.toggle('mc-stage-is-empty', isEmpty);
   container.innerHTML = isEmpty
-    ? `<div class="mc-stage-empty">No displays on the stage yet.</div>${addTile()}`
+    ? emptyState()
     : `${wallCards}${cards}${addTile()}`;
 
   // Wall cards are <a href="#/walls"> and navigate natively — no handler.
@@ -157,6 +172,7 @@ export function renderStage(container, { displays = [], walls = [], selectedIds 
     });
   });
 
-  const add = container.querySelector('[data-mc-add]');
-  if (add) add.addEventListener('click', () => { if (typeof onAddDisplay === 'function') onAddDisplay(); });
+  container.querySelectorAll('[data-mc-add]').forEach(add => {
+    add.addEventListener('click', () => { if (typeof onAddDisplay === 'function') onAddDisplay(); });
+  });
 }

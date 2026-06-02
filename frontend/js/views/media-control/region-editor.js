@@ -19,24 +19,21 @@
 // 0..100 percent, which is what layout_zones stores.
 
 import { api } from '../../api.js';
+import { esc } from '../../utils.js';
+import { t } from '../../i18n.js';
 import { FIT_MODES } from '../../player-protocol.js';
 import { showToast } from '../../components/toast.js';
 
-function esc(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-
-// The 7 presets, mirroring server/lib/layout-presets.js keys + labels exactly.
+// The 7 presets, mirroring server/lib/layout-presets.js keys exactly; labels
+// resolved through t() at render time (mc.re.preset.<key>).
 const PRESETS = [
-  { key: 'full', label: 'Full' },
-  { key: 'columns_2', label: '2-up vertical' },
-  { key: 'rows_2', label: '2-up horizontal' },
-  { key: 'columns_3', label: '3 columns' },
-  { key: 'quad', label: 'Quad (2×2)' },
-  { key: 'main_sidebar', label: 'Main + sidebars' },
-  { key: 'six', label: 'Six (3×2)' },
+  { key: 'full', labelKey: 'mc.re.preset.full' },
+  { key: 'columns_2', labelKey: 'mc.re.preset.columns_2' },
+  { key: 'rows_2', labelKey: 'mc.re.preset.rows_2' },
+  { key: 'columns_3', labelKey: 'mc.re.preset.columns_3' },
+  { key: 'quad', labelKey: 'mc.re.preset.quad' },
+  { key: 'main_sidebar', labelKey: 'mc.re.preset.main_sidebar' },
+  { key: 'six', labelKey: 'mc.re.preset.six' },
 ];
 
 const MIN_PCT = 5;   // smallest zone edge, in percent of the canvas
@@ -56,11 +53,11 @@ async function loadContentOptions() {
 
 function contentOptionsHtml(items, selectedId) {
   const opts = items.slice(0, 200).map(it => {
-    const label = it.filename || it.name || it.title || 'Content';
+    const label = it.filename || it.name || it.title || t('mc.re.content_label');
     const sel = selectedId && String(it.id) === String(selectedId) ? ' selected' : '';
     return `<option value="${esc(it.id)}"${sel}>${esc(label)}</option>`;
   }).join('');
-  return `<option value="">— no content —</option>${opts}`;
+  return `<option value="">${esc(t('mc.re.no_content'))}</option>${opts}`;
 }
 
 function fitOptionsHtml(selected) {
@@ -71,11 +68,11 @@ function fitOptionsHtml(selected) {
 
 function presetBarHtml(currentLabel) {
   const btns = PRESETS.map(p =>
-    `<button type="button" class="mc-re-preset" data-preset="${esc(p.key)}">${esc(p.label)}</button>`
+    `<button type="button" class="mc-re-preset" data-preset="${esc(p.key)}">${esc(t(p.labelKey))}</button>`
   ).join('');
   return `
-    <div class="mc-re-presets" role="group" aria-label="Layout presets">${btns}</div>
-    <div class="mc-re-current">${currentLabel ? `Layout: ${esc(currentLabel)}` : 'Pick a template to partition this display.'}</div>`;
+    <div class="mc-re-presets" role="group" aria-label="${esc(t('mc.re.presets_aria'))}">${btns}</div>
+    <div class="mc-re-current">${currentLabel ? esc(t('mc.re.current', { name: currentLabel })) : esc(t('mc.re.pick_template'))}</div>`;
 }
 
 // One zone box on the % canvas: position/size from percent columns, plus the
@@ -91,13 +88,13 @@ function zoneBoxHtml(zone, contentItems) {
   return `
     <div class="mc-re-zone" data-zone-id="${esc(zone.id)}"
          style="left:${x}%;top:${y}%;width:${w}%;height:${h}%"
-         aria-label="${esc(zone.name || 'Zone')}">
-      <div class="mc-re-zone-head">${esc(zone.name || 'Zone')}</div>
+         aria-label="${esc(zone.name || t('mc.re.zone_fallback'))}">
+      <div class="mc-re-zone-head">${esc(zone.name || t('mc.re.zone_fallback'))}</div>
       <div class="mc-re-zone-controls">
-        <label class="mc-re-ctl">Content
+        <label class="mc-re-ctl">${esc(t('mc.re.content_label'))}
           <select class="mc-re-content" data-zone-id="${esc(zone.id)}">${contentOptionsHtml(contentItems, null)}</select>
         </label>
-        <label class="mc-re-ctl">Fit
+        <label class="mc-re-ctl">${esc(t('mc.re.fit_label'))}
           <select class="mc-re-fit" data-zone-id="${esc(zone.id)}">${fitOptionsHtml(zone.fit_mode || 'contain')}</select>
         </label>
       </div>
@@ -117,18 +114,18 @@ function zoneBoxHtml(zone, contentItems) {
 export async function renderRegionEditor(container, { layoutId, deviceId, onChange } = {}) {
   if (!container) return;
   if (!layoutId) {
-    container.innerHTML = `<div class="mc-re-empty">No layout to partition.</div>`;
+    container.innerHTML = `<div class="mc-re-empty">${esc(t('mc.re.no_layout'))}</div>`;
     return;
   }
 
-  container.innerHTML = `<div class="mc-re-loading">Loading layout…</div>`;
+  container.innerHTML = `<div class="mc-re-loading">${esc(t('mc.re.loading'))}</div>`;
 
   let layout;
   let contentItems = [];
   try {
     [layout, contentItems] = await Promise.all([api.layouts.get(layoutId), loadContentOptions()]);
   } catch (e) {
-    container.innerHTML = `<div class="mc-re-error">Could not load the layout: ${esc(e?.message)}</div>`;
+    container.innerHTML = `<div class="mc-re-error">${esc(t('mc.re.load_error', { error: e?.message || '' }))}</div>`;
     return;
   }
 
@@ -141,7 +138,7 @@ export async function renderRegionEditor(container, { layoutId, deviceId, onChan
     const canvas = container.querySelector('.mc-re-canvas');
     if (!canvas) return;
     canvas.innerHTML = zones.map(z => zoneBoxHtml(z, contentItems)).join('') ||
-      `<div class="mc-re-canvas-empty">Pick a template above to create regions.</div>`;
+      `<div class="mc-re-canvas-empty">${esc(t('mc.re.canvas_empty'))}</div>`;
     attachZoneHandlers(canvas);
   }
 
@@ -150,7 +147,7 @@ export async function renderRegionEditor(container, { layoutId, deviceId, onChan
       <div class="mc-re">
         ${presetBarHtml(labelOf(layout))}
         <div class="mc-re-stage">
-          <div class="mc-re-canvas" role="application" aria-label="Region layout — drag to refine"></div>
+          <div class="mc-re-canvas" role="application" aria-label="${esc(t('mc.re.canvas_aria'))}"></div>
         </div>
       </div>`;
     attachPresetHandlers();
@@ -168,9 +165,9 @@ export async function renderRegionEditor(container, { layoutId, deviceId, onChan
           zones = Array.isArray(result?.zones) ? result.zones.map(z => ({ ...z })) : zones;
           repaint();
           if (typeof onChange === 'function') onChange(zones);
-          showToast('Layout applied — drag the regions to refine.', 'success');
+          showToast(t('mc.re.applied'), 'success');
         } catch (e) {
-          showToast(e?.message || 'Could not apply the layout preset.', 'error');
+          showToast(e?.message || t('mc.re.apply_failed'), 'error');
         } finally {
           btn.disabled = false;
         }
@@ -189,7 +186,7 @@ export async function renderRegionEditor(container, { layoutId, deviceId, onChan
       });
       if (typeof onChange === 'function') onChange(zones);
     } catch (e) {
-      showToast(e?.message || 'Could not save the region.', 'error');
+      showToast(e?.message || t('mc.re.save_failed'), 'error');
     }
   }
 
@@ -216,7 +213,7 @@ export async function renderRegionEditor(container, { layoutId, deviceId, onChan
             zone.fit_mode = fitSel.value;
             if (typeof onChange === 'function') onChange(zones);
           } catch (e) {
-            showToast(e?.message || 'Could not update the fit.', 'error');
+            showToast(e?.message || t('mc.re.fit_failed'), 'error');
           }
         });
       }
@@ -230,13 +227,13 @@ export async function renderRegionEditor(container, { layoutId, deviceId, onChan
         contentSel.addEventListener('change', async () => {
           const contentId = contentSel.value || null;
           if (!contentId) return;
-          if (!deviceId) { showToast('No display selected for this layout.', 'error'); return; }
+          if (!deviceId) { showToast(t('mc.re.no_display'), 'error'); return; }
           try {
             await api.addAssignment(deviceId, { content_id: contentId, duration_sec: 0, zone_id: zone.id });
-            showToast('Content assigned to region.', 'success');
+            showToast(t('mc.re.assigned'), 'success');
             if (typeof onChange === 'function') onChange(zones);
           } catch (e) {
-            showToast(e?.message || 'Could not assign content to the region.', 'error');
+            showToast(e?.message || t('mc.re.assign_failed'), 'error');
           }
         });
       }

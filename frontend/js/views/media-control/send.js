@@ -13,11 +13,28 @@
 //   • Returns true on success, false on cancel/error (so callers can update UI).
 
 import { api } from '../../api.js';
+import { t, tn } from '../../i18n.js';
 import { showToast } from '../../components/toast.js';
 import { confirmDialog } from '../../components/confirm.js';
 
 // YouTube URL detection (same regex as present.js).
 const YT_RE = /^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//i;
+
+/**
+ * Shared success toast for a broadcast result: "{label} on N displays" with an
+ * "M offline" tail when some targets were unreachable. Used by sendToDisplays
+ * and the Nextcloud-tab broadcast so the wording stays identical.
+ * @param {string} label   human-readable source label
+ * @param {number} sent    displays the source reached
+ * @param {number} total   displays targeted
+ */
+export function sentToast(label, sent, total) {
+  const offline = (total || 0) - (sent || 0);
+  const msg = offline > 0
+    ? tn('mc.send.result_offline', sent, { label, offline })
+    : tn('mc.send.result', sent, { label });
+  showToast(msg, 'success');
+}
 
 /**
  * Materialize a YouTube URL into a content row so the player renders it as an
@@ -31,11 +48,11 @@ async function materializeYouTube(url) {
     // api.addYoutubeContent idempotently creates or returns an existing row.
     content = await api.addYoutubeContent(url, url);
   } catch (e) {
-    showToast(e?.message || 'Could not prepare YouTube content.', 'error');
+    showToast(e?.message || t('mc.send.yt_prepare_failed'), 'error');
     return null;
   }
   if (!content || !content.id) {
-    showToast('YouTube content could not be prepared.', 'error');
+    showToast(t('mc.send.yt_unavailable'), 'error');
     return null;
   }
   return { content_id: content.id };
@@ -51,9 +68,9 @@ async function materializeYouTube(url) {
  * @param {string}  [label]     human-readable label for toasts
  * @returns {Promise<boolean>}  true = sent successfully, false = cancelled/error
  */
-export async function sendToDisplays(source, targetIds, label = 'Content') {
+export async function sendToDisplays(source, targetIds, label = t('mc.tile.content_fallback')) {
   if (!Array.isArray(targetIds) || targetIds.length === 0) {
-    showToast('No displays selected — add a display to the stage first.', 'error');
+    showToast(t('mc.send.no_displays'), 'error');
     return false;
   }
 
@@ -70,33 +87,29 @@ export async function sendToDisplays(source, targetIds, label = 'Content') {
   try {
     result = await api.broadcast({ ...resolvedSource, device_ids: targetIds });
   } catch (e) {
-    showToast(e?.message || 'Could not send to the displays.', 'error');
+    showToast(e?.message || t('mc.send.failed'), 'error');
     return false;
   }
 
   // 409 CONFIRM_ALL_REQUIRED: operator is targeting every display in the workspace.
   if (result && result.code === 'CONFIRM_ALL_REQUIRED') {
     const ok = await confirmDialog({
-      title: `Show on ALL ${result.count} displays?`,
-      message: `This puts "${label}" on every display in the room.`,
-      confirmLabel: 'Show on all',
+      title: t('mc.send.confirm_all_title', { n: result.count }),
+      message: t('mc.send.confirm_all_msg', { label }),
+      confirmLabel: t('mc.send.confirm_all_ok'),
       tone: 'default',
     });
     if (!ok) return false;
     try {
       result = await api.broadcast({ ...resolvedSource, device_ids: targetIds, confirm_all: true });
     } catch (e) {
-      showToast(e?.message || 'Could not send to the displays.', 'error');
+      showToast(e?.message || t('mc.send.failed'), 'error');
       return false;
     }
   }
 
   if (result && result.success) {
-    const offline = (result.total || 0) - (result.sent || 0);
-    showToast(
-      `${label} → ${result.sent} display${result.sent === 1 ? '' : 's'}${offline > 0 ? ` (${offline} offline)` : ''}`,
-      'success'
-    );
+    sentToast(label, result.sent, result.total);
     return true;
   }
   // Unexpected non-error non-success response — be silent (server logged it).
