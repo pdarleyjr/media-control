@@ -287,7 +287,9 @@ function setupHandlers(config, isSetup) {
 function onAuthSuccess(data) {
   localStorage.setItem('token', data.token);
   localStorage.setItem('user', JSON.stringify(data.user));
-  window.location.hash = '#/';
+  // Land on the unified Media Control dashboard (the home for everyone). The
+  // boot-time landing in app.js (#/login -> #/control) covers revisit-with-token.
+  window.location.hash = '#/control';
   window.location.reload();
 }
 
