@@ -1,7 +1,7 @@
 import { api } from '../api.js';
 import * as displayState from '../services/display-state.js';
 import { renderStage } from './media-control/stage.js';
-import { renderToolbox, refreshToolbox } from './media-control/toolbox.js';
+import { renderToolbox } from './media-control/toolbox.js';
 import { sendToDisplays } from './media-control/send.js';
 import { renderInspector, closeInspector } from './media-control/inspector.js';
 import { mountBroadcastChip } from './media-control/broadcast-chip.js';
@@ -133,8 +133,11 @@ function openAddPicker() {
     selectedIds = [...selectedIds, id];
     persistSelection();
     paintStage();
-    // Refresh toolbox so the new selection is picked up for next click-to-send.
-    refreshToolbox(toolboxEl(), selectedIds, paintStage);
+    // Full toolbox re-render so BOTH the tile-click handlers AND the tab-switch
+    // handlers re-bind to the new selection (refreshToolbox only re-rendered the
+    // active tab body, leaving the tab-switch buttons closed over a stale
+    // selection — so switching tabs then clicking a tile sent to nothing).
+    paintToolbox();
   }
 }
 
