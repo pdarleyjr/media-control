@@ -275,6 +275,15 @@ async function route() {
     return;
   }
 
+  // Authenticated and opening the BARE domain (no route yet) -> land on the
+  // unified Media Control dashboard (the documented home for everyone). An
+  // explicit '#/' or '#/displays' still opens the Displays grid, so the
+  // sidebar's Displays link (href="#/") is unaffected.
+  if (isAuthenticated() && (hash === '' || hash === '#')) {
+    window.location.hash = '#/control';
+    return;
+  }
+
   // Slice 2C - past the auth gates. (a) Show any toast stashed across the
   // accept-invite reload boundary. (b) If a stash exists (from an unauthed
   // accept-invite visit + subsequent login/register), consume it now. The
