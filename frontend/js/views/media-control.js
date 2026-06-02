@@ -90,10 +90,15 @@ function paintStage() {
   attachStageDrop(el);
 }
 
+// After a successful send we re-FETCH display state (not just repaint) so the
+// target card's now-playing label updates immediately — the store notifies its
+// subscribers, which triggers paintStage. Repainting alone showed stale data.
+function refreshAfterSend() { displayState.refresh().catch(() => {}); }
+
 function paintToolbox() {
   const el = toolboxEl();
   if (!el) return;
-  renderToolbox(el, { selectedIds, onAfterSend: paintStage });
+  renderToolbox(el, { selectedIds, onAfterSend: refreshAfterSend });
 }
 
 // Selecting a stage card opens the inspector for that display (Task 4.4):
@@ -172,7 +177,7 @@ function attachStageDrop(stageContainer) {
       const deviceId = card.dataset.deviceId;
       if (!deviceId) return;
       await sendToDisplays(source, [deviceId], label);
-      // Stage will repaint on the next display-state event.
+      refreshAfterSend(); // re-fetch state so the card's now-playing updates now
     });
   });
 }
