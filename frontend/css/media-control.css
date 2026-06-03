@@ -700,6 +700,91 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
 /* Mirror is a one-shot action button: a brief blue press confirmation. */
 .mc-control .mc-routing-btn.mc-routing-firing { background: var(--accent); color: #fff; }
 
+/* ════════════════════════════════════════════════════════════════════════
+   Consolidation: the Playlists toolbox source, the Room-setup rail panel, and
+   the in-dashboard overlay (view-modal) that hosts a folded-in builder
+   (Schedules) without leaving #/control. Light, enterprise chrome; tokens only.
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* Playlist source tiles — count sub-label + Draft badge on the shared .mc-tile */
+.mc-control .mc-tile { position: relative; }
+.mc-tile-icon-svg svg { width: 26px; height: 26px; display: block; }
+.mc-tile-sub {
+  font-size: var(--mc-font-size-xs, 11px); color: var(--mc-text-tertiary);
+  font-variant-numeric: tabular-nums; line-height: 1;
+}
+.mc-tile-badge {
+  position: absolute; top: 6px; right: 6px;
+  padding: 2px 6px; border-radius: var(--radius-pill, 999px);
+  font-size: 10px; font-weight: 700; letter-spacing: 0.03em; line-height: 1;
+  background: var(--warning-dim, #92400e); color: #fff;
+}
+
+/* Toolbox tab "Manage" link row (Playlists → full builder) */
+.mc-tb-head { display: flex; justify-content: flex-end; margin-bottom: var(--mc-space-sm, 8px); }
+.mc-tb-manage {
+  font-size: var(--font-2, 12px); font-weight: var(--mc-fw-medium, 500);
+  color: var(--accent); text-decoration: none;
+}
+.mc-tb-manage:hover { text-decoration: underline; }
+.mc-tb-manage:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+/* Room-setup rail panel (matches the Presets/Recent panel chrome) */
+.mc-setup-panel {
+  background: var(--mc-surface); border: 1px solid var(--mc-border-light);
+  border-radius: var(--mc-radius-lg); box-shadow: var(--mc-shadow-card);
+  padding: var(--mc-space-md, 16px);
+}
+.mc-setup-panel .mc-rail-title {
+  display: block; margin: 0 0 var(--mc-space-sm, 8px);
+  font-size: var(--font-2, 12px); font-weight: var(--mc-fw-semibold, 600);
+  text-transform: uppercase; letter-spacing: 0.06em; color: var(--mc-text-secondary);
+}
+.mc-setup-links { display: flex; flex-direction: column; gap: var(--space-2, 8px); }
+.mc-setup-link {
+  display: flex; align-items: center; gap: var(--space-2, 8px);
+  width: 100%; min-height: var(--tap-min, 48px); padding: 0 var(--mc-space-sm, 8px);
+  background: var(--mc-surface-alt); border: 1px solid var(--mc-border-light);
+  border-radius: var(--mc-radius-md, 12px); color: var(--mc-text-primary);
+  font-size: var(--mc-font-size-sm); font-family: inherit; text-align: left;
+  text-decoration: none; cursor: pointer; transition: border-color 0.15s, background 0.15s;
+}
+.mc-setup-link:hover { border-color: var(--accent); background: var(--mc-surface); }
+.mc-setup-link:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.mc-setup-ico { flex: 0 0 auto; display: inline-flex; color: var(--accent); }
+.mc-setup-ico svg { width: 18px; height: 18px; display: block; }
+.mc-setup-link-label { flex: 1 1 auto; }
+
+/* In-dashboard overlay — a LARGE <dialog> that hosts a full folded-in view.
+   Distinct from .mc-dialog (the small confirm/prompt dialog in main.css). */
+.mc-view-modal {
+  border: none; padding: 0; background: transparent; color: var(--mc-text-primary);
+  width: min(1120px, 95vw); max-width: 95vw; max-height: 92vh;
+}
+.mc-view-modal::backdrop { background: rgba(15, 23, 42, 0.55); backdrop-filter: blur(4px); }
+.mc-modal-card {
+  display: flex; flex-direction: column; max-height: 92vh; overflow: hidden;
+  background: var(--mc-surface); border: 1px solid var(--mc-border-light);
+  border-radius: var(--mc-radius-lg); box-shadow: var(--mc-shadow-hover);
+  animation: mc-modal-in 0.16s ease-out;
+}
+.mc-modal-head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-3, 12px);
+  padding: var(--mc-space-md, 16px) var(--mc-space-lg, 24px);
+  border-bottom: 1px solid var(--mc-border-light);
+}
+.mc-modal-title { margin: 0; font-size: var(--font-5, 18px); font-weight: 700; }
+.mc-modal-close {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: var(--tap-min, 48px); height: var(--tap-min, 48px); border: none; border-radius: var(--mc-radius-md, 12px);
+  background: transparent; color: var(--mc-text-secondary); cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.mc-modal-close:hover { background: var(--mc-surface-alt); color: var(--mc-text-primary); }
+.mc-modal-close:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.mc-modal-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: var(--mc-space-lg, 24px); }
+@keyframes mc-modal-in { from { transform: translateY(8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
 /* ---- responsive ---- */
 @media (max-width: 1024px) {
   .mc-control-body { grid-template-columns: 1fr; }
@@ -722,6 +807,8 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
   .mc-inspector:not([hidden]) { animation: none; }
   .mc-tb-spin, .mc-recent-spin { animation: none; }
   .mc-cmd-spin svg { animation: none; }
+  .mc-modal-card { animation: none; }
+  .mc-setup-link { transition: none; }
 }
 
 /* ════════════════════════════════════════════════════════════════════════

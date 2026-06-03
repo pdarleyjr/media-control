@@ -302,6 +302,14 @@ async function route() {
     return;
   }
 
+  // #/home is retired — the Studio landing dashboard's recent panels live in the
+  // Command Center rail and its quick-launches duplicate the Studio nav links, so
+  // it is folded into #/control. Redirect old bookmarks to the consolidated surface.
+  if (isAuthenticated() && hash === '#/home') {
+    window.location.hash = '#/control';
+    return;
+  }
+
   // Slice 2C - past the auth gates. (a) Show any toast stashed across the
   // accept-invite reload boundary. (b) If a stash exists (from an unauthed
   // accept-invite visit + subsequent login/register), consume it now. The

@@ -2,6 +2,7 @@ import { api } from '../api.js';
 import { esc } from '../utils.js';
 import { t, tn } from '../i18n.js';
 import { showToast } from '../components/toast.js';
+import { requestScreenshot } from '../socket.js';
 import * as displayState from '../services/display-state.js';
 import { renderStage } from './media-control/stage.js';
 import { renderToolbox } from './media-control/toolbox.js';
@@ -11,13 +12,21 @@ import { mountBroadcastChip } from './media-control/broadcast-chip.js';
 import { renderCommandBar } from './media-control/command-bar.js';
 import { renderRoomPresets } from './media-control/room-presets.js';
 import { renderRecentPanel } from './media-control/recent-panel.js';
+import { openViewModal, closeViewModal } from './media-control/view-modal.js';
+import * as schedulesView from './schedules.js';
 // transport.js is used by stage.js internally — no direct import needed here.
+
+// Rail "Room setup" launcher icons (stroke icons, dashboard SVG vocabulary).
+const ICON_SETUP_SCHEDULE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>';
+const ICON_SETUP_WALLS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="9" height="8" rx="1"></rect><rect x="13" y="3" width="9" height="8" rx="1"></rect><rect x="2" y="13" width="9" height="8" rx="1"></rect><rect x="13" y="13" width="9" height="8" rx="1"></rect></svg>';
 
 let unsub = null;
 let unsubChip = null;   // broadcast-chip unsubscribe (Task 4.5)
 let selectedIds = [];   // ids on the stage; re-hydrated from the server, persisted on change
 let wallMemberIds = new Set();   // device ids owned by a video wall (never their own card)
 let walls = [];
+let previewKickoff = null;   // one-shot "poke players to capture" timer after socket connect
+let previewInterval = null;  // periodic preview refresh for the displays on the stage
 
 // Routing mode: 'group' (default, each display independent), 'lecture' (one
 // source to all), 'mirror' (clone display A to all others). The mode is UI
@@ -136,7 +145,43 @@ function paintStage() {
 // After a successful send we re-FETCH display state (not just repaint) so the
 // target card's now-playing label updates immediately — the store notifies its
 // subscribers, which triggers paintStage. Repainting alone showed stale data.
-function refreshAfterSend() { displayState.refresh().catch(() => {}); }
+// We ALSO poke the affected players to capture a fresh screenshot (after a beat,
+// so the new content has loaded) — that is what makes the preview show what is
+// NOW playing right after a drag-drop / send. `targetIds` is optional; without it
+// we refresh every visible display.
+function refreshAfterSend(targetIds) {
+  displayState.refresh().catch(() => {});
+  const ids = (Array.isArray(targetIds) && targetIds.length) ? targetIds : visibleDeviceIds();
+  setTimeout(() => { for (const id of ids) requestScreenshot(id); }, 1800);
+}
+
+// ---- Live preview driver ----
+//
+// Players only capture + send a screenshot when ASKED (device:screenshot-request);
+// without a request, a card's screenshot_url stays null and it reads "No preview"
+// forever. The retired dashboard poked every card 2s after load + every 30s — the
+// unified control surface dropped that driver during consolidation, which is why
+// previews never loaded here. Re-add it, scoped to the displays actually on screen:
+// the selected non-wall cards PLUS every wall member screen (wall cells each render
+// their own member's live preview). Offline devices are a server-side no-op.
+function visibleDeviceIds() {
+  const ids = new Set(selectedIds.filter(id => !wallMemberIds.has(id)));
+  for (const id of wallMemberIds) ids.add(id);
+  return [...ids];
+}
+function requestVisiblePreviews() {
+  for (const id of visibleDeviceIds()) requestScreenshot(id);
+}
+function startPreviewRefresh() {
+  stopPreviewRefresh();
+  // Let the dashboard socket finish connecting, poke once, then keep them fresh.
+  previewKickoff = setTimeout(requestVisiblePreviews, 1500);
+  previewInterval = setInterval(requestVisiblePreviews, 20000);
+}
+function stopPreviewRefresh() {
+  if (previewKickoff) { clearTimeout(previewKickoff); previewKickoff = null; }
+  if (previewInterval) { clearInterval(previewInterval); previewInterval = null; }
+}
 
 // Target scope for toolbox SENDS. In 'lecture' mode a tapped source goes to
 // EVERY display in the room (whole-room takeover); otherwise to the displays on
@@ -301,6 +346,7 @@ async function openAddPicker() {
   if (selectedIds.includes(id)) return;
   selectedIds = [...selectedIds, id];
   persistSelection();
+  requestScreenshot(id); // poke the freshly-added display so its preview loads now
   paintStage();
   // Full toolbox re-render so BOTH the tile-click handlers AND the tab-switch
   // handlers re-bind to the new target set (a partial re-render would leave the
@@ -350,7 +396,7 @@ function attachStageDrop(stageContainer) {
       const deviceId = card.dataset.deviceId;
       if (!parsed || !deviceId) return;
       await sendToDisplays(parsed.source, [deviceId], parsed.label);
-      refreshAfterSend(); // re-fetch state so the card's now-playing updates now
+      refreshAfterSend([deviceId]); // re-fetch state + refresh THIS card's preview
     });
   });
 
@@ -374,7 +420,7 @@ function attachStageDrop(stageContainer) {
       const ids = (zone.dataset.wallIds || '').split(',').filter(Boolean);
       if (!ids.length) { showToast(t('mc.send.no_displays'), 'error'); return; }
       await sendToDisplays(parsed.source, ids, parsed.label);
-      refreshAfterSend();
+      refreshAfterSend(ids);
     });
   });
 
@@ -401,7 +447,7 @@ function attachStageDrop(stageContainer) {
     const targets = effectiveTargets();
     if (!targets.length) { showToast(t('mc.send.no_displays'), 'error'); return; }
     await sendToDisplays(parsed.source, targets, parsed.label);
-    refreshAfterSend();
+    refreshAfterSend(targets);
   });
 }
 
@@ -508,6 +554,7 @@ export async function render() {
                 <h2 id="mc-stage-head" class="mc-section-title">${esc(t('mc.section.displays'))}</h2>
                 <p class="mc-section-hint">${esc(t('mc.section.displays_hint'))}</p>
                 <a class="mc-section-link" href="#/">${esc(t('mc.section.manage_displays'))}</a>
+                <a class="mc-section-link" href="#/walls">${esc(t('mc.section.video_walls'))}</a>
               </div>
               <section id="mc-stage" class="mc-stage" aria-label="${esc(t('mc.section.displays'))}"></section>
             </section>
@@ -523,6 +570,19 @@ export async function render() {
           <aside class="mc-control-rail" aria-label="${esc(t('mc.rail.label'))}">
             <div id="mc-presets-host"></div>
             <div id="mc-recent-host"></div>
+            <section class="mc-rail-panel mc-setup-panel" aria-labelledby="mc-setup-head">
+              <h3 id="mc-setup-head" class="mc-rail-title">${esc(t('mc.setup.title'))}</h3>
+              <div class="mc-setup-links">
+                <button type="button" class="mc-setup-link" data-mc-setup="schedules">
+                  <span class="mc-setup-ico" aria-hidden="true">${ICON_SETUP_SCHEDULE}</span>
+                  <span class="mc-setup-link-label">${esc(t('mc.setup.schedules'))}</span>
+                </button>
+                <a class="mc-setup-link" href="#/walls">
+                  <span class="mc-setup-ico" aria-hidden="true">${ICON_SETUP_WALLS}</span>
+                  <span class="mc-setup-link-label">${esc(t('mc.setup.walls'))}</span>
+                </a>
+              </div>
+            </section>
           </aside>
         </div>
 
@@ -570,6 +630,17 @@ export async function render() {
   renderRoomPresets(document.getElementById('mc-presets-host'), { onAfterApply: refreshAfterSend });
   renderRecentPanel(document.getElementById('mc-recent-host'));
 
+  // Room-setup launchers (fold in the retired Operate links): Schedules is
+  // self-contained, so it opens as an in-dashboard overlay — the operator never
+  // leaves #/control. Video walls is a plain link to the canvas editor (a focused
+  // full screen, launched from the dashboard instead of a sidebar item).
+  const schedBtn = document.querySelector('[data-mc-setup="schedules"]');
+  if (schedBtn) {
+    schedBtn.addEventListener('click', () => {
+      openViewModal({ title: t('mc.schedules.title'), module: schedulesView });
+    });
+  }
+
   // Mount the persistent live-broadcast chip (Task 4.5). The chip subscribes to
   // the engine singleton so it reflects broadcast state even after navigation.
   if (unsubChip) { unsubChip(); unsubChip = null; }
@@ -583,6 +654,10 @@ export async function render() {
     paintStage();
     paintSummary();
   });
+
+  // Drive live previews: players only send a screenshot when asked, so poke the
+  // displays on the stage shortly after the socket connects, then keep them fresh.
+  startPreviewRefresh();
 }
 
 export function unmount() {
@@ -590,6 +665,8 @@ export function unmount() {
   // so unmount only detaches this view's subscriptions. Broadcasts persist.
   if (unsub) { unsub(); unsub = null; }
   if (unsubChip) { unsubChip(); unsubChip = null; }
+  closeViewModal();       // dismiss any open room-setup overlay (e.g. Schedules)
+  stopPreviewRefresh();   // stop poking players once we leave the control surface
   // Close the inspector so a stale panel can't linger across navigations.
   closeInspector(inspectorEl());
   // Dismiss the add-display picker if it was left open during navigation.

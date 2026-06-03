@@ -1221,6 +1221,14 @@ export default {
   'mc.section.displays_hint': 'Tap a display to inspect it. Drag a source onto a display to show it.',
   'mc.section.sources': 'Sources',
   'mc.section.manage_displays': 'Manage displays',
+  'mc.section.video_walls': 'Video walls',
+  // Room-setup rail panel (folds in the retired Operate links)
+  'mc.setup.title': 'Room setup',
+  'mc.setup.schedules': 'Schedules',
+  'mc.setup.walls': 'Video walls',
+  // In-dashboard overlay (view-modal)
+  'mc.modal.close': 'Close',
+  'mc.schedules.title': 'Schedules',
   'mc.rail.label': 'Presets and recent activity',
   // Add / pair a display (pairing folded into the Command Center)
   'mc.add.pair': 'Pair a new display',
@@ -1336,6 +1344,7 @@ export default {
   'mc.wall.screen_n': 'Screen {n}',
   // Toolbox tabs
   'mc.tab.media': 'Media',
+  'mc.tab.playlists': 'Playlists',
   'mc.tab.presentations': 'Presentations',
   'mc.tab.youtube': 'YouTube / URL',
   'mc.tab.scenes': 'Scenes',
@@ -1343,6 +1352,7 @@ export default {
   // Toolbox loading / empty / error
   'mc.tb.loading': 'Loading…',
   'mc.tb.loading_media': 'Loading media…',
+  'mc.tb.loading_playlists': 'Loading playlists…',
   'mc.tb.loading_presentations': 'Loading presentations…',
   'mc.tb.loading_scenes': 'Loading scenes…',
   'mc.tb.loading_nextcloud': 'Connecting to Nextcloud…',
@@ -1354,6 +1364,13 @@ export default {
   'mc.scenes.error': 'Could not load scenes. {error}',
   'mc.scenes.triggered': 'Scene "{name}" triggered.',
   'mc.scenes.trigger_failed': 'Could not trigger the scene.',
+  // Playlists tab (folds in the retired #/playlists link)
+  'mc.playlists.empty': 'No playlists yet. Tap Manage to build one.',
+  'mc.playlists.error': 'Could not load playlists. {error}',
+  'mc.playlists.manage': 'Manage playlists',
+  'mc.playlists.draft': 'Draft',
+  'mc.playlists.items_one': '{n} item',
+  'mc.playlists.items_other': '{n} items',
   'mc.youtube.label': 'YouTube link or web URL',
   'mc.youtube.placeholder': 'https://www.youtube.com/watch?v=…',
   'mc.youtube.send': 'Send',
@@ -1361,6 +1378,7 @@ export default {
   'mc.tile.content_fallback': 'Content',
   'mc.tile.presentation_fallback': 'Presentation',
   'mc.tile.scene_fallback': 'Scene',
+  'mc.tile.playlist_fallback': 'Playlist',
   // Nextcloud tab
   'mc.nc.disabled': 'The Files module is turned off on this server.',
   'mc.nc.not_connected': 'Could not connect to your Nextcloud files.',

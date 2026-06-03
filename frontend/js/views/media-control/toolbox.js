@@ -1,8 +1,10 @@
 // toolbox.js — the segmented source-dock below the stage in the unified Media
-// Control dashboard. Five SOURCE tabs: Media · Presentations · YouTube/URL ·
-// Scenes · Nextcloud. (Region "templates" are a per-display layout, not a source
-// to send, so they live in the inspector's "Partition into regions" flow — not
-// as a toolbox tab.)
+// Control dashboard. Six SOURCE tabs: Media · Playlists · Presentations ·
+// YouTube/URL · Scenes · Nextcloud. (Region "templates" are a per-display
+// layout, not a source to send, so they live in the inspector's "Partition into
+// regions" flow — not as a toolbox tab.) Playlists fold in the retired
+// #/playlists nav link: each playlist is a drag-or-tap source, and a "Manage"
+// link opens the full builder.
 //
 // Clicking a tile (or dropping it on a stage card) calls sendToDisplays() — the
 // shared send funnel — which handles the 409 confirm-all gate and toasts.
@@ -25,11 +27,15 @@ let activeTab = 'media';
 // ---- tab definitions (labels resolved through t() at render time) ----
 const TABS = [
   { id: 'media',         key: 'mc.tab.media' },
+  { id: 'playlists',     key: 'mc.tab.playlists' },
   { id: 'presentations', key: 'mc.tab.presentations' },
   { id: 'youtube',       key: 'mc.tab.youtube' },
   { id: 'scenes',        key: 'mc.tab.scenes' },
   { id: 'nextcloud',     key: 'mc.tab.nextcloud' },
 ];
+
+// Playlist tile glyph (stroke icon, matches the dashboard's SVG vocabulary).
+const ICON_PLAYLIST = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><circle cx="4" cy="6" r="1"></circle><circle cx="4" cy="12" r="1"></circle><circle cx="4" cy="18" r="1"></circle></svg>';
 
 // ---- composed state blocks (never a bare sentence) ----
 const ICON_EMPTY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><path d="M3 9h18M9 21V9"></path></svg>';
@@ -75,6 +81,45 @@ async function renderMediaTab(container, { selectedIds, onAfterSend }) {
     </button>`;
   }).join('');
   container.innerHTML = `<div class="mc-tile-grid">${tiles}</div>`;
+  attachTileHandlers(container, selectedIds, onAfterSend);
+}
+
+// Playlists tab — every playlist is a drag-or-tap source ({ playlist_id }); the
+// send funnel already accepts playlist_id. A "Manage playlists" link opens the
+// full builder (kept reachable, just no longer a sidebar item). The item count +
+// a Draft badge ride on each tile so the operator picks the right one at a glance.
+async function renderPlaylistsTab(container, { selectedIds, onAfterSend }) {
+  container.innerHTML = loadingState(t('mc.tb.loading_playlists'));
+  let items = [];
+  try {
+    const result = await api.getPlaylists();
+    items = Array.isArray(result) ? result : (result && Array.isArray(result.playlists) ? result.playlists : []);
+  } catch (e) {
+    container.innerHTML = errorState(t('mc.playlists.error', { error: e?.message || '' }));
+    return;
+  }
+  const manage = `<div class="mc-tb-head"><a class="mc-tb-manage" href="#/playlists">${esc(t('mc.playlists.manage'))}</a></div>`;
+  if (items.length === 0) {
+    container.innerHTML = manage + emptyState(t('mc.playlists.empty'));
+    return;
+  }
+  const tiles = items.slice(0, 48).map(item => {
+    const src = JSON.stringify({ playlist_id: item.id });
+    const name = item.name || t('mc.tile.playlist_fallback');
+    const count = tn('mc.playlists.items', item.item_count || 0);
+    const draft = item.status === 'draft'
+      ? `<span class="mc-tile-badge">${esc(t('mc.playlists.draft'))}</span>` : '';
+    return `<button type="button" class="mc-tile" draggable="true"
+      data-drag-source='${esc(src)}'
+      data-label="${esc(name)}"
+      title="${esc(name)}">
+      <span class="mc-tile-icon mc-tile-icon-svg" aria-hidden="true">${ICON_PLAYLIST}</span>
+      ${draft}
+      <span class="mc-tile-label">${esc(name)}</span>
+      <span class="mc-tile-sub">${esc(count)}</span>
+    </button>`;
+  }).join('');
+  container.innerHTML = manage + `<div class="mc-tile-grid">${tiles}</div>`;
   attachTileHandlers(container, selectedIds, onAfterSend);
 }
 
@@ -301,6 +346,9 @@ async function loadTab(tabId, tabBody, { selectedIds, onAfterSend }) {
   switch (tabId) {
     case 'media':
       await renderMediaTab(tabBody, { selectedIds, onAfterSend });
+      break;
+    case 'playlists':
+      await renderPlaylistsTab(tabBody, { selectedIds, onAfterSend });
       break;
     case 'presentations':
       await renderPresentationsTab(tabBody, { selectedIds, onAfterSend });
