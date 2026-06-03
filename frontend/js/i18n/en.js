@@ -1333,7 +1333,7 @@ export default {
   'mc.wall.edit': 'Edit wall',
   'mc.wall.fill_all': 'Drop here to fill the whole wall',
   'mc.wall.screen_fallback': 'Screen',
-  'mc.wall.no_screens': 'No screens assigned to this wall yet.',
+  'mc.wall.screen_n': 'Screen {n}',
   // Toolbox tabs
   'mc.tab.media': 'Media',
   'mc.tab.presentations': 'Presentations',

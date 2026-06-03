@@ -282,6 +282,9 @@
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .mc-wall-cell .mc-badge { top: 4px; right: 4px; padding: 2px 7px; font-size: 10px; }
+/* A physical screen slot with no paired player — dim, non-interactive. */
+.mc-wall-cell-vacant { cursor: default; background: var(--mc-dark-bg, #1E293B); }
+.mc-wall-cell-vacant:hover { box-shadow: none; }
 .mc-wall-all {
   display: flex; align-items: center; justify-content: center; gap: var(--space-2, 8px);
   margin-top: var(--mc-space-sm, 8px); min-height: 40px; padding: 0 var(--space-3, 12px);

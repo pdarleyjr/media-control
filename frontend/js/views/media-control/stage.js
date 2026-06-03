@@ -121,43 +121,76 @@ function wallMemberView(m, byId) {
   };
 }
 
-function wallCell(member) {
+function wallCell(member, screenNo) {
   const s = statusOf(member);
   const offline = !member.online;
   const f = freshness(member.screenshot_at);
   const preview = member.screenshot_url
     ? `<img class="mc-wall-cell-shot${(f.stale || offline) ? ' mc-shot-stale' : ''}" src="${esc(member.screenshot_url)}" alt="" loading="lazy">`
     : `<span class="mc-wall-cell-empty">${esc(t('mc.card.no_preview'))}</span>`;
-  const pos = (Number.isInteger(member.grid_col) && Number.isInteger(member.grid_row))
-    ? ` style="grid-column:${member.grid_col + 1};grid-row:${member.grid_row + 1}"` : '';
   const np = member.now_playing && member.now_playing.label ? member.now_playing.label : '';
+  // The visible cell label is the screen position; the device name + now-playing
+  // ride in the title. (No em-dash in the title — anti-slop.)
+  const cellLabel = screenNo ? t('mc.wall.screen_n', { n: screenNo }) : member.name;
+  const title = np ? `${member.name}: ${np}` : member.name;
   return `
-    <div class="mc-wall-cell ${s.cls}" data-device-id="${esc(member.id)}"${pos}
-         role="button" tabindex="0" title="${esc(np ? `${member.name} — ${np}` : member.name)}"
+    <div class="mc-wall-cell ${s.cls}" data-device-id="${esc(member.id)}"
+         role="button" tabindex="0" title="${esc(title)}"
          aria-label="${esc(t('mc.card.inspect_aria', { name: member.name }))}">
       ${preview}
       ${statusBadge(s)}
-      <span class="mc-wall-cell-name">${esc(member.name)}</span>
+      <span class="mc-wall-cell-name">${esc(cellLabel)}</span>
     </div>`;
 }
 
+// A physical-screen slot with no paired player (only shown when a wall has fewer
+// devices than grid slots AND no leader to mirror).
+function wallEmptySlot(screenNo) {
+  return `
+    <div class="mc-wall-cell mc-wall-cell-vacant" aria-hidden="true">
+      <span class="mc-wall-cell-empty">${esc(t('mc.wall.screen_n', { n: screenNo }))}</span>
+    </div>`;
+}
+
+// Render the wall as a grid of its PHYSICAL screens (grid_cols x grid_rows) so the
+// card mirrors the real wall — e.g. a 3x1 wall shows three 86" screens. A screen
+// slot with an assigned device shows that device; slots without their own device
+// mirror the wall's leader (single-player walls drive every screen from one
+// player), so all N screens reflect the wall's content. Each screen is its own
+// drop/inspect target; the footer strip fills every screen at once.
 function wallCard(wall, byId) {
   const members = (wall.devices || []).map(m => wallMemberView(m, byId));
   const cols = Math.max(1, wall.grid_cols || members.reduce((mx, m) => Math.max(mx, (m.grid_col || 0) + 1), 1));
   const rows = Math.max(1, wall.grid_rows || members.reduce((mx, m) => Math.max(mx, (m.grid_row || 0) + 1), 1));
-  const ids = members.map(m => m.id).join(',');
-  const cells = members.length
-    ? members.map(wallCell).join('')
-    : `<span class="mc-wall-cell-empty mc-wall-cell-none">${esc(t('mc.wall.no_screens'))}</span>`;
+  const slots = cols * rows;
+  // Index assigned members by their grid position, and pick the leader (the
+  // device every otherwise-unassigned screen mirrors).
+  const byPos = new Map();
+  members.forEach(m => {
+    if (Number.isInteger(m.grid_col) && Number.isInteger(m.grid_row)) byPos.set(m.grid_col + ',' + m.grid_row, m);
+  });
+  const leader = members.find(m => m.id === wall.leader_device_id) || members[0] || null;
+
+  // Row-major over every physical screen slot; CSS grid auto-places them in order.
+  const cells = [];
+  let n = 0;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      n++;
+      const m = byPos.get(c + ',' + r) || leader;
+      cells.push(m ? wallCell(m, n) : wallEmptySlot(n));
+    }
+  }
+  const ids = [...new Set(members.map(m => m.id))].join(',');
   return `
     <section class="mc-card mc-wall" data-wall-id="${esc(wall.id)}" aria-label="${esc(t('mc.wall.aria', { name: wall.name }))}">
       <div class="mc-wall-head">
         <span class="mc-wall-title">${esc(wall.name)}</span>
-        <span class="mc-wall-sub">${esc(tn('mc.wall.screens', members.length))}</span>
+        <span class="mc-wall-sub">${esc(tn('mc.wall.screens', slots))}</span>
         <a class="mc-wall-edit" href="#/walls">${esc(t('mc.wall.edit'))}</a>
       </div>
       <div class="mc-wall-grid" style="grid-template-columns:repeat(${cols},1fr);grid-template-rows:repeat(${rows},1fr);aspect-ratio:${cols} / ${rows}">
-        ${cells}
+        ${cells.join('')}
       </div>
       <div class="mc-wall-all" data-wall-ids="${esc(ids)}">
         <span class="mc-wall-all-ico" aria-hidden="true">${ICON_WALL_ALL}</span>
