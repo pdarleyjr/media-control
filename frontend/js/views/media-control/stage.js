@@ -29,11 +29,32 @@ function freshness(screenshotAt) {
   return { text, stale };
 }
 
-// online -> green, offline -> grey, screen blanked -> amber "Blanked".
+// Status-badge icons (1-color stroke, currentColor — the badge colour comes from
+// the CSS class, the icon + label make the state readable without relying on
+// colour alone, per WCAG 1.4.1 and the .impeccable go-vs-live rule).
+const BADGE_ICONS = {
+  live:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3.5" fill="currentColor" stroke="none"></circle><path d="M5.5 5.5a9 9 0 0 0 0 13M18.5 5.5a9 9 0 0 1 0 13"></path></svg>',
+  standby: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8"></circle></svg>',
+  blanked: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10 10 0 0 1 12 20C5 20 1 12 1 12a18 18 0 0 1 5.06-5.94M9.9 4.24A9 9 0 0 1 12 4c7 0 11 8 11 8a18 18 0 0 1-2.16 3.19"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>',
+  offline: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path><line x1="12" y1="2" x2="12" y2="12"></line></svg>',
+};
+
+// A display's at-a-glance state. live = online, awake, and showing a real source
+// (on-air → red); standby = online + awake but idle; blanked = screen off; offline.
+// Each state carries a label + icon, never colour alone.
 function statusOf(display) {
-  if (!display.online) return { cls: 'mc-status-offline', dot: 'var(--mc-standby)', label: t('mc.status.offline') };
-  if (display.screen_on === false) return { cls: 'mc-status-blanked', dot: 'var(--mc-warning)', label: t('mc.status.blanked') };
-  return { cls: 'mc-status-online', dot: 'var(--mc-success)', label: t('mc.status.online') };
+  if (!display.online) return { key: 'offline', cls: 'mc-status-offline', label: t('mc.status.offline') };
+  if (display.screen_on === false) return { key: 'blanked', cls: 'mc-status-blanked', label: t('mc.status.blanked') };
+  const playing = display.now_playing && display.now_playing.kind && display.now_playing.kind !== 'idle';
+  if (playing) return { key: 'live', cls: 'mc-status-live', label: t('mc.status.live') };
+  return { key: 'standby', cls: 'mc-status-standby', label: t('mc.status.standby') };
+}
+
+function statusBadge(s) {
+  return `<span class="mc-badge mc-badge-${s.key}">
+    <span class="mc-badge-ico" aria-hidden="true">${BADGE_ICONS[s.key] || ''}</span>
+    <span class="mc-badge-label">${esc(s.label)}</span>
+  </span>`;
 }
 
 // Real aspect from geometry; fall back to 16/9 when unknown.
@@ -61,12 +82,11 @@ function displayCard(display) {
             aria-label="${esc(t('mc.card.inspect_aria', { name: display.name }))}">
       <div class="mc-card-media" style="aspect-ratio:${ar}">
         ${preview}
+        ${statusBadge(s)}
         <span class="mc-card-caption${f.stale ? ' mc-stale' : ''}">${esc(f.text)}</span>
       </div>
       <div class="mc-card-foot">
-        <span class="mc-status-dot" style="background:${s.dot}" aria-hidden="true"></span>
         <span class="mc-card-title">${esc(display.name)}</span>
-        <span class="mc-card-status">${esc(s.label)}</span>
       </div>
       <div class="mc-card-nowplaying" title="${nowPlaying}">${nowPlaying}</div>
       <div class="mc-card-transport" data-tp-host data-device-id="${esc(display.id)}"></div>

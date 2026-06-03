@@ -8,6 +8,9 @@ import { renderToolbox } from './media-control/toolbox.js';
 import { sendToDisplays } from './media-control/send.js';
 import { renderInspector, closeInspector } from './media-control/inspector.js';
 import { mountBroadcastChip } from './media-control/broadcast-chip.js';
+import { renderCommandBar } from './media-control/command-bar.js';
+import { renderRoomPresets } from './media-control/room-presets.js';
+import { renderRecentPanel } from './media-control/recent-panel.js';
 // transport.js is used by stage.js internally — no direct import needed here.
 
 let unsub = null;
@@ -243,33 +246,68 @@ async function openAddPicker() {
 // dragstart (see toolbox.js attachTileHandlers). Stage cards (rendered by
 // stage.js) need to become drop targets AFTER the stage is repainted. This
 // function wires those handlers onto the freshly-rendered cards.
+function dragHasSource(e) {
+  return !!e.dataTransfer && (
+    e.dataTransfer.types.includes('application/x-mc-source') ||
+    e.dataTransfer.types.includes('text/plain'));
+}
+function parseDragSource(e) {
+  const raw = e.dataTransfer.getData('application/x-mc-source') ||
+              e.dataTransfer.getData('text/plain');
+  if (!raw) return null;
+  let source;
+  try { source = JSON.parse(raw); } catch { return null; }
+  const label = e.dataTransfer.getData('application/x-mc-label') || t('mc.tile.content_fallback');
+  return { source, label };
+}
+
 function attachStageDrop(stageContainer) {
+  // Per-card drop → that ONE display. stopPropagation so the stage-level handler
+  // below does not also fire and fan the source out to everyone.
   stageContainer.querySelectorAll('[data-device-id]').forEach(card => {
-    // Prevent duplicate listener registration on re-render cycles by replacing
-    // the node clone (cheapest DOM approach without an ID-keyed Map).
     card.addEventListener('dragover', (e) => {
-      if (e.dataTransfer.types.includes('application/x-mc-source') ||
-          e.dataTransfer.types.includes('text/plain')) {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = 'copy';
-        card.classList.add('mc-card-dragover');
-      }
+      if (!dragHasSource(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      card.classList.add('mc-card-dragover');
     });
     card.addEventListener('dragleave', () => card.classList.remove('mc-card-dragover'));
     card.addEventListener('drop', async (e) => {
       e.preventDefault();
+      e.stopPropagation();
       card.classList.remove('mc-card-dragover');
-      const raw = e.dataTransfer.getData('application/x-mc-source') ||
-                  e.dataTransfer.getData('text/plain');
-      if (!raw) return;
-      let source;
-      try { source = JSON.parse(raw); } catch { return; }
-      const label = e.dataTransfer.getData('application/x-mc-label') || t('mc.tile.content_fallback');
+      const parsed = parseDragSource(e);
       const deviceId = card.dataset.deviceId;
-      if (!deviceId) return;
-      await sendToDisplays(source, [deviceId], label);
+      if (!parsed || !deviceId) return;
+      await sendToDisplays(parsed.source, [deviceId], parsed.label);
       refreshAfterSend(); // re-fetch state so the card's now-playing updates now
     });
+  });
+
+  // Stage-BACKGROUND drop → every current target (the stage selection, or the
+  // whole room in Lecture mode). Cards stopPropagation, so this only fires for
+  // drops on the gaps/background. Wired once — the container node persists across
+  // repaints, so guard against stacking duplicate listeners.
+  if (stageContainer.__dropWired) return;
+  stageContainer.__dropWired = true;
+  stageContainer.addEventListener('dragover', (e) => {
+    if (!dragHasSource(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    stageContainer.classList.add('mc-stage-dragover');
+  });
+  stageContainer.addEventListener('dragleave', (e) => {
+    if (!stageContainer.contains(e.relatedTarget)) stageContainer.classList.remove('mc-stage-dragover');
+  });
+  stageContainer.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    stageContainer.classList.remove('mc-stage-dragover');
+    const parsed = parseDragSource(e);
+    if (!parsed) return;
+    const targets = effectiveTargets();
+    if (!targets.length) { showToast(t('mc.send.no_displays'), 'error'); return; }
+    await sendToDisplays(parsed.source, targets, parsed.label);
+    refreshAfterSend();
   });
 }
 
@@ -367,20 +405,31 @@ export async function render() {
           </div>
         </header>
 
-        <section class="mc-control-zone" aria-labelledby="mc-stage-head">
-          <div class="mc-section-head">
-            <h2 id="mc-stage-head" class="mc-section-title">${esc(t('mc.section.displays'))}</h2>
-            <p class="mc-section-hint">${esc(t('mc.section.displays_hint'))}</p>
-          </div>
-          <section id="mc-stage" class="mc-stage" aria-label="${esc(t('mc.section.displays'))}"></section>
-        </section>
+        <div id="mc-cmdbar-host" class="mc-cmdbar-host"></div>
 
-        <section class="mc-control-zone" aria-labelledby="mc-sources-head">
-          <div class="mc-section-head">
-            <h2 id="mc-sources-head" class="mc-section-title">${esc(t('mc.section.sources'))}</h2>
+        <div class="mc-control-body">
+          <div class="mc-control-main">
+            <section class="mc-control-zone" aria-labelledby="mc-stage-head">
+              <div class="mc-section-head">
+                <h2 id="mc-stage-head" class="mc-section-title">${esc(t('mc.section.displays'))}</h2>
+                <p class="mc-section-hint">${esc(t('mc.section.displays_hint'))}</p>
+              </div>
+              <section id="mc-stage" class="mc-stage" aria-label="${esc(t('mc.section.displays'))}"></section>
+            </section>
+
+            <section class="mc-control-zone" aria-labelledby="mc-sources-head">
+              <div class="mc-section-head">
+                <h2 id="mc-sources-head" class="mc-section-title">${esc(t('mc.section.sources'))}</h2>
+              </div>
+              <section id="mc-toolbox" class="mc-toolbox" aria-label="${esc(t('mc.section.sources'))}"></section>
+            </section>
           </div>
-          <section id="mc-toolbox" class="mc-toolbox" aria-label="${esc(t('mc.section.sources'))}"></section>
-        </section>
+
+          <aside class="mc-control-rail" aria-label="${esc(t('mc.rail.label'))}">
+            <div id="mc-presets-host"></div>
+            <div id="mc-recent-host"></div>
+          </aside>
+        </div>
 
         <aside id="mc-inspector" class="mc-inspector" hidden></aside>
       </div>
@@ -395,15 +444,29 @@ export async function render() {
   ]);
   selectedIds = Array.isArray(selection && selection.device_ids) ? selection.device_ids : [];
   pruneSelection();
+  // A fresh render starts a clean session in the default 'group' scope (routing
+  // mode is UI-only, not persisted) — set it BEFORE the first toolbox paint so
+  // the tiles bind to the stage selection, not a stale scope from last visit.
+  routingMode = 'group';
   paintStage();
   paintToolbox();
   paintSummary();
 
   attachRoutingModes(document.querySelector('.mc-control-head'));
 
-  // Reset routing mode back to 'group' on fresh render (navigating away and
-  // back starts a clean session; the state is UI-only, not persisted).
-  routingMode = 'group';
+  // Mount the classroom command bar (Start Class · Blank all · quick-launch
+  // Share screen / Whiteboard / YouTube / Library) — folds in the retired
+  // Present surface. roomIds() = every controllable (non-wall) display.
+  renderCommandBar(document.getElementById('mc-cmdbar-host'), {
+    roomIds: roomDisplayIds,
+    refreshAfterSend,
+  });
+
+  // Mount the right rail: Room Presets (one-tap scene recall, the Command-360
+  // "Layouts" analog) + Recent (recent presentations + activity, folding in the
+  // Studio Home panels). Both are read-only/self-contained — no cleanup needed.
+  renderRoomPresets(document.getElementById('mc-presets-host'), { onAfterApply: refreshAfterSend });
+  renderRecentPanel(document.getElementById('mc-recent-host'));
 
   // Mount the persistent live-broadcast chip (Task 4.5). The chip subscribes to
   // the engine singleton so it reflects broadcast state even after navigation.

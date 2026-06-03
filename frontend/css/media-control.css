@@ -281,8 +281,6 @@
 .mc-tb-state-ico svg { width: 22px; height: 22px; display: block; }
 .mc-tb-error { color: var(--danger); }
 .mc-tb-error .mc-tb-state-ico { color: var(--danger); }
-.mc-tb-hint { color: var(--mc-text-secondary); font-size: var(--mc-font-size-sm); padding: var(--mc-space-md, 16px); }
-.mc-tb-hint p { margin: 0; }
 .mc-tb-spin {
   flex: 0 0 auto; width: 18px; height: 18px; border-radius: 50%;
   border: 2px solid var(--mc-border-medium); border-top-color: var(--accent);
@@ -378,18 +376,13 @@
   background: var(--mc-surface-alt); border: 1px solid var(--mc-border-light);
   border-radius: var(--mc-radius-sm, 8px); padding: var(--mc-space-md, 16px);
 }
-.mc-insp-field { display: flex; flex-direction: column; gap: var(--space-1, 4px); font-size: var(--mc-font-size-sm); color: var(--mc-text-secondary); }
 .mc-insp-action-row { display: flex; flex-direction: column; gap: var(--mc-space-sm, 8px); }
-.mc-insp-field select, .mc-re-ctl select {
+.mc-re-ctl select {
   min-height: var(--tap-min, 48px); padding: 0 var(--space-2, 8px);
   background: var(--bg-input); border: 1px solid var(--mc-border-medium);
   border-radius: var(--mc-radius-sm, 8px);
   color: var(--mc-text-primary); font-family: var(--mc-font-family-sans); font-size: var(--mc-font-size-sm);
 }
-.mc-insp-field select:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.18); }
-.mc-insp-audio-row { display: flex; align-items: center; gap: var(--mc-space-sm, 8px); min-height: var(--tap-min, 48px); font-size: var(--mc-font-size-sm); }
-.mc-insp-audio-row span { flex: 1 1 auto; }
-.mc-insp-audio-state { flex: 0 0 auto; font-size: var(--mc-font-size-xs); color: var(--mc-text-tertiary); }
 
 /* ---- Region editor (templates-first partitioning canvas) ---- */
 .mc-re { display: flex; flex-direction: column; gap: var(--mc-space-sm, 8px); }
@@ -494,11 +487,159 @@
 .mc-pick-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mc-pick-offline { flex: 0 0 auto; font-size: var(--font-2, 12px); font-weight: 500; color: var(--mc-text-secondary); }
 
+/* ════════════════════════════════════════════════════════════════════════
+   Command bar — classroom quick actions (folds in the Present surface).
+   A white band under the header: PRIMARY "Start Class" (orange --cta, the one
+   dominant action), a "Blank all" toggle (amber when active), and a right-side
+   group of quick-launch buttons. A full-width amber banner shows while blanked.
+   ════════════════════════════════════════════════════════════════════════ */
+.mc-cmdbar {
+  display: flex; flex-direction: column; gap: var(--space-3, 12px);
+  background: var(--mc-surface); border: 1px solid var(--mc-border-light);
+  border-radius: var(--mc-radius-lg); box-shadow: var(--mc-shadow-card);
+  padding: var(--mc-space-md, 16px);
+}
+.mc-cmd-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3, 12px); }
+/* "Start Class" is the single dominant CTA: push it to the primary touch size. */
+.mc-control .mc-cmd-start { min-height: var(--tap-primary, 64px); padding: 0 var(--space-5, 24px); font-size: var(--font-4, 15px); border-radius: var(--radius-lg, 12px); }
+.mc-cmd-launch { display: flex; flex-wrap: wrap; gap: var(--space-2, 8px); margin-left: auto; }
+.mc-cmd-btn-label { white-space: nowrap; }
+/* Blank-all active = the room is dark. Amber (--warning-dim) clears WCAG AA for
+   white text; paired with the label flip + banner so it is never colour-only. */
+.mc-control .mc-cmd-blank.mc-cmd-blank-active {
+  background: var(--warning-dim, #92400e); border-color: var(--warning-dim, #92400e); color: var(--mc-text-on-dark);
+}
+.mc-control .mc-cmd-blank.mc-cmd-blank-active:hover { background: #7c360b; border-color: #7c360b; }
+.mc-cmd-blank-banner {
+  display: flex; align-items: center; gap: var(--space-2, 8px);
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+  background: #FEF3C7; border: 1px solid var(--warning, #CA8A04); border-radius: var(--radius, 8px);
+  color: var(--warning-dim, #92400e); font-size: var(--font-2, 12px); font-weight: 700; letter-spacing: 0.02em;
+}
+.mc-cmd-blank-banner[hidden] { display: none; }
+.mc-cmd-state { display: flex; align-items: center; gap: var(--space-3, 12px); padding: var(--mc-space-sm, 8px); color: var(--mc-text-secondary); font-size: var(--mc-font-size-sm); }
+.mc-cmd-error { color: var(--danger); }
+.mc-cmd-state-ico { flex: 0 0 auto; color: var(--mc-text-tertiary); }
+.mc-cmd-error .mc-cmd-state-ico { color: var(--danger); }
+.mc-cmd-spin svg { animation: mc-spin 0.8s linear infinite; }
+
+/* ════════════════════════════════════════════════════════════════════════
+   Two-column body: main control column + right rail (Presets · Recent). The
+   rail is the Command-360 "Layouts" analog. Sticky on wide screens, stacked
+   below on narrow ones (the rail follows the stage on a tablet/podium).
+   ════════════════════════════════════════════════════════════════════════ */
+.mc-control-body {
+  display: grid; grid-template-columns: minmax(0, 1fr) 320px;
+  gap: var(--mc-space-xl, 32px); align-items: start;
+}
+.mc-control-main { display: flex; flex-direction: column; gap: var(--mc-space-xl, 32px); min-width: 0; }
+.mc-control-rail { display: flex; flex-direction: column; gap: var(--mc-space-lg, 24px); position: sticky; top: var(--space-4, 16px); }
+
+/* Shared rail-panel chrome */
+.mc-presets, .mc-recent {
+  background: var(--mc-surface); border: 1px solid var(--mc-border-light);
+  border-radius: var(--mc-radius-lg); box-shadow: var(--mc-shadow-card);
+  padding: var(--mc-space-md, 16px);
+}
+.mc-presets-head, .mc-recent-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--space-2, 8px); margin-bottom: var(--mc-space-sm, 8px);
+}
+.mc-presets-title, .mc-recent-title {
+  font-size: var(--font-2, 12px); font-weight: var(--mc-fw-semibold, 600);
+  text-transform: uppercase; letter-spacing: 0.06em; color: var(--mc-text-secondary);
+}
+.mc-presets-manage, .mc-recent-link {
+  font-size: var(--font-2, 12px); font-weight: var(--mc-fw-medium, 500);
+  color: var(--accent); text-decoration: none; white-space: nowrap;
+}
+.mc-presets-manage:hover, .mc-recent-link:hover { text-decoration: underline; }
+.mc-presets-manage:focus-visible, .mc-recent-link:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+/* Room Presets list — full-width recall rows (name left, blue play icon right) */
+.mc-presets-list { display: flex; flex-direction: column; gap: var(--space-2, 8px); }
+.mc-control .mc-preset-tile { width: 100%; justify-content: space-between; text-align: left; }
+.mc-preset-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.mc-preset-recall { flex: 0 0 auto; display: inline-flex; color: var(--accent); }
+.mc-preset-recall svg { width: 16px; height: 16px; }
+
+/* Recent panel — stacked "Recent presentations" + "Recent activity" sections */
+.mc-recent-section + .mc-recent-section {
+  margin-top: var(--mc-space-md, 16px); padding-top: var(--mc-space-md, 16px);
+  border-top: 1px solid var(--mc-border-light);
+}
+.mc-recent-list { display: flex; flex-direction: column; }
+.mc-recent-row {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-2, 8px);
+  min-height: 40px; padding: var(--space-2, 8px) 0; font-size: var(--mc-font-size-sm); color: var(--mc-text-primary);
+  border-bottom: 1px solid var(--mc-border-light); text-decoration: none;
+}
+.mc-recent-row:last-child { border-bottom: none; }
+a.mc-recent-row:hover .mc-recent-action { color: var(--accent); }
+a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.mc-recent-action { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-recent-time { flex: 0 0 auto; font-size: var(--mc-font-size-xs); color: var(--mc-text-tertiary); font-variant-numeric: tabular-nums; }
+
+/* Shared composed states for the rail panels (mirror the toolbox states) */
+.mc-presets-state, .mc-recent-state {
+  display: flex; align-items: center; gap: var(--space-2, 8px);
+  padding: var(--mc-space-md, 16px) var(--mc-space-sm, 8px);
+  color: var(--mc-text-secondary); font-size: var(--mc-font-size-sm);
+}
+.mc-presets-empty, .mc-recent-empty { flex-direction: column; text-align: center; gap: var(--space-2, 8px); }
+.mc-presets-state-ico, .mc-recent-state-ico { flex: 0 0 auto; color: var(--mc-text-tertiary); }
+.mc-presets-state-ico svg, .mc-recent-state-ico svg { width: 22px; height: 22px; display: block; }
+.mc-presets-error, .mc-recent-error { color: var(--danger); }
+.mc-presets-error .mc-presets-state-ico, .mc-recent-error .mc-recent-state-ico { color: var(--danger); }
+.mc-recent-spin {
+  flex: 0 0 auto; width: 18px; height: 18px; border-radius: 50%;
+  border: 2px solid var(--mc-border-medium); border-top-color: var(--accent);
+  animation: mc-spin 0.8s linear infinite;
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   Status badges — overlaid on each stage card's preview (Command-360 style).
+   Colour + ICON + LABEL (never colour alone, WCAG 1.4.1). Attention states
+   (LIVE on-air = red, BLANK = amber) are solid; calm states (STANDBY, OFFLINE)
+   are soft tints so the wall reads at a glance without shouting.
+   ════════════════════════════════════════════════════════════════════════ */
+.mc-badge {
+  position: absolute; top: var(--mc-space-sm, 8px); right: var(--mc-space-sm, 8px);
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px 3px 7px; border-radius: var(--radius-pill, 999px);
+  font-size: var(--font-1, 11px); font-weight: 700; letter-spacing: 0.03em;
+  line-height: 1; box-shadow: var(--mc-shadow-sm); pointer-events: none;
+}
+.mc-badge-ico { display: inline-flex; }
+.mc-badge-ico svg { width: 13px; height: 13px; display: block; }
+.mc-badge-live    { background: var(--danger, #DC2626); color: #fff; }
+.mc-badge-blanked { background: var(--warning-dim, #92400e); color: #fff; }
+.mc-badge-standby { background: #E2E8F0; color: #334155; }
+.mc-badge-offline { background: #E7E5E4; color: #57534E; }
+/* Reinforce the on-air card with a faint red frame (the only card that gets one). */
+.mc-display-card.mc-status-live { border-color: rgba(220, 38, 38, 0.45); }
+.mc-display-card.mc-status-offline { opacity: 0.82; }
+
+/* Stage-background drop target ("drop here → all current targets"). Cards use
+   .mc-card-dragover for the single-display drop; this is the whole-stage drop. */
+.mc-stage-dragover {
+  outline: 2px dashed var(--accent); outline-offset: 6px; border-radius: var(--mc-radius-md);
+  background: rgba(37, 99, 235, 0.04);
+}
+
+/* Mirror is a one-shot action button: a brief blue press confirmation. */
+.mc-control .mc-routing-btn.mc-routing-firing { background: var(--accent); color: #fff; }
+
 /* ---- responsive ---- */
+@media (max-width: 1024px) {
+  .mc-control-body { grid-template-columns: 1fr; }
+  .mc-control-rail { position: static; }
+}
 @media (max-width: 720px) {
   .mc-control-head { align-items: flex-start; }
   .mc-stage { grid-template-columns: 1fr; }
   .mc-inspector { width: 100%; }
+  .mc-cmd-launch { margin-left: 0; }
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -509,7 +650,8 @@
   .mc-card, .mc-control .mc-tile { transition: none; }
   .mc-card:hover, .mc-control .mc-tile:hover { transform: none; }
   .mc-inspector:not([hidden]) { animation: none; }
-  .mc-tb-spin { animation: none; }
+  .mc-tb-spin, .mc-recent-spin { animation: none; }
+  .mc-cmd-spin svg { animation: none; }
 }
 
 /* ════════════════════════════════════════════════════════════════════════
