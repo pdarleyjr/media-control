@@ -7,42 +7,17 @@ const { OAuth2Client } = require('google-auth-library');
 const { db } = require('../db/database');
 const { generateToken, requireAuth, requireAdmin, requireSuperAdmin, PLATFORM_ROLES } = require('../middleware/auth');
 const { resolveTenancy } = require('../lib/tenancy');
+const { ensurePrimaryWorkspaceMembership } = require('../lib/primary-workspace');
 const { logActivity, getClientIp } = require('../services/activity');
 const config = require('../config');
 
-// Phase 2.1: find or create the user's default org+workspace. Returns the
-// workspace_id to embed in the JWT. Idempotent: if the user already has
-// memberships (e.g. migrated from Phase 1), returns the first one without
-// creating anything.
+// Resolve the workspace to embed in the user's JWT. Delegates to the shared
+// primary-workspace resolver so the local auth flow and the MBFD Hub user-sync
+// (routes/admin-sync.js) stay consistent: every individual login lands in the
+// ONE shared room (the primary workspace) so displays are shared, while media
+// stays per-user. Additive only — see lib/primary-workspace.js.
 function ensureDefaultOrgForUser(user) {
-  const existing = db.prepare(`
-    SELECT w.id FROM workspaces w
-    JOIN workspace_members wm ON wm.workspace_id = w.id
-    WHERE wm.user_id = ?
-    ORDER BY wm.joined_at ASC LIMIT 1
-  `).get(user.id);
-  if (existing) return existing.id;
-
-  // No memberships -> mint a fresh org and Default workspace owned by user.
-  const orgId = uuidv4();
-  const wsId  = uuidv4();
-  const orgName = (user.name && user.name.trim())
-    ? `${user.name}'s organization`
-    : `${user.email}'s organization`;
-  const tx = db.transaction(() => {
-    // Billing/subscription removed: create the org on the unlimited 'enterprise'
-    // plan (satisfies the plan_id FK) with no stripe/subscription state.
-    db.prepare(`INSERT INTO organizations (
-      id, name, owner_user_id, plan_id
-    ) VALUES (?, ?, ?, ?)`).run(
-      orgId, orgName, user.id, user.plan_id || 'enterprise'
-    );
-    db.prepare(`INSERT INTO organization_members (organization_id, user_id, role) VALUES (?, ?, 'org_owner')`).run(orgId, user.id);
-    db.prepare(`INSERT INTO workspaces (id, organization_id, name, created_by) VALUES (?, ?, 'Default', ?)`).run(wsId, orgId, user.id);
-    db.prepare(`INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, 'workspace_admin')`).run(wsId, user.id);
-  });
-  tx();
-  return wsId;
+  return ensurePrimaryWorkspaceMembership(db, user);
 }
 
 function logFailedLogin(email, ip, reason) {

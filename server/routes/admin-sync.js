@@ -7,6 +7,7 @@ const router = express.Router();
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 const { db } = require('../db/database');
+const { ensurePrimaryWorkspaceMembership } = require('../lib/primary-workspace');
 
 const ADMIN_SYNC_TOKEN = process.env.MBFD_SYNC_TOKEN;
 
@@ -31,31 +32,12 @@ function requireBearer(req, res, next) {
   next();
 }
 
-// Same logic as auth.js ensureDefaultOrgForUser - kept local to minimize the
-// upstream diff (no need to refactor that helper into a shared module).
+// Synced MBFD Hub users join the SAME shared room as everyone else. Delegates to
+// the shared resolver (lib/primary-workspace.js) so the Hub-sync path and the
+// local auth path are consistent: a synced user lands in the primary workspace
+// (shared displays) instead of a private one. Additive — never deletes anything.
 function ensureWorkspace(user) {
-  const existing = db.prepare(`
-    SELECT w.id FROM workspaces w
-    JOIN workspace_members wm ON wm.workspace_id = w.id
-    WHERE wm.user_id = ?
-    ORDER BY wm.joined_at ASC LIMIT 1
-  `).get(user.id);
-  if (existing) return existing.id;
-
-  const orgId = uuidv4();
-  const wsId = uuidv4();
-  const orgName = (user.name && user.name.trim())
-    ? `${user.name}'s organization`
-    : `${user.email}'s organization`;
-  const tx = db.transaction(() => {
-    db.prepare(`INSERT INTO organizations (id, name, owner_user_id, plan_id, subscription_status)
-                VALUES (?, ?, ?, 'enterprise', 'active')`).run(orgId, orgName, user.id);
-    db.prepare(`INSERT INTO organization_members (organization_id, user_id, role) VALUES (?, ?, 'org_owner')`).run(orgId, user.id);
-    db.prepare(`INSERT INTO workspaces (id, organization_id, name, created_by) VALUES (?, ?, 'Default', ?)`).run(wsId, orgId, user.id);
-    db.prepare(`INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, 'workspace_admin')`).run(wsId, user.id);
-  });
-  tx();
-  return wsId;
+  return ensurePrimaryWorkspaceMembership(db, user);
 }
 
 router.post('/users/sync', requireBearer, (req, res) => {
