@@ -294,6 +294,9 @@
 .mc-wall-all-ico { display: inline-flex; }
 .mc-wall-all-ico svg { width: 16px; height: 16px; display: block; }
 .mc-wall-all-dragover { border-style: solid; border-color: var(--accent); color: var(--accent); background: rgba(37, 99, 235, 0.05); }
+/* Wall transport bar — pause/skip/restart/blank the whole wall via its leader.
+   The bar (.mc-transport-bar) brings its own top border; just space it below the grid. */
+.mc-wall-transport { margin-top: var(--mc-space-sm, 8px); }
 
 /* Section-head "Manage displays" link + inspector "full settings" link (blue=go) */
 .mc-section-link, .mc-insp-link { font-size: var(--font-2, 12px); font-weight: var(--mc-fw-medium); color: var(--accent); text-decoration: none; }

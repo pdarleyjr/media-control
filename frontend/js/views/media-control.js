@@ -27,6 +27,7 @@ let wallMemberIds = new Set();   // device ids owned by a video wall (never thei
 let walls = [];
 let previewKickoff = null;   // one-shot "poke players to capture" timer after socket connect
 let previewInterval = null;  // periodic preview refresh for the displays on the stage
+let lastStageSig = null;     // structural signature of the last full stage paint (see paintStage)
 
 // Routing mode: 'group' (default, each display independent), 'lecture' (one
 // source to all), 'mirror' (clone display A to all others). The mode is UI
@@ -140,6 +141,52 @@ function paintStage() {
   });
   // Re-attach drop handlers on the freshly-rendered cards.
   attachStageDrop(el);
+  // Record what we just rendered so screenshot-only updates can patch in place
+  // (see stageSignature / refreshPreviewsInPlace) instead of rebuilding + flashing.
+  lastStageSig = stageSignature();
+}
+
+// A compact signature of the STRUCTURE the stage renders: which cards/wall cells
+// exist and their at-a-glance state (online, screen_on, now-playing kind, whether
+// a preview exists). It deliberately EXCLUDES the screenshot URL/timestamp, which
+// change on every capture. So when only a new screenshot arrives the signature is
+// unchanged and we patch the <img> src in place (flicker-free) rather than
+// rebuilding the whole stage (which reloaded every image and flashed the cards).
+function stageSignature() {
+  const byId = new Map(displayState.getAll().map(d => [d.id, d]));
+  const parts = [];
+  for (const id of selectedIds) {
+    if (wallMemberIds.has(id)) continue;
+    const d = byId.get(id);
+    if (!d) continue;
+    parts.push('c:' + id + ':' + (d.online ? 1 : 0) + ':' + (d.screen_on === false ? 0 : 1) +
+      ':' + ((d.now_playing && d.now_playing.kind) || '') + ':' + (d.screenshot_url ? 1 : 0));
+  }
+  for (const w of (walls || [])) {
+    parts.push('w:' + w.id + ':' + (w.grid_cols || 0) + 'x' + (w.grid_rows || 0) + ':' + (w.leader_device_id || ''));
+    for (const m of (w.devices || [])) {
+      const d = byId.get(m.device_id) || {};
+      parts.push('m:' + m.device_id + ':' + (d.online ? 1 : 0) + ':' + (d.screen_on === false ? 0 : 1) +
+        ':' + ((d.now_playing && d.now_playing.kind) || '') + ':' + (d.screenshot_url ? 1 : 0));
+    }
+  }
+  return parts.join('|');
+}
+
+// Patch the preview <img>s already on the stage to the latest screenshot URL,
+// without rebuilding the DOM. Setting img.src keeps the current frame visible
+// until the new one decodes (no blank flash), which is the whole point.
+function refreshPreviewsInPlace() {
+  const el = stageEl();
+  if (!el) return;
+  const byId = new Map(displayState.getAll().map(d => [d.id, d]));
+  el.querySelectorAll('img.mc-card-shot, img.mc-wall-cell-shot').forEach(img => {
+    const host = img.closest('[data-device-id]');
+    const id = host && host.dataset.deviceId;
+    const d = id && byId.get(id);
+    if (!d || !d.screenshot_url) return;
+    if (img.getAttribute('src') !== d.screenshot_url) img.setAttribute('src', d.screenshot_url);
+  });
 }
 
 // After a successful send we re-FETCH display state (not just repaint) so the
@@ -651,7 +698,14 @@ export async function render() {
   // we re-derive wall membership opportunistically on each repaint cycle.
   unsub = displayState.subscribe(() => {
     pruneSelection();
-    paintStage();
+    // Screenshot-only change (same structure) → patch previews in place so the
+    // cards (especially the wall) don't flash on every capture. Any structural
+    // change (device on/offline, blank, now-playing, first preview) → full paint.
+    if (stageSignature() === lastStageSig) {
+      refreshPreviewsInPlace();
+    } else {
+      paintStage();
+    }
     paintSummary();
   });
 

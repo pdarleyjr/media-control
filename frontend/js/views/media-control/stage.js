@@ -100,7 +100,9 @@ function displayCard(display) {
 // screen, tap it to inspect). A footer strip is the WHOLE-WALL drop target (drag a
 // source there to fill every screen at once). Per-screen control reuses the same
 // data-device-id path as a standalone display card; the whole-wall strip carries
-// data-wall-ids so the caller can fan a single source out to every member.
+// data-wall-ids so the caller can fan a single source out to every member. A
+// transport bar targeting the wall LEADER lets the operator pause / skip / restart
+// / blank the wall's content from the dashboard (the leader drives playback).
 const ICON_WALL_ALL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></svg>';
 
 // Merge a wall-membership row (name/status/grid position from the JOIN) with the
@@ -192,6 +194,7 @@ function wallCard(wall, byId) {
       <div class="mc-wall-grid" style="grid-template-columns:repeat(${cols},1fr);grid-template-rows:repeat(${rows},1fr);aspect-ratio:${cols} / ${rows}">
         ${cells.join('')}
       </div>
+      ${leader ? `<div class="mc-wall-transport" data-tp-host data-device-id="${esc(leader.id)}"></div>` : ''}
       <div class="mc-wall-all" data-wall-ids="${esc(ids)}">
         <span class="mc-wall-all-ico" aria-hidden="true">${ICON_WALL_ALL}</span>
         <span>${esc(t('mc.wall.fill_all'))}</span>
@@ -273,10 +276,13 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
     });
   });
 
-  // Mount transport bars into each card's [data-tp-host] container.
+  // Mount transport bars into each card's [data-tp-host] container. Standalone
+  // display cards resolve from displayMap; the wall card's transport host targets
+  // the wall LEADER (a wall member, so it lives in byId, not displays) — falling
+  // back to byId lets the wall be paused/skipped/blanked like any other display.
   container.querySelectorAll('[data-tp-host]').forEach(host => {
     const deviceId = host.dataset.deviceId;
-    const display  = displayMap.get(deviceId);
+    const display  = displayMap.get(deviceId) || byId.get(deviceId);
     if (!deviceId || !display) return;
     renderTransportBar(host, {
       deviceId,
