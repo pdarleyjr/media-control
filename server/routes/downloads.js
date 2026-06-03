@@ -6,6 +6,7 @@ const { execFile } = require('child_process');
 const { db } = require('../db/database');
 const { accessContext } = require('../lib/tenancy');
 const { ownedContentScope } = require('../lib/content-scope');
+const { finalizeDownload } = require('../lib/finalize-download');
 const config = require('../config');
 
 // MBFD Media Control Studio — media downloads by URL (Phase 7). Records jobs in
@@ -48,6 +49,15 @@ router.get('/health', async (req, res) => {
 router.get('/', (req, res) => {
   if (!req.workspaceId) return res.json([]);
   const scope = ownedContentScope(req.workspaceId, req.user.id);
+  const jobs = db.prepare(`SELECT * FROM download_jobs WHERE ${scope.clause} ORDER BY created_at DESC LIMIT 100`).all(...scope.params);
+  // Self-heal: any 'done' job still missing a content_id (completed before this
+  // fix shipped, or whose worker-side finalize threw) gets its content row now.
+  // finalizeDownload is idempotent, so this is a cheap no-op for already-linked jobs.
+  for (const j of jobs) {
+    if (j.status === 'done' && !j.content_id) {
+      try { finalizeDownload({ db, contentDir: config.contentDir, jobId: j.id }); } catch (e) { console.error('downloads.js finalize (poll):', e.message); }
+    }
+  }
   res.json(db.prepare(`SELECT * FROM download_jobs WHERE ${scope.clause} ORDER BY created_at DESC LIMIT 100`).all(...scope.params));
 });
 
@@ -77,6 +87,14 @@ router.post('/', async (req, res) => {
         return;
       }
       db.prepare("UPDATE download_jobs SET status = 'done', progress_pct = 100, completed_at = strftime('%s','now') WHERE id = ?").run(id);
+      // REPAIR 3: register the finished file as a content row so it's reachable
+      // from the Media Library / playlists / broadcast (was orphaned before).
+      // Idempotent — a re-run is a no-op once the job has a content_id.
+      try {
+        finalizeDownload({ db, contentDir: config.contentDir, jobId: id });
+      } catch (e) {
+        console.error('downloads.js finalize:', e.message);
+      }
     });
   })();
 });
