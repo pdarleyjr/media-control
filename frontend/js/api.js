@@ -242,6 +242,14 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
+    // Bulk-save the whole zone set atomically. The server reconciles slot-wise
+    // (surviving zones keep their ids) and runs the diff in ONE transaction, so
+    // a mid-save failure can't leave the layout half-wiped. Returns the server's
+    // authoritative reconciled zones.
+    saveZones: (layoutId, zones) => request(`/layouts/${layoutId}/zones`, {
+      method: 'PUT',
+      body: JSON.stringify({ zones }),
+    }),
     // Assign (or clear) a layout on a device. Pass { layout_id: null } to clear.
     assignToDevice: (deviceId, layout_id) => request(`/layouts/device/${deviceId}`, {
       method: 'PUT',

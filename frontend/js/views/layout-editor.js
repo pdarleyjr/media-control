@@ -381,18 +381,24 @@ async function renderEditor(container, layoutId) {
   };
 
   document.getElementById('saveLayoutBtn').onclick = async () => {
+    const btn = document.getElementById('saveLayoutBtn');
+    btn.disabled = true;
     try {
-      for (const z of layout.zones || []) {
-        await API(`/layouts/${layoutId}/zones/${z.id}`, { method: 'DELETE' });
-      }
-      for (const z of zones) {
-        await API(`/layouts/${layoutId}/zones`, { method: 'POST', body: JSON.stringify(z) });
-      }
+      // ONE atomic request: the server reconciles the zone set slot-wise
+      // (surviving zones keep their ids) and runs the whole diff in a single
+      // transaction, so a mid-save failure can't leave the layout half-wiped.
+      const result = await api.layouts.saveZones(layoutId, zones);
       showToast(t('layout.toast.saved'), 'success');
-      layout = await API(`/layouts/${layoutId}`);
-      zones = layout.zones;
+      // Mirror the server's authoritative zones (correct ids + sort_order).
+      zones = Array.isArray(result?.zones) ? result.zones : zones;
+      layout.zones = zones;
+      selectedZone = null;
+      renderZones();
+      updateProperties();
     } catch (err) {
       showToast(err.message, 'error');
+    } finally {
+      btn.disabled = false;
     }
   };
 

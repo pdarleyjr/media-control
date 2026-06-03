@@ -12,6 +12,7 @@ const { accessContext } = require('../lib/tenancy');
 // layout_zones percentage shape.
 const { buildPresetZones, presetKeys } = require('../lib/layout-presets');
 const { reconcileZones } = require('../lib/reconcile-zones');
+const { planZoneSave } = require('../lib/zone-save');
 
 // List layouts in the caller's current workspace plus all templates.
 // Phase 2.2h: workspace-scoped. Templates (is_template=1) remain visible to
@@ -195,6 +196,48 @@ router.delete('/:id/zones/:zoneId', (req, res) => {
   db.prepare('DELETE FROM layout_zones WHERE id = ? AND layout_id = ?').run(req.params.zoneId, req.params.id);
   db.prepare("UPDATE layouts SET updated_at = strftime('%s','now') WHERE id = ?").run(req.params.id);
   res.json({ success: true });
+});
+
+// Bulk-save a layout's zones in ONE atomic request. Replaces the layout-editor's
+// old DELETE-all-then-POST-all loop (N+M separate, non-transactional HTTP calls
+// that could leave a layout half-wiped on a mid-sequence failure, and churned
+// every zone id). Reuses the same slot-wise reconcile the apply-preset route
+// uses, so surviving zones keep their ids (content/schedule zone bindings
+// survive) and the whole diff runs inside a single db.transaction() —
+// all-or-nothing. Write-access gated identically to the other zone mutators.
+router.put('/:id/zones', (req, res) => {
+  const layout = checkLayoutWrite(req, res);
+  if (!layout) return;
+
+  const { zones } = req.body || {};
+  if (!Array.isArray(zones)) {
+    return res.status(400).json({ error: 'zones array required' });
+  }
+
+  const insertStmt = db.prepare(`
+    INSERT INTO layout_zones (id, layout_id, name, x_percent, y_percent, width_percent, height_percent, z_index, zone_type, fit_mode, background_color, sort_order)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const updateStmt = db.prepare(`
+    UPDATE layout_zones SET name=?, x_percent=?, y_percent=?, width_percent=?, height_percent=?, z_index=?, zone_type=?, fit_mode=?, background_color=?, sort_order=? WHERE id=?
+  `);
+  const delStmt = db.prepare('DELETE FROM layout_zones WHERE id = ?');
+
+  const saveZones = db.transaction((layoutId, zoneList) => {
+    const existing = db.prepare('SELECT * FROM layout_zones WHERE layout_id = ? ORDER BY sort_order').all(layoutId);
+    const { updates, inserts, deleteIds } = planZoneSave(existing, zoneList);
+    updates.forEach(z => updateStmt.run(z.name, z.x_percent, z.y_percent, z.width_percent,
+      z.height_percent, z.z_index, z.zone_type, z.fit_mode, z.background_color, z.sort_order, z.id));
+    inserts.forEach(z => insertStmt.run(uuidv4(), layoutId, z.name, z.x_percent, z.y_percent,
+      z.width_percent, z.height_percent, z.z_index, z.zone_type, z.fit_mode, z.background_color, z.sort_order));
+    deleteIds.forEach(id => delStmt.run(id));
+    db.prepare("UPDATE layouts SET updated_at = strftime('%s','now') WHERE id = ?").run(layoutId);
+  });
+
+  saveZones(req.params.id, zones);
+
+  const updatedZones = db.prepare('SELECT * FROM layout_zones WHERE layout_id = ? ORDER BY sort_order').all(req.params.id);
+  res.json({ success: true, zones: updatedZones });
 });
 
 // Phase 4: Apply a one-tap layout preset. REPLACES the layout's zones with the
