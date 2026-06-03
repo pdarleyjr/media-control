@@ -15,7 +15,6 @@ import * as playlists from './views/playlists.js';
 import * as scenes from './views/scenes.js';
 import * as screenShare from './views/screen-share.js';
 import * as smartboard from './views/smartboard.js';
-import * as present from './views/present.js';
 import * as home from './views/home.js';
 import * as comingSoon from './views/coming-soon.js';
 import * as presentations from './views/presentations.js';
@@ -164,14 +163,25 @@ function consumePendingInviteToast() {
 
 // Map nav-link data-view to its translation key.
 const NAV_LABEL_KEYS = {
+  control: 'nav.control',
   dashboard: 'nav.displays',
+  home: 'nav.home',
+  presentations: 'nav.presentations',
+  'ai-deck': 'nav.ai_deck',
+  'slide-editor': 'nav.slide_editor',
+  content: 'nav.media_library',
+  downloads: 'nav.downloads',
   playlists: 'nav.playlists',
   layouts: 'nav.layouts',
+  schedule: 'nav.schedule',
+  broadcast: 'nav.broadcast',
+  files: 'nav.files',
   walls: 'nav.walls',
   activity: 'nav.activity',
   help: 'nav.help',
   settings: 'nav.settings',
   admin: 'nav.admin',
+  audit: 'nav.audit',
 };
 
 function renderNavLabels() {
@@ -284,6 +294,14 @@ async function route() {
     return;
   }
 
+  // #/present is retired — its target picker, content tiles and Start/Blank
+  // command bar are folded into the unified Command Center (#/control). Redirect
+  // so old bookmarks/links land on the consolidated surface.
+  if (isAuthenticated() && hash === '#/present') {
+    window.location.hash = '#/control';
+    return;
+  }
+
   // Slice 2C - past the auth gates. (a) Show any toast stashed across the
   // accept-invite reload boundary. (b) If a stash exists (from an unauthed
   // accept-invite visit + subsequent login/register), consume it now. The
@@ -362,9 +380,6 @@ async function route() {
   if (hash === '#/control') {
     currentView = mediaControl;
     await mediaControl.render();
-  } else if (hash === '#/present') {
-    currentView = present;
-    present.render(app);
   } else if (hash === '#/home') {
     currentView = home;
     home.render(app);

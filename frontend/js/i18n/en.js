@@ -18,6 +18,20 @@ export default {
   'nav.settings': 'Settings',
   'nav.subscription': 'Subscription',
   'nav.admin': 'Admin',
+  // Unified Command Center nav (2026-06-03 consolidation)
+  'nav.control': 'Command Center',
+  'nav.home': 'Home',
+  'nav.presentations': 'Presentations',
+  'nav.ai_deck': 'AI Deck Builder',
+  'nav.slide_editor': 'Slide Editor',
+  'nav.media_library': 'Media Library',
+  'nav.downloads': 'Downloads',
+  'nav.broadcast': 'Broadcast Center',
+  'nav.files': 'Files',
+  'nav.audit': 'Audit Log',
+  'nav.section.studio': 'Studio',
+  'nav.section.operate': 'Operate',
+  'nav.section.admin': 'Admin',
 
   // Common (shared across views)
   'common.save': 'Save',
