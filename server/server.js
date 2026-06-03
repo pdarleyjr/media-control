@@ -335,9 +335,20 @@ app.get('/api/devices/:id/screenshot', (req, res) => {
     if (!user) return res.status(401).json({ error: 'User not found' });
   } catch { return res.status(401).json({ error: 'Invalid or expired token' }); }
   const { db: sdb } = require('./db/database');
-  const device = sdb.prepare('SELECT user_id FROM devices WHERE id = ?').get(req.params.id);
+  const device = sdb.prepare('SELECT user_id, workspace_id FROM devices WHERE id = ?').get(req.params.id);
   if (!device) return res.status(404).json({ error: 'Device not found' });
-  if (!['admin','superadmin'].includes(user.role) && device.user_id && device.user_id !== user.id) return res.status(403).json({ error: 'Access denied' });
+  // Shared-display model: a platform admin, the owner, OR any member of the
+  // device's workspace may view its screenshot — mirroring GET /api/displays/state
+  // (workspace-scoped) so every member sees previews of the shared room's displays.
+  // (Was owner-only, which hid shared displays' previews from everyone but the owner
+  // and didn't even whitelist platform_admin.)
+  const isAdmin = ['admin', 'superadmin', 'platform_admin'].includes(user.role);
+  let allowed = isAdmin || (device.user_id && device.user_id === user.id);
+  if (!allowed && device.workspace_id) {
+    allowed = !!sdb.prepare('SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+      .get(device.workspace_id, user.id);
+  }
+  if (!allowed) return res.status(403).json({ error: 'Access denied' });
   // Serve from memory if available (device online), otherwise from disk (offline snapshot)
   const deviceSocket = require('./ws/deviceSocket');
   const memScreenshot = deviceSocket.lastScreenshots?.[req.params.id];
