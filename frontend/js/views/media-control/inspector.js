@@ -1,9 +1,14 @@
 // inspector.js — the slide-in detail panel for a selected stage display (Task 4.4).
 //
 // Shows the display's name + geometry, a "Partition into regions" action that
-// creates/loads a layout for the display and mounts the region editor, a
-// per-region AUDIO toggle (invariant: only ONE region unmuted at a time — warn
-// when a second is turned on), and a display-level fit_mode control.
+// creates/loads a layout for the display and mounts the region editor, and the
+// per-display Whiteboard / Share-my-screen-here actions.
+//
+// NOTE: the player protocol (player-protocol.js) is FROZEN and has no command to
+// set a display-level fit or to mute/unmute a region's audio — the deployed TVs
+// never react to such an event. The former display-level "fit" select and
+// per-region "audio" toggle therefore controlled nothing, so they were removed.
+// Real per-region fit + content assignment persist inside the region editor.
 //
 // GUARD: a display that is a member of a video wall cannot be partitioned — the
 // player ignores per-display zones for wall members — so Partition is disabled
@@ -13,7 +18,7 @@
 import { api } from '../../api.js';
 import { esc } from '../../utils.js';
 import { t } from '../../i18n.js';
-import { WB, FIT_MODES } from '../../player-protocol.js';
+import { WB } from '../../player-protocol.js';
 import { showToast } from '../../components/toast.js';
 import { renderRegionEditor } from './region-editor.js';
 import { getSocket } from '../../socket.js';
@@ -22,25 +27,6 @@ import * as engine from '../../services/screen-share-engine.js';
 function geometryLabel(display) {
   if (display.width && display.height) return `${display.width} × ${display.height}`;
   return t('mc.insp.unknown_res');
-}
-
-function fitOptionsHtml(selected) {
-  return FIT_MODES.map(m =>
-    `<option value="${esc(m)}"${m === selected ? ' selected' : ''}>${esc(m)}</option>`
-  ).join('');
-}
-
-// In-panel audio invariant: track which single zone is allowed to be unmuted.
-// Toggling a second zone ON warns and keeps the previous one as the active one
-// unless the operator confirms the switch implicitly by toggling the old one off.
-function audioRowHtml(zone, unmutedZoneId) {
-  const on = String(zone.id) === String(unmutedZoneId);
-  return `
-    <label class="mc-insp-audio-row">
-      <input type="checkbox" class="mc-insp-audio" data-zone-id="${esc(zone.id)}" ${on ? 'checked' : ''}>
-      <span>${esc(zone.name || t('mc.insp.region_fallback'))}</span>
-      <span class="mc-insp-audio-state">${on ? '🔊' : '🔇'} ${esc(on ? t('mc.insp.audio_on') : t('mc.insp.audio_muted'))}</span>
-    </label>`;
 }
 
 /**
@@ -56,10 +42,6 @@ export async function renderInspector(container, { display, isWallMember = false
   if (!container || !display) return;
   container.hidden = false;
 
-  // The audio invariant is panel-local UI state: the single unmuted region.
-  let unmutedZoneId = null;
-  let currentZones = [];
-
   container.innerHTML = `
     <div class="mc-insp">
       <header class="mc-insp-head">
@@ -69,13 +51,6 @@ export async function renderInspector(container, { display, isWallMember = false
         </div>
         <button type="button" class="mc-insp-close" data-insp-close aria-label="${esc(t('mc.insp.close'))}">×</button>
       </header>
-
-      <section class="mc-insp-section">
-        <label class="mc-insp-field">
-          <span>${esc(t('mc.insp.fit_label'))}</span>
-          <select class="mc-insp-fit">${fitOptionsHtml('contain')}</select>
-        </label>
-      </section>
 
       <section class="mc-insp-section">
         ${isWallMember
@@ -92,12 +67,6 @@ export async function renderInspector(container, { display, isWallMember = false
         </div>
       </section>
 
-      <section class="mc-insp-section mc-insp-audio" id="mc-insp-audio" hidden>
-        <h3 class="mc-insp-subhead">${esc(t('mc.insp.audio'))}</h3>
-        <p class="mc-insp-hint">${esc(t('mc.insp.audio_hint'))}</p>
-        <div id="mc-insp-audio-list"></div>
-      </section>
-
       <section class="mc-insp-section mc-insp-regions" id="mc-insp-regions"></section>
     </div>`;
 
@@ -106,18 +75,6 @@ export async function renderInspector(container, { display, isWallMember = false
     closeBtn.addEventListener('click', () => {
       container.hidden = true;
       if (typeof onClose === 'function') onClose();
-    });
-  }
-
-  // Display-level fit_mode is broadcast-time metadata; here we surface it and
-  // store the operator's choice so the next send uses it. (The send funnel
-  // reads fit from the source payload; the toolbox/send wiring lives elsewhere.)
-  const fitSel = container.querySelector('.mc-insp-fit');
-  if (fitSel) {
-    fitSel.addEventListener('change', () => {
-      // Persisted per-zone inside the region editor; at display level this is a
-      // hint surfaced for the next broadcast. No server call here by design.
-      showToast(t('mc.insp.fit_set', { mode: fitSel.value }), 'success');
     });
   }
 
@@ -192,31 +149,6 @@ export async function renderInspector(container, { display, isWallMember = false
     });
   }
 
-  function paintAudio() {
-    const wrap = container.querySelector('#mc-insp-audio');
-    const list = container.querySelector('#mc-insp-audio-list');
-    if (!wrap || !list) return;
-    if (!currentZones.length) { wrap.hidden = true; return; }
-    wrap.hidden = false;
-    // Default: the first region is the unmuted one if none chosen yet.
-    if (unmutedZoneId == null && currentZones.length) unmutedZoneId = currentZones[0].id;
-    list.innerHTML = currentZones.map(z => audioRowHtml(z, unmutedZoneId)).join('');
-    list.querySelectorAll('.mc-insp-audio').forEach(cb => {
-      cb.addEventListener('change', () => {
-        const zoneId = cb.dataset.zoneId;
-        if (cb.checked) {
-          if (unmutedZoneId != null && String(unmutedZoneId) !== String(zoneId)) {
-            showToast(t('mc.insp.audio_switch'), 'info');
-          }
-          unmutedZoneId = zoneId;
-        } else if (String(unmutedZoneId) === String(zoneId)) {
-          unmutedZoneId = null;   // all muted
-        }
-        paintAudio();
-      });
-    });
-  }
-
   // Partition: ensure the display has a layout, assign it, mount the editor.
   const partitionBtn = container.querySelector('[data-insp-partition]');
   if (partitionBtn) {
@@ -228,10 +160,6 @@ export async function renderInspector(container, { display, isWallMember = false
         await renderRegionEditor(regionsEl, {
           layoutId,
           deviceId: display.id,
-          onChange: (zones) => {
-            currentZones = Array.isArray(zones) ? zones : [];
-            paintAudio();
-          },
         });
       } catch (e) {
         showToast(e?.message || t('mc.insp.partition_failed'), 'error');

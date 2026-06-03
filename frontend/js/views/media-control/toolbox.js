@@ -1,6 +1,8 @@
 // toolbox.js — the segmented source-dock below the stage in the unified Media
-// Control dashboard. Six tabs: Templates · Media · Presentations · YouTube/URL ·
-// Scenes · Nextcloud.
+// Control dashboard. Five SOURCE tabs: Media · Presentations · YouTube/URL ·
+// Scenes · Nextcloud. (Region "templates" are a per-display layout, not a source
+// to send, so they live in the inspector's "Partition into regions" flow — not
+// as a toolbox tab.)
 //
 // Clicking a tile (or dropping it on a stage card) calls sendToDisplays() — the
 // shared send funnel — which handles the 409 confirm-all gate and toasts.
@@ -9,8 +11,6 @@
 // (media-control.js): toolbox tiles carry [data-drag-source] with a JSON payload
 // so that drag events on stage cards can extract the source and call
 // sendToDisplays(). This module sets up the dragstart on its own tiles.
-//
-// The Templates tab is handled by the inspector (Task 4.4); here we show a hint.
 
 import { esc } from '../../utils.js';
 import { t, tn } from '../../i18n.js';
@@ -24,7 +24,6 @@ let activeTab = 'media';
 
 // ---- tab definitions (labels resolved through t() at render time) ----
 const TABS = [
-  { id: 'templates',     key: 'mc.tab.templates' },
   { id: 'media',         key: 'mc.tab.media' },
   { id: 'presentations', key: 'mc.tab.presentations' },
   { id: 'youtube',       key: 'mc.tab.youtube' },
@@ -47,10 +46,6 @@ function errorState(msg) {
 }
 
 // ---- tab content renderers ----
-
-function renderTemplatesTab(container) {
-  container.innerHTML = `<div class="mc-tb-hint"><p>${esc(t('mc.tb.templates_hint'))}</p></div>`;
-}
 
 async function renderMediaTab(container, { selectedIds, onAfterSend }) {
   container.innerHTML = loadingState(t('mc.tb.loading_media'));
@@ -304,9 +299,6 @@ function attachTileHandlers(container, selectedIds, onAfterSend) {
 async function loadTab(tabId, tabBody, { selectedIds, onAfterSend }) {
   tabBody.innerHTML = loadingState(t('mc.tb.loading'));
   switch (tabId) {
-    case 'templates':
-      renderTemplatesTab(tabBody);
-      break;
     case 'media':
       await renderMediaTab(tabBody, { selectedIds, onAfterSend });
       break;
@@ -364,22 +356,5 @@ export function renderToolbox(container, { selectedIds = [], onAfterSend } = {})
   });
 
   // Load initial tab
-  loadTab(activeTab, tabBody, { selectedIds, onAfterSend });
-}
-
-/**
- * Re-render just the active tab content (e.g. when selectedIds changes).
- * The container must still be in the DOM.
- *
- * @param {HTMLElement} container
- * @param {string[]} selectedIds
- * @param {()=>void} [onAfterSend]
- */
-export function refreshToolbox(container, selectedIds = [], onAfterSend) {
-  if (!container) return;
-  const tabBody = container.querySelector('#mc-tb-body');
-  if (!tabBody) return;
-  // Only tabs that use selectedIds at click-time need refreshing; re-render the
-  // active tab so the current selection is picked up on next click.
   loadTab(activeTab, tabBody, { selectedIds, onAfterSend });
 }

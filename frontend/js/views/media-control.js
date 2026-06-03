@@ -130,10 +130,21 @@ function paintStage() {
 // subscribers, which triggers paintStage. Repainting alone showed stale data.
 function refreshAfterSend() { displayState.refresh().catch(() => {}); }
 
+// Target scope for toolbox SENDS. In 'lecture' mode a tapped source goes to
+// EVERY display in the room (whole-room takeover); otherwise to the displays on
+// the stage (the current selection). Dragging a source onto a single card always
+// targets just that card, regardless of mode.
+function roomDisplayIds() {
+  return displayState.getAll().filter(d => !wallMemberIds.has(d.id)).map(d => d.id);
+}
+function effectiveTargets() {
+  return routingMode === 'lecture' ? roomDisplayIds() : selectedIds;
+}
+
 function paintToolbox() {
   const el = toolboxEl();
   if (!el) return;
-  renderToolbox(el, { selectedIds, onAfterSend: refreshAfterSend });
+  renderToolbox(el, { selectedIds: effectiveTargets(), onAfterSend: refreshAfterSend });
 }
 
 // Selecting a stage card opens the inspector for that display (Task 4.4):
@@ -219,9 +230,9 @@ async function openAddPicker() {
   persistSelection();
   paintStage();
   // Full toolbox re-render so BOTH the tile-click handlers AND the tab-switch
-  // handlers re-bind to the new selection (refreshToolbox only re-rendered the
-  // active tab body, leaving the tab-switch buttons closed over a stale
-  // selection — so switching tabs then clicking a tile sent to nothing).
+  // handlers re-bind to the new target set (a partial re-render would leave the
+  // tab-switch buttons closed over a stale selection — switch tab, click a tile,
+  // and it would send to nothing).
   paintToolbox();
   paintSummary();
 }
@@ -275,12 +286,9 @@ function attachStageDrop(stageContainer) {
 //   Mirror      — clones the first selected display's current now-playing source
 //                 to all other selected displays via sendToDisplays.
 
-async function activateLecture() {
-  if (selectedIds.length === 0) {
-    showToast(t('mc.routing.lecture_hint_empty'), 'info');
-    return;
-  }
-  showToast(t('mc.routing.lecture_hint', { n: selectedIds.length }), 'info');
+function lectureHint() {
+  const n = roomDisplayIds().length;
+  showToast(n === 0 ? t('mc.routing.lecture_hint_empty') : t('mc.routing.lecture_hint', { n }), 'info');
 }
 
 async function activateMirror() {
@@ -322,12 +330,19 @@ function attachRoutingModes(topbar) {
   btns.forEach(btn => {
     btn.addEventListener('click', async () => {
       const mode = btn.dataset.routing;
+      // Mirror is a one-shot ACTION (clone display 1 → the rest), not a persistent
+      // scope — run it and leave the current Group/Lecture scope highlight intact.
+      if (mode === 'mirror') {
+        btn.classList.add('mc-routing-firing');
+        try { await activateMirror(); } finally { btn.classList.remove('mc-routing-firing'); }
+        return;
+      }
+      // Group / Lecture are persistent target SCOPES for toolbox sends.
       routingMode = mode;
-      // Update active state on all mode buttons.
       btns.forEach(b => b.classList.toggle('mc-routing-active', b.dataset.routing === mode));
-      if (mode === 'lecture') await activateLecture();
-      if (mode === 'mirror')  await activateMirror();
-      // 'group' is the default and requires no action beyond the visual update.
+      paintToolbox();   // re-bind the toolbox tiles to the new target scope
+      paintSummary();
+      if (mode === 'lecture') lectureHint();
     });
   });
 }
