@@ -115,10 +115,15 @@ function handleScreenOnChange(deviceId, newScreenOn) {
 function paintStage() {
   const el = stageEl();
   if (!el) return;
-  const displays = displayState.getAll().filter(d => !wallMemberIds.has(d.id));
+  const all = displayState.getAll();
+  // Live state of EVERY display, incl. wall members, so wall composites can show
+  // what each member screen is showing right now.
+  const byId = new Map(all.map(d => [d.id, d]));
+  const displays = all.filter(d => !wallMemberIds.has(d.id));
   renderStage(el, {
     displays,
     walls,
+    byId,
     selectedIds,
     onSelect: openInspector,
     onAddDisplay: openAddPicker,
@@ -185,13 +190,15 @@ function pickDisplayDialog(candidates) {
        <span class="mc-pick-name">${esc(c.name)}</span>
        ${c.online ? '' : `<span class="mc-pick-offline">${esc(t('mc.add.offline'))}</span>`}
      </button>`).join('');
+  const listInner = options || `<p class="mc-pick-empty">${esc(t('mc.add.all_on_stage'))}</p>`;
   d.innerHTML = `
     <div class="mc-dialog-card">
       <h3 id="mcPickTitle" class="mc-dialog-title">${esc(t('mc.add.title'))}</h3>
       <p class="mc-dialog-msg">${esc(t('mc.add.message'))}</p>
-      <div class="mc-pick-list" role="listbox" aria-label="${esc(t('mc.add.title'))}">${options}</div>
+      <div class="mc-pick-list" role="listbox" aria-label="${esc(t('mc.add.title'))}">${listInner}</div>
       <div class="mc-dialog-actions">
         <button type="button" class="mc-btn mc-btn-ghost" data-pick-cancel>${esc(t('mc.add.cancel'))}</button>
+        <button type="button" class="mc-btn mc-btn-primary" data-pick-pair>${esc(t('mc.add.pair'))}</button>
       </div>
     </div>`;
   return new Promise((resolve) => {
@@ -201,6 +208,7 @@ function pickDisplayDialog(candidates) {
       settled = true;
       d.querySelectorAll('[data-pick-id]').forEach(b => b.removeEventListener('click', onPick));
       cancelBtn.removeEventListener('click', onCancel);
+      pairBtn.removeEventListener('click', onPair);
       d.removeEventListener('cancel', onCancel);
       d.removeEventListener('close', onCancel);
       if (d.open) d.close();
@@ -208,27 +216,89 @@ function pickDisplayDialog(candidates) {
     };
     const onPick = (e) => finish(e.currentTarget.dataset.pickId);
     const onCancel = () => finish(null);
+    const onPair = () => finish('__pair__');
     const cancelBtn = d.querySelector('[data-pick-cancel]');
+    const pairBtn = d.querySelector('[data-pick-pair]');
     d.querySelectorAll('[data-pick-id]').forEach(b => b.addEventListener('click', onPick));
     cancelBtn.addEventListener('click', onCancel);
+    pairBtn.addEventListener('click', onPair);
     d.addEventListener('cancel', onCancel);
     d.addEventListener('close', onCancel);
     d.showModal();
   });
 }
 
-// "Add display" — pick from all known displays not already on the stage and not
-// owned by a wall, via the composed picker.
+// Pair a NEW display from the Command Center: a composed code+name dialog that
+// hits the same /api/provision/pair endpoint the Displays view uses. Resolves to
+// { code, name } or null. CSP-safe (createElement + addEventListener, esc()).
+function pairDisplayDialog() {
+  const dlg = document.createElement('dialog');
+  dlg.className = 'mc-dialog mc-pair';
+  dlg.setAttribute('aria-labelledby', 'mcPairTitle');
+  dlg.innerHTML = `
+    <form method="dialog" class="mc-dialog-card">
+      <h3 id="mcPairTitle" class="mc-dialog-title">${esc(t('mc.pair.title'))}</h3>
+      <p class="mc-dialog-msg">${esc(t('mc.pair.message'))}</p>
+      <label class="mc-pair-field"><span>${esc(t('mc.pair.code_label'))}</span>
+        <input class="input mc-pair-code" type="text" inputmode="numeric" autocomplete="off" maxlength="6" pattern="[0-9]{6}" placeholder="000000"></label>
+      <label class="mc-pair-field"><span>${esc(t('mc.pair.name_label'))}</span>
+        <input class="input mc-pair-name" type="text" autocomplete="off" placeholder="${esc(t('mc.pair.name_placeholder'))}"></label>
+      <div class="mc-dialog-actions">
+        <button type="button" class="mc-btn mc-btn-ghost" data-pair-cancel>${esc(t('mc.pair.cancel'))}</button>
+        <button type="button" class="mc-btn mc-btn-primary" data-pair-go>${esc(t('mc.pair.submit'))}</button>
+      </div>
+    </form>`;
+  document.body.appendChild(dlg);
+  const codeEl = dlg.querySelector('.mc-pair-code');
+  const nameEl = dlg.querySelector('.mc-pair-name');
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (val) => { if (settled) return; settled = true; if (dlg.open) dlg.close(); dlg.remove(); resolve(val); };
+    dlg.querySelector('[data-pair-cancel]').addEventListener('click', () => finish(null));
+    dlg.addEventListener('cancel', () => finish(null));
+    dlg.querySelector('[data-pair-go]').addEventListener('click', () => {
+      const code = (codeEl.value || '').trim();
+      if (!/^[0-9]{6}$/.test(code)) { showToast(t('mc.pair.invalid_code'), 'error'); codeEl.focus(); return; }
+      finish({ code, name: (nameEl.value || '').trim() });
+    });
+    dlg.showModal();
+    codeEl.focus();
+  });
+}
+
+// Pair flow: prompt -> /api/provision/pair -> refresh state -> auto-add the new
+// display(s) to the stage. Any member with a login can pair into the shared room.
+async function openPairDisplay() {
+  const res = await pairDisplayDialog();
+  if (!res) return;
+  const before = new Set(displayState.getAll().map(d => d.id));
+  try {
+    await api.pairDevice(res.code, res.name || undefined);
+  } catch (e) {
+    showToast(e?.message || t('mc.pair.failed'), 'error');
+    return;
+  }
+  await displayState.refresh().catch(() => {});
+  await loadWalls();
+  const fresh = displayState.getAll().map(d => d.id).filter(id => !before.has(id) && !wallMemberIds.has(id));
+  if (fresh.length) { selectedIds = [...new Set([...selectedIds, ...fresh])]; persistSelection(); }
+  paintStage();
+  paintToolbox();
+  paintSummary();
+  showToast(t('mc.pair.success'), 'success');
+}
+
+// "Add display" — pick a known display not already on the stage (and not owned by
+// a wall), OR pair a brand-new one, via the composed picker. The picker always
+// offers "Pair a new display" so pairing lives inside the Command Center.
 async function openAddPicker() {
   const selected = new Set(selectedIds);
   const candidates = displayState.getAll()
     .filter(d => !selected.has(d.id) && !wallMemberIds.has(d.id));
-  if (candidates.length === 0) {
-    showToast(t('mc.add.none'), 'info');
-    return;
-  }
   const id = await pickDisplayDialog(candidates);
-  if (!id || selectedIds.includes(id)) return;
+  if (!id) return;
+  if (id === '__pair__') { await openPairDisplay(); return; }
+  if (selectedIds.includes(id)) return;
   selectedIds = [...selectedIds, id];
   persistSelection();
   paintStage();
@@ -281,6 +351,30 @@ function attachStageDrop(stageContainer) {
       if (!parsed || !deviceId) return;
       await sendToDisplays(parsed.source, [deviceId], parsed.label);
       refreshAfterSend(); // re-fetch state so the card's now-playing updates now
+    });
+  });
+
+  // Whole-wall drop strips: drop a source here to fill EVERY screen of that wall
+  // at once. The strip carries data-wall-ids="id1,id2,…"; stopPropagation so the
+  // stage-background handler does not also fire. Re-wired each paint (fresh nodes).
+  stageContainer.querySelectorAll('[data-wall-ids]').forEach(zone => {
+    zone.addEventListener('dragover', (e) => {
+      if (!dragHasSource(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      zone.classList.add('mc-wall-all-dragover');
+    });
+    zone.addEventListener('dragleave', () => zone.classList.remove('mc-wall-all-dragover'));
+    zone.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      zone.classList.remove('mc-wall-all-dragover');
+      const parsed = parseDragSource(e);
+      if (!parsed) return;
+      const ids = (zone.dataset.wallIds || '').split(',').filter(Boolean);
+      if (!ids.length) { showToast(t('mc.send.no_displays'), 'error'); return; }
+      await sendToDisplays(parsed.source, ids, parsed.label);
+      refreshAfterSend();
     });
   });
 
@@ -413,6 +507,7 @@ export async function render() {
               <div class="mc-section-head">
                 <h2 id="mc-stage-head" class="mc-section-title">${esc(t('mc.section.displays'))}</h2>
                 <p class="mc-section-hint">${esc(t('mc.section.displays_hint'))}</p>
+                <a class="mc-section-link" href="#/">${esc(t('mc.section.manage_displays'))}</a>
               </div>
               <section id="mc-stage" class="mc-stage" aria-label="${esc(t('mc.section.displays'))}"></section>
             </section>
@@ -444,6 +539,13 @@ export async function render() {
   ]);
   selectedIds = Array.isArray(selection && selection.device_ids) ? selection.device_ids : [];
   pruneSelection();
+  // Shared room: with no saved stage selection yet, default to ALL room displays
+  // so every member immediately sees every shared display (and newly-paired ones
+  // appear until the operator deliberately curates the stage). NOT persisted — the
+  // moment the operator adds/removes a display, that choice persists instead.
+  if (selectedIds.length === 0) {
+    selectedIds = roomDisplayIds();
+  }
   // A fresh render starts a clean session in the default 'group' scope (routing
   // mode is UI-only, not persisted) — set it BEFORE the first toolbox paint so
   // the tiles bind to the stage selection, not a stale scope from last visit.

@@ -245,6 +245,73 @@
 .mc-card-dragover { border-color: var(--accent) !important; box-shadow: 0 0 0 2px var(--accent) !important; }
 
 /* ════════════════════════════════════════════════════════════════════════
+   Video-wall composite — the wall rendered as its REAL member screens on the
+   wall grid (grid_cols x grid_rows), so it mirrors the physical wall. Each cell
+   is a per-screen drop/inspect target; the footer strip fills the whole wall.
+   Spans the full stage width. The screens sit on a dark bezel frame — the one
+   place "dark" belongs, because live video lives on black.
+   ════════════════════════════════════════════════════════════════════════ */
+.mc-wall { grid-column: 1 / -1; padding: var(--mc-space-md, 16px); cursor: default; }
+.mc-wall:hover { transform: none; box-shadow: var(--mc-shadow-card); border-color: var(--mc-border-light); }
+.mc-wall-head { display: flex; align-items: baseline; gap: var(--space-2, 8px); margin-bottom: var(--mc-space-sm, 8px); }
+.mc-wall-title { font-weight: var(--mc-fw-semibold); font-size: var(--mc-font-size-base); color: var(--mc-text-primary); }
+.mc-wall-sub { font-size: var(--mc-font-size-xs); color: var(--mc-text-secondary); }
+.mc-wall-edit { margin-left: auto; font-size: var(--font-2, 12px); font-weight: var(--mc-fw-medium); color: var(--accent); text-decoration: none; }
+.mc-wall-edit:hover { text-decoration: underline; }
+.mc-wall-edit:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.mc-wall-grid {
+  display: grid; gap: 3px; width: 100%;
+  background: var(--mc-dark-bg-deep, #0F172A); /* bezel frame behind the screens */
+  border-radius: var(--mc-radius-sm); padding: 3px; overflow: hidden;
+}
+.mc-wall-cell {
+  position: relative; overflow: hidden; min-height: 64px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--mc-bg-secondary); cursor: pointer;
+  transition: box-shadow var(--mc-transition-base);
+}
+.mc-wall-cell:hover { box-shadow: inset 0 0 0 2px var(--accent); }
+.mc-wall-cell:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
+.mc-wall-cell-shot { width: 100%; height: 100%; object-fit: cover; display: block; }
+.mc-wall-cell-empty { font-size: var(--mc-font-size-xs); color: var(--mc-text-on-dark-muted, #94A3B8); padding: var(--space-2, 8px); text-align: center; }
+.mc-wall-cell-none { grid-column: 1 / -1; min-height: 80px; display: flex; align-items: center; justify-content: center; }
+.mc-wall-cell-name {
+  position: absolute; left: 0; right: 0; bottom: 0; padding: 2px 6px; text-align: left;
+  background: linear-gradient(transparent, rgba(15, 23, 42, 0.78)); color: #fff;
+  font-size: var(--mc-font-size-xs); font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mc-wall-cell .mc-badge { top: 4px; right: 4px; padding: 2px 7px; font-size: 10px; }
+.mc-wall-all {
+  display: flex; align-items: center; justify-content: center; gap: var(--space-2, 8px);
+  margin-top: var(--mc-space-sm, 8px); min-height: 40px; padding: 0 var(--space-3, 12px);
+  border: 1px dashed var(--mc-border-medium); border-radius: var(--mc-radius-sm);
+  color: var(--mc-text-secondary); font-size: var(--font-2, 12px); font-weight: 600;
+}
+.mc-wall-all-ico { display: inline-flex; }
+.mc-wall-all-ico svg { width: 16px; height: 16px; display: block; }
+.mc-wall-all-dragover { border-style: solid; border-color: var(--accent); color: var(--accent); background: rgba(37, 99, 235, 0.05); }
+
+/* Section-head "Manage displays" link + inspector "full settings" link (blue=go) */
+.mc-section-link, .mc-insp-link { font-size: var(--font-2, 12px); font-weight: var(--mc-fw-medium); color: var(--accent); text-decoration: none; }
+.mc-section-link { margin-left: auto; }
+.mc-insp-link { display: inline-block; margin-top: var(--mc-space-sm, 8px); }
+.mc-section-link:hover, .mc-insp-link:hover { text-decoration: underline; }
+.mc-section-link:focus-visible, .mc-insp-link:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+/* Add-picker empty note + Pair-a-display dialog fields */
+.mc-pick-empty { margin: 0; padding: var(--space-3, 12px); font-size: var(--mc-font-size-sm); color: var(--mc-text-secondary); text-align: center; }
+.mc-pair-field { display: flex; flex-direction: column; gap: var(--space-1, 4px); font-size: var(--mc-font-size-sm); color: var(--mc-text-secondary); margin-bottom: var(--space-3, 12px); }
+.mc-pair .input {
+  min-height: var(--tap-min, 48px); padding: 0 var(--space-3, 12px);
+  background: var(--bg-input); border: 1px solid var(--mc-border-medium);
+  border-radius: var(--mc-radius-sm, 8px); color: var(--mc-text-primary);
+  font-family: var(--mc-font-family-sans); font-size: var(--mc-font-size-base);
+}
+.mc-pair .input:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18); }
+.mc-pair-code { letter-spacing: 0.3em; font-variant-numeric: tabular-nums; }
+
+/* ════════════════════════════════════════════════════════════════════════
    Toolbox dock (tabs + tile grid + states)
    ════════════════════════════════════════════════════════════════════════ */
 .mc-toolbox {
@@ -578,7 +645,7 @@
 a.mc-recent-row:hover .mc-recent-action { color: var(--accent); }
 a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 .mc-recent-action { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mc-recent-time { flex: 0 0 auto; font-size: var(--mc-font-size-xs); color: var(--mc-text-tertiary); font-variant-numeric: tabular-nums; }
+.mc-recent-time { flex: 0 0 auto; font-size: var(--mc-font-size-xs); color: var(--mc-text-secondary); font-variant-numeric: tabular-nums; }
 
 /* Shared composed states for the rail panels (mirror the toolbox states) */
 .mc-presets-state, .mc-recent-state {
@@ -647,7 +714,7 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
    operator prefers reduced motion.
    ════════════════════════════════════════════════════════════════════════ */
 @media (prefers-reduced-motion: reduce) {
-  .mc-card, .mc-control .mc-tile { transition: none; }
+  .mc-card, .mc-control .mc-tile, .mc-wall-cell { transition: none; }
   .mc-card:hover, .mc-control .mc-tile:hover { transform: none; }
   .mc-inspector:not([hidden]) { animation: none; }
   .mc-tb-spin, .mc-recent-spin { animation: none; }

@@ -93,23 +93,77 @@ function displayCard(display) {
     </button>`;
 }
 
-// A video wall stands in for all its member screens as one advanced card.
-// Clicking deep-links to #/walls (full wall control lives there for now).
-function wallCard(wall) {
-  const tiles = (wall.devices || []).length;
+// A video wall is rendered as a COMPOSITE of its real member screens, laid out on
+// the wall's grid (grid_cols x grid_rows) so it mirrors the physical wall — e.g. a
+// 3x1 wall shows three screens side by side. Each cell shows that screen's LIVE
+// preview + status and is its OWN drop/inspect target (drag a source onto one
+// screen, tap it to inspect). A footer strip is the WHOLE-WALL drop target (drag a
+// source there to fill every screen at once). Per-screen control reuses the same
+// data-device-id path as a standalone display card; the whole-wall strip carries
+// data-wall-ids so the caller can fan a single source out to every member.
+const ICON_WALL_ALL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></svg>';
+
+// Merge a wall-membership row (name/status/grid position from the JOIN) with the
+// member device's LIVE state from the display-state store (screenshot, now-playing,
+// screen_on) so each cell reflects what that screen is actually showing right now.
+function wallMemberView(m, byId) {
+  const live = byId.get(m.device_id) || {};
+  return {
+    id: m.device_id,
+    name: live.name || m.device_name || t('mc.wall.screen_fallback'),
+    online: live.online != null ? live.online : (m.device_status === 'online'),
+    screen_on: live.screen_on,
+    now_playing: live.now_playing,
+    screenshot_url: live.screenshot_url,
+    screenshot_at: live.screenshot_at,
+    grid_col: m.grid_col,
+    grid_row: m.grid_row,
+  };
+}
+
+function wallCell(member) {
+  const s = statusOf(member);
+  const offline = !member.online;
+  const f = freshness(member.screenshot_at);
+  const preview = member.screenshot_url
+    ? `<img class="mc-wall-cell-shot${(f.stale || offline) ? ' mc-shot-stale' : ''}" src="${esc(member.screenshot_url)}" alt="" loading="lazy">`
+    : `<span class="mc-wall-cell-empty">${esc(t('mc.card.no_preview'))}</span>`;
+  const pos = (Number.isInteger(member.grid_col) && Number.isInteger(member.grid_row))
+    ? ` style="grid-column:${member.grid_col + 1};grid-row:${member.grid_row + 1}"` : '';
+  const np = member.now_playing && member.now_playing.label ? member.now_playing.label : '';
   return `
-    <a class="mc-card mc-wall-card" href="#/walls" data-wall-id="${esc(wall.id)}"
-       aria-label="${esc(t('mc.wall.aria', { name: wall.name }))}">
-      <div class="mc-card-media" style="aspect-ratio:16/9">
-        <div class="mc-card-shot mc-card-shot-empty mc-wall-badge">${esc(t('mc.wall.badge'))}</div>
+    <div class="mc-wall-cell ${s.cls}" data-device-id="${esc(member.id)}"${pos}
+         role="button" tabindex="0" title="${esc(np ? `${member.name} — ${np}` : member.name)}"
+         aria-label="${esc(t('mc.card.inspect_aria', { name: member.name }))}">
+      ${preview}
+      ${statusBadge(s)}
+      <span class="mc-wall-cell-name">${esc(member.name)}</span>
+    </div>`;
+}
+
+function wallCard(wall, byId) {
+  const members = (wall.devices || []).map(m => wallMemberView(m, byId));
+  const cols = Math.max(1, wall.grid_cols || members.reduce((mx, m) => Math.max(mx, (m.grid_col || 0) + 1), 1));
+  const rows = Math.max(1, wall.grid_rows || members.reduce((mx, m) => Math.max(mx, (m.grid_row || 0) + 1), 1));
+  const ids = members.map(m => m.id).join(',');
+  const cells = members.length
+    ? members.map(wallCell).join('')
+    : `<span class="mc-wall-cell-empty mc-wall-cell-none">${esc(t('mc.wall.no_screens'))}</span>`;
+  return `
+    <section class="mc-card mc-wall" data-wall-id="${esc(wall.id)}" aria-label="${esc(t('mc.wall.aria', { name: wall.name }))}">
+      <div class="mc-wall-head">
+        <span class="mc-wall-title">${esc(wall.name)}</span>
+        <span class="mc-wall-sub">${esc(tn('mc.wall.screens', members.length))}</span>
+        <a class="mc-wall-edit" href="#/walls">${esc(t('mc.wall.edit'))}</a>
       </div>
-      <div class="mc-card-foot">
-        <span class="mc-status-dot" style="background:var(--mc-broadcasting)" aria-hidden="true"></span>
-        <span class="mc-card-title">${esc(wall.name)}</span>
-        <span class="mc-card-status">${esc(tn('mc.wall.tiles', tiles))}</span>
+      <div class="mc-wall-grid" style="grid-template-columns:repeat(${cols},1fr);grid-template-rows:repeat(${rows},1fr);aspect-ratio:${cols} / ${rows}">
+        ${cells}
       </div>
-      <div class="mc-card-nowplaying">${esc(t('mc.wall.open'))}</div>
-    </a>`;
+      <div class="mc-wall-all" data-wall-ids="${esc(ids)}">
+        <span class="mc-wall-all-ico" aria-hidden="true">${ICON_WALL_ALL}</span>
+        <span>${esc(t('mc.wall.fill_all'))}</span>
+      </div>
+    </section>`;
 }
 
 // Plus tile shown alongside the populated stage to add another display.
@@ -143,15 +197,17 @@ function emptyState() {
  * @param {HTMLElement} container
  * @param {object} opts
  * @param {Array}  opts.displays      selected, NON-wall-member displays to show
- * @param {Array}  [opts.walls]       walls to show as single cards
+ * @param {Array}  [opts.walls]       walls to render as composite member-screen grids
+ * @param {Map<string,object>} [opts.byId]  live state of EVERY display (incl. wall
+ *   members) keyed by id, so wall cells can show what each screen is showing now
  * @param {string[]} opts.selectedIds     currently-selected display ids
- * @param {(id:string)=>void} opts.onSelect        a display card was activated
+ * @param {(id:string)=>void} opts.onSelect        a display card / wall screen was activated
  * @param {()=>void}          opts.onAddDisplay     the "+ Add display" tile was activated
  * @param {(id:string, screenOn:boolean)=>void} [opts.onScreenOnChange]
  *   Called when a blank/unblank ack changes a display's screen_on value so the
  *   caller can patch display-state and trigger a re-paint.
  */
-export function renderStage(container, { displays = [], walls = [], selectedIds = [], onSelect, onAddDisplay, onScreenOnChange } = {}) {
+export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], onSelect, onAddDisplay, onScreenOnChange } = {}) {
   if (!container) return;
   const selected = new Set(selectedIds);
 
@@ -162,7 +218,7 @@ export function renderStage(container, { displays = [], walls = [], selectedIds 
     .filter(d => selected.has(d.id))
     .map(displayCard)
     .join('');
-  const wallCards = (walls || []).map(wallCard).join('');
+  const wallCards = (walls || []).map(w => wallCard(w, byId)).join('');
 
   const isEmpty = !cards && !wallCards;
   container.classList.toggle('mc-stage-is-empty', isEmpty);
@@ -170,12 +226,18 @@ export function renderStage(container, { displays = [], walls = [], selectedIds 
     ? emptyState()
     : `${wallCards}${cards}${addTile()}`;
 
-  // Wall cards are <a href="#/walls"> and navigate natively — no handler.
-  // Display cards: clicking anywhere except the transport bar opens the inspector.
-  container.querySelectorAll('[data-device-id]:not([data-tp-host])').forEach(el => {
-    if (el.classList.contains('mc-display-card')) {
-      el.addEventListener('click', () => { if (typeof onSelect === 'function') onSelect(el.dataset.deviceId); });
-    }
+  // Display cards (<button>) and wall screen cells (<div role=button>) both open
+  // the inspector for that display. The whole-wall <a href="#/walls"> "Edit" link
+  // navigates natively. Transport bars live inside display cards (data-tp-host)
+  // and stopPropagation, so they never trigger the inspector.
+  container.querySelectorAll('.mc-display-card[data-device-id]').forEach(el => {
+    el.addEventListener('click', () => { if (typeof onSelect === 'function') onSelect(el.dataset.deviceId); });
+  });
+  container.querySelectorAll('.mc-wall-cell[data-device-id]').forEach(el => {
+    el.addEventListener('click', () => { if (typeof onSelect === 'function') onSelect(el.dataset.deviceId); });
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (typeof onSelect === 'function') onSelect(el.dataset.deviceId); }
+    });
   });
 
   // Mount transport bars into each card's [data-tp-host] container.

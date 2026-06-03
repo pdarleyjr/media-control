@@ -65,6 +65,7 @@ export async function renderInspector(container, { display, isWallMember = false
           <button type="button" class="mc-btn mc-btn-secondary" data-insp-ss-start>${esc(t('mc.insp.ss_start'))}</button>
           <button type="button" class="mc-btn mc-btn-danger-sm" data-insp-ss-stop hidden>${esc(t('mc.insp.ss_stop'))}</button>
         </div>
+        <a class="mc-insp-link" href="#/device/${esc(display.id)}">${esc(t('mc.insp.full_settings'))}</a>
       </section>
 
       <section class="mc-insp-section mc-insp-regions" id="mc-insp-regions"></section>
