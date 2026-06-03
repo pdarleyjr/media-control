@@ -17,6 +17,7 @@ const router = express.Router();
 const { db } = require('../db/database');
 const sceneEngine = require('../services/scene-engine');
 const { logActivity, getClientIp } = require('../services/activity');
+const { deckPlayerUrl } = require('../lib/deck-player-url');
 
 router.post('/', (req, res) => {
   if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
@@ -25,7 +26,7 @@ router.post('/', (req, res) => {
   }
 
   const {
-    device_ids, content_id, remote_url, playlist_id, fit_mode, confirm_all,
+    device_ids, content_id, remote_url, playlist_id, presentation_id, fit_mode, confirm_all,
   } = req.body || {};
 
   // Validate the target selection.
@@ -33,9 +34,24 @@ router.post('/', (req, res) => {
     return res.status(400).json({ error: 'device_ids must be a non-empty array' });
   }
 
-  // Validate at least one source.
-  if (!content_id && !remote_url && !playlist_id) {
-    return res.status(400).json({ error: 'one of content_id, remote_url, or playlist_id is required' });
+  // Validate at least one source (presentation_id counts as a valid source).
+  if (!content_id && !remote_url && !playlist_id && !presentation_id) {
+    return res.status(400).json({ error: 'one of content_id, remote_url, playlist_id, or presentation_id is required' });
+  }
+
+  // Resolve a presentation_id to its public deck-player remote_url, so a deck
+  // flows through the SAME source/push path as a hand-typed remote_url (exactly
+  // what the "Present this deck" buttons already broadcast). The presentation
+  // must exist and live in the caller's workspace.
+  let effectiveRemoteUrl = remote_url;
+  if (presentation_id) {
+    const pres = db.prepare('SELECT id, workspace_id FROM presentations WHERE id = ?').get(String(presentation_id));
+    if (!pres) return res.status(404).json({ error: `Presentation ${presentation_id} not found` });
+    if (pres.workspace_id !== req.workspaceId) {
+      return res.status(403).json({ error: `Presentation ${presentation_id} is not in this workspace` });
+    }
+    const publicBase = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
+    effectiveRemoteUrl = deckPlayerUrl(publicBase, pres.id);
   }
 
   // De-dupe and confirm every target device is in this workspace.
@@ -59,7 +75,7 @@ router.post('/', (req, res) => {
     return res.status(409).json({ code: 'CONFIRM_ALL_REQUIRED', count: totalInWorkspace });
   }
 
-  const source = { content_id, remote_url, playlist_id, fit_mode };
+  const source = { content_id, remote_url: effectiveRemoteUrl, playlist_id, fit_mode };
   const io = req.app.get('io');
 
   let sent = 0;
@@ -75,9 +91,10 @@ router.post('/', (req, res) => {
   // Log the broadcast (activityLogger middleware only captures a single
   // device_id; broadcasts touch many, so log an explicit summary here).
   try {
-    const sourceLabel = playlist_id ? `playlist:${playlist_id}`
+    const sourceLabel = presentation_id ? `presentation:${presentation_id}`
+      : playlist_id ? `playlist:${playlist_id}`
       : content_id ? `content:${content_id}`
-      : `url:${remote_url}`;
+      : `url:${effectiveRemoteUrl}`;
     logActivity(
       req.user.id,
       'POST /api/broadcast',
