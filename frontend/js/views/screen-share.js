@@ -73,7 +73,7 @@ async function listVideoWalls() {
   // Returns array of walls, each with .devices = [{ device_id, device_name,
   // device_status, grid_col, grid_row, canvas_x, canvas_y, canvas_width,
   // canvas_height }, ...]. Empty array on auth/no-workspace.
-  try { return await apiGet('/api/video-walls'); } catch (_) { return []; }
+  try { return await apiGet('/api/walls'); } catch (_) { return []; }
 }
 
 /**
