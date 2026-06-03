@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { db } = require('../db/database');
 const { nowPlayingFromSnapshot } = require('../lib/display-state');
+const { mapDisplayRow } = require('../lib/display-row');
 
 // Deny writes for read-only members (mirrors scenes.js inline gate).
 function requireWorkspaceWrite(req, res) {
@@ -30,25 +31,7 @@ router.get('/state', (req, res) => {
     LIMIT 500
   `).all(req.workspaceId);
 
-  const displays = rows.map(r => {
-    const online = r.status === 'online' && r.last_heartbeat && (now - r.last_heartbeat) < 60;
-    const np = nowPlayingFromSnapshot(r.snapshot);
-    return {
-      id: r.id,
-      name: r.name,
-      online,
-      screen_on: r.screen_on !== 0,
-      width: r.screen_width || null,
-      height: r.screen_height || null,
-      layout_id: r.layout_id || null,
-      now_playing: np,
-      // Token-less by design: the screenshot endpoint needs the JWT via
-      // ?token= for browser <img> tags (no Authorization header). The client
-      // display-state store appends &token= centrally; do NOT bake it in here.
-      screenshot_url: r.shot_at ? `/api/devices/${r.id}/screenshot?t=${r.shot_at}` : null,
-      screenshot_at: r.shot_at || null,
-    };
-  });
+  const displays = rows.map(r => mapDisplayRow(r, nowPlayingFromSnapshot(r.snapshot), now));
   res.json({ displays });
 });
 
