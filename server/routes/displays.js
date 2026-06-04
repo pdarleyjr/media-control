@@ -3,6 +3,7 @@ const router = express.Router();
 const { db } = require('../db/database');
 const { nowPlayingFromSnapshot } = require('../lib/display-state');
 const { mapDisplayRow } = require('../lib/display-row');
+const config = require('../config');
 
 // Deny writes for read-only members (mirrors scenes.js inline gate).
 function requireWorkspaceWrite(req, res) {
@@ -31,7 +32,10 @@ router.get('/state', (req, res) => {
     LIMIT 500
   `).all(req.workspaceId);
 
-  const displays = rows.map(r => mapDisplayRow(r, nowPlayingFromSnapshot(r.snapshot), now));
+  const assetCache = config.localContentBaseUrl
+    ? { mode: 'local', base_url: config.localContentBaseUrl }
+    : { mode: 'direct' };
+  const displays = rows.map(r => mapDisplayRow(r, nowPlayingFromSnapshot(r.snapshot), now, assetCache));
   res.json({ displays });
 });
 

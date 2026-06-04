@@ -79,3 +79,11 @@ test('now_playing is passed through unchanged', () => {
   const out = mapDisplayRow(baseRow(), np, 1000);
   assert.deepEqual(out.now_playing, np);
 });
+
+test('asset cache defaults to direct and preserves supplied mode', () => {
+  assert.deepEqual(mapDisplayRow(baseRow(), NP, 1000).asset_cache, { mode: 'direct' });
+  assert.deepEqual(
+    mapDisplayRow(baseRow(), NP, 1000, { mode: 'local', base_url: 'http://10.0.0.5:8096' }).asset_cache,
+    { mode: 'local', base_url: 'http://10.0.0.5:8096' },
+  );
+});

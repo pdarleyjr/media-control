@@ -1,4 +1,5 @@
 const path = require('path');
+const { localContentBaseUrlFromEnv } = require('./lib/local-asset-url');
 
 module.exports = {
   appName: process.env.APP_NAME || 'Media Control',
@@ -12,6 +13,11 @@ module.exports = {
   contentDir: path.join(__dirname, 'uploads', 'content'),
   screenshotsDir: path.join(__dirname, 'uploads', 'screenshots'),
   frontendDir: path.join(__dirname, '..', 'frontend'),
+  // Optional LAN delivery base for classroom displays. When set, playlist
+  // payloads include per-item asset_url values that point at the local GMKtec
+  // origin instead of the public Cloudflare hostname, so large media fan-out
+  // rides the training-room LAN. Leave empty to preserve direct/public URLs.
+  localContentBaseUrl: localContentBaseUrlFromEnv(process.env),
   // App-level heartbeat. Checker runs every heartbeatInterval and marks
   // devices offline if last_heartbeat is older than heartbeatTimeout.
   // Env override for self-hosters on slow/jittery networks (issue #3:

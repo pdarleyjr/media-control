@@ -125,6 +125,10 @@ export function sendKey(deviceId, keycode) {
   if (dashboardSocket) dashboardSocket.emit('dashboard:remote-key', { device_id: deviceId, keycode });
 }
 
+export function identifyDevice(deviceId, payload = {}) {
+  if (dashboardSocket) dashboardSocket.emit('dashboard:identify', { device_id: deviceId, ...payload });
+}
+
 // Optional callback receives the server-side ack: { delivered, queued, reason }.
 // Callers without a callback keep firing-and-forgetting (no behavior change).
 // With a callback, we use Socket.IO's .timeout() so the callback always fires -

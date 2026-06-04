@@ -2,7 +2,7 @@ import { api } from '../api.js';
 import { esc } from '../utils.js';
 import { t, tn } from '../i18n.js';
 import { showToast } from '../components/toast.js';
-import { requestScreenshot } from '../socket.js';
+import { identifyDevice, requestScreenshot } from '../socket.js';
 import * as displayState from '../services/display-state.js';
 import { renderStage } from './media-control/stage.js';
 import { renderToolbox } from './media-control/toolbox.js';
@@ -136,6 +136,7 @@ function paintStage() {
     byId,
     selectedIds,
     onSelect: openInspector,
+    onCalibrateWall: showWallCalibration,
     onAddDisplay: openAddPicker,
     onScreenOnChange: handleScreenOnChange,
   });
@@ -200,6 +201,13 @@ function refreshAfterSend(targetIds) {
   displayState.refresh().catch(() => {});
   const ids = (Array.isArray(targetIds) && targetIds.length) ? targetIds : visibleDeviceIds();
   setTimeout(() => { for (const id of ids) requestScreenshot(id); }, 1800);
+}
+
+function showWallCalibration(deviceIds, wallName) {
+  const ids = [...new Set(Array.isArray(deviceIds) ? deviceIds : [])];
+  if (ids.length === 0) return;
+  ids.forEach(id => identifyDevice(id, { mode: 'calibration', duration_ms: 30000 }));
+  showToast(t('mc.wall.calibrate_sent', { name: wallName || t('mc.wall.screen_fallback') }), 'success');
 }
 
 // ---- Live preview driver ----

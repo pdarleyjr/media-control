@@ -211,19 +211,29 @@ router.post('/:id/identify', (req, res) => {
   if (!device) return;
 
   // Label the player renders on the flash marker: device name, or a short id
-  // suffix as a fallback when unnamed.
+  // suffix as a fallback when unnamed. Calibration mode rides the existing
+  // device:identify event so the frozen command protocol remains unchanged.
   const label = (device.name && String(device.name).trim())
     ? device.name
     : String(device.id).slice(0, 8);
+  const payload = { label };
+  if (req.body && req.body.mode === 'calibration') {
+    payload.mode = 'calibration';
+    payload.enabled = req.body.enabled !== false;
+    const duration = Number(req.body.duration_ms);
+    payload.duration_ms = Number.isFinite(duration)
+      ? Math.max(5000, Math.min(120000, Math.floor(duration)))
+      : 30000;
+  }
 
   const io = req.app.get('io');
   if (io) {
     try {
-      io.of('/device').to(req.params.id).emit('device:identify', { label });
+      io.of('/device').to(req.params.id).emit('device:identify', payload);
     } catch (e) { /* socket layer best-effort; route still succeeds */ }
   }
 
-  res.json({ success: true, device_id: req.params.id, label });
+  res.json({ success: true, device_id: req.params.id, ...payload });
 });
 
 // Delete device

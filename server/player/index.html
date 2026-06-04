@@ -186,6 +186,35 @@
     }
     #statusOverlay h2 { color: #3b82f6; font-size: clamp(20px, 3.5vw, 40px); margin-bottom: max(8px, 1vh); }
     #statusOverlay p { font-size: clamp(14px, 2vw, 22px); }
+
+    .calibration-overlay {
+      position: fixed; inset: 0; z-index: 12000; pointer-events: none;
+      color: #fff; background:
+        linear-gradient(rgba(255,255,255,0.34) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.34) 1px, transparent 1px),
+        linear-gradient(rgba(59,130,246,0.58) 2px, transparent 2px),
+        linear-gradient(90deg, rgba(59,130,246,0.58) 2px, transparent 2px),
+        rgba(0,0,0,0.38);
+      background-size: 5vw 5vh, 5vw 5vh, 25vw 25vh, 25vw 25vh, auto;
+      box-shadow: inset 0 0 0 max(4px,0.4vmin) #fff, inset 0 0 0 max(10px,1vmin) #2563eb;
+    }
+    .calibration-overlay::before,
+    .calibration-overlay::after {
+      content: ''; position: absolute; background: #ef4444; box-shadow: 0 0 max(8px,1vmin) rgba(0,0,0,0.75);
+    }
+    .calibration-overlay::before { left: 50%; top: 0; bottom: 0; width: max(3px,0.25vmin); transform: translateX(-50%); }
+    .calibration-overlay::after { top: 50%; left: 0; right: 0; height: max(3px,0.25vmin); transform: translateY(-50%); }
+    .calibration-info {
+      position: absolute; left: max(18px,2vmin); top: max(18px,2vmin); right: max(18px,2vmin);
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: max(8px,1vmin);
+      font: 700 clamp(14px, 2.2vw, 34px) / 1.15 sans-serif; text-shadow: 0 2px 8px #000;
+    }
+    .calibration-info span { display: block; padding: max(8px,1vmin) max(12px,1.4vmin); background: rgba(0,0,0,0.78); border: 2px solid rgba(255,255,255,0.86); border-radius: max(6px,0.8vmin); }
+    .calibration-corner { position: absolute; width: max(54px,6vmin); height: max(54px,6vmin); border-color: #f97316; border-style: solid; }
+    .calibration-corner.tl { left: 0; top: 0; border-width: max(8px,0.8vmin) 0 0 max(8px,0.8vmin); }
+    .calibration-corner.tr { right: 0; top: 0; border-width: max(8px,0.8vmin) max(8px,0.8vmin) 0 0; }
+    .calibration-corner.bl { left: 0; bottom: 0; border-width: 0 0 max(8px,0.8vmin) max(8px,0.8vmin); }
+    .calibration-corner.br { right: 0; bottom: 0; border-width: 0 max(8px,0.8vmin) max(8px,0.8vmin) 0; }
   </style>
 </head>
 <body>
@@ -269,6 +298,16 @@
         info_nothing: 'Nothing',
         info_na: 'N/A',
         info_sw: 'Service Worker',
+        calibration_title: 'Calibration pattern',
+        calibration_device: 'Display',
+        calibration_wall: 'Wall',
+        calibration_position: 'Position',
+        calibration_role: 'Role',
+        calibration_resolution: 'Viewport',
+        calibration_leader: 'Leader',
+        calibration_follower: 'Follower',
+        calibration_solo: 'Standalone',
+        player_recovery_paused: 'Player recovery paused. Check network or reboot the display.',
       },
       es: {
         web_player: 'Reproductor web', server_url: 'URL del servidor', server_url_placeholder: 'https://signage.tudominio.com', connect: 'Conectar', pairing_code: 'Código de vinculación', pairing_hint: 'Ingresa este código en el panel para vincular esta pantalla', connecting: 'Conectando...', connecting_muted: 'Conectando (audio silenciado)...', info_title: 'Reproductor web Media Control', info_close_hint: 'Presiona Atrás de nuevo o haz clic para cerrar', info_device_id: 'ID del dispositivo', info_device_name: 'Nombre del dispositivo', info_server: 'Servidor', info_status: 'Estado', info_now_playing: 'Reproduciendo', info_resolution: 'Resolución', info_uptime: 'Tiempo activo', info_platform: 'Plataforma', info_cache: 'Caché', info_connected: 'Conectado', info_disconnected: 'Desconectado', info_active: 'Activo', info_inactive: 'Inactivo', info_nothing: 'Nada', info_na: 'N/D', info_sw: 'Service Worker',
@@ -357,6 +396,7 @@
     let lastWallSync = null;
     let currentVideoEl = null;
     let currentItemStartedAt = 0;
+    let pendingWallStartAt = 0;
     // Followers in a video wall must stay silent — N copies of the same audio
     // slightly out of sync produce a flanged echo across the wall. Only the
     // leader is allowed to make sound. This helper is the single source of
@@ -370,6 +410,13 @@
     let ytApiCallbacks = [];
     let activeYtPlayer = null;
     let ytGeneration = 0;
+    let calibrationTimer = null;
+    let watchdogTimer = null;
+    let watchdogLastTick = Date.now();
+    const WATCHDOG_INTERVAL_MS = 5000;
+    const WATCHDOG_STALL_MS = 60000;
+    const WATCHDOG_RELOAD_LIMIT = 3;
+    const WATCHDOG_RELOAD_WINDOW_MS = 5 * 60 * 1000;
 
     // AudioContext is created lazily on the first user gesture. Resuming it
     // is what convinces stricter browsers (Firefox) that the site is "user-
@@ -439,6 +486,109 @@
     function hideEnableAudioPrompt() {
       document.getElementById('enableAudioPrompt')?.remove();
     }
+
+    function hideCalibrationOverlay() {
+      if (calibrationTimer) { clearTimeout(calibrationTimer); calibrationTimer = null; }
+      document.getElementById('calibrationOverlay')?.remove();
+    }
+
+    function showCalibrationOverlay(data) {
+      if (data && data.enabled === false) { hideCalibrationOverlay(); return; }
+      hideCalibrationOverlay();
+
+      const overlay = document.createElement('div');
+      overlay.id = 'calibrationOverlay';
+      overlay.className = 'calibration-overlay';
+      overlay.setAttribute('role', 'status');
+      overlay.setAttribute('aria-live', 'polite');
+
+      const info = document.createElement('div');
+      info.className = 'calibration-info';
+      const label = (data && data.label) || config.deviceName || (config.deviceId || '').slice(0, 8) || _t('info_na');
+      const role = wallConfig ? (wallConfig.is_leader ? _t('calibration_leader') : _t('calibration_follower')) : _t('calibration_solo');
+      const row = Number.isFinite(Number(wallConfig?.grid_row)) ? Number(wallConfig.grid_row) + 1 : null;
+      const col = Number.isFinite(Number(wallConfig?.grid_col)) ? Number(wallConfig.grid_col) + 1 : null;
+      const position = row && col ? `R${row} / C${col}` : _t('info_na');
+      const wallName = wallConfig?.wall_name || wallConfig?.wall_id || _t('info_na');
+      const values = [
+        [_t('calibration_title'), label],
+        [_t('calibration_wall'), wallName],
+        [_t('calibration_position'), position],
+        [_t('calibration_role'), role],
+        [_t('calibration_device'), (config.deviceId || '').slice(0, 8) || _t('info_na')],
+        [_t('calibration_resolution'), `${window.innerWidth}×${window.innerHeight}`],
+      ];
+      values.forEach(([k, v]) => {
+        const span = document.createElement('span');
+        span.textContent = `${k}: ${v}`;
+        info.appendChild(span);
+      });
+      overlay.appendChild(info);
+      ['tl', 'tr', 'bl', 'br'].forEach((c) => {
+        const corner = document.createElement('div');
+        corner.className = 'calibration-corner ' + c;
+        overlay.appendChild(corner);
+      });
+      document.body.appendChild(overlay);
+
+      const duration = Number(data?.duration_ms);
+      calibrationTimer = setTimeout(hideCalibrationOverlay, Number.isFinite(duration) ? Math.max(5000, Math.min(120000, duration)) : 30000);
+    }
+
+    function requestSelfHealingReload(reason) {
+      try {
+        const now = Date.now();
+        const key = 'rd_player_recovery_reloads';
+        let stamps = [];
+        try { stamps = JSON.parse(localStorage.getItem(key) || '[]'); } catch { stamps = []; }
+        stamps = stamps.filter(t => now - Number(t) < WATCHDOG_RELOAD_WINDOW_MS);
+        if (stamps.length >= WATCHDOG_RELOAD_LIMIT) {
+          console.warn('[watchdog] reload limit reached after ' + reason);
+          showStatus(_t('player_recovery_paused'));
+          return;
+        }
+        stamps.push(now);
+        localStorage.setItem(key, JSON.stringify(stamps));
+        console.warn('[watchdog] reloading after ' + reason);
+      } catch (e) { /* localStorage can fail; reload anyway */ }
+      setTimeout(() => { window.location.reload(); }, 100);
+    }
+
+    function startSelfHealingWatchdog() {
+      if (watchdogTimer) return;
+      watchdogLastTick = Date.now();
+      watchdogTimer = setInterval(() => {
+        const now = Date.now();
+        const drift = now - watchdogLastTick;
+        watchdogLastTick = now;
+        try { localStorage.setItem('rd_player_watchdog_pulse', String(now)); } catch {}
+        if (drift > WATCHDOG_STALL_MS) requestSelfHealingReload('main-thread-stall-' + drift + 'ms');
+      }, WATCHDOG_INTERVAL_MS);
+
+      const onContextLost = (e) => {
+        try { e.preventDefault(); } catch (_) {}
+        requestSelfHealingReload('webgl-context-lost');
+      };
+      const watchCanvas = (canvas) => {
+        if (!canvas || canvas.__mcWebglWatchdog) return;
+        canvas.__mcWebglWatchdog = true;
+        canvas.addEventListener('webglcontextlost', onContextLost, false);
+      };
+      document.querySelectorAll('canvas').forEach(watchCanvas);
+      try {
+        const mo = new MutationObserver((mutations) => {
+          mutations.forEach((m) => {
+            m.addedNodes && m.addedNodes.forEach((n) => {
+              if (n && n.tagName === 'CANVAS') watchCanvas(n);
+              if (n && n.querySelectorAll) n.querySelectorAll('canvas').forEach(watchCanvas);
+            });
+          });
+        });
+        mo.observe(document.documentElement, { childList: true, subtree: true });
+      } catch (e) { /* MutationObserver unavailable on older TVs */ }
+    }
+
+    startSelfHealingWatchdog();
 
     // Track user interaction for autoplay policy
     ['click', 'touchstart', 'keydown'].forEach(evt => {
@@ -1014,10 +1164,23 @@
         if (!wallConfig || wallConfig.is_leader) return;
         if (data.wall_id !== wallConfig.wall_id) return;
         lastWallSync = data;
-        // If leader switched item, jump to it
+        // If leader switched item, jump to it. If the leader's content_id does
+        // not match the follower's item at the same index, hold position and
+        // request a fresh payload instead of playing the wrong wall tile.
         if (typeof data.current_index === 'number' && data.current_index !== currentIndex && playlist.length > 0) {
-          currentIndex = ((data.current_index % playlist.length) + playlist.length) % playlist.length;
-          playCurrentItem();
+          const targetIndex = ((data.current_index % playlist.length) + playlist.length) % playlist.length;
+          const targetItem = playlist[targetIndex] || {};
+          if (data.content_id && targetItem.content_id && data.content_id !== targetItem.content_id) {
+            console.warn('[wall] sync content mismatch leader=' + data.content_id + ' local=' + targetItem.content_id + ' index=' + targetIndex);
+            if (socket?.connected) socket.emit('wall:sync-request', { wall_id: wallConfig.wall_id });
+          } else {
+            const startInMs = Number(data.start_in_ms);
+            pendingWallStartAt = Number.isFinite(startInMs) && startInMs > 50
+              ? Date.now() + Math.min(2000, Math.max(0, startInMs))
+              : 0;
+            currentIndex = targetIndex;
+            playCurrentItem();
+          }
         }
         // YouTube follower alignment. The IFrame API has no playbackRate so
         // we can't nudge gently; we hard-seek on any non-trivial drift. Also
@@ -1028,7 +1191,7 @@
             typeof activeYtPlayer.getCurrentTime === 'function') {
           try {
             const now = Date.now();
-            const latency = data.sent_at ? Math.max(0, (now - data.sent_at) / 1000) : 0;
+            const latency = data.sent_at ? Math.min(2, Math.max(0, (now - data.sent_at) / 1000)) : 0;
             const target = data.position_sec + latency;
             const ytTime = activeYtPlayer.getCurrentTime() || 0;
             if (Math.abs(ytTime - target) > 1.5) {
@@ -1046,7 +1209,7 @@
         // by now a bit more time has elapsed, so target = position + latency.
         if (currentVideoEl && typeof data.position_sec === 'number') {
           const now = Date.now();
-          const latency = data.sent_at ? Math.max(0, (now - data.sent_at) / 1000) : 0;
+          const latency = data.sent_at ? Math.min(2, Math.max(0, (now - data.sent_at) / 1000)) : 0;
           const target = data.position_sec + latency;
           const drift = (currentVideoEl.currentTime || 0) - target;
           const absDrift = Math.abs(drift);
@@ -1057,7 +1220,8 @@
           } else if (absDrift > 0.05) {
             // Small drift: nudge playbackRate to converge gently. ±3% is
             // imperceptible on most content but pulls in 50ms drift in <2s.
-            try { currentVideoEl.playbackRate = drift > 0 ? 0.97 : 1.03; } catch (_) {}
+            const rate = drift > 0 ? 0.97 : 1.03;
+            try { if (Math.abs((currentVideoEl.playbackRate || 1) - rate) > 0.001) currentVideoEl.playbackRate = rate; } catch (_) {}
           } else if (currentVideoEl.playbackRate !== 1.0) {
             // In-window: ride at normal rate.
             try { currentVideoEl.playbackRate = 1.0; } catch (_) {}
@@ -1172,8 +1336,9 @@
       // Phase 2: dashboard "Identify" action — flash a big high-contrast
       // marker on this display for ~5s. Does not disturb playback underneath.
       socket.on('device:identify', (data) => {
-        console.log('Identify requested:', data?.label || config.deviceName || '');
-        showIdentifyOverlay(data && data.label);
+        console.log('Identify requested:', data?.label || config.deviceName || '', data?.mode || 'identify');
+        if (data && data.mode === 'calibration') showCalibrationOverlay(data);
+        else showIdentifyOverlay(data && data.label);
       });
 
       // Phase 6: Smartboard — the dashboard relays normalized 0..1 drawing
@@ -1379,6 +1544,7 @@
         content_id: item.content_id || null,
         position_sec: position,
         sent_at: Date.now(),
+        start_in_ms: Math.max(0, currentItemStartedAt - Date.now()),
       });
     }
 
@@ -1537,7 +1703,8 @@
       hideStatus();
       const item = playlist[currentIndex];
       console.log('Playing:', item.filename, `(${currentIndex + 1}/${playlist.length})`);
-      currentItemStartedAt = Date.now();
+      currentItemStartedAt = pendingWallStartAt || (wallConfig?.is_leader ? Date.now() + 500 : Date.now());
+      pendingWallStartAt = 0;
 
       // Only the leader (or single, non-walled players) records a play_start —
       // followers would just spam duplicate proof-of-play rows for the same item.
@@ -1836,7 +2003,7 @@
       const isPdf = !isWebpage && item.mime_type === 'application/pdf';
       const isOffice = !isWebpage && OFFICE_MIMES.includes(item.mime_type);
       const serverUrl = config.serverUrl;
-      const src = remoteUrl || `${serverUrl}/uploads/content/${item.filepath}`;
+      const src = item.asset_url || remoteUrl || `${serverUrl}/uploads/content/${item.filepath}`;
       // 2026-05-28: per-item fit_mode override. Null/undefined falls back to
       // 'fill' (wall) / 'contain' (solo). Validated server-side so any value
       // arriving here is a known CSS object-fit token.
@@ -1869,7 +2036,10 @@
         } else if (isVideo) {
           const video = document.createElement('video');
           video.src = src;
-          video.autoplay = true;
+          const wallStartDelayMs = wallConfig && currentItemStartedAt > Date.now() + 40
+            ? Math.min(2000, currentItemStartedAt - Date.now())
+            : 0;
+          video.autoplay = wallStartDelayMs <= 0;
           // Followers stay muted unconditionally (leader-only audio); leaders
           // start muted only if the user hasn't gestured yet (autoplay policy).
           video.muted = isFollower ? true : !userHasInteracted;
@@ -1906,7 +2076,7 @@
           currentVideoEl = video;
           // Try playing as we set muted above. If the browser blocks
           // unmuted autoplay (e.g. no user gesture yet), retry muted.
-          video.play().then(() => {
+          const startVideo = () => video.play().then(() => {
             console.log('[wall/audio] play() ok muted=' + video.muted + ' volume=' + video.volume);
           }).catch((err) => {
             console.warn('[wall/audio] play() rejected, falling back to muted: ' + (err?.name || err?.message || err));
@@ -1915,8 +2085,10 @@
               .then(() => console.log('[wall/audio] muted-fallback play() ok'))
               .catch((e2) => console.error('[wall/audio] muted-fallback play() also failed: ' + (e2?.name || e2?.message || e2)));
           });
+          if (wallStartDelayMs > 0) setTimeout(startVideo, wallStartDelayMs);
+          else startVideo();
           // Fallback: force play if not started after 2s
-          setTimeout(() => { if (video.paused) { video.muted = true; video.play().catch(() => {}); } }, 2000);
+          setTimeout(() => { if (video.paused) { video.muted = true; video.play().catch(() => {}); } }, wallStartDelayMs + 2000);
         } else if (isImage) {
           const img = document.createElement('img');
           img.src = src;
@@ -1992,7 +2164,7 @@
         if (!assignment) return;
 
         const isVideo = assignment.mime_type?.startsWith('video/');
-        const src = assignment.remote_url || `${config.serverUrl}/uploads/content/${assignment.filepath}`;
+        const src = assignment.asset_url || assignment.remote_url || `${config.serverUrl}/uploads/content/${assignment.filepath}`;
 
         const isYoutubeZone = assignment.mime_type === 'video/youtube';
 

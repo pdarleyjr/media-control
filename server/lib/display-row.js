@@ -9,7 +9,7 @@
 //     screen_on, playlist_id, layout_id, shot_at }
 // `nowPlaying` is the resolved now-playing summary (see lib/display-state.js).
 // `now` is the current unix time (seconds) used for the online window.
-function mapDisplayRow(row, nowPlaying, now) {
+function mapDisplayRow(row, nowPlaying, now, assetCache = null) {
   const online = row.status === 'online' && row.last_heartbeat && (now - row.last_heartbeat) < 60;
   return {
     id: row.id,
@@ -26,6 +26,7 @@ function mapDisplayRow(row, nowPlaying, now) {
     // store appends &token= centrally; do NOT bake it in here.
     screenshot_url: row.shot_at ? `/api/devices/${row.id}/screenshot?t=${row.shot_at}` : null,
     screenshot_at: row.shot_at || null,
+    asset_cache: assetCache || { mode: 'direct' },
   };
 }
 

@@ -6,6 +6,7 @@ const { db, pruneTelemetry, pruneScreenshots } = require('../db/database');
 const config = require('../config');
 const heartbeat = require('../services/heartbeat');
 const commandQueue = require('../lib/command-queue');
+const { withLocalAssetUrls } = require('../lib/local-asset-url');
 
 // Debounce window for marking a device offline on socket disconnect. Brief
 // flap (Wi-Fi blip, Engine.IO ping miss, server-side eviction-then-reconnect)
@@ -94,6 +95,8 @@ function buildPlaylistPayload(deviceId) {
         }
       }
     } catch (e) { /* live backfill is best-effort */ }
+
+    assignments = withLocalAssetUrls(assignments, config.localContentBaseUrl);
   }
 
   let layout = null;
@@ -157,6 +160,11 @@ function buildPlaylistPayload(deviceId) {
 
       wall_config = {
         wall_id: wall.id,
+        wall_name: wall.name || null,
+        grid_col: pos.grid_col,
+        grid_row: pos.grid_row,
+        grid_cols: wall.grid_cols,
+        grid_rows: wall.grid_rows,
         screen_rect: screenRect,
         player_rect: playerRect,
         is_leader: wall.leader_device_id === deviceId,

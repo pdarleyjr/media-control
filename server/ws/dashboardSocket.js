@@ -47,6 +47,27 @@ function canActOnScene(socket, activityId, tier /* 'read' | 'write' */) {
   return ctx.workspaceRole === 'workspace_editor' || ctx.workspaceRole === 'workspace_admin';
 }
 
+function buildIdentifyPayload(data, deviceId) {
+  let label = null;
+  try {
+    const row = db.prepare('SELECT name FROM devices WHERE id = ?').get(deviceId);
+    label = (row && row.name) ? row.name : String(deviceId).slice(0, 8);
+  } catch (e) {
+    label = String(deviceId).slice(0, 8);
+  }
+
+  const payload = { label };
+  if (data && data.mode === 'calibration') {
+    payload.mode = 'calibration';
+    payload.enabled = data.enabled !== false;
+    const duration = Number(data.duration_ms);
+    payload.duration_ms = Number.isFinite(duration)
+      ? Math.max(5000, Math.min(120000, Math.floor(duration)))
+      : 30000;
+  }
+  return payload;
+}
+
 module.exports = function setupDashboardSocket(io) {
   const dashboardNs = io.of('/dashboard');
   const deviceNs = io.of('/device');
@@ -117,15 +138,9 @@ module.exports = function setupDashboardSocket(io) {
     socket.on('dashboard:identify', (data) => {
       const { device_id } = data || {};
       if (!canActOnDevice(socket, device_id, 'write')) return;
-      let label = null;
-      try {
-        const row = db.prepare('SELECT name FROM devices WHERE id = ?').get(device_id);
-        label = (row && row.name) ? row.name : String(device_id).slice(0, 8);
-      } catch (e) {
-        label = String(device_id).slice(0, 8);
-      }
-      deviceNs.to(device_id).emit('device:identify', { label });
-      console.log(`Identify flashed on device ${device_id} (label: ${label})`);
+      const payload = buildIdentifyPayload(data, device_id);
+      deviceNs.to(device_id).emit('device:identify', payload);
+      console.log(`Identify flashed on device ${device_id} (mode: ${payload.mode || 'identify'}, label: ${payload.label})`);
     });
 
     // Phase 6 (Smartboard): relay whiteboard control/draw events from the

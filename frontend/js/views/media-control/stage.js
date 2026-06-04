@@ -103,6 +103,8 @@ function displayCard(display) {
 // data-wall-ids so the caller can fan a single source out to every member. A
 // transport bar targeting the wall LEADER lets the operator pause / skip / restart
 // / blank the wall's content from the dashboard (the leader drives playback).
+// A calibration button flashes a non-disruptive overlay on every wall member via
+// the existing identify event, keeping the frozen player command protocol intact.
 const ICON_WALL_ALL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></svg>';
 
 // Merge a wall-membership row (name/status/grid position from the JOIN) with the
@@ -189,6 +191,9 @@ function wallCard(wall, byId) {
       <div class="mc-wall-head">
         <span class="mc-wall-title">${esc(wall.name)}</span>
         <span class="mc-wall-sub">${esc(tn('mc.wall.screens', slots))}</span>
+        <button type="button" class="mc-wall-calibrate" data-wall-calibrate
+                data-wall-ids="${esc(ids)}" data-wall-name="${esc(wall.name)}"
+                title="${esc(t('mc.wall.calibrate_title'))}">${esc(t('mc.wall.calibrate'))}</button>
         <a class="mc-wall-edit" href="#/walls">${esc(t('mc.wall.edit'))}</a>
       </div>
       <div class="mc-wall-grid" style="grid-template-columns:repeat(${cols},1fr);grid-template-rows:repeat(${rows},1fr);aspect-ratio:${cols} / ${rows}">
@@ -238,12 +243,13 @@ function emptyState() {
  *   members) keyed by id, so wall cells can show what each screen is showing now
  * @param {string[]} opts.selectedIds     currently-selected display ids
  * @param {(id:string)=>void} opts.onSelect        a display card / wall screen was activated
+ * @param {(ids:string[], name:string)=>void} [opts.onCalibrateWall]
  * @param {()=>void}          opts.onAddDisplay     the "+ Add display" tile was activated
  * @param {(id:string, screenOn:boolean)=>void} [opts.onScreenOnChange]
  *   Called when a blank/unblank ack changes a display's screen_on value so the
  *   caller can patch display-state and trigger a re-paint.
  */
-export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], onSelect, onAddDisplay, onScreenOnChange } = {}) {
+export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], onSelect, onCalibrateWall, onAddDisplay, onScreenOnChange } = {}) {
   if (!container) return;
   const selected = new Set(selectedIds);
 
@@ -273,6 +279,15 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
     el.addEventListener('click', () => { if (typeof onSelect === 'function') onSelect(el.dataset.deviceId); });
     el.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (typeof onSelect === 'function') onSelect(el.dataset.deviceId); }
+    });
+  });
+
+  container.querySelectorAll('[data-wall-calibrate]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const ids = String(btn.dataset.wallIds || '').split(',').filter(Boolean);
+      if (ids.length && typeof onCalibrateWall === 'function') onCalibrateWall(ids, btn.dataset.wallName || '');
     });
   });
 

@@ -21,12 +21,18 @@ import { t } from '../../i18n.js';
 import { WB } from '../../player-protocol.js';
 import { showToast } from '../../components/toast.js';
 import { renderRegionEditor } from './region-editor.js';
-import { getSocket } from '../../socket.js';
+import { getSocket, identifyDevice } from '../../socket.js';
 import * as engine from '../../services/screen-share-engine.js';
 
 function geometryLabel(display) {
   if (display.width && display.height) return `${display.width} × ${display.height}`;
   return t('mc.insp.unknown_res');
+}
+
+function assetCacheLabel(display) {
+  return display?.asset_cache?.mode === 'local'
+    ? t('mc.insp.cache_local')
+    : t('mc.insp.cache_direct');
 }
 
 /**
@@ -64,8 +70,14 @@ export async function renderInspector(container, { display, isWallMember = false
           <button type="button" class="mc-btn mc-btn-secondary" data-insp-wb-start>${esc(t('mc.insp.wb_start'))}</button>
           <button type="button" class="mc-btn mc-btn-secondary" data-insp-ss-start>${esc(t('mc.insp.ss_start'))}</button>
           <button type="button" class="mc-btn mc-btn-danger-sm" data-insp-ss-stop hidden>${esc(t('mc.insp.ss_stop'))}</button>
+          <button type="button" class="mc-btn mc-btn-secondary" data-insp-calibrate>${esc(t('mc.insp.calibrate'))}</button>
         </div>
         <a class="mc-insp-link" href="#/device/${esc(display.id)}">${esc(t('mc.insp.full_settings'))}</a>
+      </section>
+
+      <section class="mc-insp-section">
+        <h3 class="mc-insp-subhead">${esc(t('mc.insp.delivery'))}</h3>
+        <p class="mc-insp-kv"><span>${esc(t('mc.insp.cache_status'))}</span><strong>${esc(assetCacheLabel(display))}</strong></p>
       </section>
 
       <section class="mc-insp-section mc-insp-regions" id="mc-insp-regions"></section>
@@ -92,6 +104,7 @@ export async function renderInspector(container, { display, isWallMember = false
   const wbStartBtn = container.querySelector('[data-insp-wb-start]');
   const ssStartBtn = container.querySelector('[data-insp-ss-start]');
   const ssStopBtn  = container.querySelector('[data-insp-ss-stop]');
+  const calibrateBtn = container.querySelector('[data-insp-calibrate]');
 
   // Sync the Start/Stop button visibility to the engine state for this display.
   function syncSsButtons() {
@@ -147,6 +160,13 @@ export async function renderInspector(container, { display, isWallMember = false
       } finally {
         ssStopBtn.disabled = false;
       }
+    });
+  }
+
+  if (calibrateBtn) {
+    calibrateBtn.addEventListener('click', () => {
+      identifyDevice(display.id, { mode: 'calibration', duration_ms: 30000 });
+      showToast(t('mc.insp.calibrate_sent', { name: display.name }), 'success');
     });
   }
 
