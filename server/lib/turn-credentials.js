@@ -51,12 +51,17 @@ const OPENRELAY_TURN = [
 ];
 
 const TURN_TTL_SECONDS = 60 * 60; // 1 hour
+const CF_TURN_TIMEOUT_MS = parseInt(process.env.CF_TURN_TIMEOUT_MS, 10) || 5000;
 
 async function fetchCloudflareTurnCredentials(keyId, apiToken, ttlSeconds = TURN_TTL_SECONDS) {
   // https://developers.cloudflare.com/calls/turn/generate-credentials/
   const url = `https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(keyId)}/credentials/generate-ice-servers`;
+  const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout
+    ? AbortSignal.timeout(CF_TURN_TIMEOUT_MS)
+    : undefined;
   const res = await fetch(url, {
     method: 'POST',
+    signal,
     headers: {
       'Authorization': `Bearer ${apiToken}`,
       'Content-Type': 'application/json',

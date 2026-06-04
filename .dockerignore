@@ -9,6 +9,9 @@ server/db/*.db
 server/db/*.db-wal
 server/db/*.db-shm
 server/uploads
+server/certs
+server/certs/*.pem
+server/certs/.jwt_secret
 data
 *.log
 .env

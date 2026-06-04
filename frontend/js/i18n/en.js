@@ -48,6 +48,10 @@ export default {
   'common.hours_ago': '{n}h ago',
   'common.days_ago': '{n}d ago',
   'common.unknown': 'Unknown',
+  'app.update_available': 'Dashboard updated.',
+  'app.reload_now': 'Reload now',
+  'app.session_expires': 'Session expires in {minutes} minutes.',
+  'app.relogin': 'Re-login',
 
   // Auth (login view)
   'auth.sign_in': 'Sign In',

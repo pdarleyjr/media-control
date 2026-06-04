@@ -385,32 +385,32 @@ async function loadDevice(deviceId, activeTab = null) {
             <button class="btn btn-secondary" id="stopRemoteBtn" style="display:none">${t('device.remote.stop')}</button>
             <hr style="border-color:var(--border);margin:8px 0">
             <!-- Always available -->
-            <button class="btn btn-secondary btn-sm" onclick="window._sendKey('KEYCODE_VOLUME_UP')">${t('device.remote.vol_up')}</button>
-            <button class="btn btn-secondary btn-sm" onclick="window._sendKey('KEYCODE_VOLUME_DOWN')">${t('device.remote.vol_down')}</button>
+            <button class="btn btn-secondary btn-sm" data-remote-key="KEYCODE_VOLUME_UP">${t('device.remote.vol_up')}</button>
+            <button class="btn btn-secondary btn-sm" data-remote-key="KEYCODE_VOLUME_DOWN">${t('device.remote.vol_down')}</button>
             <hr style="border-color:var(--border);margin:8px 0">
             <!-- System View controls (disabled until enabled) -->
             <div id="systemViewControls" style="opacity:0.4;pointer-events:none">
-              <button class="btn btn-secondary btn-sm" onclick="window._sendKey('KEYCODE_HOME')">${t('device.remote.home')}</button>
-              <button class="btn btn-secondary btn-sm" onclick="window._sendKey('KEYCODE_BACK')">${t('device.remote.back')}</button>
-              <button class="btn btn-secondary btn-sm" onclick="window._sendKey('KEYCODE_APP_SWITCH')">${t('device.remote.recents')}</button>
-              <button class="btn btn-danger btn-sm" onclick="window._sendKey('KEYCODE_POWER')">${t('device.remote.power')}</button>
+              <button class="btn btn-secondary btn-sm" data-remote-key="KEYCODE_HOME">${t('device.remote.home')}</button>
+              <button class="btn btn-secondary btn-sm" data-remote-key="KEYCODE_BACK">${t('device.remote.back')}</button>
+              <button class="btn btn-secondary btn-sm" data-remote-key="KEYCODE_APP_SWITCH">${t('device.remote.recents')}</button>
+              <button class="btn btn-danger btn-sm" data-remote-key="KEYCODE_POWER">${t('device.remote.power')}</button>
               <hr style="border-color:var(--border);margin:8px 0">
-              <button class="btn btn-secondary btn-sm" onclick="window._sendKey('KEYCODE_DPAD_UP')">&#9650;</button>
+              <button class="btn btn-secondary btn-sm" data-remote-key="KEYCODE_DPAD_UP">&#9650;</button>
               <div style="display:flex;gap:4px">
-                <button class="btn btn-secondary btn-sm" style="flex:1" onclick="window._sendKey('KEYCODE_DPAD_LEFT')">&#9664;</button>
-                <button class="btn btn-secondary btn-sm" style="flex:1" onclick="window._sendKey('KEYCODE_DPAD_RIGHT')">&#9654;</button>
+                <button class="btn btn-secondary btn-sm" style="flex:1" data-remote-key="KEYCODE_DPAD_LEFT">&#9664;</button>
+                <button class="btn btn-secondary btn-sm" style="flex:1" data-remote-key="KEYCODE_DPAD_RIGHT">&#9654;</button>
               </div>
-              <button class="btn btn-secondary btn-sm" onclick="window._sendKey('KEYCODE_DPAD_DOWN')">&#9660;</button>
-              <button class="btn btn-primary btn-sm" onclick="window._sendKey('KEYCODE_DPAD_CENTER')">${t('device.remote.ok')}</button>
+              <button class="btn btn-secondary btn-sm" data-remote-key="KEYCODE_DPAD_DOWN">&#9660;</button>
+              <button class="btn btn-primary btn-sm" data-remote-key="KEYCODE_DPAD_CENTER">${t('device.remote.ok')}</button>
               <hr style="border-color:var(--border);margin:8px 0">
-              <button class="btn btn-secondary btn-sm" onclick="window._sendCmd('settings')">${t('device.remote.settings')}</button>
+              <button class="btn btn-secondary btn-sm" data-remote-cmd="settings">${t('device.remote.settings')}</button>
               <hr style="border-color:var(--border);margin:8px 0">
               <div style="display:flex;gap:4px">
-                <button class="btn btn-secondary btn-sm" style="flex:1" onclick="window._sendCmd('screen_off')">${t('device.remote.scrn_off')}</button>
-                <button class="btn btn-secondary btn-sm" style="flex:1" onclick="window._sendCmd('screen_on')">${t('device.remote.scrn_on')}</button>
+                <button class="btn btn-secondary btn-sm" style="flex:1" data-remote-cmd="screen_off">${t('device.remote.scrn_off')}</button>
+                <button class="btn btn-secondary btn-sm" style="flex:1" data-remote-cmd="screen_on">${t('device.remote.scrn_on')}</button>
               </div>
             </div>
-            <button class="btn btn-primary btn-sm" id="enableSystemCaptureBtn" onclick="window._enableSystemView()" title="${t('device.remote.system_view_tooltip')}" style="margin-top:8px">
+            <button class="btn btn-primary btn-sm" id="enableSystemCaptureBtn" data-enable-system-view="1" title="${t('device.remote.system_view_tooltip')}" style="margin-top:8px">
               ${t('device.remote.enable_system_view')}
             </button>
             <span id="systemViewHint" style="font-size:10px;color:var(--text-muted);line-height:1.2;display:block;margin-top:4px">${t('device.remote.system_view_hint')}</span>
@@ -419,33 +419,11 @@ async function loadDevice(deviceId, activeTab = null) {
       </div>
     `;
 
-    // Global key/command handlers for remote
-    window._sendKey = (keycode) => {
-      if (currentDevice) sendKey(currentDevice.id, keycode);
-    };
-    window._sendCmd = (type) => {
-      if (currentDevice) sendCommand(currentDevice.id, type, {});
-    };
-    window._enableSystemView = () => {
-      if (!currentDevice) return;
-      sendCommand(currentDevice.id, 'enable_system_capture', {});
-      // Unlock the system controls after a short delay (user needs to tap "Start now" on device)
-      const btn = document.getElementById('enableSystemCaptureBtn');
-      const hint = document.getElementById('systemViewHint');
-      if (btn) { btn.textContent = t('device.remote.waiting_for_approval'); btn.disabled = true; }
-      // Check periodically if the device granted it (we'll know because screenshots keep coming even after Home)
-      setTimeout(() => {
-        const controls = document.getElementById('systemViewControls');
-        if (controls) { controls.style.opacity = '1'; controls.style.pointerEvents = 'auto'; }
-        if (btn) { btn.textContent = t('device.remote.system_view_enabled'); btn.style.background = 'var(--success)'; }
-        if (hint) hint.textContent = t('device.remote.unlocked_hint');
-      }, 5000);
-    };
-
     // Render uptime timeline
     renderUptimeTimeline(device.uptimeData || [], device.statusLog || []);
 
     setupTabs();
+    setupRemoteControls();
     setupActions(device);
     setupRemote(device);
     setupPlaylistActions(device);
@@ -532,6 +510,44 @@ function setupTabs() {
       document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
     });
   });
+}
+
+function setupRemoteControls() {
+  const controls = document.querySelector('.remote-controls');
+  if (!controls) return;
+  controls.addEventListener('click', (e) => {
+    const keyButton = e.target.closest('[data-remote-key]');
+    if (keyButton) {
+      if (currentDevice) sendKey(currentDevice.id, keyButton.dataset.remoteKey);
+      return;
+    }
+
+    const commandButton = e.target.closest('[data-remote-cmd]');
+    if (commandButton) {
+      if (currentDevice) sendCommand(currentDevice.id, commandButton.dataset.remoteCmd, {});
+      return;
+    }
+
+    if (e.target.closest('[data-enable-system-view]')) {
+      enableSystemView();
+    }
+  });
+}
+
+function enableSystemView() {
+  if (!currentDevice) return;
+  sendCommand(currentDevice.id, 'enable_system_capture', {});
+  // Unlock the system controls after a short delay (user needs to tap "Start now" on device)
+  const btn = document.getElementById('enableSystemCaptureBtn');
+  const hint = document.getElementById('systemViewHint');
+  if (btn) { btn.textContent = t('device.remote.waiting_for_approval'); btn.disabled = true; }
+  // Check periodically if the device granted it (we'll know because screenshots keep coming even after Home)
+  setTimeout(() => {
+    const controls = document.getElementById('systemViewControls');
+    if (controls) { controls.style.opacity = '1'; controls.style.pointerEvents = 'auto'; }
+    if (btn) { btn.textContent = t('device.remote.system_view_enabled'); btn.style.background = 'var(--success)'; }
+    if (hint) hint.textContent = t('device.remote.unlocked_hint');
+  }, 5000);
 }
 
 async function setupActions(device) {
@@ -1272,5 +1288,4 @@ export function cleanup() {
   if (remoteActive && currentDevice) stopRemote(currentDevice.id);
   remoteActive = false;
   currentDevice = null;
-  window._sendKey = null;
 }

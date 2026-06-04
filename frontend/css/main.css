@@ -274,12 +274,14 @@ body {
 /* Buttons */
 .btn {
   padding: 8px 16px;
+  min-height: var(--tap-min);
   border-radius: var(--radius);
   font-weight: 500;
   font-size: 13px;
   transition: all var(--transition);
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
 }
 
@@ -304,7 +306,7 @@ body {
 
 .btn-danger {
   background: var(--danger-dim);
-  color: #fca5a5;
+  color: #fff;
 }
 
 .btn-danger:hover {
@@ -319,6 +321,8 @@ body {
 
 .btn-icon {
   padding: 6px;
+  min-width: var(--tap-min);
+  min-height: var(--tap-min);
   border-radius: var(--radius);
   color: var(--text-secondary);
   transition: all var(--transition);
@@ -775,9 +779,9 @@ body {
   font-weight: 500;
 }
 
-.device-status-badge.online { background: var(--success-dim); color: var(--success); }
-.device-status-badge.offline { background: var(--danger-dim); color: #fca5a5; }
-.device-status-badge.provisioning { background: var(--warning-dim); color: var(--warning); }
+.device-status-badge.online { background: var(--success-tint); color: var(--success-text); }
+.device-status-badge.offline { background: var(--danger-tint); color: var(--danger-text); }
+.device-status-badge.provisioning { background: var(--warning-tint); color: var(--warning-text); }
 
 .tabs {
   display: flex;
@@ -1427,9 +1431,9 @@ body {
   .schedule-controls > span { flex: 0 1 auto; }
 
   /* Tap targets: minimum 44px height for interactive elements */
-  .btn { min-height: 44px; padding: 10px 16px; }
-  .btn-sm { min-height: 36px; padding: 8px 12px; }
-  .btn-icon { min-width: 40px; min-height: 40px; }
+  .btn { min-height: var(--tap-min); padding: 10px 16px; }
+  .btn-sm { min-height: var(--tap-min); padding: 8px 12px; }
+  .btn-icon { min-width: var(--tap-min); min-height: var(--tap-min); }
 
   /* Form inputs: 16px font to prevent iOS focus zoom; 44px tap target */
   .input,
@@ -1764,7 +1768,7 @@ body {
 .mc-live-badge {
   display: inline-flex; align-items: center; gap: var(--mc-space-xs);
   padding: var(--mc-space-xs) var(--mc-space-md);
-  background: var(--mc-live-dim); color: var(--mc-live);
+  background: var(--mc-live-dim); color: var(--mc-live-text);
   border-radius: var(--mc-radius-full); font-size: var(--mc-font-size-xs); font-weight: var(--mc-fw-bold);
 }
 .mc-live-badge::before {

@@ -20,10 +20,16 @@
   --text-muted: #8A847C;
   --success: #16A34A;
   --success-dim: #15803d;
+  --success-tint: #dcfce7;
+  --success-text: #166534;
   --danger: #DC2626;
   --danger-dim: #991b1b;
+  --danger-tint: #fee2e2;
+  --danger-text: #991b1b;
   --warning: #CA8A04;
   --warning-dim: #92400e;
+  --warning-tint: #fef3c7;
+  --warning-text: #92400e;
   --border: #E4E0DA;
   --border-light: #D4D0CA;
   /* screen-share.css references these with dark fallbacks — define them light */
@@ -47,8 +53,8 @@
   /* Single disciplined call-to-action accent (orange), reserved for the ONE
      dominant action on a surface (Go Live / Present). Distinct from --accent so
      a future white-label can't dilute the CTA convention. Never status-coded. */
-  --cta: #f97316;
-  --cta-hover: #ea580c;
+  --cta: #c2410c;
+  --cta-hover: #9a3412;
   --cta-contrast: #ffffff;
 
   /* LIVE / on-air semantics. Always paired with a label or icon in markup —
@@ -141,6 +147,7 @@
 
   /* live / broadcast */
   --mc-live: #DC2626;
+  --mc-live-text: #B91C1C;
   --mc-live-dim: #FEF2F2;
   --mc-standby: #78716C;
   --mc-broadcasting: #3B82F6;

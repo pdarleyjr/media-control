@@ -1,3 +1,5 @@
+import { t } from './i18n.js';
+
 let dashboardSocket = null;
 const listeners = new Map();
 
@@ -77,10 +79,10 @@ function updateConnectionStatus(connected) {
   const text = el.querySelector('span:last-child');
   if (connected) {
     dot.className = 'status-dot online';
-    text.textContent = 'Connected';
+    text.textContent = t('common.connected');
   } else {
     dot.className = 'status-dot offline';
-    text.textContent = 'Disconnected';
+    text.textContent = t('common.disconnected');
   }
 }
 

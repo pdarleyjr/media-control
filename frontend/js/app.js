@@ -580,7 +580,17 @@ setInterval(async () => {
       if (toast) {
         const notice = document.createElement('div');
         notice.className = 'toast info';
-        notice.innerHTML = '<span>Dashboard updated. <a href="javascript:location.reload()" style="color:var(--accent);text-decoration:underline;font-weight:600">Reload now</a></span>';
+        notice.setAttribute('role', 'status');
+        notice.setAttribute('aria-live', 'polite');
+        const message = document.createElement('span');
+        message.textContent = t('app.update_available') + ' ';
+        const reload = document.createElement('button');
+        reload.type = 'button';
+        reload.textContent = t('app.reload_now');
+        reload.style.cssText = 'color:var(--accent);text-decoration:underline;font-weight:600;background:none;border:0;padding:0;cursor:pointer;font:inherit';
+        reload.addEventListener('click', () => window.location.reload());
+        message.appendChild(reload);
+        notice.appendChild(message);
         toast.appendChild(notice);
       }
     }
@@ -607,12 +617,31 @@ if (isAuthenticated()) {
         if (toast && !toast.querySelector('.session-warn')) {
           const warn = document.createElement('div');
           warn.className = 'toast info session-warn';
-          warn.innerHTML = `<span>Session expires in ${minutesLeft} minutes. <a href="#/login" style="color:var(--accent);text-decoration:underline" onclick="localStorage.removeItem('token');localStorage.removeItem('user')">Re-login</a></span>`;
+          warn.setAttribute('role', 'status');
+          warn.setAttribute('aria-live', 'polite');
+          const message = document.createElement('span');
+          message.textContent = t('app.session_expires', { minutes: minutesLeft }) + ' ';
+          const relogin = document.createElement('button');
+          relogin.type = 'button';
+          relogin.textContent = t('app.relogin');
+          relogin.style.cssText = 'color:var(--accent);text-decoration:underline;background:none;border:0;padding:0;cursor:pointer;font:inherit';
+          relogin.addEventListener('click', () => {
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+            window.location.hash = '#/login';
+          });
+          message.appendChild(relogin);
+          warn.appendChild(message);
           toast.appendChild(warn);
           setTimeout(() => warn.remove(), 10000);
         }
       }
-    } catch {}
+    } catch {
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      window.location.hash = '#/login';
+      window.location.reload();
+    }
   }, 60000);
 }
 window.addEventListener('hashchange', route);
