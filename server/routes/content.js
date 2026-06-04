@@ -12,6 +12,7 @@ const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
 // Phase 2.2b: workspace-aware access. Mirrors the pattern from devices.js.
 const { accessContext } = require('../lib/tenancy');
 const { ownedContentScope } = require('../lib/content-scope');
+const { contentRowsWithThumbnailUrls } = require('../lib/content-response');
 
 // Multer captures file.originalname directly from the multipart filename header,
 // bypassing sanitizeBody. Apply the same HTML-escape here so a filename like
@@ -75,7 +76,7 @@ router.get('/', (req, res) => {
   sql += ' ORDER BY folder, created_at DESC LIMIT ? OFFSET ?';
   params.push(Math.min(parseInt(req.query.limit) || 100, 500), parseInt(req.query.offset) || 0);
   const content = db.prepare(sql).all(...params);
-  res.json(content);
+  res.json(contentRowsWithThumbnailUrls(content));
 });
 
 // Get folders list for the caller's current workspace.
