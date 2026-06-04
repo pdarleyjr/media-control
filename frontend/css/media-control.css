@@ -305,6 +305,31 @@
 .mc-wall-all-ico { display: inline-flex; }
 .mc-wall-all-ico svg { width: 16px; height: 16px; display: block; }
 .mc-wall-all-dragover { border-style: solid; border-color: var(--accent); color: var(--accent); background: rgba(37, 99, 235, 0.05); }
+
+/* Span/Split template toggle (2026-06-04). Segmented control in the wall head;
+   the active segment is the current layout_mode. Pushes to the right edge, with
+   calibrate/edit following it (their margin-left:auto is reset here). */
+.mc-wall-template {
+  margin-left: auto; display: inline-flex; gap: 3px; align-items: center;
+  background: var(--mc-dark-bg, #1E293B);
+  border: 1px solid var(--mc-border-light, rgba(148, 163, 184, 0.25));
+  border-radius: 8px; padding: 3px;
+}
+.mc-wall-template ~ .mc-wall-calibrate,
+.mc-wall-template ~ .mc-wall-edit { margin-left: var(--space-2, 8px); }
+.mc-wall-tpl {
+  min-height: 32px; padding: 0 12px; border: none; background: transparent; cursor: pointer;
+  font-size: var(--font-2, 12px); font-weight: 600; color: var(--mc-text-secondary);
+  border-radius: 6px; line-height: 1;
+}
+.mc-wall-tpl:hover { color: var(--mc-text-primary); }
+.mc-wall-tpl.is-active { background: var(--accent, #2563eb); color: #fff; }
+.mc-wall-tpl:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.mc-wall-hint { font-size: var(--font-2, 12px); color: var(--mc-text-secondary); margin-bottom: var(--mc-space-sm, 8px); }
+/* Split template: separate the screens so each reads as its own drop target. */
+.mc-wall-mode-split .mc-wall-grid { gap: 8px; }
+.mc-wall-mode-split .mc-wall-cell { outline: 1px dashed var(--mc-border-light, rgba(148, 163, 184, 0.4)); outline-offset: -1px; }
+
 /* Wall transport bar — pause/skip/restart/blank the whole wall via its leader.
    The bar (.mc-transport-bar) brings its own top border; just space it below the grid. */
 .mc-wall-transport { margin-top: var(--mc-space-sm, 8px); }

@@ -187,6 +187,12 @@ const migrations = [
   // per display (written only on ACKED device-command delivery), and a tiny
   // per-user "what was I controlling" selection so the unified stage re-hydrates.
   "ALTER TABLE devices ADD COLUMN screen_on INTEGER NOT NULL DEFAULT 1",
+  // 2026-06-04 Video Wall 2 template card: a wall can render in 'span' mode
+  // (one source stretched across every screen via the leader/follower
+  // wall_config — the existing behaviour) OR 'split' mode (each member screen
+  // plays its OWN content full-screen, independently — no wall_config emitted).
+  // The dashboard wall card exposes this as a Span/Split template toggle.
+  "ALTER TABLE video_walls ADD COLUMN layout_mode TEXT NOT NULL DEFAULT 'span'",
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (e) { /* already exists */ }

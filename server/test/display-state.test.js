@@ -22,6 +22,7 @@ test('REAL shape: top-level array, single image item -> filename + image kind', 
   assert.equal(r.label, 'mbfd_logo(2).png');
   assert.equal(r.kind, 'image');
   assert.equal(r.itemCount, 1);
+  assert.equal(r.contentId, 'fa5b3a19');
 });
 
 test('top-level array: youtube item -> youtube kind', () => {

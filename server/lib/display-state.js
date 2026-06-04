@@ -29,7 +29,9 @@ function nowPlayingFromSnapshot(snapshotJson) {
   else if (mime.startsWith('video/')) kind = 'video';
   else if (it.widget_id) kind = 'widget';
   else if (it.remote_url) kind = 'web';
-  return { label: name, kind, itemCount: 1 };
+  // contentId lets the stage attach the content's poster thumbnail for content
+  // whose live screenshot is useless (un-capturable video / deck / web iframes).
+  return { label: name, kind, itemCount: 1, contentId: it.content_id || null };
 }
 
 module.exports = { nowPlayingFromSnapshot };

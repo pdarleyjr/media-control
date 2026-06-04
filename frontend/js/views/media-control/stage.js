@@ -63,6 +63,20 @@ function aspectRatio(width, height) {
   return '16/9';
 }
 
+// Pick the preview image for a display / wall screen. Content whose live canvas
+// screenshot is black anyway — hardware-decoded video and cross-origin deck /
+// web / YouTube iframes — carries a server-supplied now_playing.poster_url (the
+// content's generated thumbnail). Prefer it so the cell shows a REAL preview of
+// what is playing instead of a black capture. Posters are intentional, not a
+// degraded live frame, so they are never dimmed as "stale". Falls back to the
+// live screenshot, then to nothing.
+function previewSource(obj) {
+  const poster = obj && obj.now_playing && obj.now_playing.poster_url;
+  if (poster) return { src: poster, poster: true };
+  if (obj && obj.screenshot_url) return { src: obj.screenshot_url, poster: false };
+  return null;
+}
+
 function displayCard(display) {
   const s = statusOf(display);
   const f = freshness(display.screenshot_at);
@@ -71,9 +85,16 @@ function displayCard(display) {
     : esc(t('mc.card.nothing_playing'));
   const ar = aspectRatio(display.width, display.height);
   const offline = !display.online;
-  const preview = display.screenshot_url
-    ? `<img class="mc-card-shot${(f.stale || offline) ? ' mc-shot-stale' : ''}" src="${esc(display.screenshot_url)}" alt="${esc(t('mc.card.preview_alt', { name: display.name }))}" loading="lazy">`
+  const pv = previewSource(display);
+  const showingPoster = !!(pv && pv.poster);
+  const staleCls = (pv && !pv.poster && (f.stale || offline)) ? ' mc-shot-stale' : '';
+  const preview = pv
+    ? `<img class="mc-card-shot${staleCls}${pv.poster ? ' mc-shot-poster' : ''}" src="${esc(pv.src)}" alt="${esc(t('mc.card.preview_alt', { name: display.name }))}" loading="lazy">`
     : `<div class="mc-card-shot mc-card-shot-empty">${esc(t('mc.card.no_preview'))}</div>`;
+  // A poster is always current (it IS what's playing), so show a neutral caption
+  // rather than a misleading "Updated Ns ago" about a screenshot we aren't using.
+  const captionText = showingPoster ? t('mc.card.now_showing') : f.text;
+  const captionStale = (!showingPoster && f.stale) ? ' mc-stale' : '';
 
   // data-tp-host is populated after innerHTML injection by mountCardTransport.
   return `
@@ -83,7 +104,7 @@ function displayCard(display) {
       <div class="mc-card-media" style="aspect-ratio:${ar}">
         ${preview}
         ${statusBadge(s)}
-        <span class="mc-card-caption${f.stale ? ' mc-stale' : ''}">${esc(f.text)}</span>
+        <span class="mc-card-caption${captionStale}">${esc(captionText)}</span>
       </div>
       <div class="mc-card-foot">
         <span class="mc-card-title">${esc(display.name)}</span>
@@ -129,8 +150,10 @@ function wallCell(member, screenNo) {
   const s = statusOf(member);
   const offline = !member.online;
   const f = freshness(member.screenshot_at);
-  const preview = member.screenshot_url
-    ? `<img class="mc-wall-cell-shot${(f.stale || offline) ? ' mc-shot-stale' : ''}" src="${esc(member.screenshot_url)}" alt="" loading="lazy">`
+  const pv = previewSource(member);
+  const staleCls = (pv && !pv.poster && (f.stale || offline)) ? ' mc-shot-stale' : '';
+  const preview = pv
+    ? `<img class="mc-wall-cell-shot${staleCls}${pv.poster ? ' mc-shot-poster' : ''}" src="${esc(pv.src)}" alt="" loading="lazy">`
     : `<span class="mc-wall-cell-empty">${esc(t('mc.card.no_preview'))}</span>`;
   const np = member.now_playing && member.now_playing.label ? member.now_playing.label : '';
   // The visible cell label is the screen position; the device name + now-playing
@@ -186,23 +209,34 @@ function wallCard(wall, byId) {
     }
   }
   const ids = [...new Set(members.map(m => m.id))].join(',');
+  // Span/Split template (2026-06-04). 'span' = one source stretched across every
+  // screen (true wall sync); 'split' = each screen plays its own source. The card
+  // re-renders to reflect the active template and the fill-strip changes meaning.
+  const mode = wall.layout_mode === 'split' ? 'split' : 'span';
+  const fillLabel = mode === 'split' ? t('mc.wall.fill_all') : t('mc.wall.fill_span');
+  const modeHint = mode === 'split' ? t('mc.wall.split_hint') : t('mc.wall.span_hint');
   return `
-    <section class="mc-card mc-wall" data-wall-id="${esc(wall.id)}" aria-label="${esc(t('mc.wall.aria', { name: wall.name }))}">
+    <section class="mc-card mc-wall mc-wall-mode-${mode}" data-wall-id="${esc(wall.id)}" data-layout-mode="${mode}" aria-label="${esc(t('mc.wall.aria', { name: wall.name }))}">
       <div class="mc-wall-head">
         <span class="mc-wall-title">${esc(wall.name)}</span>
         <span class="mc-wall-sub">${esc(tn('mc.wall.screens', slots))}</span>
+        <div class="mc-wall-template" role="group" aria-label="${esc(t('mc.wall.template_aria'))}">
+          <button type="button" class="mc-wall-tpl${mode === 'span' ? ' is-active' : ''}" data-wall-mode="span" data-wall-id="${esc(wall.id)}" aria-pressed="${mode === 'span'}" title="${esc(t('mc.wall.span_hint'))}">${esc(t('mc.wall.tpl_span'))}</button>
+          <button type="button" class="mc-wall-tpl${mode === 'split' ? ' is-active' : ''}" data-wall-mode="split" data-wall-id="${esc(wall.id)}" aria-pressed="${mode === 'split'}" title="${esc(t('mc.wall.split_hint'))}">${esc(t('mc.wall.tpl_split'))}</button>
+        </div>
         <button type="button" class="mc-wall-calibrate" data-wall-calibrate
                 data-wall-ids="${esc(ids)}" data-wall-name="${esc(wall.name)}"
                 title="${esc(t('mc.wall.calibrate_title'))}">${esc(t('mc.wall.calibrate'))}</button>
         <a class="mc-wall-edit" href="#/walls">${esc(t('mc.wall.edit'))}</a>
       </div>
+      <div class="mc-wall-hint">${esc(modeHint)}</div>
       <div class="mc-wall-grid" style="grid-template-columns:repeat(${cols},1fr);grid-template-rows:repeat(${rows},1fr);aspect-ratio:${cols} / ${rows}">
         ${cells.join('')}
       </div>
       ${leader ? `<div class="mc-wall-transport" data-tp-host data-device-id="${esc(leader.id)}"></div>` : ''}
       <div class="mc-wall-all" data-wall-ids="${esc(ids)}">
         <span class="mc-wall-all-ico" aria-hidden="true">${ICON_WALL_ALL}</span>
-        <span>${esc(t('mc.wall.fill_all'))}</span>
+        <span>${esc(fillLabel)}</span>
       </div>
     </section>`;
 }
@@ -249,7 +283,7 @@ function emptyState() {
  *   Called when a blank/unblank ack changes a display's screen_on value so the
  *   caller can patch display-state and trigger a re-paint.
  */
-export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], onSelect, onCalibrateWall, onAddDisplay, onScreenOnChange } = {}) {
+export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], onSelect, onCalibrateWall, onAddDisplay, onScreenOnChange, onSetWallMode } = {}) {
   if (!container) return;
   const selected = new Set(selectedIds);
 
@@ -288,6 +322,19 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
       e.stopPropagation();
       const ids = String(btn.dataset.wallIds || '').split(',').filter(Boolean);
       if (ids.length && typeof onCalibrateWall === 'function') onCalibrateWall(ids, btn.dataset.wallName || '');
+    });
+  });
+
+  // Span/Split template toggle: switch the wall's layout_mode. stopPropagation so
+  // the wall card's other handlers don't fire. The caller persists via the API
+  // and repaints the stage so the card reflects the chosen template.
+  container.querySelectorAll('.mc-wall-tpl[data-wall-mode]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = btn.dataset.wallId;
+      const mode = btn.dataset.wallMode;
+      if (id && mode && typeof onSetWallMode === 'function') onSetWallMode(id, mode);
     });
   });
 

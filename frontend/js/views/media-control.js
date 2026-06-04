@@ -139,6 +139,7 @@ function paintStage() {
     onCalibrateWall: showWallCalibration,
     onAddDisplay: openAddPicker,
     onScreenOnChange: handleScreenOnChange,
+    onSetWallMode: setWallMode,
   });
   // Re-attach drop handlers on the freshly-rendered cards.
   attachStageDrop(el);
@@ -161,14 +162,14 @@ function stageSignature() {
     const d = byId.get(id);
     if (!d) continue;
     parts.push('c:' + id + ':' + (d.online ? 1 : 0) + ':' + (d.screen_on === false ? 0 : 1) +
-      ':' + ((d.now_playing && d.now_playing.kind) || '') + ':' + (d.screenshot_url ? 1 : 0));
+      ':' + ((d.now_playing && d.now_playing.kind) || '') + ':' + (d.screenshot_url ? 1 : 0) + ':' + ((d.now_playing && d.now_playing.poster_url) ? 'p' : ''));
   }
   for (const w of (walls || [])) {
-    parts.push('w:' + w.id + ':' + (w.grid_cols || 0) + 'x' + (w.grid_rows || 0) + ':' + (w.leader_device_id || ''));
+    parts.push('w:' + w.id + ':' + (w.grid_cols || 0) + 'x' + (w.grid_rows || 0) + ':' + (w.leader_device_id || '') + ':' + (w.layout_mode || 'span'));
     for (const m of (w.devices || [])) {
       const d = byId.get(m.device_id) || {};
       parts.push('m:' + m.device_id + ':' + (d.online ? 1 : 0) + ':' + (d.screen_on === false ? 0 : 1) +
-        ':' + ((d.now_playing && d.now_playing.kind) || '') + ':' + (d.screenshot_url ? 1 : 0));
+        ':' + ((d.now_playing && d.now_playing.kind) || '') + ':' + (d.screenshot_url ? 1 : 0) + ':' + ((d.now_playing && d.now_playing.poster_url) ? 'p' : ''));
     }
   }
   return parts.join('|');
@@ -186,6 +187,10 @@ function refreshPreviewsInPlace() {
     const id = host && host.dataset.deviceId;
     const d = id && byId.get(id);
     if (!d || !d.screenshot_url) return;
+    // A cell intentionally showing the content's poster (un-capturable video /
+    // deck / web, see stage.previewSource) must NOT be clobbered with the black
+    // live screenshot on the next capture tick — leave the poster in place.
+    if (d.now_playing && d.now_playing.poster_url) return;
     if (img.getAttribute('src') !== d.screenshot_url) img.setAttribute('src', d.screenshot_url);
   });
 }
@@ -208,6 +213,25 @@ function showWallCalibration(deviceIds, wallName) {
   if (ids.length === 0) return;
   ids.forEach(id => identifyDevice(id, { mode: 'calibration', duration_ms: 30000 }));
   showToast(t('mc.wall.calibrate_sent', { name: wallName || t('mc.wall.screen_fallback') }), 'success');
+}
+
+// Switch a wall's Span/Split template. 'span' = one source stretched across every
+// screen (true wall sync); 'split' = each screen plays its own source. The server
+// re-pushes fresh payloads to every member (entering/exiting wall mode), so the
+// physical screens reconfigure; we reload walls + repaint so the card reflects it.
+async function setWallMode(wallId, mode) {
+  if (!wallId || (mode !== 'span' && mode !== 'split')) return;
+  const wall = (walls || []).find(w => w.id === wallId);
+  if (wall && wall.layout_mode === mode) return; // already in this template
+  try {
+    await api.updateWall(wallId, { layout_mode: mode });
+    await loadWalls();
+    paintStage();
+    paintSummary();
+    showToast(t(mode === 'split' ? 'mc.wall.tpl_split_on' : 'mc.wall.tpl_span_on'), 'success');
+  } catch (e) {
+    showToast(e?.message || t('mc.wall.tpl_error'), 'error');
+  }
 }
 
 // ---- Live preview driver ----

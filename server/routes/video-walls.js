@@ -162,6 +162,9 @@ router.put('/:id', requireWallWrite, (req, res) => {
   const fields = ['name', 'grid_cols', 'grid_rows', 'bezel_h_mm', 'bezel_v_mm',
     'screen_w_mm', 'screen_h_mm', 'sync_mode', 'leader_device_id', 'content_id', 'playlist_id',
     'player_x', 'player_y', 'player_width', 'player_height',
+    // 2026-06-04: Span/Split template. 'span' = one source stretched across all
+    // screens (wall_config); 'split' = each member screen plays independently.
+    'layout_mode',
     // 2026-05-28: wall-level refresh_rate_hz override (informational on the player,
     // surfaced in payload.wall_config.refresh_rate_hz so future native players can pick
     // an exact display mode on Fire TV / Android).

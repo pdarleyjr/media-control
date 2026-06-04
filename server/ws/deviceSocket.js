@@ -115,7 +115,10 @@ function buildPlaylistPayload(deviceId) {
   if (device?.wall_id) {
     const wall = db.prepare('SELECT * FROM video_walls WHERE id = ?').get(device.wall_id);
     const pos = db.prepare('SELECT * FROM video_wall_devices WHERE wall_id = ? AND device_id = ?').get(device.wall_id, deviceId);
-    if (wall && pos) {
+    // 'split' template: each member screen plays its OWN playlist full-screen, so
+    // we DON'T emit wall_config (no leader/follower sync, no slice mapping). Only
+    // 'span' (the default) builds the spanning wall_config below.
+    if (wall && pos && wall.layout_mode !== 'split') {
       const baseW = 320, baseH = 180;
       const bezelH = wall.bezel_h_mm || 0;
       const bezelV = wall.bezel_v_mm || 0;
