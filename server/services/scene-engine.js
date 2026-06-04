@@ -67,9 +67,18 @@ function ensureDevicePlaylist(deviceId, userId) {
 // /remote (empty filepath, derived mime_type).
 function resolveRemoteUrlContent(remoteUrl, workspaceId, userId) {
   const existing = db.prepare(
-    'SELECT id FROM content WHERE remote_url = ? AND (workspace_id = ? OR workspace_id IS NULL) LIMIT 1'
+    'SELECT id, mime_type FROM content WHERE remote_url = ? AND (workspace_id = ? OR workspace_id IS NULL) LIMIT 1'
   ).get(remoteUrl, workspaceId || null);
-  if (existing) return existing.id;
+  if (existing) {
+    // Self-heal legacy deck/presentation rows that an older resolver stored as
+    // image/jpeg. Players without the /player/deck/ URL rescue render those as a
+    // broken <img> (blank) — the "presentation won't play on the wall" bug. A
+    // deck URL is always an embedded web page, so correct the mime in place.
+    if (/\/player\/deck\//.test(remoteUrl) && existing.mime_type !== 'text/html') {
+      try { db.prepare("UPDATE content SET mime_type = 'text/html' WHERE id = ?").run(existing.id); } catch (_) {}
+    }
+    return existing.id;
+  }
 
   const id = uuidv4();
   // Guess the media type from the URL so the player picks the right renderer.
