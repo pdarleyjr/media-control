@@ -72,7 +72,16 @@ function resolveRemoteUrlContent(remoteUrl, workspaceId, userId) {
   if (existing) return existing.id;
 
   const id = uuidv4();
-  const mimeType = /\.(mp4|webm|mkv|avi|mov)$/i.test(remoteUrl) ? 'video/mp4' : 'image/jpeg';
+  // Guess the media type from the URL so the player picks the right renderer.
+  // Video extension -> video; image extension -> image; ANYTHING ELSE (a deck /
+  // presentation player page, or any other web URL) is an embedded WEB PAGE the
+  // player must IFRAME — NOT a still image. Defaulting to image/jpeg made the
+  // player build <img src="…/player/deck/…"> against an HTML page, which renders
+  // blank — the "presentation/deck won't play on the wall" bug.
+  let mimeType;
+  if (/\.(mp4|webm|mkv|avi|mov|m4v)(?:[?#]|$)/i.test(remoteUrl)) mimeType = 'video/mp4';
+  else if (/\.(jpe?g|png|gif|webp|bmp|svg|avif)(?:[?#]|$)/i.test(remoteUrl)) mimeType = 'image/jpeg';
+  else mimeType = 'text/html';
   let filename;
   try { filename = new URL(remoteUrl).hostname || 'remote'; } catch { filename = 'remote'; }
   db.prepare(`

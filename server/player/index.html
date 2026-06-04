@@ -1795,6 +1795,8 @@
         item.widget_id ||
         item.mime_type === 'video/youtube' ||
         item.mime_type === 'application/pdf' ||
+        item.mime_type === 'text/html' ||
+        (item.remote_url && /\/player\/deck\//.test(item.remote_url)) ||
         OFFICE_MIMES.includes(item.mime_type) ||
         (typeof item.mime_type === 'string' && (item.mime_type.startsWith('video/') || item.mime_type.startsWith('image/')))
       );
@@ -1821,12 +1823,18 @@
       // dictates index transitions. Single-screen and leader behave normally.
       const isFollower = !!wallConfig && !wallConfig.is_leader;
 
-      const isYoutube = item.mime_type === 'video/youtube';
-      const isVideo = !isYoutube && item.mime_type?.startsWith('video/');
-      const isImage = item.mime_type?.startsWith('image/');
-      const isPdf = item.mime_type === 'application/pdf';
-      const isOffice = OFFICE_MIMES.includes(item.mime_type);
       const remoteUrl = item.remote_url;
+      // A deck/presentation player page (or any text/html remote_url) is an
+      // embedded WEB PAGE rendered in an iframe — never an <img>/<video>. The
+      // deck-URL test also rescues legacy content rows still mis-typed image/jpeg
+      // (the "presentation won't play on the wall" bug).
+      const isWebpage = item.mime_type === 'text/html' ||
+        (!!remoteUrl && /\/player\/deck\//.test(remoteUrl));
+      const isYoutube = !isWebpage && item.mime_type === 'video/youtube';
+      const isVideo = !isYoutube && !isWebpage && item.mime_type?.startsWith('video/');
+      const isImage = !isWebpage && item.mime_type?.startsWith('image/');
+      const isPdf = !isWebpage && item.mime_type === 'application/pdf';
+      const isOffice = !isWebpage && OFFICE_MIMES.includes(item.mime_type);
       const serverUrl = config.serverUrl;
       const src = remoteUrl || `${serverUrl}/uploads/content/${item.filepath}`;
       // 2026-05-28: per-item fit_mode override. Null/undefined falls back to
@@ -1843,6 +1851,21 @@
         // Fullscreen / wall-tile
         if (isYoutube) {
           createYoutubeEmbed(src, item, mount);
+        } else if (isWebpage) {
+          // Deck / presentation / web page → embed in an iframe (the only way an
+          // HTML page renders; an <img>/<video> against a page is blank). The wall
+          // transport bar advances deck slides via postMessage (doTransport targets
+          // .wall-stage iframe). A lone deck does NOT auto-advance (that would reload
+          // the iframe and snap back to slide 1); a multi-item playlist advances by
+          // duration like the other branches.
+          const frame = document.createElement('iframe');
+          frame.src = src;
+          frame.style.cssText = 'width:100%;height:100%;border:none;background:#000';
+          frame.allow = 'autoplay; fullscreen';
+          mount.appendChild(frame);
+          if (!isFollower && playlist.length > 1) {
+            advanceTimer = setTimeout(nextItem, (item.duration_sec || 30) * 1000);
+          }
         } else if (isVideo) {
           const video = document.createElement('video');
           video.src = src;
