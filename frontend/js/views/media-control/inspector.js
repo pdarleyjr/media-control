@@ -108,12 +108,35 @@ async function loadInspectorData(deviceId) {
     api.getDevice(deviceId).catch(() => null),
     api.getContent().catch(() => []),
     api.getPlaylists().catch(() => []),
-    api.layouts.list().catch(() => []),
+    listLayouts().catch(() => []),
   ]);
   const content = Array.isArray(contentRes) ? contentRes : (contentRes && Array.isArray(contentRes.content) ? contentRes.content : []);
   const playlists = Array.isArray(playlistsRes) ? playlistsRes : (playlistsRes && Array.isArray(playlistsRes.playlists) ? playlistsRes.playlists : []);
   const layouts = Array.isArray(layoutsRes) ? layoutsRes : [];
   return { device, content, playlists, layouts };
+}
+
+async function listLayouts() {
+  if (api.layouts && typeof api.layouts.list === 'function') {
+    return api.layouts.list();
+  }
+
+  // Defensive fallback for mixed browser caches: a freshly-loaded inspector.js
+  // can run with an older cached api.js that does not expose layouts.list yet.
+  const token = localStorage.getItem('token');
+  const res = await fetch('/api/layouts', {
+    headers: token ? { Authorization: `Bearer ${token}`, Accept: 'application/json' } : { Accept: 'application/json' },
+    credentials: 'same-origin',
+  });
+  if (res.status === 401) {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    window.location.hash = '#/login';
+    window.location.reload();
+    throw new Error('Session expired');
+  }
+  if (!res.ok) throw new Error('Could not load layouts');
+  return res.json();
 }
 
 function optionsHtml(items, selectedId, emptyLabel, labelFn) {

@@ -494,7 +494,15 @@ function updateFrontendHash() {
       'js/views/settings.js', 'js/views/login.js',
       'js/views/layout-editor.js', 'js/views/schedule.js', 'js/views/widgets.js',
       'js/views/video-wall.js', 'js/views/reports.js', 'js/views/designer.js',
-      'js/views/activity.js', 'js/views/kiosk.js'].map(f => {
+      'js/views/activity.js', 'js/views/kiosk.js',
+      // Command Center is split into feature modules; include them in the
+      // frontend hash so inspector/routing hotfixes force active browsers to
+      // reload instead of mixing new modules with stale cached dependencies.
+      'css/media-control.css', 'js/views/media-control.js',
+      'js/views/media-control/command-bar.js', 'js/views/media-control/inspector.js',
+      'js/views/media-control/routing-picker.js', 'js/views/media-control/stage.js',
+      'js/views/media-control/toolbox.js', 'js/views/media-control/send.js',
+      'js/views/media-control/transport.js', 'js/services/screen-share-engine.js'].map(f => {
       try { return fs.readFileSync(path.join(config.frontendDir, f)); } catch { return ''; }
     });
     // Include player files in hash so web players detect code updates

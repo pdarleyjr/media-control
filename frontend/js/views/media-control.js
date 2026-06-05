@@ -46,7 +46,11 @@ async function loadWalls() {
     if (!Array.isArray(walls)) walls = [];
   } catch { walls = []; }
   wallMemberIds = new Set();
-  for (const w of walls) for (const d of (w.devices || [])) wallMemberIds.add(d.device_id);
+  for (const w of walls) {
+    for (const d of (w.devices || [])) {
+      if (d && d.device_id) wallMemberIds.add(d.device_id);
+    }
+  }
 }
 
 function persistSelection() {
@@ -246,8 +250,8 @@ async function setWallMode(wallId, mode) {
 // the selected non-wall cards PLUS every wall member screen (wall cells each render
 // their own member's live preview). Offline devices are a server-side no-op.
 function visibleDeviceIds() {
-  const ids = new Set(selectedIds.filter(id => !wallMemberIds.has(id)));
-  for (const id of wallMemberIds) ids.add(id);
+  const ids = new Set(selectedIds.filter(id => id && !wallMemberIds.has(id)));
+  for (const id of wallMemberIds) if (id) ids.add(id);
   return [...ids];
 }
 function requestVisiblePreviews() {
