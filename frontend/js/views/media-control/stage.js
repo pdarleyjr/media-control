@@ -146,28 +146,42 @@ function wallMemberView(m, byId) {
   };
 }
 
-function wallCell(member, screenNo) {
+function wallCell(member, screenNo, { showPreview = true } = {}) {
   const s = statusOf(member);
   const offline = !member.online;
   const f = freshness(member.screenshot_at);
   const pv = previewSource(member);
   const staleCls = (pv && !pv.poster && (f.stale || offline)) ? ' mc-shot-stale' : '';
-  const preview = pv
-    ? `<img class="mc-wall-cell-shot${staleCls}${pv.poster ? ' mc-shot-poster' : ''}" src="${esc(pv.src)}" alt="" loading="lazy">`
-    : `<span class="mc-wall-cell-empty">${esc(t('mc.card.no_preview'))}</span>`;
+  const preview = showPreview
+    ? (pv
+      ? `<img class="mc-wall-cell-shot${staleCls}${pv.poster ? ' mc-shot-poster' : ''}" src="${esc(pv.src)}" alt="" loading="lazy">`
+      : `<span class="mc-wall-cell-empty">${esc(t('mc.card.no_preview'))}</span>`)
+    : '';
   const np = member.now_playing && member.now_playing.label ? member.now_playing.label : '';
   // The visible cell label is the screen position; the device name + now-playing
   // ride in the title. (No em-dash in the title — anti-slop.)
   const cellLabel = screenNo ? t('mc.wall.screen_n', { n: screenNo }) : member.name;
   const title = np ? `${member.name}: ${np}` : member.name;
   return `
-    <div class="mc-wall-cell ${s.cls}" data-device-id="${esc(member.id)}"
+    <div class="mc-wall-cell ${s.cls}${showPreview ? '' : ' mc-wall-cell-overlay'}" data-device-id="${esc(member.id)}"
          role="button" tabindex="0" title="${esc(title)}"
          aria-label="${esc(t('mc.card.inspect_aria', { name: member.name }))}">
       ${preview}
       ${statusBadge(s)}
       <span class="mc-wall-cell-name">${esc(cellLabel)}</span>
     </div>`;
+}
+
+function wallSpanPreview(leader) {
+  const pv = previewSource(leader);
+  if (!leader || !pv) {
+    return `<div class="mc-wall-span-layer mc-wall-span-empty"><span>${esc(t('mc.card.no_preview'))}</span></div>`;
+  }
+  const f = freshness(leader.screenshot_at);
+  const staleCls = (pv && !pv.poster && (f.stale || !leader.online)) ? ' mc-shot-stale' : '';
+  return `<div class="mc-wall-span-layer" data-device-id="${esc(leader.id)}">
+    <img class="mc-wall-span-shot${staleCls}${pv.poster ? ' mc-shot-poster' : ''}" src="${esc(pv.src)}" alt="${esc(t('mc.card.preview_alt', { name: leader.name }))}" loading="lazy">
+  </div>`;
 }
 
 // A physical-screen slot with no paired player (only shown when a wall has fewer
@@ -198,16 +212,6 @@ function wallCard(wall, byId) {
   });
   const leader = members.find(m => m.id === wall.leader_device_id) || members[0] || null;
 
-  // Row-major over every physical screen slot; CSS grid auto-places them in order.
-  const cells = [];
-  let n = 0;
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      n++;
-      const m = byPos.get(c + ',' + r) || leader;
-      cells.push(m ? wallCell(m, n) : wallEmptySlot(n));
-    }
-  }
   const ids = [...new Set(members.map(m => m.id))].join(',');
   // Span/Split template (2026-06-04). 'span' = one source stretched across every
   // screen (true wall sync); 'split' = each screen plays its own source. The card
@@ -215,6 +219,17 @@ function wallCard(wall, byId) {
   const mode = wall.layout_mode === 'split' ? 'split' : 'span';
   const fillLabel = mode === 'split' ? t('mc.wall.fill_all') : t('mc.wall.fill_span');
   const modeHint = mode === 'split' ? t('mc.wall.split_hint') : t('mc.wall.span_hint');
+  // Row-major over every physical screen slot; CSS grid auto-places them in order.
+  const cells = [];
+  let n = 0;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      n++;
+      const m = byPos.get(c + ',' + r) || leader;
+      cells.push(m ? wallCell(m, n, { showPreview: mode === 'split' }) : wallEmptySlot(n));
+    }
+  }
+  const spanLayer = mode === 'span' ? wallSpanPreview(leader) : '';
   return `
     <section class="mc-card mc-wall mc-wall-mode-${mode}" data-wall-id="${esc(wall.id)}" data-layout-mode="${mode}" aria-label="${esc(t('mc.wall.aria', { name: wall.name }))}">
       <div class="mc-wall-head">
@@ -231,6 +246,7 @@ function wallCard(wall, byId) {
       </div>
       <div class="mc-wall-hint">${esc(modeHint)}</div>
       <div class="mc-wall-grid" style="grid-template-columns:repeat(${cols},1fr);grid-template-rows:repeat(${rows},1fr);aspect-ratio:${cols} / ${rows}">
+        ${spanLayer}
         ${cells.join('')}
       </div>
       ${leader ? `<div class="mc-wall-transport" data-tp-host data-device-id="${esc(leader.id)}"></div>` : ''}

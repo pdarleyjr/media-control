@@ -272,15 +272,28 @@
 .mc-wall-calibrate:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .mc-wall-calibrate + .mc-wall-edit { margin-left: 0; }
 .mc-wall-grid {
+  position: relative;
   display: grid; gap: 3px; width: min(100%, 940px); margin-inline: auto;
   background: var(--mc-dark-bg-deep, #0F172A); /* bezel frame behind the screens */
   border-radius: var(--mc-radius-sm); padding: 3px; overflow: hidden;
 }
+.mc-wall-span-layer {
+  position: absolute;
+  inset: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--mc-dark-bg, #1E293B);
+  overflow: hidden;
+}
+.mc-wall-span-shot { width: 100%; height: 100%; object-fit: cover; display: block; }
+.mc-wall-span-empty { color: var(--mc-text-on-dark-muted, #94A3B8); font-size: var(--mc-font-size-sm); }
 .mc-wall-cell {
   position: relative; overflow: hidden; min-height: 64px;
   display: flex; align-items: center; justify-content: center;
   background: var(--mc-bg-secondary); cursor: pointer;
   transition: box-shadow var(--mc-transition-base);
+  z-index: 1;
 }
 .mc-wall-cell:hover { box-shadow: inset 0 0 0 2px var(--accent); }
 .mc-wall-cell:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
@@ -328,8 +341,23 @@
 .mc-wall-tpl:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .mc-wall-hint { font-size: var(--font-2, 12px); color: var(--mc-text-secondary); margin-bottom: var(--mc-space-sm, 8px); }
 /* Split template: separate the screens so each reads as its own drop target. */
+.mc-wall-mode-span .mc-wall-grid { gap: 3px; }
+.mc-wall-mode-span .mc-wall-cell-overlay {
+  background: transparent;
+  box-shadow: inset 1px 0 rgba(255,255,255,0.34), inset -1px 0 rgba(15,23,42,0.28);
+}
+.mc-wall-mode-span .mc-wall-cell-overlay:hover { box-shadow: inset 0 0 0 2px rgba(37,99,235,0.8); }
+.mc-wall-mode-span .mc-wall-cell-overlay.mc-card-dragover { box-shadow: inset 0 0 0 2px var(--accent) !important; }
 .mc-wall-mode-split .mc-wall-grid { gap: 8px; }
 .mc-wall-mode-split .mc-wall-cell { outline: 1px dashed var(--mc-border-light, rgba(148, 163, 184, 0.4)); outline-offset: -1px; }
+.mc-wall-mode-split .mc-wall-cell::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 1px solid transparent;
+  pointer-events: none;
+}
+.mc-wall-mode-split .mc-wall-cell:hover::after { border-color: rgba(37,99,235,0.75); }
 
 /* Wall transport bar — pause/skip/restart/blank the whole wall via its leader.
    The bar (.mc-transport-bar) brings its own top border; just space it below the grid. */

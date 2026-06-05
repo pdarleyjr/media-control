@@ -32,6 +32,8 @@ export default {
   'nav.section.studio': 'Studio',
   'nav.section.operate': 'Operate',
   'nav.section.admin': 'Admin',
+  'nav.collapse': 'Collapse navigation',
+  'nav.expand': 'Expand navigation',
 
   // Common (shared across views)
   'common.save': 'Save',

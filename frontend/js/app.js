@@ -37,6 +37,7 @@ import { api } from './api.js';
 const app = document.getElementById('app');
 const sidebar = document.querySelector('.sidebar');
 let currentView = null;
+const SIDEBAR_COLLAPSED_KEY = 'mc_sidebar_collapsed';
 
 // ==================== Slice 2C: accept-invite plumbing ====================
 //
@@ -188,9 +189,33 @@ function renderNavLabels() {
   document.querySelectorAll('.nav-link').forEach((link) => {
     const key = NAV_LABEL_KEYS[link.dataset.view];
     if (!key) return;
+    const label = t(key);
     const span = link.querySelector('span');
-    if (span) span.textContent = t(key);
+    if (span) span.textContent = label;
+    link.setAttribute('title', label);
   });
+  updateSidebarCollapseButton();
+}
+
+function sidebarCollapsed() {
+  return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1';
+}
+
+function setSidebarCollapsed(collapsed) {
+  localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0');
+  document.body.classList.toggle('sidebar-collapsed', collapsed);
+  sidebar?.classList.toggle('collapsed', collapsed);
+  updateSidebarCollapseButton();
+}
+
+function updateSidebarCollapseButton() {
+  const btn = document.getElementById('sidebarCollapseBtn');
+  if (!btn) return;
+  const collapsed = document.body.classList.contains('sidebar-collapsed');
+  const label = collapsed ? t('nav.expand') : t('nav.collapse');
+  btn.setAttribute('aria-label', label);
+  btn.setAttribute('title', label);
+  btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
 }
 
 
@@ -526,6 +551,7 @@ function updateSidebarUser() {
 // Initialize. (Scenes + Smartboard nav links are static markup in index.html.)
 renderNavLabels();
 translateStaticDom();
+setSidebarCollapsed(sidebarCollapsed());
 window.addEventListener('language-changed', () => {
   renderNavLabels();
   translateStaticDom();
@@ -550,6 +576,7 @@ if ('serviceWorker' in navigator) {
 const sidebarEl = document.querySelector('.sidebar');
 const backdropEl = document.getElementById('sidebarBackdrop');
 const menuBtn = document.getElementById('mobileMenuBtn');
+const sidebarCollapseBtn = document.getElementById('sidebarCollapseBtn');
 
 function setMobileNav(open) {
   if (!sidebarEl || !backdropEl) return;
@@ -560,6 +587,9 @@ function setMobileNav(open) {
 
 menuBtn?.addEventListener('click', () => {
   setMobileNav(!sidebarEl.classList.contains('open'));
+});
+sidebarCollapseBtn?.addEventListener('click', () => {
+  setSidebarCollapsed(!document.body.classList.contains('sidebar-collapsed'));
 });
 backdropEl?.addEventListener('click', () => setMobileNav(false));
 window.addEventListener('hashchange', () => setMobileNav(false));

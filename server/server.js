@@ -489,7 +489,7 @@ const crypto = require('crypto');
 let frontendHash = '';
 function updateFrontendHash() {
   try {
-    const files = ['index.html', 'js/app.js', 'js/api.js', 'js/socket.js', 'css/main.css',
+    const files = ['index.html', 'js/app.js', 'js/api.js', 'js/socket.js', 'css/variables.css', 'css/main.css',
       'js/views/dashboard.js', 'js/views/device-detail.js', 'js/views/content-library.js',
       'js/views/settings.js', 'js/views/login.js',
       'js/views/layout-editor.js', 'js/views/schedule.js', 'js/views/widgets.js',

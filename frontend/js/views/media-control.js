@@ -163,19 +163,24 @@ function paintStage() {
 function stageSignature() {
   const byId = new Map(displayState.getAll().map(d => [d.id, d]));
   const parts = [];
+  const playingSig = (d) => {
+    const np = d && d.now_playing;
+    if (!np) return '';
+    return [np.kind || '', np.contentId || '', np.label || '', np.poster_url || ''].join('~');
+  };
   for (const id of selectedIds) {
     if (wallMemberIds.has(id)) continue;
     const d = byId.get(id);
     if (!d) continue;
     parts.push('c:' + id + ':' + (d.online ? 1 : 0) + ':' + (d.screen_on === false ? 0 : 1) +
-      ':' + ((d.now_playing && d.now_playing.kind) || '') + ':' + (d.screenshot_url ? 1 : 0) + ':' + ((d.now_playing && d.now_playing.poster_url) ? 'p' : ''));
+      ':' + playingSig(d) + ':' + (d.screenshot_url ? 1 : 0) + ':' + ((d.now_playing && d.now_playing.poster_url) ? 'p' : ''));
   }
   for (const w of (walls || [])) {
     parts.push('w:' + w.id + ':' + (w.grid_cols || 0) + 'x' + (w.grid_rows || 0) + ':' + (w.leader_device_id || '') + ':' + (w.layout_mode || 'span'));
     for (const m of (w.devices || [])) {
       const d = byId.get(m.device_id) || {};
       parts.push('m:' + m.device_id + ':' + (d.online ? 1 : 0) + ':' + (d.screen_on === false ? 0 : 1) +
-        ':' + ((d.now_playing && d.now_playing.kind) || '') + ':' + (d.screenshot_url ? 1 : 0) + ':' + ((d.now_playing && d.now_playing.poster_url) ? 'p' : ''));
+        ':' + playingSig(d) + ':' + (d.screenshot_url ? 1 : 0) + ':' + ((d.now_playing && d.now_playing.poster_url) ? 'p' : ''));
     }
   }
   return parts.join('|');
@@ -188,7 +193,7 @@ function refreshPreviewsInPlace() {
   const el = stageEl();
   if (!el) return;
   const byId = new Map(displayState.getAll().map(d => [d.id, d]));
-  el.querySelectorAll('img.mc-card-shot, img.mc-wall-cell-shot').forEach(img => {
+  el.querySelectorAll('img.mc-card-shot, img.mc-wall-cell-shot, img.mc-wall-span-shot').forEach(img => {
     const host = img.closest('[data-device-id]');
     const id = host && host.dataset.deviceId;
     const d = id && byId.get(id);
@@ -554,7 +559,10 @@ function parseDragSource(e) {
 function attachStageDrop(stageContainer) {
   // Per-card drop → that ONE display. stopPropagation so the stage-level handler
   // below does not also fire and fan the source out to everyone.
-  stageContainer.querySelectorAll('[data-device-id]').forEach(card => {
+  stageContainer.querySelectorAll('.mc-display-card[data-device-id], .mc-wall-cell[data-device-id]').forEach(card => {
+    const isSplitWallCell = card.classList.contains('mc-wall-cell') && card.closest('.mc-wall')?.dataset.layoutMode === 'split';
+    const isStandaloneCard = card.classList.contains('mc-display-card');
+    if (!isStandaloneCard && !isSplitWallCell) return;
     card.addEventListener('dragover', (e) => {
       if (!dragHasSource(e)) return;
       e.preventDefault();

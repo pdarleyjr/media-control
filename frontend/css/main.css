@@ -2,10 +2,13 @@
 body {
   display: flex;
   overflow: hidden;
+  --sidebar-current-width: var(--sidebar-width);
 }
 
+body.sidebar-collapsed { --sidebar-current-width: var(--sidebar-collapsed-width, 72px); }
+
 .sidebar {
-  width: var(--sidebar-width);
+  width: var(--sidebar-current-width);
   height: 100vh;
   background: var(--bg-secondary);
   border-right: 1px solid var(--border);
@@ -16,21 +19,74 @@ body {
   left: 0;
   top: 0;
   z-index: 100;
+  transition: width var(--transition), transform 0.3s ease;
 }
 
 .sidebar-header {
   padding: 20px 16px;
   border-bottom: 1px solid var(--border);
+  position: relative;
+  min-height: 96px;
 }
 
 .logo {
   display: flex;
   align-items: center;
   gap: 10px;
+  padding-right: 44px;
   color: var(--accent);
   font-weight: 700;
   font-size: 16px;
 }
+
+.sidebar-collapse-btn {
+  position: absolute;
+  top: 14px;
+  right: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--tap-min);
+  height: var(--tap-min);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition), color var(--transition), transform var(--transition);
+}
+.sidebar-collapse-btn:hover { background: var(--bg-card-hover); border-color: var(--accent); color: var(--accent); }
+.sidebar-collapse-btn:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.sidebar-collapse-icon { transition: transform var(--transition); }
+
+.sidebar.collapsed .sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 76px;
+  padding: 14px 8px;
+}
+.sidebar.collapsed .sidebar-collapse-btn { position: static; }
+.sidebar.collapsed .sidebar-collapse-icon { transform: rotate(180deg); }
+.sidebar.collapsed .logo,
+.sidebar.collapsed .workspace-switcher,
+.sidebar.collapsed .nav-section,
+.sidebar.collapsed .nav-link span,
+.sidebar.collapsed .connection-status span:not(.status-dot),
+.sidebar.collapsed #sidebarUser > div,
+.sidebar.collapsed #logoutBtn {
+  display: none !important;
+}
+.sidebar.collapsed .nav-links { padding: 12px 8px; }
+.sidebar.collapsed .nav-link {
+  justify-content: center;
+  padding: 10px;
+  min-width: var(--tap-min);
+}
+.sidebar.collapsed .nav-link svg { flex: 0 0 auto; }
+.sidebar.collapsed .sidebar-footer { padding: 12px; }
+.sidebar.collapsed .connection-status { justify-content: center; }
+.sidebar.collapsed #sidebarUser { justify-content: center; margin-bottom: 10px !important; }
 
 /* Workspace switcher (Phase 3 MVP). Sits in sidebar-header below the logo.
    Three render modes via JS: dropdown (>1 ws), static text (1 ws),
@@ -245,11 +301,12 @@ body {
 }
 
 .content {
-  margin-left: var(--sidebar-width);
+  margin-left: var(--sidebar-current-width);
   flex: 1;
   height: 100vh;
   overflow-y: auto;
   padding: 24px 32px;
+  transition: margin-left var(--transition), padding var(--transition);
 }
 
 /* Page Header */
@@ -1381,12 +1438,36 @@ body {
 
 /* Responsive */
 @media (max-width: 768px) {
+  body { --sidebar-current-width: var(--sidebar-width); }
   .mobile-menu-btn { display: flex; }
   .sidebar {
+    width: var(--sidebar-width);
     transform: translateX(-100%);
     transition: transform 0.3s ease;
     z-index: 150;
   }
+  .sidebar.collapsed .sidebar-header {
+    display: block;
+    min-height: 96px;
+    padding: 20px 16px;
+  }
+  .sidebar.collapsed .sidebar-collapse-btn { position: absolute; }
+  .sidebar.collapsed .sidebar-collapse-icon { transform: none; }
+  .sidebar.collapsed .logo,
+  .sidebar.collapsed .workspace-switcher,
+  .sidebar.collapsed .nav-section,
+  .sidebar.collapsed .nav-link span,
+  .sidebar.collapsed .connection-status span:not(.status-dot),
+  .sidebar.collapsed #sidebarUser > div,
+  .sidebar.collapsed #logoutBtn {
+    display: flex !important;
+  }
+  .sidebar.collapsed .workspace-switcher,
+  .sidebar.collapsed .nav-section,
+  .sidebar.collapsed .connection-status span:not(.status-dot),
+  .sidebar.collapsed #sidebarUser > div { display: block !important; }
+  .sidebar.collapsed .nav-link { justify-content: flex-start; padding: 10px 14px; }
+  .sidebar.collapsed .sidebar-footer { padding: 16px; }
   .sidebar.open {
     transform: translateX(0);
   }

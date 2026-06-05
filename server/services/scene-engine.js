@@ -46,13 +46,32 @@ function buildSnapshotItems(playlistId) {
 // Ensure the device has its OWN auto-playlist (the slot we replace for single
 // content/remote_url pushes). Mirrors ensureDevicePlaylist in
 // routes/assignments.js, including the workspace_id stamp.
+function wallContextForDevice(deviceId) {
+  return db.prepare(`
+    SELECT vw.id AS wall_id, vw.playlist_id AS wall_playlist_id,
+           COALESCE(vw.layout_mode, 'span') AS layout_mode
+    FROM video_wall_devices vwd
+    JOIN video_walls vw ON vw.id = vwd.wall_id
+    WHERE vwd.device_id = ?
+    LIMIT 1
+  `).get(deviceId) || null;
+}
+
 function ensureDevicePlaylist(deviceId, userId) {
   const device = db.prepare('SELECT playlist_id, workspace_id, name, user_id FROM devices WHERE id = ?').get(deviceId);
   if (!device) return null;
   if (device.playlist_id) {
-    // Verify it's a real, still-existing playlist (FK is SET NULL on delete).
-    const exists = db.prepare('SELECT id FROM playlists WHERE id = ?').get(device.playlist_id);
-    if (exists) return device.playlist_id;
+    // Verify it's a real, still-existing playlist (FK is SET NULL on delete),
+    // then only reuse playlists that are safe for a one-item replacement.
+    const existing = db.prepare('SELECT id, is_auto_generated FROM playlists WHERE id = ?').get(device.playlist_id);
+    if (existing) {
+      const wall = wallContextForDevice(deviceId);
+      const isSharedSplitWallPlaylist = !!(wall && wall.layout_mode === 'split' && wall.wall_playlist_id === existing.id);
+      const isSharedSpanWallPlaylist = !!(wall && wall.layout_mode !== 'split' && wall.wall_playlist_id === existing.id);
+      if (!isSharedSplitWallPlaylist && (existing.is_auto_generated || isSharedSpanWallPlaylist)) {
+        return existing.id;
+      }
+    }
   }
   const playlistId = uuidv4();
   db.prepare('INSERT INTO playlists (id, user_id, workspace_id, name, is_auto_generated) VALUES (?, ?, ?, ?, 1)')

@@ -189,6 +189,17 @@ router.put('/:id', requireWallWrite, (req, res) => {
     for (const m of members) stmt.run(req.body.playlist_id || null, m.device_id);
   }
 
+  // Switching a wall back to Span means every physical screen should again play
+  // the wall-level playlist. Split mode may have given members private
+  // per-device playlists for per-cell drops; leave those alone while split, but
+  // rejoin the shared wall playlist when returning to span.
+  if (req.body.layout_mode === 'span') {
+    const playlistId = req.body.playlist_id !== undefined ? req.body.playlist_id : wall.playlist_id;
+    const members = db.prepare('SELECT device_id FROM video_wall_devices WHERE wall_id = ?').all(req.params.id);
+    const stmt = db.prepare('UPDATE devices SET playlist_id = ? WHERE id = ?');
+    for (const m of members) stmt.run(playlistId || null, m.device_id);
+  }
+
   pushToWallMembers(req, req.params.id);
   notifyDashboards(req, req.wall.workspace_id);
   res.json(loadWallWithDevices(req.params.id));
