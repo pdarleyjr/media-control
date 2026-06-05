@@ -85,7 +85,7 @@ const dashboardCsp = helmet.contentSecurityPolicy({
     mediaSrc: ["'self'", 'blob:', 'https:'],
     connectSrc: ["'self'", 'wss:', 'ws:', 'https:'],
     fontSrc: ["'self'", 'data:'],
-    frameSrc: ["'self'", 'https://www.youtube.com', 'https://youtube.com'],
+    frameSrc: ["'self'", 'https://www.youtube.com', 'https://youtube.com', 'https://*.mbfdhub.com'],
     objectSrc: ["'none'"],
     baseUri: ["'self'"],
     formAction: ["'self'"],
