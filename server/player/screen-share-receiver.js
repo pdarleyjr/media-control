@@ -35,6 +35,7 @@
   var iceConfig = null;
   var pendingRemoteCandidates = [];
   var teardownTimer = null;
+  var setupTimer = null;
 
   function log() {
     var args = Array.prototype.slice.call(arguments);
@@ -68,6 +69,7 @@
       window.__screentinkerScreenShare.wallTile = wallTile;
       log('session start', wallTile ? 'wall-tile' : 'fullscreen');
       window.__screentinkerScreenShare.active = true;
+      armSetupWatchdog();
       ensureIceConfig().then(function () {
         createPeerConnection();
         showConnectingChip();
@@ -170,6 +172,7 @@
       var state = pc.connectionState;
       log('pc state:', state);
       if (state === 'connected') {
+        clearSetupWatchdog();
         if (teardownTimer) { clearTimeout(teardownTimer); teardownTimer = null; }
         mountOverlay();
         playVideo();
@@ -193,6 +196,7 @@
 
   function handleOffer(sdp) {
     if (!sdp) return Promise.reject(new Error('empty sdp'));
+    clearSetupWatchdog();
     if (!pc) createPeerConnection();
     return pc.setRemoteDescription(sdp).then(function () {
       // Drain any candidates that arrived before the remote description.
@@ -236,6 +240,19 @@
       try { connectingChipEl.remove(); } catch (_) {}
       connectingChipEl = null;
     }
+  }
+
+  function clearSetupWatchdog() {
+    if (setupTimer) { clearTimeout(setupTimer); setupTimer = null; }
+  }
+
+  function armSetupWatchdog() {
+    clearSetupWatchdog();
+    setupTimer = setTimeout(function () {
+      warn('screen-share setup timed out before offer/connection');
+      teardown();
+      emitEnded();
+    }, 15000);
   }
 
   // Pre-create the hidden video element so ontrack has somewhere to bind.
@@ -347,6 +364,7 @@
 
   function teardown() {
     if (teardownTimer) { clearTimeout(teardownTimer); teardownTimer = null; }
+    clearSetupWatchdog();
     if (pc) {
       try { pc.close(); } catch (_) { /* */ }
       pc = null;

@@ -32,6 +32,7 @@
  */
 
 import * as engine from '../services/screen-share-engine.js';
+import { showToast } from '../components/toast.js';
 
 // ----------------------------------------------------------------------
 // Debug logger - opt-in via localStorage.SCREEN_SHARE_DEBUG='1'. Keeps the
@@ -415,7 +416,7 @@ function wireTargetCheckboxHandlers() {
             }
             if (failures.length > 0) {
               warnLog(`wall broadcast: ${failures.length}/${targets.length} members failed`);
-              alert(`Broadcasting to ${targets.length - failures.length} of ${targets.length} wall tiles. Check the Active broadcasts list for which tile failed.`);
+              showToast(`Broadcasting to ${targets.length - failures.length} of ${targets.length} wall tiles. Check Active broadcasts for failures.`, 'warning');
             }
           } else {
             await engine.startBroadcastTo(deviceId);
@@ -425,7 +426,7 @@ function wireTargetCheckboxHandlers() {
           rehydratePreviewIfNeeded();
         } catch (err) {
           errLog('start broadcast failed:', err);
-          alert(`Could not broadcast to that target:\n${err.message || err}`);
+          showToast(`Could not broadcast to that target: ${err.message || err}`, 'error');
           e.target.checked = false;
         } finally {
           e.target.disabled = false;

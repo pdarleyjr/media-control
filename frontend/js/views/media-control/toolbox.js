@@ -6,8 +6,8 @@
 // #/playlists nav link: each playlist is a drag-or-tap source, and a "Manage"
 // link opens the full builder.
 //
-// Clicking a tile (or dropping it on a stage card) calls sendToDisplays() — the
-// shared send funnel — which handles the 409 confirm-all gate and toasts.
+// Clicking a tile opens the Command Center routing picker. Dropping a tile on a
+// stage card still calls sendToDisplays() for the explicit single-card target.
 //
 // Drag-drop from toolbox tiles onto stage cards is coordinated from the CALLER
 // (media-control.js): toolbox tiles carry [data-drag-source] with a JSON payload
@@ -53,7 +53,7 @@ function errorState(msg) {
 
 // ---- tab content renderers ----
 
-async function renderMediaTab(container, { selectedIds, onAfterSend }) {
+async function renderMediaTab(container, { selectedIds, onAfterSend, onRouteSource }) {
   container.innerHTML = loadingState(t('mc.tb.loading_media'));
   let items = [];
   try {
@@ -81,14 +81,14 @@ async function renderMediaTab(container, { selectedIds, onAfterSend }) {
     </button>`;
   }).join('');
   container.innerHTML = `<div class="mc-tile-grid">${tiles}</div>`;
-  attachTileHandlers(container, selectedIds, onAfterSend);
+  attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource);
 }
 
 // Playlists tab — every playlist is a drag-or-tap source ({ playlist_id }); the
 // send funnel already accepts playlist_id. A "Manage playlists" link opens the
 // full builder (kept reachable, just no longer a sidebar item). The item count +
 // a Draft badge ride on each tile so the operator picks the right one at a glance.
-async function renderPlaylistsTab(container, { selectedIds, onAfterSend }) {
+async function renderPlaylistsTab(container, { selectedIds, onAfterSend, onRouteSource }) {
   container.innerHTML = loadingState(t('mc.tb.loading_playlists'));
   let items = [];
   try {
@@ -120,10 +120,10 @@ async function renderPlaylistsTab(container, { selectedIds, onAfterSend }) {
     </button>`;
   }).join('');
   container.innerHTML = manage + `<div class="mc-tile-grid">${tiles}</div>`;
-  attachTileHandlers(container, selectedIds, onAfterSend);
+  attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource);
 }
 
-async function renderPresentationsTab(container, { selectedIds, onAfterSend }) {
+async function renderPresentationsTab(container, { selectedIds, onAfterSend, onRouteSource }) {
   container.innerHTML = loadingState(t('mc.tb.loading_presentations'));
   let items = [];
   try {
@@ -149,10 +149,10 @@ async function renderPresentationsTab(container, { selectedIds, onAfterSend }) {
     </button>`;
   }).join('');
   container.innerHTML = `<div class="mc-tile-grid">${tiles}</div>`;
-  attachTileHandlers(container, selectedIds, onAfterSend);
+  attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource);
 }
 
-function renderYouTubeTab(container, { selectedIds, onAfterSend }) {
+function renderYouTubeTab(container, { selectedIds, onAfterSend, onRouteSource }) {
   container.innerHTML = `
     <form class="mc-yt-form" data-yt-form>
       <label class="mc-tb-label" for="mc-yt-url">${esc(t('mc.youtube.label'))}</label>
@@ -166,8 +166,11 @@ function renderYouTubeTab(container, { selectedIds, onAfterSend }) {
     e.preventDefault();
     const url = (container.querySelector('.mc-yt-input').value || '').trim();
     if (!url) { showToast(t('mc.youtube.need_url'), 'error'); return; }
-    const ok = await sendToDisplays({ remote_url: url }, selectedIds, url);
-    if (ok && typeof onAfterSend === 'function') onAfterSend();
+    const ok = typeof onRouteSource === 'function'
+      ? await onRouteSource({ remote_url: url }, url)
+      : await sendToDisplays({ remote_url: url }, selectedIds, url);
+    if (ok && typeof onAfterSend === 'function' && typeof onRouteSource !== 'function') onAfterSend();
+    if (ok) container.querySelector('.mc-yt-input').value = '';
   });
 }
 
@@ -178,7 +181,7 @@ function renderYouTubeTab(container, { selectedIds, onAfterSend }) {
 // Presentations (deck player path) are intentionally NOT shown here — use the
 // Presentations tab. The email comes from the JWT (server-enforced); the client
 // never sends it.
-async function renderNextcloudTab(container, { selectedIds, onAfterSend }, path = '') {
+async function renderNextcloudTab(container, { selectedIds, onAfterSend, onRouteNextcloud }, path = '') {
   container.innerHTML = loadingState(t('mc.tb.loading_nextcloud'));
   let health;
   // error:null (not a literal) so the localized t('mc.nc.unreachable') tail fires.
@@ -229,14 +232,14 @@ async function renderNextcloudTab(container, { selectedIds, onAfterSend }, path 
   // Breadcrumb navigation
   container.querySelectorAll('.mc-nc-crumb').forEach((el) => {
     el.addEventListener('click', () => {
-      renderNextcloudTab(container, { selectedIds, onAfterSend }, el.dataset.ncPath || '');
+      renderNextcloudTab(container, { selectedIds, onAfterSend, onRouteNextcloud }, el.dataset.ncPath || '');
     });
   });
 
   // Folder drill-down
   container.querySelectorAll('[data-nc-dir]').forEach((el) => {
     el.addEventListener('click', () => {
-      renderNextcloudTab(container, { selectedIds, onAfterSend }, el.dataset.ncDir);
+      renderNextcloudTab(container, { selectedIds, onAfterSend, onRouteNextcloud }, el.dataset.ncDir);
     });
   });
 
@@ -254,6 +257,11 @@ async function renderNextcloudTab(container, { selectedIds, onAfterSend }, path 
       const ncPath = btn.dataset.ncPath;
       const label = btn.dataset.ncLabel || ncPath;
       try {
+        if (typeof onRouteNextcloud === 'function') {
+          const ok = await onRouteNextcloud(ncPath, label);
+          if (!ok) restore();
+          return;
+        }
         let result = await api.files.broadcast(ncPath, selectedIds);
         if (result && result.code === 'CONFIRM_ALL_REQUIRED') {
           const ok = await confirmDialog({
@@ -318,15 +326,18 @@ async function renderScenesTab(container, { onAfterSend }) {
 }
 
 // Attach click + dragstart on toolbox tiles that call sendToDisplays.
-function attachTileHandlers(container, selectedIds, onAfterSend) {
+function attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource) {
   container.querySelectorAll('.mc-tile[data-drag-source]').forEach(tile => {
-    // Click = send to all selectedIds immediately
+    // Click = explicit target picker in Command Center; fallback preserves the
+    // legacy immediate send contract for other callers/tests.
     tile.addEventListener('click', async () => {
       let source;
       try { source = JSON.parse(tile.dataset.dragSource); } catch { return; }
       const label = tile.dataset.label || t('mc.tile.content_fallback');
-      const ok = await sendToDisplays(source, selectedIds, label);
-      if (ok && typeof onAfterSend === 'function') onAfterSend();
+      const ok = typeof onRouteSource === 'function'
+        ? await onRouteSource(source, label)
+        : await sendToDisplays(source, selectedIds, label);
+      if (ok && typeof onAfterSend === 'function' && typeof onRouteSource !== 'function') onAfterSend();
     });
 
     // Dragstart = serialize source onto the DataTransfer so stage cards can
@@ -341,26 +352,26 @@ function attachTileHandlers(container, selectedIds, onAfterSend) {
 }
 
 // Load and render the given tab into the tab-body container.
-async function loadTab(tabId, tabBody, { selectedIds, onAfterSend }) {
+async function loadTab(tabId, tabBody, { selectedIds, onAfterSend, onRouteSource, onRouteNextcloud }) {
   tabBody.innerHTML = loadingState(t('mc.tb.loading'));
   switch (tabId) {
     case 'media':
-      await renderMediaTab(tabBody, { selectedIds, onAfterSend });
+      await renderMediaTab(tabBody, { selectedIds, onAfterSend, onRouteSource });
       break;
     case 'playlists':
-      await renderPlaylistsTab(tabBody, { selectedIds, onAfterSend });
+      await renderPlaylistsTab(tabBody, { selectedIds, onAfterSend, onRouteSource });
       break;
     case 'presentations':
-      await renderPresentationsTab(tabBody, { selectedIds, onAfterSend });
+      await renderPresentationsTab(tabBody, { selectedIds, onAfterSend, onRouteSource });
       break;
     case 'youtube':
-      renderYouTubeTab(tabBody, { selectedIds, onAfterSend });
+      renderYouTubeTab(tabBody, { selectedIds, onAfterSend, onRouteSource });
       break;
     case 'scenes':
       await renderScenesTab(tabBody, { onAfterSend });
       break;
     case 'nextcloud':
-      await renderNextcloudTab(tabBody, { selectedIds, onAfterSend });
+      await renderNextcloudTab(tabBody, { selectedIds, onAfterSend, onRouteNextcloud });
       break;
     default:
       tabBody.innerHTML = '';
@@ -373,9 +384,11 @@ async function loadTab(tabId, tabBody, { selectedIds, onAfterSend }) {
  * @param {HTMLElement} container
  * @param {object} opts
  * @param {string[]} opts.selectedIds   currently-selected display ids (passed to send funnel)
- * @param {()=>void} [opts.onAfterSend] called after a successful send (e.g. to refresh stage)
+ * @param {()=>void} [opts.onAfterSend] called after a successful fallback send
+ * @param {(source:object,label:string)=>Promise<boolean>} [opts.onRouteSource]
+ * @param {(path:string,label:string)=>Promise<boolean>} [opts.onRouteNextcloud]
  */
-export function renderToolbox(container, { selectedIds = [], onAfterSend } = {}) {
+export function renderToolbox(container, { selectedIds = [], onAfterSend, onRouteSource, onRouteNextcloud } = {}) {
   if (!container) return;
 
   const tabHtml = TABS.map(tab =>
@@ -399,10 +412,10 @@ export function renderToolbox(container, { selectedIds = [], onAfterSend } = {})
         b.classList.toggle('active', on);
         b.setAttribute('aria-selected', on ? 'true' : 'false');
       });
-      await loadTab(activeTab, tabBody, { selectedIds, onAfterSend });
+      await loadTab(activeTab, tabBody, { selectedIds, onAfterSend, onRouteSource, onRouteNextcloud });
     });
   });
 
   // Load initial tab
-  loadTab(activeTab, tabBody, { selectedIds, onAfterSend });
+  loadTab(activeTab, tabBody, { selectedIds, onAfterSend, onRouteSource, onRouteNextcloud });
 }

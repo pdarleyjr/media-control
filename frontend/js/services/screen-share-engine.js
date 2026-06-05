@@ -243,25 +243,37 @@ export async function startCapture(contentHint) {
       autoGainControl: false,
     },
   };
-  // Conditional hints — these are Chromium 105+ / partial in newer Firefox.
-  if ('systemAudio' in SUPPORTED_CONSTRAINTS || true) {
-    baseConstraints.systemAudio = 'include';
-  }
-  if ('selfBrowserSurface' in SUPPORTED_CONSTRAINTS || true) {
-    baseConstraints.selfBrowserSurface = 'exclude';
-  }
-  if ('surfaceSwitching' in SUPPORTED_CONSTRAINTS || true) {
-    baseConstraints.surfaceSwitching = 'include';
-  }
+  // Chromium-specific top-level hints. Firefox/Safari can reject unknown
+  // getDisplayMedia keys instead of ignoring them, so retry with the conservative
+  // constraints below when the rich request fails with a constraint/type error.
+  const richConstraints = {
+    ...baseConstraints,
+    systemAudio: 'include',
+    selfBrowserSurface: 'exclude',
+    surfaceSwitching: 'include',
+  };
 
   try {
-    stream = await navigator.mediaDevices.getDisplayMedia(baseConstraints);
+    stream = await navigator.mediaDevices.getDisplayMedia(richConstraints);
   } catch (e) {
     if (e && e.name === 'NotAllowedError') {
       return { ok: false, reason: 'cancelled', status: 'Capture cancelled. Click the button to try again.' };
     }
-    errLog('getDisplayMedia failed:', e);
-    return { ok: false, reason: 'failed', status: `Failed to start capture: ${e.message || e.name || 'unknown'}` };
+    const retryable = e && ['TypeError', 'OverconstrainedError', 'ConstraintNotSatisfiedError', 'NotSupportedError'].includes(e.name);
+    if (retryable) {
+      try {
+        stream = await navigator.mediaDevices.getDisplayMedia(baseConstraints);
+      } catch (retryError) {
+        if (retryError && retryError.name === 'NotAllowedError') {
+          return { ok: false, reason: 'cancelled', status: 'Capture cancelled. Click the button to try again.' };
+        }
+        errLog('getDisplayMedia fallback failed:', retryError);
+        return { ok: false, reason: 'failed', status: `Failed to start capture: ${retryError.message || retryError.name || 'unknown'}` };
+      }
+    } else {
+      errLog('getDisplayMedia failed:', e);
+      return { ok: false, reason: 'failed', status: `Failed to start capture: ${e.message || e.name || 'unknown'}` };
+    }
   }
 
   applyContentHint(currentContentHint);
@@ -310,16 +322,19 @@ export async function startBroadcastTo(deviceId, opts = {}) {
   const { wallTile = null, contentHint } = (opts && typeof opts === 'object') ? opts : {};
   if (typeof contentHint === 'string') currentContentHint = contentHint;
 
-  // Capture (once) — backed by the same getDisplayMedia path as startCapture().
-  await ensureCapture();
-
   if (peerConnections.has(deviceId)) {
     dbg(`broadcast to ${deviceId} already running`);
     return;
   }
 
+  await init();
   const sock = getSocket();
   if (!sock || !sock.connected) throw new Error('Dashboard socket not connected');
+
+  // Capture (once) — backed by the same getDisplayMedia path as startCapture().
+  // Do this only after the socket is available so a disconnected dashboard does
+  // not leave the browser sharing indicator active with nowhere to send media.
+  await ensureCapture();
 
   // Server-side session setup. wall_tile is optional - when present, the
   // server forwards it to the receiver so it can render this device's
@@ -329,123 +344,133 @@ export async function startBroadcastTo(deviceId, opts = {}) {
     : { device_id: deviceId };
   const startAck = await emitWithAck(sock, SS.START, startPayload);
   if (!startAck || !startAck.ok) {
+    if (peerConnections.size === 0) stopCaptureOnly();
     throw new Error(startAck && startAck.error ? startAck.error : 'server refused screen-share:start');
   }
 
-  const pc = new RTCPeerConnection({
-    iceServers: iceConfig.iceServers,
-    iceTransportPolicy: iceConfig.iceTransportPolicy || 'all',
-    bundlePolicy: 'max-bundle',
-  });
-  peerConnections.set(deviceId, pc);
-  pendingDeviceCandidates.set(deviceId, []);
-  notifyChange();
-
-  // Compute the adaptive per-receiver bitrate from the ACTUAL captured geometry
-  // (resolution + frame rate). No fixed cap — see computeAdaptiveBitrate above.
-  // Captured once here and reused by applyBitrateCap() below (closure scope).
-  let adaptiveBitrateKbps = bitrateCeilingKbps();
-  const capturedTrack = stream.getVideoTracks()[0];
-  const capturedSettings = capturedTrack && capturedTrack.getSettings ? capturedTrack.getSettings() : {};
-  if (capturedSettings.width && capturedSettings.height) {
-    adaptiveBitrateKbps = computeAdaptiveBitrate(capturedSettings.width, capturedSettings.height, capturedSettings.frameRate);
-  }
-  dbg(`adaptive bitrate ${adaptiveBitrateKbps} kbps for ${capturedSettings.width || '?'}x${capturedSettings.height || '?'}@${capturedSettings.frameRate || '?'}`);
-
-  // Add tracks via transceivers with explicit sendonly direction + the adaptive
-  // bitrate target baked in via sendEncodings. This is the modern API and is
-  // the only way to clamp encoder bitrate BEFORE negotiation. The deprecated
-  // sender.setParameters() post-negotiation path silently no-ops in many
-  // browsers because the encoder isn't bound yet at addTrack time.
-  for (const track of stream.getTracks()) {
-    const initEncoding = track.kind === 'video'
-      ? [{ maxBitrate: adaptiveBitrateKbps * 1000, networkPriority: 'high' }]
-      : undefined;
-    try {
-      pc.addTransceiver(track, {
-        direction: 'sendonly',
-        streams: [stream],
-        ...(initEncoding ? { sendEncodings: initEncoding } : {}),
-      });
-    } catch (e) {
-      // Fallback for ancient browsers without addTransceiver(sendEncodings).
-      warnLog('addTransceiver with sendEncodings failed, falling back to addTrack:', e);
-      pc.addTrack(track, stream);
-    }
-  }
-
-  // Belt-and-suspenders: re-apply the bitrate cap post-negotiation in case
-  // the browser ignored sendEncodings (older Chromium variants).
-  const applyBitrateCap = async () => {
-    for (const sender of pc.getSenders()) {
-      if (!sender.track || sender.track.kind !== 'video') continue;
-      try {
-        const params = sender.getParameters();
-        if (!params.encodings || params.encodings.length === 0) {
-          params.encodings = [{}];
-        }
-        params.encodings[0].maxBitrate = adaptiveBitrateKbps * 1000;
-        await sender.setParameters(params);
-      } catch (_) { /* tolerate older browsers */ }
-    }
-  };
-
-  pc.onicecandidate = (ev) => {
-    if (ev.candidate && sock.connected) {
-      sock.emit(SS.ICE, {
-        device_id: deviceId,
-        candidate: ev.candidate.toJSON ? ev.candidate.toJSON() : ev.candidate,
-      });
-    }
-  };
-
-  pc.onconnectionstatechange = () => {
-    dbg(`pc(${deviceId}) state:`, pc.connectionState);
+  let pc = null;
+  try {
+    pc = new RTCPeerConnection({
+      iceServers: (iceConfig && iceConfig.iceServers) || [],
+      iceTransportPolicy: (iceConfig && iceConfig.iceTransportPolicy) || 'all',
+      bundlePolicy: 'max-bundle',
+    });
+    peerConnections.set(deviceId, pc);
+    pendingDeviceCandidates.set(deviceId, []);
     notifyChange();
-    const state = pc.connectionState;
-    if (state === 'connected') {
-      clearConnectTimeout(deviceId);
-      applyBitrateCap();
-    } else if (state === 'failed') {
-      // CRITICAL: notify server so activeSessions is cleared and the user
-      // can restart immediately. Without this, the next start attempt fails.
-      warnLog(`pc(${deviceId}) connection failed; notifying server`);
-      stopBroadcastTo(deviceId).catch(() => {});
-    } else if (state === 'closed') {
-      peerConnections.delete(deviceId);
-      pendingDeviceCandidates.delete(deviceId);
-      clearConnectTimeout(deviceId);
+
+    // Compute the adaptive per-receiver bitrate from the ACTUAL captured geometry
+    // (resolution + frame rate). No fixed cap — see computeAdaptiveBitrate above.
+    // Captured once here and reused by applyBitrateCap() below (closure scope).
+    let adaptiveBitrateKbps = bitrateCeilingKbps();
+    const capturedTrack = stream.getVideoTracks()[0];
+    const capturedSettings = capturedTrack && capturedTrack.getSettings ? capturedTrack.getSettings() : {};
+    if (capturedSettings.width && capturedSettings.height) {
+      adaptiveBitrateKbps = computeAdaptiveBitrate(capturedSettings.width, capturedSettings.height, capturedSettings.frameRate);
+    }
+    dbg(`adaptive bitrate ${adaptiveBitrateKbps} kbps for ${capturedSettings.width || '?'}x${capturedSettings.height || '?'}@${capturedSettings.frameRate || '?'}`);
+
+    // Add tracks via transceivers with explicit sendonly direction + the adaptive
+    // bitrate target baked in via sendEncodings. This is the modern API and is
+    // the only way to clamp encoder bitrate BEFORE negotiation. The deprecated
+    // sender.setParameters() post-negotiation path silently no-ops in many
+    // browsers because the encoder isn't bound yet at addTrack time.
+    for (const track of stream.getTracks()) {
+      const initEncoding = track.kind === 'video'
+        ? [{ maxBitrate: adaptiveBitrateKbps * 1000, networkPriority: 'high' }]
+        : undefined;
+      try {
+        pc.addTransceiver(track, {
+          direction: 'sendonly',
+          streams: [stream],
+          ...(initEncoding ? { sendEncodings: initEncoding } : {}),
+        });
+      } catch (e) {
+        // Fallback for ancient browsers without addTransceiver(sendEncodings).
+        warnLog('addTransceiver with sendEncodings failed, falling back to addTrack:', e);
+        pc.addTrack(track, stream);
+      }
+    }
+
+    // Belt-and-suspenders: re-apply the bitrate cap post-negotiation in case
+    // the browser ignored sendEncodings (older Chromium variants).
+    const applyBitrateCap = async () => {
+      for (const sender of pc.getSenders()) {
+        if (!sender.track || sender.track.kind !== 'video') continue;
+        try {
+          const params = sender.getParameters();
+          if (!params.encodings || params.encodings.length === 0) {
+            params.encodings = [{}];
+          }
+          params.encodings[0].maxBitrate = adaptiveBitrateKbps * 1000;
+          await sender.setParameters(params);
+        } catch (_) { /* tolerate older browsers */ }
+      }
+    };
+
+    pc.onicecandidate = (ev) => {
+      if (ev.candidate && sock.connected) {
+        sock.emit(SS.ICE, {
+          device_id: deviceId,
+          candidate: ev.candidate.toJSON ? ev.candidate.toJSON() : ev.candidate,
+        });
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      dbg(`pc(${deviceId}) state:`, pc.connectionState);
       notifyChange();
+      const state = pc.connectionState;
+      if (state === 'connected') {
+        clearConnectTimeout(deviceId);
+        applyBitrateCap();
+      } else if (state === 'failed') {
+        // CRITICAL: notify server so activeSessions is cleared and the user
+        // can restart immediately. Without this, the next start attempt fails.
+        warnLog(`pc(${deviceId}) connection failed; notifying server`);
+        stopBroadcastTo(deviceId).catch(() => {});
+      } else if (state === 'closed') {
+        peerConnections.delete(deviceId);
+        pendingDeviceCandidates.delete(deviceId);
+        clearConnectTimeout(deviceId);
+        notifyChange();
+      }
+    };
+
+    // 30-second connect timeout: if we don't reach 'connected' in time, treat
+    // as failed. ICE 'failed' often takes >30s to fire on its own; this gives
+    // the user feedback faster.
+    const timeoutHandle = setTimeout(() => {
+      if (pc.connectionState !== 'connected' && pc.connectionState !== 'closed') {
+        warnLog(`pc(${deviceId}) connect timeout after ${CONNECT_TIMEOUT_MS}ms; tearing down`);
+        stopBroadcastTo(deviceId).catch(() => {});
+      }
+    }, CONNECT_TIMEOUT_MS);
+    connectionTimeouts.set(deviceId, timeoutHandle);
+
+    // The offer-direction args are deprecated but harmless. The actual
+    // direction is determined by the transceivers we added above.
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    const offerAck = await emitWithAck(sock, SS.OFFER, {
+      device_id: deviceId,
+      sdp: pc.localDescription,
+    });
+    if (!offerAck || !offerAck.ok) {
+      throw new Error(offerAck && offerAck.error ? offerAck.error : 'server refused screen-share:offer');
     }
-  };
-
-  // 30-second connect timeout: if we don't reach 'connected' in time, treat
-  // as failed. ICE 'failed' often takes >30s to fire on its own; this gives
-  // the user feedback faster.
-  const timeoutHandle = setTimeout(() => {
-    if (pc.connectionState !== 'connected' && pc.connectionState !== 'closed') {
-      warnLog(`pc(${deviceId}) connect timeout after ${CONNECT_TIMEOUT_MS}ms; tearing down`);
-      stopBroadcastTo(deviceId).catch(() => {});
-    }
-  }, CONNECT_TIMEOUT_MS);
-  connectionTimeouts.set(deviceId, timeoutHandle);
-
-  // The offer-direction args are deprecated but harmless. The actual
-  // direction is determined by the transceivers we added above.
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-
-  const offerAck = await emitWithAck(sock, SS.OFFER, {
-    device_id: deviceId,
-    sdp: pc.localDescription,
-  });
-  if (!offerAck || !offerAck.ok) {
-    try { pc.close(); } catch (_) { /* */ }
+  } catch (err) {
+    try { if (pc) pc.close(); } catch (_) { /* */ }
     peerConnections.delete(deviceId);
     pendingDeviceCandidates.delete(deviceId);
     clearConnectTimeout(deviceId);
+    if (sock && sock.connected) {
+      await emitWithAck(sock, SS.STOP, { device_id: deviceId }).catch(() => {});
+    }
     notifyChange();
-    throw new Error(offerAck && offerAck.error ? offerAck.error : 'server refused screen-share:offer');
+    if (peerConnections.size === 0) stopCaptureOnly();
+    throw err;
   }
 }
 

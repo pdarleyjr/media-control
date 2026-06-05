@@ -146,6 +146,7 @@ function setupScreenShareSignaling({ dashboardNs, deviceNs, canActOnDevice, devi
 
       activeSessions.set(device_id, {
         broadcasterSocketId: socket.id,
+        broadcasterUserId: socket.userId,
         startedAt: Date.now(),
         disconnectedAt: null,
         wallTile: safeWallTile,
@@ -193,7 +194,8 @@ function setupScreenShareSignaling({ dashboardNs, deviceNs, canActOnDevice, devi
       }
       const session = activeSessions.get(device_id);
       if (!session) return ack && ack({ ok: true, already_ended: true });
-      if (session.broadcasterSocketId !== socket.id) {
+      const reclaimingGraceSession = session.disconnectedAt && session.broadcasterUserId === socket.userId;
+      if (session.broadcasterSocketId !== socket.id && !reclaimingGraceSession) {
         return ack && ack({ ok: false, error: 'not_session_owner' });
       }
       if (!canActOnDevice(socket, device_id, 'write')) {

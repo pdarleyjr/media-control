@@ -229,6 +229,7 @@ export const api = {
   // forwards the chosen key. Follows the same request()/Bearer pattern as the
   // rest of the API surface.
   layouts: {
+    list: () => request('/layouts'),
     // Fetch a single layout WITH its zones (server attaches layout.zones).
     get: (layoutId) => request(`/layouts/${layoutId}`),
     // Create a layout in the caller's current workspace. Returns { id, zones, ... }.

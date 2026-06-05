@@ -6,13 +6,15 @@ import { identifyDevice, requestScreenshot } from '../socket.js';
 import * as displayState from '../services/display-state.js';
 import { renderStage } from './media-control/stage.js';
 import { renderToolbox } from './media-control/toolbox.js';
-import { sendToDisplays } from './media-control/send.js';
+import { sendToDisplays, sentToast } from './media-control/send.js';
 import { renderInspector, closeInspector } from './media-control/inspector.js';
+import { pickRoutingTargets } from './media-control/routing-picker.js';
 import { mountBroadcastChip } from './media-control/broadcast-chip.js';
 import { renderCommandBar } from './media-control/command-bar.js';
 import { renderRoomPresets } from './media-control/room-presets.js';
 import { renderRecentPanel } from './media-control/recent-panel.js';
 import { openViewModal, closeViewModal } from './media-control/view-modal.js';
+import { confirmDialog } from '../components/confirm.js';
 import * as schedulesView from './schedules.js';
 // transport.js is used by stage.js internally — no direct import needed here.
 
@@ -273,10 +275,91 @@ function effectiveTargets() {
   return routingMode === 'lecture' ? roomDisplayIds() : selectedIds;
 }
 
+function wallDeviceIds(wall) {
+  return [...new Set(((wall && wall.devices) || []).map(m => m.device_id).filter(Boolean))];
+}
+
+async function applyWallRoutingModes(wallSelections) {
+  const changes = [];
+  for (const selection of (wallSelections || [])) {
+    const wall = selection.wall;
+    if (!wall || !wall.id) continue;
+    const desired = selection.mode === 'sections' ? 'split' : 'span';
+    const current = wall.layout_mode === 'split' ? 'split' : 'span';
+    if (current !== desired) changes.push(api.updateWall(wall.id, { layout_mode: desired }));
+  }
+  if (!changes.length) return;
+  await Promise.all(changes);
+  await loadWalls();
+  paintStage();
+  paintSummary();
+}
+
+async function chooseRouteTargets(label) {
+  const allDisplays = displayState.getAll().filter(d => !wallMemberIds.has(d.id));
+  const result = await pickRoutingTargets({ displays: allDisplays, walls, label });
+  if (!result) return null;
+  const targetIds = [...new Set([
+    ...(result.displayIds || []),
+    ...(result.wallSelections || []).flatMap(sel => sel.deviceIds || wallDeviceIds(sel.wall)),
+  ])];
+  if (!targetIds.length) {
+    showToast(t('mc.send.no_displays'), 'error');
+    return null;
+  }
+  return { targetIds, wallSelections: result.wallSelections || [] };
+}
+
+async function routeSourceWithPicker(source, label = t('mc.tile.content_fallback')) {
+  const route = await chooseRouteTargets(label);
+  if (!route) return false;
+  try {
+    await applyWallRoutingModes(route.wallSelections);
+  } catch (e) {
+    showToast(e?.message || t('mc.wall.tpl_error'), 'error');
+    return false;
+  }
+  const ok = await sendToDisplays(source, route.targetIds, label);
+  if (ok) refreshAfterSend(route.targetIds);
+  return ok;
+}
+
+async function routeNextcloudWithPicker(path, label = t('mc.tile.content_fallback')) {
+  const route = await chooseRouteTargets(label);
+  if (!route) return false;
+  try {
+    await applyWallRoutingModes(route.wallSelections);
+    let result = await api.files.broadcast(path, route.targetIds);
+    if (result && result.code === 'CONFIRM_ALL_REQUIRED') {
+      const ok = await confirmDialog({
+        title: t('mc.send.confirm_all_title', { n: result.count }),
+        message: t('mc.send.confirm_all_msg', { label }),
+        confirmLabel: t('mc.send.confirm_all_ok'),
+        tone: 'default',
+      });
+      if (!ok) return false;
+      result = await api.files.broadcast(path, route.targetIds, { confirm_all: true });
+    }
+    if (result && result.success) {
+      sentToast(label, result.sent, result.total);
+      refreshAfterSend(route.targetIds);
+      return true;
+    }
+  } catch (e) {
+    showToast(e?.message || t('mc.send.failed'), 'error');
+  }
+  return false;
+}
+
 function paintToolbox() {
   const el = toolboxEl();
   if (!el) return;
-  renderToolbox(el, { selectedIds: effectiveTargets(), onAfterSend: refreshAfterSend });
+  renderToolbox(el, {
+    selectedIds: effectiveTargets(),
+    onAfterSend: refreshAfterSend,
+    onRouteSource: routeSourceWithPicker,
+    onRouteNextcloud: routeNextcloudWithPicker,
+  });
 }
 
 // Selecting a stage card opens the inspector for that display (Task 4.4):
@@ -293,6 +376,14 @@ function openInspector(deviceId) {
     display,
     isWallMember: wallMemberIds.has(deviceId),
     onClose: () => { /* panel hides itself; nothing else to tear down */ },
+    onDeviceChanged: async () => {
+      await displayState.refresh().catch(() => {});
+      await loadWalls();
+      pruneSelection();
+      paintStage();
+      paintToolbox();
+      paintSummary();
+    },
   });
 }
 
@@ -482,7 +573,7 @@ function attachStageDrop(stageContainer) {
   // Whole-wall drop strips: drop a source here to fill EVERY screen of that wall
   // at once. The strip carries data-wall-ids="id1,id2,…"; stopPropagation so the
   // stage-background handler does not also fire. Re-wired each paint (fresh nodes).
-  stageContainer.querySelectorAll('[data-wall-ids]').forEach(zone => {
+  stageContainer.querySelectorAll('.mc-wall-all[data-wall-ids]').forEach(zone => {
     zone.addEventListener('dragover', (e) => {
       if (!dragHasSource(e)) return;
       e.preventDefault();
