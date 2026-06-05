@@ -78,12 +78,15 @@ let ctx = null;
 let currentTool = 'pen';
 let currentColor = DEFAULT_COLOR;
 let currentSize = DEFAULT_SIZE;
+let requestedDeviceId = null;
 
 // Drawing state for the in-progress stroke.
 let drawing = false;
 let activePointerId = null;
+let activeStrokeId = null;
 let strokePoints = [];        // ALL points of the in-progress stroke (normalized 0..1)
 let pendingPoints = [];       // points collected since the last flush (normalized 0..1)
+let pendingPhase = 'append';
 let flushTimer = null;
 
 // Local undo stack: each entry is a completed stroke {points, color, size, tool}.
@@ -104,10 +107,13 @@ function resetState() {
   currentTool = 'pen';
   currentColor = DEFAULT_COLOR;
   currentSize = DEFAULT_SIZE;
+  requestedDeviceId = null;
   drawing = false;
   activePointerId = null;
+  activeStrokeId = null;
   strokePoints = [];
   pendingPoints = [];
+  pendingPhase = 'append';
   strokeHistory = [];
 }
 
@@ -117,6 +123,7 @@ function resetState() {
 export function render(container) {
   resetState();
   activeContainer = container;
+  requestedDeviceId = deviceIdFromHash();
   renderPicker();
 }
 
@@ -157,6 +164,25 @@ function emitWb(event, payload) {
   if (sock && sock.connected) {
     sock.emit(event, payload);
   }
+}
+
+function emitWbAck(event, payload, timeoutMs = 5000) {
+  const sock = getSocket();
+  if (!sock || !sock.connected) return Promise.resolve({ ok: false, error: 'socket_disconnected' });
+  return new Promise(resolve => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve({ ok: false, error: 'timeout' });
+    }, timeoutMs);
+    sock.emit(event, payload, (ack) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(ack || { ok: true });
+    });
+  });
 }
 
 // ----------------------------------------------------------------------
@@ -204,15 +230,21 @@ async function renderPicker() {
         if (id) selectDisplay(id);
       });
     });
+    if (requestedDeviceId) {
+      const target = devices.find(d => d.id === requestedDeviceId && d.status === 'online');
+      requestedDeviceId = null;
+      if (target) selectDisplay(target.id);
+    }
   } catch (e) {
     listEl.innerHTML = `<div class="muted">Could not load displays: ${escapeHtml(e.message || String(e))}</div>`;
   }
 }
 
-function selectDisplay(deviceId) {
+async function selectDisplay(deviceId) {
   selectedDeviceId = deviceId;
-  // Tell the display to show its whiteboard overlay.
-  emitWb('dashboard:wb-start', { device_id: deviceId });
+  // Tell the display to show its whiteboard overlay and load persisted strokes.
+  const ack = await emitWbAck('dashboard:wb-start', { device_id: deviceId });
+  strokeHistory = Array.isArray(ack?.strokes) ? ack.strokes : [];
   renderBoard();
 }
 
@@ -367,10 +399,12 @@ function onPointerDown(e) {
   if (drawing) return;
   drawing = true;
   activePointerId = e.pointerId;
+  activeStrokeId = 'wb-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
   try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
   const p = pointFromEvent(e);
   strokePoints = [p];
   pendingPoints = [p];
+  pendingPhase = 'begin';
   // Render the initial dot immediately so a tap leaves a mark.
   drawStrokeSegment([p]);
   scheduleFlush();
@@ -396,6 +430,7 @@ function onPointerUp(e) {
 
   // Final flush of any remaining points so the display matches exactly.
   clearFlushTimer();
+  pendingPhase = 'end';
   flushPending();
 
   // Commit the completed stroke to local undo history.
@@ -407,8 +442,10 @@ function onPointerUp(e) {
       tool: currentTool,
     });
   }
+  activeStrokeId = null;
   strokePoints = [];
   pendingPoints = [];
+  pendingPhase = 'append';
 }
 
 // Render the in-progress stroke locally using quadratic-midpoint smoothing.
@@ -522,8 +559,11 @@ function flushPending() {
       color: currentColor,
       size: currentSize,
       tool: currentTool,
+      stroke_id: activeStrokeId,
+      phase: pendingPhase,
     },
   });
+  pendingPhase = 'append';
 }
 
 // ----------------------------------------------------------------------
@@ -554,6 +594,13 @@ function stopSession() {
   pendingPoints = [];
   strokeHistory = [];
   renderPicker();
+}
+
+function deviceIdFromHash() {
+  const hash = window.location.hash || '';
+  const q = hash.includes('?') ? hash.slice(hash.indexOf('?') + 1) : '';
+  if (!q) return null;
+  try { return new URLSearchParams(q).get('device') || null; } catch { return null; }
 }
 
 // ----------------------------------------------------------------------

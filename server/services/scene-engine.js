@@ -25,6 +25,7 @@
 
 const { v4: uuidv4 } = require('uuid');
 const { db } = require('../db/database');
+const whiteboardState = require('./whiteboard-state');
 
 // Mirror routes/playlists.js + routes/assignments.js snapshot select so the
 // published snapshot the player consumes carries the same denormalized shape.
@@ -154,6 +155,7 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
       // platform template with no workspace_id).
       if (pl.workspace_id && device.workspace_id && pl.workspace_id !== device.workspace_id) return false;
       db.prepare('UPDATE devices SET playlist_id = ? WHERE id = ?').run(source.playlist_id, deviceId);
+      whiteboardState.clearForMedia(io, deviceId);
       pushPlaylistUpdate(io, deviceId);
       return true;
     }
@@ -190,6 +192,7 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
     });
     tx();
 
+    whiteboardState.clearForMedia(io, deviceId);
     pushPlaylistUpdate(io, deviceId);
     return true;
   } catch (e) {

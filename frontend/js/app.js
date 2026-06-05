@@ -400,7 +400,7 @@ async function route() {
     else if (hash === '#/widgets' && link.dataset.view === 'widgets') link.classList.add('active');
     else if ((hash.startsWith('#/wall') || hash === '#/walls') && link.dataset.view === 'walls') link.classList.add('active');
     else if (hash === '#/screen-share' && link.dataset.view === 'screen-share') link.classList.add('active');
-    else if (hash === '#/smartboard' && link.dataset.view === 'smartboard') link.classList.add('active');
+    else if (hash.startsWith('#/smartboard') && link.dataset.view === 'smartboard') link.classList.add('active');
     else if (hash === '#/reports' && link.dataset.view === 'reports') link.classList.add('active');
     else if (hash === '#/activity' && link.dataset.view === 'activity') link.classList.add('active');
     else if (hash === '#/designer' && link.dataset.view === 'designer') link.classList.add('active');
@@ -422,7 +422,7 @@ async function route() {
   } else if (hash === '#/screen-share') {
     currentView = screenShare;
     screenShare.render(app);
-  } else if (hash === '#/smartboard') {
+  } else if (hash.startsWith('#/smartboard')) {
     currentView = smartboard;
     smartboard.render(app);
   } else if (hash.startsWith('#/device/')) {

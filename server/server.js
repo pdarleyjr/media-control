@@ -494,7 +494,7 @@ function updateFrontendHash() {
       'js/views/settings.js', 'js/views/login.js',
       'js/views/layout-editor.js', 'js/views/schedule.js', 'js/views/widgets.js',
       'js/views/video-wall.js', 'js/views/reports.js', 'js/views/designer.js',
-      'js/views/activity.js', 'js/views/kiosk.js',
+      'js/views/activity.js', 'js/views/kiosk.js', 'js/views/smartboard.js',
       // Command Center is split into feature modules; include them in the
       // frontend hash so inspector/routing hotfixes force active browsers to
       // reload instead of mixing new modules with stale cached dependencies.

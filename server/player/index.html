@@ -397,6 +397,7 @@
     let currentVideoEl = null;
     let currentItemStartedAt = 0;
     let pendingWallStartAt = 0;
+    let displayProfile = null;
     // Followers in a video wall must stay silent — N copies of the same audio
     // slightly out of sync produce a flanged echo across the wall. Only the
     // leader is allowed to make sound. This helper is the single source of
@@ -867,7 +868,49 @@
       cssW: 0,         // canvas CSS pixel width
       cssH: 0,         // canvas CSS pixel height
       resizeHandler: null,
+      toolbar: null,
+      nativeTouch: false,
+      drawing: false,
+      activePointerId: null,
+      livePoints: [],
+      tool: 'pen',
+      color: '#ffffff',
+      size: 8,
     };
+
+    function runtimeProbe() {
+      return {
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+        devicePixelRatio: window.devicePixelRatio || 1,
+        userAgent: navigator.userAgent || '',
+        maxTouchPoints: navigator.maxTouchPoints || 0,
+        pointerFine: window.matchMedia && window.matchMedia('(pointer: fine)').matches,
+        pointerCoarse: window.matchMedia && window.matchMedia('(pointer: coarse)').matches,
+        standalone: !!(window.matchMedia && (window.matchMedia('(display-mode: fullscreen)').matches || window.matchMedia('(display-mode: standalone)').matches)),
+      };
+    }
+
+    function isClassroomSmartboardProfile(profile) {
+      return !!profile && profile.id === 'classroom_1_smartboard_jaszdot_86';
+    }
+
+    function applyDisplayProfile(profile) {
+      displayProfile = profile || null;
+      const active = isClassroomSmartboardProfile(displayProfile);
+      document.documentElement.classList.toggle('media-control-classroom-1-smartboard', active);
+      document.body.classList.toggle('media-control-classroom-1-smartboard', active);
+      if (active) {
+        document.documentElement.style.overscrollBehavior = 'none';
+        document.body.style.overscrollBehavior = 'none';
+        document.body.style.touchAction = 'manipulation';
+      }
+    }
+
+    function classroomSmartboardTouchEnabled(payload) {
+      if (!isClassroomSmartboardProfile((payload && payload.display_profile) || displayProfile)) return false;
+      const probe = runtimeProbe();
+      return probe.maxTouchPoints >= 2 || probe.pointerCoarse;
+    }
 
     // Size (or re-size) the whiteboard canvas to the current window, accounting
     // for devicePixelRatio so lines stay crisp on hi-dpi displays.
@@ -952,6 +995,127 @@
       } catch (e) { /* never break playback */ }
     }
 
+    function wbStoreStroke(stroke) {
+      if (!stroke || !Array.isArray(stroke.points) || stroke.points.length === 0) return;
+      if (stroke.stroke_id) {
+        const existing = _wb.strokes.find(s => s && s.stroke_id === stroke.stroke_id);
+        if (existing) {
+          existing.points = (existing.points || []).concat(stroke.points || []);
+          existing.color = stroke.color;
+          existing.size = stroke.size;
+          existing.tool = stroke.tool;
+          existing.phase = stroke.phase;
+          return;
+        }
+      }
+      _wb.strokes.push(stroke);
+    }
+
+    function wbSetTool(tool) {
+      _wb.tool = (tool === 'highlighter' || tool === 'eraser') ? tool : 'pen';
+      if (!_wb.toolbar) return;
+      _wb.toolbar.querySelectorAll('[data-wb-tool]').forEach(function (btn) {
+        const active = btn.getAttribute('data-wb-tool') === _wb.tool;
+        btn.classList.toggle('active', active);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
+    }
+
+    function wbBuildToolbar() {
+      if (!_wb.overlay || _wb.toolbar) return;
+      const bar = document.createElement('div');
+      bar.id = 'smartboardNativeToolbar';
+      bar.style.cssText = 'position:absolute;left:max(32px,2vw);right:max(32px,2vw);bottom:max(32px,3vh);' +
+        'min-height:64px;display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;' +
+        'font-family:-apple-system,BlinkMacSystemFont,sans-serif;pointer-events:auto;z-index:2;' +
+        'padding:10px 14px;border-radius:24px;background:rgba(15,23,42,0.76);backdrop-filter:none;' +
+        'box-shadow:0 10px 30px rgba(0,0,0,0.26)';
+      const mkBtn = function (text, attrs, danger) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = text;
+        Object.keys(attrs || {}).forEach(k => btn.setAttribute(k, attrs[k]));
+        btn.style.cssText = 'min-width:64px;min-height:64px;padding:0 22px;border-radius:18px;border:1px solid rgba(255,255,255,0.24);' +
+          'background:' + (danger ? 'rgba(239,68,68,0.92)' : 'rgba(30,41,59,0.96)') + ';color:#fff;font-size:20px;font-weight:800;' +
+          'touch-action:manipulation;-webkit-tap-highlight-color:transparent';
+        return btn;
+      };
+      bar.appendChild(mkBtn('Pen', { 'data-wb-tool': 'pen', 'aria-pressed': 'true' }));
+      bar.appendChild(mkBtn('Highlighter', { 'data-wb-tool': 'highlighter', 'aria-pressed': 'false' }));
+      bar.appendChild(mkBtn('Eraser', { 'data-wb-tool': 'eraser', 'aria-pressed': 'false' }));
+      bar.appendChild(mkBtn('Undo', { 'data-wb-action': 'undo' }));
+      bar.appendChild(mkBtn('Clear', { 'data-wb-action': 'clear' }, true));
+      bar.appendChild(mkBtn('Close', { 'data-wb-action': 'stop' }));
+      bar.querySelectorAll('[data-wb-tool]').forEach(btn => btn.addEventListener('click', () => wbSetTool(btn.getAttribute('data-wb-tool'))));
+      bar.querySelector('[data-wb-action="undo"]').addEventListener('click', () => {
+        if (_wb.strokes.length > 0) _wb.strokes.pop();
+        wbRedrawAll();
+        if (socket?.connected) socket.emit('device:wb-undo', {});
+      });
+      bar.querySelector('[data-wb-action="clear"]').addEventListener('click', () => {
+        _wb.strokes = [];
+        wbRedrawAll();
+        if (socket?.connected) socket.emit('device:wb-clear', {});
+      });
+      bar.querySelector('[data-wb-action="stop"]').addEventListener('click', () => wbStop());
+      _wb.toolbar = bar;
+      _wb.overlay.appendChild(bar);
+      wbSetTool(_wb.tool);
+    }
+
+    function wbPointFromEvent(e) {
+      const rect = _wb.canvas.getBoundingClientRect();
+      return {
+        x: Math.max(0, Math.min(1, (e.clientX - rect.left) / (rect.width || 1))),
+        y: Math.max(0, Math.min(1, (e.clientY - rect.top) / (rect.height || 1))),
+      };
+    }
+
+    function wbNativeDown(e) {
+      if (!_wb.nativeTouch || _wb.drawing || !_wb.canvas) return;
+      if (e.target && e.target.closest && e.target.closest('#smartboardNativeToolbar')) return;
+      _wb.drawing = true;
+      _wb.activePointerId = e.pointerId;
+      _wb.liveStrokeId = 'native-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+      _wb.livePoints = [wbPointFromEvent(e)];
+      try { _wb.canvas.setPointerCapture(e.pointerId); } catch (_) {}
+      wbDrawStroke({ points: _wb.livePoints, color: _wb.color, size: _wb.size, tool: _wb.tool });
+      e.preventDefault();
+    }
+
+    function wbNativeMove(e) {
+      if (!_wb.nativeTouch || !_wb.drawing || e.pointerId !== _wb.activePointerId) return;
+      _wb.livePoints.push(wbPointFromEvent(e));
+      wbRedrawAll();
+      wbDrawStroke({ points: _wb.livePoints, color: _wb.color, size: _wb.size, tool: _wb.tool });
+      e.preventDefault();
+    }
+
+    function wbNativeUp(e) {
+      if (!_wb.nativeTouch || !_wb.drawing || (e.pointerId != null && e.pointerId !== _wb.activePointerId)) return;
+      try { _wb.canvas.releasePointerCapture(_wb.activePointerId); } catch (_) {}
+      const stroke = { points: _wb.livePoints.slice(), color: _wb.color, size: _wb.size, tool: _wb.tool, stroke_id: _wb.liveStrokeId, phase: 'end' };
+      wbStoreStroke(stroke);
+      wbRedrawAll();
+      if (socket?.connected) socket.emit('device:wb-stroke', { stroke });
+      _wb.drawing = false;
+      _wb.activePointerId = null;
+      _wb.liveStrokeId = null;
+      _wb.livePoints = [];
+      e.preventDefault();
+    }
+
+    function wbApplyNativeTouch(enabled) {
+      _wb.nativeTouch = !!enabled;
+      if (!_wb.overlay || !_wb.canvas) return;
+      _wb.overlay.style.pointerEvents = _wb.nativeTouch ? 'auto' : 'none';
+      _wb.canvas.style.pointerEvents = _wb.nativeTouch ? 'auto' : 'none';
+      _wb.canvas.style.touchAction = _wb.nativeTouch ? 'none' : 'auto';
+      _wb.overlay.classList.toggle('native-touch', _wb.nativeTouch);
+      if (_wb.nativeTouch) wbBuildToolbar();
+      else if (_wb.toolbar) { _wb.toolbar.remove(); _wb.toolbar = null; }
+    }
+
     // Clear the canvas and replay every stroke in order (used after resize/undo).
     function wbRedrawAll() {
       try {
@@ -975,9 +1139,18 @@
     // capability a browser-client display has that dumb HDMI/cast sinks cannot.
     // (Was an opaque #10151c blank board; if a clean board is wanted, Blank the
     // display first, then draw.)
-    function wbShow() {
+    function wbShow(options) {
       try {
-        if (_wb.overlay) return; // already shown
+        const initialStrokes = Array.isArray(options && options.strokes) ? options.strokes : null;
+        const nativeTouch = classroomSmartboardTouchEnabled(options || {});
+        if (_wb.overlay) {
+          if (initialStrokes) {
+            _wb.strokes = initialStrokes.slice();
+            wbRedrawAll();
+          }
+          wbApplyNativeTouch(nativeTouch);
+          return;
+        }
         const ov = document.createElement('div');
         ov.id = 'smartboardOverlay';
         ov.style.cssText = 'position:fixed;inset:0;z-index:2147483646;' +
@@ -1004,8 +1177,14 @@
         _wb.overlay = ov;
         _wb.canvas = canvas;
         _wb.ctx = canvas.getContext('2d');
-        _wb.strokes = [];
+        _wb.strokes = initialStrokes ? initialStrokes.slice() : [];
         wbFitCanvas();
+        wbRedrawAll();
+        wbApplyNativeTouch(nativeTouch);
+        canvas.addEventListener('pointerdown', wbNativeDown);
+        canvas.addEventListener('pointermove', wbNativeMove);
+        canvas.addEventListener('pointerup', wbNativeUp);
+        canvas.addEventListener('pointercancel', wbNativeUp);
 
         _wb.resizeHandler = function () {
           wbFitCanvas();
@@ -1024,10 +1203,21 @@
           window.removeEventListener('orientationchange', _wb.resizeHandler);
           _wb.resizeHandler = null;
         }
+        if (_wb.canvas) {
+          _wb.canvas.removeEventListener('pointerdown', wbNativeDown);
+          _wb.canvas.removeEventListener('pointermove', wbNativeMove);
+          _wb.canvas.removeEventListener('pointerup', wbNativeUp);
+          _wb.canvas.removeEventListener('pointercancel', wbNativeUp);
+        }
         if (_wb.overlay) _wb.overlay.remove();
         _wb.overlay = null;
         _wb.canvas = null;
         _wb.ctx = null;
+        _wb.toolbar = null;
+        _wb.nativeTouch = false;
+        _wb.drawing = false;
+        _wb.activePointerId = null;
+        _wb.livePoints = [];
         _wb.strokes = [];
       } catch (e) { /* never break playback */ }
     }
@@ -1345,10 +1535,11 @@
       // events here. We render them on a fullscreen overlay above playback.
       // Every handler is wrapped defensively: a bad payload must never crash
       // the player (playback continues underneath regardless).
-      socket.on('device:wb-show', () => {
+      socket.on('device:wb-show', (data) => {
         try {
           console.log('Smartboard: show');
-          wbShow();
+          if (data && data.display_profile) applyDisplayProfile(data.display_profile);
+          wbShow(data || {});
         } catch (e) { /* never break playback */ }
       });
 
@@ -1357,7 +1548,7 @@
           if (!_wb.overlay) wbShow(); // tolerate a stroke before show
           const stroke = data && data.stroke;
           if (!stroke || !Array.isArray(stroke.points) || stroke.points.length === 0) return;
-          _wb.strokes.push(stroke);
+          wbStoreStroke(stroke);
           wbDrawStroke(stroke);
         } catch (e) { /* never break playback */ }
       });
@@ -1600,6 +1791,7 @@
       }
 
       const newItems = data.assignments || [];
+      applyDisplayProfile(data.display_profile || null);
       // Build fingerprint from id + url + filename to detect any content change
       const fingerprint = (items) => items.map(a => `${a.content_id || ''}|${a.widget_id || ''}|${a.remote_url || ''}|${a.filepath || ''}|${a.filename || ''}`).join(',');
       const newFp = fingerprint(newItems);

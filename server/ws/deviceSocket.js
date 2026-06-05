@@ -7,6 +7,8 @@ const config = require('../config');
 const heartbeat = require('../services/heartbeat');
 const commandQueue = require('../lib/command-queue');
 const { withLocalAssetUrls } = require('../lib/local-asset-url');
+const { profileForDevice, isClassroom1Smartboard } = require('../lib/display-profiles');
+const whiteboardState = require('../services/whiteboard-state');
 
 // Debounce window for marking a device offline on socket disconnect. Brief
 // flap (Wi-Fi blip, Engine.IO ping miss, server-side eviction-then-reconnect)
@@ -66,7 +68,7 @@ function logDeviceStatus(deviceId, status) {
 // Build playlist payload with layout and zones
 // Reads from published_snapshot (Phase 3) so draft edits don't affect live devices
 function buildPlaylistPayload(deviceId) {
-  const device = db.prepare('SELECT playlist_id, layout_id, orientation, wall_id, screen_width, screen_height, refresh_rate_hz, auto_detect_resolution FROM devices WHERE id = ?').get(deviceId);
+  const device = db.prepare('SELECT id, name, playlist_id, layout_id, orientation, wall_id, screen_width, screen_height, refresh_rate_hz, auto_detect_resolution FROM devices WHERE id = ?').get(deviceId);
 
   let assignments = [];
   if (device?.playlist_id) {
@@ -191,6 +193,7 @@ function buildPlaylistPayload(deviceId) {
       refresh_rate_hz: device?.refresh_rate_hz || null,
       auto_detected: !!device?.auto_detect_resolution,
     },
+    display_profile: profileForDevice(device),
   };
 }
 
@@ -720,6 +723,46 @@ module.exports = function setupDeviceSocket(io) {
       } catch (e) {
         // Catch-all so a malformed payload never escapes the event loop.
         console.error(`display:viewport handler crashed: ${e.message}`, e.stack);
+      }
+    });
+
+    // Native Classroom 1 Smartboard whiteboard input. Only the dedicated
+    // Classroom 1 profile may originate whiteboard writes from the display
+    // itself; all other displays remain dashboard-controlled receivers.
+    function canUseNativeWhiteboard() {
+      if (!currentDeviceId) return false;
+      const device = db.prepare('SELECT id, name FROM devices WHERE id = ?').get(currentDeviceId);
+      return isClassroom1Smartboard(device);
+    }
+
+    socket.on('device:wb-stroke', (data) => {
+      try {
+        if (!requireDeviceAuth() || !canUseNativeWhiteboard()) return;
+        const stroke = whiteboardState.appendStroke(null, currentDeviceId, data && data.stroke);
+        if (!stroke) return;
+        emitToDeviceWorkspace(dashboardNs, currentDeviceId, 'dashboard:wb-stroke', { device_id: currentDeviceId, stroke });
+      } catch (e) {
+        console.warn(`device:wb-stroke handler error: ${e.message}`);
+      }
+    });
+
+    socket.on('device:wb-clear', () => {
+      try {
+        if (!requireDeviceAuth() || !canUseNativeWhiteboard()) return;
+        whiteboardState.clearSession(null, currentDeviceId);
+        emitToDeviceWorkspace(dashboardNs, currentDeviceId, 'dashboard:wb-clear', { device_id: currentDeviceId });
+      } catch (e) {
+        console.warn(`device:wb-clear handler error: ${e.message}`);
+      }
+    });
+
+    socket.on('device:wb-undo', () => {
+      try {
+        if (!requireDeviceAuth() || !canUseNativeWhiteboard()) return;
+        const strokes = whiteboardState.undoStroke(null, currentDeviceId);
+        emitToDeviceWorkspace(dashboardNs, currentDeviceId, 'dashboard:wb-undo', { device_id: currentDeviceId, strokes });
+      } catch (e) {
+        console.warn(`device:wb-undo handler error: ${e.message}`);
       }
     });
 

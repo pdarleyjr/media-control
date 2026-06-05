@@ -607,3 +607,15 @@ CREATE TABLE IF NOT EXISTS dashboard_state (
     updated_at     INTEGER NOT NULL DEFAULT (strftime('%s','now')),
     PRIMARY KEY (user_id, workspace_id)
 );
+
+-- Persistent remote whiteboard state per display. Stop/hide does not delete this;
+-- clear and media broadcasts do.
+CREATE TABLE IF NOT EXISTS whiteboard_sessions (
+    workspace_id  TEXT NOT NULL,
+    device_id     TEXT NOT NULL,
+    strokes_json  TEXT NOT NULL DEFAULT '[]',
+    updated_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    PRIMARY KEY (workspace_id, device_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_whiteboard_sessions_device ON whiteboard_sessions(device_id);

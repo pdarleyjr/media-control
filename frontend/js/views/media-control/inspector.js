@@ -18,7 +18,7 @@
 import { api } from '../../api.js';
 import { esc } from '../../utils.js';
 import { t } from '../../i18n.js';
-import { COMMAND_TYPES, WB } from '../../player-protocol.js';
+import { COMMAND_TYPES } from '../../player-protocol.js';
 import { showToast } from '../../components/toast.js';
 import { confirmDialog } from '../../components/confirm.js';
 import { renderRegionEditor } from './region-editor.js';
@@ -286,9 +286,9 @@ export async function renderInspector(container, { display, isWallMember = false
 
   // ---- Whiteboard + Screen-share per-display actions ----
   //
-  // "Turn into Whiteboard": emits WB.START to the display via the dashboard
-  // socket, reusing the same smartboard emit flow (no re-implementation needed;
-  // the server relays dashboard:wb-start → device:wb-show to the player).
+  // "Turn into Whiteboard": opens the interactive controller for this exact
+  // display. The controller starts/replays the display overlay and preserves
+  // strokes server-side, so leaving and re-entering does not erase the board.
   //
   // "Share My Screen here": starts a screen-share broadcast via the persistent
   // engine singleton (capture is demand-triggered inside startBroadcastTo).
@@ -316,15 +316,7 @@ export async function renderInspector(container, { display, isWallMember = false
 
   if (wbStartBtn) {
     wbStartBtn.addEventListener('click', () => {
-      const sock = getSocket();
-      if (!sock || !sock.connected) {
-        showToast(t('mc.insp.wb_not_connected'), 'error');
-        return;
-      }
-      // Emit dashboard:wb-start with device_id payload; the server relays this
-      // to the player as device:wb-show (asymmetric naming in the protocol).
-      sock.emit(WB.START, { device_id: device.id });
-      showToast(t('mc.insp.wb_started', { name: device.name }), 'success');
+      window.location.hash = `#/smartboard?device=${encodeURIComponent(device.id)}`;
     });
   }
 
@@ -410,7 +402,6 @@ export async function renderInspector(container, { display, isWallMember = false
       message: t('mc.insp.remove_msg', { name: device.name }),
       confirmLabel: t('mc.insp.remove'),
       tone: 'danger',
-      hold: true,
     });
     if (!ok) return;
     try {

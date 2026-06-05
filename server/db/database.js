@@ -193,6 +193,16 @@ const migrations = [
   // plays its OWN content full-screen, independently — no wall_config emitted).
   // The dashboard wall card exposes this as a Span/Split template toggle.
   "ALTER TABLE video_walls ADD COLUMN layout_mode TEXT NOT NULL DEFAULT 'span'",
+  // 2026-06-05: persistent whiteboard state per display. Stop/hide does not
+  // clear strokes; explicit clear and media broadcasts do.
+  `CREATE TABLE IF NOT EXISTS whiteboard_sessions (
+    workspace_id TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    strokes_json TEXT NOT NULL DEFAULT '[]',
+    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    PRIMARY KEY (workspace_id, device_id)
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_whiteboard_sessions_device ON whiteboard_sessions(device_id)",
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (e) { /* already exists */ }

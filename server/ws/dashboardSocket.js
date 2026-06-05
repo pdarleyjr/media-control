@@ -3,6 +3,8 @@ const { verifyToken } = require('../middleware/auth');
 const { db } = require('../db/database');
 const { accessContext, accessibleWorkspaceIds } = require('../lib/tenancy');
 const { workspaceRoom } = require('../lib/socket-rooms');
+const whiteboardState = require('../services/whiteboard-state');
+const { profileForDevice } = require('../lib/display-profiles');
 
 // Phase 2.3: workspace-scoped socket rooms + per-command permission gates.
 // Replaces the previous flat dashboardNs.emit broadcast (which leaked every
@@ -149,28 +151,44 @@ module.exports = function setupDashboardSocket(io) {
     // dashboard:identify (no new namespace). Coordinates in each stroke are
     // normalized 0..1 and are relayed verbatim; the player scales them by its
     // overlay canvas dimensions.
-    socket.on('dashboard:wb-start', (data) => {
+    socket.on('dashboard:wb-start', (data, ack) => {
       const { device_id } = data || {};
-      if (!canActOnDevice(socket, device_id, 'write')) return;
-      deviceNs.to(device_id).emit('device:wb-show', {});
+      if (!canActOnDevice(socket, device_id, 'write')) {
+        if (typeof ack === 'function') ack({ ok: false, error: 'forbidden' });
+        return;
+      }
+      const device = db.prepare('SELECT id, name, workspace_id FROM devices WHERE id = ?').get(device_id);
+      const session = whiteboardState.startSession(device && device.workspace_id, device_id);
+      const profile = profileForDevice(device);
+      const payload = {
+        strokes: session.strokes,
+        touch_enabled: !!profile,
+        display_profile: profile,
+      };
+      deviceNs.to(device_id).emit('device:wb-show', payload);
+      if (typeof ack === 'function') ack({ ok: true, ...payload });
       console.log(`Whiteboard started on device ${device_id}`);
     });
 
     socket.on('dashboard:wb-stroke', (data) => {
       const { device_id, stroke } = data || {};
       if (!canActOnDevice(socket, device_id, 'write')) return;
-      deviceNs.to(device_id).emit('device:wb-stroke', { stroke });
+      const safeStroke = whiteboardState.appendStroke(null, device_id, stroke);
+      if (!safeStroke) return;
+      deviceNs.to(device_id).emit('device:wb-stroke', { stroke: safeStroke });
     });
 
     socket.on('dashboard:wb-clear', (data) => {
       const { device_id } = data || {};
       if (!canActOnDevice(socket, device_id, 'write')) return;
+      whiteboardState.clearSession(null, device_id);
       deviceNs.to(device_id).emit('device:wb-clear', {});
     });
 
     socket.on('dashboard:wb-undo', (data) => {
       const { device_id } = data || {};
       if (!canActOnDevice(socket, device_id, 'write')) return;
+      whiteboardState.undoStroke(null, device_id);
       deviceNs.to(device_id).emit('device:wb-undo', {});
     });
 
