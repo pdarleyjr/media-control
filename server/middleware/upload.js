@@ -52,18 +52,31 @@ const ALLOWED_DOC_TYPES = new Set([
   'application/vnd.oasis.opendocument.presentation',
 ]);
 
+const ALLOWED_IMAGE_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'image/bmp',
+]);
+
+const ALLOWED_VIDEO_TYPES = new Set([
+  'video/mp4',
+  'video/webm',
+  'video/avi',
+  'video/mkv',
+  'video/mov',
+  'video/x-msvideo',
+  'video/quicktime',
+  'video/x-matroska',
+]);
+
+function isAllowedUploadMime(mimetype) {
+  return ALLOWED_IMAGE_TYPES.has(mimetype) || ALLOWED_VIDEO_TYPES.has(mimetype) || ALLOWED_DOC_TYPES.has(mimetype);
+}
+
 const fileFilter = (req, file, cb) => {
-  const allowedTypes = [
-    'video/mp4', 'video/webm', 'video/avi', 'video/mkv', 'video/mov',
-    'video/x-msvideo', 'video/quicktime', 'video/x-matroska',
-    'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp'
-  ];
-  if (
-    allowedTypes.includes(file.mimetype) ||
-    file.mimetype.startsWith('video/') ||
-    file.mimetype.startsWith('image/') ||
-    ALLOWED_DOC_TYPES.has(file.mimetype)
-  ) {
+  if (isAllowedUploadMime(file.mimetype)) {
     cb(null, true);
   } else {
     cb(new Error('Only video, image, PDF, and Office document files are allowed'), false);
@@ -88,3 +101,6 @@ const upload = multer({
 // reuse the canonical list.
 module.exports = upload;
 module.exports.ALLOWED_DOC_TYPES = ALLOWED_DOC_TYPES;
+module.exports.ALLOWED_IMAGE_TYPES = ALLOWED_IMAGE_TYPES;
+module.exports.ALLOWED_VIDEO_TYPES = ALLOWED_VIDEO_TYPES;
+module.exports.isAllowedUploadMime = isAllowedUploadMime;

@@ -398,6 +398,8 @@ app.get('/api/content/:id/file', (req, res) => {
   if (!inPlaylist && !inWidget) return res.status(403).json({ error: 'Content not assigned to any playlist or widget' });
   const safePath = path.resolve(config.contentDir, path.basename(content.filepath));
   if (!safePath.startsWith(path.resolve(config.contentDir))) return res.status(403).json({ error: 'Invalid path' });
+  if (content.mime_type) res.setHeader('Content-Type', content.mime_type);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   res.sendFile(safePath);
 });
 
@@ -408,6 +410,7 @@ app.get('/api/content/:id/thumbnail', (req, res) => {
   if (!content || !content.thumbnail_path) return res.status(404).json({ error: 'Thumbnail not found' });
   const safePath = path.resolve(config.contentDir, path.basename(content.thumbnail_path));
   if (!safePath.startsWith(path.resolve(config.contentDir))) return res.status(403).json({ error: 'Invalid path' });
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   res.sendFile(safePath);
 });
 
@@ -418,6 +421,7 @@ app.get('/api/content/:id/thumbnail', (req, res) => {
 // yet (they still filter by user_id); 2.2 will migrate them one route at a time.
 const { requireAuth } = require('./middleware/auth');
 const { resolveTenancy } = require('./lib/tenancy');
+const { requireWorkspaceWrite } = require('./lib/permissions');
 
 // activityLogger wraps res.json on every subsequent route to auto-log
 // successful POST/PUT/DELETE mutations. Mount it BEFORE the workspace routes
@@ -445,7 +449,7 @@ app.all('/api/tus', requireAuth, resolveTenancy, tusHandle);
 app.all('/api/tus/*', requireAuth, resolveTenancy, tusHandle);
 app.use('/api/folders', requireAuth, resolveTenancy, require('./routes/folders'));
 app.use('/api/assignments', requireAuth, resolveTenancy, require('./routes/assignments'));
-app.use('/api/provision', requireAuth, resolveTenancy, require('./routes/provisioning'));
+app.use('/api/provision', requireAuth, resolveTenancy, requireWorkspaceWrite, require('./routes/provisioning'));
 app.use('/api/layouts', requireAuth, resolveTenancy, require('./routes/layouts'));
 // Widget render is public (accessed by devices)
 app.get('/api/widgets/:id/render', (req, res, next) => { req._skipAuth = true; next(); });
@@ -616,6 +620,7 @@ app.use('/uploads/content', (req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   res.setHeader('Cache-Control', 'public, max-age=2592000, immutable'); // 30 days
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   next();
 }, express.static(config.contentDir));
 
@@ -642,10 +647,8 @@ startAlertService(io);
 
 // Handle provisioning via WebSocket notification
 const { db } = require('./db/database');
-const originalProvisionRoute = require('./routes/provisioning');
-
 // Override provision to also notify device via WS
-app.post('/api/provision/pair', requireAuth, resolveTenancy, (req, res) => {
+app.post('/api/provision/pair', requireAuth, resolveTenancy, requireWorkspaceWrite, (req, res) => {
   const { pairing_code, name } = req.body;
   if (!pairing_code) return res.status(400).json({ error: 'pairing_code required' });
   // Phase 2.2a: pair into the caller's current workspace. Refusing on no
@@ -667,7 +670,7 @@ app.post('/api/provision/pair', requireAuth, resolveTenancy, (req, res) => {
   // Notify the device via WebSocket
   deviceNs.to(device.id).emit('device:paired', { device_id: device.id, name: deviceName });
 
-  const updated = db.prepare('SELECT * FROM devices WHERE id = ?').get(device.id);
+  const updated = db.prepare('SELECT id, name, workspace_id, status FROM devices WHERE id = ?').get(device.id);
   // Phase 2.3: scope to the workspace the device was just claimed into.
   const { workspaceRoom, emitToWorkspace } = require('./lib/socket-rooms');
   emitToWorkspace(dashboardNs, workspaceRoom(updated.workspace_id), 'dashboard:device-added', updated);
