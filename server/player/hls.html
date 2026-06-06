@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Live Channel</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    #cam { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; z-index: 2; }
+    #label {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 4;
+      padding: 10px 16px; font-size: 18px; font-weight: 600; color: #fff;
+      background: linear-gradient(0deg, rgba(0,0,0,.72), rgba(0,0,0,0));
+      text-shadow: 0 1px 3px rgba(0,0,0,.8); pointer-events: none;
+      display: flex; align-items: center; gap: 10px;
+    }
+    #label .dot { width: 9px; height: 9px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 8px #ef4444; }
+    #state {
+      position: fixed; inset: 0; z-index: 3; display: flex; align-items: center; justify-content: center;
+      color: #cbd5e1; font-size: 20px; text-align: center; padding: 24px; background: #000;
+    }
+    #state.hide { display: none; }
+    @media (prefers-reduced-motion: reduce) { #label .dot { box-shadow: none; } }
+  </style>
+</head>
+<body>
+  <video id="cam" muted playsinline autoplay></video>
+  <div id="state"><span id="statetext">Connecting…</span></div>
+  <div id="label" hidden><span class="dot" aria-hidden="true"></span><span id="labeltext"></span></div>
+  <script src="vendor/hls.light.min.js"></script>
+  <script>
+    // Generic live-channel wrapper for the Camera Feeds "Live News" folder.
+    // The station's HLS .m3u8 is resolved (and, for CORS/encryption-restricted
+    // stations, proxied) SERVER-SIDE by /player/news-stream?station=<key>, which
+    // returns { source }. We play that with hls.js — the player core has no HLS
+    // branch, so this self-contained page is what the display iframes. Station is
+    // a server-whitelisted key, never a raw URL (no SSRF/open-embed surface).
+    (function () {
+      var params = new URLSearchParams(location.search);
+      var station = (params.get('station') || '').toLowerCase().replace(/[^a-z0-9_]/g, '');
+      var label = (params.get('label') || '').slice(0, 80);
+      var video = document.getElementById('cam');
+      var stateEl = document.getElementById('state');
+      var stateText = document.getElementById('statetext');
+      var labelEl = document.getElementById('label');
+      var labelText = document.getElementById('labeltext');
+
+      if (!station) { stateText.textContent = 'No channel selected.'; return; }
+      if (label) { labelText.textContent = label; labelEl.hidden = false; }
+
+      var hls = null, reresolves = 0, MAX = 5, stallTimer = null, stopped = false;
+      function showState(on, msg) { if (msg) stateText.textContent = msg; stateEl.classList.toggle('hide', !on); }
+      function clearStall() { if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; } }
+      function armStall() { clearStall(); stallTimer = setTimeout(onStall, 45000); }
+      function onPlaying() { showState(false); clearStall(); reresolves = 0; }
+      function onStall() { if (stopped) return; reresolves++; if (reresolves > MAX) { showState(true, 'Reconnecting…'); return; } resolveAndPlay(); }
+
+      function resolveAndPlay() {
+        if (stopped) return;
+        showState(true, 'Connecting…');
+        fetch('news-stream?station=' + encodeURIComponent(station), { cache: 'no-store' })
+          .then(function (r) { if (!r.ok) throw new Error('resolve ' + r.status); return r.json(); })
+          .then(function (data) { if (!data || !data.source) throw new Error('no source'); attach(data.source); })
+          .catch(function () { reresolves++; if (reresolves > MAX) { showState(true, 'Channel unavailable'); return; } setTimeout(resolveAndPlay, 5000); });
+      }
+
+      function attach(source) {
+        if (hls) { try { hls.destroy(); } catch (e) {} hls = null; }
+        if (window.Hls && window.Hls.isSupported()) {
+          hls = new window.Hls({ liveSyncDurationCount: 3, manifestLoadingTimeOut: 12000, fragLoadingTimeOut: 20000 });
+          hls.loadSource(source);
+          hls.attachMedia(video);
+          hls.on(window.Hls.Events.MANIFEST_PARSED, function () { video.play().catch(function () {}); armStall(); });
+          hls.on(window.Hls.Events.ERROR, function (evt, data) {
+            if (data && data.fatal) { armStall(); if (reresolves <= MAX) { reresolves++; setTimeout(resolveAndPlay, 3000); } }
+          });
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          video.src = source; video.play().catch(function () {}); armStall();
+        } else { showState(true, 'HLS not supported'); }
+      }
+
+      video.addEventListener('playing', onPlaying);
+      video.addEventListener('waiting', armStall);
+      video.addEventListener('stalled', armStall);
+      document.addEventListener('visibilitychange', function () {
+        if (document.hidden) { clearStall(); if (hls) { try { hls.destroy(); } catch (e) {} hls = null; } }
+        else { resolveAndPlay(); }
+      });
+
+      resolveAndPlay();
+    })();
+  </script>
+</body>
+</html>

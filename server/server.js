@@ -279,6 +279,27 @@ app.get('/player/oz-poster', (req, res) => {
   res.redirect(302, u);
 });
 
+// MBFD Media Control — Miami live-NEWS resolver + proxy (Camera Feeds "Live News").
+// /player/news-stream?station=<key> resolves a whitelisted station key to a
+// playable HLS .m3u8 ({source}); /player/hls.html plays it with hls.js. Most
+// stations are a direct CDN master; WSVN is AES-128 + CORS-locked so its source is
+// a /player/hls-proxy URL that relays the playlist + key with ACAO:*. Public under
+// /player (Cloudflare-Access bypass) so unattended displays reach it without OTP;
+// station keys are server-whitelisted (no arbitrary URL -> no SSRF).
+const { resolveNewsStream } = require('./lib/news-streams');
+const { handleProxy } = require('./lib/hls-proxy');
+app.get('/player/news-stream', async (req, res) => {
+  try {
+    const data = await resolveNewsStream(String(req.query.station || '').toLowerCase());
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'public, max-age=30');
+    res.json(data);
+  } catch (e) {
+    res.status(e.status || 502).json({ error: e.message || 'resolve failed' });
+  }
+});
+app.get('/player/hls-proxy', handleProxy);
+
 // Serve web player at /player (same no-cache for JS/HTML). The index.html
 // route above intercepts the HTML requests; everything else still falls
 // through to this static handler (debug-overlay.js, sw.js, manifest, etc).

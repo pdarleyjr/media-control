@@ -13,6 +13,8 @@
 //               origin, so oz.html resolves the .m3u8 via /player/oz-stream and
 //               plays it with hls.js)
 //             • https://media.mbfdhub.com/player/cam.html?id=<fl511 id>&label=… (FDOT snapshot)
+//             • https://media.mbfdhub.com/player/hls.html?station=<key>&label=… (live-news
+//               HLS — resolved/proxied server-side by /player/news-stream, played via hls.js)
 //   thumb : "ozolio:<OID>" | "youtube:<ID>" | a direct https image | omitted (→ folder icon)
 //   kind  : "video" (default) | "snapshot" (refreshing still — labeled on the tile)
 //
@@ -20,9 +22,9 @@
 // pass, 2026-06-06). Dead / frame-blocked / embedding-disabled / non-live sources
 // from the original list were DROPPED, never added — a tile that won't play is
 // worse than no tile. Dropped, with reasons:
-//   • Local TV news (CBS4/NBC6/Local10/WSVN/Univision23/Telemundo51): no station
-//     runs a stable, embeddable, 24/7 YouTube LIVE id; their web players are
-//     ad/cookie-consent/DRM-gated and don't muted-autoplay in a bare iframe.
+//   • Local TV news on the station WEBSITES + YouTube: ad/consent/DRM-gated and not
+//     embeddable. BUT each station's free 24/7 FAST/OTT HLS feed IS playable via the
+//     hls.js wrapper (see the "news" group below) — that is how the news folder works.
 //   • EarthCam (News Café / Brickell Key / resort pages): proprietary HLS players
 //     behind ads + consent + click-to-play (and we have no hls.js).
 //   • PTZtv PortMiami / South Beach YouTube ids: embedding disabled by the owner
@@ -53,15 +55,34 @@ function fdot(title, id) {
     kind: 'snapshot',
   };
 }
+// Live-news channel: a whitelisted station key the player resolves server-side to
+// an HLS .m3u8 and plays via hls.js (see /player/hls.html + lib/news-streams.js).
+// No per-feed thumbnail (no provider poster) → falls back to the broadcast-tower
+// folder icon; the label identifies the channel.
+function news(title, key) {
+  return {
+    title,
+    url: `https://media.mbfdhub.com/player/hls.html?station=${key}&label=${encodeURIComponent(title)}`,
+  };
+}
 
 export const CAMERA_FEED_GROUPS = [
   {
     id: 'news',
     nameKey: 'mc.cf.group.news',
-    // Intentionally empty: no Miami station exposes a stable embeddable 24/7 live
-    // stream (see header). Folder is hidden while empty. Left here so the category
-    // is documented if a station ever publishes a persistent YouTube-Live id.
-    feeds: [],
+    // Each station's free 24/7 FAST/OTT HLS feed, resolved server-side and played
+    // via hls.js. MBTV (the City of Miami Beach's own gov channel) leads; then
+    // English, then Spanish. Commercial feeds are for internal department-display
+    // situational awareness. WSVN is AES-128 + CORS-locked → resolve+proxy.
+    feeds: [
+      news('MBTV · Miami Beach', 'mbtv'),
+      news('CBS News Miami', 'cbs'),
+      news('NBC6 South Florida', 'nbc6'),
+      news('Local 10 · WPLG', 'local10'),
+      news('WSVN 7News', 'wsvn'),
+      news('Univisión 23', 'univision23'),
+      news('Telemundo 51', 'telemundo51'),
+    ],
   },
   {
     id: 'causeway',
