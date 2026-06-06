@@ -346,11 +346,18 @@ export function attachTileHandlers(container, selectedIds, onAfterSend, onRouteS
 
     // Dragstart = serialize source onto the DataTransfer so stage cards can
     // receive it as a drop and call sendToDisplays({ source }, [deviceId]).
+    // Also carry the tile's thumbnail (if it has a real image, not just an icon)
+    // so the Multiview composer can show that picture inside the cell it's
+    // dropped into. Tiles with only a glyph carry no thumb → the cell falls back
+    // to a category icon + the source label (which still identifies the feed).
     tile.addEventListener('dragstart', (e) => {
       e.dataTransfer.effectAllowed = 'copy';
       e.dataTransfer.setData('text/plain', tile.dataset.dragSource);
       e.dataTransfer.setData('application/x-mc-source', tile.dataset.dragSource);
       e.dataTransfer.setData('application/x-mc-label', tile.dataset.label || t('mc.tile.content_fallback'));
+      const thumbImg = tile.querySelector('img');
+      const thumbSrc = thumbImg && (thumbImg.currentSrc || thumbImg.src);
+      if (thumbSrc) e.dataTransfer.setData('application/x-mc-thumb', thumbSrc);
     });
   });
 }

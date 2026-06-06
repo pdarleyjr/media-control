@@ -8,6 +8,7 @@ import { renderStage } from './media-control/stage.js';
 import { renderToolbox } from './media-control/toolbox.js';
 import { sendToDisplays, sentToast } from './media-control/send.js';
 import { renderInspector, closeInspector } from './media-control/inspector.js';
+import { renderMultiview, teardownMultiview } from './media-control/multiview.js';
 import { pickRoutingTargets } from './media-control/routing-picker.js';
 import { mountBroadcastChip } from './media-control/broadcast-chip.js';
 import { renderCommandBar } from './media-control/command-bar.js';
@@ -741,6 +742,15 @@ export async function render() {
               <section id="mc-stage" class="mc-stage" aria-label="${esc(t('mc.section.displays'))}"></section>
             </section>
 
+            <section class="mc-control-zone mc-mv-zone" aria-labelledby="mc-mv-head">
+              <div class="mc-section-head">
+                <h2 id="mc-mv-head" class="mc-section-title">${esc(t('mc.mv.title'))}</h2>
+                <p class="mc-section-hint">${esc(t('mc.mv.section_hint'))}</p>
+                <button type="button" class="mc-section-link mc-mv-toggle" data-mv-toggle aria-expanded="false">${esc(t('mc.mv.activate'))}</button>
+              </div>
+              <div id="mc-multiview" class="mc-multiview-host" hidden></div>
+            </section>
+
             <section class="mc-control-zone" aria-labelledby="mc-sources-head">
               <div class="mc-section-head">
                 <h2 id="mc-sources-head" class="mc-section-title">${esc(t('mc.section.sources'))}</h2>
@@ -823,6 +833,27 @@ export async function render() {
     });
   }
 
+  // Multiview Layout composer (split one display into a 4-left / 2-center /
+  // 4-right mosaic, drag a source into each frame, monitor one frame's audio
+  // locally, then send the assembled layout to a display). Mounted lazily on
+  // first activation so the heavier composer only renders when the operator
+  // asks for it. Sends ride the same routing picker + funnel as every tile.
+  const mvToggle = document.querySelector('[data-mv-toggle]');
+  const mvHost = document.getElementById('mc-multiview');
+  if (mvToggle && mvHost) {
+    let mvMounted = false;
+    mvToggle.addEventListener('click', async () => {
+      const show = mvHost.hidden;
+      mvHost.hidden = !show;
+      mvToggle.setAttribute('aria-expanded', show ? 'true' : 'false');
+      mvToggle.textContent = show ? t('mc.mv.hide') : t('mc.mv.activate');
+      if (show && !mvMounted) {
+        mvMounted = true;
+        await renderMultiview(mvHost, { routeSource: routeSourceWithPicker });
+      }
+    });
+  }
+
   // Mount the persistent live-broadcast chip (Task 4.5). The chip subscribes to
   // the engine singleton so it reflects broadcast state even after navigation.
   if (unsubChip) { unsubChip(); unsubChip = null; }
@@ -854,6 +885,7 @@ export function unmount() {
   // so unmount only detaches this view's subscriptions. Broadcasts persist.
   if (unsub) { unsub(); unsub = null; }
   if (unsubChip) { unsubChip(); unsubChip = null; }
+  teardownMultiview();    // stop any local audio monitor so it can't keep playing
   closeViewModal();       // dismiss any open room-setup overlay (e.g. Schedules)
   stopPreviewRefresh();   // stop poking players once we leave the control surface
   // Close the inspector so a stale panel can't linger across navigations.

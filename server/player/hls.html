@@ -41,6 +41,9 @@
       var params = new URLSearchParams(location.search);
       var station = (params.get('station') || '').toLowerCase().replace(/[^a-z0-9_]/g, '');
       var label = (params.get('label') || '').slice(0, 80);
+      // audio=1 — command-center audio monitor only (loaded behind a user click,
+      // so unmuted autoplay is permitted). Displays load without it → stay muted.
+      var wantAudio = params.get('audio') === '1';
       var video = document.getElementById('cam');
       var stateEl = document.getElementById('state');
       var stateText = document.getElementById('statetext');
@@ -49,6 +52,7 @@
 
       if (!station) { stateText.textContent = 'No channel selected.'; return; }
       if (label) { labelText.textContent = label; labelEl.hidden = false; }
+      if (wantAudio) { video.muted = false; video.volume = 1; try { video.removeAttribute('muted'); } catch (e) {} }
 
       var hls = null, reresolves = 0, MAX = 5, stallTimer = null, stopped = false;
       function showState(on, msg) { if (msg) stateText.textContent = msg; stateEl.classList.toggle('hide', !on); }

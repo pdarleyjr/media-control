@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Multiview Layout</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; height: 100%; width: 100%; background: #000; overflow: hidden; }
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    /* The mosaic canvas fills the player iframe. Cells are positioned by the
+       slot's percent rect, so this auto-scales to any 16:9 display or wall. */
+    #grid { position: absolute; inset: 0; background: #000; }
+    .cell {
+      position: absolute; overflow: hidden; background: #000;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06);
+    }
+    .cell > iframe, .cell > video, .cell > img {
+      position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: block;
+    }
+    .cell > video, .cell > img { object-fit: contain; background: #000; }
+    /* Per-cell label chip — bottom-left, so a generic-thumbnail feed (e.g. a
+       news channel) is still identifiable on the physical wall. */
+    .cell-label {
+      position: absolute; left: 0; right: 0; bottom: 0; z-index: 5; pointer-events: none;
+      padding: 6px 10px; font-size: clamp(10px, 1.1vw, 16px); font-weight: 600; color: #fff;
+      background: linear-gradient(0deg, rgba(0,0,0,.7), rgba(0,0,0,0));
+      text-shadow: 0 1px 3px rgba(0,0,0,.85);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    /* Empty slots stay pure black on the display (clean, intentional). */
+  </style>
+</head>
+<body>
+  <div id="grid"></div>
+  <script src="multiview-core.js"></script>
+  <script>
+    // Multiview composite renderer. The cell→source map (which feed sits in
+    // which of the 4-left / 2-center / 4-right slots) is carried, sanitized, in
+    // the ?cells= base64url param — so this page is self-contained and stateless,
+    // exactly like oz.html / hls.html / deck. The player iframes it as a single
+    // text/html source; each non-empty cell is itself an iframe of the SAME URL
+    // any source tile carries (oz.html / hls.html / cam.html / youtube-nocookie /
+    // /player/deck/<id> / /api/content/<id>/file), so we reuse every existing
+    // per-source player verbatim. All cells are muted on the display (no
+    // cacophony); audio is monitored from the command center, not here.
+    (function () {
+      var MV = window.Multiview;
+      var gridEl = document.getElementById('grid');
+      if (!MV) { return; }
+
+      var params = new URLSearchParams(location.search);
+      var cells = MV.decodeCells(params.get('cells'));
+
+      function esc(s) {
+        return String(s == null ? '' : s)
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+      }
+
+      function makeMedia(cell) {
+        var el;
+        if (cell.k === 'v') {
+          el = document.createElement('video');
+          el.src = cell.u;
+          el.autoplay = true; el.loop = true; el.muted = true; el.playsInline = true;
+          el.setAttribute('playsinline', '');
+        } else if (cell.k === 'm') {
+          el = document.createElement('img');
+          el.src = cell.u; el.alt = cell.l || '';
+        } else {
+          el = document.createElement('iframe');
+          el.src = cell.u;
+          el.setAttribute('allow', 'autoplay; fullscreen; encrypted-media; picture-in-picture');
+          el.setAttribute('referrerpolicy', 'no-referrer-when-downgrade');
+          el.setAttribute('scrolling', 'no');
+        }
+        return el;
+      }
+
+      for (var i = 0; i < MV.SLOTS.length; i++) {
+        var slot = MV.SLOTS[i];
+        var box = document.createElement('div');
+        box.className = 'cell';
+        box.setAttribute('data-slot', slot.id);
+        box.style.left = slot.x + '%';
+        box.style.top = slot.y + '%';
+        box.style.width = slot.w + '%';
+        box.style.height = slot.h + '%';
+        var cell = cells[slot.id];
+        if (cell && cell.u) {
+          box.appendChild(makeMedia(cell));
+          if (cell.l) {
+            var lab = document.createElement('div');
+            lab.className = 'cell-label';
+            lab.innerHTML = esc(cell.l);
+            box.appendChild(lab);
+          }
+        }
+        gridEl.appendChild(box);
+      }
+    })();
+  </script>
+</body>
+</html>
