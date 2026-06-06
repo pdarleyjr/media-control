@@ -20,6 +20,7 @@ import { api } from '../../api.js';
 import { sendToDisplays, sentToast } from './send.js';
 import { showToast } from '../../components/toast.js';
 import { confirmDialog } from '../../components/confirm.js';
+import { renderCameraFeedsTab } from './camera-feeds.js';
 
 // Active tab id (persisted only for the lifetime of the rendered toolbox).
 let activeTab = 'media';
@@ -27,6 +28,7 @@ let activeTab = 'media';
 // ---- tab definitions (labels resolved through t() at render time) ----
 const TABS = [
   { id: 'media',         key: 'mc.tab.media' },
+  { id: 'camerafeeds',   key: 'mc.tab.camerafeeds' },
   { id: 'playlists',     key: 'mc.tab.playlists' },
   { id: 'presentations', key: 'mc.tab.presentations' },
   { id: 'youtube',       key: 'mc.tab.youtube' },
@@ -326,7 +328,9 @@ async function renderScenesTab(container, { onAfterSend }) {
 }
 
 // Attach click + dragstart on toolbox tiles that call sendToDisplays.
-function attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource) {
+// Exported so the Camera Feeds tab (camera-feeds.js) reuses the identical
+// tap-to-route + drag-to-card wiring instead of duplicating it.
+export function attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource) {
   container.querySelectorAll('.mc-tile[data-drag-source]').forEach(tile => {
     // Click = explicit target picker in Command Center; fallback preserves the
     // legacy immediate send contract for other callers/tests.
@@ -357,6 +361,9 @@ async function loadTab(tabId, tabBody, { selectedIds, onAfterSend, onRouteSource
   switch (tabId) {
     case 'media':
       await renderMediaTab(tabBody, { selectedIds, onAfterSend, onRouteSource });
+      break;
+    case 'camerafeeds':
+      renderCameraFeedsTab(tabBody, { selectedIds, onAfterSend, onRouteSource });
       break;
     case 'playlists':
       await renderPlaylistsTab(tabBody, { selectedIds, onAfterSend, onRouteSource });

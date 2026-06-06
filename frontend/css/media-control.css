@@ -452,6 +452,57 @@
 }
 .mc-scene-tile { width: 120px; }
 
+/* ---- Camera Feeds tab: collapsible folders of live-camera source tiles ---- */
+.mc-cf-hint {
+  margin: 0 0 var(--mc-space-sm, 8px); font-size: var(--mc-font-size-sm, 13px);
+  color: var(--mc-text-secondary);
+}
+.mc-cf-groups { display: flex; flex-direction: column; gap: var(--mc-space-sm, 8px); }
+.mc-cf-group {
+  border: 1px solid var(--mc-border-light); border-radius: var(--mc-radius-md, 12px);
+  background: var(--mc-bg-secondary, #F2EFEA); overflow: hidden;
+}
+.mc-cf-group-head {
+  display: flex; align-items: center; gap: var(--mc-space-sm, 8px);
+  min-height: var(--tap-min, 48px); padding: var(--space-2, 8px) var(--mc-space-md, 16px);
+  cursor: pointer; list-style: none; user-select: none;
+  font-weight: var(--mc-fw-semibold, 600); color: var(--mc-text-primary);
+}
+.mc-cf-group-head::-webkit-details-marker { display: none; }
+/* Disclosure chevron (rotates when the folder is open). */
+.mc-cf-group-head::before {
+  content: ''; flex: 0 0 auto; width: 8px; height: 8px; margin-right: 2px;
+  border-right: 2px solid var(--mc-text-tertiary, #8A847C);
+  border-bottom: 2px solid var(--mc-text-tertiary, #8A847C);
+  transform: rotate(-45deg); transition: transform var(--mc-transition-base, .2s ease);
+}
+.mc-cf-group[open] > .mc-cf-group-head::before { transform: rotate(45deg); }
+.mc-cf-group-head:hover { background: var(--mc-surface-alt, rgba(0,0,0,.03)); }
+.mc-cf-group-head:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
+.mc-cf-group-ico { flex: 0 0 auto; display: inline-flex; color: var(--accent); }
+.mc-cf-group-ico svg { width: 22px; height: 22px; display: block; }
+.mc-cf-group-title { flex: 1 1 auto; }
+.mc-cf-count {
+  flex: 0 0 auto; font-size: var(--mc-font-size-xs, 11px); font-weight: var(--mc-fw-medium, 500);
+  color: var(--mc-text-secondary); background: var(--mc-surface); border: 1px solid var(--mc-border-light);
+  border-radius: var(--mc-radius-pill, 999px); padding: 2px 10px;
+}
+.mc-cf-group[open] > .mc-tile-grid { padding: var(--mc-space-sm, 8px) var(--mc-space-md, 16px) var(--mc-space-md, 16px); }
+/* Fallback (no provider thumbnail): a category glyph sized like a thumbnail. */
+.mc-cf-tile-ico {
+  display: flex; align-items: center; justify-content: center;
+  width: 72px; height: 54px; border-radius: var(--mc-radius-sm, 8px);
+  background: var(--mc-bg-secondary); color: var(--accent);
+}
+.mc-cf-tile-ico svg { width: 30px; height: 30px; }
+.mc-cf-tile .mc-tile-sub {
+  font-size: 9px; letter-spacing: .03em; text-transform: uppercase;
+  color: var(--mc-text-tertiary, #8A847C);
+}
+@media (prefers-reduced-motion: reduce) {
+  .mc-cf-group-head::before { transition: none; }
+}
+
 /* YouTube / URL form (.mc-yt-input scoped to .mc-control; shared with Present) */
 .mc-yt-form { display: flex; flex-direction: column; gap: var(--mc-space-sm, 8px); max-width: 640px; }
 .mc-tb-label { font-size: var(--mc-font-size-sm); color: var(--mc-text-secondary); font-weight: var(--mc-fw-medium); }

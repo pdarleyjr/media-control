@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Live Camera</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    #poster, #cam { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+    #poster { z-index: 1; }
+    #cam { z-index: 2; }
+    #label {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 4;
+      padding: 10px 16px; font-size: 18px; font-weight: 600; color: #fff;
+      background: linear-gradient(0deg, rgba(0,0,0,.72), rgba(0,0,0,0));
+      text-shadow: 0 1px 3px rgba(0,0,0,.8); pointer-events: none;
+      display: flex; align-items: center; gap: 10px;
+    }
+    #label .dot { width: 9px; height: 9px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 8px #22c55e; }
+    #state {
+      position: fixed; top: 12px; left: 12px; z-index: 4; display: none;
+      align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px;
+      background: rgba(0,0,0,.6); color: #e2e8f0; font-size: 13px;
+    }
+    #state.show { display: flex; }
+    @media (prefers-reduced-motion: reduce) { #label .dot { box-shadow: none; } }
+  </style>
+</head>
+<body>
+  <img id="poster" alt="">
+  <video id="cam" muted playsinline autoplay></video>
+  <div id="state"><span>Reconnecting…</span></div>
+  <div id="label" hidden><span class="dot" aria-hidden="true"></span><span id="labeltext"></span></div>
+  <script src="vendor/hls.light.min.js"></script>
+  <script>
+    // Ozolio live-camera wrapper. The cam's HLS stream is gated by Ozolio on the
+    // embedding "document" (only allow-listed host sites resolve), so the bare
+    // relay embed renders black on our origin. Instead we resolve the .m3u8
+    // SERVER-SIDE via /player/oz-stream (which passes the allow-listed document),
+    // then play it here with hls.js — the relay serves the playlist/segments with
+    // Access-Control-Allow-Origin:* so they play from any origin. Layered
+    // resilience: live video → poster still + "reconnecting" on stall → periodic
+    // re-resolve (the edge host rotates). Never a black/broken tile.
+    (function () {
+      var params = new URLSearchParams(location.search);
+      var oid = (params.get('oid') || '').trim();
+      var label = (params.get('label') || '').slice(0, 80);
+      var video = document.getElementById('cam');
+      var poster = document.getElementById('poster');
+      var stateEl = document.getElementById('state');
+      var labelEl = document.getElementById('label');
+      var labelText = document.getElementById('labeltext');
+
+      if (!/^EMB_[A-Za-z0-9]{6,16}$/.test(oid)) { stateEl.querySelector('span').textContent = 'Invalid camera'; stateEl.classList.add('show'); return; }
+      if (label) { labelText.textContent = label; labelEl.hidden = false; }
+      poster.src = posterUrl();
+
+      var hls = null;
+      var reresolves = 0;
+      var MAX_RERESOLVES = 4;
+      var stallTimer = null;
+      var stopped = false;
+
+      function posterUrl() { return 'oz-poster?oid=' + encodeURIComponent(oid) + '&t=' + Date.now(); }
+      function showState(on) { stateEl.classList.toggle('show', !!on); if (on) poster.src = posterUrl(); }
+      function clearStall() { if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; } }
+      function armStall() { clearStall(); stallTimer = setTimeout(onStall, 45000); }
+
+      function onPlaying() { showState(false); clearStall(); reresolves = 0; }
+      function onStall() {
+        if (stopped) return;
+        reresolves++;
+        if (reresolves > MAX_RERESOLVES) { showState(true); return; }
+        resolveAndPlay();
+      }
+
+      function resolveAndPlay() {
+        if (stopped) return;
+        showState(true);
+        fetch('oz-stream?oid=' + encodeURIComponent(oid), { cache: 'no-store' })
+          .then(function (r) { if (!r.ok) throw new Error('resolve ' + r.status); return r.json(); })
+          .then(function (data) {
+            if (!data || !data.source) throw new Error('no source');
+            if (data.poster) poster.src = data.poster;
+            attach(data.source);
+          })
+          .catch(function () {
+            reresolves++;
+            if (reresolves > MAX_RERESOLVES) { showState(true); return; }
+            setTimeout(resolveAndPlay, 5000);
+          });
+      }
+
+      function attach(source) {
+        if (hls) { try { hls.destroy(); } catch (e) {} hls = null; }
+        if (window.Hls && window.Hls.isSupported()) {
+          hls = new window.Hls({ liveSyncDurationCount: 3, manifestLoadingTimeOut: 12000, fragLoadingTimeOut: 20000 });
+          hls.loadSource(source);
+          hls.attachMedia(video);
+          hls.on(window.Hls.Events.MANIFEST_PARSED, function () { video.play().catch(function () {}); armStall(); });
+          hls.on(window.Hls.Events.ERROR, function (evt, data) {
+            if (data && data.fatal) { armStall(); if (reresolves <= MAX_RERESOLVES) { reresolves++; setTimeout(resolveAndPlay, 3000); } }
+          });
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          video.src = source; video.play().catch(function () {}); armStall();
+        } else {
+          showState(true); // no HLS support — leave the poster still showing
+        }
+      }
+
+      video.addEventListener('playing', onPlaying);
+      video.addEventListener('waiting', armStall);
+      video.addEventListener('stalled', armStall);
+      document.addEventListener('visibilitychange', function () {
+        if (document.hidden) { clearStall(); if (hls) { try { hls.destroy(); } catch (e) {} hls = null; } }
+        else { resolveAndPlay(); }
+      });
+
+      resolveAndPlay();
+    })();
+  </script>
+</body>
+</html>

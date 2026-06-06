@@ -253,6 +253,32 @@ app.get('/player/asset/:id', (req, res) => {
   res.sendFile(safePath);
 });
 
+// MBFD Media Control — Ozolio live-camera stream resolver (Camera Feeds tab).
+// Ozolio gates HLS resolution on the embedding "document", so the bare relay embed
+// renders black on our origin. We resolve the .m3u8 here with the allow-listed
+// document; /player/oz.html then plays it via hls.js (relay segments are ACAO:* so
+// they play from any origin). Public + under /player so it inherits the existing
+// Cloudflare-Access bypass — unattended displays reach it with no OTP. The oid is
+// strictly whitelisted (EMB_ alphanumeric) so the fixed upstream host can't be
+// abused for SSRF.
+const { resolveOzolioStream, posterUrl } = require('./lib/ozolio-resolve');
+app.get('/player/oz-stream', async (req, res) => {
+  try {
+    const data = await resolveOzolioStream(String(req.query.oid || ''));
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'public, max-age=60');
+    res.json(data);
+  } catch (e) {
+    res.status(e.status || 502).json({ error: e.message || 'resolve failed' });
+  }
+});
+app.get('/player/oz-poster', (req, res) => {
+  const u = posterUrl(String(req.query.oid || ''));
+  if (!u) return res.status(400).type('text/plain').send('invalid oid');
+  res.setHeader('Cache-Control', 'public, max-age=30');
+  res.redirect(302, u);
+});
+
 // Serve web player at /player (same no-cache for JS/HTML). The index.html
 // route above intercepts the HTML requests; everything else still falls
 // through to this static handler (debug-overlay.js, sw.js, manifest, etc).
