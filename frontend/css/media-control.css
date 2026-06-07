@@ -174,6 +174,13 @@
   gap: var(--space-4, 16px);
   justify-content: start;
   align-items: start; /* cards size to content; a portrait display doesn't stretch its row */
+  /* Uniform tiling. renderStage sets --mc-maxcols (the widest wall's column
+     count) and --mc-tile (= stageWidth / maxCols px, kept current by a
+     ResizeObserver). Every wall tile + the Smartboard tile is exactly --mc-tile,
+     so identical 86" panels match across configs and Video Wall 1 fills the
+     stage without any card growing past it. Defaults below apply pre-measure. */
+  --mc-maxcols: 3;
+  --mc-tile: 300px;
 }
 .mc-stage.mc-stage-is-empty { display: block; }
 
@@ -252,7 +259,22 @@
    Spans the full stage width. The screens sit on a dark bezel frame — the one
    place "dark" belongs, because live video lives on black.
    ════════════════════════════════════════════════════════════════════════ */
-.mc-wall { grid-column: 1 / -1; padding: var(--space-3, 12px); cursor: default; overflow-x: auto; }
+/* Each wall (and the single-screen Smartboard tile) sits on its own full-width
+   stage row but is sized to cols x tile and LEFT-aligned, so the card hugs its
+   tiles: Video Wall 1 (3 screens) fills the stage, Video Wall 2 (2) is 2/3 as
+   wide, the Smartboard (1) is one tile — every tile the SAME size (stage/maxCols),
+   capped at --mc-tile-max, never wider than the stage. */
+.mc-wall { grid-column: 1 / -1; padding: var(--space-3, 12px); cursor: default; }
+.mc-wall, .mc-display-card-tile {
+  /* Card width = cols x the shared uniform tile (--mc-tile px, computed by
+     renderStage = stageWidth / maxCols and kept current by a ResizeObserver).
+     So every tile is identical across walls, Video Wall 1 (cols=maxCols) fills
+     the stage, Video Wall 2 is 2/3 as wide, the Smartboard is one tile — and no
+     card exceeds the stage. */
+  width: calc(var(--mc-cols, 1) * var(--mc-tile, 300px));
+  box-sizing: border-box; /* cols x tile is the OUTER width — padding/border never push the card past the stage */
+  justify-self: start;
+}
 .mc-wall:hover { transform: none; box-shadow: var(--mc-shadow-card); border-color: var(--mc-border-light); }
 .mc-wall-head { display: flex; align-items: baseline; gap: var(--space-2, 8px); margin-bottom: var(--mc-space-sm, 8px); }
 .mc-wall-title { font-weight: var(--mc-fw-semibold); font-size: var(--mc-font-size-base); color: var(--mc-text-primary); }
@@ -273,18 +295,17 @@
 .mc-wall-calibrate + .mc-wall-edit { margin-left: 0; }
 .mc-wall-grid {
   position: relative;
-  /* width is intrinsic (perTile x cols from the inline grid-template), NOT a
-     fixed box divided by cols — so every TV tile is the same size and a 3-TV
-     wall is simply wider than a 2-TV wall. max-content keeps it tile-sized;
-     .mc-wall scrolls horizontally if a wall is wider than the stage. */
-  display: grid; gap: 3px; width: max-content; max-width: 100%; margin-inline: auto;
+  /* The grid FILLS the card (which is itself sized to cols x tile), with equal
+     1fr columns, so the tiles fill their container evenly. Tile size is uniform
+     across walls because the CARD width is cols/maxCols of the stage. */
+  display: grid; gap: 3px; width: 100%;
   background: var(--mc-dark-bg-deep, #0F172A); /* bezel frame behind the screens */
   border-radius: var(--mc-radius-sm); padding: 3px; overflow: hidden;
 }
-/* Classroom 1 Smartboard: sized to ONE wall TV tile (same 86" hardware class),
-   so its card matches a single screen in the video walls. Left-aligned in its
-   stage-grid column; the media keeps the display's true (16:9) aspect ratio. */
-.mc-display-card-tile { width: var(--mc-card-tile-w, 188px); justify-self: start; }
+/* Classroom 1 Smartboard: one 86" panel, so its card is exactly ONE wall tile
+   (--mc-cols:1) on its own full-width row, left-aligned — matching a single
+   screen in the video walls. Width/max-width come from the shared rule above. */
+.mc-display-card-tile { grid-column: 1 / -1; }
 .mc-wall-span-layer {
   position: absolute;
   inset: 3px;
@@ -297,7 +318,10 @@
 .mc-wall-span-shot { width: 100%; height: 100%; object-fit: cover; display: block; }
 .mc-wall-span-empty { color: var(--mc-text-on-dark-muted, #94A3B8); font-size: var(--mc-font-size-sm); }
 .mc-wall-cell {
-  position: relative; overflow: hidden; min-height: 64px;
+  position: relative; overflow: hidden;
+  /* Tiles are now responsive (1fr of a cols/maxCols-wide card); the panel aspect
+     ratio gives each cell its height so it tracks the width. */
+  aspect-ratio: var(--mc-cell-ar, 16 / 9);
   display: flex; align-items: center; justify-content: center;
   background: var(--mc-bg-secondary); cursor: pointer;
   transition: box-shadow var(--mc-transition-base);
@@ -668,14 +692,16 @@
 }
 .mc-tp-group { display: flex; gap: var(--space-1, 4px); flex-wrap: wrap; }
 .mc-tp-btn {
-  min-width: var(--tap-min, 48px); min-height: var(--tap-min, 48px); padding: 0 var(--space-2, 8px);
-  display: inline-flex; align-items: center; justify-content: center;
+  min-width: var(--tap-min, 48px); min-height: var(--tap-min, 48px); padding: 4px var(--space-2, 8px);
+  display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
   background: var(--mc-surface-alt); border: 1px solid var(--mc-border-light);
   border-radius: var(--mc-radius-sm, 8px); color: var(--mc-text-primary);
-  font-size: var(--mc-font-size-base); font-family: var(--mc-font-family-sans);
+  font-family: var(--mc-font-family-sans);
   cursor: pointer; line-height: 1;
   transition: background var(--mc-transition-base), color var(--mc-transition-base), border-color var(--mc-transition-base);
 }
+.mc-tp-ico { font-size: var(--mc-font-size-base); line-height: 1; }
+.mc-tp-text { font-size: 10px; font-weight: 600; line-height: 1; white-space: nowrap; letter-spacing: 0.01em; }
 .mc-tp-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
 .mc-tp-btn:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .mc-tp-btn:disabled { opacity: 0.45; cursor: default; }

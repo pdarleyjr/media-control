@@ -70,23 +70,26 @@ function aspectRatio(width, height) {
 // panel's PHYSICAL width (video_walls.screen_w_mm) so identical 86" panels get
 // identical tiles across walls, and larger panels get larger tiles. The Classroom
 // 1 Smartboard (also 86") is given the same single-tile size so it matches one TV.
-const REF_SCREEN_W_MM = 400;   // the walls' stored 86" panel width — the reference
-const TILE_BASE_PX = 188;      // a single reference (86") tile's width, in px
-const TILE_MIN_PX = 120;
-const TILE_MAX_PX = 320;
-function tileWidthPx(screenWmm) {
-  const sw = (typeof screenWmm === 'number' && screenWmm > 0) ? screenWmm : REF_SCREEN_W_MM;
-  return Math.round(Math.max(TILE_MIN_PX, Math.min(TILE_MAX_PX, TILE_BASE_PX * (sw / REF_SCREEN_W_MM))));
-}
-function tileHeightPx(tileW, screenWmm, screenHmm) {
-  const sw = (typeof screenWmm === 'number' && screenWmm > 0) ? screenWmm : REF_SCREEN_W_MM;
-  const sh = (typeof screenHmm === 'number' && screenHmm > 0) ? screenHmm : (REF_SCREEN_W_MM * 9 / 16);
-  return Math.round(tileW * (sh / sw));
-}
 // The Classroom 1 Smartboard is an 86" panel like the wall TVs; identify it by
 // name so its standalone card matches one wall tile (display-state exposes name).
 function isSmartboard(display) {
   return /smartboard/i.test((display && display.name) || '');
+}
+// Render/load order key from the trailing number in a wall name ("Video Wall 1"
+// -> 1, "Video Wall 2" -> 2) so VW1 loads before VW2.
+function wallOrderKey(w) {
+  const m = String((w && w.name) || '').match(/(\d+)/);
+  return m ? parseInt(m[1], 10) : 999;
+}
+// Shared uniform tile size in px = stageWidth / maxCols, clamped so a lone
+// display can't balloon and tiny stages stay usable. Set as --mc-tile on the
+// stage; cards are sized to cols x --mc-tile in CSS.
+const TILE_MIN_PX = 160, TILE_MAX_PX = 520;
+function applyTileSize(container, maxCols) {
+  const w = container.clientWidth || 0;
+  if (w <= 0) return; // not laid out yet; ResizeObserver will fire when it is
+  const tile = Math.max(TILE_MIN_PX, Math.min(TILE_MAX_PX, Math.floor(w / Math.max(1, maxCols))));
+  container.style.setProperty('--mc-tile', tile + 'px');
 }
 
 // Pick the preview image for a display / wall screen. Content whose live canvas
@@ -113,7 +116,6 @@ function displayCard(display) {
   // The 86" Classroom 1 Smartboard is sized to ONE wall TV tile so it visually
   // matches a single screen in the video walls (same hardware class).
   const sb = isSmartboard(display);
-  const sbTileW = sb ? tileWidthPx(REF_SCREEN_W_MM) : 0;
   const offline = !display.online;
   const pv = previewSource(display);
   const showingPoster = !!(pv && pv.poster);
@@ -129,7 +131,7 @@ function displayCard(display) {
   // data-tp-host is populated after innerHTML injection by mountCardTransport.
   return `
     <button type="button" class="mc-card mc-display-card ${s.cls}${sb ? ' mc-display-card-tile' : ''}"
-            data-device-id="${esc(display.id)}"${sb ? ` style="--mc-card-tile-w:${sbTileW}px"` : ''}
+            data-device-id="${esc(display.id)}"${sb ? ' style="--mc-cols:1"' : ''}
             aria-label="${esc(t('mc.card.inspect_aria', { name: display.name }))}">
       <div class="mc-card-media" style="aspect-ratio:${ar}">
         ${preview}
@@ -234,11 +236,14 @@ function wallCard(wall, byId) {
   const cols = Math.max(1, wall.grid_cols || members.reduce((mx, m) => Math.max(mx, (m.grid_col || 0) + 1), 1));
   const rows = Math.max(1, wall.grid_rows || members.reduce((mx, m) => Math.max(mx, (m.grid_row || 0) + 1), 1));
   const slots = cols * rows;
-  // Per-TV tile size from the panel's physical width — uniform across walls of
-  // the same hardware; the wall's total width is perTile x cols (see CSS: the
-  // grid is max-content, not a fixed box divided by cols).
-  const tileW = tileWidthPx(wall.screen_w_mm);
-  const tileH = tileHeightPx(tileW, wall.screen_w_mm, wall.screen_h_mm);
+  // Uniform tiling: every TV tile is 1/maxCols of the stage width — set as
+  // --mc-cols on the card + --mc-maxcols on the stage (CSS sizes the card to
+  // cols x tile and fills it). So identical 86" panels render identically-sized
+  // tiles on EVERY wall, a 3-screen wall fills the stage, a 2-screen wall is 2/3
+  // as wide, and the single-screen Smartboard is one tile — without any card
+  // exceeding the stage width. Cells carry the panel aspect ratio so their height
+  // tracks the responsive width.
+  const cellAr = (wall.screen_w_mm > 0 && wall.screen_h_mm > 0) ? `${wall.screen_w_mm}/${wall.screen_h_mm}` : '16/9';
   // Index assigned members by their grid position, and pick the leader (the
   // device every otherwise-unassigned screen mirrors).
   const byPos = new Map();
@@ -266,7 +271,7 @@ function wallCard(wall, byId) {
   }
   const spanLayer = mode === 'span' ? wallSpanPreview(leader) : '';
   return `
-    <section class="mc-card mc-wall mc-wall-mode-${mode}" data-wall-id="${esc(wall.id)}" data-layout-mode="${mode}" aria-label="${esc(t('mc.wall.aria', { name: wall.name }))}">
+    <section class="mc-card mc-wall mc-wall-mode-${mode}" data-wall-id="${esc(wall.id)}" data-layout-mode="${mode}" style="--mc-cols:${cols}; --mc-cell-ar:${cellAr}" aria-label="${esc(t('mc.wall.aria', { name: wall.name }))}">
       <div class="mc-wall-head">
         <span class="mc-wall-title">${esc(wall.name)}</span>
         <span class="mc-wall-sub">${esc(tn('mc.wall.screens', slots))}</span>
@@ -280,7 +285,7 @@ function wallCard(wall, byId) {
         <a class="mc-wall-edit" href="#/walls">${esc(t('mc.wall.edit'))}</a>
       </div>
       <div class="mc-wall-hint">${esc(modeHint)}</div>
-      <div class="mc-wall-grid" style="grid-template-columns:repeat(${cols}, ${tileW}px);grid-template-rows:repeat(${rows}, ${tileH}px)">
+      <div class="mc-wall-grid" style="grid-template-columns:repeat(${cols}, 1fr)">
         ${spanLayer}
         ${cells.join('')}
       </div>
@@ -341,11 +346,31 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
   // Build a lookup map for display data so transport bars can read screen_on.
   const displayMap = new Map(displays.map(d => [d.id, d]));
 
+  // Load/render order: Video Wall 1, then Video Wall 2, ... (by the trailing
+  // number in the name), with the single-screen Smartboard LAST among displays —
+  // so the room loads VW1 -> VW2 -> Smartboard.
+  const wallList = (walls || []).slice().sort((a, b) => wallOrderKey(a) - wallOrderKey(b) || String(a.name || '').localeCompare(String(b.name || '')));
+  // Uniform-tile budget: the widest wall's column count drives a shared tile size
+  // (stage width / maxCols). Every 86" panel then renders an identically-sized
+  // tile across walls + the Smartboard, Video Wall 1 fills the stage, and no card
+  // exceeds it. --mc-tile is recomputed here + on resize (CSS reads it).
+  const maxCols = Math.max(1, ...wallList.map(w => Math.max(1, w.grid_cols || 1)));
+  container.style.setProperty('--mc-maxcols', String(maxCols));
+  applyTileSize(container, maxCols);
+  if (!container._mcTileRO && typeof ResizeObserver !== 'undefined') {
+    container._mcTileMax = maxCols;
+    container._mcTileRO = new ResizeObserver(() => applyTileSize(container, container._mcTileMax || 1));
+    container._mcTileRO.observe(container);
+  } else {
+    container._mcTileMax = maxCols;
+  }
+
   const cards = displays
     .filter(d => selected.has(d.id))
+    .sort((a, b) => (isSmartboard(a) ? 1 : 0) - (isSmartboard(b) ? 1 : 0))
     .map(displayCard)
     .join('');
-  const wallCards = (walls || []).map(w => wallCard(w, byId)).join('');
+  const wallCards = wallList.map(w => wallCard(w, byId)).join('');
 
   const isEmpty = !cards && !wallCards;
   container.classList.toggle('mc-stage-is-empty', isEmpty);

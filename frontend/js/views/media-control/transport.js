@@ -45,7 +45,9 @@ export function renderTransportBar(container, { deviceId, screenOn = true, onScr
 
   const transportHtml = TRANSPORT_BTNS.map(b => {
     const title = t(b.titleKey);
-    return `<button type="button" class="mc-tp-btn" data-tp-action="${esc(b.action)}" title="${esc(title)}" aria-label="${esc(title)}">${b.label}</button>`;
+    // Glyph + visible text label so each control reads clearly (Previous /
+    // Restart / Play / Pause / Next), not just an icon. title/aria stay for AT.
+    return `<button type="button" class="mc-tp-btn" data-tp-action="${esc(b.action)}" title="${esc(title)}" aria-label="${esc(title)}"><span class="mc-tp-ico" aria-hidden="true">${b.label}</span><span class="mc-tp-text">${esc(title)}</span></button>`;
   }).join('');
 
   const blankLabel = screenOn ? t('mc.tp.blank') : t('mc.tp.unblank');
