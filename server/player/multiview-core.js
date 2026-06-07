@@ -43,10 +43,20 @@
   for (var i = 0; i < SLOTS.length; i++) SLOT_BY_ID[SLOTS[i].id] = SLOTS[i];
 
   // Cell render kinds: i = iframe (camera/news/youtube/deck), v = <video> file,
-  // m = <img> (image file). Unknown kinds fall back to iframe.
+  // m = <img> (image file). Unknown kinds fall back to iframe. The special kind
+  // 'share' marks a screen-share frame: it carries NO url (the share is a WebRTC
+  // overlay the receiver mounts on top of the cell rect — see screen-share
+  // wall-tile mode), so grid.html renders a labelled placeholder behind it.
   var KINDS = { i: 1, v: 1, m: 1 };
 
   var LABEL_MAX = 80;
+
+  // Reactive-layout geometry. A cell MAY carry its own {x,y,w,h} percent rect
+  // (operator resized it); when absent the cell uses its fixed SLOT rect, so a
+  // default 4+2+4 layout encodes/decodes byte-identically (no regression).
+  var MIN_PCT = 5;                                   // smallest tile edge, percent
+  function isPct(n) { return typeof n === 'number' && isFinite(n) && n >= 0 && n <= 100; }
+  function clampPct(v) { return Math.max(0, Math.min(100, v)); }
 
   // ---- the SECURITY BOUNDARY ----------------------------------------------
   // grid.html renders these URLs on a CSP-free /player page (iframe/video/img),
@@ -97,8 +107,10 @@
     return b64urlEncode(JSON.stringify(map || {}));
   }
 
-  // Decode + SANITIZE a cells param into a clean {slotId: {u,l,k}} map. Drops
-  // unknown slots, disallowed URLs, and bad kinds. Never throws.
+  // Decode + SANITIZE a cells param into a clean {slotId: {u,l,k[,x,y,w,h]}} map.
+  // Drops unknown slots, disallowed URLs, and bad kinds; passes per-cell geometry
+  // through ONLY when all four are valid percentages (else omits it entirely, so a
+  // default-layout cell decodes to exactly {u,l,k}). Never throws.
   function decodeCells(param) {
     var out = {};
     if (!param) return out;
@@ -110,10 +122,73 @@
       if (!SLOT_BY_ID[id]) continue;
       var c = raw[id];
       if (!c || typeof c !== 'object') continue;
-      if (!isAllowedCellUrl(c.u)) continue;
-      var kind = (typeof c.k === 'string' && KINDS[c.k]) ? c.k : 'i';
       var label = typeof c.l === 'string' ? c.l.slice(0, LABEL_MAX) : '';
-      out[id] = { u: c.u, l: label, k: kind };
+      var cell;
+      if (c.k === 'share') {
+        // Screen-share placeholder: no URL (the share is a WebRTC overlay).
+        cell = { l: label, k: 'share' };
+      } else {
+        if (!isAllowedCellUrl(c.u)) continue;
+        var kind = (typeof c.k === 'string' && KINDS[c.k]) ? c.k : 'i';
+        cell = { u: c.u, l: label, k: kind };
+      }
+      // Optional reactive geometry — only when all four are valid, positive %.
+      if (isPct(c.x) && isPct(c.y) && isPct(c.w) && isPct(c.h) && c.w > 0 && c.h > 0) {
+        cell.x = +c.x; cell.y = +c.y; cell.w = +c.w; cell.h = +c.h;
+      }
+      out[id] = cell;
+    }
+    return out;
+  }
+
+  // ---- reactive tiling geometry (pure — shared by the composer + unit tests) --
+  // The effective rect of a cell: its own {x,y,w,h} when present, else its fixed
+  // SLOT rect. Keeps grid.html + the composer agreeing on geometry.
+  function rectForCell(id, cell) {
+    if (cell && isPct(cell.x) && isPct(cell.y) && cell.w > 0 && cell.h > 0) {
+      return { x: cell.x, y: cell.y, w: cell.w, h: cell.h };
+    }
+    var s = SLOT_BY_ID[id];
+    return s ? { x: s.x, y: s.y, w: s.w, h: s.h } : { x: 0, y: 0, w: 100, h: 100 };
+  }
+
+  function overlaps(a, b) {
+    return !(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y);
+  }
+
+  // SHRINK-only reflow. After the active rect changes, every OTHER rect that
+  // overlaps it is shrunk along its least-penetration axis so its NEAR edge abuts
+  // the active rect — its FAR edge never moves, so reflow introduces NO new
+  // overlap between neighbours (no cascade) and nothing leaves 0..100. The active
+  // rect is pinned (operator intent wins). `rects` = { id: {x,y,w,h} }; returns a
+  // fresh map. Tiles that get fully covered collapse to a MIN_PCT sliver at the
+  // active edge rather than inverting.
+  function reflowAroundActive(rects, activeId) {
+    var out = {};
+    for (var k in rects) out[k] = { x: rects[k].x, y: rects[k].y, w: rects[k].w, h: rects[k].h };
+    var a = out[activeId];
+    if (!a) return out;
+    for (var id in out) {
+      if (id === activeId) continue;
+      var b = out[id];
+      if (!overlaps(a, b)) continue;
+      var ox = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+      var oy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+      if (ox <= 0 || oy <= 0) continue;
+      if (ox <= oy) {
+        // horizontal: keep b's far edge, push its near edge to a's edge
+        if ((b.x + b.w / 2) >= (a.x + a.w / 2)) { var right = b.x + b.w; b.x = a.x + a.w; b.w = right - b.x; }
+        else { b.w = a.x - b.x; }
+      } else {
+        // vertical
+        if ((b.y + b.h / 2) >= (a.y + a.h / 2)) { var bottom = b.y + b.h; b.y = a.y + a.h; b.h = bottom - b.y; }
+        else { b.h = a.y - b.y; }
+      }
+      if (b.w < MIN_PCT) b.w = MIN_PCT;
+      if (b.h < MIN_PCT) b.h = MIN_PCT;
+      b.x = clampPct(b.x); b.y = clampPct(b.y);
+      if (b.x + b.w > 100) b.x = Math.max(0, 100 - b.w);
+      if (b.y + b.h > 100) b.y = Math.max(0, 100 - b.h);
     }
     return out;
   }
@@ -123,10 +198,16 @@
     SLOT_BY_ID: SLOT_BY_ID,
     KINDS: KINDS,
     LABEL_MAX: LABEL_MAX,
+    MIN_PCT: MIN_PCT,
+    isPct: isPct,
+    clampPct: clampPct,
     isAllowedCellUrl: isAllowedCellUrl,
     b64urlEncode: b64urlEncode,
     b64urlDecode: b64urlDecode,
     encodeCells: encodeCells,
-    decodeCells: decodeCells
+    decodeCells: decodeCells,
+    rectForCell: rectForCell,
+    overlaps: overlaps,
+    reflowAroundActive: reflowAroundActive
   };
 });

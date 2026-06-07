@@ -252,7 +252,7 @@
    Spans the full stage width. The screens sit on a dark bezel frame — the one
    place "dark" belongs, because live video lives on black.
    ════════════════════════════════════════════════════════════════════════ */
-.mc-wall { grid-column: 1 / -1; padding: var(--space-3, 12px); cursor: default; }
+.mc-wall { grid-column: 1 / -1; padding: var(--space-3, 12px); cursor: default; overflow-x: auto; }
 .mc-wall:hover { transform: none; box-shadow: var(--mc-shadow-card); border-color: var(--mc-border-light); }
 .mc-wall-head { display: flex; align-items: baseline; gap: var(--space-2, 8px); margin-bottom: var(--mc-space-sm, 8px); }
 .mc-wall-title { font-weight: var(--mc-fw-semibold); font-size: var(--mc-font-size-base); color: var(--mc-text-primary); }
@@ -273,10 +273,18 @@
 .mc-wall-calibrate + .mc-wall-edit { margin-left: 0; }
 .mc-wall-grid {
   position: relative;
-  display: grid; gap: 3px; width: min(100%, 940px); margin-inline: auto;
+  /* width is intrinsic (perTile x cols from the inline grid-template), NOT a
+     fixed box divided by cols — so every TV tile is the same size and a 3-TV
+     wall is simply wider than a 2-TV wall. max-content keeps it tile-sized;
+     .mc-wall scrolls horizontally if a wall is wider than the stage. */
+  display: grid; gap: 3px; width: max-content; max-width: 100%; margin-inline: auto;
   background: var(--mc-dark-bg-deep, #0F172A); /* bezel frame behind the screens */
   border-radius: var(--mc-radius-sm); padding: 3px; overflow: hidden;
 }
+/* Classroom 1 Smartboard: sized to ONE wall TV tile (same 86" hardware class),
+   so its card matches a single screen in the video walls. Left-aligned in its
+   stage-grid column; the media keeps the display's true (16:9) aspect ratio. */
+.mc-display-card-tile { width: var(--mc-card-tile-w, 188px); justify-self: start; }
 .mc-wall-span-layer {
   position: absolute;
   inset: 3px;
@@ -1032,6 +1040,7 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
   aspect-ratio: 16 / 9; background: #000;
   border: 1px solid var(--mc-border-light, #243044); border-radius: var(--mc-radius-md, 8px);
   overflow: hidden;
+  touch-action: none;   /* pointer-resize handles must not scroll the page on touch */
 }
 /* Fallback for browsers without aspect-ratio: a padding-top spacer would be
    needed, but every target browser here (operator desktops) supports it. */
@@ -1086,3 +1095,46 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
 @media (max-width: 640px) {
   .mc-mv-monitor-box { width: 100%; }
 }
+
+/* ── Multiview reactive resize + screen-share frame (2026-06-07) ────────────
+   Resize handles ride the corners/edges of a FILLED frame (drag to resize;
+   neighbours shrink to fit). The screen-share chip is dragged into a frame; the
+   frame then offers a "Share to display" control. Scoped under .mc-control. */
+.mc-mv-handle {
+  position: absolute; z-index: 4; width: 14px; height: 14px;
+  background: var(--mc-accent, #2563eb); border: 2px solid #fff; border-radius: 50%;
+  opacity: 0; transition: opacity 0.12s ease; touch-action: none;
+}
+.mc-mv-cell.filled:hover .mc-mv-handle,
+.mc-mv-cell.filled:focus-within .mc-mv-handle { opacity: 0.9; }
+.mc-mv-handle-nw { left: -7px; top: -7px; cursor: nwse-resize; }
+.mc-mv-handle-ne { right: -7px; top: -7px; cursor: nesw-resize; }
+.mc-mv-handle-sw { left: -7px; bottom: -7px; cursor: nesw-resize; }
+.mc-mv-handle-se { right: -7px; bottom: -7px; cursor: nwse-resize; }
+.mc-mv-handle-n  { left: calc(50% - 7px); top: -7px; cursor: ns-resize; }
+.mc-mv-handle-s  { left: calc(50% - 7px); bottom: -7px; cursor: ns-resize; }
+.mc-mv-handle-e  { right: -7px; top: calc(50% - 7px); cursor: ew-resize; }
+.mc-mv-handle-w  { left: -7px; top: calc(50% - 7px); cursor: ew-resize; }
+/* The action buttons (top-right) must stay clickable above the ne/e handles. */
+.mc-mv-cell-actions { z-index: 5; }
+
+/* Draggable "Screen share" chip in the composer header. */
+.mc-mv-sharechip {
+  display: inline-flex; align-items: center; gap: 6px; cursor: grab;
+  padding: 6px 12px; border-radius: var(--mc-radius-pill, 999px);
+  background: var(--mc-surface-alt, #1e2d45); color: var(--mc-text-primary, #e2e8f0);
+  border: 1px solid var(--mc-border-medium, #334155); font-size: var(--mc-font-size-sm, 13px);
+  font-weight: var(--mc-fw-medium, 500); font-family: var(--mc-font-family-sans);
+}
+.mc-mv-sharechip:hover { border-color: var(--mc-accent, #2563eb); }
+.mc-mv-sharechip:active { cursor: grabbing; }
+.mc-mv-sharechip-ico svg { width: 16px; height: 16px; display: block; }
+
+/* Screen-share frame: a labelled blue placeholder + Share/Stop controls. */
+.mc-mv-cell-share.filled { background: #0b1220; border-color: rgba(96,165,250,0.45); }
+.mc-mv-cell-ico-share { color: #60a5fa; }
+.mc-mv-share-controls {
+  position: absolute; left: 50%; top: 56%; transform: translate(-50%, -50%); z-index: 3;
+  display: flex; flex-direction: column; align-items: center; gap: 4px; width: 92%;
+}
+.mc-mv-share-on { font-size: clamp(9px, 0.95vw, 12px); color: #93c5fd; font-weight: var(--mc-fw-semibold, 600); text-align: center; }

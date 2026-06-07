@@ -63,6 +63,32 @@ function aspectRatio(width, height) {
   return '16/9';
 }
 
+// ── Proportional tile sizing (2026-06-07) ─────────────────────────────────
+// A wall is drawn as `perTile × cols` (NOT a fixed-width box divided by cols), so
+// every TV tile is the SAME size regardless of how many TVs the wall has, and a
+// 3-TV wall is simply wider than a 2-TV wall. The per-tile size scales with the
+// panel's PHYSICAL width (video_walls.screen_w_mm) so identical 86" panels get
+// identical tiles across walls, and larger panels get larger tiles. The Classroom
+// 1 Smartboard (also 86") is given the same single-tile size so it matches one TV.
+const REF_SCREEN_W_MM = 400;   // the walls' stored 86" panel width — the reference
+const TILE_BASE_PX = 188;      // a single reference (86") tile's width, in px
+const TILE_MIN_PX = 120;
+const TILE_MAX_PX = 320;
+function tileWidthPx(screenWmm) {
+  const sw = (typeof screenWmm === 'number' && screenWmm > 0) ? screenWmm : REF_SCREEN_W_MM;
+  return Math.round(Math.max(TILE_MIN_PX, Math.min(TILE_MAX_PX, TILE_BASE_PX * (sw / REF_SCREEN_W_MM))));
+}
+function tileHeightPx(tileW, screenWmm, screenHmm) {
+  const sw = (typeof screenWmm === 'number' && screenWmm > 0) ? screenWmm : REF_SCREEN_W_MM;
+  const sh = (typeof screenHmm === 'number' && screenHmm > 0) ? screenHmm : (REF_SCREEN_W_MM * 9 / 16);
+  return Math.round(tileW * (sh / sw));
+}
+// The Classroom 1 Smartboard is an 86" panel like the wall TVs; identify it by
+// name so its standalone card matches one wall tile (display-state exposes name).
+function isSmartboard(display) {
+  return /smartboard/i.test((display && display.name) || '');
+}
+
 // Pick the preview image for a display / wall screen. Content whose live canvas
 // screenshot is black anyway — hardware-decoded video and cross-origin deck /
 // web / YouTube iframes — carries a server-supplied now_playing.poster_url (the
@@ -84,6 +110,10 @@ function displayCard(display) {
     ? esc(display.now_playing.label)
     : esc(t('mc.card.nothing_playing'));
   const ar = aspectRatio(display.width, display.height);
+  // The 86" Classroom 1 Smartboard is sized to ONE wall TV tile so it visually
+  // matches a single screen in the video walls (same hardware class).
+  const sb = isSmartboard(display);
+  const sbTileW = sb ? tileWidthPx(REF_SCREEN_W_MM) : 0;
   const offline = !display.online;
   const pv = previewSource(display);
   const showingPoster = !!(pv && pv.poster);
@@ -98,8 +128,8 @@ function displayCard(display) {
 
   // data-tp-host is populated after innerHTML injection by mountCardTransport.
   return `
-    <button type="button" class="mc-card mc-display-card ${s.cls}"
-            data-device-id="${esc(display.id)}"
+    <button type="button" class="mc-card mc-display-card ${s.cls}${sb ? ' mc-display-card-tile' : ''}"
+            data-device-id="${esc(display.id)}"${sb ? ` style="--mc-card-tile-w:${sbTileW}px"` : ''}
             aria-label="${esc(t('mc.card.inspect_aria', { name: display.name }))}">
       <div class="mc-card-media" style="aspect-ratio:${ar}">
         ${preview}
@@ -204,6 +234,11 @@ function wallCard(wall, byId) {
   const cols = Math.max(1, wall.grid_cols || members.reduce((mx, m) => Math.max(mx, (m.grid_col || 0) + 1), 1));
   const rows = Math.max(1, wall.grid_rows || members.reduce((mx, m) => Math.max(mx, (m.grid_row || 0) + 1), 1));
   const slots = cols * rows;
+  // Per-TV tile size from the panel's physical width — uniform across walls of
+  // the same hardware; the wall's total width is perTile x cols (see CSS: the
+  // grid is max-content, not a fixed box divided by cols).
+  const tileW = tileWidthPx(wall.screen_w_mm);
+  const tileH = tileHeightPx(tileW, wall.screen_w_mm, wall.screen_h_mm);
   // Index assigned members by their grid position, and pick the leader (the
   // device every otherwise-unassigned screen mirrors).
   const byPos = new Map();
@@ -245,7 +280,7 @@ function wallCard(wall, byId) {
         <a class="mc-wall-edit" href="#/walls">${esc(t('mc.wall.edit'))}</a>
       </div>
       <div class="mc-wall-hint">${esc(modeHint)}</div>
-      <div class="mc-wall-grid" style="grid-template-columns:repeat(${cols},1fr);grid-template-rows:repeat(${rows},1fr);aspect-ratio:${cols} / ${rows}">
+      <div class="mc-wall-grid" style="grid-template-columns:repeat(${cols}, ${tileW}px);grid-template-rows:repeat(${rows}, ${tileH}px)">
         ${spanLayer}
         ${cells.join('')}
       </div>

@@ -29,6 +29,15 @@
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     /* Empty slots stay pure black on the display (clean, intentional). */
+    /* Screen-share frame: a labelled dark placeholder. The live WebRTC share is
+       mounted ON TOP of this rect by the player's screen-share receiver (wall-tile
+       rect mode), so this is what shows before/without an active share. */
+    .cell-share { background: #0b1220; box-shadow: inset 0 0 0 1px rgba(96,165,250,0.35); }
+    .cell-share-ph {
+      position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+      color: #93c5fd; font-size: clamp(12px, 1.4vw, 22px); font-weight: 600;
+      letter-spacing: 0.02em; text-align: center; padding: 8px;
+    }
   </style>
 </head>
 <body>
@@ -78,17 +87,34 @@
         return el;
       }
 
+      // Render ONLY filled cells. Empty slots are NOT drawn — the black grid
+      // background shows through — so a resized tile can never be occluded by an
+      // empty slot's box (and the wall stays clean). Each cell uses its own
+      // {x,y,w,h} percent rect when the operator resized it (reactive layout),
+      // otherwise its fixed SLOT rect (default 4+2+4 — unchanged).
       for (var i = 0; i < MV.SLOTS.length; i++) {
         var slot = MV.SLOTS[i];
-        var box = document.createElement('div');
-        box.className = 'cell';
-        box.setAttribute('data-slot', slot.id);
-        box.style.left = slot.x + '%';
-        box.style.top = slot.y + '%';
-        box.style.width = slot.w + '%';
-        box.style.height = slot.h + '%';
         var cell = cells[slot.id];
-        if (cell && cell.u) {
+        if (!cell) continue;                          // empty slot -> nothing drawn
+        var isShare = cell.k === 'share';
+        if (!isShare && !cell.u) continue;            // non-share cell needs a url
+        var r = MV.rectForCell(slot.id, cell);
+        var box = document.createElement('div');
+        box.className = isShare ? 'cell cell-share' : 'cell';
+        box.setAttribute('data-slot', slot.id);
+        box.style.left = r.x + '%';
+        box.style.top = r.y + '%';
+        box.style.width = r.w + '%';
+        box.style.height = r.h + '%';
+        if (isShare) {
+          // Placeholder behind the live WebRTC screen-share overlay (the receiver
+          // mounts the share on top of this rect via wall-tile mode). Shows the
+          // label so the frame is identifiable before/without an active share.
+          var ph = document.createElement('div');
+          ph.className = 'cell-share-ph';
+          ph.innerHTML = esc(cell.l || 'Screen Share');
+          box.appendChild(ph);
+        } else {
           box.appendChild(makeMedia(cell));
           if (cell.l) {
             var lab = document.createElement('div');

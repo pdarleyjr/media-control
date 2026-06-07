@@ -94,3 +94,76 @@ test('decodeCells never throws on garbage', () => {
   assert.deepEqual(MV.decodeCells('Zm9v'), {});           // "foo" — not an object
   assert.deepEqual(MV.decodeCells(undefined), {});
 });
+
+// ---- reactive layout: optional per-cell geometry (backward compatible) ----
+
+test('decodeCells carries valid per-cell geometry, round-trips', () => {
+  const map = {
+    C1: { u: '/player/hls.html?station=cbs', l: 'CBS', k: 'i', x: 25, y: 0, w: 60, h: 55 },
+    L1: { u: '/player/oz.html?oid=EMB_A1', l: 'Cam', k: 'i' }, // no geometry -> stays {u,l,k}
+  };
+  const decoded = MV.decodeCells(MV.encodeCells(map));
+  assert.deepEqual(decoded, map);
+  // The no-geometry cell must NOT gain geometry keys (preserves the default-layout
+  // byte-identical contract).
+  assert.deepEqual(Object.keys(decoded.L1).sort(), ['k', 'l', 'u']);
+});
+
+test('decodeCells drops invalid/out-of-range geometry entirely', () => {
+  const map = {
+    C1: { u: '/player/oz.html?oid=EMB_A1', l: 'a', k: 'i', x: -5, y: 0, w: 50, h: 50 },   // x<0
+    C2: { u: '/player/oz.html?oid=EMB_A2', l: 'b', k: 'i', x: 0, y: 0, w: 0, h: 50 },     // w=0
+    R1: { u: '/player/oz.html?oid=EMB_A3', l: 'c', k: 'i', x: 10, y: 10, w: 'big', h: 5 },// NaN
+  };
+  const decoded = MV.decodeCells(MV.encodeCells(map));
+  for (const id of ['C1', 'C2', 'R1']) {
+    assert.deepEqual(Object.keys(decoded[id]).sort(), ['k', 'l', 'u'], `${id} kept bad geometry`);
+  }
+});
+
+test('decodeCells supports a share cell (no url) with optional geometry', () => {
+  const map = { C1: { l: 'Screen Share', k: 'share', x: 25, y: 0, w: 50, h: 50 } };
+  const decoded = MV.decodeCells(MV.encodeCells(map));
+  assert.deepEqual(decoded, map);
+  // A share cell with NO url is still kept (the share is a WebRTC overlay).
+  const bare = MV.decodeCells(MV.encodeCells({ R2: { l: 'Share', k: 'share' } }));
+  assert.deepEqual(bare, { R2: { l: 'Share', k: 'share' } });
+});
+
+// ---- reactive layout: reflow geometry ----
+
+test('rectForCell uses cell geometry when valid, else the fixed slot', () => {
+  assert.deepEqual(MV.rectForCell('C1', { x: 10, y: 20, w: 30, h: 40 }), { x: 10, y: 20, w: 30, h: 40 });
+  assert.deepEqual(MV.rectForCell('C1', { u: 'x' }), { x: 25, y: 0, w: 50, h: 50 }); // C1 slot
+  assert.deepEqual(MV.rectForCell('L1', null), { x: 0, y: 0, w: 25, h: 25 });        // L1 slot
+});
+
+test('reflowAroundActive: growing a tile leaves NO overlap with it and stays in 0..100', () => {
+  // Start from the fixed 4+2+4 slot rects, then grow C1 (center-top) to 60x60.
+  const rects = {};
+  for (const s of MV.SLOTS) rects[s.id] = { x: s.x, y: s.y, w: s.w, h: s.h };
+  rects.C1 = { x: 20, y: 0, w: 60, h: 60 };
+  const out = MV.reflowAroundActive(rects, 'C1');
+  const A = out.C1;
+  for (const id of Object.keys(out)) {
+    const r = out[id];
+    assert.ok(r.x >= 0 && r.y >= 0 && r.x + r.w <= 100.001 && r.y + r.h <= 100.001, `${id} out of bounds: ${JSON.stringify(r)}`);
+    assert.ok(r.w >= MV.MIN_PCT - 1e-9 && r.h >= MV.MIN_PCT - 1e-9, `${id} below min size`);
+    if (id === 'C1') continue;
+    assert.ok(!MV.overlaps(A, r), `${id} still overlaps the active tile: ${JSON.stringify(r)}`);
+  }
+  // The active tile is pinned (unchanged).
+  assert.deepEqual(out.C1, { x: 20, y: 0, w: 60, h: 60 });
+});
+
+test('reflowAroundActive: a non-overlapping resize leaves neighbors untouched', () => {
+  const rects = {};
+  for (const s of MV.SLOTS) rects[s.id] = { x: s.x, y: s.y, w: s.w, h: s.h };
+  // Shrink C1 to 40x40 (no new overlap — it only frees space).
+  rects.C1 = { x: 25, y: 0, w: 40, h: 40 };
+  const out = MV.reflowAroundActive(rects, 'C1');
+  for (const s of MV.SLOTS) {
+    if (s.id === 'C1') continue;
+    assert.deepEqual(out[s.id], { x: s.x, y: s.y, w: s.w, h: s.h }, `${s.id} should be untouched`);
+  }
+});

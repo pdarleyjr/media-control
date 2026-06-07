@@ -1,25 +1,35 @@
 // multiview.js — the "Multiview Layout" composer for the Command Center.
 //
 // A single display is split into a 4-left / 2-center / 4-right mosaic (every
-// cell 16:9). The operator drags source tiles from the toolbox into each frame,
-// sees a thumbnail + label in just the frame they dropped into, can click any
-// frame to monitor THAT stream's audio locally (in this browser, not on the
-// wall — so they can switch which feed they hear), then sends the assembled
-// layout to a display.
+// cell 16:9 by default). The operator drags source tiles from the toolbox into
+// each frame, sees a thumbnail + label in just the frame they dropped into, can
+// click any frame to monitor THAT stream's audio locally (in this browser, not
+// on the wall — so they can switch which feed they hear), then sends the
+// assembled layout to a display.
+//
+// Reactive layout (2026-06-07): grab a frame's edge/corner handle to resize it;
+// neighbours SHRINK away to avoid overlap and everything stays within the
+// display margins. Geometry is OPTIONAL per cell — an un-resized layout encodes
+// byte-identically to the fixed 4+2+4 (no regression).
+//
+// Screen share into a frame (2026-06-07): drag the "Screen share" chip into a
+// frame, then pick a display — the operator's screen is broadcast into THAT
+// frame's rect on that display via the screen-share receiver's wall-tile rect
+// mode (no new pipe — reuses the existing WebRTC engine + signaling).
 //
 // ARCHITECTURE: the layout is NOT a new player protocol. On "Send", the filled
 // cells are encoded into a /player/grid.html?cells=<base64url> URL and pushed as
-// an ordinary text/html remote_url through the existing send funnel — the
-// display iframes grid.html, which iframes each cell's own per-source player
-// (oz.html / hls.html / cam.html / youtube-nocookie / deck / content file),
-// reusing every existing renderer verbatim. The SLOTS geometry + cell-URL
-// allowlist here MIRROR server/player/multiview-core.js (the renderer + tests
-// share that file); keep them in sync.
+// an ordinary text/html remote_url through the existing send funnel. The SLOTS
+// geometry + cell-URL allowlist + reflow math here MIRROR
+// server/player/multiview-core.js (the renderer + unit tests share that file);
+// keep them in sync.
 
 import { api } from '../../api.js';
 import { esc } from '../../utils.js';
 import { t } from '../../i18n.js';
 import { showToast } from '../../components/toast.js';
+import * as displayState from '../../services/display-state.js';
+import * as screenShareEngine from '../../services/screen-share-engine.js';
 
 // 4-left / 2-center / 4-right, in percent of the 16:9 canvas. MIRROR of SLOTS
 // in server/player/multiview-core.js.
@@ -38,7 +48,10 @@ const SLOTS = [
 const SLOT_BY_ID = Object.fromEntries(SLOTS.map((s) => [s.id, s]));
 
 const STORE_KEY = 'mc_multiview_cells_v1';
+const GEOM_KEY = 'mc_multiview_geoms_v1';
 const LABEL_MAX = 80;
+const MIN_PCT = 5;                              // smallest tile edge (mirror of core)
+const HANDLE_DIRS = ['nw', 'ne', 'sw', 'se', 'n', 'e', 's', 'w'];
 
 // ---- category icons (stroke SVGs, matching the dashboard vocabulary) ----
 const IC = {
@@ -50,26 +63,81 @@ const IC = {
   sound:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z"></path><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a9 9 0 0 1 0 14"></path></svg>',
   mute:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z"></path><path d="M22 9l-6 6M16 9l6 6"></path></svg>',
   clear:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"></path></svg>',
+  screen:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"></rect><path d="M8 21h8M12 17v4"></path></svg>',
 };
 
 // ---- module state (one composer per Command Center mount) ----
 let cells = {};               // slotId -> { cellUrl, monitorUrl, kind, label, thumb, category }
+let geoms = {};               // slotId -> { x,y,w,h } percent override (absent = fixed SLOT)
+let shareDevice = {};         // slotId -> deviceId currently receiving this frame's screen share
 let contentIndex = {};        // content_id -> { mime, thumbnail_url, filename }
 let routeSourceFn = null;     // injected: (source, label) => Promise<bool>
 let monitorSlot = null;       // slot id currently being monitored locally
+let monitorRenderedKey = null;// guard so a re-render doesn't restart the monitor stream
+let unsubShare = null;        // screen-share engine onChange unsubscribe
 let rootEl = null;
+
+// ---------- geometry helpers (MIRROR of multiview-core.js — keep in sync) ----------
+function clampPct(v) { return Math.max(0, Math.min(100, v)); }
+function validGeom(g) {
+  return g && [g.x, g.y, g.w, g.h].every((n) => typeof n === 'number' && isFinite(n) && n >= 0 && n <= 100) && g.w > 0 && g.h > 0;
+}
+function cellRect(id) {
+  const g = geoms[id];
+  if (validGeom(g)) return g;
+  const s = SLOT_BY_ID[id];
+  return { x: s.x, y: s.y, w: s.w, h: s.h };
+}
+function overlaps(a, b) {
+  return !(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y);
+}
+// SHRINK-only reflow (identical to multiview-core.reflowAroundActive).
+function reflowAroundActive(rects, activeId) {
+  const out = {};
+  for (const k in rects) out[k] = { x: rects[k].x, y: rects[k].y, w: rects[k].w, h: rects[k].h };
+  const a = out[activeId];
+  if (!a) return out;
+  for (const id in out) {
+    if (id === activeId) continue;
+    const b = out[id];
+    if (!overlaps(a, b)) continue;
+    const ox = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+    const oy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+    if (ox <= 0 || oy <= 0) continue;
+    if (ox <= oy) {
+      if ((b.x + b.w / 2) >= (a.x + a.w / 2)) { const right = b.x + b.w; b.x = a.x + a.w; b.w = right - b.x; }
+      else { b.w = a.x - b.x; }
+    } else {
+      if ((b.y + b.h / 2) >= (a.y + a.h / 2)) { const bottom = b.y + b.h; b.y = a.y + a.h; b.h = bottom - b.y; }
+      else { b.h = a.y - b.y; }
+    }
+    if (b.w < MIN_PCT) b.w = MIN_PCT;
+    if (b.h < MIN_PCT) b.h = MIN_PCT;
+    b.x = clampPct(b.x); b.y = clampPct(b.y);
+    if (b.x + b.w > 100) b.x = Math.max(0, 100 - b.w);
+    if (b.y + b.h > 100) b.y = Math.max(0, 100 - b.h);
+  }
+  return out;
+}
 
 // ---------- persistence ----------
 function loadStore() {
   try { cells = JSON.parse(localStorage.getItem(STORE_KEY) || '{}') || {}; }
   catch { cells = {}; }
-  // Drop anything that isn't a known slot or lost its URL.
+  // Keep only known slots that still carry content (a url) or are a share frame.
   for (const id of Object.keys(cells)) {
-    if (!SLOT_BY_ID[id] || !cells[id] || !cells[id].cellUrl) delete cells[id];
+    const c = cells[id];
+    if (!SLOT_BY_ID[id] || !c || (!c.cellUrl && c.kind !== 'share')) delete cells[id];
+  }
+  try { geoms = JSON.parse(localStorage.getItem(GEOM_KEY) || '{}') || {}; }
+  catch { geoms = {}; }
+  for (const id of Object.keys(geoms)) {
+    if (!SLOT_BY_ID[id] || !validGeom(geoms[id])) delete geoms[id];
   }
 }
 function saveStore() {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(cells)); } catch { /* quota — non-fatal */ }
+  try { localStorage.setItem(GEOM_KEY, JSON.stringify(geoms)); } catch { /* */ }
 }
 
 // ---------- source → cell resolution ----------
@@ -109,9 +177,13 @@ function ytEmbed(id, muted) {
 // Resolve a dropped { source, label, thumb } into a cell descriptor, or return
 // { error } with a reason key. Mirrors the allowlist of multiview-core.js: only
 // same-origin /player + /api/content paths and youtube-nocookie embeds become
-// cells.
+// cells. The synthetic { screen_share:true } source becomes a no-url share frame.
 function resolveCell(source, label, thumb) {
   label = (label || '').slice(0, LABEL_MAX);
+
+  if (source.screen_share) {
+    return { cellUrl: null, monitorUrl: null, kind: 'share', label: label || t('mc.mv.screen_share'), thumb: null, category: 'share' };
+  }
 
   if (source.playlist_id) return { error: 'mc.mv.err_playlist' };
 
@@ -169,7 +241,14 @@ function buildGridUrl() {
   const map = {};
   for (const id of Object.keys(cells)) {
     const c = cells[id];
-    if (c && c.cellUrl) map[id] = { u: c.cellUrl, l: c.label || '', k: c.kind || 'i' };
+    if (!c) continue;
+    let entry = null;
+    if (c.kind === 'share') entry = { l: c.label || t('mc.mv.screen_share'), k: 'share' };
+    else if (c.cellUrl) entry = { u: c.cellUrl, l: c.label || '', k: c.kind || 'i' };
+    if (!entry) continue;
+    const g = geoms[id];
+    if (validGeom(g)) { entry.x = g.x; entry.y = g.y; entry.w = g.w; entry.h = g.h; }
+    map[id] = entry;
   }
   return `${location.origin}/player/grid.html?cells=${b64url(JSON.stringify(map))}`;
 }
@@ -179,11 +258,44 @@ function slotName(slot) {
   return t(`mc.mv.slot.${slot.id}`);
 }
 
+function handlesHtml() {
+  return HANDLE_DIRS.map((d) =>
+    `<span class="mc-mv-handle mc-mv-handle-${d}" data-mv-handle="${d}" aria-hidden="true"></span>`
+  ).join('');
+}
+
+function shareControlsHtml(slotId) {
+  const dev = shareDevice[slotId];
+  const active = dev && screenShareEngine.getActiveTargets().includes(dev);
+  if (active) {
+    const d = displayState.get(dev);
+    const name = (d && d.name) || t('mc.mv.slot.' + slotId);
+    return `<div class="mc-mv-share-controls">
+      <span class="mc-mv-share-on">${esc(t('mc.mv.sharing_to', { name }))}</span>
+      <button type="button" class="mc-btn mc-btn-sm mc-mv-share-stop" data-mv-share-stop="${esc(slotId)}">${esc(t('mc.mv.stop_share'))}</button>
+    </div>`;
+  }
+  return `<div class="mc-mv-share-controls">
+    <button type="button" class="mc-btn mc-btn-sm mc-btn-primary mc-mv-share-start" data-mv-share-start="${esc(slotId)}">${esc(t('mc.mv.share_to'))}</button>
+  </div>`;
+}
+
 function cellInner(slot) {
   const c = cells[slot.id];
   if (!c) {
     return `<span class="mc-mv-slot-name">${esc(slotName(slot))}</span>
             <span class="mc-mv-slot-hint">${esc(t('mc.mv.drop_here'))}</span>`;
+  }
+  // Screen-share frame — placeholder + share/stop controls (no thumbnail/monitor).
+  if (c.kind === 'share') {
+    return `
+      <span class="mc-mv-cell-ico mc-mv-cell-ico-share" aria-hidden="true">${IC.screen}</span>
+      <div class="mc-mv-cell-actions">
+        <button type="button" class="mc-mv-cell-btn mc-mv-clear" data-mv-clear="${esc(slot.id)}" title="${esc(t('mc.mv.clear_cell'))}">${IC.clear}</button>
+      </div>
+      ${shareControlsHtml(slot.id)}
+      <div class="mc-mv-cell-label" title="${esc(c.label || '')}">${esc(c.label || t('mc.mv.screen_share'))}</div>
+      ${handlesHtml()}`;
   }
   const thumb = c.thumb
     ? `<img class="mc-mv-cell-thumb" src="${esc(c.thumb)}" alt="" loading="lazy">`
@@ -201,17 +313,21 @@ function cellInner(slot) {
       ${listenBtn}
       <button type="button" class="mc-mv-cell-btn mc-mv-clear" data-mv-clear="${esc(slot.id)}" title="${esc(t('mc.mv.clear_cell'))}">${IC.clear}</button>
     </div>
-    <div class="mc-mv-cell-label" title="${esc(c.label || '')}">${esc(c.label || slotName(slot))}</div>`;
+    <div class="mc-mv-cell-label" title="${esc(c.label || '')}">${esc(c.label || slotName(slot))}</div>
+    ${handlesHtml()}`;
 }
 
 function render() {
   if (!rootEl) return;
   const filled = Object.keys(cells).length;
+  const resized = Object.keys(geoms).length;
   const cellsHtml = SLOTS.map((slot) => {
     const c = cells[slot.id];
-    return `<div class="mc-mv-cell${c ? ' filled' : ''}${monitorSlot === slot.id ? ' monitoring' : ''}"
+    const r = cellRect(slot.id);
+    const shareCls = (c && c.kind === 'share') ? ' mc-mv-cell-share' : '';
+    return `<div class="mc-mv-cell${c ? ' filled' : ''}${shareCls}${monitorSlot === slot.id ? ' monitoring' : ''}"
       data-mv-cell="${esc(slot.id)}" data-side="${slot.side}"
-      style="left:${slot.x}%;top:${slot.y}%;width:${slot.w}%;height:${slot.h}%"
+      style="left:${r.x}%;top:${r.y}%;width:${r.w}%;height:${r.h}%"
       aria-label="${esc(slotName(slot))}">${cellInner(slot)}</div>`;
   }).join('');
 
@@ -220,6 +336,10 @@ function render() {
       <div class="mc-mv-head">
         <p class="mc-mv-hint">${esc(t('mc.mv.hint'))}</p>
         <div class="mc-mv-actions">
+          <button type="button" class="mc-mv-sharechip" draggable="true" data-mv-sharechip title="${esc(t('mc.mv.screen_share_hint'))}">
+            <span class="mc-mv-sharechip-ico" aria-hidden="true">${IC.screen}</span><span>${esc(t('mc.mv.screen_share'))}</span>
+          </button>
+          <button type="button" class="mc-btn mc-btn-ghost mc-mv-reset"${resized ? '' : ' disabled'}>${esc(t('mc.mv.reset'))}</button>
           <button type="button" class="mc-btn mc-btn-ghost mc-mv-clear-all"${filled ? '' : ' disabled'}>${esc(t('mc.mv.clear_all'))}</button>
           <button type="button" class="mc-btn mc-btn-primary mc-mv-send"${filled ? '' : ' disabled'}>${esc(t('mc.mv.send'))}</button>
         </div>
@@ -237,6 +357,7 @@ function render() {
       </div>
     </div>`;
 
+  monitorRenderedKey = null;   // full re-render replaced the monitor box
   attachHandlers();
   renderMonitor();
 }
@@ -269,10 +390,19 @@ function dropIntoSlot(slotId, parsed) {
 }
 
 function clearCell(slotId) {
+  // Stop any active share for this frame before removing it.
+  if (shareDevice[slotId]) { screenShareEngine.stopBroadcastTo(shareDevice[slotId]).catch(() => {}); delete shareDevice[slotId]; }
   delete cells[slotId];
   if (monitorSlot === slotId) monitorSlot = null;
   saveStore();
   render();
+}
+
+function clearAll() {
+  for (const id of Object.keys(shareDevice)) { screenShareEngine.stopBroadcastTo(shareDevice[id]).catch(() => {}); }
+  shareDevice = {};
+  cells = {}; geoms = {}; monitorSlot = null;
+  saveStore(); render();
 }
 
 function attachHandlers() {
@@ -292,6 +422,10 @@ function attachHandlers() {
       const parsed = parseDrag(e);
       if (parsed) dropIntoSlot(slotId, parsed);
     });
+    // Resize handles (only present on filled cells).
+    cellEl.querySelectorAll('[data-mv-handle]').forEach((h) => {
+      h.addEventListener('pointerdown', (ev) => startResize(ev, cellEl, slotId, h.dataset.mvHandle));
+    });
   });
 
   rootEl.querySelectorAll('[data-mv-listen]').forEach((btn) => {
@@ -300,14 +434,97 @@ function attachHandlers() {
   rootEl.querySelectorAll('[data-mv-clear]').forEach((btn) => {
     btn.addEventListener('click', (e) => { e.stopPropagation(); clearCell(btn.dataset.mvClear); });
   });
-  const clearAll = rootEl.querySelector('.mc-mv-clear-all');
-  if (clearAll) clearAll.addEventListener('click', () => {
-    cells = {}; monitorSlot = null; saveStore(); render();
-  });
+  bindShareControls();
+
+  const sharechip = rootEl.querySelector('[data-mv-sharechip]');
+  if (sharechip) {
+    sharechip.addEventListener('dragstart', (e) => {
+      const payload = JSON.stringify({ screen_share: true });
+      e.dataTransfer.effectAllowed = 'copy';
+      e.dataTransfer.setData('text/plain', payload);
+      e.dataTransfer.setData('application/x-mc-source', payload);
+      e.dataTransfer.setData('application/x-mc-label', t('mc.mv.screen_share'));
+    });
+    // Click = drop into the first empty frame (center first), for non-drag users.
+    sharechip.addEventListener('click', () => {
+      const order = ['C1', 'C2', 'L1', 'R1', 'L2', 'R2', 'L3', 'R3', 'L4', 'R4'];
+      const target = order.find((id) => !cells[id]);
+      if (!target) { showToast(t('mc.mv.err_no_empty'), 'error'); return; }
+      dropIntoSlot(target, { source: { screen_share: true }, label: t('mc.mv.screen_share'), thumb: null });
+    });
+  }
+
+  const reset = rootEl.querySelector('.mc-mv-reset');
+  if (reset) reset.addEventListener('click', () => { geoms = {}; saveStore(); render(); });
+  const clearAllBtn = rootEl.querySelector('.mc-mv-clear-all');
+  if (clearAllBtn) clearAllBtn.addEventListener('click', clearAll);
   const sendBtn = rootEl.querySelector('.mc-mv-send');
   if (sendBtn) sendBtn.addEventListener('click', sendLayout);
   const monStop = rootEl.querySelector('.mc-mv-monitor-stop');
   if (monStop) monStop.addEventListener('click', () => { monitorSlot = null; render(); });
+}
+
+function bindShareControls() {
+  rootEl.querySelectorAll('[data-mv-share-start]').forEach((btn) => {
+    btn.addEventListener('click', (e) => { e.stopPropagation(); startShare(btn.dataset.mvShareStart); });
+  });
+  rootEl.querySelectorAll('[data-mv-share-stop]').forEach((btn) => {
+    btn.addEventListener('click', (e) => { e.stopPropagation(); stopShare(btn.dataset.mvShareStop); });
+  });
+}
+
+// ---------- reactive resize (port of region-editor's percent-space pointer drag) ----------
+function applyResize(dir, dx, dy, start) {
+  let { x, y, w, h } = start;
+  if (dir.includes('e')) w = Math.max(MIN_PCT, Math.min(start.w + dx, 100 - start.x));
+  if (dir.includes('s')) h = Math.max(MIN_PCT, Math.min(start.h + dy, 100 - start.y));
+  if (dir.includes('w')) { const nw = Math.max(MIN_PCT, Math.min(start.w - dx, start.x + start.w)); x = start.x + (start.w - nw); w = nw; }
+  if (dir.includes('n')) { const nh = Math.max(MIN_PCT, Math.min(start.h - dy, start.y + start.h)); y = start.y + (start.h - nh); h = nh; }
+  return { x: clampPct(x), y: clampPct(y), w: clampPct(w), h: clampPct(h) };
+}
+
+function applyLiveStyles() {
+  rootEl.querySelectorAll('.mc-mv-cell').forEach((el) => {
+    const r = cellRect(el.dataset.mvCell);
+    el.style.left = r.x + '%'; el.style.top = r.y + '%';
+    el.style.width = r.w + '%'; el.style.height = r.h + '%';
+  });
+}
+
+function startResize(ev, cellEl, slotId, dir) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  const stage = rootEl.querySelector('.mc-mv-stage');
+  if (!stage) return;
+  const rect = stage.getBoundingClientRect();
+  try { cellEl.setPointerCapture(ev.pointerId); } catch { /* */ }
+  const base = cellRect(slotId);
+  const start = { x: base.x, y: base.y, w: base.w, h: base.h };
+  const startX = ev.clientX, startY = ev.clientY;
+
+  function move(e) {
+    const dx = rect.width ? ((e.clientX - startX) / rect.width) * 100 : 0;
+    const dy = rect.height ? ((e.clientY - startY) / rect.height) * 100 : 0;
+    geoms[slotId] = applyResize(dir, dx, dy, start);
+    // Snapshot every slot's current rect, reflow neighbours away from the active
+    // tile, write the result back as explicit geometry.
+    const all = {};
+    for (const s of SLOTS) all[s.id] = cellRect(s.id);
+    const reflowed = reflowAroundActive(all, slotId);
+    for (const s of SLOTS) geoms[s.id] = reflowed[s.id];
+    applyLiveStyles();
+  }
+  function up() {
+    try { cellEl.releasePointerCapture(ev.pointerId); } catch { /* */ }
+    cellEl.removeEventListener('pointermove', move);
+    cellEl.removeEventListener('pointerup', up);
+    cellEl.removeEventListener('pointercancel', up);
+    saveStore();
+    render();   // rebuild so handles/labels/positions are consistent + rebound
+  }
+  cellEl.addEventListener('pointermove', move);
+  cellEl.addEventListener('pointerup', up);
+  cellEl.addEventListener('pointercancel', up);
 }
 
 // ---------- local audio monitor ----------
@@ -320,9 +537,11 @@ function renderMonitor() {
   const box = rootEl.querySelector('.mc-mv-monitor-box');
   const labelEl = rootEl.querySelector('.mc-mv-monitor-label');
   if (!wrap || !box) return;
-  box.innerHTML = '';
   const c = monitorSlot ? cells[monitorSlot] : null;
-  if (!c || !c.monitorUrl) { wrap.hidden = true; return; }
+  if (!c || !c.monitorUrl) { wrap.hidden = true; box.innerHTML = ''; monitorRenderedKey = null; return; }
+  const key = monitorSlot + '|' + c.monitorUrl;
+  if (key === monitorRenderedKey && box.firstChild) { wrap.hidden = false; return; } // already playing — don't restart
+  box.innerHTML = '';
   wrap.hidden = false;
   if (labelEl) labelEl.textContent = c.label || '';
   // The element is created in response to the operator's click (a user gesture),
@@ -339,6 +558,83 @@ function renderMonitor() {
     f.setAttribute('title', c.label || 'audio monitor');
     box.appendChild(f);
   }
+  monitorRenderedKey = key;
+}
+
+// ---------- screen share into a frame ----------
+// Minimal display picker (CSP-safe native <dialog>; createElement + listeners).
+// Resolves to a display object { id, name } or null.
+function pickDisplay() {
+  const online = displayState.getAll().filter((d) => d && d.online);
+  if (online.length === 0) { showToast(t('mc.mv.no_online_displays'), 'error'); return Promise.resolve(null); }
+  const dlg = document.createElement('dialog');
+  dlg.className = 'mc-dialog mc-pick';
+  const items = online.map((d) =>
+    `<button type="button" class="mc-pick-item" data-pick-id="${esc(d.id)}"><span class="mc-pick-name">${esc(d.name || d.id)}</span></button>`
+  ).join('');
+  dlg.innerHTML = `
+    <div class="mc-dialog-card">
+      <h3 class="mc-dialog-title">${esc(t('mc.mv.pick_display_title'))}</h3>
+      <div class="mc-pick-list" role="listbox">${items}</div>
+      <div class="mc-dialog-actions">
+        <button type="button" class="mc-btn mc-btn-ghost" data-pick-cancel>${esc(t('mc.add.cancel'))}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(dlg);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (val) => { if (settled) return; settled = true; if (dlg.open) dlg.close(); dlg.remove(); resolve(val); };
+    dlg.querySelectorAll('[data-pick-id]').forEach((b) => b.addEventListener('click', () => {
+      const d = online.find((x) => x.id === b.dataset.pickId);
+      finish(d || null);
+    }));
+    dlg.querySelector('[data-pick-cancel]').addEventListener('click', () => finish(null));
+    dlg.addEventListener('cancel', () => finish(null));
+    dlg.showModal();
+  });
+}
+
+async function startShare(slotId) {
+  const target = await pickDisplay();
+  if (!target) return;
+  const r = cellRect(slotId);
+  // Receiver wall-tile rect mode: screen_rect = the whole display, player_rect =
+  // this frame's rect. Percent units (px cancel out), so no device-pixel lookup.
+  const wallTile = { screen_rect: { x: 0, y: 0, w: 100, h: 100 }, player_rect: { x: r.x, y: r.y, w: r.w, h: r.h } };
+  try {
+    await screenShareEngine.startBroadcastTo(target.id, { wallTile });
+    shareDevice[slotId] = target.id;
+    showToast(t('mc.mv.share_started', { name: target.name || target.id }), 'success');
+  } catch (e) {
+    showToast((e && e.message) || t('mc.mv.share_failed'), 'error');
+  }
+  render();
+}
+
+async function stopShare(slotId) {
+  const dev = shareDevice[slotId];
+  if (dev) { try { await screenShareEngine.stopBroadcastTo(dev); } catch { /* */ } delete shareDevice[slotId]; }
+  showToast(t('mc.mv.share_stopped'), 'info');
+  render();
+}
+
+// Re-sync only the share controls when the engine's broadcast set changes (a
+// share connected / failed / was preempted) — WITHOUT a full re-render, so the
+// local audio monitor never restarts.
+function syncShareUi() {
+  if (!rootEl) return;
+  const active = new Set(screenShareEngine.getActiveTargets());
+  for (const id of Object.keys(shareDevice)) { if (!active.has(shareDevice[id])) delete shareDevice[id]; }
+  rootEl.querySelectorAll('.mc-mv-cell-share[data-mv-cell]').forEach((el) => {
+    const slotId = el.dataset.mvCell;
+    const host = el.querySelector('.mc-mv-share-controls');
+    if (host) {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = shareControlsHtml(slotId);
+      host.replaceWith(tmp.firstElementChild);
+    }
+  });
+  bindShareControls();
 }
 
 // ---------- send ----------
@@ -360,6 +656,10 @@ export async function renderMultiview(container, { routeSource } = {}) {
   rootEl = container;
   routeSourceFn = routeSource;
   loadStore();
+  // React to screen-share connect/fail/preempt so the frame's Share/Stop button
+  // reflects reality (targeted update — does not restart the audio monitor).
+  if (unsubShare) { unsubShare(); unsubShare = null; }
+  unsubShare = screenShareEngine.onChange(() => syncShareUi());
   // Build the content id→meta index once so dropped uploads resolve to the right
   // renderer (image vs video). Best-effort; a miss just defaults to an iframe.
   try {
@@ -372,9 +672,13 @@ export async function renderMultiview(container, { routeSource } = {}) {
 }
 
 // Stop the local audio monitor and drop DOM refs (called on view unmount so a
-// monitored stream can't keep playing audio after navigating away).
+// monitored stream can't keep playing audio after navigating away). Active screen
+// shares are INTENTIONALLY left running — the engine is a session singleton, so
+// shares persist across navigation exactly like the standalone screen-share view.
 export function teardownMultiview() {
   monitorSlot = null;
+  monitorRenderedKey = null;
+  if (unsubShare) { unsubShare(); unsubShare = null; }
   if (rootEl) {
     const box = rootEl.querySelector('.mc-mv-monitor-box');
     if (box) box.innerHTML = '';
