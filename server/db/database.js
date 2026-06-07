@@ -756,6 +756,41 @@ function migrateDashboardState() {
 }
 migrateDashboardState();
 
+// Security hardening (2026-06-06): dedicated append-only audit log for
+// state-changing display-control actions (commands to displays, scene/playlist
+// changes, provisioning/pairing, kiosk actions). Separate from activity_log so
+// security review has one purpose-built, redacted trail that the app's own
+// activity-feed pruning/queries can't dilute. Idempotent CREATE IF NOT EXISTS
+// + best-effort stamp, mirroring migrateScenes / migrateDashboardState. See
+// lib/audit.js for the writer (it redacts secrets/tokens before insert).
+const MC_AUDIT_LOG_ID = 'mc_audit_log';
+function migrateAuditLog() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS audit_log (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        actor_type    TEXT NOT NULL,        -- 'user' | 'device' | 'system'
+        actor_id      TEXT,                 -- user id or device id
+        action        TEXT NOT NULL,        -- e.g. 'display.command', 'scene.trigger'
+        target_type   TEXT,                 -- 'device' | 'workspace' | 'scene' | 'kiosk' | ...
+        target_id     TEXT,
+        workspace_id  TEXT,
+        source_ip     TEXT,
+        details       TEXT                  -- redacted JSON summary (no secrets/tokens)
+      );
+    `);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_audit_log_workspace ON audit_log(workspace_id, created_at)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_audit_log_target ON audit_log(target_type, target_id)');
+  } catch (e) {
+    console.error('[mc_audit_log] migration failed:', e.message);
+  }
+  try { db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(MC_AUDIT_LOG_ID); }
+  catch (e) { /* stamp best-effort */ }
+}
+migrateAuditLog();
+
 // Prune old telemetry (keep last 24h worth at 15s intervals = ~5760, cap at 6000)
 function pruneTelemetry(deviceId) {
   db.prepare(`

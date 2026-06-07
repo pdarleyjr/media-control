@@ -28,6 +28,13 @@ module.exports = {
   // offline at emit time (ms). On reconnect within this window, queued events
   // are flushed in order. Past TTL they're dropped. See lib/command-queue.js.
   commandQueueTtlMs: parseInt(process.env.COMMAND_QUEUE_TTL_MS) || 30000,
+  // Per-socket display-control rate limiting (lib/socket-rate-limit.js). Caps
+  // how fast / how many concurrent control events ONE dashboard socket can
+  // relay to displays so a malicious or buggy client can't flood a panel.
+  // Defaults are generous enough for fast whiteboard strokes + rapid taps.
+  socketControlRatePerSec: parseInt(process.env.SOCKET_CONTROL_RATE_PER_SEC) || 25,
+  socketControlBurst:      parseInt(process.env.SOCKET_CONTROL_BURST) || 60,
+  socketControlMaxDepth:   parseInt(process.env.SOCKET_CONTROL_MAX_DEPTH) || 60,
   // Engine.IO transport-level ping/pong. Raised from Socket.IO defaults
   // (25000/20000) because TV WebKits (LG webOS, older Tizen) miss pongs
   // under decode load - tighter values cause spurious transport drops.

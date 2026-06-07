@@ -5,6 +5,28 @@ const { db } = require('../db/database');
 const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
 // Phase 2.2e: workspace-aware access. Same pattern as content/widgets/folders.
 const { accessContext } = require('../lib/tenancy');
+const { checkRemoteUrlShape } = require('../lib/ssrf-policy');
+
+// Reject kiosk button / logo URLs that target internal infrastructure. These
+// are opened on the display (window.open) or fetched by it as a logo; an admin
+// shouldn't be able to point a shared classroom display at internal infra or
+// the metadata endpoint. Centralized policy, literal-host check (no DNS — the
+// device, not the server, dereferences these). Returns an error string or null.
+function validateKioskConfigUrls(pageConfig) {
+  if (!pageConfig || typeof pageConfig !== 'object') return null;
+  const urls = [];
+  if (typeof pageConfig.logoUrl === 'string' && pageConfig.logoUrl) urls.push(pageConfig.logoUrl);
+  if (Array.isArray(pageConfig.buttons)) {
+    for (const b of pageConfig.buttons) {
+      if (b && b.action === 'url' && typeof b.url === 'string' && b.url) urls.push(b.url);
+    }
+  }
+  for (const u of urls) {
+    const r = checkRemoteUrlShape(u);
+    if (!r.ok) return r.error;
+  }
+  return null;
+}
 
 // Escape HTML to prevent XSS
 function escapeHtml(str) {
@@ -189,6 +211,8 @@ router.post('/', (req, res) => {
   if (!req.workspaceId) return res.status(403).json({ error: 'No workspace context. Switch to a workspace before creating kiosk pages.' });
   const { name, config: pageConfig } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
+  const urlErr = validateKioskConfigUrls(pageConfig);
+  if (urlErr) return res.status(400).json({ error: urlErr });
 
   const id = uuidv4();
   db.prepare('INSERT INTO kiosk_pages (id, user_id, workspace_id, name, config) VALUES (?, ?, ?, ?, ?)')
@@ -203,6 +227,8 @@ router.put('/:id', (req, res) => {
   if (!page) return;
 
   const { name, config: pageConfig } = req.body;
+  const urlErr = validateKioskConfigUrls(pageConfig);
+  if (urlErr) return res.status(400).json({ error: urlErr });
   if (name) db.prepare('UPDATE kiosk_pages SET name = ? WHERE id = ?').run(name, req.params.id);
   if (pageConfig) db.prepare('UPDATE kiosk_pages SET config = ?, updated_at = strftime(\'%s\',\'now\') WHERE id = ?')
     .run(JSON.stringify(pageConfig), req.params.id);

@@ -9,6 +9,7 @@ const { v4: uuidv4 } = require('uuid');
 const { db } = require('../db/database');
 const config = require('../config');
 const { sanitizeString } = require('../middleware/sanitize');
+const { isAllowedUploadMime } = require('../middleware/upload');
 
 // Same filename hygiene as content.js: NFC-normalize (macOS sends NFD) then
 // HTML-escape & < > " ' so a hostile filename renders as text in every UI sink.
@@ -36,6 +37,14 @@ async function finalizeUpload({ absPath, originalName, mimeType, size, userId, w
   }
 
   const ext = path.extname(originalName || '') || '';
+  const mt = mimeType || 'application/octet-stream';
+  if (!isAllowedUploadMime(mt)) {
+    try { fs.unlinkSync(absPath); } catch { /* ignore */ }
+    const e = new Error('Only video, image, PDF, and Office document files are allowed');
+    e.status = 415;
+    throw e;
+  }
+
   const id = uuidv4();
   const filename = `${id}${ext}`;
   const destPath = path.join(config.contentDir, filename);
@@ -52,7 +61,6 @@ async function finalizeUpload({ absPath, originalName, mimeType, size, userId, w
   }
 
   let width = null, height = null, durationSec = null, thumbnailPath = null;
-  const mt = mimeType || 'application/octet-stream';
   try {
     if (mt.startsWith('image/')) {
       const sharp = require('sharp');

@@ -13,6 +13,7 @@ const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
 const { accessContext } = require('../lib/tenancy');
 const { ownedContentScope } = require('../lib/content-scope');
 const { contentRowsWithThumbnailUrls } = require('../lib/content-response');
+const { checkRemoteUrlShape, assertRemoteUrlSafe } = require('../lib/ssrf-policy');
 
 // Multer captures file.originalname directly from the multipart filename header,
 // bypassing sanitizeBody. Apply the same HTML-escape here so a filename like
@@ -31,25 +32,20 @@ function safeFilename(name) {
   return sanitizeString((name || '').normalize('NFC'));
 }
 
-// SSRF gate for remote_url. Returns null if valid, else { status, error }.
-// Used by both POST /remote and PUT /:id so a user can't bypass the check by
-// uploading a benign URL and then PUT-updating it to file:///etc/passwd.
+// SSRF gate for remote_url (synchronous shape check). Returns null if the URL
+// shape is acceptable, else { status, error }. Delegates to the centralized
+// policy in lib/ssrf-policy.js so the deny rules (loopback/private/link-local/
+// Tailscale/metadata) live in ONE place and stay consistent across broadcast,
+// widgets, kiosk, scenes, and content. Used by PUT /:id (a stored remote_url
+// that isn't re-fetched here) so a user can't bypass the check by uploading a
+// benign URL then PUT-updating it to an internal address.
+//
+// This is the literal-host check only; routes that actively reach out (POST
+// /remote) additionally await assertRemoteUrlSafe() to resolve DNS and close
+// the rebinding hole.
 function validateRemoteUrl(url) {
-  let parsed;
-  try { parsed = new URL(url); }
-  catch { return { status: 400, error: 'Invalid URL format' }; }
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
-    return { status: 400, error: 'URL must use http or https' };
-  }
-  const hostname = parsed.hostname.toLowerCase();
-  const isPrivate = hostname === 'localhost' || hostname === '0.0.0.0' ||
-    hostname.startsWith('127.') || hostname.startsWith('10.') ||
-    hostname.startsWith('192.168.') || hostname.startsWith('169.254.') ||
-    /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname) ||
-    hostname.startsWith('fc') || hostname.startsWith('fd') || hostname === '::1' ||
-    hostname.endsWith('.local') || hostname.endsWith('.internal');
-  if (isPrivate) return { status: 400, error: 'Internal URLs are not allowed' };
-  return null;
+  const r = checkRemoteUrlShape(url);
+  return r.ok ? null : { status: 400, error: r.error };
 }
 
 // List content in the caller's current workspace, plus any platform-template
@@ -177,13 +173,16 @@ router.post('/', checkStorageLimit, upload.single('file'), async (req, res) => {
 });
 
 // Add remote URL content
-router.post('/remote', checkRemoteUrl, (req, res) => {
+router.post('/remote', checkRemoteUrl, async (req, res) => {
   try {
     if (!req.workspaceId) return res.status(403).json({ error: 'No workspace context. Switch to a workspace before adding remote content.' });
     const { url, name, mime_type } = req.body;
     if (!url) return res.status(400).json({ error: 'url is required' });
-    const urlErr = validateRemoteUrl(url);
-    if (urlErr) return res.status(urlErr.status).json({ error: urlErr.error });
+    // Full SSRF check: shape + DNS resolution. A new remote URL will be fetched
+    // by the server/displays, so a public hostname that resolves to a private
+    // address (DNS rebinding) must be rejected here, not just the literal host.
+    const safe = await assertRemoteUrlSafe(url);
+    if (!safe.ok) return res.status(400).json({ error: safe.error });
 
     const id = uuidv4();
     const filename = name || url.split('/').pop()?.split('?')[0] || 'remote_content';
