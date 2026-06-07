@@ -8,6 +8,17 @@ const appConfig = require('../config');
 const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
 // Phase 2.2d: workspace-aware access. Same pattern as devices.js / content.js.
 const { accessContext } = require('../lib/tenancy');
+const { checkRemoteUrlShape } = require('../lib/ssrf-policy');
+
+// Reject web/iframe widget URLs (config.url) that target internal infra. The URL
+// is loaded in the display's iframe; centralized policy, literal-host check (the
+// device dereferences it, not the server). Returns an error string or null.
+function validateWidgetConfigUrl(config) {
+  if (!config || typeof config !== 'object') return null;
+  if (typeof config.url !== 'string' || config.url === '') return null;
+  const r = checkRemoteUrlShape(config.url);
+  return r.ok ? null : r.error;
+}
 
 // For preview only: inline /api/content/:id/file and /thumbnail URLs as data URIs,
 // scoped to the caller's current workspace. Lets the srcdoc preview iframe show
@@ -82,6 +93,8 @@ router.post('/', (req, res) => {
   if (!req.workspaceId) return res.status(403).json({ error: 'No workspace context. Switch to a workspace before creating widgets.' });
   const { widget_type, name, config } = req.body;
   if (!widget_type || !name) return res.status(400).json({ error: 'widget_type and name required' });
+  const urlErr = validateWidgetConfigUrl(config);
+  if (urlErr) return res.status(400).json({ error: urlErr });
 
   const id = uuidv4();
   db.prepare('INSERT INTO widgets (id, user_id, workspace_id, widget_type, name, config) VALUES (?, ?, ?, ?, ?, ?)')
@@ -134,6 +147,8 @@ router.put('/:id', (req, res) => {
   if (!widget) return;
 
   const { name, config } = req.body;
+  const urlErr = validateWidgetConfigUrl(config);
+  if (urlErr) return res.status(400).json({ error: urlErr });
   if (name) db.prepare('UPDATE widgets SET name = ?, updated_at = strftime(\'%s\',\'now\') WHERE id = ?').run(name, req.params.id);
   if (config) db.prepare('UPDATE widgets SET config = ?, updated_at = strftime(\'%s\',\'now\') WHERE id = ?').run(JSON.stringify(config), req.params.id);
 

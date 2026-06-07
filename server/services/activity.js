@@ -27,6 +27,21 @@ function getClientIp(req) {
   return req.ip || null;
 }
 
+// Resolve the real client IP for a Socket.IO socket, using the same trusted-peer
+// gate as getClientIp: prefer CF-Connecting-IP only when the immediate TCP peer
+// is trusted (CF edge / loopback), otherwise fall back to the handshake address.
+// Used by the audit trail for socket-relayed control actions.
+function getSocketIp(socket) {
+  if (!socket || !socket.handshake) return null;
+  const hs = socket.handshake;
+  const cf = hs.headers && hs.headers['cf-connecting-ip'];
+  if (typeof cf === 'string' && cf.length > 0) {
+    const peer = socket.conn && socket.conn.remoteAddress;
+    if (peer && isTrustedPeer(peer, 0)) return cf;
+  }
+  return hs.address || null;
+}
+
 // Phase 2.2 writer-leak fix: activity_log rows now stamp workspace_id so
 // tenant-scoped queries don't miss new events. Callers pass the workspace
 // when known; the middleware below sources it from resolveTenancy. When
@@ -94,4 +109,4 @@ function summarizeAction(req) {
   return parts.join(', ') || null;
 }
 
-module.exports = { logActivity, getActivity, pruneActivityLog, activityLogger, getClientIp };
+module.exports = { logActivity, getActivity, pruneActivityLog, activityLogger, getClientIp, getSocketIp };

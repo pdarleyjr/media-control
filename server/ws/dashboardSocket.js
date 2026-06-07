@@ -5,6 +5,10 @@ const { accessContext, accessibleWorkspaceIds } = require('../lib/tenancy');
 const { workspaceRoom } = require('../lib/socket-rooms');
 const whiteboardState = require('../services/whiteboard-state');
 const { profileForDevice } = require('../lib/display-profiles');
+const config = require('../config');
+const { createLimiter } = require('../lib/socket-rate-limit');
+const { audit } = require('../lib/audit');
+const { getSocketIp } = require('../services/activity');
 
 // Phase 2.3: workspace-scoped socket rooms + per-command permission gates.
 // Replaces the previous flat dashboardNs.emit broadcast (which leaked every
@@ -74,6 +78,65 @@ module.exports = function setupDashboardSocket(io) {
   const dashboardNs = io.of('/dashboard');
   const deviceNs = io.of('/device');
 
+  // Per-socket token-bucket + queue-depth limiter for display-control events.
+  // One instance for the namespace; state is keyed per socket.id and dropped on
+  // disconnect. Excess events are rejected (dropped, or ack'd with a reason when
+  // the client passed an ack callback) so a flood can't reach a display.
+  const controlLimiter = createLimiter({
+    ratePerSec: config.socketControlRatePerSec,
+    burst: config.socketControlBurst,
+    maxDepth: config.socketControlMaxDepth,
+  });
+  const _sweep = setInterval(() => controlLimiter.sweep(), 30000);
+  if (_sweep.unref) _sweep.unref();
+
+  // Audit a state-changing device-control action. Resolves the device's
+  // workspace for scope and the socket's client IP for source attribution.
+  // Never throws (audit() swallows its own errors). The detail payload is
+  // redacted by lib/audit before it touches disk.
+  function auditDeviceControl(socket, action, deviceId, details) {
+    let workspaceId = null;
+    try {
+      const d = db.prepare('SELECT workspace_id FROM devices WHERE id = ?').get(deviceId);
+      workspaceId = d && d.workspace_id || null;
+    } catch (_) { /* non-fatal */ }
+    audit({
+      actorType: 'user',
+      actorId: socket.userId,
+      action,
+      targetType: 'device',
+      targetId: deviceId,
+      workspaceId,
+      sourceIp: getSocketIp(socket),
+      details,
+    });
+  }
+
+  // Build a per-socket registrar for rate-limited control events. Each accepted
+  // event consumes a token + a depth slot (released when the handler returns).
+  // On reject: if the client supplied an ack callback (last arg is a function),
+  // call it with { delivered:false, reason }; otherwise the event is silently
+  // dropped (fire-and-forget events like remote-touch / wb-stroke). Handler
+  // bodies are unchanged — they still close over `socket` — so this is a drop-in
+  // swap of `socket.on(` for `onControl(`.
+  function makeOnControl(socket) {
+    return function onControl(event, handler) {
+      socket.on(event, (...args) => {
+        const ack = typeof args[args.length - 1] === 'function' ? args[args.length - 1] : null;
+        const verdict = controlLimiter.tryConsume(socket.id);
+        if (!verdict.allowed) {
+          if (ack) ack({ delivered: false, reason: verdict.reason });
+          return;
+        }
+        try {
+          return handler(...args);
+        } finally {
+          verdict.release();
+        }
+      });
+    };
+  }
+
   dashboardNs.use((socket, next) => {
     const token = socket.handshake.auth?.token;
     if (!token) return next(new Error('Authentication required'));
@@ -96,40 +159,46 @@ module.exports = function setupDashboardSocket(io) {
     for (const wsId of wsIds) socket.join(workspaceRoom(wsId));
     console.log(`Dashboard client connected: ${socket.id} (user: ${socket.userId}, rooms: ${wsIds.length})`);
 
-    socket.on('dashboard:request-screenshot', (data) => {
+    // Rate-limited registrar for display-control events (token bucket + queue
+    // depth, per socket). Non-control events (none here) would use socket.on.
+    const onControl = makeOnControl(socket);
+
+    onControl('dashboard:request-screenshot', (data) => {
       const { device_id } = data;
       if (!canActOnDevice(socket, device_id, 'read')) return;
       const conn = heartbeat.getConnection(device_id);
       if (conn) deviceNs.to(device_id).emit('device:screenshot-request', {});
     });
 
-    socket.on('dashboard:remote-touch', (data) => {
+    onControl('dashboard:remote-touch', (data) => {
       const { device_id, x, y, action } = data;
       if (!canActOnDevice(socket, device_id, 'write')) return;
       deviceNs.to(device_id).emit('device:remote-touch', { x, y, action });
     });
 
-    socket.on('dashboard:remote-key', (data) => {
+    onControl('dashboard:remote-key', (data) => {
       const { device_id, keycode } = data;
       if (!canActOnDevice(socket, device_id, 'write')) return;
       console.log(`Remote key: ${keycode} -> ${device_id}`);
       deviceNs.to(device_id).emit('device:remote-key', { keycode });
     });
 
-    socket.on('dashboard:remote-start', (data) => {
+    onControl('dashboard:remote-start', (data) => {
       const { device_id } = data;
       if (!canActOnDevice(socket, device_id, 'write')) return;
       const room = deviceNs.adapter.rooms.get(device_id);
       console.log(`Remote start for ${device_id}, room has ${room?.size || 0} socket(s)`);
       deviceNs.to(device_id).emit('device:remote-start', {});
       console.log(`Remote session started for device ${device_id}`);
+      auditDeviceControl(socket, 'display.remote_start', device_id, {});
     });
 
-    socket.on('dashboard:remote-stop', (data) => {
+    onControl('dashboard:remote-stop', (data) => {
       const { device_id } = data;
       if (!canActOnDevice(socket, device_id, 'write')) return;
       deviceNs.to(device_id).emit('device:remote-stop', {});
       console.log(`Remote session stopped for device ${device_id}`);
+      auditDeviceControl(socket, 'display.remote_stop', device_id, {});
     });
 
     // Phase 2 (display self-report): flash an on-screen marker on a chosen
@@ -137,7 +206,7 @@ module.exports = function setupDashboardSocket(io) {
     // Same write-tier gate + device-room emit pattern as dashboard:remote-*.
     // The label defaults to the device name (or a short id suffix) so the
     // player can render a human-readable badge.
-    socket.on('dashboard:identify', (data) => {
+    onControl('dashboard:identify', (data) => {
       const { device_id } = data || {};
       if (!canActOnDevice(socket, device_id, 'write')) return;
       const payload = buildIdentifyPayload(data, device_id);
@@ -151,7 +220,7 @@ module.exports = function setupDashboardSocket(io) {
     // dashboard:identify (no new namespace). Coordinates in each stroke are
     // normalized 0..1 and are relayed verbatim; the player scales them by its
     // overlay canvas dimensions.
-    socket.on('dashboard:wb-start', (data, ack) => {
+    onControl('dashboard:wb-start', (data, ack) => {
       const { device_id } = data || {};
       if (!canActOnDevice(socket, device_id, 'write')) {
         if (typeof ack === 'function') ack({ ok: false, error: 'forbidden' });
@@ -170,7 +239,7 @@ module.exports = function setupDashboardSocket(io) {
       console.log(`Whiteboard started on device ${device_id}`);
     });
 
-    socket.on('dashboard:wb-stroke', (data) => {
+    onControl('dashboard:wb-stroke', (data) => {
       const { device_id, stroke } = data || {};
       if (!canActOnDevice(socket, device_id, 'write')) return;
       const safeStroke = whiteboardState.appendStroke(null, device_id, stroke);
@@ -178,28 +247,28 @@ module.exports = function setupDashboardSocket(io) {
       deviceNs.to(device_id).emit('device:wb-stroke', { stroke: safeStroke });
     });
 
-    socket.on('dashboard:wb-clear', (data) => {
+    onControl('dashboard:wb-clear', (data) => {
       const { device_id } = data || {};
       if (!canActOnDevice(socket, device_id, 'write')) return;
       whiteboardState.clearSession(null, device_id);
       deviceNs.to(device_id).emit('device:wb-clear', {});
     });
 
-    socket.on('dashboard:wb-undo', (data) => {
+    onControl('dashboard:wb-undo', (data) => {
       const { device_id } = data || {};
       if (!canActOnDevice(socket, device_id, 'write')) return;
       whiteboardState.undoStroke(null, device_id);
       deviceNs.to(device_id).emit('device:wb-undo', {});
     });
 
-    socket.on('dashboard:wb-stop', (data) => {
+    onControl('dashboard:wb-stop', (data) => {
       const { device_id } = data || {};
       if (!canActOnDevice(socket, device_id, 'write')) return;
       deviceNs.to(device_id).emit('device:wb-stop', {});
       console.log(`Whiteboard stopped on device ${device_id}`);
     });
 
-    socket.on('dashboard:device-command', (data, ack) => {
+    onControl('dashboard:device-command', (data, ack) => {
       const { device_id, type, payload } = data;
       if (!canActOnDevice(socket, device_id, 'write')) {
         if (typeof ack === 'function') ack({ delivered: false, reason: 'forbidden' });
@@ -210,6 +279,7 @@ module.exports = function setupDashboardSocket(io) {
         deviceNs.to(device_id).emit('device:command', { type, payload });
         console.log(`Command delivered to device ${device_id}: ${type}`);
         if (typeof ack === 'function') ack({ delivered: true });
+        auditDeviceControl(socket, 'display.command', device_id, { type, payload, delivered: true });
         // Unified dashboard: record authoritative on/off ONLY when actually delivered
         // to a live display. Never write it for a merely-queued command — that would
         // make the dashboard lie about reality.
@@ -232,6 +302,7 @@ module.exports = function setupDashboardSocket(io) {
       } catch (e) { /* command-queue module absent; fall through to lost */ }
       console.log(`Command for offline device ${device_id}: ${type} (queued=${queued})`);
       if (typeof ack === 'function') ack({ delivered: false, queued, reason: 'offline' });
+      auditDeviceControl(socket, 'display.command', device_id, { type, payload, delivered: false, queued });
     });
 
     // Phase 3: trigger an Operational Activity ("Scene") — pushes the scene to
@@ -240,7 +311,7 @@ module.exports = function setupDashboardSocket(io) {
     // but checked against the SCENE's workspace (a scene targets many devices)
     // rather than a single device. Follows the same ack-callback shape as
     // dashboard:device-command.
-    socket.on('dashboard:scene-trigger', (data, ack) => {
+    onControl('dashboard:scene-trigger', (data, ack) => {
       const { activityId } = data || {};
       if (!activityId) {
         if (typeof ack === 'function') ack({ delivered: false, reason: 'missing_activity_id' });
@@ -255,6 +326,13 @@ module.exports = function setupDashboardSocket(io) {
         const result = sceneEngine.triggerScene(io, activityId);
         console.log(`Scene triggered ${activityId}: pushed=${result.pushed}, failed=${result.failed}`);
         if (typeof ack === 'function') ack({ delivered: true, ...result });
+        let sceneWs = null;
+        try { sceneWs = (db.prepare('SELECT workspace_id FROM operational_activities WHERE id = ?').get(activityId) || {}).workspace_id || null; } catch (_) {}
+        audit({
+          actorType: 'user', actorId: socket.userId, action: 'scene.trigger',
+          targetType: 'scene', targetId: activityId, workspaceId: sceneWs,
+          sourceIp: getSocketIp(socket), details: { pushed: result.pushed, failed: result.failed },
+        });
       } catch (e) {
         console.error(`dashboard:scene-trigger failed for ${activityId}: ${e.message}`);
         if (typeof ack === 'function') ack({ delivered: false, reason: 'error' });
@@ -262,6 +340,7 @@ module.exports = function setupDashboardSocket(io) {
     });
 
     socket.on('disconnect', () => {
+      controlLimiter.forget(socket.id);
       console.log(`Dashboard client disconnected: ${socket.id}`);
     });
   });

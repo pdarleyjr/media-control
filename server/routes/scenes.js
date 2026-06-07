@@ -13,6 +13,7 @@ const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const { db } = require('../db/database');
 const sceneEngine = require('../services/scene-engine');
+const { checkRemoteUrlShape } = require('../lib/ssrf-policy');
 
 // Deny writes for read-only members. Returns true if the caller may write in
 // the current workspace, else sends 403 and returns false. Mirrors the inline
@@ -42,6 +43,12 @@ function normalizePlacement(p, index) {
   if (!p || typeof p !== 'object') throw new Error(`placement[${index}] must be an object`);
   const hasSource = p.content_id || p.remote_url || p.playlist_id;
   if (!hasSource) throw new Error(`placement[${index}] requires content_id, remote_url, or playlist_id`);
+  // SSRF gate: a stored remote_url is later pushed to displays on scene trigger.
+  // Reject internal targets at save time (centralized policy; literal-host check).
+  if (p.remote_url) {
+    const r = checkRemoteUrlShape(p.remote_url);
+    if (!r.ok) throw new Error(`placement[${index}] ${r.error}`);
+  }
   let fit = p.fit_mode;
   if (fit !== undefined && fit !== null && fit !== '') {
     if (typeof fit !== 'string' || !VALID_FIT_MODES.includes(fit.toLowerCase())) {
