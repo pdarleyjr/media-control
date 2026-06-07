@@ -300,6 +300,39 @@ app.get('/player/news-stream', async (req, res) => {
 });
 app.get('/player/hls-proxy', handleProxy);
 
+// MBFD Media Control — server-side website screenshot (Website broadcasting).
+// Renders a third-party site with headless Chromium and serves a JPEG, so sites
+// that block framing (X-Frame-Options / CSP frame-ancestors) still display on
+// walls and inside multiview frames. Public under /player (Cloudflare-Access
+// bypass) so unattended displays reach it without OTP. NOT an open proxy: the
+// URL is read from the content row by id (already operator-chosen + SSRF-checked
+// at creation) and RE-validated here (closes DNS-rebinding); clients never pass
+// a raw URL. The :id is an unguessable UUID, matching the /player/asset model.
+const { getSiteShot, isExternalHttpUrl } = require('./lib/site-shot');
+const { assertRemoteUrlSafe } = require('./lib/ssrf-policy');
+app.get('/player/site-shot/:id', async (req, res) => {
+  try {
+    const { db } = require('./db/database');
+    const c = db.prepare('SELECT id, remote_url, mime_type FROM content WHERE id = ?').get(req.params.id);
+    if (!c || !c.remote_url) return res.status(404).type('text/plain').send('not found');
+    if (c.mime_type !== 'text/html' || !isExternalHttpUrl(c.remote_url)) {
+      return res.status(400).type('text/plain').send('not a website');
+    }
+    const safe = await assertRemoteUrlSafe(c.remote_url);
+    if (!safe.ok) return res.status(400).type('text/plain').send('blocked url');
+    const file = await getSiteShot(c.id, c.remote_url, { width: req.query.w, height: req.query.h, interval: req.query.interval });
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('Cache-Control', 'public, max-age=5');
+    res.setHeader('Content-Type', 'image/jpeg');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.sendFile(file);
+  } catch (e) {
+    console.warn('[site-shot] render failed:', e && e.message);
+    res.status(502).type('text/plain').send('render failed');
+  }
+});
+
 // Serve web player at /player (same no-cache for JS/HTML). The index.html
 // route above intercepts the HTML requests; everything else still falls
 // through to this static handler (debug-overlay.js, sw.js, manifest, etc).

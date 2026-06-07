@@ -27,6 +27,14 @@ test('upload policy allows expected media and document types', () => {
   assert.equal(isAllowedUploadMime('video/mp4'), true);
   assert.equal(isAllowedUploadMime('application/pdf'), true);
   assert.equal(isAllowedUploadMime('image/avif'), true);
+  // iPhone HEIC/HEIF accepted (transcoded to JPEG on upload).
+  assert.equal(isAllowedUploadMime('image/heic'), true);
+  assert.equal(isAllowedUploadMime('image/heif'), true);
+});
+
+test('resolveUploadMime recovers iPhone HEIC from extension on a generic MIME', () => {
+  assert.equal(resolveUploadMime({ mimetype: 'application/octet-stream', originalname: 'IMG_1234.HEIC' }), 'image/heic');
+  assert.equal(resolveUploadMime({ mimetype: '', originalname: 'photo.heif' }), 'image/heif');
 });
 
 test('resolveUploadMime recovers the real type from the extension when the client sends a generic MIME', () => {

@@ -11,6 +11,7 @@ const config = require('../config');
 const { sanitizeString } = require('../middleware/sanitize');
 const { isAllowedUploadMime } = require('../middleware/upload');
 const { isDocThumbnailMime, kickDocThumbnail } = require('./doc-thumbnail');
+const { isHeicMime, heicToJpeg, kickHevcTranscodeIfNeeded } = require('./media-transcode');
 
 // Same filename hygiene as content.js: NFC-normalize (macOS sends NFD) then
 // HTML-escape & < > " ' so a hostile filename renders as text in every UI sink.
@@ -38,7 +39,7 @@ async function finalizeUpload({ absPath, originalName, mimeType, size, userId, w
   }
 
   const ext = path.extname(originalName || '') || '';
-  const mt = mimeType || 'application/octet-stream';
+  let mt = mimeType || 'application/octet-stream';
   if (!isAllowedUploadMime(mt)) {
     try { fs.unlinkSync(absPath); } catch { /* ignore */ }
     const e = new Error('Only video, image, PDF, and Office document files are allowed');
@@ -47,8 +48,8 @@ async function finalizeUpload({ absPath, originalName, mimeType, size, userId, w
   }
 
   const id = uuidv4();
-  const filename = `${id}${ext}`;
-  const destPath = path.join(config.contentDir, filename);
+  let filename = `${id}${ext}`;
+  let destPath = path.join(config.contentDir, filename);
 
   fs.mkdirSync(config.contentDir, { recursive: true });
   // Move the assembled file into the content dir. rename() is atomic on the same
@@ -59,6 +60,16 @@ async function finalizeUpload({ absPath, originalName, mimeType, size, userId, w
   } catch (e) {
     fs.copyFileSync(absPath, destPath);
     try { fs.unlinkSync(absPath); } catch { /* ignore */ }
+  }
+
+  // iPhone HEIC/HEIF -> JPEG (same as the multipart path): displays + sharp can't
+  // render HEIC, so transcode and continue as a normal image. Non-fatal.
+  if (isHeicMime(mt)) {
+    const conv = await heicToJpeg(destPath, config.contentDir).catch(() => null);
+    if (conv) {
+      try { fs.unlinkSync(destPath); } catch { /* ignore */ }
+      filename = conv.filename; destPath = conv.absPath; mt = 'image/jpeg'; size = conv.size;
+    }
   }
 
   let width = null, height = null, durationSec = null, thumbnailPath = null;
@@ -104,6 +115,10 @@ async function finalizeUpload({ absPath, originalName, mimeType, size, userId, w
   // rendered in the background too (poppler / LibreOffice). Non-fatal.
   if (isDocThumbnailMime(mt)) {
     kickDocThumbnail(id, destPath, mt);
+  }
+  // iPhone HEVC video -> H.264 MP4 in the background; no-op for H.264.
+  if (mt.startsWith('video/')) {
+    kickHevcTranscodeIfNeeded(id, destPath);
   }
 
   return db.prepare('SELECT * FROM content WHERE id = ?').get(id);

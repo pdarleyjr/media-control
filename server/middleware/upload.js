@@ -59,10 +59,13 @@ const ALLOWED_IMAGE_TYPES = new Set([
   'image/webp',
   'image/bmp',
   // AVIF: modern, widely decoded by the Chromium-based players AND by sharp
-  // (libvips heif) for thumbnails. (TIFF/HEIC deliberately excluded — they are
-  // not reliably renderable in an <img> on the display players, so accepting
-  // them would yield a thumbnail but a blank full-screen render.)
+  // (libvips heif) for thumbnails.
   'image/avif',
+  // HEIC/HEIF (iPhone default). Displays + sharp can't render these directly, so
+  // the upload handler transcodes them to JPEG on arrival (lib/media-transcode).
+  // (TIFF still excluded — not reliably renderable and not a common camera default.)
+  'image/heic',
+  'image/heif',
 ]);
 
 const ALLOWED_VIDEO_TYPES = new Set([
@@ -91,6 +94,7 @@ const EXT_TO_MIME = {
   '.avi': 'video/x-msvideo', '.mov': 'video/quicktime',
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
   '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp', '.avif': 'image/avif',
+  '.heic': 'image/heic', '.heif': 'image/heif',
   '.pdf': 'application/pdf',
   '.doc': 'application/msword',
   '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',

@@ -2150,6 +2150,13 @@
         'application/vnd.oasis.opendocument.spreadsheet',
         'application/vnd.oasis.opendocument.presentation',
       ];
+      // A pasted third-party site (absolute http(s) URL on a foreign host). Our
+      // own pages (decks/grid/oz/hls) are root-relative (no scheme) so they
+      // return false and iframe directly.
+      function isExternalSite(u) {
+        if (!u || !/^https?:\/\//i.test(u)) return false;
+        try { return new URL(u).host !== location.host; } catch (e) { return false; }
+      }
       const hasRenderableType = item && (
         item.widget_id ||
         item.mime_type === 'video/youtube' ||
@@ -2218,7 +2225,17 @@
           // the iframe and snap back to slide 1); a multi-item playlist advances by
           // duration like the other branches.
           const frame = document.createElement('iframe');
-          frame.src = src;
+          // External third-party site → render via the server-side screenshot
+          // player, which bypasses X-Frame-Options / CSP frame-ancestors (a
+          // direct iframe of such a site renders blank). Our own /player/* pages
+          // (decks, grid, oz, hls) are root-relative and iframe directly.
+          let webSrc = src;
+          if (item.content_id && isExternalSite(remoteUrl)) {
+            const sw = Math.max(320, Math.min(3840, Math.round(mount.clientWidth || window.innerWidth || 1600)));
+            const sh = Math.max(240, Math.min(2160, Math.round(mount.clientHeight || window.innerHeight || 900)));
+            webSrc = '/player/site.html?id=' + encodeURIComponent(item.content_id) + '&w=' + sw + '&h=' + sh;
+          }
+          frame.src = webSrc;
           frame.style.cssText = 'width:100%;height:100%;border:none;background:#000';
           frame.allow = 'autoplay; fullscreen';
           mount.appendChild(frame);

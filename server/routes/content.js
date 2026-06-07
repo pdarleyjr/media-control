@@ -15,6 +15,7 @@ const { ownedContentScope } = require('../lib/content-scope');
 const { contentRowsWithThumbnailUrls } = require('../lib/content-response');
 const { checkRemoteUrlShape, assertRemoteUrlSafe } = require('../lib/ssrf-policy');
 const { isDocThumbnailMime, kickDocThumbnail } = require('../lib/doc-thumbnail');
+const { isHeicMime, heicToJpeg, kickHevcTranscodeIfNeeded } = require('../lib/media-transcode');
 
 // Multer captures file.originalname directly from the multipart filename header,
 // bypassing sanitizeBody. Apply the same HTML-escape here so a filename like
@@ -91,6 +92,21 @@ router.post('/', checkStorageLimit, upload.single('file'), async (req, res) => {
   try {
     if (!req.workspaceId) return res.status(403).json({ error: 'No workspace context. Switch to a workspace before uploading.' });
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+    // iPhone HEIC/HEIF -> JPEG up front: neither the display players nor sharp
+    // can render HEIC, so transcode to JPEG and continue as a normal image so the
+    // existing image branch generates dimensions + a thumbnail. Non-fatal: on
+    // failure we keep the original (it just won't render/thumbnail).
+    if (isHeicMime(req.file.mimetype)) {
+      const conv = await heicToJpeg(req.file.path, config.contentDir).catch(() => null);
+      if (conv) {
+        try { fs.unlinkSync(req.file.path); } catch { /* ignore */ }
+        req.file.path = conv.absPath;
+        req.file.filename = conv.filename;
+        req.file.mimetype = 'image/jpeg';
+        req.file.size = conv.size;
+      }
+    }
 
     const id = uuidv4();
     const filepath = req.file.filename;
@@ -171,6 +187,11 @@ router.post('/', checkStorageLimit, upload.single('file'), async (req, res) => {
     // exactly like the YouTube transcode path. Non-fatal by construction.
     if (isDocThumbnailMime(req.file.mimetype)) {
       kickDocThumbnail(id, req.file.path, req.file.mimetype);
+    }
+    // iPhone HEVC (H.265) video -> H.264 MP4 in the background so it plays on the
+    // display browsers; no-op for H.264. Row is swapped in place when done.
+    if (req.file.mimetype.startsWith('video/')) {
+      kickHevcTranscodeIfNeeded(id, req.file.path);
     }
 
     const content = db.prepare('SELECT * FROM content WHERE id = ?').get(id);

@@ -204,6 +204,12 @@ function resolveCell(source, label, thumb) {
     if (/^video\//.test(mime)) {
       return { cellUrl: fileUrl, monitorUrl: fileUrl, kind: 'v', label, thumb: thumb || meta.thumbnail_url || null, category: 'film' };
     }
+    if (mime === 'text/html') {
+      // Website content (external site) → server-side screenshot player, which
+      // bypasses X-Frame-Options so it renders inside the cell. The shot endpoint
+      // reads the real URL from the row by id. /player/* is allowlisted.
+      return { cellUrl: `/player/site.html?id=${encodeURIComponent(source.content_id)}`, monitorUrl: null, kind: 'i', label, thumb: thumb || meta.thumbnail_url || null, category: 'broadcast' };
+    }
     // Unknown / web content → iframe the file (browser picks a viewer).
     return { cellUrl: fileUrl, monitorUrl: null, kind: 'i', label, thumb: thumb || meta.thumbnail_url || null, category: 'generic' };
   }
