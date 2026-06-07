@@ -53,6 +53,23 @@ function errorState(msg) {
   return `<div class="mc-tb-state mc-tb-error" role="alert"><span class="mc-tb-state-ico" aria-hidden="true">${ICON_ERROR}</span><span>${esc(msg)}</span></div>`;
 }
 
+// Tile preview: real thumbnail when one exists, else a type-aware glyph so a
+// document never shows the generic image placeholder (or, in the library, a
+// broken <img> pointed at raw document bytes).
+function mediaTileThumb(item) {
+  if (item.thumbnail_url) {
+    return `<img class="mc-tile-thumb" src="${esc(item.thumbnail_url)}" alt="" loading="lazy">`;
+  }
+  const mt = item.mime_type || '';
+  let glyph = '🖼';
+  if (/pdf/.test(mt)) glyph = '📕';
+  else if (/presentation|ms-powerpoint/.test(mt)) glyph = '📊';
+  else if (/wordprocessing|msword|opendocument\.text/.test(mt)) glyph = '📄';
+  else if (/spreadsheet|ms-excel/.test(mt)) glyph = '📈';
+  else if (mt.startsWith('video/')) glyph = '🎬';
+  return `<span class="mc-tile-icon">${glyph}</span>`;
+}
+
 // ---- tab content renderers ----
 
 async function renderMediaTab(container, { selectedIds, onAfterSend, onRouteSource }) {
@@ -73,7 +90,7 @@ async function renderMediaTab(container, { selectedIds, onAfterSend, onRouteSour
   const tiles = items.slice(0, 48).map(item => {
     const src = JSON.stringify({ content_id: item.id });
     const name = item.filename || item.name || t('mc.tile.content_fallback');
-    const thumb = item.thumbnail_url ? `<img class="mc-tile-thumb" src="${esc(item.thumbnail_url)}" alt="" loading="lazy">` : `<span class="mc-tile-icon">🖼</span>`;
+    const thumb = mediaTileThumb(item);
     return `<button type="button" class="mc-tile" draggable="true"
       data-drag-source='${esc(src)}'
       data-label="${esc(name)}"

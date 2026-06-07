@@ -58,6 +58,11 @@ const ALLOWED_IMAGE_TYPES = new Set([
   'image/gif',
   'image/webp',
   'image/bmp',
+  // AVIF: modern, widely decoded by the Chromium-based players AND by sharp
+  // (libvips heif) for thumbnails. (TIFF/HEIC deliberately excluded — they are
+  // not reliably renderable in an <img> on the display players, so accepting
+  // them would yield a thumbnail but a blank full-screen render.)
+  'image/avif',
 ]);
 
 const ALLOWED_VIDEO_TYPES = new Set([
@@ -75,8 +80,54 @@ function isAllowedUploadMime(mimetype) {
   return ALLOWED_IMAGE_TYPES.has(mimetype) || ALLOWED_VIDEO_TYPES.has(mimetype) || ALLOWED_DOC_TYPES.has(mimetype);
 }
 
+// Extension -> canonical MIME, used only to recover the real type when the
+// client sends a generic/empty Content-Type. Browsers + OSes frequently label
+// .mkv/.mov as application/octet-stream and .pptx/.docx as application/zip or
+// octet-stream, which previously caused valid files to be rejected. Only maps
+// to types already on the allow-list, so this never widens what is accepted —
+// it just stops a correctly-named file from being denied over a bad MIME guess.
+const EXT_TO_MIME = {
+  '.mp4': 'video/mp4', '.webm': 'video/webm', '.mkv': 'video/x-matroska',
+  '.avi': 'video/x-msvideo', '.mov': 'video/quicktime',
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+  '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp', '.avif': 'image/avif',
+  '.pdf': 'application/pdf',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.odt': 'application/vnd.oasis.opendocument.text',
+  '.ods': 'application/vnd.oasis.opendocument.spreadsheet',
+  '.odp': 'application/vnd.oasis.opendocument.presentation',
+};
+
+// MIME values that mean "the client didn't really tell us" — only for these do
+// we fall back to the extension. A specific-but-disallowed MIME is still denied.
+const GENERIC_MIMES = new Set([
+  '', 'application/octet-stream', 'binary/octet-stream',
+  'application/zip', 'application/x-zip-compressed', 'application/vnd.ms-office',
+]);
+
+// Returns the canonical allow-listed MIME for an upload, or null if disallowed.
+// Mutating the result onto file.mimetype keeps every downstream consumer
+// (thumbnail branch, DB row, player) working with the real type.
+function resolveUploadMime(file) {
+  const mt = (file && file.mimetype || '').toLowerCase();
+  if (isAllowedUploadMime(mt)) return mt;
+  if (GENERIC_MIMES.has(mt)) {
+    const ext = path.extname((file && file.originalname) || '').toLowerCase();
+    const inferred = EXT_TO_MIME[ext];
+    if (inferred && isAllowedUploadMime(inferred)) return inferred;
+  }
+  return null;
+}
+
 const fileFilter = (req, file, cb) => {
-  if (isAllowedUploadMime(file.mimetype)) {
+  const canonical = resolveUploadMime(file);
+  if (canonical) {
+    file.mimetype = canonical;
     cb(null, true);
   } else {
     cb(new Error('Only video, image, PDF, and Office document files are allowed'), false);
@@ -104,3 +155,5 @@ module.exports.ALLOWED_DOC_TYPES = ALLOWED_DOC_TYPES;
 module.exports.ALLOWED_IMAGE_TYPES = ALLOWED_IMAGE_TYPES;
 module.exports.ALLOWED_VIDEO_TYPES = ALLOWED_VIDEO_TYPES;
 module.exports.isAllowedUploadMime = isAllowedUploadMime;
+module.exports.resolveUploadMime = resolveUploadMime;
+module.exports.EXT_TO_MIME = EXT_TO_MIME;

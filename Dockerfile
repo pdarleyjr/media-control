@@ -8,7 +8,13 @@ COPY server/package.json server/package-lock.json* ./
 RUN npm install --omit=dev --no-audit --no-fund
 
 FROM node:22-alpine
-RUN apk add --no-cache ffmpeg tini vips yt-dlp poppler-utils
+# poppler-utils: PDF page-1 -> image (pdftoppm) for PDF thumbnails.
+# libreoffice + fonts: headless office->PDF so PowerPoint/Word/Excel/ODF uploads
+#   (incl. exports with no embedded preview, e.g. Gamma) get a real slide/page
+#   thumbnail. One cached layer (before CACHEBUST) so code deploys don't re-pull
+#   it. Verified: soffice converts a real PPTX -> PDF in ~6s on this base.
+RUN apk add --no-cache ffmpeg tini vips yt-dlp poppler-utils \
+    libreoffice ttf-dejavu fontconfig
 WORKDIR /app
 COPY --from=deps /app/server/node_modules ./server/node_modules
 # Cache-bust: pass --build-arg CACHEBUST=$(git rev-parse HEAD) on every deploy so

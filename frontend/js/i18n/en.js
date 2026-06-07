@@ -188,6 +188,11 @@ export default {
   'content.type_remote_short': 'Remote',
   'content.type_video': 'Video',
   'content.type_image': 'Image',
+  'content.type_pdf': 'PDF',
+  'content.type_slides': 'Slides',
+  'content.type_sheet': 'Spreadsheet',
+  'content.type_doc': 'Document',
+  'content.type_document': 'Document',
   // Item action buttons
   'content.btn_edit': 'Edit',
   'content.btn_delete': 'Delete',

@@ -764,6 +764,31 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(config.frontendDir, 'index.html'));
 });
 
+// Final error handler (4-arg). Without it, multer's fileFilter rejection and
+// LIMIT_FILE_SIZE bubbled to Express's default handler as a 500 text/html page,
+// so the dashboard could only show an opaque "server error" for a disallowed or
+// oversized upload. Map them to actionable JSON; mirror the tus path's 415.
+// Must be registered AFTER all routes so next(err) reaches it.
+app.use((err, req, res, next) => {
+  if (!err) return next();
+  if (res.headersSent) return next(err);
+  if (err.name === 'MulterError') {
+    const tooBig = err.code === 'LIMIT_FILE_SIZE';
+    return res.status(tooBig ? 413 : 400).json({
+      error: tooBig ? 'File exceeds the maximum allowed upload size' : `Upload error: ${err.message}`,
+    });
+  }
+  if (/files? are allowed/i.test(err.message || '')) {
+    return res.status(415).json({ error: err.message });
+  }
+  const status = Number.isInteger(err.status) ? err.status : 500;
+  if (req.path && req.path.startsWith('/api/')) {
+    return res.status(status).json({ error: err.message || 'Server error' });
+  }
+  console.error('Unhandled error:', err.stack || err);
+  return res.status(status).send('Server error');
+});
+
 const listenPort = hasSsl ? config.httpsPort : config.port;
 const protocol = hasSsl ? 'https' : 'http';
 

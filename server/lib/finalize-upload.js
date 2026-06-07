@@ -10,6 +10,7 @@ const { db } = require('../db/database');
 const config = require('../config');
 const { sanitizeString } = require('../middleware/sanitize');
 const { isAllowedUploadMime } = require('../middleware/upload');
+const { isDocThumbnailMime, kickDocThumbnail } = require('./doc-thumbnail');
 
 // Same filename hygiene as content.js: NFC-normalize (macOS sends NFD) then
 // HTML-escape & < > " ' so a hostile filename renders as text in every UI sink.
@@ -98,6 +99,12 @@ async function finalizeUpload({ absPath, originalName, mimeType, size, userId, w
     INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, duration_sec, thumbnail_path, width, height)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(id, userId, workspaceId, safeFilename(originalName), filename, mt, size || 0, durationSec, thumbnailPath, width, height);
+
+  // PDF/Office/ODF docs uploaded via the resumable path get their thumbnail
+  // rendered in the background too (poppler / LibreOffice). Non-fatal.
+  if (isDocThumbnailMime(mt)) {
+    kickDocThumbnail(id, destPath, mt);
+  }
 
   return db.prepare('SELECT * FROM content WHERE id = ?').get(id);
 }

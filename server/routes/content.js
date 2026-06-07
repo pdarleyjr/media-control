@@ -14,6 +14,7 @@ const { accessContext } = require('../lib/tenancy');
 const { ownedContentScope } = require('../lib/content-scope');
 const { contentRowsWithThumbnailUrls } = require('../lib/content-response');
 const { checkRemoteUrlShape, assertRemoteUrlSafe } = require('../lib/ssrf-policy');
+const { isDocThumbnailMime, kickDocThumbnail } = require('../lib/doc-thumbnail');
 
 // Multer captures file.originalname directly from the multipart filename header,
 // bypassing sanitizeBody. Apply the same HTML-escape here so a filename like
@@ -163,6 +164,14 @@ router.post('/', checkStorageLimit, upload.single('file'), async (req, res) => {
       INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, duration_sec, thumbnail_path, width, height)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(id, req.user.id, req.workspaceId, safeFilename(req.file.originalname), filepath, req.file.mimetype, req.file.size, durationSec, thumbnailPath, width, height);
+
+    // PDF/Office/ODF: thumbnail rendering (poppler / LibreOffice) can take a few
+    // seconds, so generate it in the background and attach it to the row when
+    // ready — the upload response returns immediately with thumbnail_path null,
+    // exactly like the YouTube transcode path. Non-fatal by construction.
+    if (isDocThumbnailMime(req.file.mimetype)) {
+      kickDocThumbnail(id, req.file.path, req.file.mimetype);
+    }
 
     const content = db.prepare('SELECT * FROM content WHERE id = ?').get(id);
     res.status(201).json(content);
@@ -485,6 +494,12 @@ router.put('/:id/replace', upload.single('file'), async (req, res) => {
 
   db.prepare(`UPDATE content SET filepath = ?, mime_type = ?, file_size = ?, thumbnail_path = ?, width = ?, height = ? WHERE id = ?`)
     .run(filepath, req.file.mimetype, req.file.size, thumbnailPath, width, height, req.params.id);
+
+  // Regenerate a document thumbnail in the background when a file is replaced
+  // with a PDF/Office/ODF document (the inline branch above only covers images).
+  if (isDocThumbnailMime(req.file.mimetype)) {
+    kickDocThumbnail(req.params.id, req.file.path, req.file.mimetype);
+  }
 
   res.json(db.prepare('SELECT * FROM content WHERE id = ?').get(req.params.id));
 });
