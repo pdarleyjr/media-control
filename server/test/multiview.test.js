@@ -220,3 +220,100 @@ test('reflowAroundActive: a non-overlapping resize leaves neighbors untouched', 
     assert.deepEqual(out[s.id], { x: s.x, y: s.y, w: s.w, h: s.h }, `${s.id} should be untouched`);
   }
 });
+
+// ---- aspect-aware tiling: derive screen count + per-screen-aspect tile maps ----
+// One physical screen is ~16:9; an N-screen wall has aspect ~= N*16/9. layoutForAspect
+// returns ONLY the slots that have a tile on a given target, each cell equal to the
+// per-screen aspect so the mosaic tiles the wall completely (contain pillarboxes ~3.4%).
+
+test('normalizeAspect coerces strings and rejects junk to 16/9', () => {
+  assert.equal(MV.normalizeAspect('5.7278'), 5.7278);
+  assert.equal(MV.normalizeAspect(''), 16 / 9);
+  assert.equal(MV.normalizeAspect('-1'), 16 / 9);
+  assert.equal(MV.normalizeAspect(undefined), 16 / 9);
+  assert.equal(MV.normalizeAspect(NaN), 16 / 9);
+  assert.equal(MV.normalizeAspect(0), 16 / 9);
+});
+
+test('screensFor rounds aspect/16:9 to a screen count (min 1)', () => {
+  assert.equal(MV.screensFor(16 / 9), 1);
+  assert.equal(MV.screensFor(21 / 9), 1);          // 2.3333 -> 1.31 -> 1
+  assert.equal(MV.screensFor(12372 / 2160), 3);    // 5.7278 -> 3.22 -> 3
+  assert.equal(MV.screensFor(8248 / 2160), 2);     // 3.8185 -> 2.15 -> 2
+  assert.equal(MV.screensFor(32 / 9), 2);          // 3.5556 -> 2.00 -> 2
+});
+
+test('layoutForAspect(16:9) is the unchanged fixed 4+2+4 (all 10 slots)', () => {
+  const lay = MV.layoutForAspect(16 / 9);
+  assert.equal(Object.keys(lay).length, 10);
+  for (const s of MV.SLOTS) {
+    assert.deepEqual(lay[s.id], { x: s.x, y: s.y, w: s.w, h: s.h }, `slot ${s.id}`);
+  }
+});
+
+test('layoutForAspect(3-screen wall): center-primary + 2x2 flanks, fills the wall', () => {
+  const A = 12372 / 2160;
+  const lay = MV.layoutForAspect(A);
+  assert.equal(lay.C2, undefined);                 // C2 has no tile on a 3-screen wall
+  assert.equal(Object.keys(lay).length, 9);
+  assert.deepEqual(lay.C1, { x: 100 / 3, y: 0, w: 100 / 3, h: 100 });
+  // Tiles cover the whole canvas exactly.
+  let area = 0;
+  for (const id of Object.keys(lay)) area += lay[id].w * lay[id].h;
+  assert.ok(Math.abs(area - 10000) < 1e-6, `area=${area}`);
+  // No two tiles overlap.
+  const ids = Object.keys(lay);
+  for (let i = 0; i < ids.length; i++) {
+    for (let j = i + 1; j < ids.length; j++) {
+      assert.ok(!MV.overlaps(lay[ids[i]], lay[ids[j]]), `${ids[i]} overlaps ${ids[j]}`);
+    }
+  }
+  // Every present tile has the per-screen pixel aspect = wall_aspect/3.
+  const perScreen = A / 3;
+  for (const id of ids) {
+    const r = lay[id];
+    assert.ok(Math.abs(A * (r.w / r.h) - perScreen) < 1e-6, `${id} pixel aspect off`);
+  }
+});
+
+test('layoutForAspect(2-screen wall): two 2x2 screens, fills the wall', () => {
+  const A = 8248 / 2160;
+  const lay = MV.layoutForAspect(A);
+  assert.equal(lay.C1, undefined);                 // both center slots omitted on a 2-screen wall
+  assert.equal(lay.C2, undefined);
+  assert.equal(Object.keys(lay).length, 8);
+  let area = 0;
+  for (const id of Object.keys(lay)) area += lay[id].w * lay[id].h;
+  assert.ok(Math.abs(area - 10000) < 1e-6, `area=${area}`);
+  const ids = Object.keys(lay);
+  for (let i = 0; i < ids.length; i++) {
+    for (let j = i + 1; j < ids.length; j++) {
+      assert.ok(!MV.overlaps(lay[ids[i]], lay[ids[j]]), `${ids[i]} overlaps ${ids[j]}`);
+    }
+  }
+  const perScreen = A / 2;
+  for (const id of ids) {
+    const r = lay[id];
+    assert.ok(Math.abs(A * (r.w / r.h) - perScreen) < 1e-6, `${id} pixel aspect off`);
+  }
+});
+
+test('layoutForAspect(21:9, S=1) falls back to the fixed slots (no remap)', () => {
+  const lay = MV.layoutForAspect(2.3333);
+  assert.equal(Object.keys(lay).length, 10);
+  for (const s of MV.SLOTS) {
+    assert.deepEqual(lay[s.id], { x: s.x, y: s.y, w: s.w, h: s.h }, `slot ${s.id}`);
+  }
+});
+
+test('rectForCell with a layout: operator geom wins, else the tile, else null', () => {
+  const wallLayout = MV.layoutForAspect(12372 / 2160);
+  // Operator-resized cell: its own geometry is returned as-is even with a layout.
+  assert.deepEqual(MV.rectForCell('L1', { x: 5, y: 5, w: 20, h: 20 }, wallLayout), { x: 5, y: 5, w: 20, h: 20 });
+  // A no-geometry cell takes the aspect tile for its slot.
+  assert.deepEqual(MV.rectForCell('C1', { u: 'x' }, wallLayout), { x: 100 / 3, y: 0, w: 100 / 3, h: 100 });
+  // A slot with no tile on this target returns null.
+  assert.equal(MV.rectForCell('C2', { u: 'x' }, wallLayout), null);
+  // Backward compatible: with NO layout arg, falls back to the fixed slot rect.
+  assert.deepEqual(MV.rectForCell('L1', null), { x: 0, y: 0, w: 25, h: 25 });
+});

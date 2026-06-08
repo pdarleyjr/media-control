@@ -58,10 +58,10 @@
   function isPct(n) { return typeof n === 'number' && isFinite(n) && n >= 0 && n <= 100; }
   function clampPct(v) { return Math.max(0, Math.min(100, v)); }
 
-  // Per-cell media fit. The default (omitted) is 'cover' — content FILLS the cell
-  // (grid.html's base object-fit), so a 16:9 feed in a now-ultra-wide cell uses the
-  // whole frame instead of letterboxing. 'contain' opts a single cell back into
-  // no-crop letterbox. Only those two strings are ever honored.
+  // Per-cell media fit. The default (omitted f) is now 'contain' — content is shown
+  // WITHOUT distortion (grid.html's base object-fit), letterboxing/pillarboxing as
+  // needed. 'cover' opts a single cell into crop-to-fill (content FILLS the cell,
+  // cropping overflow). Only those two strings are ever honored.
   function isFit(v) { return v === 'cover' || v === 'contain'; }
 
   // ---- the SECURITY BOUNDARY ----------------------------------------------
@@ -118,7 +118,7 @@
   // through ONLY when all four are valid percentages (else omits it entirely, so a
   // default-layout cell decodes to exactly {u,l,k}). The optional media-fit `f` is
   // kept ONLY when it is the literal 'cover' or 'contain' (any other value is
-  // dropped; an omitted `f` means default = cover). Never throws.
+  // dropped; an omitted `f` means default = contain). Never throws.
   function decodeCells(param) {
     var out = {};
     if (!param) return out;
@@ -151,13 +151,52 @@
     return out;
   }
 
+  // ---- aspect-aware tiling (pure — shared by grid.html + the unit tests) -------
+  // One physical screen is ~16:9; an N-screen wall has aspect ~= N*16/9. Cells
+  // that equal the PER-SCREEN aspect tile the whole wall completely, so 16:9
+  // content shows with only ~3.4% pillarbox (object-fit:contain) instead of the
+  // ~3.2x-too-wide stretch you get when every cell is a percent of the wide canvas.
+  var SCREEN_ASPECT = 16 / 9;
+  function normalizeAspect(raw) { var n = (typeof raw === 'number') ? raw : parseFloat(raw); return (typeof n === 'number' && isFinite(n) && n > 0) ? n : (16 / 9); }
+  function screensFor(aspect) { return Math.max(1, Math.round(normalizeAspect(aspect) / SCREEN_ASPECT)); }
+  // layoutForAspect: returns { id: {x,y,w,h} } ONLY for slots that have a tile on this
+  // target (omitted slot id = no tile -> grid.html skips it). Cells equal the per-screen
+  // aspect so they fill the wall completely with ~3.4% pillarbox for 16:9 content.
+  //  screens<=1 : the fixed 4+2+4 (all 10 SLOTS) -> single 16:9 display unchanged.
+  //  screens==2 : left screen 2x2 (L1-4) + right screen 2x2 (R1-4); C1/C2 omitted (8 tiles).
+  //  screens==3 : primary center (C1 = whole center screen) + a 2x2 on each side; C2 omitted (9 tiles).
+  //  screens>=4 : fall back to the 4+2+4 (no current hardware; avoids mis-tiling).
+  function layoutForAspect(aspect) {
+    var S = screensFor(aspect), out = {}, i, s;
+    function slotsMap() { var m = {}; for (var j = 0; j < SLOTS.length; j++) { s = SLOTS[j]; m[s.id] = { x: s.x, y: s.y, w: s.w, h: s.h }; } return m; }
+    if (S <= 1 || S >= 4) return slotsMap();
+    if (S === 2) {
+      // each screen = 50% wide; a 2x2 cell = 25% x 50% -> aspect = A*0.5 = per-screen.
+      out.L1 = { x: 0,  y: 0,  w: 25, h: 50 }; out.L2 = { x: 25, y: 0,  w: 25, h: 50 };
+      out.L3 = { x: 0,  y: 50, w: 25, h: 50 }; out.L4 = { x: 25, y: 50, w: 25, h: 50 };
+      out.R1 = { x: 50, y: 0,  w: 25, h: 50 }; out.R2 = { x: 75, y: 0,  w: 25, h: 50 };
+      out.R3 = { x: 50, y: 50, w: 25, h: 50 }; out.R4 = { x: 75, y: 50, w: 25, h: 50 };
+      return out;
+    }
+    // S === 3: primary center + 2x2 flanks. third = one screen; half = a flank cell.
+    var third = 100 / 3, half = third / 2;
+    out.L1 = { x: 0,    y: 0,  w: half, h: 50 }; out.L2 = { x: half, y: 0,  w: half, h: 50 };
+    out.L3 = { x: 0,    y: 50, w: half, h: 50 }; out.L4 = { x: half, y: 50, w: half, h: 50 };
+    out.C1 = { x: third, y: 0, w: third, h: 100 };
+    out.R1 = { x: 2 * third,        y: 0,  w: half, h: 50 }; out.R2 = { x: 2 * third + half, y: 0,  w: half, h: 50 };
+    out.R3 = { x: 2 * third,        y: 50, w: half, h: 50 }; out.R4 = { x: 2 * third + half, y: 50, w: half, h: 50 };
+    return out;
+  }
+
   // ---- reactive tiling geometry (pure — shared by the composer + unit tests) --
-  // The effective rect of a cell: its own {x,y,w,h} when present, else its fixed
-  // SLOT rect. Keeps grid.html + the composer agreeing on geometry.
-  function rectForCell(id, cell) {
+  // The effective rect of a cell: its own {x,y,w,h} when present, else (with a
+  // `layout`) the aspect tile for this target (null = no tile here), else its
+  // fixed SLOT rect. Keeps grid.html + the composer agreeing on geometry.
+  function rectForCell(id, cell, layout) {
     if (cell && isPct(cell.x) && isPct(cell.y) && cell.w > 0 && cell.h > 0) {
       return { x: cell.x, y: cell.y, w: cell.w, h: cell.h };
     }
+    if (layout) return layout[id] || null;            // ultra-wide: the aspect tile, or null = no tile here
     var s = SLOT_BY_ID[id];
     return s ? { x: s.x, y: s.y, w: s.w, h: s.h } : { x: 0, y: 0, w: 100, h: 100 };
   }
@@ -212,6 +251,10 @@
     isPct: isPct,
     clampPct: clampPct,
     isFit: isFit,
+    SCREEN_ASPECT: SCREEN_ASPECT,
+    normalizeAspect: normalizeAspect,
+    screensFor: screensFor,
+    layoutForAspect: layoutForAspect,
     isAllowedCellUrl: isAllowedCellUrl,
     b64urlEncode: b64urlEncode,
     b64urlDecode: b64urlDecode,

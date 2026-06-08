@@ -182,10 +182,11 @@ function stripLabelParam(relUrl) {
   return relUrl.replace(/([?&])label=[^&]*/i, '$1').replace(/[?&]$/, '').replace(/\?&/, '?');
 }
 
-// A cell's media-fit, defaulting to 'cover' (fill the frame — grid.html's base
-// behavior). Only 'cover' | 'contain' are ever stored/sent.
+// A cell's media-fit, defaulting to 'contain' (no distortion — grid.html's base
+// behavior; letterbox/pillarbox as needed). 'cover' opts a frame into crop-to-fill.
+// Only 'cover' | 'contain' are ever stored/sent.
 function cellFit(c) {
-  return c && c.fit === 'contain' ? 'contain' : 'cover';
+  return c && c.fit === 'cover' ? 'cover' : 'contain';
 }
 
 // Append &fit=cover to a /player iframe URL so cam/oz/hls/site honor it (their
@@ -357,7 +358,7 @@ function cellInner(slot) {
          aria-pressed="${monitoring ? 'true' : 'false'}">${monitoring ? IC.mute : IC.sound}</button>`
     : '';
   // Fill/Fit toggle: Fill (cover) fills the frame, Fit (contain) letterboxes.
-  // Shows the CURRENT mode; clicking flips it. Default is Fill.
+  // Shows the CURRENT mode; clicking flips it. Default is Fit (no distortion).
   const filling = cellFit(c) !== 'contain';
   const fitBtn = `<button type="button" class="mc-mv-cell-btn mc-mv-fit${filling ? '' : ' fitmode'}"
        data-mv-fit="${esc(slot.id)}"
@@ -443,9 +444,10 @@ function parseDrag(e) {
 function dropIntoSlot(slotId, parsed) {
   const resolved = resolveCell(parsed.source, parsed.label, parsed.thumb);
   if (resolved.error) { showToast(t(resolved.error), 'error'); return; }
-  // Default every new cell to Fill (cover). The operator can toggle to Fit per
-  // frame; the choice is preserved across re-drops only by the toggle, not here.
-  if (resolved.kind !== 'share') resolved.fit = 'cover';
+  // Default every new cell to Fit (contain — no distortion). The operator can
+  // toggle to Fill (cover) per frame; the choice is preserved across re-drops only
+  // by the toggle, not here.
+  if (resolved.kind !== 'share') resolved.fit = 'contain';
   cells[slotId] = resolved;
   saveStore();
   if (monitorSlot && monitorSlot !== slotId && !cells[monitorSlot]) monitorSlot = null;

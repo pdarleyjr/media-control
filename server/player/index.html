@@ -2157,6 +2157,17 @@
         if (!u || !/^https?:\/\//i.test(u)) return false;
         try { return new URL(u).host !== location.host; } catch (e) { return false; }
       }
+      // Our multiview composite page. It is same-origin (so isExternalSite is false
+      // and it iframes directly); we tell it the wall's target aspect so its cells
+      // tile the whole wall completely instead of stretching each one to the wide
+      // canvas aspect.
+      function isGridUrl(u) { return typeof u === 'string' && /\/player\/grid\.html(\?|$)/.test(u); }
+      function gridTargetAspect(mountEl) {
+        var w, h;
+        if (wallConfig && wallConfig.player_rect && wallConfig.player_rect.w && wallConfig.player_rect.h) { w = wallConfig.player_rect.w; h = wallConfig.player_rect.h; }
+        else { w = (mountEl && mountEl.clientWidth) || window.innerWidth || 16; h = (mountEl && mountEl.clientHeight) || window.innerHeight || 9; }
+        return h > 0 ? (w / h) : (16 / 9);
+      }
       const hasRenderableType = item && (
         item.widget_id ||
         item.mime_type === 'video/youtube' ||
@@ -2234,6 +2245,11 @@
             const sw = Math.max(320, Math.min(3840, Math.round(mount.clientWidth || window.innerWidth || 1600)));
             const sh = Math.max(240, Math.min(2160, Math.round(mount.clientHeight || window.innerHeight || 900)));
             webSrc = '/player/site.html?id=' + encodeURIComponent(item.content_id) + '&w=' + sw + '&h=' + sh;
+          } else if (isGridUrl(remoteUrl)) {
+            // Multiview grid → append the wall's target aspect so its cells tile the
+            // full wall. Base off the bare grid URL (remoteUrl), not a rewritten src.
+            const asp = gridTargetAspect(mount);
+            webSrc = remoteUrl + (remoteUrl.indexOf('?') === -1 ? '?' : '&') + 'aspect=' + asp.toFixed(4);
           }
           frame.src = webSrc;
           frame.style.cssText = 'width:100%;height:100%;border:none;background:#000';

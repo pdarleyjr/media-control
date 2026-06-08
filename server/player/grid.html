@@ -18,11 +18,12 @@
     .cell > iframe, .cell > video, .cell > img {
       position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: block;
     }
-    /* Default = cover: media FILLS the cell (no letterbox), so a 16:9 feed in a
-       resized/ultra-wide cell uses the whole frame. A cell tagged data-fit="contain"
-       opts back into no-crop letterbox. */
-    .cell > video, .cell > img { object-fit: cover; background: #000; }
-    .cell[data-fit="contain"] > video, .cell[data-fit="contain"] > img { object-fit: contain; }
+    /* Default = contain: media is shown WITHOUT distortion (letterbox/pillarbox as
+       needed), so an aspect-matched tile pillarboxes only ~3.4% rather than
+       cover-cropping or stretching. A cell tagged data-fit="cover" opts into
+       crop-to-fill. */
+    .cell > video, .cell > img { object-fit: contain; background: #000; }
+    .cell[data-fit="cover"] > video, .cell[data-fit="cover"] > img { object-fit: cover; }
     /* Per-cell label chip — bottom-left, so a generic-thumbnail feed (e.g. a
        news channel) is still identifiable on the physical wall. */
     .cell-label {
@@ -64,6 +65,14 @@
 
       var params = new URLSearchParams(location.search);
       var cells = MV.decodeCells(params.get('cells'));
+      // The player appends &aspect=<wall w/h> at render time. When it implies 2+
+      // screens we ignore saved per-cell geometry and use the clean per-screen
+      // aspect tiles (layoutForAspect), so the mosaic fills the wall completely
+      // with ~3.4% pillarbox instead of stretching. On a single 16:9 display the
+      // layout is the unchanged fixed 4+2+4.
+      var aspect = MV.normalizeAspect(params.get('aspect'));
+      var ultrawide = MV.screensFor(aspect) >= 2;
+      var layout = ultrawide ? MV.layoutForAspect(aspect) : null;
 
       function esc(s) {
         return String(s == null ? '' : s)
@@ -102,13 +111,18 @@
         if (!cell) continue;                          // empty slot -> nothing drawn
         var isShare = cell.k === 'share';
         if (!isShare && !cell.u) continue;            // non-share cell needs a url
-        var r = MV.rectForCell(slot.id, cell);
+        // On ultra-wide we intentionally ignore per-cell saved geometry and use the
+        // clean aspect tiles; on a single display we honor the operator's geometry.
+        var r = MV.rectForCell(slot.id, ultrawide ? null : cell, layout);
+        if (!r) continue;                             // slot has no tile on this target (e.g. C2 on a 3-screen wall)
         var box = document.createElement('div');
         box.className = isShare ? 'cell cell-share' : 'cell';
         box.setAttribute('data-slot', slot.id);
-        // Per-cell media fit (default cover; 'contain' = letterbox). Drives the
-        // object-fit of <video>/<img> via CSS; iframe feeds carry fit in their URL.
-        box.setAttribute('data-fit', cell.f === 'contain' ? 'contain' : 'cover');
+        // Per-cell media fit (default contain = no distortion; 'cover' = crop-to-fill).
+        // Drives the object-fit of <video>/<img> via CSS; iframe feeds carry fit in
+        // their URL. Only set data-fit for an explicit 'cover'; an omitted/contain f
+        // leaves no attribute so the base CSS (contain) applies.
+        if (cell.f === 'cover') box.setAttribute('data-fit', 'cover');
         box.style.left = r.x + '%';
         box.style.top = r.y + '%';
         box.style.width = r.w + '%';
