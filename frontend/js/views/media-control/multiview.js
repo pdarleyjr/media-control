@@ -189,6 +189,15 @@ function cellFit(c) {
   return c && c.fit === 'cover' ? 'cover' : 'contain';
 }
 
+// A cell can carry sound ON THE WALL only if it is a video file or one of our live
+// audio players (oz/hls). cam.html is a still image; images/docs/decks/youtube
+// can't drive wall audio. MIRROR of isAudioCapable() in multiview-core.js.
+function wallAudioCapable(c) {
+  if (!c || c.kind === 'share') return false;
+  if (c.kind === 'v') return true;
+  return c.kind === 'i' && /\/player\/(oz|hls)\.html/.test(c.cellUrl || '');
+}
+
 // Append &fit=cover to a /player iframe URL so cam/oz/hls/site honor it (their
 // object-fit defaults to contain). Only added for the 'cover' (fill) choice —
 // 'contain' is each page's default, so no param is needed. Same root-relative
@@ -294,6 +303,9 @@ function buildGridUrl() {
       // inner page (whose default is contain) fills the frame.
       const u = FIT_PARAM_RE.test(c.cellUrl) ? withFit(c.cellUrl, fit) : c.cellUrl;
       entry = { u, l: c.label || '', k: c.kind || 'i', f: fit };
+      // Wall audio: mark THIS cell to play sound on the display (grid.html unmutes
+      // only it). Guarded to audio-capable kinds so the flag can't ride an image.
+      if (c.audio === true && wallAudioCapable(c)) entry.a = 1;
     }
     if (!entry) continue;
     const g = geoms[id];
@@ -357,6 +369,15 @@ function cellInner(slot) {
          title="${esc(monitoring ? t('mc.mv.stop_audio') : t('mc.mv.listen'))}"
          aria-pressed="${monitoring ? 'true' : 'false'}">${monitoring ? IC.mute : IC.sound}</button>`
     : '';
+  // "Broadcast this frame's sound to the WALL" — distinct from the local 🔊 monitor
+  // above. At most one frame carries wall audio; turning one on clears the rest.
+  const wallOn = wallAudioCapable(c) && c.audio === true;
+  const wallAudioBtn = wallAudioCapable(c)
+    ? `<button type="button" class="mc-mv-cell-btn mc-mv-wallaudio${wallOn ? ' active' : ''}"
+         data-mv-wallaudio="${esc(slot.id)}"
+         title="${esc(wallOn ? t('mc.mv.wall_audio_on') : t('mc.mv.wall_audio'))}"
+         aria-pressed="${wallOn ? 'true' : 'false'}">${IC.broadcast}</button>`
+    : '';
   // Fill/Fit toggle: Fill (cover) fills the frame, Fit (contain) letterboxes.
   // Shows the CURRENT mode; clicking flips it. Default is Fit (no distortion).
   const filling = cellFit(c) !== 'contain';
@@ -369,6 +390,7 @@ function cellInner(slot) {
     <div class="mc-mv-cell-actions">
       ${fitBtn}
       ${listenBtn}
+      ${wallAudioBtn}
       <button type="button" class="mc-mv-cell-btn mc-mv-clear" data-mv-clear="${esc(slot.id)}" title="${esc(t('mc.mv.clear_cell'))}">${IC.clear}</button>
     </div>
     <div class="mc-mv-cell-label" title="${esc(c.label || '')}">${esc(c.label || slotName(slot))}</div>
@@ -499,6 +521,9 @@ function attachHandlers() {
   rootEl.querySelectorAll('[data-mv-fit]').forEach((btn) => {
     btn.addEventListener('click', (e) => { e.stopPropagation(); toggleFit(btn.dataset.mvFit); });
   });
+  rootEl.querySelectorAll('[data-mv-wallaudio]').forEach((btn) => {
+    btn.addEventListener('click', (e) => { e.stopPropagation(); toggleWallAudio(btn.dataset.mvWallaudio); });
+  });
   rootEl.querySelectorAll('[data-mv-clear]').forEach((btn) => {
     btn.addEventListener('click', (e) => { e.stopPropagation(); clearCell(btn.dataset.mvClear); });
   });
@@ -602,6 +627,19 @@ function toggleFit(slotId) {
   const c = cells[slotId];
   if (!c || c.kind === 'share') return;
   c.fit = cellFit(c) === 'contain' ? 'cover' : 'contain';
+  saveStore();
+  render();
+}
+
+// ---------- wall audio (one frame's sound plays on the display) ----------
+// Mutually exclusive: turning one frame on clears the flag from every other, so
+// the wall is never a cacophony. grid.html unmutes exactly this cell.
+function toggleWallAudio(slotId) {
+  const c = cells[slotId];
+  if (!wallAudioCapable(c)) return;
+  const turningOn = c.audio !== true;
+  for (const id of Object.keys(cells)) { if (cells[id]) delete cells[id].audio; }
+  if (turningOn) c.audio = true;
   saveStore();
   render();
 }

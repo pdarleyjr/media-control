@@ -85,28 +85,44 @@
       var ultrawide = MV.screensFor(aspect) >= 2;
       var layout = ultrawide ? MV.layoutForAspect(aspect) : null;
 
+      // At most ONE cell plays sound on the wall (operator's pick); the rest stay
+      // muted to avoid cacophony. audioEl is that cell's <video> or live-player
+      // iframe; window.__mcEnableAudio() (called by the display player after the
+      // one-time user gesture that satisfies the autoplay policy) unmutes it.
+      var audioId = MV.audioSlotId(cells);
+      var audioEl = null;
+
       function esc(s) {
         return String(s == null ? '' : s)
           .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
           .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
       }
 
-      function makeMedia(cell) {
+      function makeMedia(cell, isAudio) {
         var el;
         if (cell.k === 'v') {
           el = document.createElement('video');
           el.src = cell.u;
-          el.autoplay = true; el.loop = true; el.muted = true; el.playsInline = true;
+          // The wall-audio cell starts UNMUTED (and is captured so a later user
+          // gesture can (re)start it with sound); every other cell stays muted.
+          el.autoplay = true; el.loop = true; el.muted = !isAudio; el.playsInline = true;
           el.setAttribute('playsinline', '');
+          if (isAudio) { el.volume = 1; audioEl = el; }
         } else if (cell.k === 'm') {
           el = document.createElement('img');
           el.src = cell.u; el.alt = cell.l || '';
         } else {
           el = document.createElement('iframe');
-          el.src = cell.u;
+          // For the wall-audio cell, tell our live player (oz/hls) to unmute by
+          // appending &audio=1; it falls back to muted if the browser blocks
+          // unmuted autoplay, then unmutes on __mcEnableAudio (see below).
+          var src = cell.u;
+          if (isAudio) { src += (src.indexOf('?') === -1 ? '?' : '&') + 'audio=1'; }
+          el.src = src;
           el.setAttribute('allow', 'autoplay; fullscreen; encrypted-media; picture-in-picture');
           el.setAttribute('referrerpolicy', 'no-referrer-when-downgrade');
           el.setAttribute('scrolling', 'no');
+          if (isAudio) audioEl = el;
         }
         return el;
       }
@@ -147,7 +163,7 @@
           ph.innerHTML = esc(cell.l || 'Screen Share');
           box.appendChild(ph);
         } else {
-          box.appendChild(makeMedia(cell));
+          box.appendChild(makeMedia(cell, slot.id === audioId));
           if (cell.l) {
             var lab = document.createElement('div');
             lab.className = 'cell-label';
@@ -157,6 +173,23 @@
         }
         gridEl.appendChild(box);
       }
+
+      // Audio unlock. The display player shows a one-time "tap to enable audio"
+      // prompt; on that gesture it walks its same-origin player iframes and calls
+      // __mcEnableAudio(). We forward it to the single wall-audio cell: unmute the
+      // <video>, or call the live player's own __mcEnableAudio (oz/hls expose it).
+      // No-op when no cell carries audio. Idempotent.
+      window.__mcEnableAudio = function () {
+        if (!audioEl) return;
+        try {
+          if (audioEl.tagName === 'VIDEO') {
+            audioEl.muted = false; audioEl.volume = 1;
+            var p = audioEl.play(); if (p && p.catch) p.catch(function () {});
+          } else if (audioEl.contentWindow && typeof audioEl.contentWindow.__mcEnableAudio === 'function') {
+            audioEl.contentWindow.__mcEnableAudio();   // same-origin oz/hls player
+          }
+        } catch (e) { /* cross-origin or not ready — ignore */ }
+      };
     })();
   </script>
 </body>

@@ -764,6 +764,18 @@
       if (isWallFollower()) return;
       // Unmute any playing HTML5 video
       document.querySelectorAll('video').forEach(v => { v.muted = false; });
+      // Reach INTO our own same-origin player iframes and turn their sound on: a
+      // full-screen news/cam stream (hls/oz expose __mcEnableAudio) or the multiview
+      // grid (which relays to its single chosen audio cell). querySelectorAll('video')
+      // can't see inside an iframe, so we call the hook the iframe exposes. Now that
+      // the top frame has user activation, their unmuted play() is allowed.
+      // Cross-origin frames throw on access and are skipped.
+      document.querySelectorAll('iframe').forEach(f => {
+        try {
+          const w = f.contentWindow;
+          if (w && typeof w.__mcEnableAudio === 'function') w.__mcEnableAudio();
+        } catch (e) { /* cross-origin — skip */ }
+      });
       // Unmute the active YouTube embed (iframe — querySelectorAll('video') misses it)
       try {
         if (activeYtPlayer && typeof activeYtPlayer.unMute === 'function') {
@@ -2256,6 +2268,12 @@
               // the full wall instead of falling back to the tiny 4+2+4 mosaic.
               const asp = gridTargetAspect(mount);
               webSrc = ownPath + (ownPath.indexOf('?') === -1 ? '?' : '&') + 'aspect=' + asp.toFixed(4);
+            } else if (!isFollower && /\/player\/(oz|hls)\.html(\?|$)/.test(ownPath)) {
+              // A single full-screen live stream (news / Ozolio cam) → play WITH
+              // sound on leader/solo (followers stay muted to avoid echo across the
+              // wall). The player falls back to muted if the browser blocks unmuted
+              // autoplay, then unmutes on the one-time "tap to enable audio" gesture.
+              webSrc = ownPath + (ownPath.indexOf('?') === -1 ? '?' : '&') + 'audio=1';
             }
           } else if (item.content_id && isExternalSite(remoteUrl)) {
             // A genuinely third-party site → server-side screenshot (bypasses

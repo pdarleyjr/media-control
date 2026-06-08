@@ -58,6 +58,23 @@
       if (label) { labelText.textContent = label; labelEl.hidden = false; }
       if (wantAudio) { video.muted = false; video.volume = 1; try { video.removeAttribute('muted'); } catch (e) {} }
 
+      // Start playback. If we asked for sound but the browser blocks unmuted
+      // autoplay (no user gesture yet), fall back to MUTED so the video still
+      // shows — sound then comes back via __mcEnableAudio() once the display's
+      // one-time "tap to enable audio" gesture gives the page activation.
+      function safePlay() {
+        var p = video.play();
+        if (p && p.catch) p.catch(function () {
+          if (!video.muted) { video.muted = true; var p2 = video.play(); if (p2 && p2.catch) p2.catch(function () {}); }
+        });
+      }
+      // Called by the parent (display player / multiview grid) after a user gesture.
+      window.__mcEnableAudio = function () {
+        video.muted = false; video.volume = 1;
+        try { video.removeAttribute('muted'); } catch (e) {}
+        var p = video.play(); if (p && p.catch) p.catch(function () {});
+      };
+
       var hls = null, reresolves = 0, MAX = 5, stallTimer = null, stopped = false;
       function showState(on, msg) { if (msg) stateText.textContent = msg; stateEl.classList.toggle('hide', !on); }
       function clearStall() { if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; } }
@@ -80,12 +97,12 @@
           hls = new window.Hls({ liveSyncDurationCount: 3, manifestLoadingTimeOut: 12000, fragLoadingTimeOut: 20000 });
           hls.loadSource(source);
           hls.attachMedia(video);
-          hls.on(window.Hls.Events.MANIFEST_PARSED, function () { video.play().catch(function () {}); armStall(); });
+          hls.on(window.Hls.Events.MANIFEST_PARSED, function () { safePlay(); armStall(); });
           hls.on(window.Hls.Events.ERROR, function (evt, data) {
             if (data && data.fatal) { armStall(); if (reresolves <= MAX) { reresolves++; setTimeout(resolveAndPlay, 3000); } }
           });
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-          video.src = source; video.play().catch(function () {}); armStall();
+          video.src = source; safePlay(); armStall();
         } else { showState(true, 'HLS not supported'); }
       }
 

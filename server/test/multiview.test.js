@@ -317,3 +317,48 @@ test('rectForCell with a layout: operator geom wins, else the tile, else null', 
   // Backward compatible: with NO layout arg, falls back to the fixed slot rect.
   assert.deepEqual(MV.rectForCell('L1', null), { x: 0, y: 0, w: 25, h: 25 });
 });
+
+// ---- wall audio: a single cell may carry sound; everything else stays muted ----
+function enc(map) { return MV.encodeCells(map); }
+
+test('decodeCells: keeps a:1 on an audio-capable cell (video / oz / hls)', () => {
+  const d = MV.decodeCells(enc({
+    C1: { u: '/player/hls.html?station=mbtv', l: 'MBTV', k: 'i', a: 1 },
+    L1: { u: '/api/content/5/file', l: 'clip', k: 'v', a: 1 },
+  }));
+  assert.equal(d.C1.a, 1);
+  assert.equal(d.L1.a, 1);
+});
+
+test('decodeCells: DROPS a:1 on a non-audio cell (image / cam / youtube / doc)', () => {
+  const d = MV.decodeCells(enc({
+    L1: { u: '/api/content/9/file', l: 'pic', k: 'm', a: 1 },          // image
+    L2: { u: '/player/cam.html?id=470', l: 'cam', k: 'i', a: 1 },      // jpeg snapshot
+    L3: { u: 'https://www.youtube-nocookie.com/embed/abc123', l: 'yt', k: 'i', a: 1 },
+  }));
+  assert.equal(d.L1.a, undefined);
+  assert.equal(d.L2.a, undefined);
+  assert.equal(d.L3.a, undefined);
+});
+
+test('audioSlotId: returns the first (SLOT-order) cell flagged a:1, else null', () => {
+  // R1 comes after C1 in SLOT order, so C1 wins even though both are flagged.
+  const both = MV.decodeCells(enc({
+    R1: { u: '/player/oz.html?oid=X', l: 'cam', k: 'i', a: 1 },
+    C1: { u: '/player/hls.html?station=mbtv', l: 'MBTV', k: 'i', a: 1 },
+  }));
+  assert.equal(MV.audioSlotId(both), 'C1');
+  // None flagged → null (the whole wall is muted, the default).
+  const none = MV.decodeCells(enc({ C1: { u: '/player/hls.html?station=mbtv', l: 'x', k: 'i' } }));
+  assert.equal(MV.audioSlotId(none), null);
+  assert.equal(MV.audioSlotId({}), null);
+});
+
+test('isAudioCapable: video + oz/hls only', () => {
+  assert.equal(MV.isAudioCapable('v', '/api/content/1/file'), true);
+  assert.equal(MV.isAudioCapable('i', '/player/hls.html?station=mbtv'), true);
+  assert.equal(MV.isAudioCapable('i', '/player/oz.html?oid=X'), true);
+  assert.equal(MV.isAudioCapable('i', '/player/cam.html?id=1'), false);
+  assert.equal(MV.isAudioCapable('m', '/api/content/1/file'), false);
+  assert.equal(MV.isAudioCapable('i', 'https://www.youtube-nocookie.com/embed/abc123'), false);
+});

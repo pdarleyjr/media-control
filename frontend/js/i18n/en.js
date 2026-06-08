@@ -1401,6 +1401,8 @@ export default {
   'mc.mv.drop_here': 'Drop a source',
   'mc.mv.listen': 'Listen to this frame',
   'mc.mv.stop_audio': 'Stop audio',
+  'mc.mv.wall_audio': 'Play this frame’s sound on the wall',
+  'mc.mv.wall_audio_on': 'Wall audio: this frame (click to mute)',
   'mc.mv.clear_cell': 'Remove from frame',
   'mc.mv.fit_to': 'Switch to Fit (letterbox — show all, no crop)',
   'mc.mv.fill_to': 'Switch to Fill (fill the frame — may crop)',

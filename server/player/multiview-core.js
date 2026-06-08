@@ -64,6 +64,15 @@
   // cropping overflow). Only those two strings are ever honored.
   function isFit(v) { return v === 'cover' || v === 'contain'; }
 
+  // A cell can carry sound ON THE WALL only if it is a <video> file or one of our
+  // live audio players (oz.html / hls.html). cam.html is a still image, images /
+  // docs / decks have no audio, and cross-origin youtube can't be unmuted from the
+  // parent — so those never carry wall audio. At most ONE cell is unmuted on the
+  // wall (the rest stay muted to avoid cacophony); see audioSlotId().
+  function isAudioCapable(kind, url) {
+    return kind === 'v' || (kind === 'i' && /\/player\/(oz|hls)\.html/.test(url || ''));
+  }
+
   // ---- the SECURITY BOUNDARY ----------------------------------------------
   // grid.html renders these URLs on a CSP-free /player page (iframe/video/img),
   // so a cell URL may ONLY be a same-origin player/content path or a
@@ -142,6 +151,13 @@
       }
       // Optional media-fit — kept ONLY when explicitly 'cover' or 'contain'.
       if (isFit(c.f)) cell.f = c.f;
+      // Optional WALL-audio flag — kept ONLY on an audio-capable cell. Default
+      // (omitted) = muted on the wall, exactly as before. audioSlotId() then picks
+      // the single cell that is actually unmuted, so even if several rows carry the
+      // flag only the first (in SLOT order) gets sound.
+      if ((c.a === 1 || c.a === true || c.a === '1') && cell.k !== 'share' && isAudioCapable(cell.k, cell.u)) {
+        cell.a = 1;
+      }
       // Optional reactive geometry — only when all four are valid, positive %.
       if (isPct(c.x) && isPct(c.y) && isPct(c.w) && isPct(c.h) && c.w > 0 && c.h > 0) {
         cell.x = +c.x; cell.y = +c.y; cell.w = +c.w; cell.h = +c.h;
@@ -192,6 +208,18 @@
   // The effective rect of a cell: its own {x,y,w,h} when present, else (with a
   // `layout`) the aspect tile for this target (null = no tile here), else its
   // fixed SLOT rect. Keeps grid.html + the composer agreeing on geometry.
+  // The ONE slot whose cell plays sound on the wall: the first cell (in SLOT
+  // order) flagged a===1. null = the whole wall is muted (the default). grid.html
+  // unmutes only this cell; the player's audio-unlock targets only its iframe.
+  function audioSlotId(cells) {
+    if (!cells) return null;
+    for (var i = 0; i < SLOTS.length; i++) {
+      var c = cells[SLOTS[i].id];
+      if (c && c.a === 1) return SLOTS[i].id;
+    }
+    return null;
+  }
+
   function rectForCell(id, cell, layout) {
     if (cell && isPct(cell.x) && isPct(cell.y) && cell.w > 0 && cell.h > 0) {
       return { x: cell.x, y: cell.y, w: cell.w, h: cell.h };
@@ -251,6 +279,8 @@
     isPct: isPct,
     clampPct: clampPct,
     isFit: isFit,
+    isAudioCapable: isAudioCapable,
+    audioSlotId: audioSlotId,
     SCREEN_ASPECT: SCREEN_ASPECT,
     normalizeAspect: normalizeAspect,
     screensFor: screensFor,

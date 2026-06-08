@@ -1197,6 +1197,8 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
 .mc-mv-cell-btn svg { width: 15px; height: 15px; }
 .mc-mv-cell-btn:hover { background: rgba(0,0,0,0.85); }
 .mc-mv-listen.active { background: var(--mc-broadcasting, #22c55e); color: #06210f; }
+/* Wall-audio toggle: the frame whose sound plays ON THE DISPLAY (one at a time). */
+.mc-mv-wallaudio.active { background: var(--mc-broadcasting, #22c55e); color: #06210f; }
 /* Fit/Fill toggle: in Fit (contain) mode it reads as "active/non-default" so the
    operator can see at a glance which frames were switched off the default Fill. */
 .mc-mv-fit.fitmode { background: var(--mc-accent, #2563eb); color: #fff; }
