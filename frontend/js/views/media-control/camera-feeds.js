@@ -1,16 +1,15 @@
 // camera-feeds.js — the "Camera Feeds" tab in the Media Control source dock.
 //
 // A curated catalog of Miami / Miami Beach live cameras and news streams, grouped
-// into collapsible folders (News, Causeways & Port, South Beach Streets, Beaches,
-// Traffic Cams, EarthCam). Each feed is a draggable .mc-tile carrying a
+// into collapsible folders (News; Traffic · Skyline · Causeways; South Beach
+// Streets; Beach Cams; Port & Marine; Miami Cams). Each feed is a draggable .mc-tile carrying a
 // { remote_url } source — the SAME contract every other source tab uses — so the
 // operator drags a camera onto a display card (or taps to route it) exactly like
 // any other source. The player renders the remote_url in an <iframe> (text/html),
 // which is how every live web cam / YouTube / Ozolio embed plays.
 //
 // Thumbnails are REAL where the provider exposes one (Ozolio live poster, YouTube
-// frame still, FL511 snapshot); otherwise a clean category icon stands in. No
-// generic placeholder.
+// frame still); otherwise a clean category icon stands in. No generic placeholder.
 //
 // This tab is FRONTEND-ONLY and additive: no DB rows, no server changes. YouTube
 // cams use the youtube-nocookie.com/embed form on purpose — it is NOT matched by
@@ -26,16 +25,16 @@ import { CAMERA_FEED_GROUPS } from './camera-feeds-catalog.js';
 const GROUP_ICONS = {
   // Broadcast tower — live news.
   news: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"></path><path d="M12 14v8"></path><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4"></path><path d="M5 5a9 9 0 0 0 0 14M19 5a9 9 0 0 1 0 14"></path></svg>',
-  // Suspension bridge — causeways / port / bay.
-  causeway: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 18h20"></path><path d="M4 18V8M20 18V8"></path><path d="M4 9c4 4 12 4 16 0"></path><path d="M9 18v-5M15 18v-5M12 18v-7"></path></svg>',
+  // Suspension bridge — traffic / skyline / causeways.
+  skyline: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 18h20"></path><path d="M4 18V8M20 18V8"></path><path d="M4 9c4 4 12 4 16 0"></path><path d="M9 18v-5M15 18v-5M12 18v-7"></path></svg>',
   // City skyline — street views.
   street: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"></path><path d="M5 21V7l5-4v18"></path><path d="M10 21V9l5 3v9"></path><path d="M19 21V12l-4-2"></path><path d="M8 7h.01M8 11h.01M8 15h.01"></path></svg>',
   // Sun over water — beaches / coastal.
   beach: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.5"></circle><path d="M12 1.5v1M12 13.5v1M4.5 8h1M18.5 8h1M6.4 2.4l.7.7M16.9 13.9l.7.7M17.6 2.4l-.7.7M7.1 13.9l-.7.7"></path><path d="M2 19c1.5-1.5 3-1.5 4.5 0s3 1.5 4.5 0 3-1.5 4.5 0 3 1.5 4.5 0"></path><path d="M2 22.5c1.5-1.5 3-1.5 4.5 0s3 1.5 4.5 0 3-1.5 4.5 0 3 1.5 4.5 0"></path></svg>',
-  // Car — traffic (per request: a car icon on traffic cams).
-  traffic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 17h14M5 17a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm18 0a2 2 0 1 1-4 0 2 2 0 0 1 4 0z"></path><path d="M3 17v-3.2a2 2 0 0 1 .4-1.2l1.9-2.5A2 2 0 0 1 6.9 9h8.5a2 2 0 0 1 1.6.8l2.2 3a2 2 0 0 1 .4 1.2V17"></path><path d="M3 13h16"></path></svg>',
-  // Webcam / CCTV — EarthCam.
-  earthcam: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="10" r="6"></circle><circle cx="12" cy="10" r="2"></circle><path d="M8 19h8M12 16v3"></path></svg>',
+  // Anchor — port & marine.
+  marine: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="2"></circle><path d="M12 7v15"></path><path d="M5 12H3a9 9 0 0 0 18 0h-2"></path><path d="M8 11H5M19 11h-3"></path></svg>',
+  // Map pin — greater-Miami cams.
+  miami: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>',
 };
 
 // Tile fallback icon (no provider thumbnail) — a small live-camera glyph.

@@ -130,6 +130,59 @@ test('decodeCells supports a share cell (no url) with optional geometry', () => 
   assert.deepEqual(bare, { R2: { l: 'Share', k: 'share' } });
 });
 
+// ---- per-cell media fit (Fill/Fit) — optional, backward compatible ----
+
+test('isFit accepts only the two literal modes', () => {
+  assert.ok(MV.isFit('cover'));
+  assert.ok(MV.isFit('contain'));
+  assert.ok(!MV.isFit('fill'));
+  assert.ok(!MV.isFit('COVER'));
+  assert.ok(!MV.isFit(''));
+  assert.ok(!MV.isFit(true));
+  assert.ok(!MV.isFit(undefined));
+});
+
+test('decodeCells keeps f when it is cover or contain, round-trips', () => {
+  const map = {
+    C1: { u: '/player/hls.html?station=cbs&fit=cover', l: 'CBS', k: 'i', f: 'cover' },
+    L1: { u: '/player/oz.html?oid=EMB_A1', l: 'Cam', k: 'i', f: 'contain' },
+  };
+  const decoded = MV.decodeCells(MV.encodeCells(map));
+  assert.deepEqual(decoded, map);
+});
+
+test('decodeCells DROPS any f value other than cover/contain', () => {
+  const map = {
+    C1: { u: '/player/oz.html?oid=EMB_A1', l: 'a', k: 'i', f: 'fill' },      // bogus mode
+    C2: { u: '/player/oz.html?oid=EMB_A2', l: 'b', k: 'i', f: 'COVER' },     // wrong case
+    R1: { u: '/player/oz.html?oid=EMB_A3', l: 'c', k: 'i', f: 1 },           // non-string
+  };
+  const decoded = MV.decodeCells(MV.encodeCells(map));
+  // No cell may carry an `f` key, and an omitted f means default (cover) — so a
+  // cell with a bad f decodes to exactly {u,l,k}.
+  for (const id of ['C1', 'C2', 'R1']) {
+    assert.deepEqual(Object.keys(decoded[id]).sort(), ['k', 'l', 'u'], `${id} kept bad f`);
+  }
+});
+
+test('f does NOT relax the URL allowlist (foreign origins still rejected)', () => {
+  // A valid fit on a disallowed URL must still drop the whole cell.
+  const decoded = MV.decodeCells(MV.encodeCells({
+    C1: { u: 'https://evil.example.com/x', l: 'bad', k: 'i', f: 'cover' },
+  }));
+  assert.deepEqual(decoded, {});
+  // Sanity: the allowlist itself is byte-for-byte unchanged.
+  assert.ok(MV.isAllowedCellUrl('/player/oz.html?oid=EMB_A1&fit=cover'));
+  assert.ok(!MV.isAllowedCellUrl('https://evil.example.com/x'));
+  assert.ok(!MV.isAllowedCellUrl('/player/../secret'));
+});
+
+test('f combines with geometry and round-trips', () => {
+  const map = { C1: { u: '/player/cam.html?id=470&fit=cover', l: 'Cam', k: 'i', f: 'cover', x: 25, y: 0, w: 60, h: 55 } };
+  const decoded = MV.decodeCells(MV.encodeCells(map));
+  assert.deepEqual(decoded, map);
+});
+
 // ---- reactive layout: reflow geometry ----
 
 test('rectForCell uses cell geometry when valid, else the fixed slot', () => {

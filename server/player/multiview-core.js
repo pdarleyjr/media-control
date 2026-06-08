@@ -58,6 +58,12 @@
   function isPct(n) { return typeof n === 'number' && isFinite(n) && n >= 0 && n <= 100; }
   function clampPct(v) { return Math.max(0, Math.min(100, v)); }
 
+  // Per-cell media fit. The default (omitted) is 'cover' — content FILLS the cell
+  // (grid.html's base object-fit), so a 16:9 feed in a now-ultra-wide cell uses the
+  // whole frame instead of letterboxing. 'contain' opts a single cell back into
+  // no-crop letterbox. Only those two strings are ever honored.
+  function isFit(v) { return v === 'cover' || v === 'contain'; }
+
   // ---- the SECURITY BOUNDARY ----------------------------------------------
   // grid.html renders these URLs on a CSP-free /player page (iframe/video/img),
   // so a cell URL may ONLY be a same-origin player/content path or a
@@ -107,10 +113,12 @@
     return b64urlEncode(JSON.stringify(map || {}));
   }
 
-  // Decode + SANITIZE a cells param into a clean {slotId: {u,l,k[,x,y,w,h]}} map.
+  // Decode + SANITIZE a cells param into a clean {slotId: {u,l,k[,f][,x,y,w,h]}} map.
   // Drops unknown slots, disallowed URLs, and bad kinds; passes per-cell geometry
   // through ONLY when all four are valid percentages (else omits it entirely, so a
-  // default-layout cell decodes to exactly {u,l,k}). Never throws.
+  // default-layout cell decodes to exactly {u,l,k}). The optional media-fit `f` is
+  // kept ONLY when it is the literal 'cover' or 'contain' (any other value is
+  // dropped; an omitted `f` means default = cover). Never throws.
   function decodeCells(param) {
     var out = {};
     if (!param) return out;
@@ -132,6 +140,8 @@
         var kind = (typeof c.k === 'string' && KINDS[c.k]) ? c.k : 'i';
         cell = { u: c.u, l: label, k: kind };
       }
+      // Optional media-fit — kept ONLY when explicitly 'cover' or 'contain'.
+      if (isFit(c.f)) cell.f = c.f;
       // Optional reactive geometry — only when all four are valid, positive %.
       if (isPct(c.x) && isPct(c.y) && isPct(c.w) && isPct(c.h) && c.w > 0 && c.h > 0) {
         cell.x = +c.x; cell.y = +c.y; cell.w = +c.w; cell.h = +c.h;
@@ -201,6 +211,7 @@
     MIN_PCT: MIN_PCT,
     isPct: isPct,
     clampPct: clampPct,
+    isFit: isFit,
     isAllowedCellUrl: isAllowedCellUrl,
     b64urlEncode: b64urlEncode,
     b64urlDecode: b64urlDecode,

@@ -22,6 +22,8 @@ import * as schedulesView from './schedules.js';
 // Rail "Room setup" launcher icons (stroke icons, dashboard SVG vocabulary).
 const ICON_SETUP_SCHEDULE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>';
 const ICON_SETUP_WALLS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="9" height="8" rx="1"></rect><rect x="13" y="3" width="9" height="8" rx="1"></rect><rect x="2" y="13" width="9" height="8" rx="1"></rect><rect x="13" y="13" width="9" height="8" rx="1"></rect></svg>';
+// Library drawer collapse/expand chevron (points right when open → collapse, left when collapsed → reopen).
+const ICON_CHEVRON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>';
 
 let unsub = null;
 let unsubChip = null;   // broadcast-chip unsubscribe (Task 4.5)
@@ -372,6 +374,23 @@ function paintToolbox() {
   });
 }
 
+// The library drawer sits BELOW the inspector (z-index 30 vs 40) and is fully
+// covered by it when open. While the inspector is open we also mark the drawer
+// inert + aria-hidden so keyboard/AT users can't tab into the obscured drawer;
+// closing the inspector restores it (and the drawer re-reveals naturally, since
+// the inspector just becomes hidden — no extra show/hide coordination needed).
+function setLibraryInert(inert) {
+  const drawer = document.getElementById('mc-library-drawer');
+  if (!drawer) return;
+  if (inert) {
+    drawer.setAttribute('inert', '');
+    drawer.setAttribute('aria-hidden', 'true');
+  } else {
+    drawer.removeAttribute('inert');
+    drawer.removeAttribute('aria-hidden');
+  }
+}
+
 // Selecting a stage card opens the inspector for that display (Task 4.4):
 // display info, "Partition into regions", per-region audio + fit. Closing the
 // panel hides it. Wall members never render as their own card, but we still pass
@@ -381,11 +400,12 @@ function openInspector(deviceId) {
   const el = inspectorEl();
   if (!el) return;
   const display = displayState.get(deviceId);
-  if (!display) { closeInspector(el); return; }
+  if (!display) { closeInspector(el); setLibraryInert(false); return; }
+  setLibraryInert(true);
   renderInspector(el, {
     display,
     isWallMember: wallMemberIds.has(deviceId),
-    onClose: () => { /* panel hides itself; nothing else to tear down */ },
+    onClose: () => { setLibraryInert(false); },
     onDeviceChanged: async () => {
       await displayState.refresh().catch(() => {});
       await loadWalls();
@@ -751,32 +771,47 @@ export async function render() {
               <div id="mc-multiview" class="mc-multiview-host" hidden></div>
             </section>
 
-            <section class="mc-control-zone" aria-labelledby="mc-sources-head">
-              <div class="mc-section-head">
-                <h2 id="mc-sources-head" class="mc-section-title">${esc(t('mc.section.sources'))}</h2>
-              </div>
-              <section id="mc-toolbox" class="mc-toolbox" aria-label="${esc(t('mc.section.sources'))}"></section>
+            <section class="mc-control-bottom" aria-label="${esc(t('mc.rail.label'))}">
+              <div id="mc-presets-host"></div>
+              <div id="mc-recent-host"></div>
+              <section class="mc-setup-panel" aria-labelledby="mc-setup-head">
+                <h3 id="mc-setup-head" class="mc-rail-title">${esc(t('mc.setup.title'))}</h3>
+                <div class="mc-setup-links">
+                  <button type="button" class="mc-setup-link" data-mc-setup="schedules">
+                    <span class="mc-setup-ico" aria-hidden="true">${ICON_SETUP_SCHEDULE}</span>
+                    <span class="mc-setup-link-label">${esc(t('mc.setup.schedules'))}</span>
+                  </button>
+                  <a class="mc-setup-link" href="#/walls">
+                    <span class="mc-setup-ico" aria-hidden="true">${ICON_SETUP_WALLS}</span>
+                    <span class="mc-setup-link-label">${esc(t('mc.setup.walls'))}</span>
+                  </a>
+                </div>
+              </section>
             </section>
           </div>
-
-          <aside class="mc-control-rail" aria-label="${esc(t('mc.rail.label'))}">
-            <div id="mc-presets-host"></div>
-            <div id="mc-recent-host"></div>
-            <section class="mc-rail-panel mc-setup-panel" aria-labelledby="mc-setup-head">
-              <h3 id="mc-setup-head" class="mc-rail-title">${esc(t('mc.setup.title'))}</h3>
-              <div class="mc-setup-links">
-                <button type="button" class="mc-setup-link" data-mc-setup="schedules">
-                  <span class="mc-setup-ico" aria-hidden="true">${ICON_SETUP_SCHEDULE}</span>
-                  <span class="mc-setup-link-label">${esc(t('mc.setup.schedules'))}</span>
-                </button>
-                <a class="mc-setup-link" href="#/walls">
-                  <span class="mc-setup-ico" aria-hidden="true">${ICON_SETUP_WALLS}</span>
-                  <span class="mc-setup-link-label">${esc(t('mc.setup.walls'))}</span>
-                </a>
-              </div>
-            </section>
-          </aside>
         </div>
+
+        <aside id="mc-library-drawer" class="mc-library-drawer" data-open="true" aria-label="${esc(t('mc.section.sources'))}">
+          <button type="button" class="mc-library-tab" data-library-toggle
+                  aria-expanded="true" aria-controls="mc-toolbox"
+                  title="${esc(t('mc.library.toggle'))}">
+            <span class="mc-library-tab-ico" aria-hidden="true">${ICON_CHEVRON}</span>
+            <span class="mc-library-tab-label">${esc(t('mc.library.title'))}</span>
+          </button>
+          <div class="mc-library-inner">
+            <div class="mc-library-head">
+              <h2 id="mc-library-title" class="mc-library-title">${esc(t('mc.library.title'))}</h2>
+              <button type="button" class="mc-library-collapse" data-library-toggle
+                      aria-expanded="true" aria-controls="mc-toolbox"
+                      aria-label="${esc(t('mc.library.collapse'))}" title="${esc(t('mc.library.collapse'))}">
+                <span aria-hidden="true">${ICON_CHEVRON}</span>
+              </button>
+            </div>
+            <div class="mc-library-body">
+              <section id="mc-toolbox" class="mc-toolbox" aria-labelledby="mc-library-title"></section>
+            </div>
+          </div>
+        </aside>
 
         <aside id="mc-inspector" class="mc-inspector" hidden></aside>
       </div>
@@ -851,6 +886,37 @@ export async function render() {
         mvMounted = true;
         await renderMultiview(mvHost, { routeSource: routeSourceWithPicker });
       }
+    });
+  }
+
+  // Content LIBRARY drawer (right side, collapsible). Toggling flips data-open on
+  // the drawer; both the docked reopen tab and the in-header collapse button drive
+  // it (mirrors the multiview toggle's aria-expanded pattern). The drawer is a
+  // FIXED overlay so collapsing/expanding never reflows the stage — the stage's
+  // ResizeObserver tiling is untouched. Drag-and-drop is unaffected: tiles keep
+  // their draggable + data-drag-source attrs and the drawer never sets
+  // pointer-events:none, so an operator can drag a tile from the open drawer onto
+  // a stage card exactly as before.
+  const libraryDrawer = document.getElementById('mc-library-drawer');
+  if (libraryDrawer) {
+    // When collapsed, mark the (off-screen) drawer BODY inert so keyboard/AT users
+    // don't tab into hidden tiles — but leave the docked reopen tab focusable so
+    // it can be pulled back open. The tab lives OUTSIDE .mc-library-inner.
+    const libraryInner = libraryDrawer.querySelector('.mc-library-inner');
+    const setLibraryOpen = (open) => {
+      libraryDrawer.dataset.open = open ? 'true' : 'false';
+      libraryDrawer.querySelectorAll('[data-library-toggle]').forEach(btn => {
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+      if (libraryInner) {
+        if (open) { libraryInner.removeAttribute('inert'); }
+        else { libraryInner.setAttribute('inert', ''); }
+      }
+    };
+    libraryDrawer.querySelectorAll('[data-library-toggle]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        setLibraryOpen(libraryDrawer.dataset.open !== 'true');
+      });
     });
   }
 

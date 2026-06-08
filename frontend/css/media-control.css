@@ -565,6 +565,78 @@
 .mc-nc-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--mc-text-primary); font-size: var(--mc-font-size-sm); }
 
 /* ════════════════════════════════════════════════════════════════════════
+   Content LIBRARY drawer (right-side, collapsible). A fixed overlay so it never
+   reflows the stage; slides off-screen when collapsed, leaving a docked reopen
+   tab. Width (--mc-library-w, 380px) is kept BELOW the inspector's 430px so the
+   inspector (z-index 40) fully covers this drawer (z-index 30) when a display is
+   selected. Scroll lives on .mc-library-body — NOT on #mc-toolbox — because
+   paintToolbox() replaces #mc-toolbox innerHTML wholesale.
+   ════════════════════════════════════════════════════════════════════════ */
+.mc-library-drawer {
+  position: fixed; right: 0; top: 0; height: 100%;
+  width: var(--mc-library-w, 380px); max-width: 92vw;
+  z-index: 30;
+  transition: transform var(--mc-transition-base);
+  will-change: transform;
+}
+.mc-library-drawer[data-open="false"] { transform: translateX(100%); }
+
+/* Docked reopen tab — rides the drawer's left edge, stays visible when the
+   drawer is collapsed off-screen so the operator can pull it back open. */
+.mc-library-tab {
+  position: absolute; top: 50%; right: 100%; transform: translateY(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: var(--space-2, 8px);
+  padding: var(--mc-space-md, 16px) var(--space-2, 8px);
+  background: var(--mc-surface); border: 1px solid var(--mc-border-medium); border-right: none;
+  border-radius: var(--mc-radius-md, 12px) 0 0 var(--mc-radius-md, 12px);
+  box-shadow: -6px 0 16px rgba(41,37,36,0.12);
+  color: var(--mc-text-primary); font-family: var(--mc-font-family-sans);
+  font-size: var(--mc-font-size-sm); cursor: pointer;
+}
+.mc-library-tab:hover { background: var(--mc-surface-alt); border-color: var(--accent); }
+.mc-library-tab:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.mc-library-tab-ico { display: inline-flex; color: var(--accent); transition: transform var(--mc-transition-base); }
+.mc-library-tab-ico svg { width: 18px; height: 18px; display: block; }
+/* Chevron points right (collapse) when open, flips to point left (reopen) when collapsed. */
+.mc-library-drawer[data-open="false"] .mc-library-tab-ico { transform: rotate(180deg); }
+.mc-library-tab-label {
+  writing-mode: vertical-rl; text-orientation: mixed;
+  font-weight: var(--mc-fw-semibold, 600); letter-spacing: 0.04em;
+  text-transform: uppercase; font-size: var(--font-2, 12px); color: var(--mc-text-secondary);
+}
+
+.mc-library-inner {
+  display: flex; flex-direction: column; height: 100%;
+  background: var(--mc-surface); border-left: 1px solid var(--mc-border-medium);
+  box-shadow: -8px 0 24px rgba(41,37,36,0.16);
+}
+.mc-library-head {
+  flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-2, 8px);
+  padding: var(--mc-space-md, 16px) var(--mc-space-lg, 24px);
+  border-bottom: 1px solid var(--mc-border-light);
+}
+.mc-library-title { margin: 0; font-size: var(--mc-font-size-lg, 18px); font-weight: var(--mc-fw-semibold); color: var(--mc-text-primary); }
+.mc-library-collapse {
+  flex: 0 0 auto; width: var(--tap-min, 48px); height: var(--tap-min, 48px);
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; border: none; color: var(--mc-text-secondary);
+  cursor: pointer; border-radius: var(--mc-radius-sm);
+}
+.mc-library-collapse svg { width: 20px; height: 20px; display: block; }
+.mc-library-collapse:hover { color: var(--mc-text-primary); background: var(--mc-surface-alt); }
+.mc-library-collapse:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+/* Scroll lives HERE so paintToolbox() replacing #mc-toolbox innerHTML never
+   wipes the scroll container. */
+.mc-library-body {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  padding: var(--mc-space-lg, 24px);
+}
+/* Inside the drawer the toolbox is just the tab strip + tile grid — its own card
+   chrome (border/radius/bg) is redundant against the drawer surface, so flatten. */
+.mc-library-body .mc-toolbox { background: transparent; border: none; border-radius: 0; padding: 0; }
+
+/* ════════════════════════════════════════════════════════════════════════
    Inspector (slide-in display detail)
    ════════════════════════════════════════════════════════════════════════ */
 .mc-inspector {
@@ -808,16 +880,35 @@
 .mc-cmd-spin svg { animation: mc-spin 0.8s linear infinite; }
 
 /* ════════════════════════════════════════════════════════════════════════
-   Two-column body: main control column + right rail (Presets · Recent). The
-   rail is the Command-360 "Layouts" analog. Sticky on wide screens, stacked
-   below on narrow ones (the rail follows the stage on a tablet/podium).
+   Single-column body: the main control column now spans the full width. The
+   content LIBRARY moved to a fixed right-side collapsible drawer (overlay, see
+   .mc-library-drawer) and the former right-rail panels (Presets · Recent · Room
+   setup) moved to .mc-control-bottom below the stage. A constant right gutter
+   keeps content clear of the open drawer on wide screens WITHOUT reflowing the
+   stage when the drawer collapses (the gutter never changes on toggle, so the
+   stage's ResizeObserver tiling stays stable).
    ════════════════════════════════════════════════════════════════════════ */
-.mc-control-body {
-  display: grid; grid-template-columns: minmax(0, 1fr) 320px;
-  gap: var(--mc-space-xl, 32px); align-items: start;
-}
+.mc-control { --mc-library-w: 380px; }
+.mc-control-body { display: block; }
 .mc-control-main { display: flex; flex-direction: column; gap: var(--mc-space-lg, 24px); min-width: 0; }
-.mc-control-rail { display: flex; flex-direction: column; gap: var(--mc-space-lg, 24px); position: sticky; top: var(--space-4, 16px); }
+
+/* Bottom row: the three former-rail panels (Presets · Recent · Room setup) as a
+   responsive auto-fit row that reuses each panel's existing chrome unchanged. */
+.mc-control-bottom {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--mc-space-lg, 24px); align-items: start;
+}
+
+/* Wide screens: reserve a constant right gutter on the in-flow content so the
+   open library drawer (a fixed overlay) doesn't sit over the content column. The
+   gutter is CONSTANT — it does not change when the drawer collapses — so the
+   stage never reflows on toggle and its ResizeObserver tiling stays stable. The
+   fixed drawer/inspector are NOT in flow, so this padding doesn't move them.
+   Below this breakpoint the drawer becomes a full-width overlay (see responsive
+   block), so no gutter is reserved and the content uses the full width. */
+@media (min-width: 1025px) {
+  .mc-control { padding-right: calc(var(--mc-library-w, 380px) + var(--mc-space-lg, 24px)); }
+}
 
 /* Shared rail-panel chrome */
 .mc-presets, .mc-recent {
@@ -1000,14 +1091,19 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
 @keyframes mc-modal-in { from { transform: translateY(8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 
 /* ---- responsive ---- */
+/* ≤1024px: no right gutter is reserved (see the min-width:1025px rule above), so
+   the content uses the full width and the library drawer becomes a wider overlay
+   that floats over content when opened (operator collapses it to see the stage). */
 @media (max-width: 1024px) {
-  .mc-control-body { grid-template-columns: 1fr; }
-  .mc-control-rail { position: static; }
+  .mc-library-drawer { width: min(420px, 92vw); }
 }
 @media (max-width: 720px) {
   .mc-control-head { align-items: flex-start; }
   .mc-stage { grid-template-columns: 1fr; }
   .mc-inspector { width: 100%; }
+  /* Full-width drawer on phones; the inspector is also full-width and z-index 40
+     still covers it. The reopen tab tucks against the right edge. */
+  .mc-library-drawer { width: 100%; max-width: 100%; }
   .mc-cmd-launch { margin-left: 0; }
   .mc-route-sections, .mc-insp-top-actions, .mc-insp-control-grid { grid-template-columns: 1fr; }
 }
@@ -1024,6 +1120,7 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
   .mc-cmd-spin svg { animation: none; }
   .mc-modal-card { animation: none; }
   .mc-setup-link { transition: none; }
+  .mc-library-drawer, .mc-library-tab-ico { transition: none; }
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -1085,6 +1182,9 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
 .mc-mv-slot-hint { font-size: clamp(8px, 0.8vw, 10px); color: var(--mc-text-tertiary, #64748b); }
 
 .mc-mv-cell-thumb { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+/* Mirror the wall's fit choice in the preview thumbnail: Fill (cover, default)
+   vs Fit (contain, letterbox). Matches grid.html's per-cell object-fit. */
+.mc-mv-cell[data-fit="contain"] .mc-mv-cell-thumb { object-fit: contain; background: #000; }
 .mc-mv-cell-ico { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--mc-text-secondary, #94a3b8); }
 .mc-mv-cell-ico svg { width: 28%; height: 28%; max-width: 40px; max-height: 40px; opacity: 0.7; }
 
@@ -1097,6 +1197,9 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
 .mc-mv-cell-btn svg { width: 15px; height: 15px; }
 .mc-mv-cell-btn:hover { background: rgba(0,0,0,0.85); }
 .mc-mv-listen.active { background: var(--mc-broadcasting, #22c55e); color: #06210f; }
+/* Fit/Fill toggle: in Fit (contain) mode it reads as "active/non-default" so the
+   operator can see at a glance which frames were switched off the default Fill. */
+.mc-mv-fit.fitmode { background: var(--mc-accent, #2563eb); color: #fff; }
 .mc-mv-clear:hover { background: var(--mc-danger, #ef4444); }
 
 .mc-mv-cell-label {

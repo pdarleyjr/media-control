@@ -41,12 +41,16 @@
       var params = new URLSearchParams(location.search);
       var id = (params.get('id') || '').replace(/[^0-9]/g, '');
       var label = (params.get('label') || '').slice(0, 80);
+      // fit=cover fills the frame (used when this page is a multiview cell that
+      // wants no letterbox); default contain preserves standalone behavior.
+      var fit = params.get('fit') === 'cover' ? 'cover' : 'contain';
       var REFRESH_MS = 30000; // re-pull twice per source refresh window so a new frame is shown promptly
       var img = document.getElementById('cam');
       var msg = document.getElementById('msg');
       var labelEl = document.getElementById('label');
       var labelText = document.getElementById('labeltext');
 
+      img.style.objectFit = fit;
       if (!id) { msg.textContent = 'No camera selected.'; msg.style.display = 'flex'; return; }
       if (label) { labelText.textContent = label; labelEl.hidden = false; }
 

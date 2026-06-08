@@ -27,7 +27,11 @@
   // cell's pixel box when iframed inside a multiview grid cell.
   var w = parseInt(q.get('w'), 10) || Math.round(window.innerWidth) || 1600;
   var h = parseInt(q.get('h'), 10) || Math.round(window.innerHeight) || 900;
+  // fit=cover fills the frame (no letterbox) — used when this page is a multiview
+  // cell; default contain preserves standalone behavior.
+  var fit = q.get('fit') === 'cover' ? 'cover' : 'contain';
   var img = document.getElementById('shot');
+  img.style.objectFit = fit;
   var state = document.getElementById('state');
   var fails = 0;
 

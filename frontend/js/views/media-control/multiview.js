@@ -64,12 +64,21 @@ const IC = {
   mute:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z"></path><path d="M22 9l-6 6M16 9l6 6"></path></svg>',
   clear:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"></path></svg>',
   screen:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"></rect><path d="M8 21h8M12 17v4"></path></svg>',
+  // Fill = arrows pushing OUT to the frame edges (content fills, may crop).
+  fill:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"></path></svg>',
+  // Fit = arrows pulling IN (content fits whole, may letterbox).
+  fit:       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"></path></svg>',
 };
 
 // Office/ODF mime matcher (Word/Excel/PowerPoint + OpenDocument). Such files
 // can't render as raw bytes in a frame, so they route through /player/doc-pdf/:id
 // (LibreOffice -> PDF) like the full-screen player does.
 const OFFICE_DOC_RE = /(msword|ms-excel|ms-powerpoint|officedocument\.(?:wordprocessing|spreadsheet|presentation)ml|oasis\.opendocument)/;
+
+// Iframe player pages whose inner <video>/<img> honors a ?fit=cover param (so a
+// fill choice reaches their letterboxed media). grid.html's object-fit handles
+// <video>/<img> cells directly; youtube/deck/doc-pdf/api-content are NOT in here.
+const FIT_PARAM_RE = /^\/player\/(oz|hls|cam|site)\.html(\?|$)/;
 
 // ---- module state (one composer per Command Center mount) ----
 let cells = {};               // slotId -> { cellUrl, monitorUrl, kind, label, thumb, category }
@@ -173,6 +182,21 @@ function stripLabelParam(relUrl) {
   return relUrl.replace(/([?&])label=[^&]*/i, '$1').replace(/[?&]$/, '').replace(/\?&/, '?');
 }
 
+// A cell's media-fit, defaulting to 'cover' (fill the frame — grid.html's base
+// behavior). Only 'cover' | 'contain' are ever stored/sent.
+function cellFit(c) {
+  return c && c.fit === 'contain' ? 'contain' : 'cover';
+}
+
+// Append &fit=cover to a /player iframe URL so cam/oz/hls/site honor it (their
+// object-fit defaults to contain). Only added for the 'cover' (fill) choice —
+// 'contain' is each page's default, so no param is needed. Same root-relative
+// query style as the rest of this module; the result still passes the allowlist.
+function withFit(relUrl, fit) {
+  if (fit !== 'cover') return relUrl;
+  return relUrl + (relUrl.indexOf('?') === -1 ? '?' : '&') + 'fit=cover';
+}
+
 // Build a youtube-nocookie embed URL (cell = muted autoplay; monitor = unmuted).
 function ytEmbed(id, muted) {
   return `https://www.youtube-nocookie.com/embed/${id}?autoplay=1&mute=${muted ? 1 : 0}` +
@@ -261,7 +285,15 @@ function buildGridUrl() {
     if (!c) continue;
     let entry = null;
     if (c.kind === 'share') entry = { l: c.label || t('mc.mv.screen_share'), k: 'share' };
-    else if (c.cellUrl) entry = { u: c.cellUrl, l: c.label || '', k: c.kind || 'i' };
+    else if (c.cellUrl) {
+      const fit = cellFit(c);
+      // Thread fit two ways: grid.html's object-fit reads the `f` field (video/img
+      // + the fit-capable iframe pages set their own object-fit from ?fit=cover).
+      // For oz/hls/cam/site iframes, also push &fit=cover into the cell URL so the
+      // inner page (whose default is contain) fills the frame.
+      const u = FIT_PARAM_RE.test(c.cellUrl) ? withFit(c.cellUrl, fit) : c.cellUrl;
+      entry = { u, l: c.label || '', k: c.kind || 'i', f: fit };
+    }
     if (!entry) continue;
     const g = geoms[id];
     if (validGeom(g)) { entry.x = g.x; entry.y = g.y; entry.w = g.w; entry.h = g.h; }
@@ -324,9 +356,17 @@ function cellInner(slot) {
          title="${esc(monitoring ? t('mc.mv.stop_audio') : t('mc.mv.listen'))}"
          aria-pressed="${monitoring ? 'true' : 'false'}">${monitoring ? IC.mute : IC.sound}</button>`
     : '';
+  // Fill/Fit toggle: Fill (cover) fills the frame, Fit (contain) letterboxes.
+  // Shows the CURRENT mode; clicking flips it. Default is Fill.
+  const filling = cellFit(c) !== 'contain';
+  const fitBtn = `<button type="button" class="mc-mv-cell-btn mc-mv-fit${filling ? '' : ' fitmode'}"
+       data-mv-fit="${esc(slot.id)}"
+       title="${esc(filling ? t('mc.mv.fit_to') : t('mc.mv.fill_to'))}"
+       aria-pressed="${filling ? 'false' : 'true'}">${filling ? IC.fill : IC.fit}</button>`;
   return `
     ${thumb}
     <div class="mc-mv-cell-actions">
+      ${fitBtn}
       ${listenBtn}
       <button type="button" class="mc-mv-cell-btn mc-mv-clear" data-mv-clear="${esc(slot.id)}" title="${esc(t('mc.mv.clear_cell'))}">${IC.clear}</button>
     </div>
@@ -342,8 +382,11 @@ function render() {
     const c = cells[slot.id];
     const r = cellRect(slot.id);
     const shareCls = (c && c.kind === 'share') ? ' mc-mv-cell-share' : '';
+    // data-fit drives the preview thumbnail's object-fit so the composer mirrors
+    // what the wall will show (cover = fill, contain = letterbox).
+    const fitAttr = (c && c.kind !== 'share') ? ` data-fit="${cellFit(c)}"` : '';
     return `<div class="mc-mv-cell${c ? ' filled' : ''}${shareCls}${monitorSlot === slot.id ? ' monitoring' : ''}"
-      data-mv-cell="${esc(slot.id)}" data-side="${slot.side}"
+      data-mv-cell="${esc(slot.id)}" data-side="${slot.side}"${fitAttr}
       style="left:${r.x}%;top:${r.y}%;width:${r.w}%;height:${r.h}%"
       aria-label="${esc(slotName(slot))}">${cellInner(slot)}</div>`;
   }).join('');
@@ -400,6 +443,9 @@ function parseDrag(e) {
 function dropIntoSlot(slotId, parsed) {
   const resolved = resolveCell(parsed.source, parsed.label, parsed.thumb);
   if (resolved.error) { showToast(t(resolved.error), 'error'); return; }
+  // Default every new cell to Fill (cover). The operator can toggle to Fit per
+  // frame; the choice is preserved across re-drops only by the toggle, not here.
+  if (resolved.kind !== 'share') resolved.fit = 'cover';
   cells[slotId] = resolved;
   saveStore();
   if (monitorSlot && monitorSlot !== slotId && !cells[monitorSlot]) monitorSlot = null;
@@ -447,6 +493,9 @@ function attachHandlers() {
 
   rootEl.querySelectorAll('[data-mv-listen]').forEach((btn) => {
     btn.addEventListener('click', (e) => { e.stopPropagation(); toggleMonitor(btn.dataset.mvListen); });
+  });
+  rootEl.querySelectorAll('[data-mv-fit]').forEach((btn) => {
+    btn.addEventListener('click', (e) => { e.stopPropagation(); toggleFit(btn.dataset.mvFit); });
   });
   rootEl.querySelectorAll('[data-mv-clear]').forEach((btn) => {
     btn.addEventListener('click', (e) => { e.stopPropagation(); clearCell(btn.dataset.mvClear); });
@@ -542,6 +591,17 @@ function startResize(ev, cellEl, slotId, dir) {
   cellEl.addEventListener('pointermove', move);
   cellEl.addEventListener('pointerup', up);
   cellEl.addEventListener('pointercancel', up);
+}
+
+// ---------- per-cell fit ----------
+// Flip a frame between Fill (cover, default) and Fit (contain). Persists with the
+// cell so it survives re-render and is included in the encoded layout.
+function toggleFit(slotId) {
+  const c = cells[slotId];
+  if (!c || c.kind === 'share') return;
+  c.fit = cellFit(c) === 'contain' ? 'cover' : 'contain';
+  saveStore();
+  render();
 }
 
 // ---------- local audio monitor ----------

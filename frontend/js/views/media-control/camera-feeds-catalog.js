@@ -12,25 +12,31 @@
 //               cam — the bare relay embed is host-gated and renders black on our
 //               origin, so oz.html resolves the .m3u8 via /player/oz-stream and
 //               plays it with hls.js)
-//             • https://media.mbfdhub.com/player/cam.html?id=<fl511 id>&label=… (FDOT snapshot)
 //             • https://media.mbfdhub.com/player/hls.html?station=<key>&label=… (live-news
 //               HLS — resolved/proxied server-side by /player/news-stream, played via hls.js)
 //   thumb : "ozolio:<OID>" | "youtube:<ID>" | a direct https image | omitted (→ folder icon)
 //   kind  : "video" (default) | "snapshot" (refreshing still — labeled on the tile)
 //
 // Every feed here was embeddability- AND liveness-verified (adversarial validation
-// pass, 2026-06-06). Dead / frame-blocked / embedding-disabled / non-live sources
-// from the original list were DROPPED, never added — a tile that won't play is
-// worse than no tile. Dropped, with reasons:
+// passes, 2026-06-06 + 2026-06-08). Dead / frame-blocked / embedding-disabled /
+// non-live sources are DROPPED, never added — a tile that won't play is worse than
+// no tile. Dropped, with reasons:
 //   • Local TV news on the station WEBSITES + YouTube: ad/consent/DRM-gated and not
 //     embeddable. BUT each station's free 24/7 FAST/OTT HLS feed IS playable via the
 //     hls.js wrapper (see the "news" group below) — that is how the news folder works.
 //   • EarthCam (News Café / Brickell Key / resort pages): proprietary HLS players
 //     behind ads + consent + click-to-play (and we have no hls.js).
-//   • PTZtv PortMiami / South Beach YouTube ids: embedding disabled by the owner
-//     (playableInEmbed:false) or the recordings have ended.
+//   • PTZtv PortMiami / South Beach YouTube ids that are embedding-disabled by the
+//     owner (playableInEmbed:false) or whose recordings have ended — e.g. GgmD8xuOqMM,
+//     DxZziUUr6CY (verified embedding-disabled 2026-06-08).
 //   • Ozolio /explore/ pages (MacArthur, Biscayne North): frame-blocked host pages
 //     whose CID_/raw OIDs 404 from the relay (only EMB_ OIDs resolve).
+//   • FDOT / FL511 traffic cams: the only public artifact is a ~60s-refresh JPEG; the
+//     real DIVAS live-video HLS is token-gated (HTTP 401, no CORS) and needs special
+//     FDOT DIVAS authorization, so it CANNOT be embedded as direct live HLS. The old
+//     JPEG-snapshot tiles (cam.html) are therefore replaced by embeddable YouTube live
+//     causeway / skyline streams that show the same Biscayne Bay corridors as full
+//     continuous video (see the "skyline" group below).
 
 // ---- feed builders (keep the catalog DRY + scannable) ----
 function yt(title, id) {
@@ -45,14 +51,6 @@ function oz(title, oid) {
     title,
     url: `https://media.mbfdhub.com/player/oz.html?oid=${oid}&label=${encodeURIComponent(title)}`,
     thumb: `ozolio:${oid}`,
-  };
-}
-function fdot(title, id) {
-  return {
-    title,
-    url: `https://media.mbfdhub.com/player/cam.html?id=${id}&label=${encodeURIComponent(title)}`,
-    thumb: `https://fl511.com/map/Cctv/${id}`,
-    kind: 'snapshot',
   };
 }
 // Live-news channel: a whitelisted station key the player resolves server-side to
@@ -85,11 +83,17 @@ export const CAMERA_FEED_GROUPS = [
     ],
   },
   {
-    id: 'causeway',
-    nameKey: 'mc.cf.group.causeway',
+    id: 'skyline',
+    nameKey: 'mc.cf.group.skyline',
+    // Traffic / skyline / causeway corridors as continuous YouTube live video.
+    // REPLACES the former FDOT/FL511 JPEG-snapshot "Traffic Cams" group: the FDOT
+    // DIVAS live-video HLS is token-gated (401, no CORS) and not embeddable, so
+    // these embeddable 24/7 streams of the same Biscayne Bay / causeway corridors
+    // stand in (full motion, not a refreshing still).
     feeds: [
       oz('Biscayne Bay & PortMiami', 'EMB_FDVN00000417'),
       yt('MacArthur Causeway & Skyline', '4UzQd1dVPlo'),
+      yt('Miami River Cam', '7wHgYc_kN98'),
     ],
   },
   {
@@ -106,32 +110,35 @@ export const CAMERA_FEED_GROUPS = [
     id: 'beach',
     nameKey: 'mc.cf.group.beach',
     feeds: [
+      yt('ZeroEight · South Beach / Collins Ave', 'g5BS95j2rmM'),
+      yt('Ocean Drive · Miami Beach', 'lVkJlng3nSs'),
       yt('Acqualina Beach Cam', 'sI7oCUe1dmo'),
       yt('Sunny Isles Beach', 'T5U_EzpjCJk'),
+      yt('Sunny Isles Beach · Cam 2', 'qDQ97Gw83Xs'),
+      yt('Hollywood Beach Broadwalk', 'cmkAbDUEoyA'),
+      yt('Coral City Camera · Reef', '7i8ARjIeM2k'),
       oz('Newport Pier · North', 'EMB_DCCO00000F84'),
       oz('Newport Fishing Pier', 'EMB_BKDD00000F89'),
     ],
   },
   {
-    id: 'traffic',
-    nameKey: 'mc.cf.group.traffic',
+    id: 'marine',
+    nameKey: 'mc.cf.group.marine',
     feeds: [
-      // FDOT District 6 / FL511 publishes these causeway + Port cameras only as a
-      // ~60s-refresh JPEG (the DIVAS video stream is auth-walled). cam.html reloads
-      // the still so the display shows a live-updating image, not a frozen frame.
-      fdot('MacArthur Cswy · Alton Rd', 470),
-      fdot('MacArthur Cswy · Watson Is.', 604),
-      fdot('MacArthur Cswy · Bridge Rd', 409),
-      fdot('Julia Tuttle Cswy · Alton Rd', 408),
-      fdot('Julia Tuttle Cswy · I-95', 566),
-      fdot('Port of Miami · Port Blvd', 425),
+      yt('PortMiami Cruise Ships', 'PeYZZinH1wI'),
+      yt('PortMiami Terminals', '9iV-D-KAtao'),
+      yt('Biscayne Bay North Waterfront', '5YCajRjvWCg'),
     ],
   },
   {
-    id: 'earthcam',
-    nameKey: 'mc.cf.group.earthcam',
-    // Intentionally empty: every EarthCam page is HLS + ad/consent-gated (see
-    // header). The one resolvable Sunny Isles view lives in "Beaches" instead.
-    feeds: [],
+    id: 'miami',
+    nameKey: 'mc.cf.group.miami',
+    // Ozolio EMB_ live cams around greater Miami / Miami Beach.
+    feeds: [
+      oz('Grand Hyatt · Convention Center', 'EMB_VKAD00001371'),
+      oz('Little Havana · Calle Ocho', 'EMB_KQOD00000D77'),
+      oz('Wynwood Walls', 'EMB_GYHT00000D7C'),
+      oz('Coconut Grove', 'EMB_ZJKB000009E9'),
+    ],
   },
 ];
