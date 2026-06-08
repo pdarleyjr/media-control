@@ -2323,30 +2323,24 @@
           mount.appendChild(pdfFrame);
           if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 30) * 1000);
         } else if (isOffice) {
-          // 2026-05-28: Office documents render through the ONLYOFFICE
-          // Document Server already running at office.mbfdhub.com. The viewer
-          // URL is a public 'apps/preview/' path; if that endpoint isn't
-          // exposed, the file shows as a download instead — non-fatal but
-          // suboptimal. Follow-up: implement server-side conversion to PDF
-          // at upload time so we can always route through the PDF branch.
-          const officeFrame = document.createElement('iframe');
-          // ONLYOFFICE preview URL pattern. The file URL must be publicly
-          // reachable; we use the same /api/content/:id/file route the
-          // player already uses.
-          officeFrame.src = `https://office.mbfdhub.com/web-apps/apps/api/documents/api.js?fileUrl=${encodeURIComponent(src)}`;
-          officeFrame.style.cssText = 'width:100%;height:100%;border:none;background:#fff';
-          officeFrame.allow = 'autoplay; fullscreen';
-          // If the iframe fails to load, fall back to displaying the file
-          // (browsers may offer a download — still better than a black void).
-          officeFrame.onerror = () => {
-            console.warn('ONLYOFFICE iframe error; falling back to direct embed');
-            mount.innerHTML = '';
-            const fallback = document.createElement('iframe');
-            fallback.src = src;
-            fallback.style.cssText = 'width:100%;height:100%;border:none;background:#fff';
-            mount.appendChild(fallback);
-          };
-          mount.appendChild(officeFrame);
+          // 2026-06-07: Office/ODF docs (PPT/PPTX/DOC/DOCX/XLS/XLSX/ODF) are
+          // converted to PDF server-side by headless LibreOffice (cached at
+          // /player/doc-pdf/:id) and rendered through the browser's native PDF
+          // viewer — the SAME proven path as the isPdf branch above. This
+          // replaces the old ONLYOFFICE `…/api/documents/api.js?fileUrl=…`
+          // iframe, which pointed at the ONLYOFFICE JS *library* (not a viewer)
+          // and so displayed the raw JavaScript source as text on the display.
+          const docFrame = document.createElement('iframe');
+          // content_id is required to reach the converter route; fall back to
+          // the raw file only if it's somehow absent (browser may still offer a
+          // download — better than a blank void).
+          const docPdfSrc = item.content_id
+            ? `/player/doc-pdf/${item.content_id}`
+            : src;
+          docFrame.src = docPdfSrc + '#toolbar=0&navpanes=0&scrollbar=0&view=FitH';
+          docFrame.style.cssText = `width:100%;height:100%;border:none;background:#fff;object-fit:${cssFit}`;
+          docFrame.allow = 'autoplay; fullscreen';
+          mount.appendChild(docFrame);
           if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 60) * 1000);
         } else if (item.widget_id) {
           const iframe = document.createElement('iframe');

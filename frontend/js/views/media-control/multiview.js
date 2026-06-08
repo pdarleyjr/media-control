@@ -66,6 +66,11 @@ const IC = {
   screen:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"></rect><path d="M8 21h8M12 17v4"></path></svg>',
 };
 
+// Office/ODF mime matcher (Word/Excel/PowerPoint + OpenDocument). Such files
+// can't render as raw bytes in a frame, so they route through /player/doc-pdf/:id
+// (LibreOffice -> PDF) like the full-screen player does.
+const OFFICE_DOC_RE = /(msword|ms-excel|ms-powerpoint|officedocument\.(?:wordprocessing|spreadsheet|presentation)ml|oasis\.opendocument)/;
+
 // ---- module state (one composer per Command Center mount) ----
 let cells = {};               // slotId -> { cellUrl, monitorUrl, kind, label, thumb, category }
 let geoms = {};               // slotId -> { x,y,w,h } percent override (absent = fixed SLOT)
@@ -209,6 +214,12 @@ function resolveCell(source, label, thumb) {
       // bypasses X-Frame-Options so it renders inside the cell. The shot endpoint
       // reads the real URL from the row by id. /player/* is allowlisted.
       return { cellUrl: `/player/site.html?id=${encodeURIComponent(source.content_id)}`, monitorUrl: null, kind: 'i', label, thumb: thumb || meta.thumbnail_url || null, category: 'broadcast' };
+    }
+    if (OFFICE_DOC_RE.test(mime)) {
+      // Office/ODF doc → LibreOffice-rendered PDF shown via the browser's native
+      // PDF viewer inside the cell (raw .pptx/.docx bytes can't iframe). Same
+      // /player/doc-pdf/:id route the full-screen player uses; /player/* is allowlisted.
+      return { cellUrl: `/player/doc-pdf/${encodeURIComponent(source.content_id)}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`, monitorUrl: null, kind: 'i', label, thumb: thumb || meta.thumbnail_url || null, category: 'generic' };
     }
     // Unknown / web content → iframe the file (browser picks a viewer).
     return { cellUrl: fileUrl, monitorUrl: null, kind: 'i', label, thumb: thumb || meta.thumbnail_url || null, category: 'generic' };

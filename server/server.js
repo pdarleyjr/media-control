@@ -333,6 +333,52 @@ app.get('/player/site-shot/:id', async (req, res) => {
   }
 });
 
+// MBFD Media Control — Office/ODF document playback as PDF (Content > office docs).
+// PPT/PPTX/DOC/DOCX/XLS/XLSX/ODF can't render in a browser frame as raw bytes, and
+// the old ONLYOFFICE api.js iframe URL displayed the JS library as text. Here we
+// convert the document to a PDF with headless LibreOffice (cached) and serve it so
+// the player can show it through the native PDF viewer — the same path PDFs use.
+// Public under /player (Cloudflare-Access bypass) so unattended displays reach it
+// without OTP. Same deployment guard as /api/content/:id/file: only serve docs that
+// are actually referenced by a playlist/widget in their workspace (or are platform
+// templates), so a leaked UUID can't convert+exfiltrate arbitrary private uploads.
+const { getOfficePdf, isConvertibleOfficeMime } = require('./lib/doc-pdf');
+app.get('/player/doc-pdf/:id', async (req, res) => {
+  try {
+    const { db } = require('./db/database');
+    const c = db.prepare('SELECT id, filepath, mime_type, workspace_id FROM content WHERE id = ?').get(req.params.id);
+    if (!c || !c.filepath) return res.status(404).type('text/plain').send('not found');
+    if (!isConvertibleOfficeMime(c.mime_type)) return res.status(400).type('text/plain').send('not an office document');
+    let inPlaylist, inWidget;
+    if (c.workspace_id) {
+      inPlaylist = db.prepare(
+        `SELECT pi.id FROM playlist_items pi
+         JOIN playlists p ON p.id = pi.playlist_id
+         WHERE pi.content_id = ? AND p.workspace_id = ? LIMIT 1`
+      ).get(c.id, c.workspace_id);
+      inWidget = inPlaylist ? null : db.prepare(
+        'SELECT id FROM widgets WHERE workspace_id = ? AND config LIKE ? LIMIT 1'
+      ).get(c.workspace_id, `%/api/content/${c.id}/%`);
+    } else {
+      inPlaylist = db.prepare('SELECT id FROM playlist_items WHERE content_id = ? LIMIT 1').get(c.id);
+      inWidget = inPlaylist ? null : db.prepare(
+        'SELECT id FROM widgets WHERE config LIKE ? LIMIT 1'
+      ).get(`%/api/content/${c.id}/%`);
+    }
+    if (!inPlaylist && !inWidget) return res.status(403).type('text/plain').send('not assigned to any playlist or widget');
+    const srcPath = path.resolve(config.contentDir, path.basename(c.filepath));
+    if (!srcPath.startsWith(path.resolve(config.contentDir))) return res.status(403).type('text/plain').send('invalid path');
+    const pdfPath = await getOfficePdf(c.id, srcPath, c.mime_type);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.sendFile(pdfPath);
+  } catch (e) {
+    console.warn('[doc-pdf] convert failed:', e && e.message);
+    res.status(502).type('text/plain').send('conversion failed');
+  }
+});
+
 // Serve web player at /player (same no-cache for JS/HTML). The index.html
 // route above intercepts the HTML requests; everything else still falls
 // through to this static handler (debug-overlay.js, sw.js, manifest, etc).

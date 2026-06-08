@@ -194,5 +194,8 @@ module.exports = {
   generateDocThumbnail,
   kickDocThumbnail,
   embeddedThumbnail,
+  officeToPdf,
   DOC_THUMB_MIMES,
+  OOXML_MIMES,
+  ODF_MIMES,
 };
