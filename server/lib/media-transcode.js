@@ -126,21 +126,33 @@ function classifyMedia(m) {
   const vcodec = (m.vcodec || '').toLowerCase();
   const tenbit = is10bit(m.pixfmt);
   const hdr = isHdr(m.transfer, m.colorspace);
+  // tonemap carries WHICH HDR transfer so buildTranscodeArgs can stamp the right
+  // input characteristics: 'hlg' for arib-std-b67, else 'pq' (HDR10 / Dolby Vision).
+  const tonemap = hdr ? ((m.transfer || '').toLowerCase() === 'arib-std-b67' ? 'hlg' : 'pq') : false;
   const containerOk = ext === '.webm' || MP4_EXTS.has(ext);
   const codecOk = ext === '.webm' ? ['vp8', 'vp9', 'av1'].includes(vcodec) : vcodec === 'h264';
   const webSafe = containerOk && codecOk && !tenbit && !hdr;
   // The video ELEMENTARY stream is browser-decodable as-is only when it's 8-bit
   // SDR H.264 — then we can copy it and just fix the container + audio.
   const videoStreamFine = vcodec === 'h264' && !tenbit && !hdr;
-  return { webSafe, needsReencode: !videoStreamFine, tonemap: hdr };
+  return { webSafe, needsReencode: !videoStreamFine, tonemap };
 }
 
+// PURE. The HDR->SDR -vf filtergraph. setparams STAMPS the assumed input
+// characteristics first, so files with missing/unknown color tags (common in DV /
+// some HDR encodes) don't fail zscale with "no path between colorspaces". Then
+// PQ/HLG -> linear -> hable tonemap -> BT.709 SDR 8-bit.
+function hdrToSdrVf(kind) {
+  const trc = kind === 'hlg' ? 'arib-std-b67' : 'smpte2084';
+  return `setparams=color_primaries=bt2020:color_trc=${trc}:colorspace=bt2020nc,` +
+    'zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,' +
+    'zscale=t=bt709:m=bt709:p=bt709:r=tv,format=yuv420p';
+}
 // PURE. ffmpeg argv to normalize `inPath` -> browser-safe MP4 at `outPath`.
-const HDR_TO_SDR_VF = 'zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p';
 function buildTranscodeArgs(inPath, outPath, cls) {
   const args = ['-y', '-i', inPath, '-map', '0:v:0', '-map', '0:a:0?', '-sn', '-dn'];
   if (cls.needsReencode) {
-    if (cls.tonemap) args.push('-vf', HDR_TO_SDR_VF);
+    if (cls.tonemap) args.push('-vf', hdrToSdrVf(cls.tonemap));
     else args.push('-pix_fmt', 'yuv420p');
     // -threads 8 bounds memory (an all-cores 4K encode spikes several GB); medium
     // /crf20 + profile high + 8-bit = high-quality, universally decodable default.

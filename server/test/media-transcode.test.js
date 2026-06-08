@@ -53,13 +53,15 @@ test('classifyMedia: H.264 in a non-web container → REMUX (copy video, fix con
   assert.equal(c.tonemap, false);
 });
 
-test('classifyMedia: HEVC / 10-bit / HDR → RE-ENCODE (tonemap only when HDR)', () => {
+test('classifyMedia: HEVC / 10-bit / HDR → RE-ENCODE (tonemap PQ vs HLG only when HDR)', () => {
   assert.deepEqual(MT.classifyMedia({ ext: '.mp4', vcodec: 'hevc', pixfmt: 'yuv420p' }),
     { webSafe: false, needsReencode: true, tonemap: false });
   assert.equal(MT.classifyMedia({ ext: '.mp4', vcodec: 'h264', pixfmt: 'yuv420p10le' }).needsReencode, true);
   // The DolbyElement case: HEVC Main10 + Dolby Vision (PQ) in an .mkv
   const dv = MT.classifyMedia({ ext: '.mkv', vcodec: 'hevc', pixfmt: 'yuv420p10le', transfer: 'smpte2084', colorspace: 'bt2020nc' });
-  assert.deepEqual(dv, { webSafe: false, needsReencode: true, tonemap: true });
+  assert.deepEqual(dv, { webSafe: false, needsReencode: true, tonemap: 'pq' });
+  // HLG source → 'hlg' (stamps a different input transfer)
+  assert.equal(MT.classifyMedia({ ext: '.mkv', vcodec: 'hevc', pixfmt: 'yuv420p10le', transfer: 'arib-std-b67' }).tonemap, 'hlg');
 });
 
 test('buildTranscodeArgs: REMUX path copies video, forces stereo AAC + faststart', () => {
@@ -81,10 +83,12 @@ test('buildTranscodeArgs: RE-ENCODE (SDR) uses libx264 8-bit, no tonemap filter'
   assert.ok(a.includes('-ac') && a[a.indexOf('-ac') + 1] === '2');
 });
 
-test('buildTranscodeArgs: RE-ENCODE (HDR) inserts the HDR→SDR tonemap -vf', () => {
-  const a = MT.buildTranscodeArgs('/in.mkv', '/out.mp4', { needsReencode: true, tonemap: true });
-  const vfIdx = a.indexOf('-vf');
-  assert.ok(vfIdx >= 0);
-  assert.ok(a[vfIdx + 1].includes('tonemap') && a[vfIdx + 1].includes('zscale'));
-  assert.ok(a.includes('libx264'));
+test('buildTranscodeArgs: RE-ENCODE (HDR) stamps input + tonemaps; PQ vs HLG transfer', () => {
+  const pq = MT.buildTranscodeArgs('/in.mkv', '/out.mp4', { needsReencode: true, tonemap: 'pq' });
+  const vf = pq[pq.indexOf('-vf') + 1];
+  assert.ok(vf.includes('setparams'), 'stamps assumed color tags so unknown-tag HDR does not fail zscale');
+  assert.ok(vf.includes('smpte2084') && vf.includes('tonemap') && vf.includes('zscale'));
+  assert.ok(pq.includes('libx264'));
+  const hlg = MT.buildTranscodeArgs('/in.mkv', '/out.mp4', { needsReencode: true, tonemap: 'hlg' });
+  assert.ok(hlg[hlg.indexOf('-vf') + 1].includes('arib-std-b67'));
 });
