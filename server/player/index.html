@@ -2285,6 +2285,19 @@
           frame.src = webSrc;
           frame.style.cssText = 'width:100%;height:100%;border:none;background:#000';
           frame.allow = 'autoplay; fullscreen';
+          // Multiview audio: once the page has user activation (the one-time "tap to
+          // enable audio"), (re)enable the grid's chosen audio cell on EVERY mount —
+          // so SWITCHING the audio frame by re-sending the layout takes effect live
+          // without another tap (the grid is muted by default and unlockAudio only
+          // fires on a fresh gesture). Followers stay muted (leader-only audio). The
+          // grid is same-origin (root-relative) so we can call into it; it arms +
+          // retries internally if its audio cell hasn't booted yet.
+          if (isGridUrl(ownPath) && !isFollower) {
+            frame.addEventListener('load', () => {
+              if (!userHasInteracted) return;
+              try { if (frame.contentWindow && frame.contentWindow.__mcEnableAudio) frame.contentWindow.__mcEnableAudio(); } catch (e) { /* not ready / cross-origin */ }
+            });
+          }
           mount.appendChild(frame);
           if (!isFollower && playlist.length > 1) {
             advanceTimer = setTimeout(nextItem, (item.duration_sec || 30) * 1000);

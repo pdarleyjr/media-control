@@ -174,12 +174,15 @@
         gridEl.appendChild(box);
       }
 
-      // Audio unlock. The display player shows a one-time "tap to enable audio"
-      // prompt; on that gesture it walks its same-origin player iframes and calls
-      // __mcEnableAudio(). We forward it to the single wall-audio cell: unmute the
-      // <video>, or call the live player's own __mcEnableAudio (oz/hls expose it).
-      // No-op when no cell carries audio. Idempotent.
-      window.__mcEnableAudio = function () {
+      // Audio unlock. The display player calls __mcEnableAudio() to turn the single
+      // wall-audio cell's sound on — both on the one-time "tap to enable audio"
+      // gesture AND every time the player (re)mounts a grid once the page already
+      // has user activation (so SWITCHING the audio frame by re-sending the layout
+      // takes effect live, without another tap). We unmute the <video>, or call the
+      // live player's own __mcEnableAudio (oz/hls expose it). Idempotent; no-op when
+      // no cell carries audio.
+      var _audioArmed = false;
+      function enableAudioCell() {
         if (!audioEl) return;
         try {
           if (audioEl.tagName === 'VIDEO') {
@@ -189,7 +192,15 @@
             audioEl.contentWindow.__mcEnableAudio();   // same-origin oz/hls player
           }
         } catch (e) { /* cross-origin or not ready — ignore */ }
-      };
+      }
+      window.__mcEnableAudio = function () { _audioArmed = true; enableAudioCell(); };
+      // If the audio cell is a live-player iframe, it may not have booted (defined
+      // its own __mcEnableAudio) at the instant the player arms us — retry when it
+      // finishes loading, so an early call before the inner player is ready still
+      // turns sound on.
+      if (audioEl && audioEl.tagName === 'IFRAME') {
+        audioEl.addEventListener('load', function () { if (_audioArmed) enableAudioCell(); });
+      }
     })();
   </script>
 </body>
