@@ -81,10 +81,27 @@
     return typeof u === 'string' && /\/player\/grid\.html(\?|$)/.test(u);
   }
 
+  // The org's OWN dashboards (any *.mbfdhub.com page that isn't one of our /player
+  // routes — e.g. the live ops wall at wall.mbfdhub.com). They send no
+  // X-Frame-Options / CSP frame-ancestors, so we iframe them LIVE at the display's
+  // full size instead of the server-side screenshot (which clamps width to 3840px
+  // and centered the ops wall on the 12372px video wall). Third-party sites are NOT
+  // framable (they blank in an iframe) and still take the screenshot path. Checked
+  // AFTER ownPlayerPath() (our /player pages), so it only ever sees bare dashboards.
+  function isFramableSite(u) {
+    if (typeof u !== 'string' || !/^https?:\/\//i.test(u)) return false;
+    if (ownPlayerPath(u)) return false;                   // our /player pages route root-relative, not here
+    try {
+      var h = new URL(u).host.toLowerCase();
+      return h === 'mbfdhub.com' || h.slice(-12) === '.mbfdhub.com';
+    } catch (e) { return false; }
+  }
+
   return {
     OWN_PREFIXES: OWN_PREFIXES,
     ownPlayerPath: ownPlayerPath,
     isExternalSite: isExternalSite,
-    isGridUrl: isGridUrl
+    isGridUrl: isGridUrl,
+    isFramableSite: isFramableSite
   };
 });

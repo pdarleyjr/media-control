@@ -91,3 +91,21 @@ test('isGridUrl: matches our multiview page (relative and absolute)', () => {
   assert.equal(PR.isGridUrl('/player/hls.html?station=mbtv'), false);
   assert.equal(PR.isGridUrl('/player/grid.htmlx'), false);
 });
+
+test('isFramableSite: our own *.mbfdhub.com dashboards iframe live; third-party + our /player do not', () => {
+  // The ops wall + any org dashboard → iframe live (no X-Frame-Options), full-wall.
+  assert.equal(PR.isFramableSite('https://wall.mbfdhub.com/'), true);
+  assert.equal(PR.isFramableSite('https://mbfdhub.com/'), true);
+  assert.equal(PR.isFramableSite('https://office.mbfdhub.com/dashboard'), true);
+  // Our /player pages are handled by ownPlayerPath (root-relative), never here.
+  assert.equal(PR.isFramableSite('https://media.mbfdhub.com/player/grid.html?cells=abc'), false);
+  // Genuinely third-party → still screenshot (would blank in a frame).
+  assert.equal(PR.isFramableSite('https://example.com/'), false);
+  assert.equal(PR.isFramableSite('https://www.youtube.com/watch?v=x'), false);
+  // Look-alike hosts must NOT match the suffix.
+  assert.equal(PR.isFramableSite('https://evil-mbfdhub.com/'), false);
+  assert.equal(PR.isFramableSite('https://notmbfdhub.com/'), false);
+  // Non-absolute / empty.
+  assert.equal(PR.isFramableSite('/player/deck/abc'), false);
+  assert.equal(PR.isFramableSite(''), false);
+});

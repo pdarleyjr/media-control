@@ -2172,7 +2172,8 @@
       var PR = window.PlayerRouting || {
         ownPlayerPath: function () { return null; },
         isExternalSite: function (u) { return !!u && /^https?:\/\//i.test(u) && (function () { try { return new URL(u).host !== location.host; } catch (e) { return false; } })(); },
-        isGridUrl: function (u) { return typeof u === 'string' && /\/player\/grid\.html(\?|$)/.test(u); }
+        isGridUrl: function (u) { return typeof u === 'string' && /\/player\/grid\.html(\?|$)/.test(u); },
+        isFramableSite: function () { return false; }
       };
       function isExternalSite(u) { return PR.isExternalSite(u, location.host); }
       function isGridUrl(u) { return PR.isGridUrl(u); }
@@ -2275,6 +2276,12 @@
               // autoplay, then unmutes on the one-time "tap to enable audio" gesture.
               webSrc = ownPath + (ownPath.indexOf('?') === -1 ? '?' : '&') + 'audio=1';
             }
+          } else if (PR.isFramableSite(remoteUrl)) {
+            // Our OWN dashboard on *.mbfdhub.com (e.g. the live ops wall). It sends
+            // no X-Frame-Options, so iframe it LIVE at the display's full size —
+            // NOT the server-side screenshot (which clamps width to 3840px and
+            // centered it on the 12372px wall, showing only the middle screen).
+            webSrc = remoteUrl;
           } else if (item.content_id && isExternalSite(remoteUrl)) {
             // A genuinely third-party site → server-side screenshot (bypasses
             // X-Frame-Options / CSP frame-ancestors that blank a direct iframe).
