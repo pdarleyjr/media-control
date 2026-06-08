@@ -1,13 +1,24 @@
-// iPhone media transcoding.
+// Upload media normalization.
 //
 //   * HEIC/HEIF stills  -> JPEG, inline at upload. The display players and sharp
 //     cannot decode HEIC (sharp's bundled libheif only does AVIF), so we decode
 //     with heif-convert (libheif-tools + libde265) and re-encode JPEG. The stored
 //     /served file becomes a normal JPEG, so it renders + thumbnails everywhere.
-//   * HEVC (H.265) video -> H.264 MP4, in the background. iPhones record HEVC in a
-//     .mov; H.265 won't play on most display browsers. ffmpeg (libx264 encoder +
-//     hevc decoder, both present) transcodes and the row is swapped in place,
-//     mirroring transcodeYouTubeInBackground. H.264 .mov is left untouched.
+//   * Video -> a browser-safe MP4 (H.264 8-bit + stereo AAC), in the background.
+//     Display browsers can only play H.264 (in mp4/mov) or VP8/VP9/AV1 (in webm),
+//     8-bit, SDR, with AAC/Opus stereo-ish audio. ANYTHING else — an .mkv/.avi
+//     container, HEVC/H.265, 10-bit, HDR/Dolby-Vision, or TrueHD/E-AC3/Atmos audio
+//     — renders as "sound only / stutter / black". classifyMedia() decides; we
+//     REMUX (lossless -c:v copy) when only the container/audio is wrong, else
+//     re-encode with libx264 (HDR sources are tone-mapped to SDR). The row is
+//     swapped in place on success and the original removed, mirroring the YouTube
+//     transcode. Already-web-safe video (e.g. H.264 .mp4/.mov) is left untouched.
+//
+//   Memory/robustness: transcodes run IN this container (which is mem-capped), so
+//   they go through a SINGLE-FLIGHT queue with bounded ffmpeg threads — one 4K
+//   encode at a time, never N concurrent uploads stacking. resumePendingTranscodes()
+//   re-queues any not-yet-web-safe video on boot, so a transcode killed mid-flight
+//   by a deploy/restart self-heals on the next start.
 
 const fs = require('fs');
 const path = require('path');
@@ -70,28 +81,120 @@ function needsHevcTranscode(absPath) {
   return codec === 'hevc' || codec === 'h265';
 }
 
-// Background HEVC -> H.264 MP4. Swaps the content row in place on success
-// (filepath, file_size, dims, duration, regenerated thumbnail) and deletes the
-// original. No-op for non-HEVC video. Non-fatal (the row keeps the original).
-function kickHevcTranscodeIfNeeded(contentId, absPath) {
-  let codec;
-  try { codec = probeVideoCodec(absPath); } catch { codec = null; }
-  if (codec !== 'hevc' && codec !== 'h265') return;
+// Full probe of the first video stream -> the fields classifyMedia() needs.
+// Null on failure (caller leaves the file alone). IMPURE (runs ffprobe).
+function probeMedia(absPath) {
+  try {
+    const json = execFileSync('ffprobe',
+      ['-v', 'quiet', '-print_format', 'json', '-show_format', '-select_streams', 'v:0', '-show_streams', absPath],
+      { timeout: 20000 }).toString();
+    const info = JSON.parse(json);
+    const v = (info.streams || [])[0] || {};
+    return {
+      ext: path.extname(absPath).toLowerCase(),
+      vcodec: (v.codec_name || '').toLowerCase(),
+      pixfmt: (v.pix_fmt || '').toLowerCase(),
+      transfer: (v.color_transfer || '').toLowerCase(),
+      colorspace: (v.color_space || '').toLowerCase(),
+    };
+  } catch { return null; }
+}
+
+// PURE helpers — unit-tested without ffmpeg.
+const MP4_EXTS = new Set(['.mp4', '.m4v', '.mov']);
+// 10/12/16-bit pixel formats: yuv420p10le, yuv444p12le, p010le, p016le, ...
+function is10bit(pixfmt) {
+  pixfmt = (pixfmt || '').toLowerCase();
+  return /(?:10|12|16)(?:le|be)$/.test(pixfmt) || /^p0?1[0-6]/.test(pixfmt);
+}
+// HDR: PQ (smpte2084), HLG (arib-std-b67), or a BT.2020 colorspace.
+function isHdr(transfer, colorspace) {
+  transfer = (transfer || '').toLowerCase();
+  return transfer === 'smpte2084' || transfer === 'arib-std-b67' || /bt2020/.test((colorspace || '').toLowerCase());
+}
+// PURE. Decide what to do with a probed file:
+//   webSafe       — already plays in a display browser; do nothing.
+//   needsReencode — the video stream itself is unplayable (HEVC/10-bit/HDR/etc.)
+//                   so re-encode with libx264; else only the container/audio is
+//                   wrong and we REMUX (-c:v copy, lossless).
+//   tonemap       — source is HDR; tone-map to SDR during re-encode.
+// A null probe (unreadable) is treated as web-safe so we never touch a file we
+// can't understand.
+function classifyMedia(m) {
+  if (!m) return { webSafe: true, needsReencode: false, tonemap: false };
+  const ext = (m.ext || '').toLowerCase();
+  const vcodec = (m.vcodec || '').toLowerCase();
+  const tenbit = is10bit(m.pixfmt);
+  const hdr = isHdr(m.transfer, m.colorspace);
+  const containerOk = ext === '.webm' || MP4_EXTS.has(ext);
+  const codecOk = ext === '.webm' ? ['vp8', 'vp9', 'av1'].includes(vcodec) : vcodec === 'h264';
+  const webSafe = containerOk && codecOk && !tenbit && !hdr;
+  // The video ELEMENTARY stream is browser-decodable as-is only when it's 8-bit
+  // SDR H.264 — then we can copy it and just fix the container + audio.
+  const videoStreamFine = vcodec === 'h264' && !tenbit && !hdr;
+  return { webSafe, needsReencode: !videoStreamFine, tonemap: hdr };
+}
+
+// PURE. ffmpeg argv to normalize `inPath` -> browser-safe MP4 at `outPath`.
+const HDR_TO_SDR_VF = 'zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p';
+function buildTranscodeArgs(inPath, outPath, cls) {
+  const args = ['-y', '-i', inPath, '-map', '0:v:0', '-map', '0:a:0?', '-sn', '-dn'];
+  if (cls.needsReencode) {
+    if (cls.tonemap) args.push('-vf', HDR_TO_SDR_VF);
+    else args.push('-pix_fmt', 'yuv420p');
+    // -threads 8 bounds memory (an all-cores 4K encode spikes several GB); medium
+    // /crf20 + profile high + 8-bit = high-quality, universally decodable default.
+    args.push('-c:v', 'libx264', '-profile:v', 'high', '-preset', 'medium', '-crf', '20', '-threads', '8');
+  } else {
+    args.push('-c:v', 'copy');   // only the container/audio was wrong — keep the H.264 stream
+  }
+  // Force stereo AAC: Atmos/TrueHD/E-AC3/5.1/7.1 don't play in display browsers.
+  args.push('-c:a', 'aac', '-ac', '2', '-b:a', '256k', '-movflags', '+faststart', outPath);
+  return args;
+}
+
+// ---- single-flight transcode queue (one ffmpeg at a time → bounds memory) ----
+const _queue = [];
+let _running = false;
+let _activeId = null;
+function enqueueTranscode(job) {
+  if (!job || !job.contentId || !job.absPath) return;
+  if (_activeId === job.contentId) return;
+  if (_queue.some((j) => j.contentId === job.contentId)) return;
+  _queue.push(job);
+  pumpQueue();
+}
+function pumpQueue() {
+  if (_running || _queue.length === 0) return;
+  const job = _queue.shift();
+  _running = true; _activeId = job.contentId;
+  runOneTranscode(job, () => { _running = false; _activeId = null; setImmediate(pumpQueue); });
+}
+function transcodeTimeoutMs() {
+  const v = parseInt(process.env.HEVC_TIMEOUT_MS, 10);
+  return Number.isFinite(v) && v > 0 ? v : 60 * 60 * 1000;   // 1h ceiling (4K encodes are slow)
+}
+
+// Run ONE job: probe -> skip if web-safe -> transcode -> swap row + delete original.
+// Always calls done() exactly once. Non-fatal throughout (row keeps the original).
+function runOneTranscode(job, done) {
+  const { contentId, absPath } = job;
+  let cls;
+  try {
+    if (!fs.existsSync(absPath)) return done();
+    cls = classifyMedia(probeMedia(absPath));
+  } catch { return done(); }
+  if (!cls || cls.webSafe) return done();
 
   const outName = `${uuidv4()}.mp4`;
   const outPath = path.join(config.contentDir, outName);
-  const timeoutMs = (() => { const v = parseInt(process.env.HEVC_TIMEOUT_MS, 10); return Number.isFinite(v) && v > 0 ? v : 30 * 60 * 1000; })();
-  const args = [
-    '-y', '-i', absPath,
-    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p',
-    '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart',
-    outPath,
-  ];
-  execFile('ffmpeg', args, { timeout: timeoutMs }, (err) => {
+  const args = buildTranscodeArgs(absPath, outPath, cls);
+  console.log(`[transcode] ${contentId}: ${cls.needsReencode ? (cls.tonemap ? 're-encode+tonemap' : 're-encode') : 'remux'} -> ${outName}`);
+  execFile('ffmpeg', args, { timeout: transcodeTimeoutMs() }, (err) => {
     if (err) {
-      console.warn(`HEVC transcode failed for ${contentId}: ${err.message}`);
+      console.warn(`[transcode] failed for ${contentId}: ${err.message}`);
       try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch { /* ignore */ }
-      return;
+      return done();
     }
     let durationSec = null, width = null, height = null, fileSize = 0, thumbName = null;
     try {
@@ -101,25 +204,56 @@ function kickHevcTranscodeIfNeeded(contentId, absPath) {
       if (info.format && info.format.duration) durationSec = parseFloat(info.format.duration);
       const vs = info.streams && info.streams.find((s) => s.codec_type === 'video');
       if (vs) { width = vs.width; height = vs.height; }
-    } catch (e) { console.warn(`ffprobe of transcoded HEVC file failed: ${e.message}`); }
+    } catch (e) { console.warn(`[transcode] ffprobe of output failed: ${e.message}`); }
     try {
       thumbName = `thumb_${outName.replace(/\.[^.]+$/, '.jpg')}`;
-      execFileSync('ffmpeg', ['-y', '-i', outPath, '-ss', '2', '-vframes', '1', '-vf', `scale=${config.thumbnailWidth}:-1`, path.join(config.contentDir, thumbName)], { timeout: 30000 });
+      execFileSync('ffmpeg', ['-y', '-ss', '5', '-i', outPath, '-vframes', '1', '-vf', `scale=${config.thumbnailWidth}:-1`, path.join(config.contentDir, thumbName)], { timeout: 30000 });
     } catch { thumbName = null; }
     try {
       const { db } = require('../db/database');
       const prev = db.prepare('SELECT filepath, thumbnail_path FROM content WHERE id = ?').get(contentId);
       db.prepare("UPDATE content SET filepath = ?, mime_type = 'video/mp4', file_size = ?, duration_sec = ?, width = ?, height = ?, thumbnail_path = COALESCE(?, thumbnail_path) WHERE id = ?")
         .run(outName, fileSize, durationSec, width, height, thumbName, contentId);
-      // Clean up the original HEVC file + its old thumbnail now the row points at the MP4.
       if (prev && prev.filepath && prev.filepath !== outName) { try { fs.unlinkSync(path.join(config.contentDir, prev.filepath)); } catch { /* ignore */ } }
       if (prev && prev.thumbnail_path && thumbName && prev.thumbnail_path !== thumbName) { try { fs.unlinkSync(path.join(config.contentDir, prev.thumbnail_path)); } catch { /* ignore */ } }
-      console.log(`HEVC->H.264 transcoded ${contentId} -> ${outName} (${width}x${height}, ${durationSec}s)`);
+      console.log(`[transcode] ${contentId} -> ${outName} (${width}x${height}, ${durationSec}s, ${Math.round(fileSize / 1e6)}MB)`);
     } catch (e) {
-      console.error(`Failed to update content row after HEVC transcode: ${e.message}`);
+      console.error(`[transcode] failed to update row for ${contentId}: ${e.message}`);
       try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch { /* ignore */ }
     }
+    done();
   });
 }
 
-module.exports = { isHeicMime, heicToJpeg, probeVideoCodec, needsHevcTranscode, kickHevcTranscodeIfNeeded, HEIC_MIMES };
+// Background normalize -> browser-safe MP4. Enqueued for EVERY video upload; the
+// runner probes and no-ops when the file already plays. Name kept for the existing
+// call sites (content.js / finalize-upload.js). Non-fatal.
+function kickHevcTranscodeIfNeeded(contentId, absPath) {
+  enqueueTranscode({ contentId, absPath });
+}
+
+// On boot, re-queue any video row that isn't already a web-safe MP4/WebM. A
+// transcode killed mid-flight by a deploy/restart leaves the row pointing at the
+// original (e.g. video/x-matroska); this self-heals it. The runner re-probes and
+// skips anything that is actually fine (e.g. an H.264 .mov reported as quicktime).
+function resumePendingTranscodes() {
+  try {
+    const { db } = require('../db/database');
+    const rows = db.prepare(
+      "SELECT id, filepath FROM content WHERE mime_type LIKE 'video/%' AND mime_type NOT IN ('video/mp4', 'video/webm') AND filepath IS NOT NULL"
+    ).all();
+    let queued = 0;
+    for (const r of rows) {
+      const abs = path.join(config.contentDir, r.filepath);
+      if (fs.existsSync(abs)) { enqueueTranscode({ contentId: r.id, absPath: abs }); queued++; }
+    }
+    if (queued) console.log(`[transcode] resume: queued ${queued} non-web-safe video(s) for normalization`);
+  } catch (e) { console.warn(`[transcode] resume scan failed: ${e && e.message}`); }
+}
+
+module.exports = {
+  isHeicMime, heicToJpeg, probeVideoCodec, needsHevcTranscode,
+  kickHevcTranscodeIfNeeded, resumePendingTranscodes,
+  probeMedia, classifyMedia, buildTranscodeArgs, is10bit, isHdr,
+  HEIC_MIMES,
+};

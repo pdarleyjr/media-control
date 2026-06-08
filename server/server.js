@@ -883,6 +883,13 @@ server.listen(listenPort, '0.0.0.0', () => {
 ║  Listening on all interfaces (0.0.0.0)           ║
 ╚══════════════════════════════════════════════════╝
   `);
+  // Self-heal any video that isn't yet a browser-safe MP4 (e.g. a transcode that
+  // a previous deploy/restart killed mid-flight). Deferred + single-flight so it
+  // never blocks startup or stacks ffmpeg processes. Non-fatal.
+  setTimeout(() => {
+    try { require('./lib/media-transcode').resumePendingTranscodes(); }
+    catch (e) { console.warn('resumePendingTranscodes kick failed:', e && e.message); }
+  }, 8000);
 });
 
 // If SSL is enabled, also start an HTTP server that redirects to HTTPS
