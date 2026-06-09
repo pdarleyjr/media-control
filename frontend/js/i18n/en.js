@@ -1262,6 +1262,7 @@ export default {
   // Command bar (classroom quick actions, folds in the Present surface)
   'mc.cmd.aria_bar': 'Room controls',
   'mc.cmd.aria_launch': 'Quick-launch sources',
+  'mc.cmd.multiview': 'Multiview',
   'mc.cmd.start': 'Start Class',
   'mc.cmd.started_one': 'Class started. 1 display ready.',
   'mc.cmd.started_other': 'Class started. {n} displays ready.',
@@ -1282,6 +1283,13 @@ export default {
   'mc.cmd.yt_show': 'Show it',
   'mc.cmd.yt_invalid': "That does not look like a YouTube link.",
   'mc.cmd.error': 'The command bar could not load. Reload the page to try again.',
+  // Per-card Screensaver dropdown
+  'mc.saver.placeholder': 'Screensaver',
+  'mc.saver.aria': 'Set a screensaver for this display',
+  'mc.saver.title': 'Show a screensaver on this display',
+  'mc.saver.dashboard': 'Dashboard',
+  'mc.saver.bw': 'B&W Wallpaper',
+  'mc.saver.l1': 'L1 Wallpaper',
   // Room Presets rail (one-tap scene recall)
   'mc.presets.title': 'Room Presets',
   'mc.presets.manage': 'Manage',
@@ -1366,6 +1374,7 @@ export default {
   'mc.wall.template_aria': 'Wall layout template',
   'mc.wall.tpl_span': 'Span',
   'mc.wall.tpl_split': 'Split',
+  'mc.wall.split_badge': 'Split · independent screens',
   'mc.wall.span_hint': 'One source spans every screen. Drop a file on the wall.',
   'mc.wall.split_hint': 'Each screen plays its own source. Drop a file on a screen.',
   'mc.wall.tpl_span_on': 'Span template applied: one source fills the whole wall.',
@@ -1444,6 +1453,8 @@ export default {
   'mc.tb.loading_nextcloud': 'Connecting to Nextcloud…',
   'mc.media.empty': 'No media yet. Upload videos or images in the Content Library.',
   'mc.media.error': 'Could not load media. {error}',
+  'mc.media.all': 'All',
+  'mc.media.folders': 'Folders',
   'mc.presentations.empty': 'No presentations yet. Create one on the Presentations page.',
   'mc.presentations.error': 'Could not load presentations. {error}',
   'mc.scenes.empty': 'No scenes yet. Create one on the Scenes page.',

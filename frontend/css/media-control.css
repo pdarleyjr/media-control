@@ -123,30 +123,6 @@
    (e.g. the inspector "Stop broadcast" button when no broadcast is active). */
 .mc-btn-danger-sm[hidden] { display: none; }
 
-/* ---- routing-mode segmented control ---- */
-.mc-routing-modes {
-  display: inline-flex; align-items: stretch;
-  border: 1px solid var(--border);
-  border-radius: var(--radius, 8px);
-  background: var(--bg-card);
-  overflow: hidden;
-}
-.mc-control .mc-routing-btn {
-  min-height: var(--tap-min, 48px);
-  padding: 0 var(--space-4, 16px);
-  border: none;
-  border-right: 1px solid var(--border);
-  border-radius: 0;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: var(--font-3, 13px); font-weight: 600;
-}
-.mc-control .mc-routing-btn:last-child { border-right: none; }
-.mc-control .mc-routing-btn:hover { background: var(--bg-secondary); color: var(--text-primary); }
-.mc-control .mc-routing-btn:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
-.mc-control .mc-routing-btn.mc-routing-active { background: var(--accent); color: #fff; }
-.mc-control .mc-routing-btn.mc-routing-active:hover { background: var(--accent-hover); }
-
 /* ---- live-broadcast chip (on-air red, color paired with a label) ---- */
 .mc-control .mc-chip {
   display: inline-flex; align-items: center; gap: var(--space-2, 8px);
@@ -857,7 +833,7 @@
 }
 .mc-cmd-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3, 12px); }
 /* "Start Class" is the single dominant CTA: push it to the primary touch size. */
-.mc-control .mc-cmd-start { min-height: var(--tap-primary, 64px); padding: 0 var(--space-5, 24px); font-size: var(--font-4, 15px); border-radius: var(--radius-lg, 12px); }
+.mc-control .mc-cmd-multiview { min-height: var(--tap-primary, 64px); padding: 0 var(--space-5, 24px); font-size: var(--font-4, 15px); border-radius: var(--radius-lg, 12px); }
 .mc-cmd-launch { display: flex; flex-wrap: wrap; gap: var(--space-2, 8px); margin-left: auto; }
 .mc-cmd-btn-label { white-space: nowrap; }
 /* Blank-all active = the room is dark. Amber (--warning-dim) clears WCAG AA for
@@ -1001,9 +977,6 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
   outline: 2px dashed var(--accent); outline-offset: 6px; border-radius: var(--mc-radius-md);
   background: rgba(37, 99, 235, 0.04);
 }
-
-/* Mirror is a one-shot action button: a brief blue press confirmation. */
-.mc-control .mc-routing-btn.mc-routing-firing { background: var(--accent); color: #fff; }
 
 /* ════════════════════════════════════════════════════════════════════════
    Consolidation: the Playlists toolbox source, the Room-setup rail panel, and
@@ -1269,3 +1242,42 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
   display: flex; flex-direction: column; align-items: center; gap: 4px; width: 92%;
 }
 .mc-mv-share-on { font-size: clamp(9px, 0.95vw, 12px); color: #93c5fd; font-weight: var(--mc-fw-semibold, 600); text-align: center; }
+
+/* ── Per-card Screensaver dropdown (2026-06-09) ───────────────────────────────
+   A compact <select> on every display + wall card. Sits in the card foot (or
+   the wall head). stopPropagation in JS keeps it from opening the inspector. */
+.mc-screensaver {
+  flex: 0 0 auto; max-width: 9.5rem;
+  font-family: var(--mc-font-family-sans); font-size: var(--mc-font-size-xs);
+  padding: 2px 6px; border-radius: var(--mc-radius-sm);
+  border: 1px solid var(--mc-border-light); background: var(--mc-surface);
+  color: var(--mc-text-secondary); cursor: pointer;
+}
+.mc-screensaver:hover { border-color: var(--mc-border-medium); color: var(--mc-text-primary); }
+.mc-wall-head .mc-screensaver { margin-left: var(--mc-space-sm); }
+
+/* ── Video-wall SPLIT group: independent member cards (2026-06-09) ────────────
+   In Split mode a wall renders its members as their OWN display cards under a
+   compact header (which keeps the Span/Split toggle so they can recombine). The
+   group is sized like the span wall (cols x --mc-tile); the members share it. */
+.mc-wall-split { gap: var(--mc-space-sm); padding-bottom: var(--mc-space-sm); }
+.mc-wall-split-members {
+  display: flex; flex-wrap: wrap; gap: var(--mc-space-md);
+  padding: 0 var(--mc-space-sm) var(--mc-space-sm);
+}
+.mc-wall-split-members .mc-display-card { flex: 1 1 0; min-width: 0; }
+
+/* ── Media-tab folder chips (the "directory" filter, 2026-06-09) ────────────── */
+.mc-tb-folders {
+  display: flex; flex-wrap: wrap; gap: var(--mc-space-xs, 4px);
+  padding: 0 0 var(--mc-space-sm); margin-bottom: var(--mc-space-sm);
+  border-bottom: 1px solid var(--mc-border-light);
+}
+.mc-tb-folder {
+  font-family: var(--mc-font-family-sans); font-size: var(--mc-font-size-xs);
+  padding: 3px 10px; border-radius: var(--mc-radius-full, 999px);
+  border: 1px solid var(--mc-border-light); background: var(--mc-surface);
+  color: var(--mc-text-secondary); cursor: pointer; white-space: nowrap;
+}
+.mc-tb-folder:hover { border-color: var(--mc-border-medium); color: var(--mc-text-primary); }
+.mc-tb-folder.is-active { background: var(--accent, #2563eb); border-color: var(--accent, #2563eb); color: #fff; }

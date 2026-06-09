@@ -109,16 +109,12 @@ export const CAMERA_FEED_GROUPS = [
   {
     id: 'beach',
     nameKey: 'mc.cf.group.beach',
+    // Miami Beach proper only. Other-city beach cams (Sunny Isles, Acqualina,
+    // Hollywood, Newport) and the non-MB Coral City reef cam were removed
+    // 2026-06-09 — this controller is scoped to Miami Beach.
     feeds: [
       yt('ZeroEight · South Beach / Collins Ave', 'g5BS95j2rmM'),
       yt('Ocean Drive · Miami Beach', 'lVkJlng3nSs'),
-      yt('Acqualina Beach Cam', 'sI7oCUe1dmo'),
-      yt('Sunny Isles Beach', 'T5U_EzpjCJk'),
-      yt('Sunny Isles Beach · Cam 2', 'qDQ97Gw83Xs'),
-      yt('Hollywood Beach Broadwalk', 'cmkAbDUEoyA'),
-      yt('Coral City Camera · Reef', '7i8ARjIeM2k'),
-      oz('Newport Pier · North', 'EMB_DCCO00000F84'),
-      oz('Newport Fishing Pier', 'EMB_BKDD00000F89'),
     ],
   },
   {
@@ -128,17 +124,6 @@ export const CAMERA_FEED_GROUPS = [
       yt('PortMiami Cruise Ships', 'PeYZZinH1wI'),
       yt('PortMiami Terminals', '9iV-D-KAtao'),
       yt('Biscayne Bay North Waterfront', '5YCajRjvWCg'),
-    ],
-  },
-  {
-    id: 'miami',
-    nameKey: 'mc.cf.group.miami',
-    // Ozolio EMB_ live cams around greater Miami / Miami Beach.
-    feeds: [
-      oz('Grand Hyatt · Convention Center', 'EMB_VKAD00001371'),
-      oz('Little Havana · Calle Ocho', 'EMB_KQOD00000D77'),
-      oz('Wynwood Walls', 'EMB_GYHT00000D7C'),
-      oz('Coconut Grove', 'EMB_ZJKB000009E9'),
     ],
   },
 ];

@@ -1,0 +1,70 @@
+/* Smartboard (whiteboard controller) view.
+ *
+ * The view mounts into .content#app — a fixed-height (100vh) BLOCK container.
+ * Without these rules the .sb-canvas-wrap had no height, so the canvas (sized
+ * from its wrapper's getBoundingClientRect) collapsed to ~1px and the board
+ * rendered as a "narrow white bar". This stylesheet gives the board a column
+ * flex layout with a flex-filling canvas wrapper so the canvas fills the view,
+ * and styles the picker + toolbar controls (which previously had zero CSS).
+ */
+
+.view-smartboard { color: var(--text, #111827); }
+
+/* ---- Step 1: display picker ---- */
+.sb-picker { padding: 24px; display: flex; flex-direction: column; gap: 16px; box-sizing: border-box; }
+.sb-picker .view-header h1 { margin: 0 0 4px; font-size: 22px; font-weight: 700; }
+.sb-picker .muted { color: var(--text-muted, #64748b); }
+.sb-display-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.sb-display-card {
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
+  padding: 16px; border: 1px solid var(--border, #e5e7eb); border-radius: 12px;
+  background: var(--surface, #fff); cursor: pointer; text-align: left;
+  font: inherit; color: inherit;
+  transition: border-color .12s ease, box-shadow .12s ease, transform .06s ease;
+}
+.sb-display-card:hover:not([disabled]) { border-color: var(--accent, #2563eb); box-shadow: 0 2px 10px rgba(0, 0, 0, .08); }
+.sb-display-card:active:not([disabled]) { transform: translateY(1px); }
+.sb-display-card[disabled] { opacity: .5; cursor: not-allowed; }
+.sb-display-all { border-style: dashed; border-color: var(--accent, #2563eb); }
+.sb-display-name { font-weight: 600; font-size: 15px; }
+.sb-display-status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted, #64748b); }
+.sb-display-status .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #9ca3af; }
+.sb-display-status .status-dot.online { background: #22c55e; }
+
+/* ---- Step 2: drawing board ---- */
+.view-smartboard.sb-board {
+  display: flex; flex-direction: column;
+  height: 100%; min-height: 0;
+  box-sizing: border-box; padding: 12px; gap: 10px;
+}
+.sb-toolbar {
+  flex: 0 0 auto;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #e5e7eb); border-radius: 12px;
+  background: var(--surface, #fff);
+}
+.sb-target { font-weight: 700; font-size: 14px; padding-right: 12px; border-right: 1px solid var(--border, #e5e7eb); }
+.sb-tool-group { display: inline-flex; gap: 6px; align-items: center; }
+.sb-actions { margin-left: auto; }
+.sb-tool, .sb-btn {
+  font: inherit; font-size: 13px; padding: 7px 12px; border-radius: 8px;
+  border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
+  color: var(--text, #111827); cursor: pointer;
+}
+.sb-tool:hover, .sb-btn:hover { border-color: var(--accent, #2563eb); }
+.sb-tool.active { background: var(--accent, #2563eb); color: #fff; border-color: var(--accent, #2563eb); }
+.sb-btn-danger { color: #b91c1c; border-color: #fca5a5; }
+.sb-btn-danger:hover { background: #fee2e2; border-color: #ef4444; }
+.sb-swatches { display: inline-flex; gap: 6px; align-items: center; }
+.sb-swatch { width: 24px; height: 24px; border-radius: 50%; border: 2px solid rgba(0, 0, 0, .15); cursor: pointer; padding: 0; }
+.sb-swatch.active { outline: 2px solid var(--accent, #2563eb); outline-offset: 2px; }
+.sb-size { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-muted, #64748b); }
+.sb-size input[type="range"] { width: 120px; }
+
+.sb-canvas-wrap {
+  flex: 1 1 auto; min-height: 0; position: relative;
+  background: #fff;
+  border: 1px solid var(--border, #e5e7eb); border-radius: 12px; overflow: hidden;
+}
+#sb-canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }

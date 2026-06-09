@@ -15,6 +15,34 @@ import { esc } from '../../utils.js';
 import { t, tn } from '../../i18n.js';
 import { renderTransportBar } from './transport.js';
 
+// ── Screensaver dropdown (per card) ───────────────────────────────────────
+// A small in-card <select> on every display + wall card that broadcasts a
+// "screensaver" source to that display. Options are fixed classroom defaults:
+//   • Dashboard    → the live wall.mbfdhub.com ops dashboard (framable; the
+//                    player iframes *.mbfdhub.com live, not a screenshot)
+//   • B&W Wallpaper / L1 Wallpaper → uploaded image content items.
+// Content ids are workspace-stable assets in the Wallpaper folder; if an asset
+// is ever re-uploaded, update the id here.
+const SCREENSAVER_OPTIONS = [
+  { value: 'url:https://wall.mbfdhub.com', labelKey: 'mc.saver.dashboard' },
+  { value: 'content:4798f022-e9d9-4cba-a0b0-56aeb75a6bff', labelKey: 'mc.saver.bw' },
+  { value: 'content:1d01b7a0-1a0c-4d3d-b0fd-6d854ce09ae3', labelKey: 'mc.saver.l1' },
+];
+
+// Render the screensaver <select>. `dataAttrs` carries the target wiring:
+// `data-device-id="X"` (single display / split member) or `data-wall-ids="a,b"`
+// (whole wall). The first option is a non-committal placeholder.
+function screensaverSelect(dataAttrs) {
+  const opts = SCREENSAVER_OPTIONS
+    .map(o => `<option value="${esc(o.value)}">${esc(t(o.labelKey))}</option>`)
+    .join('');
+  return `<select class="mc-screensaver" ${dataAttrs}
+            aria-label="${esc(t('mc.saver.aria'))}" title="${esc(t('mc.saver.title'))}">
+            <option value="">${esc(t('mc.saver.placeholder'))}</option>
+            ${opts}
+          </select>`;
+}
+
 // "Updated Ns ago" from a unix-seconds timestamp. > 30s is considered stale.
 const STALE_AFTER_S = 30;
 function freshness(screenshotAt) {
@@ -140,6 +168,7 @@ function displayCard(display) {
       </div>
       <div class="mc-card-foot">
         <span class="mc-card-title">${esc(display.name)}</span>
+        ${screensaverSelect(`data-device-id="${esc(display.id)}"`)}
       </div>
       <div class="mc-card-nowplaying" title="${nowPlaying}">${nowPlaying}</div>
       <div class="mc-card-transport" data-tp-host data-device-id="${esc(display.id)}"></div>
@@ -282,6 +311,7 @@ function wallCard(wall, byId) {
         <button type="button" class="mc-wall-calibrate" data-wall-calibrate
                 data-wall-ids="${esc(ids)}" data-wall-name="${esc(wall.name)}"
                 title="${esc(t('mc.wall.calibrate_title'))}">${esc(t('mc.wall.calibrate'))}</button>
+        ${screensaverSelect(`data-wall-ids="${esc(ids)}"`)}
         <a class="mc-wall-edit" href="#/walls">${esc(t('mc.wall.edit'))}</a>
       </div>
       <div class="mc-wall-hint">${esc(modeHint)}</div>
@@ -289,11 +319,45 @@ function wallCard(wall, byId) {
         ${spanLayer}
         ${cells.join('')}
       </div>
-      ${leader ? `<div class="mc-wall-transport" data-tp-host data-device-id="${esc(leader.id)}"></div>` : ''}
+      ${leader ? `<div class="mc-wall-transport" data-tp-host data-device-id="${esc(leader.id)}" data-blank-ids="${esc(ids)}"></div>` : ''}
       <div class="mc-wall-all" data-wall-ids="${esc(ids)}">
         <span class="mc-wall-all-ico" aria-hidden="true">${ICON_WALL_ALL}</span>
         <span>${esc(fillLabel)}</span>
       </div>
+    </section>`;
+}
+
+// SPLIT template (2026-06-09): a video wall in 'split' mode is NOT one composite
+// surface — each physical screen plays independently. So instead of the single
+// composite wallCard, we render each member screen as its OWN standalone display
+// card (drag a different source onto each, blank/transport each separately) under
+// a compact header that keeps the Span/Split toggle (so the operator can recombine
+// into a spanned wall) and Calibrate. The member cards reuse displayCard, so they
+// inherit the full drop / inspect / transport / screensaver wiring with no extra
+// per-card plumbing.
+function wallSplitGroup(wall, byId) {
+  const members = (wall.devices || []).map(m => wallMemberView(m, byId));
+  const ids = [...new Set(members.map(m => m.id))].join(',');
+  const cols = Math.max(1, wall.grid_cols || members.length || 1);
+  const memberCards = members
+    .map(m => { const live = byId.get(m.id); return live ? displayCard(live) : ''; })
+    .join('');
+  return `
+    <section class="mc-card mc-wall mc-wall-split" data-wall-id="${esc(wall.id)}" data-layout-mode="split" style="--mc-cols:${cols}" aria-label="${esc(t('mc.wall.aria', { name: wall.name }))}">
+      <div class="mc-wall-head">
+        <span class="mc-wall-title">${esc(wall.name)}</span>
+        <span class="mc-wall-sub">${esc(t('mc.wall.split_badge'))}</span>
+        <div class="mc-wall-template" role="group" aria-label="${esc(t('mc.wall.template_aria'))}">
+          <button type="button" class="mc-wall-tpl" data-wall-mode="span" data-wall-id="${esc(wall.id)}" aria-pressed="false" title="${esc(t('mc.wall.span_hint'))}">${esc(t('mc.wall.tpl_span'))}</button>
+          <button type="button" class="mc-wall-tpl is-active" data-wall-mode="split" data-wall-id="${esc(wall.id)}" aria-pressed="true" title="${esc(t('mc.wall.split_hint'))}">${esc(t('mc.wall.tpl_split'))}</button>
+        </div>
+        <button type="button" class="mc-wall-calibrate" data-wall-calibrate
+                data-wall-ids="${esc(ids)}" data-wall-name="${esc(wall.name)}"
+                title="${esc(t('mc.wall.calibrate_title'))}">${esc(t('mc.wall.calibrate'))}</button>
+        <a class="mc-wall-edit" href="#/walls">${esc(t('mc.wall.edit'))}</a>
+      </div>
+      <div class="mc-wall-hint">${esc(t('mc.wall.split_hint'))}</div>
+      <div class="mc-wall-split-members">${memberCards}</div>
     </section>`;
 }
 
@@ -338,8 +402,10 @@ function emptyState() {
  * @param {(id:string, screenOn:boolean)=>void} [opts.onScreenOnChange]
  *   Called when a blank/unblank ack changes a display's screen_on value so the
  *   caller can patch display-state and trigger a re-paint.
+ * @param {(ids:string[], source:object, label:string)=>void} [opts.onScreensaver]
+ *   A screensaver option was chosen on a card; broadcast `source` to `ids`.
  */
-export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], onSelect, onCalibrateWall, onAddDisplay, onScreenOnChange, onSetWallMode } = {}) {
+export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], onSelect, onCalibrateWall, onAddDisplay, onScreenOnChange, onSetWallMode, onScreensaver } = {}) {
   if (!container) return;
   const selected = new Set(selectedIds);
 
@@ -370,7 +436,9 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
     .sort((a, b) => (isSmartboard(a) ? 1 : 0) - (isSmartboard(b) ? 1 : 0))
     .map(displayCard)
     .join('');
-  const wallCards = wallList.map(w => wallCard(w, byId)).join('');
+  // Span walls render as one composite card; SPLIT walls render each member as
+  // its own independent display card (see wallSplitGroup).
+  const wallCards = wallList.map(w => (w.layout_mode === 'split' ? wallSplitGroup(w, byId) : wallCard(w, byId))).join('');
 
   const isEmpty = !cards && !wallCards;
   container.classList.toggle('mc-stage-is-empty', isEmpty);
@@ -422,12 +490,42 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
     const deviceId = host.dataset.deviceId;
     const display  = displayMap.get(deviceId) || byId.get(deviceId);
     if (!deviceId || !display) return;
+    // A wall transport host carries data-blank-ids="id1,id2,…" so the Blank
+    // toggle darkens EVERY wall screen, not just the leader (screen on/off is a
+    // per-physical-device command). Transport (play/pause/skip) stays on the
+    // leader, which drives wall sync.
+    const blankIds = String(host.dataset.blankIds || '').split(',').filter(Boolean);
     renderTransportBar(host, {
       deviceId,
+      blankDeviceIds: blankIds.length ? blankIds : undefined,
       screenOn: display.screen_on !== false,
       onScreenOnChange: (newValue) => {
         if (typeof onScreenOnChange === 'function') onScreenOnChange(deviceId, newValue);
       },
+    });
+  });
+
+  // Per-card Screensaver dropdown. stopPropagation so opening/changing it never
+  // bubbles to the card's inspector-open click. Reset to the placeholder after a
+  // pick so choosing the same option again re-fires. Target = this card's device
+  // (data-device-id) or the whole wall (data-wall-ids).
+  container.querySelectorAll('select.mc-screensaver').forEach(sel => {
+    ['pointerdown', 'mousedown', 'click'].forEach(ev => sel.addEventListener(ev, e => e.stopPropagation()));
+    sel.addEventListener('change', (e) => {
+      e.stopPropagation();
+      const val = sel.value;
+      sel.value = '';
+      if (!val || typeof onScreensaver !== 'function') return;
+      const ids = sel.dataset.deviceId
+        ? [sel.dataset.deviceId]
+        : String(sel.dataset.wallIds || '').split(',').filter(Boolean);
+      if (!ids.length) return;
+      let source = null;
+      if (val.startsWith('url:')) source = { remote_url: val.slice(4) };
+      else if (val.startsWith('content:')) source = { content_id: val.slice(8) };
+      if (!source) return;
+      const opt = SCREENSAVER_OPTIONS.find(o => o.value === val);
+      onScreensaver(ids, source, opt ? t(opt.labelKey) : t('mc.saver.title'));
     });
   });
 

@@ -34,13 +34,6 @@ let previewKickoff = null;   // one-shot "poke players to capture" timer after s
 let previewInterval = null;  // periodic preview refresh for the displays on the stage
 let lastStageSig = null;     // structural signature of the last full stage paint (see paintStage)
 
-// Routing mode: 'group' (default, each display independent), 'lecture' (one
-// source to all), 'mirror' (clone display A to all others). The mode is UI
-// state only — 'lecture' and 'mirror' act as presets that modify how the next
-// send-to-all operation behaves. 'group' means the toolbox tile click targets
-// only the display the user explicitly sends to (default).
-let routingMode = 'group';
-
 // Build the set of device ids that belong to a video wall — those devices are
 // represented by the wall card, never their own (mirrors dashboard.js:789-793).
 async function loadWalls() {
@@ -149,6 +142,7 @@ function paintStage() {
     onAddDisplay: openAddPicker,
     onScreenOnChange: handleScreenOnChange,
     onSetWallMode: setWallMode,
+    onScreensaver: applyScreensaver,
   });
   // Re-attach drop handlers on the freshly-rendered cards.
   attachStageDrop(el);
@@ -222,6 +216,14 @@ function refreshAfterSend(targetIds) {
   setTimeout(() => { for (const id of ids) requestScreenshot(id); }, 1800);
 }
 
+// A screensaver option was chosen on a card's dropdown: broadcast the chosen
+// source (the wall.mbfdhub.com dashboard, or a wallpaper image) to that card's
+// device(s). Reuses the same send funnel as every other broadcast.
+function applyScreensaver(ids, source, label) {
+  if (!Array.isArray(ids) || ids.length === 0 || !source) return;
+  sendToDisplays(source, ids, label).then((ok) => { if (ok) refreshAfterSend(ids); });
+}
+
 function showWallCalibration(deviceIds, wallName) {
   const ids = [...new Set(Array.isArray(deviceIds) ? deviceIds : [])];
   if (ids.length === 0) return;
@@ -276,15 +278,22 @@ function stopPreviewRefresh() {
   if (previewInterval) { clearInterval(previewInterval); previewInterval = null; }
 }
 
-// Target scope for toolbox SENDS. In 'lecture' mode a tapped source goes to
-// EVERY display in the room (whole-room takeover); otherwise to the displays on
-// the stage (the current selection). Dragging a source onto a single card always
-// targets just that card, regardless of mode.
+// Content-send target scope: the displays on the stage (the current selection).
+// Dragging a source onto a single card always targets just that card.
 function roomDisplayIds() {
   return displayState.getAll().filter(d => !wallMemberIds.has(d.id)).map(d => d.id);
 }
 function effectiveTargets() {
-  return routingMode === 'lecture' ? roomDisplayIds() : selectedIds;
+  return selectedIds;
+}
+
+// Physical screen-power scope for Blank all: EVERY controllable display PLUS
+// every video-wall member device (each wall screen is a real device that must
+// receive its own screen_off/screen_on — the wall card alone never would).
+function roomCommandIds() {
+  const ids = new Set(roomDisplayIds());
+  for (const id of wallMemberIds) if (id) ids.add(id);
+  return [...ids];
 }
 
 function wallDeviceIds(wall) {
@@ -627,10 +636,10 @@ function attachStageDrop(stageContainer) {
     });
   });
 
-  // Stage-BACKGROUND drop → every current target (the stage selection, or the
-  // whole room in Lecture mode). Cards stopPropagation, so this only fires for
-  // drops on the gaps/background. Wired once — the container node persists across
-  // repaints, so guard against stacking duplicate listeners.
+  // Stage-BACKGROUND drop → every display on the stage (the current selection).
+  // Cards stopPropagation, so this only fires for drops on the gaps/background.
+  // Wired once — the container node persists across repaints, so guard against
+  // stacking duplicate listeners.
   if (stageContainer.__dropWired) return;
   stageContainer.__dropWired = true;
   stageContainer.addEventListener('dragover', (e) => {
@@ -654,80 +663,6 @@ function attachStageDrop(stageContainer) {
   });
 }
 
-// ---- Routing-mode preset buttons (Task 4.6) ----
-//
-// Three modes:
-//   Group Share — default; each display is controlled independently via tile
-//                 clicks and drag-drop. No automatic fan-out.
-//   Lecture     — clicking a toolbox tile sends that source to ALL selected
-//                 displays simultaneously. Essentially the same as clicking a
-//                 tile while every display is selected (sendToDisplays already
-//                 handles multiple targets). This mode visually highlights that
-//                 fact and makes the toolbox tile-click target all at once.
-//   Mirror      — clones the first selected display's current now-playing source
-//                 to all other selected displays via sendToDisplays.
-
-function lectureHint() {
-  const n = roomDisplayIds().length;
-  showToast(n === 0 ? t('mc.routing.lecture_hint_empty') : t('mc.routing.lecture_hint', { n }), 'info');
-}
-
-async function activateMirror() {
-  if (selectedIds.length < 2) {
-    showToast(t('mc.routing.mirror_need_two'), 'info');
-    return;
-  }
-  // Find the first selected display's current source.
-  const sourceDisplay = displayState.get(selectedIds[0]);
-  if (!sourceDisplay || !sourceDisplay.now_playing || sourceDisplay.now_playing.kind === 'idle') {
-    showToast(t('mc.routing.mirror_no_source'), 'info');
-    return;
-  }
-  // Mirror: re-broadcast whatever is "now playing" on display[0] to the others.
-  // We use the playlist_id if available (best fidelity), falling back to a
-  // content-level send. This is a best-effort clone, not a perfect sync.
-  const targets = selectedIds.slice(1);
-  let source = null;
-  if (sourceDisplay.layout_id) {
-    // Complex layout — cannot mirror at content level; guide the operator.
-    showToast(t('mc.routing.mirror_layout'), 'info');
-    return;
-  }
-  // Use the playlist_id from the display state if present.
-  if (sourceDisplay.playlist_id) {
-    source = { playlist_id: sourceDisplay.playlist_id };
-  }
-  if (!source) {
-    showToast(t('mc.routing.mirror_unknown'), 'info');
-    return;
-  }
-  const label = sourceDisplay.now_playing.label || t('mc.tile.content_fallback');
-  await sendToDisplays(source, targets, label);
-}
-
-function attachRoutingModes(topbar) {
-  if (!topbar) return;
-  const btns = topbar.querySelectorAll('[data-routing]');
-  btns.forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const mode = btn.dataset.routing;
-      // Mirror is a one-shot ACTION (clone display 1 → the rest), not a persistent
-      // scope — run it and leave the current Group/Lecture scope highlight intact.
-      if (mode === 'mirror') {
-        btn.classList.add('mc-routing-firing');
-        try { await activateMirror(); } finally { btn.classList.remove('mc-routing-firing'); }
-        return;
-      }
-      // Group / Lecture are persistent target SCOPES for toolbox sends.
-      routingMode = mode;
-      btns.forEach(b => b.classList.toggle('mc-routing-active', b.dataset.routing === mode));
-      paintToolbox();   // re-bind the toolbox tiles to the new target scope
-      paintSummary();
-      if (mode === 'lecture') lectureHint();
-    });
-  });
-}
-
 export async function render() {
   const app = document.getElementById('app');
   app.innerHTML = `
@@ -740,11 +675,6 @@ export async function render() {
           </div>
           <div class="mc-control-controls">
             <div id="mc-broadcast-chip" class="mc-chip mc-chip-live" hidden></div>
-            <div class="mc-routing-modes" role="group" aria-label="${esc(t('mc.routing.label'))}">
-              <button type="button" class="mc-btn mc-routing-btn mc-routing-active" data-routing="group" title="${esc(t('mc.routing.group_title'))}">${esc(t('mc.routing.group'))}</button>
-              <button type="button" class="mc-btn mc-routing-btn" data-routing="lecture" title="${esc(t('mc.routing.lecture_title'))}">${esc(t('mc.routing.lecture'))}</button>
-              <button type="button" class="mc-btn mc-routing-btn" data-routing="mirror" title="${esc(t('mc.routing.mirror_title'))}">${esc(t('mc.routing.mirror'))}</button>
-            </div>
           </div>
         </header>
 
@@ -759,16 +689,11 @@ export async function render() {
                 <a class="mc-section-link" href="#/">${esc(t('mc.section.manage_displays'))}</a>
                 <a class="mc-section-link" href="#/walls">${esc(t('mc.section.video_walls'))}</a>
               </div>
-              <section id="mc-stage" class="mc-stage" aria-label="${esc(t('mc.section.displays'))}"></section>
-            </section>
-
-            <section class="mc-control-zone mc-mv-zone" aria-labelledby="mc-mv-head">
-              <div class="mc-section-head">
-                <h2 id="mc-mv-head" class="mc-section-title">${esc(t('mc.mv.title'))}</h2>
-                <p class="mc-section-hint">${esc(t('mc.mv.section_hint'))}</p>
-                <button type="button" class="mc-section-link mc-mv-toggle" data-mv-toggle aria-expanded="false">${esc(t('mc.mv.activate'))}</button>
-              </div>
+              <!-- Multiview builder mounts here, directly ABOVE the stage (whose
+                   first card is Classroom 1 Video Wall 1). Toggled by the command
+                   bar's "Multiview" button; lazy-mounted on first open. -->
               <div id="mc-multiview" class="mc-multiview-host" hidden></div>
+              <section id="mc-stage" class="mc-stage" aria-label="${esc(t('mc.section.displays'))}"></section>
             </section>
 
             <section class="mc-control-bottom" aria-label="${esc(t('mc.rail.label'))}">
@@ -833,22 +758,38 @@ export async function render() {
   if (selectedIds.length === 0) {
     selectedIds = roomDisplayIds();
   }
-  // A fresh render starts a clean session in the default 'group' scope (routing
-  // mode is UI-only, not persisted) — set it BEFORE the first toolbox paint so
-  // the tiles bind to the stage selection, not a stale scope from last visit.
-  routingMode = 'group';
   paintStage();
   paintToolbox();
   paintSummary();
 
-  attachRoutingModes(document.querySelector('.mc-control-head'));
+  // Multiview builder — mounted directly above the stage (whose first card is
+  // Classroom 1 Video Wall 1) and toggled by the command bar's "Multiview"
+  // button. Lazy-mounted on first open so the heavier composer only renders
+  // when asked for. Sends ride the same routing picker + funnel as every tile.
+  const mvHost = document.getElementById('mc-multiview');
+  let mvMounted = false;
+  async function toggleMultiview() {
+    if (!mvHost) return;
+    const show = mvHost.hidden;
+    mvHost.hidden = !show;
+    if (show) {
+      if (!mvMounted) {
+        mvMounted = true;
+        await renderMultiview(mvHost, { routeSource: routeSourceWithPicker });
+      }
+      try { mvHost.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch { /* */ }
+    }
+  }
 
-  // Mount the classroom command bar (Start Class · Blank all · quick-launch
-  // Share screen / Whiteboard / YouTube / Library) — folds in the retired
-  // Present surface. roomIds() = every controllable (non-wall) display.
+  // Mount the classroom command bar (Multiview · Blank all · quick-launch
+  // Share screen / YouTube / Library). roomIds() = controllable (non-wall)
+  // displays for content sends; blankIds() ALSO includes every wall member so
+  // "Blank all" darkens the physical video-wall screens too.
   renderCommandBar(document.getElementById('mc-cmdbar-host'), {
     roomIds: roomDisplayIds,
+    blankIds: roomCommandIds,
     refreshAfterSend,
+    onMultiview: toggleMultiview,
   });
 
   // Mount the right rail: Room Presets (one-tap scene recall, the Command-360
@@ -865,27 +806,6 @@ export async function render() {
   if (schedBtn) {
     schedBtn.addEventListener('click', () => {
       openViewModal({ title: t('mc.schedules.title'), module: schedulesView });
-    });
-  }
-
-  // Multiview Layout composer (split one display into a 4-left / 2-center /
-  // 4-right mosaic, drag a source into each frame, monitor one frame's audio
-  // locally, then send the assembled layout to a display). Mounted lazily on
-  // first activation so the heavier composer only renders when the operator
-  // asks for it. Sends ride the same routing picker + funnel as every tile.
-  const mvToggle = document.querySelector('[data-mv-toggle]');
-  const mvHost = document.getElementById('mc-multiview');
-  if (mvToggle && mvHost) {
-    let mvMounted = false;
-    mvToggle.addEventListener('click', async () => {
-      const show = mvHost.hidden;
-      mvHost.hidden = !show;
-      mvToggle.setAttribute('aria-expanded', show ? 'true' : 'false');
-      mvToggle.textContent = show ? t('mc.mv.hide') : t('mc.mv.activate');
-      if (show && !mvMounted) {
-        mvMounted = true;
-        await renderMultiview(mvHost, { routeSource: routeSourceWithPicker });
-      }
     });
   }
 

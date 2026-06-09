@@ -87,20 +87,44 @@ async function renderMediaTab(container, { selectedIds, onAfterSend, onRouteSour
     container.innerHTML = emptyState(t('mc.media.empty'));
     return;
   }
-  const tiles = items.slice(0, 48).map(item => {
-    const src = JSON.stringify({ content_id: item.id });
-    const name = item.filename || item.name || t('mc.tile.content_fallback');
-    const thumb = mediaTileThumb(item);
-    return `<button type="button" class="mc-tile" draggable="true"
-      data-drag-source='${esc(src)}'
-      data-label="${esc(name)}"
-      title="${esc(name)}">
-      ${thumb}
-      <span class="mc-tile-label">${esc(name)}</span>
-    </button>`;
-  }).join('');
-  container.innerHTML = `<div class="mc-tile-grid">${tiles}</div>`;
-  attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource);
+  // Folder "directory" view: chips built from each item's own folder field. The
+  // operator can browse into a folder (e.g. Wallpaper) or see All. Filtering is
+  // client-side over the already-fetched list (no extra request).
+  const folders = [...new Set(items.map(i => i.folder).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const chipBar = folders.length
+    ? `<div class="mc-tb-folders" role="group" aria-label="${esc(t('mc.media.folders'))}">
+         <button type="button" class="mc-tb-folder is-active" data-folder="">${esc(t('mc.media.all'))}</button>
+         ${folders.map(f => `<button type="button" class="mc-tb-folder" data-folder="${esc(f)}">${esc(f)}</button>`).join('')}
+       </div>`
+    : '';
+  container.innerHTML = chipBar + `<div class="mc-tile-grid" id="mc-media-grid"></div>`;
+  const grid = container.querySelector('#mc-media-grid');
+
+  const paint = (folderFilter) => {
+    const shown = folderFilter ? items.filter(i => i.folder === folderFilter) : items;
+    grid.innerHTML = shown.slice(0, 48).map(item => {
+      const src = JSON.stringify({ content_id: item.id });
+      const name = item.filename || item.name || t('mc.tile.content_fallback');
+      const thumb = mediaTileThumb(item);
+      return `<button type="button" class="mc-tile" draggable="true"
+        data-drag-source='${esc(src)}'
+        data-label="${esc(name)}"
+        title="${esc(name)}">
+        ${thumb}
+        <span class="mc-tile-label">${esc(name)}</span>
+      </button>`;
+    }).join('');
+    // Re-bind tile click/drag handlers to the freshly-rendered tiles.
+    attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource);
+  };
+
+  container.querySelectorAll('.mc-tb-folder[data-folder]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      container.querySelectorAll('.mc-tb-folder').forEach(b => b.classList.toggle('is-active', b === btn));
+      paint(btn.dataset.folder || '');
+    });
+  });
+  paint('');
 }
 
 // Playlists tab — every playlist is a drag-or-tap source ({ playlist_id }); the

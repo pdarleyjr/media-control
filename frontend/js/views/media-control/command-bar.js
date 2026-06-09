@@ -19,7 +19,7 @@
 // class names below). Safe to call repeatedly — re-render replaces innerHTML.
 
 import { esc } from '../../utils.js';
-import { t, tn } from '../../i18n.js';
+import { t } from '../../i18n.js';
 import { showToast } from '../../components/toast.js';
 import { sendCommand } from '../../socket.js';
 import { COMMAND_TYPES } from '../../player-protocol.js';
@@ -34,10 +34,9 @@ let blanked = false;
 const YT_RE = /^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//i;
 
 // ---- inline stroke icons (controlled markup, no user input) ----
-const ICON_START = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>';
+const ICON_MV = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="8" height="7" rx="1"></rect><rect x="13" y="4" width="8" height="7" rx="1"></rect><rect x="3" y="13" width="8" height="7" rx="1"></rect><rect x="13" y="13" width="8" height="7" rx="1"></rect></svg>';
 const ICON_BLANK = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line><path d="M4 5l16 14"></path></svg>';
 const ICON_SCREEN = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line><polyline points="9 9 12 6 15 9"></polyline><line x1="12" y1="6" x2="12" y2="14"></line></svg>';
-const ICON_WB = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="1"></rect><path d="M12 17v3"></path><path d="M8 20h8"></path><path d="M7 12c1.5-2 3-2 5 0s3.5 2 5 0"></path></svg>';
 const ICON_YT = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="3"></rect><polygon points="10 9 16 12 10 15 10 9" fill="currentColor" stroke="none"></polygon></svg>';
 const ICON_LIB = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>';
 const ICON_ERROR = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v5M12 16h.01"></path></svg>';
@@ -145,11 +144,17 @@ function promptYouTube(roomIds, refreshAfterSend) {
  * @param {HTMLElement} container
  * @param {object} opts
  * @param {() => (string[]|object)} opts.roomIds  returns every controllable
- *   (non-wall) display id in the room. Tolerated shapes: Array or { key:[...] }.
+ *   (non-wall) display id in the room — used for content sends (YouTube).
+ *   Tolerated shapes: Array or { key:[...] }.
+ * @param {() => (string[]|object)} [opts.blankIds]  device ids for "Blank all".
+ *   Includes video-wall MEMBER devices (each wall screen is a real device that
+ *   must receive its own screen_off/on). Falls back to roomIds when absent.
  * @param {() => void} [opts.refreshAfterSend]  re-fetches live display state
  *   after a successful send.
+ * @param {() => void} [opts.onMultiview]  opens the multiview layout builder
+ *   (mounted above the Video Wall 1 card by the host view).
  */
-export function renderCommandBar(container, { roomIds, refreshAfterSend } = {}) {
+export function renderCommandBar(container, { roomIds, blankIds, refreshAfterSend, onMultiview } = {}) {
   if (!container) return;
 
   // Guard: a usable roomIds() provider is required. Render a composed error
@@ -162,9 +167,9 @@ export function renderCommandBar(container, { roomIds, refreshAfterSend } = {}) 
   container.innerHTML = `
     <div class="mc-cmdbar" role="group" aria-label="${esc(t('mc.cmd.aria_bar'))}">
       <div class="mc-cmd-row">
-        <button type="button" class="mc-btn mc-cmd-btn mc-btn-cta mc-cmd-start" data-cmd="start">
-          ${ICON_START}
-          <span class="mc-cmd-btn-label">${esc(t('mc.cmd.start'))}</span>
+        <button type="button" class="mc-btn mc-cmd-btn mc-btn-cta mc-cmd-multiview" data-cmd="multiview">
+          ${ICON_MV}
+          <span class="mc-cmd-btn-label">${esc(t('mc.cmd.multiview'))}</span>
         </button>
 
         <button type="button" class="mc-btn mc-cmd-btn mc-cmd-blank" data-cmd="blank" aria-pressed="false">
@@ -176,10 +181,6 @@ export function renderCommandBar(container, { roomIds, refreshAfterSend } = {}) 
           <button type="button" class="mc-btn mc-cmd-btn mc-btn-secondary" data-launch="screen">
             ${ICON_SCREEN}
             <span class="mc-cmd-btn-label">${esc(t('mc.cmd.share_screen'))}</span>
-          </button>
-          <button type="button" class="mc-btn mc-cmd-btn mc-btn-secondary" data-launch="whiteboard">
-            ${ICON_WB}
-            <span class="mc-cmd-btn-label">${esc(t('mc.cmd.whiteboard'))}</span>
           </button>
           <button type="button" class="mc-btn mc-cmd-btn mc-btn-secondary" data-launch="youtube">
             ${ICON_YT}
@@ -210,24 +211,22 @@ export function renderCommandBar(container, { roomIds, refreshAfterSend } = {}) 
     if (banner) banner.hidden = !blanked;
   };
 
-  // PRIMARY: Start Class — wake/un-blank EVERY room display.
-  container.querySelector('[data-cmd="start"]').addEventListener('click', () => {
-    const ids = normalizeIds(roomIds());
-    if (ids.length === 0) {
-      showToast(t('mc.cmd.no_displays'), 'error');
-      return;
-    }
-    ids.forEach((id) => sendCommand(id, COMMAND_TYPES.SCREEN_ON, {}));
-    blanked = false;
-    reflect();
-    showToast(tn('mc.cmd.started', ids.length), 'success');
-    if (typeof refreshAfterSend === 'function') refreshAfterSend();
-  });
+  // PRIMARY: Multiview — open the multiview layout builder. The host view
+  // mounts the composer directly above the Video Wall 1 card.
+  const mvBtn = container.querySelector('[data-cmd="multiview"]');
+  if (mvBtn) {
+    mvBtn.addEventListener('click', () => {
+      if (typeof onMultiview === 'function') onMultiview();
+    });
+  }
 
   // TOGGLE: Blank all — flip the module flag, then drive every room display to
   // SCREEN_OFF (blanked) or SCREEN_ON (resumed).
   blankBtn.addEventListener('click', () => {
-    const ids = normalizeIds(roomIds());
+    // Blank all targets every physical screen, INCLUDING video-wall members
+    // (via blankIds); fall back to roomIds when no wall-aware provider is given.
+    const blankProvider = (typeof blankIds === 'function') ? blankIds : roomIds;
+    const ids = normalizeIds(blankProvider());
     if (ids.length === 0) {
       showToast(t('mc.cmd.no_displays'), 'error');
       return;
@@ -245,7 +244,6 @@ export function renderCommandBar(container, { roomIds, refreshAfterSend } = {}) 
     btn.addEventListener('click', () => {
       switch (btn.dataset.launch) {
         case 'screen': window.location.hash = '#/screen-share'; break;
-        case 'whiteboard': window.location.hash = '#/smartboard'; break;
         case 'youtube': promptYouTube(roomIds, refreshAfterSend); break;
         case 'library': window.location.hash = '#/content'; break;
       }

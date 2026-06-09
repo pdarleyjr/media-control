@@ -40,8 +40,16 @@ const TRANSPORT_BTNS = [
  *   value. Callers should use this to update display-state so the stage card
  *   re-paints with the correct status dot and "Blanked" label.
  */
-export function renderTransportBar(container, { deviceId, screenOn = true, onScreenOnChange } = {}) {
+export function renderTransportBar(container, { deviceId, blankDeviceIds, screenOn = true, onScreenOnChange } = {}) {
   if (!container) return;
+
+  // Blank/unblank target set. For a standalone display this is just [deviceId].
+  // For a video wall the caller passes every member id (data-blank-ids) so the
+  // toggle darkens ALL screens at once — the primary `deviceId` (leader) carries
+  // the ack that drives this button's UI state; the rest fire-and-forget.
+  const blankIds = (Array.isArray(blankDeviceIds) && blankDeviceIds.length)
+    ? [...new Set(blankDeviceIds.filter(Boolean))]
+    : [deviceId];
 
   const transportHtml = TRANSPORT_BTNS.map(b => {
     const title = t(b.titleKey);
@@ -84,6 +92,10 @@ export function renderTransportBar(container, { deviceId, screenOn = true, onScr
       const turningOn = blankBtn.classList.contains('mc-tp-blank-active'); // currently blanked → turn on
       const type = turningOn ? COMMAND_TYPES.SCREEN_ON : COMMAND_TYPES.SCREEN_OFF;
       blankBtn.disabled = true;
+
+      // Fan to every other member first (fire-and-forget); the primary device's
+      // ack below drives the button's authoritative UI state.
+      blankIds.filter(id => id && id !== deviceId).forEach(id => sendCommand(id, type, {}));
 
       sendCommand(deviceId, type, {}, (ack) => {
         blankBtn.disabled = false;

@@ -70,7 +70,11 @@ const ERASER_BG = '#ffffff';  // board background; eraser paints with this color
 // so re-entering the route never inherits a zombie session.
 // ----------------------------------------------------------------------
 let activeContainer = null;
-let selectedDeviceId = null;
+// Targets for the live whiteboard. A single display ([id]) or the whole room
+// (every online display) — strokes fan to ALL of them so a drawing made on the
+// controller reflects on every chosen display at once.
+let targetDeviceIds = [];
+let targetLabel = '';
 
 let canvas = null;
 let ctx = null;
@@ -101,7 +105,8 @@ let boundPointerUp = null;
 function resetState() {
   detachCanvasListeners();
   clearFlushTimer();
-  selectedDeviceId = null;
+  targetDeviceIds = [];
+  targetLabel = '';
   canvas = null;
   ctx = null;
   currentTool = 'pen';
@@ -139,14 +144,15 @@ export function unmount() {
 }
 
 function teardown() {
-  // If a session is live, tell the display to hide its overlay.
-  if (selectedDeviceId) {
-    emitWb('dashboard:wb-stop', { device_id: selectedDeviceId });
+  // If a session is live, tell every target display to hide its overlay.
+  if (targetDeviceIds.length) {
+    broadcastWb('dashboard:wb-stop', {});
   }
   detachCanvasListeners();
   clearFlushTimer();
   activeContainer = null;
-  selectedDeviceId = null;
+  targetDeviceIds = [];
+  targetLabel = '';
   canvas = null;
   ctx = null;
   drawing = false;
@@ -159,10 +165,15 @@ function teardown() {
 // ----------------------------------------------------------------------
 // Socket emit helper - fire-and-forget on the shared dashboard socket.
 // ----------------------------------------------------------------------
-function emitWb(event, payload) {
+// Fan an event to EVERY current target display on the shared dashboard socket
+// (fire-and-forget), stamping each emit with its own device_id. Single-display
+// and whole-room selections both flow through here, so a drawing reflects on
+// every chosen display simultaneously.
+function broadcastWb(event, payload) {
   const sock = getSocket();
-  if (sock && sock.connected) {
-    sock.emit(event, payload);
+  if (!sock || !sock.connected) return;
+  for (const id of targetDeviceIds) {
+    if (id) sock.emit(event, { ...payload, device_id: id });
   }
 }
 
@@ -211,7 +222,15 @@ async function renderPicker() {
       listEl.innerHTML = '<div class="muted">No paired displays in this workspace yet. Pair a display under Displays.</div>';
       return;
     }
-    listEl.innerHTML = devices.map((d) => {
+    const onlineIds = devices.filter(d => d.status === 'online').map(d => d.id);
+    // "All displays" — draw once, reflect on every online display in the room.
+    const allCard = onlineIds.length > 1
+      ? `<button class="sb-display-card sb-display-all" data-all="1">
+           <span class="sb-display-name">All displays (whole room)</span>
+           <span class="sb-display-status"><span class="status-dot online"></span>${onlineIds.length} online</span>
+         </button>`
+      : '';
+    listEl.innerHTML = allCard + devices.map((d) => {
       const online = d.status === 'online';
       return `
         <button class="sb-display-card" data-device-id="${escapeHtml(d.id)}" ${online ? '' : 'disabled'}>
@@ -224,27 +243,37 @@ async function renderPicker() {
       `;
     }).join('');
 
+    const allBtn = listEl.querySelector('.sb-display-all[data-all]');
+    if (allBtn) allBtn.addEventListener('click', () => selectTargets(onlineIds, 'All displays'));
     listEl.querySelectorAll('.sb-display-card[data-device-id]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const id = btn.dataset.deviceId;
-        if (id) selectDisplay(id);
+        const name = btn.querySelector('.sb-display-name')?.textContent || 'Display';
+        if (id) selectTargets([id], name);
       });
     });
     if (requestedDeviceId) {
       const target = devices.find(d => d.id === requestedDeviceId && d.status === 'online');
       requestedDeviceId = null;
-      if (target) selectDisplay(target.id);
+      if (target) selectTargets([target.id], target.name || 'Display');
     }
   } catch (e) {
     listEl.innerHTML = `<div class="muted">Could not load displays: ${escapeHtml(e.message || String(e))}</div>`;
   }
 }
 
-async function selectDisplay(deviceId) {
-  selectedDeviceId = deviceId;
-  // Tell the display to show its whiteboard overlay and load persisted strokes.
-  const ack = await emitWbAck('dashboard:wb-start', { device_id: deviceId });
-  strokeHistory = Array.isArray(ack?.strokes) ? ack.strokes : [];
+async function selectTargets(ids, label) {
+  targetDeviceIds = (ids || []).filter(Boolean);
+  targetLabel = label || '';
+  if (!targetDeviceIds.length) return;
+  // Show the overlay on EVERY target; seed local history from the first target's
+  // persisted strokes (a whole-room board starts from screen one's saved state).
+  let strokes = [];
+  for (let i = 0; i < targetDeviceIds.length; i++) {
+    const ack = await emitWbAck('dashboard:wb-start', { device_id: targetDeviceIds[i] });
+    if (i === 0 && Array.isArray(ack?.strokes)) strokes = ack.strokes;
+  }
+  strokeHistory = strokes;
   renderBoard();
 }
 
@@ -256,6 +285,7 @@ function renderBoard() {
   activeContainer.innerHTML = `
     <div class="view-smartboard sb-board">
       <div class="sb-toolbar" id="sb-toolbar">
+        <span class="sb-target" title="Strokes are sent to this target">${escapeHtml(targetLabel || 'Display')}</span>
         <div class="sb-tool-group" role="group" aria-label="Tools">
           <button class="sb-tool" data-tool="pen" title="Pen" aria-pressed="true">Pen</button>
           <button class="sb-tool" data-tool="highlighter" title="Highlighter" aria-pressed="false">Highlighter</button>
@@ -549,11 +579,10 @@ function clearFlushTimer() {
 }
 
 function flushPending() {
-  if (!selectedDeviceId || pendingPoints.length === 0) return;
+  if (!targetDeviceIds.length || pendingPoints.length === 0) return;
   const batch = pendingPoints;
   pendingPoints = [];
-  emitWb('dashboard:wb-stroke', {
-    device_id: selectedDeviceId,
+  broadcastWb('dashboard:wb-stroke', {
     stroke: {
       points: batch,
       color: currentColor,
@@ -572,20 +601,21 @@ function flushPending() {
 function clearBoard() {
   strokeHistory = [];
   repaintFromHistory();
-  emitWb('dashboard:wb-clear', { device_id: selectedDeviceId });
+  broadcastWb('dashboard:wb-clear', {});
 }
 
 function undo() {
   if (strokeHistory.length > 0) strokeHistory.pop();
   repaintFromHistory();
-  emitWb('dashboard:wb-undo', { device_id: selectedDeviceId });
+  broadcastWb('dashboard:wb-undo', {});
 }
 
 function stopSession() {
-  emitWb('dashboard:wb-stop', { device_id: selectedDeviceId });
+  broadcastWb('dashboard:wb-stop', {});
   detachCanvasListeners();
   clearFlushTimer();
-  selectedDeviceId = null;
+  targetDeviceIds = [];
+  targetLabel = '';
   canvas = null;
   ctx = null;
   drawing = false;
