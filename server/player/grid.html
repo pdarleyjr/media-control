@@ -85,6 +85,17 @@
       var ultrawide = MV.screensFor(aspect) >= 2;
       var layout = ultrawide ? MV.layoutForAspect(aspect) : null;
 
+      // Explicit column split (single spanning device, e.g. NVIDIA Mosaic fusing
+      // N TVs into one window): the composer appends &split=N to force N
+      // full-height column tiles (L1/R1 ...), overriding the aspect mosaic so each
+      // TV shows exactly one independently-dropped column. The seam lands on the
+      // bezel between TVs.
+      var splitParam = parseInt(params.get('split'), 10);
+      if (isFinite(splitParam) && splitParam >= 2 && typeof MV.splitColumnsLayout === 'function') {
+        ultrawide = true;                          // keep line 143 passing null so layout[id] wins
+        layout = MV.splitColumnsLayout(splitParam);
+      }
+
       // At most ONE cell plays sound on the wall (operator's pick); the rest stay
       // muted to avoid cacophony. audioEl is that cell's <video> or live-player
       // iframe; window.__mcEnableAudio() (called by the display player after the

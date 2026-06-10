@@ -1380,6 +1380,12 @@ export default {
   'mc.wall.tpl_span_on': 'Span template applied: one source fills the whole wall.',
   'mc.wall.tpl_split_on': 'Split template applied: drop a file onto each screen.',
   'mc.wall.tpl_error': 'Could not change the wall template.',
+  // Single-spanning-device split (one PC / Mosaic drives N TVs as one window)
+  'mc.wall.half_left': 'Left',
+  'mc.wall.half_right': 'Right',
+  'mc.wall.split_one_hint': 'One display spanning every screen. Drop a source onto a screen to fill just that screen.',
+  'mc.wall.split_drop_aria': 'Drop a source onto {label}',
+  'mc.wall.split_label': 'Split layout',
   // Toolbox tabs
   'mc.tab.media': 'Media',
   'mc.tab.camerafeeds': 'Camera Feeds',
