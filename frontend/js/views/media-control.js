@@ -8,7 +8,7 @@ import { renderStage } from './media-control/stage.js';
 import { renderToolbox } from './media-control/toolbox.js';
 import { sendToDisplays, sentToast } from './media-control/send.js';
 import { renderInspector, closeInspector } from './media-control/inspector.js';
-import { renderMultiview, teardownMultiview } from './media-control/multiview.js';
+import { renderMultiview, teardownMultiview, buildSplitGridUrl } from './media-control/multiview.js';
 import { pickRoutingTargets } from './media-control/routing-picker.js';
 import { mountBroadcastChip } from './media-control/broadcast-chip.js';
 import { renderCommandBar } from './media-control/command-bar.js';
@@ -33,6 +33,11 @@ let walls = [];
 let previewKickoff = null;   // one-shot "poke players to capture" timer after socket connect
 let previewInterval = null;  // periodic preview refresh for the displays on the stage
 let lastStageSig = null;     // structural signature of the last full stage paint (see paintStage)
+// Per-wall split-column sources for a SINGLE spanning device (Mosaic): wallId ->
+// array indexed by column (0=left). Survives repaint (kept here, NOT in the DOM)
+// so dropping on the right column never blanks the left — both columns are re-sent
+// together as one composite grid on each drop.
+const wallSplitState = {};
 
 // Build the set of device ids that belong to a video wall — those devices are
 // represented by the wall card, never their own (mirrors dashboard.js:789-793).
@@ -248,6 +253,41 @@ async function setWallMode(wallId, mode) {
   } catch (e) {
     showToast(e?.message || t('mc.wall.tpl_error'), 'error');
   }
+}
+
+// Drop a source onto ONE column of a single-spanning-device split wall (a PC
+// driving N TVs as one Mosaic window). There is only one physical device, so both
+// columns must travel together as ONE composite grid URL: we MERGE the new column
+// into the wall's kept column state, rebuild the grid, ensure the wall is in split
+// mode (so the server gives this device its own playlist, not the shared span one),
+// then broadcast the merged grid to that single device. Dropping on the right
+// leaves the left intact and vice-versa.
+async function dropOnWallHalf(wallId, halfIndex, source, label) {
+  const wall = (walls || []).find(w => w.id === wallId);
+  if (!wall) return;
+  const cols = Math.max(2, wall.grid_cols || 2);
+  const leaderId = wall.leader_device_id
+    || (wall.devices && wall.devices[0] && wall.devices[0].device_id);
+  if (!leaderId) { showToast(t('mc.send.no_displays'), 'error'); return; }
+
+  const arr = wallSplitState[wallId] ? wallSplitState[wallId].slice() : new Array(cols).fill(null);
+  arr[halfIndex] = { source, label };
+  wallSplitState[wallId] = arr;
+
+  let url;
+  try { url = await buildSplitGridUrl(arr, cols); }
+  catch { url = null; }
+  if (!url) { showToast(t('mc.send.failed'), 'error'); return; }
+
+  // The single device needs its OWN playlist (not the shared span playlist) for the
+  // composite to land — that happens only in split mode. Idempotent if already split.
+  if (wall.layout_mode !== 'split') {
+    try { await api.updateWall(wallId, { layout_mode: 'split' }); await loadWalls(); }
+    catch { /* best-effort; broadcast still targets the device directly */ }
+  }
+
+  const ok = await sendToDisplays({ remote_url: url }, [leaderId], label || t('mc.wall.split_label'));
+  if (ok) { refreshAfterSend([leaderId]); paintStage(); }
 }
 
 // ---- Live preview driver ----
@@ -609,6 +649,29 @@ function attachStageDrop(stageContainer) {
       if (!parsed || !deviceId) return;
       await sendToDisplays(parsed.source, [deviceId], parsed.label);
       refreshAfterSend([deviceId]); // re-fetch state + refresh THIS card's preview
+    });
+  });
+
+  // Single-spanning-device split halves: drop a source onto ONE column of a wall
+  // driven by one Mosaic window. Each half pushes its own source into a composite
+  // grid on that single device (merge-and-resend; the other column is untouched).
+  stageContainer.querySelectorAll('.mc-wall-split-half[data-device-id][data-split-half]').forEach(half => {
+    half.addEventListener('dragover', (e) => {
+      if (!dragHasSource(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      half.classList.add('mc-card-dragover');
+    });
+    half.addEventListener('dragleave', () => half.classList.remove('mc-card-dragover'));
+    half.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      half.classList.remove('mc-card-dragover');
+      const parsed = parseDragSource(e);
+      const wallId = half.closest('.mc-wall[data-wall-id]')?.dataset.wallId;
+      const idx = parseInt(half.dataset.splitHalf, 10);
+      if (!parsed || !wallId || !Number.isInteger(idx)) return;
+      await dropOnWallHalf(wallId, idx, parsed.source, parsed.label);
     });
   });
 

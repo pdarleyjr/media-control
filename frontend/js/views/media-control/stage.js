@@ -335,10 +335,68 @@ function wallCard(wall, byId) {
 // into a spanned wall) and Calibrate. The member cards reuse displayCard, so they
 // inherit the full drop / inspect / transport / screensaver wiring with no extra
 // per-card plumbing.
+// One column of a SINGLE-spanning-device split wall (e.g. a PC driving N TVs as
+// one Mosaic window): an independent drop target that pushes its OWN source into
+// column `half` of the composite grid on that one device. The preview crops the
+// device's live screenshot to this column so each half shows what is actually on
+// that TV. data-device-id = the spanning (leader) device; data-split-half = index.
+function wallSplitHalfCell(leader, half, cols) {
+  const pv = previewSource(leader);
+  const label = cols === 2
+    ? (half === 0 ? t('mc.wall.half_left') : t('mc.wall.half_right'))
+    : t('mc.wall.screen_n', { n: half + 1 });
+  // Crop the composite screenshot to this column via background sizing.
+  const posX = cols > 1 ? (half * 100 / (cols - 1)) : 0;
+  const bg = pv
+    ? ` style="background-image:url('${esc(pv.src)}');background-size:${cols * 100}% 100%;background-position:${posX}% 0;background-repeat:no-repeat;"`
+    : '';
+  const empty = pv ? '' : `<span class="mc-wall-cell-empty">${esc(t('mc.card.no_preview'))}</span>`;
+  return `
+    <div class="mc-wall-split-half" data-device-id="${esc(leader.id)}" data-split-half="${half}"
+         role="button" tabindex="0" aria-label="${esc(t('mc.wall.split_drop_aria', { label }))}"${bg}>
+      ${empty}
+      <span class="mc-wall-cell-name">${esc(label)}</span>
+    </div>`;
+}
+
 function wallSplitGroup(wall, byId) {
   const members = (wall.devices || []).map(m => wallMemberView(m, byId));
   const ids = [...new Set(members.map(m => m.id))].join(',');
   const cols = Math.max(1, wall.grid_cols || members.length || 1);
+
+  // SINGLE spanning device (one PC via NVIDIA Mosaic / extended desktop driving N
+  // TVs as ONE window): there is only one member device but grid_cols > 1, so the
+  // per-device-card split below can't express "drop onto screen 2" (no 2nd device).
+  // Render N independent half drop cells instead; each drop composites its source
+  // into one column of a grid pushed to the single window (see dropOnWallHalf).
+  if (members.length === 1 && cols > 1) {
+    const leader = members[0];
+    const halves = [];
+    for (let i = 0; i < cols; i++) halves.push(wallSplitHalfCell(leader, i, cols));
+    return `
+    <section class="mc-card mc-wall mc-wall-split mc-wall-split-one" data-wall-id="${esc(wall.id)}" data-layout-mode="split" style="--mc-cols:${cols}" aria-label="${esc(t('mc.wall.aria', { name: wall.name }))}">
+      <div class="mc-wall-head">
+        <span class="mc-wall-title">${esc(wall.name)}</span>
+        <span class="mc-wall-sub">${esc(t('mc.wall.split_badge'))}</span>
+        <div class="mc-wall-template" role="group" aria-label="${esc(t('mc.wall.template_aria'))}">
+          <button type="button" class="mc-wall-tpl" data-wall-mode="span" data-wall-id="${esc(wall.id)}" aria-pressed="false" title="${esc(t('mc.wall.span_hint'))}">${esc(t('mc.wall.tpl_span'))}</button>
+          <button type="button" class="mc-wall-tpl is-active" data-wall-mode="split" data-wall-id="${esc(wall.id)}" aria-pressed="true" title="${esc(t('mc.wall.split_hint'))}">${esc(t('mc.wall.tpl_split'))}</button>
+        </div>
+        <button type="button" class="mc-wall-calibrate" data-wall-calibrate
+                data-wall-ids="${esc(ids)}" data-wall-name="${esc(wall.name)}"
+                title="${esc(t('mc.wall.calibrate_title'))}">${esc(t('mc.wall.calibrate'))}</button>
+        ${screensaverSelect(`data-wall-ids="${esc(ids)}"`)}
+        <a class="mc-wall-edit" href="#/walls">${esc(t('mc.wall.edit'))}</a>
+      </div>
+      <div class="mc-wall-hint">${esc(t('mc.wall.split_one_hint'))}</div>
+      <div class="mc-wall-grid" style="grid-template-columns:repeat(${cols}, 1fr)">
+        ${halves.join('')}
+      </div>
+      ${leader ? `<div class="mc-wall-transport" data-tp-host data-device-id="${esc(leader.id)}" data-blank-ids="${esc(ids)}"></div>` : ''}
+    </section>`;
+  }
+
+  // Multi-device split: each physical screen is its OWN device → its own card.
   const memberCards = members
     .map(m => { const live = byId.get(m.id); return live ? displayCard(live) : ''; })
     .join('');

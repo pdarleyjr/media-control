@@ -204,6 +204,23 @@
     return out;
   }
 
+  // ---- explicit column split (single spanning device split into N columns) -----
+  // A wall driven by ONE device (e.g. a PC using NVIDIA Mosaic to fuse N TVs into
+  // ONE window) can't be split per-device — there is no second browser to host the
+  // second screen. Instead the command center pushes a composite grid with N
+  // full-height columns and &split=N, and grid.html selects this layout so each TV
+  // shows exactly one independently-droppable column. The column ids are chosen
+  // from the fixed SLOT set so decodeCells keeps them and grid.html draws them in
+  // SLOT order, left -> right. KEEP IN SYNC with multiview.js SPLIT_COL_IDS.
+  var SPLIT_COL_IDS = { 2: ['L1', 'R1'], 3: ['L1', 'C1', 'R1'], 4: ['L1', 'L2', 'R1', 'R2'] };
+  function splitColumnIds(n) { n = Math.max(2, Math.min(4, n | 0)); return SPLIT_COL_IDS[n] || SPLIT_COL_IDS[2]; }
+  function splitColumnsLayout(n) {
+    n = Math.max(2, Math.min(4, n | 0));
+    var ids = splitColumnIds(n), out = {}, w = 100 / n, i;
+    for (i = 0; i < ids.length; i++) out[ids[i]] = { x: i * w, y: 0, w: w, h: 100 };
+    return out;
+  }
+
   // ---- reactive tiling geometry (pure — shared by the composer + unit tests) --
   // The effective rect of a cell: its own {x,y,w,h} when present, else (with a
   // `layout`) the aspect tile for this target (null = no tile here), else its
@@ -285,6 +302,8 @@
     normalizeAspect: normalizeAspect,
     screensFor: screensFor,
     layoutForAspect: layoutForAspect,
+    splitColumnIds: splitColumnIds,
+    splitColumnsLayout: splitColumnsLayout,
     isAllowedCellUrl: isAllowedCellUrl,
     b64urlEncode: b64urlEncode,
     b64urlDecode: b64urlDecode,

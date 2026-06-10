@@ -362,3 +362,44 @@ test('isAudioCapable: video + oz/hls only', () => {
   assert.equal(MV.isAudioCapable('m', '/api/content/1/file'), false);
   assert.equal(MV.isAudioCapable('i', 'https://www.youtube-nocookie.com/embed/abc123'), false);
 });
+
+// ---- single-spanning-device column split (&split=N) -------------------------
+// A wall driven by ONE device (Mosaic) is split into N independently-droppable
+// full-height columns. grid.html forces splitColumnsLayout() when &split=N, so the
+// halves render edge-to-edge (NOT the aspect mosaic, which would put them in the
+// top corners). These lock the geometry + that the ids are real SLOTs decodeCells keeps.
+test('splitColumnsLayout(2): two full-height halves at L1/R1, tiling the canvas', () => {
+  const lay = MV.splitColumnsLayout(2);
+  assert.deepEqual(Object.keys(lay).sort(), ['L1', 'R1']);
+  assert.deepEqual(lay.L1, { x: 0, y: 0, w: 50, h: 100 });
+  assert.deepEqual(lay.R1, { x: 50, y: 0, w: 50, h: 100 });
+  assert.ok(!MV.overlaps(lay.L1, lay.R1));
+  assert.equal(lay.L1.w * lay.L1.h + lay.R1.w * lay.R1.h, 10000);   // full coverage, no gaps
+});
+
+test('splitColumnsLayout(3): three full-height thirds at L1/C1/R1', () => {
+  const lay = MV.splitColumnsLayout(3);
+  assert.deepEqual(Object.keys(lay).sort(), ['C1', 'L1', 'R1']);
+  for (const id of ['L1', 'C1', 'R1']) assert.equal(lay[id].h, 100);
+  assert.ok(Math.abs(lay.L1.w - 100 / 3) < 1e-9);
+  assert.ok(Math.abs(lay.C1.x - 100 / 3) < 1e-9);
+});
+
+test('splitColumnIds: clamped 2..4 and every id is a real SLOT (decodeCells keeps it)', () => {
+  assert.deepEqual(MV.splitColumnIds(1), ['L1', 'R1']);   // clamps up to 2
+  assert.deepEqual(MV.splitColumnIds(9), MV.splitColumnIds(4)); // clamps down to 4
+  for (const n of [2, 3, 4]) {
+    for (const id of MV.splitColumnIds(n)) assert.ok(MV.SLOT_BY_ID[id], `${id} is a SLOT`);
+  }
+});
+
+test('decodeCells round-trips a 2-column split payload (L1/R1 kept, allowlisted)', () => {
+  const enc = (m) => MV.encodeCells(m);
+  const out = MV.decodeCells(enc({
+    L1: { u: '/api/content/abc/file', l: 'Left', k: 'm' },
+    R1: { u: '/player/hls.html?station=mbtv', l: 'Right', k: 'i' },
+  }));
+  assert.deepEqual(Object.keys(out).sort(), ['L1', 'R1']);
+  assert.equal(out.L1.u, '/api/content/abc/file');
+  assert.equal(out.R1.u, '/player/hls.html?station=mbtv');
+});

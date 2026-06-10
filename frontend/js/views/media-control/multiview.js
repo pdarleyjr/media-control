@@ -315,6 +315,39 @@ function buildGridUrl() {
   return `${location.origin}/player/grid.html?cells=${b64url(JSON.stringify(map))}`;
 }
 
+// ---------- single-device wall split (N full-height column cells) ----------
+// The wall card's Split button, when the wall is ONE spanning device (e.g. a PC
+// using NVIDIA Mosaic to drive N TVs as one window), drops a source onto one of N
+// columns. Each column maps to a fixed grid cell id (mirror of multiview-core
+// splitColumnIds) so grid.html?cells=...&split=N renders N independently-sourced
+// columns on the one window. `halfSources[i]` = { source, label } or null.
+// Returns a grid.html URL, or null when nothing droppable is set yet.
+const SPLIT_COL_IDS = { 2: ['L1', 'R1'], 3: ['L1', 'C1', 'R1'], 4: ['L1', 'L2', 'R1', 'R2'] };
+async function ensureContentIndex() {
+  if (contentIndex && Object.keys(contentIndex).length) return;
+  try {
+    const result = await api.getContent();
+    const items = Array.isArray(result) ? result : (result && Array.isArray(result.content) ? result.content : []);
+    contentIndex = {};
+    for (const it of items) contentIndex[it.id] = { mime: it.mime_type || '', thumbnail_url: it.thumbnail_url || null, filename: it.filename || '' };
+  } catch { /* a miss just defaults a cell to an iframe — still renders */ }
+}
+export async function buildSplitGridUrl(halfSources, cols) {
+  const n = Math.max(2, Math.min(4, cols || 2));
+  const ids = SPLIT_COL_IDS[n] || SPLIT_COL_IDS[2];
+  await ensureContentIndex();
+  const map = {};
+  for (let i = 0; i < ids.length; i++) {
+    const hs = halfSources && halfSources[i];
+    if (!hs || !hs.source) continue;
+    const res = resolveCell(hs.source, hs.label || '', null);
+    if (!res || res.error || !res.cellUrl) continue;        // share/playlist/unsupported → skip
+    map[ids[i]] = { u: res.cellUrl, l: res.label || '', k: res.kind || 'i' };
+  }
+  if (!Object.keys(map).length) return null;
+  return `${location.origin}/player/grid.html?cells=${b64url(JSON.stringify(map))}&split=${n}`;
+}
+
 // ---------- rendering ----------
 function slotName(slot) {
   return t(`mc.mv.slot.${slot.id}`);
