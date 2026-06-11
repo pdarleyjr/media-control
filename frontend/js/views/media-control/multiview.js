@@ -71,14 +71,14 @@ const IC = {
 };
 
 // Office/ODF mime matcher (Word/Excel/PowerPoint + OpenDocument). Such files
-// can't render as raw bytes in a frame, so they route through /player/doc-pdf/:id
-// (LibreOffice -> PDF) like the full-screen player does.
+// can't render as raw bytes in a frame, so they route through /player/doc/:id
+// (LibreOffice -> PDF -> cached page images) like the full-screen player does.
 const OFFICE_DOC_RE = /(msword|ms-excel|ms-powerpoint|officedocument\.(?:wordprocessing|spreadsheet|presentation)ml|oasis\.opendocument)/;
 
 // Iframe player pages whose inner <video>/<img> honors a ?fit=cover param (so a
 // fill choice reaches their letterboxed media). grid.html's object-fit handles
-// <video>/<img> cells directly; youtube/deck/doc-pdf/api-content are NOT in here.
-const FIT_PARAM_RE = /^\/player\/(oz|hls|cam|site)\.html(\?|$)/;
+// <video>/<img> cells directly; youtube/deck/api-content are NOT in here.
+const FIT_PARAM_RE = /^\/player\/(?:(oz|hls|cam|site)\.html|doc\/[^/?#]+)(\?|$)/;
 
 // ---- module state (one composer per Command Center mount) ----
 let cells = {};               // slotId -> { cellUrl, monitorUrl, kind, label, thumb, category }
@@ -249,11 +249,11 @@ function resolveCell(source, label, thumb) {
       // reads the real URL from the row by id. /player/* is allowlisted.
       return { cellUrl: `/player/site.html?id=${encodeURIComponent(source.content_id)}`, monitorUrl: null, kind: 'i', label, thumb: thumb || meta.thumbnail_url || null, category: 'broadcast' };
     }
-    if (OFFICE_DOC_RE.test(mime)) {
-      // Office/ODF doc → LibreOffice-rendered PDF shown via the browser's native
-      // PDF viewer inside the cell (raw .pptx/.docx bytes can't iframe). Same
-      // /player/doc-pdf/:id route the full-screen player uses; /player/* is allowlisted.
-      return { cellUrl: `/player/doc-pdf/${encodeURIComponent(source.content_id)}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`, monitorUrl: null, kind: 'i', label, thumb: thumb || meta.thumbnail_url || null, category: 'generic' };
+    if (mime === 'application/pdf' || OFFICE_DOC_RE.test(mime)) {
+      // PDF/Office/ODF doc → controllable document player. Office files are
+      // converted to PDF server-side; the page then renders one cached slide/page
+      // image at a time and listens for transport postMessage events.
+      return { cellUrl: `/player/doc/${encodeURIComponent(source.content_id)}`, monitorUrl: null, kind: 'i', label, thumb: thumb || meta.thumbnail_url || null, category: 'slides' };
     }
     // Unknown / web content → iframe the file (browser picks a viewer).
     return { cellUrl: fileUrl, monitorUrl: null, kind: 'i', label, thumb: thumb || meta.thumbnail_url || null, category: 'generic' };

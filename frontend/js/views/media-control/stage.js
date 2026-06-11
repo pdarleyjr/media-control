@@ -27,6 +27,7 @@ const SCREENSAVER_OPTIONS = [
   { value: 'url:https://wall.mbfdhub.com', labelKey: 'mc.saver.dashboard' },
   { value: 'content:4798f022-e9d9-4cba-a0b0-56aeb75a6bff', labelKey: 'mc.saver.bw' },
   { value: 'content:1d01b7a0-1a0c-4d3d-b0fd-6d854ce09ae3', labelKey: 'mc.saver.l1' },
+  { value: 'content:7c596f36-27f6-4d7b-9bb0-2c682791d25a', labelKey: 'mc.saver.mbfd_map' },
 ];
 
 // Render the screensaver <select>. `dataAttrs` carries the target wiring:

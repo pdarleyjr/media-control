@@ -16,6 +16,7 @@ import { renderRoomPresets } from './media-control/room-presets.js';
 import { renderRecentPanel } from './media-control/recent-panel.js';
 import { openViewModal, closeViewModal } from './media-control/view-modal.js';
 import { confirmDialog } from '../components/confirm.js';
+import * as screenShareEngine from '../services/screen-share-engine.js';
 import * as schedulesView from './schedules.js';
 // transport.js is used by stage.js internally — no direct import needed here.
 
@@ -907,6 +908,10 @@ export async function render() {
   // the engine singleton so it reflects broadcast state even after navigation.
   if (unsubChip) { unsubChip(); unsubChip = null; }
   unsubChip = mountBroadcastChip(document.getElementById('mc-broadcast-chip'));
+  // Prime signaling + ICE servers outside the user's click gesture. Browsers are
+  // strict about getDisplayMedia() activation; doing network work before the
+  // chooser can make first-click Media Control shares fail intermittently.
+  screenShareEngine.init().catch(() => {});
 
   // Fresh data (status, screenshots, wall changes) repaints the stage. The
   // store re-fetches walls-affecting changes via its own 'wall-changed' refresh;

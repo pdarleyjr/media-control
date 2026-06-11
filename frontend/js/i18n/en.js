@@ -1290,6 +1290,7 @@ export default {
   'mc.saver.dashboard': 'Dashboard',
   'mc.saver.bw': 'B&W Wallpaper',
   'mc.saver.l1': 'L1 Wallpaper',
+  'mc.saver.mbfd_map': 'MBFD Map',
   // Room Presets rail (one-tap scene recall)
   'mc.presets.title': 'Room Presets',
   'mc.presets.manage': 'Manage',

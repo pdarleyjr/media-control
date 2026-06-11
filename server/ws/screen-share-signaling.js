@@ -208,6 +208,26 @@ function setupScreenShareSignaling({ dashboardNs, deviceNs, canActOnDevice, devi
       ack && ack({ ok: true });
     });
 
+    socket.on('screen-share:resume', (data, ack) => {
+      const { device_id } = data || {};
+      if (!device_id) {
+        return ack && ack({ ok: false, error: 'device_id required' });
+      }
+      const session = activeSessions.get(device_id);
+      if (!session) return ack && ack({ ok: false, error: 'no_active_session' });
+      if (session.broadcasterUserId !== socket.userId) {
+        return ack && ack({ ok: false, error: 'not_session_owner' });
+      }
+      if (!canActOnDevice(socket, device_id, 'write')) {
+        return ack && ack({ ok: false, error: 'forbidden' });
+      }
+      session.broadcasterSocketId = socket.id;
+      session.disconnectedAt = null;
+      socket.data.ownedScreenShareSessions.add(device_id);
+      console.log(`[screen-share] resume: device=${device_id} broadcaster=${socket.id}`);
+      ack && ack({ ok: true });
+    });
+
     // On dashboard socket disconnect, mark each owned session with
     // disconnectedAt rather than tearing it down immediately. The reaper
     // will clean up after the grace period if no reconnect happens. Also,

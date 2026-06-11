@@ -9,7 +9,7 @@ const { v4: uuidv4 } = require('uuid');
 const { db } = require('../db/database');
 const config = require('../config');
 const { sanitizeString } = require('../middleware/sanitize');
-const { isAllowedUploadMime } = require('../middleware/upload');
+const { resolveUploadMime } = require('../middleware/upload');
 const { isDocThumbnailMime, kickDocThumbnail } = require('./doc-thumbnail');
 const { isHeicMime, heicToJpeg, kickHevcTranscodeIfNeeded } = require('./media-transcode');
 
@@ -39,8 +39,8 @@ async function finalizeUpload({ absPath, originalName, mimeType, size, userId, w
   }
 
   const ext = path.extname(originalName || '') || '';
-  let mt = mimeType || 'application/octet-stream';
-  if (!isAllowedUploadMime(mt)) {
+  let mt = resolveUploadMime({ mimetype: mimeType || '', originalname: originalName || '' });
+  if (!mt) {
     try { fs.unlinkSync(absPath); } catch { /* ignore */ }
     const e = new Error('Only video, image, PDF, and Office document files are allowed');
     e.status = 415;
