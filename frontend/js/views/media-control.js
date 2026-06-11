@@ -324,6 +324,9 @@ function stopPreviewRefresh() {
 function roomDisplayIds() {
   return displayState.getAll().filter(d => !wallMemberIds.has(d.id)).map(d => d.id);
 }
+function onlineRoomDisplayIds() {
+  return displayState.getAll().filter(d => d.online && !wallMemberIds.has(d.id)).map(d => d.id);
+}
 function effectiveTargets() {
   return selectedIds;
 }
@@ -822,8 +825,11 @@ export async function render() {
   // so every member immediately sees every shared display (and newly-paired ones
   // appear until the operator deliberately curates the stage). NOT persisted — the
   // moment the operator adds/removes a display, that choice persists instead.
-  if (selectedIds.length === 0) {
-    selectedIds = roomDisplayIds();
+  const onlineIds = onlineRoomDisplayIds();
+  const selectedHasOnline = displayState.getAll().some(d => selectedIds.includes(d.id) && d.online && !wallMemberIds.has(d.id));
+  if (selectedIds.length === 0 || (!selectedHasOnline && onlineIds.length > 0)) {
+    selectedIds = onlineIds.length > 0 ? onlineIds : roomDisplayIds();
+    persistSelection();
   }
   paintStage();
   paintToolbox();
