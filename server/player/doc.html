@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Document Player</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: #000; }
+    #page { width: 100%; height: 100%; object-fit: contain; background: #000; display: block; }
+    body[data-fit="cover"] #page { object-fit: cover; }
+    #status {
+      position: fixed; left: 50%; bottom: max(18px, env(safe-area-inset-bottom)); transform: translateX(-50%);
+      z-index: 3; max-width: min(92vw, 820px); padding: 8px 13px; border-radius: 999px;
+      color: #fff; background: rgba(0,0,0,.62); box-shadow: 0 10px 32px rgba(0,0,0,.35);
+      font-size: clamp(12px, 1.35vw, 18px); font-weight: 700; letter-spacing: .01em;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0; transition: opacity .18s ease;
+      pointer-events: none;
+    }
+    body[data-show-status="1"] #status { opacity: 1; }
+    #error {
+      position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 40px;
+      color: #fecaca; background: #0f172a; font: 700 clamp(18px, 2vw, 30px)/1.35 system-ui, sans-serif; text-align: center;
+    }
+    body[data-error="1"] #error { display: flex; }
+    body[data-error="1"] #stage, body[data-error="1"] #status { display: none; }
+  </style>
+</head>
+<body>
+  <div id="stage"><img id="page" alt="Document page"></div>
+  <div id="status" aria-live="polite"></div>
+  <div id="error">Document failed to load.</div>
+  <script>
+    (function () {
+      'use strict';
+      var parts = location.pathname.split('/').filter(Boolean);
+      var id = parts[parts.length - 1] || '';
+      var params = new URLSearchParams(location.search || '');
+      var fit = params.get('fit') === 'cover' ? 'cover' : 'contain';
+      document.body.dataset.fit = fit;
+
+      var img = document.getElementById('page');
+      var statusEl = document.getElementById('status');
+      var page = Math.max(1, parseInt(params.get('page') || '1', 10) || 1);
+      var pages = 1;
+      var filename = 'Document';
+      var version = '';
+      var statusTimer = null;
+      var playTimer = null;
+
+      function esc(s) {
+        return String(s == null ? '' : s)
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+      }
+      function showStatus(ms) {
+        statusEl.innerHTML = esc(filename) + ' · ' + page + ' / ' + pages;
+        document.body.dataset.showStatus = '1';
+        clearTimeout(statusTimer);
+        statusTimer = setTimeout(function () { document.body.dataset.showStatus = '0'; }, ms || 1400);
+      }
+      function pageUrl(n) {
+        var q = version ? ('?v=' + encodeURIComponent(version)) : '';
+        return '/player/doc-page/' + encodeURIComponent(id) + '/' + n + '.png' + q;
+      }
+      function prefetch(n) {
+        if (n < 1 || n > pages) return;
+        var im = new Image();
+        im.src = pageUrl(n);
+      }
+      function render(n, announce) {
+        page = Math.max(1, Math.min(pages, parseInt(n, 10) || 1));
+        img.src = pageUrl(page);
+        img.onload = function () { prefetch(page + 1); prefetch(page - 1); };
+        if (announce !== false) showStatus();
+      }
+      function stopAuto() {
+        if (playTimer) clearInterval(playTimer);
+        playTimer = null;
+      }
+      function toggleAuto() {
+        if (playTimer) { stopAuto(); showStatus(); return; }
+        playTimer = setInterval(function () {
+          render(page >= pages ? 1 : page + 1, true);
+        }, Math.max(2500, parseInt(params.get('interval') || '8000', 10) || 8000));
+        showStatus();
+      }
+      function handleAction(action) {
+        if (action === 'next') render(page + 1, true);
+        else if (action === 'prev') render(page - 1, true);
+        else if (action === 'restart') { stopAuto(); render(1, true); }
+        else if (action === 'play_pause') toggleAuto();
+      }
+
+      window.addEventListener('message', function (event) {
+        var data = event && event.data;
+        if (!data || data.__mc_transport == null) return;
+        handleAction(data.__mc_transport);
+      });
+      window.addEventListener('keydown', function (event) {
+        if (event.key === 'ArrowRight' || event.key === 'PageDown' || event.key === ' ') { event.preventDefault(); handleAction('next'); }
+        else if (event.key === 'ArrowLeft' || event.key === 'PageUp') { event.preventDefault(); handleAction('prev'); }
+        else if (event.key === 'Home') { event.preventDefault(); handleAction('restart'); }
+      });
+      document.addEventListener('click', function () { handleAction('next'); });
+
+      fetch('/player/doc-meta/' + encodeURIComponent(id), { cache: 'no-store' })
+        .then(function (r) { if (!r.ok) throw new Error('metadata ' + r.status); return r.json(); })
+        .then(function (meta) {
+          pages = Math.max(1, parseInt(meta.pages, 10) || 1);
+          filename = meta.filename || filename;
+          version = meta.version || '';
+          render(page, true);
+        })
+        .catch(function (e) {
+          console.error('[doc-player] failed:', e);
+          document.body.dataset.error = '1';
+        });
+    })();
+  </script>
+</body>
+</html>

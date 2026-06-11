@@ -404,6 +404,36 @@
     // leader is allowed to make sound. This helper is the single source of
     // truth used by every code path that would otherwise unmute audio.
     function isWallFollower() { return !!(wallConfig && !wallConfig.is_leader); }
+    const DOC_OFFICE_MIMES = [
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-powerpoint',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'application/vnd.oasis.opendocument.text',
+      'application/vnd.oasis.opendocument.spreadsheet',
+      'application/vnd.oasis.opendocument.presentation',
+    ];
+    function isOfficeMime(mt) { return DOC_OFFICE_MIMES.includes(String(mt || '')); }
+    function isDocumentMime(mt) { return mt === 'application/pdf' || isOfficeMime(mt); }
+    function docPlayerSrc(item, fit) {
+      if (!item || !item.content_id) return null;
+      const q = fit === 'cover' ? '?fit=cover' : '';
+      return '/player/doc/' + encodeURIComponent(item.content_id) + q;
+    }
+    function postTransportToFrames(action) {
+      let posted = false;
+      document.querySelectorAll('#playerContainer iframe, .zone iframe, .wall-stage iframe').forEach((f) => {
+        try {
+          if (f.contentWindow) {
+            f.contentWindow.postMessage({ __mc_transport: action }, '*');
+            posted = true;
+          }
+        } catch (e) { /* cross-origin/none */ }
+      });
+      return posted;
+    }
     // YouTube player state. Declared up front because the cached-playlist restore
     // (a few lines below) may synchronously call into createYoutubeEmbed before the
     // script reaches the original declaration site, which used to throw a temporal
@@ -1521,10 +1551,8 @@
       function doTransport(action) {
         try {
           const item = playlist[currentIndex] || {};
-          if (item.remote_url) {
-            document.querySelectorAll('#playerContainer iframe, .zone iframe, .wall-stage iframe').forEach((f) => {
-              try { if (f.contentWindow) f.contentWindow.postMessage({ __mc_transport: action }, '*'); } catch (e) { /* cross-origin/none */ }
-            });
+          if (item.remote_url || isDocumentMime(item.mime_type)) {
+            postTransportToFrames(action);
             return;
           }
           const len = playlist.length || 0;
@@ -2152,17 +2180,6 @@
       // than fall through every branch and leave a blank container.
       // 2026-05-28: also accept PDF + Office MIMEs so they don't fall into the
       // "Waiting for content" hole.
-      const OFFICE_MIMES = [
-        'application/msword',
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        'application/vnd.ms-excel',
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        'application/vnd.ms-powerpoint',
-        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-        'application/vnd.oasis.opendocument.text',
-        'application/vnd.oasis.opendocument.spreadsheet',
-        'application/vnd.oasis.opendocument.presentation',
-      ];
       // URL routing lives in the shared, unit-tested player-routing.js module
       // (window.PlayerRouting). ownPlayerPath() rewrites our OWN absolute player/
       // content URLs to root-relative so they load LIVE from this device's own
@@ -2189,7 +2206,7 @@
         item.mime_type === 'application/pdf' ||
         item.mime_type === 'text/html' ||
         (item.remote_url && /\/player\/deck\//.test(item.remote_url)) ||
-        OFFICE_MIMES.includes(item.mime_type) ||
+        isOfficeMime(item.mime_type) ||
         (typeof item.mime_type === 'string' && (item.mime_type.startsWith('video/') || item.mime_type.startsWith('image/')))
       );
       if (!hasRenderableType) {
@@ -2226,7 +2243,7 @@
       const isVideo = !isYoutube && !isWebpage && item.mime_type?.startsWith('video/');
       const isImage = !isWebpage && item.mime_type?.startsWith('image/');
       const isPdf = !isWebpage && item.mime_type === 'application/pdf';
-      const isOffice = !isWebpage && OFFICE_MIMES.includes(item.mime_type);
+      const isOffice = !isWebpage && isOfficeMime(item.mime_type);
       const serverUrl = config.serverUrl;
       const src = item.asset_url || remoteUrl || `${serverUrl}/uploads/content/${item.filepath}`;
       // 2026-05-28: per-item fit_mode override. Null/undefined falls back to
@@ -2377,38 +2394,26 @@
           // Leader / single screen drives image advance; follower waits for sync
           if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 10) * 1000);
         } else if (isPdf) {
-          // 2026-05-28: PDF rendering via the browser's native PDF viewer
-          // (Silk Browser on Fire TV inherits Chrome's PDF support). The
-          // #toolbar=0&navpanes=0&scrollbar=0 fragment hides Chrome's PDF
-          // chrome so the page fills the kiosk. The duration_sec from the
-          // playlist item drives advance. For multi-page navigation in
-          // future, swap this for pdf.js with a paged advance loop.
+          // Controllable PDF player: renders cached Poppler page images and
+          // listens for Command Center transport messages. This avoids native
+          // PDF-plugin quirks and lets prev/next move pages/slides reliably.
           const pdfFrame = document.createElement('iframe');
-          pdfFrame.src = src + '#toolbar=0&navpanes=0&scrollbar=0&view=FitH';
+          pdfFrame.src = docPlayerSrc(item, cssFit) || (src + '#toolbar=0&navpanes=0&scrollbar=0&view=FitH');
           pdfFrame.style.cssText = `width:100%;height:100%;border:none;background:#fff;object-fit:${cssFit}`;
           pdfFrame.allow = 'autoplay; fullscreen';
           mount.appendChild(pdfFrame);
-          if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 30) * 1000);
+          if (!isFollower && playlist.length > 1) advanceTimer = setTimeout(nextItem, (item.duration_sec || 30) * 1000);
         } else if (isOffice) {
-          // 2026-06-07: Office/ODF docs (PPT/PPTX/DOC/DOCX/XLS/XLSX/ODF) are
-          // converted to PDF server-side by headless LibreOffice (cached at
-          // /player/doc-pdf/:id) and rendered through the browser's native PDF
-          // viewer — the SAME proven path as the isPdf branch above. This
-          // replaces the old ONLYOFFICE `…/api/documents/api.js?fileUrl=…`
-          // iframe, which pointed at the ONLYOFFICE JS *library* (not a viewer)
-          // and so displayed the raw JavaScript source as text on the display.
+          // Office/ODF docs are converted to PDF server-side, then displayed by
+          // the same controllable document player. For PowerPoint this means
+          // each slide is one transport-controllable page image.
           const docFrame = document.createElement('iframe');
-          // content_id is required to reach the converter route; fall back to
-          // the raw file only if it's somehow absent (browser may still offer a
-          // download — better than a blank void).
-          const docPdfSrc = item.content_id
-            ? `/player/doc-pdf/${item.content_id}`
-            : src;
-          docFrame.src = docPdfSrc + '#toolbar=0&navpanes=0&scrollbar=0&view=FitH';
+          const docSrc = docPlayerSrc(item, cssFit) || src;
+          docFrame.src = docSrc;
           docFrame.style.cssText = `width:100%;height:100%;border:none;background:#fff;object-fit:${cssFit}`;
           docFrame.allow = 'autoplay; fullscreen';
           mount.appendChild(docFrame);
-          if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 60) * 1000);
+          if (!isFollower && playlist.length > 1) advanceTimer = setTimeout(nextItem, (item.duration_sec || 60) * 1000);
         } else if (item.widget_id) {
           const iframe = document.createElement('iframe');
           iframe.src = `${serverUrl}/api/widgets/${item.widget_id}/render`;
@@ -2434,6 +2439,9 @@
         if (!assignment) return;
 
         const isVideo = assignment.mime_type?.startsWith('video/');
+        const isImage = assignment.mime_type?.startsWith('image/');
+        const isPdf = assignment.mime_type === 'application/pdf';
+        const isOffice = isOfficeMime(assignment.mime_type);
         const src = assignment.asset_url || assignment.remote_url || `${config.serverUrl}/uploads/content/${assignment.filepath}`;
 
         const isYoutubeZone = assignment.mime_type === 'video/youtube';
@@ -2454,12 +2462,26 @@
           video.style.cssText = `width:100%;height:100%;object-fit:${zone.fit_mode || 'cover'}`;
           if (!video.loop) video.onended = () => nextItem();
           div.appendChild(video);
-        } else {
+        } else if (isPdf || isOffice) {
+          const iframe = document.createElement('iframe');
+          iframe.src = docPlayerSrc(assignment, zone.fit_mode || 'contain') || src;
+          iframe.style.cssText = 'width:100%;height:100%;border:none;background:#000';
+          iframe.allow = 'autoplay; fullscreen';
+          div.appendChild(iframe);
+          if (playlist.length > 1) advanceTimer = setTimeout(nextItem, (assignment.duration_sec || 30) * 1000);
+        } else if (isImage) {
           const img = document.createElement('img');
           img.src = src;
           img.style.cssText = `width:100%;height:100%;object-fit:${zone.fit_mode || 'cover'}`;
           div.appendChild(img);
           if (playlist.length > 1) advanceTimer = setTimeout(nextItem, (assignment.duration_sec || 10) * 1000);
+        } else {
+          const iframe = document.createElement('iframe');
+          iframe.src = src;
+          iframe.style.cssText = 'width:100%;height:100%;border:none;background:#000';
+          iframe.allow = 'autoplay; fullscreen';
+          div.appendChild(iframe);
+          if (playlist.length > 1) advanceTimer = setTimeout(nextItem, (assignment.duration_sec || 30) * 1000);
         }
 
         container.appendChild(div);

@@ -45,7 +45,7 @@ router.get('/state', (req, res) => {
   // /api/content/:id/thumbnail route) so the dashboard shows a real preview
   // instead of a black tile. A still image captures fine, so images keep the
   // live screenshot; anything without a generated poster falls back to it too.
-  const POSTERABLE = new Set(['video', 'web', 'youtube']);
+  const POSTERABLE = new Set(['video', 'web', 'youtube', 'pdf', 'document']);
   const posterStmt = db.prepare('SELECT thumbnail_path FROM content WHERE id = ?');
   for (const d of displays) {
     const np = d.now_playing;

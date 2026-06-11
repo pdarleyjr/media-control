@@ -81,3 +81,43 @@ test('TUS finalize rejects disallowed client metadata before creating content', 
   assert.equal(fs.existsSync(file), false);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('TUS finalize recovers canonical Office/PDF MIME from generic client metadata', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-upload-policy-'));
+  const rows = [
+    {
+      name: 'deck.pptx',
+      mime: 'application/zip',
+      expected: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    },
+    {
+      name: 'incident-plan.pdf',
+      mime: '',
+      expected: 'application/pdf',
+    },
+  ];
+
+  // Keep this test focused on finalizeUpload's policy behavior. The test DB has
+  // no real users/workspaces, and FK behavior is covered elsewhere.
+  db.pragma('foreign_keys = OFF');
+  try {
+    for (const r of rows) {
+      const file = path.join(dir, r.name);
+      fs.writeFileSync(file, 'test bytes');
+      const inserted = await finalizeUpload({
+        absPath: file,
+        originalName: r.name,
+        mimeType: r.mime,
+        size: 10,
+        userId: 'test-user',
+        workspaceId: 'test-workspace',
+      });
+      assert.equal(inserted.mime_type, r.expected);
+      assert.equal(inserted.filename, r.name);
+      assert.equal(fs.existsSync(file), false);
+    }
+  } finally {
+    db.pragma('foreign_keys = ON');
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

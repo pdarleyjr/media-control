@@ -27,6 +27,8 @@ function nowPlayingFromSnapshot(snapshotJson) {
   if (mime === 'video/youtube') kind = 'youtube';
   else if (mime.startsWith('image/')) kind = 'image';
   else if (mime.startsWith('video/')) kind = 'video';
+  else if (mime === 'application/pdf') kind = 'pdf';
+  else if (/msword|ms-excel|ms-powerpoint|officedocument\.(?:wordprocessing|spreadsheet|presentation)ml|oasis\.opendocument/.test(mime)) kind = 'document';
   else if (it.widget_id) kind = 'widget';
   else if (it.remote_url) kind = 'web';
   // contentId lets the stage attach the content's poster thumbnail for content

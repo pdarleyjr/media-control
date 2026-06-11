@@ -343,29 +343,15 @@ app.get('/player/site-shot/:id', async (req, res) => {
 // are actually referenced by a playlist/widget in their workspace (or are platform
 // templates), so a leaked UUID can't convert+exfiltrate arbitrary private uploads.
 const { getOfficePdf, isConvertibleOfficeMime } = require('./lib/doc-pdf');
+const { canServePublicContent } = require('./lib/public-content-access');
+const { DEFAULT_DPI, clampPage, getPdfPageCount, getRenderablePdf, isDocumentMime, renderPdfPageImage } = require('./lib/doc-render');
 app.get('/player/doc-pdf/:id', async (req, res) => {
   try {
     const { db } = require('./db/database');
     const c = db.prepare('SELECT id, filepath, mime_type, workspace_id FROM content WHERE id = ?').get(req.params.id);
     if (!c || !c.filepath) return res.status(404).type('text/plain').send('not found');
     if (!isConvertibleOfficeMime(c.mime_type)) return res.status(400).type('text/plain').send('not an office document');
-    let inPlaylist, inWidget;
-    if (c.workspace_id) {
-      inPlaylist = db.prepare(
-        `SELECT pi.id FROM playlist_items pi
-         JOIN playlists p ON p.id = pi.playlist_id
-         WHERE pi.content_id = ? AND p.workspace_id = ? LIMIT 1`
-      ).get(c.id, c.workspace_id);
-      inWidget = inPlaylist ? null : db.prepare(
-        'SELECT id FROM widgets WHERE workspace_id = ? AND config LIKE ? LIMIT 1'
-      ).get(c.workspace_id, `%/api/content/${c.id}/%`);
-    } else {
-      inPlaylist = db.prepare('SELECT id FROM playlist_items WHERE content_id = ? LIMIT 1').get(c.id);
-      inWidget = inPlaylist ? null : db.prepare(
-        'SELECT id FROM widgets WHERE config LIKE ? LIMIT 1'
-      ).get(`%/api/content/${c.id}/%`);
-    }
-    if (!inPlaylist && !inWidget) return res.status(403).type('text/plain').send('not assigned to any playlist or widget');
+    if (!canServePublicContent(db, c)) return res.status(403).type('text/plain').send('not assigned to any playlist or widget');
     const srcPath = path.resolve(config.contentDir, path.basename(c.filepath));
     if (!srcPath.startsWith(path.resolve(config.contentDir))) return res.status(403).type('text/plain').send('invalid path');
     const pdfPath = await getOfficePdf(c.id, srcPath, c.mime_type);
@@ -376,6 +362,60 @@ app.get('/player/doc-pdf/:id', async (req, res) => {
   } catch (e) {
     console.warn('[doc-pdf] convert failed:', e && e.message);
     res.status(502).type('text/plain').send('conversion failed');
+  }
+});
+
+// Controllable PDF / Office document player. Unlike the browser's native PDF
+// plugin, /player/doc/:id can receive Command Center transport events and move
+// page-by-page through an uploaded PDF or LibreOffice-converted PowerPoint.
+app.get('/player/doc/:id', (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(__dirname, 'player', 'doc.html'));
+});
+
+app.get('/player/doc-meta/:id', async (req, res) => {
+  try {
+    const { db } = require('./db/database');
+    const c = db.prepare('SELECT id, filename, filepath, mime_type, workspace_id FROM content WHERE id = ?').get(req.params.id);
+    if (!c || !c.filepath) return res.status(404).json({ error: 'not found' });
+    if (!isDocumentMime(c.mime_type)) return res.status(400).json({ error: 'not a document' });
+    if (!canServePublicContent(db, c)) return res.status(403).json({ error: 'not assigned to any playlist or widget' });
+    const pdfPath = await getRenderablePdf(c);
+    const pages = await getPdfPageCount(pdfPath);
+    const stat = fs.statSync(pdfPath);
+    res.setHeader('Cache-Control', 'public, max-age=30');
+    res.json({
+      id: c.id,
+      filename: c.filename || 'Document',
+      mime_type: c.mime_type,
+      pages,
+      dpi: DEFAULT_DPI,
+      version: Math.round(stat.mtimeMs),
+    });
+  } catch (e) {
+    console.warn('[doc-player] metadata failed:', e && e.message);
+    res.status(502).json({ error: 'metadata failed' });
+  }
+});
+
+app.get('/player/doc-page/:id/:page.png', async (req, res) => {
+  try {
+    const { db } = require('./db/database');
+    const c = db.prepare('SELECT id, filepath, mime_type, workspace_id FROM content WHERE id = ?').get(req.params.id);
+    if (!c || !c.filepath) return res.status(404).type('text/plain').send('not found');
+    if (!isDocumentMime(c.mime_type)) return res.status(400).type('text/plain').send('not a document');
+    if (!canServePublicContent(db, c)) return res.status(403).type('text/plain').send('not assigned to any playlist or widget');
+    const pdfPath = await getRenderablePdf(c);
+    const pages = await getPdfPageCount(pdfPath);
+    const page = clampPage(req.params.page, pages);
+    const rendered = await renderPdfPageImage(c.id, pdfPath, page);
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+    res.sendFile(rendered.path);
+  } catch (e) {
+    console.warn('[doc-player] page render failed:', e && e.message);
+    res.status(502).type('text/plain').send('render failed');
   }
 });
 
@@ -503,25 +543,7 @@ app.get('/api/content/:id/file', (req, res) => {
   const content = db.prepare('SELECT * FROM content WHERE id = ?').get(req.params.id);
   if (!content) return res.status(404).json({ error: 'Content not found' });
   if (!content.filepath) return res.status(404).json({ error: 'No file (remote URL content)' });
-  let inPlaylist, inWidget;
-  if (content.workspace_id) {
-    // Workspace-scoped: only count references inside the content's own workspace.
-    inPlaylist = db.prepare(
-      `SELECT pi.id FROM playlist_items pi
-       JOIN playlists p ON p.id = pi.playlist_id
-       WHERE pi.content_id = ? AND p.workspace_id = ? LIMIT 1`
-    ).get(req.params.id, content.workspace_id);
-    inWidget = inPlaylist ? null : db.prepare(
-      'SELECT id FROM widgets WHERE workspace_id = ? AND config LIKE ? LIMIT 1'
-    ).get(content.workspace_id, `%/api/content/${req.params.id}/%`);
-  } else {
-    // Platform-template (workspace_id IS NULL): globally referenceable.
-    inPlaylist = db.prepare('SELECT id FROM playlist_items WHERE content_id = ? LIMIT 1').get(req.params.id);
-    inWidget = inPlaylist ? null : db.prepare(
-      'SELECT id FROM widgets WHERE config LIKE ? LIMIT 1'
-    ).get(`%/api/content/${req.params.id}/%`);
-  }
-  if (!inPlaylist && !inWidget) return res.status(403).json({ error: 'Content not assigned to any playlist or widget' });
+  if (!canServePublicContent(db, content)) return res.status(403).json({ error: 'Content not assigned to any playlist or widget' });
   const safePath = path.resolve(config.contentDir, path.basename(content.filepath));
   if (!safePath.startsWith(path.resolve(config.contentDir))) return res.status(403).json({ error: 'Invalid path' });
   if (content.mime_type) res.setHeader('Content-Type', content.mime_type);
@@ -637,6 +659,10 @@ function updateFrontendHash() {
     });
     // Include player files in hash so web players detect code updates
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'index.html'))); } catch {}
+    try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'doc.html'))); } catch {}
+    try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'grid.html'))); } catch {}
+    try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'multiview-core.js'))); } catch {}
+    try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'screen-share-receiver.js'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'sw.js'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'debug-overlay.js'))); } catch {}
     frontendHash = crypto.createHash('md5').update(Buffer.concat(files.map(f => Buffer.from(f)))).digest('hex').slice(0, 8);

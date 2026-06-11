@@ -212,6 +212,17 @@
       if (audioEl && audioEl.tagName === 'IFRAME') {
         audioEl.addEventListener('load', function () { if (_audioArmed) enableAudioCell(); });
       }
+      // Forward Command Center transport to same-origin controllable child players
+      // (notably /player/doc/:id for PDF/PPT page navigation). Cross-origin frames
+      // ignore it safely.
+      window.addEventListener('message', function (event) {
+        var data = event && event.data;
+        if (!data || data.__mc_transport == null) return;
+        var frames = gridEl.querySelectorAll('iframe');
+        for (var i = 0; i < frames.length; i++) {
+          try { if (frames[i].contentWindow) frames[i].contentWindow.postMessage(data, '*'); } catch (e) { /* ignore */ }
+        }
+      });
     })();
   </script>
 </body>
