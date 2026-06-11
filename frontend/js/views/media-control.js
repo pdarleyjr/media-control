@@ -567,8 +567,9 @@ async function openPairDisplay() {
   const res = await pairDisplayDialog();
   if (!res) return;
   const before = new Set(displayState.getAll().map(d => d.id));
+  let paired = null;
   try {
-    await api.pairDevice(res.code, res.name || undefined);
+    paired = await api.pairDevice(res.code, res.name || undefined);
   } catch (e) {
     showToast(e?.message || t('mc.pair.failed'), 'error');
     return;
@@ -576,7 +577,9 @@ async function openPairDisplay() {
   await displayState.refresh().catch(() => {});
   await loadWalls();
   const fresh = displayState.getAll().map(d => d.id).filter(id => !before.has(id) && !wallMemberIds.has(id));
-  if (fresh.length) { selectedIds = [...new Set([...selectedIds, ...fresh])]; persistSelection(); }
+  const pairedId = paired && paired.id && !wallMemberIds.has(paired.id) ? paired.id : null;
+  const addIds = [...fresh, pairedId].filter(Boolean);
+  if (addIds.length) { selectedIds = [...new Set([...selectedIds, ...addIds])]; persistSelection(); }
   paintStage();
   paintToolbox();
   paintSummary();

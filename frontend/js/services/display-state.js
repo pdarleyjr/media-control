@@ -56,6 +56,10 @@ function ensureWired() {
     });
   });
   onSocket('playback-progress', (d) => { merge(d.device_id || d.id, { progress: d }); });
+  // Pairing can happen from either the legacy Displays page or Command Center.
+  // The server emits this after /api/provision/pair; refresh immediately so the
+  // newly claimed display appears without relying on a manual reload.
+  onSocket('dashboard:device-added', () => { refresh().catch(() => {}); });
   onSocket('wall-changed', () => { refresh().catch(() => {}); });
 }
 
