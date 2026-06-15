@@ -24,7 +24,7 @@ body.console-mode .content {
   z-index: 3000;
   min-height: var(--console-header-h);
   display: grid;
-  grid-template-columns: minmax(300px, 1.25fr) minmax(280px, 1fr) minmax(260px, auto) 120px;
+  grid-template-columns: minmax(300px, 1.25fr) minmax(260px, 1fr) minmax(250px, auto) auto 120px;
   align-items: center;
   gap: 18px;
   padding: 14px 22px;
@@ -134,6 +134,146 @@ body.console-mode .content {
   font-size: 24px;
   font-weight: 950;
   color: #f8fafc;
+}
+
+.console-usb-button {
+  min-height: 56px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 18px;
+  padding: 0 18px;
+  background: linear-gradient(135deg, #f97316, #2563eb);
+  color: #fff;
+  font-size: 17px;
+  font-weight: 950;
+  cursor: pointer;
+  box-shadow: 0 14px 30px rgba(37, 99, 235, 0.22);
+}
+
+.console-usb-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(2, 6, 23, 0.72);
+  backdrop-filter: blur(12px);
+}
+
+.console-usb-panel {
+  width: min(980px, 96vw);
+  max-height: min(820px, 92vh);
+  display: flex;
+  flex-direction: column;
+  border-radius: 30px;
+  background: #f8fafc;
+  color: #0f172a;
+  box-shadow: 0 34px 120px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.console-usb-panel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 26px 30px;
+  color: #f8fafc;
+  background: linear-gradient(135deg, #07111f, #0f2b4a);
+}
+
+.console-usb-panel h2 {
+  margin: 0;
+  font-size: 34px;
+  letter-spacing: -0.04em;
+}
+
+.console-usb-close,
+.console-usb-actions button {
+  min-height: 54px;
+  border: 0;
+  border-radius: 16px;
+  padding: 0 20px;
+  background: #2563eb;
+  color: white;
+  font-size: 17px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.console-usb-close,
+.console-usb-actions button.secondary {
+  background: #334155;
+}
+
+.console-usb-body {
+  padding: 26px 30px 30px;
+  overflow: auto;
+}
+
+.console-usb-help {
+  margin: 0 0 18px;
+  color: #475569;
+  font-size: 18px;
+  line-height: 1.45;
+}
+
+.console-usb-list {
+  display: grid;
+  gap: 12px;
+}
+
+.console-usb-row {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  gap: 16px;
+  align-items: center;
+  padding: 18px;
+  border: 1px solid #dbe5f0;
+  border-radius: 20px;
+  background: white;
+}
+
+.console-usb-row input {
+  width: 30px;
+  height: 30px;
+}
+
+.console-usb-row strong {
+  display: block;
+  font-size: 19px;
+}
+
+.console-usb-row small {
+  display: block;
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 14px;
+}
+
+.console-usb-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  padding-top: 12px;
+}
+
+.console-usb-empty {
+  padding: 28px;
+  border-radius: 22px;
+  background: #eaf2fb;
+  color: #0f2b4a;
+  font-size: 18px;
+  line-height: 1.45;
+}
+
+.console-usb-progress {
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: 16px;
+  background: #dcfce7;
+  color: #166534;
+  font-weight: 900;
 }
 
 .console-boot {

@@ -163,11 +163,17 @@ export function getIceConfig() { return iceConfig; }
 // init — idempotent. Primes ICE servers + wires signaling listeners once.
 // ----------------------------------------------------------------------
 let icePrimed = false;
+let icePrimePromise = null;
 export async function init() {
   wireSocketListeners();
   if (!icePrimed) {
-    icePrimed = true;
-    await primeIceServers();
+    if (!icePrimePromise) {
+      icePrimePromise = primeIceServers().then((cfg) => {
+        icePrimed = true;
+        return cfg;
+      });
+    }
+    await icePrimePromise;
   }
 }
 
@@ -327,7 +333,10 @@ export async function startBroadcastTo(deviceId, opts = {}) {
     return;
   }
 
-  await init();
+  // Wire listeners synchronously, but do NOT await the ICE fetch before opening
+  // getDisplayMedia(). Browsers can consume the transient user activation while
+  // awaiting network I/O, causing first-click shares from Media Control to fail.
+  wireSocketListeners();
   const sock = getSocket();
   if (!sock || !sock.connected) throw new Error('Dashboard socket not connected');
 
@@ -335,6 +344,10 @@ export async function startBroadcastTo(deviceId, opts = {}) {
   // Do this only after the socket is available so a disconnected dashboard does
   // not leave the browser sharing indicator active with nowhere to send media.
   await ensureCapture();
+
+  // Now that the chooser has opened under the original user gesture, it is safe
+  // to wait for the primed ICE config before constructing RTCPeerConnection.
+  await init();
 
   // Server-side session setup. wall_tile is optional - when present, the
   // server forwards it to the receiver so it can render this device's
@@ -527,6 +540,19 @@ function clearConnectTimeout(deviceId) {
   }
 }
 
+async function resumeActiveSessions() {
+  const sock = getSocket();
+  if (!sock || !sock.connected || peerConnections.size === 0) return;
+  for (const deviceId of peerConnections.keys()) {
+    try {
+      const ack = await emitWithAck(sock, 'screen-share:resume', { device_id: deviceId });
+      if (!ack || !ack.ok) warnLog(`resume failed for ${deviceId}: ${ack && ack.error ? ack.error : 'no_ack'}`);
+    } catch (e) {
+      warnLog(`resume threw for ${deviceId}:`, e);
+    }
+  }
+}
+
 // ----------------------------------------------------------------------
 // Socket listeners (idempotent: wired once per socket instance via a
 // sentinel property. Re-wires automatically if the underlying socket
@@ -612,8 +638,10 @@ function wireSocketListeners() {
     sock.io.on('reconnect', () => {
       dbg('socket reconnected; re-wiring screen-share listeners');
       // The reconnected manager reuses the same socket object - the sentinel
-      // remains set and listeners are intact. This handler exists for
-      // observability; explicit re-wiring would create duplicates.
+      // remains set and listeners are intact. Reclaim live sessions so the
+      // server's disconnect grace reaper does not kill a still-working WebRTC
+      // share 30 seconds later.
+      resumeActiveSessions().catch(() => {});
     });
   }
 }

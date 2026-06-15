@@ -14,6 +14,8 @@ const { accessContext } = require('../lib/tenancy');
 const { ownedContentScope } = require('../lib/content-scope');
 const { contentRowsWithThumbnailUrls } = require('../lib/content-response');
 const { checkRemoteUrlShape, assertRemoteUrlSafe } = require('../lib/ssrf-policy');
+const { isDocThumbnailMime, kickDocThumbnail } = require('../lib/doc-thumbnail');
+const { isHeicMime, heicToJpeg, kickHevcTranscodeIfNeeded } = require('../lib/media-transcode');
 
 // Multer captures file.originalname directly from the multipart filename header,
 // bypassing sanitizeBody. Apply the same HTML-escape here so a filename like
@@ -91,6 +93,21 @@ router.post('/', checkStorageLimit, upload.single('file'), async (req, res) => {
     if (!req.workspaceId) return res.status(403).json({ error: 'No workspace context. Switch to a workspace before uploading.' });
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
+    // iPhone HEIC/HEIF -> JPEG up front: neither the display players nor sharp
+    // can render HEIC, so transcode to JPEG and continue as a normal image so the
+    // existing image branch generates dimensions + a thumbnail. Non-fatal: on
+    // failure we keep the original (it just won't render/thumbnail).
+    if (isHeicMime(req.file.mimetype)) {
+      const conv = await heicToJpeg(req.file.path, config.contentDir).catch(() => null);
+      if (conv) {
+        try { fs.unlinkSync(req.file.path); } catch { /* ignore */ }
+        req.file.path = conv.absPath;
+        req.file.filename = conv.filename;
+        req.file.mimetype = 'image/jpeg';
+        req.file.size = conv.size;
+      }
+    }
+
     const id = uuidv4();
     const filepath = req.file.filename;
     let width = null, height = null, durationSec = null, thumbnailPath = null;
@@ -163,6 +180,19 @@ router.post('/', checkStorageLimit, upload.single('file'), async (req, res) => {
       INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, duration_sec, thumbnail_path, width, height)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(id, req.user.id, req.workspaceId, safeFilename(req.file.originalname), filepath, req.file.mimetype, req.file.size, durationSec, thumbnailPath, width, height);
+
+    // PDF/Office/ODF: thumbnail rendering (poppler / LibreOffice) can take a few
+    // seconds, so generate it in the background and attach it to the row when
+    // ready — the upload response returns immediately with thumbnail_path null,
+    // exactly like the YouTube transcode path. Non-fatal by construction.
+    if (isDocThumbnailMime(req.file.mimetype)) {
+      kickDocThumbnail(id, req.file.path, req.file.mimetype);
+    }
+    // iPhone HEVC (H.265) video -> H.264 MP4 in the background so it plays on the
+    // display browsers; no-op for H.264. Row is swapped in place when done.
+    if (req.file.mimetype.startsWith('video/')) {
+      kickHevcTranscodeIfNeeded(id, req.file.path);
+    }
 
     const content = db.prepare('SELECT * FROM content WHERE id = ?').get(id);
     res.status(201).json(content);
@@ -485,6 +515,12 @@ router.put('/:id/replace', upload.single('file'), async (req, res) => {
 
   db.prepare(`UPDATE content SET filepath = ?, mime_type = ?, file_size = ?, thumbnail_path = ?, width = ?, height = ? WHERE id = ?`)
     .run(filepath, req.file.mimetype, req.file.size, thumbnailPath, width, height, req.params.id);
+
+  // Regenerate a document thumbnail in the background when a file is replaced
+  // with a PDF/Office/ODF document (the inline branch above only covers images).
+  if (isDocThumbnailMime(req.file.mimetype)) {
+    kickDocThumbnail(req.params.id, req.file.path, req.file.mimetype);
+  }
 
   res.json(db.prepare('SELECT * FROM content WHERE id = ?').get(req.params.id));
 });

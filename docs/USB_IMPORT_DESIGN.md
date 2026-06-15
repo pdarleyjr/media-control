@@ -59,19 +59,19 @@ Future MBFD Live USB Import lets an instructor insert a USB drive, choose suppor
 - FFmpeg/ffprobe for media inspection and transcodes.
 - PDF thumbnail generation through Poppler or similar tooling.
 
-## V1 Scaffold Present Now
+## V1 Implemented Now
 
-- `mbfd-podium-agent` exposes `GET /usb/status`.
-- It reports removable block-device data from `lsblk`.
-- It does not mount USB devices.
-- It does not open USB content.
-- It does not execute anything from USB.
+- `mbfd-podium-agent` exposes `GET /usb/status`, `GET /usb/files`, `POST /usb/stage`, and `GET /usb/staged/:id`.
+- The agent lists only supported file types from removable USB devices.
+- If a removable partition is not mounted, the root-owned agent attempts a read-only `ro,noexec,nodev,nosuid` mount under `/mnt/mbfd-usb`.
+- The console opens a touchscreen USB Import panel and shows checkboxes for selectable files.
+- Nothing is imported automatically; only checked files are staged and uploaded.
+- Selected files are copied to `/var/lib/mbfd/podium-agent/usb-staging` before the browser uploads them to the authenticated Media Control content API.
+- The agent never executes USB content.
+- Blocked extensions are never listed for selection.
 
 ## Future Agent Endpoints
 
-- `GET /usb/status`
-- `POST /usb/scan`
-- `POST /usb/stage`
 - `POST /usb/eject`
 - `GET /usb/imports/:id`
 

@@ -46,6 +46,7 @@ const CONSOLE_DEVICE_ID = new URLSearchParams(window.location.search).get('devic
 let consoleSessionReady = false;
 let consoleProfiles = [];
 let consoleClockTimer = null;
+const PODIUM_AGENT_URL = 'http://127.0.0.1:8755';
 
 // ==================== Slice 2C: accept-invite plumbing ====================
 //
@@ -352,8 +353,10 @@ function renderConsoleHeader() {
       <span>Profile</span>
       <select id="consoleProfileSelect" aria-label="Current profile">${options}</select>
     </label>
+    <button class="console-usb-button" id="consoleUsbButton" type="button">USB Import</button>
     <time id="consoleClock" class="console-clock"></time>
   `;
+  document.getElementById('consoleUsbButton')?.addEventListener('click', openConsoleUsbPanel);
   const select = document.getElementById('consoleProfileSelect');
   select?.addEventListener('change', async (event) => {
     const selected = event.target.value;
@@ -376,6 +379,132 @@ function renderConsoleHeader() {
   });
   updateConsoleClock();
   if (!consoleClockTimer) consoleClockTimer = setInterval(updateConsoleClock, 15000);
+}
+
+function renderUsbPanel(message = 'Scanning USB drives...') {
+  document.getElementById('consoleUsbOverlay')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'consoleUsbOverlay';
+  overlay.className = 'console-usb-overlay';
+  overlay.innerHTML = `
+    <section class="console-usb-panel" role="dialog" aria-modal="true" aria-labelledby="consoleUsbTitle">
+      <header>
+        <div>
+          <p class="console-kicker">MBFD Live USB Import</p>
+          <h2 id="consoleUsbTitle">Choose files to import</h2>
+        </div>
+        <button type="button" class="console-usb-close" data-close>Close</button>
+      </header>
+      <div class="console-usb-body" id="consoleUsbBody">${esc(message)}</div>
+    </section>
+  `;
+  document.body.appendChild(overlay);
+  overlay.querySelector('[data-close]')?.addEventListener('click', () => overlay.remove());
+  return overlay;
+}
+
+async function agentFetch(path, options = {}) {
+  const res = await fetch(`${PODIUM_AGENT_URL}${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.headers || {}),
+    },
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || `Podium agent returned ${res.status}`);
+  return json;
+}
+
+async function openConsoleUsbPanel() {
+  const overlay = renderUsbPanel();
+  const body = overlay.querySelector('#consoleUsbBody');
+  try {
+    const data = await agentFetch('/usb/files');
+    const files = Array.isArray(data.files) ? data.files : [];
+    if (!files.length) {
+      body.innerHTML = `
+        <div class="console-usb-empty">
+          <strong>No supported files found.</strong>
+          <p>Insert a USB drive with PDF, Office, image, or video files. The console will only import files you select.</p>
+        </div>
+      `;
+      return;
+    }
+    body.innerHTML = `
+      <p class="console-usb-help">Select only the files you want to copy into your Media Control library. Nothing is imported automatically.</p>
+      <form id="consoleUsbForm" class="console-usb-list">
+        ${files.map((file) => `
+          <label class="console-usb-row">
+            <input type="checkbox" name="file" value="${esc(file.id)}">
+            <span>
+              <strong>${esc(file.name)}</strong>
+              <small>${esc(file.relativePath)} · ${formatBytes(file.size)}</small>
+            </span>
+          </label>
+        `).join('')}
+        <div class="console-usb-actions">
+          <button type="submit">Import selected</button>
+          <button type="button" class="secondary" data-refresh>Refresh USB</button>
+        </div>
+      </form>
+      <div class="console-usb-progress" id="consoleUsbProgress" hidden></div>
+    `;
+    body.querySelector('[data-refresh]')?.addEventListener('click', openConsoleUsbPanel);
+    body.querySelector('#consoleUsbForm')?.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const selected = [...body.querySelectorAll('input[name="file"]:checked')].map((input) => input.value);
+      if (!selected.length) { showToast('Select at least one USB file to import', 'error'); return; }
+      await importSelectedUsbFiles(selected, body);
+    });
+  } catch (err) {
+    body.innerHTML = `
+      <div class="console-usb-empty">
+        <strong>USB import is not available.</strong>
+        <p>${esc(err?.message || 'The local podium agent could not be reached.')}</p>
+      </div>
+    `;
+  }
+}
+
+function formatBytes(bytes) {
+  const n = Number(bytes) || 0;
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+async function importSelectedUsbFiles(fileIds, body) {
+  const progress = body.querySelector('#consoleUsbProgress');
+  if (progress) { progress.hidden = false; progress.textContent = 'Copying selected files from USB...'; }
+  const staged = await agentFetch('/usb/stage', {
+    method: 'POST',
+    body: JSON.stringify({ file_ids: fileIds }),
+  });
+  const stagedFiles = Array.isArray(staged.staged) ? staged.staged : [];
+  if (!stagedFiles.length) throw new Error(staged.error || 'No selected files could be staged');
+  const token = localStorage.getItem('token');
+  let imported = 0;
+  for (const file of stagedFiles) {
+    if (progress) progress.textContent = `Uploading ${file.name}...`;
+    const blobRes = await fetch(file.url);
+    if (!blobRes.ok) throw new Error(`Could not read staged file ${file.name}`);
+    const blob = await blobRes.blob();
+    const form = new FormData();
+    form.append('file', new File([blob], file.name, { type: file.mime_type || blob.type || 'application/octet-stream' }));
+    const upload = await fetch('/api/content', {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: form,
+    });
+    const uploadBody = await upload.json().catch(() => ({}));
+    if (!upload.ok) throw new Error(uploadBody.error || `Upload failed for ${file.name}`);
+    imported += 1;
+  }
+  if (progress) progress.textContent = `Imported ${imported} file${imported === 1 ? '' : 's'} into Media Control.`;
+  showToast(`Imported ${imported} USB file${imported === 1 ? '' : 's'}`, 'success');
+  await route();
 }
 
 // Refresh the cached user from the server. The server reads plan_id fresh

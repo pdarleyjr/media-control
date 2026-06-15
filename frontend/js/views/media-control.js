@@ -8,6 +8,7 @@ import { renderStage } from './media-control/stage.js';
 import { renderToolbox } from './media-control/toolbox.js';
 import { sendToDisplays, sentToast } from './media-control/send.js';
 import { renderInspector, closeInspector } from './media-control/inspector.js';
+import { renderMultiview, teardownMultiview, buildSplitGridUrl } from './media-control/multiview.js';
 import { pickRoutingTargets } from './media-control/routing-picker.js';
 import { mountBroadcastChip } from './media-control/broadcast-chip.js';
 import { renderCommandBar } from './media-control/command-bar.js';
@@ -15,12 +16,15 @@ import { renderRoomPresets } from './media-control/room-presets.js';
 import { renderRecentPanel } from './media-control/recent-panel.js';
 import { openViewModal, closeViewModal } from './media-control/view-modal.js';
 import { confirmDialog } from '../components/confirm.js';
+import * as screenShareEngine from '../services/screen-share-engine.js';
 import * as schedulesView from './schedules.js';
 // transport.js is used by stage.js internally — no direct import needed here.
 
 // Rail "Room setup" launcher icons (stroke icons, dashboard SVG vocabulary).
 const ICON_SETUP_SCHEDULE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>';
 const ICON_SETUP_WALLS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="9" height="8" rx="1"></rect><rect x="13" y="3" width="9" height="8" rx="1"></rect><rect x="2" y="13" width="9" height="8" rx="1"></rect><rect x="13" y="13" width="9" height="8" rx="1"></rect></svg>';
+// Library drawer collapse/expand chevron (points right when open → collapse, left when collapsed → reopen).
+const ICON_CHEVRON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>';
 
 let unsub = null;
 let unsubChip = null;   // broadcast-chip unsubscribe (Task 4.5)
@@ -30,13 +34,11 @@ let walls = [];
 let previewKickoff = null;   // one-shot "poke players to capture" timer after socket connect
 let previewInterval = null;  // periodic preview refresh for the displays on the stage
 let lastStageSig = null;     // structural signature of the last full stage paint (see paintStage)
-
-// Routing mode: 'group' (default, each display independent), 'lecture' (one
-// source to all), 'mirror' (clone display A to all others). The mode is UI
-// state only — 'lecture' and 'mirror' act as presets that modify how the next
-// send-to-all operation behaves. 'group' means the toolbox tile click targets
-// only the display the user explicitly sends to (default).
-let routingMode = 'group';
+// Per-wall split-column sources for a SINGLE spanning device (Mosaic): wallId ->
+// array indexed by column (0=left). Survives repaint (kept here, NOT in the DOM)
+// so dropping on the right column never blanks the left — both columns are re-sent
+// together as one composite grid on each drop.
+const wallSplitState = {};
 
 // Build the set of device ids that belong to a video wall — those devices are
 // represented by the wall card, never their own (mirrors dashboard.js:789-793).
@@ -146,6 +148,7 @@ function paintStage() {
     onAddDisplay: openAddPicker,
     onScreenOnChange: handleScreenOnChange,
     onSetWallMode: setWallMode,
+    onScreensaver: applyScreensaver,
   });
   // Re-attach drop handlers on the freshly-rendered cards.
   attachStageDrop(el);
@@ -219,6 +222,14 @@ function refreshAfterSend(targetIds) {
   setTimeout(() => { for (const id of ids) requestScreenshot(id); }, 1800);
 }
 
+// A screensaver option was chosen on a card's dropdown: broadcast the chosen
+// source (the wall.mbfdhub.com dashboard, or a wallpaper image) to that card's
+// device(s). Reuses the same send funnel as every other broadcast.
+function applyScreensaver(ids, source, label) {
+  if (!Array.isArray(ids) || ids.length === 0 || !source) return;
+  sendToDisplays(source, ids, label).then((ok) => { if (ok) refreshAfterSend(ids); });
+}
+
 function showWallCalibration(deviceIds, wallName) {
   const ids = [...new Set(Array.isArray(deviceIds) ? deviceIds : [])];
   if (ids.length === 0) return;
@@ -243,6 +254,41 @@ async function setWallMode(wallId, mode) {
   } catch (e) {
     showToast(e?.message || t('mc.wall.tpl_error'), 'error');
   }
+}
+
+// Drop a source onto ONE column of a single-spanning-device split wall (a PC
+// driving N TVs as one Mosaic window). There is only one physical device, so both
+// columns must travel together as ONE composite grid URL: we MERGE the new column
+// into the wall's kept column state, rebuild the grid, ensure the wall is in split
+// mode (so the server gives this device its own playlist, not the shared span one),
+// then broadcast the merged grid to that single device. Dropping on the right
+// leaves the left intact and vice-versa.
+async function dropOnWallHalf(wallId, halfIndex, source, label) {
+  const wall = (walls || []).find(w => w.id === wallId);
+  if (!wall) return;
+  const cols = Math.max(2, wall.grid_cols || 2);
+  const leaderId = wall.leader_device_id
+    || (wall.devices && wall.devices[0] && wall.devices[0].device_id);
+  if (!leaderId) { showToast(t('mc.send.no_displays'), 'error'); return; }
+
+  const arr = wallSplitState[wallId] ? wallSplitState[wallId].slice() : new Array(cols).fill(null);
+  arr[halfIndex] = { source, label };
+  wallSplitState[wallId] = arr;
+
+  let url;
+  try { url = await buildSplitGridUrl(arr, cols); }
+  catch { url = null; }
+  if (!url) { showToast(t('mc.send.failed'), 'error'); return; }
+
+  // The single device needs its OWN playlist (not the shared span playlist) for the
+  // composite to land — that happens only in split mode. Idempotent if already split.
+  if (wall.layout_mode !== 'split') {
+    try { await api.updateWall(wallId, { layout_mode: 'split' }); await loadWalls(); }
+    catch { /* best-effort; broadcast still targets the device directly */ }
+  }
+
+  const ok = await sendToDisplays({ remote_url: url }, [leaderId], label || t('mc.wall.split_label'));
+  if (ok) { refreshAfterSend([leaderId]); paintStage(); }
 }
 
 // ---- Live preview driver ----
@@ -273,15 +319,25 @@ function stopPreviewRefresh() {
   if (previewInterval) { clearInterval(previewInterval); previewInterval = null; }
 }
 
-// Target scope for toolbox SENDS. In 'lecture' mode a tapped source goes to
-// EVERY display in the room (whole-room takeover); otherwise to the displays on
-// the stage (the current selection). Dragging a source onto a single card always
-// targets just that card, regardless of mode.
+// Content-send target scope: the displays on the stage (the current selection).
+// Dragging a source onto a single card always targets just that card.
 function roomDisplayIds() {
   return displayState.getAll().filter(d => !wallMemberIds.has(d.id)).map(d => d.id);
 }
+function onlineRoomDisplayIds() {
+  return displayState.getAll().filter(d => d.online && !wallMemberIds.has(d.id)).map(d => d.id);
+}
 function effectiveTargets() {
-  return routingMode === 'lecture' ? roomDisplayIds() : selectedIds;
+  return selectedIds;
+}
+
+// Physical screen-power scope for Blank all: EVERY controllable display PLUS
+// every video-wall member device (each wall screen is a real device that must
+// receive its own screen_off/screen_on — the wall card alone never would).
+function roomCommandIds() {
+  const ids = new Set(roomDisplayIds());
+  for (const id of wallMemberIds) if (id) ids.add(id);
+  return [...ids];
 }
 
 function wallDeviceIds(wall) {
@@ -371,6 +427,23 @@ function paintToolbox() {
   });
 }
 
+// The library drawer sits BELOW the inspector (z-index 30 vs 40) and is fully
+// covered by it when open. While the inspector is open we also mark the drawer
+// inert + aria-hidden so keyboard/AT users can't tab into the obscured drawer;
+// closing the inspector restores it (and the drawer re-reveals naturally, since
+// the inspector just becomes hidden — no extra show/hide coordination needed).
+function setLibraryInert(inert) {
+  const drawer = document.getElementById('mc-library-drawer');
+  if (!drawer) return;
+  if (inert) {
+    drawer.setAttribute('inert', '');
+    drawer.setAttribute('aria-hidden', 'true');
+  } else {
+    drawer.removeAttribute('inert');
+    drawer.removeAttribute('aria-hidden');
+  }
+}
+
 // Selecting a stage card opens the inspector for that display (Task 4.4):
 // display info, "Partition into regions", per-region audio + fit. Closing the
 // panel hides it. Wall members never render as their own card, but we still pass
@@ -380,11 +453,12 @@ function openInspector(deviceId) {
   const el = inspectorEl();
   if (!el) return;
   const display = displayState.get(deviceId);
-  if (!display) { closeInspector(el); return; }
+  if (!display) { closeInspector(el); setLibraryInert(false); return; }
+  setLibraryInert(true);
   renderInspector(el, {
     display,
     isWallMember: wallMemberIds.has(deviceId),
-    onClose: () => { /* panel hides itself; nothing else to tear down */ },
+    onClose: () => { setLibraryInert(false); },
     onDeviceChanged: async () => {
       await displayState.refresh().catch(() => {});
       await loadWalls();
@@ -496,8 +570,9 @@ async function openPairDisplay() {
   const res = await pairDisplayDialog();
   if (!res) return;
   const before = new Set(displayState.getAll().map(d => d.id));
+  let paired = null;
   try {
-    await api.pairDevice(res.code, res.name || undefined);
+    paired = await api.pairDevice(res.code, res.name || undefined);
   } catch (e) {
     showToast(e?.message || t('mc.pair.failed'), 'error');
     return;
@@ -505,7 +580,9 @@ async function openPairDisplay() {
   await displayState.refresh().catch(() => {});
   await loadWalls();
   const fresh = displayState.getAll().map(d => d.id).filter(id => !before.has(id) && !wallMemberIds.has(id));
-  if (fresh.length) { selectedIds = [...new Set([...selectedIds, ...fresh])]; persistSelection(); }
+  const pairedId = paired && paired.id && !wallMemberIds.has(paired.id) ? paired.id : null;
+  const addIds = [...fresh, pairedId].filter(Boolean);
+  if (addIds.length) { selectedIds = [...new Set([...selectedIds, ...addIds])]; persistSelection(); }
   paintStage();
   paintToolbox();
   paintSummary();
@@ -582,6 +659,29 @@ function attachStageDrop(stageContainer) {
     });
   });
 
+  // Single-spanning-device split halves: drop a source onto ONE column of a wall
+  // driven by one Mosaic window. Each half pushes its own source into a composite
+  // grid on that single device (merge-and-resend; the other column is untouched).
+  stageContainer.querySelectorAll('.mc-wall-split-half[data-device-id][data-split-half]').forEach(half => {
+    half.addEventListener('dragover', (e) => {
+      if (!dragHasSource(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      half.classList.add('mc-card-dragover');
+    });
+    half.addEventListener('dragleave', () => half.classList.remove('mc-card-dragover'));
+    half.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      half.classList.remove('mc-card-dragover');
+      const parsed = parseDragSource(e);
+      const wallId = half.closest('.mc-wall[data-wall-id]')?.dataset.wallId;
+      const idx = parseInt(half.dataset.splitHalf, 10);
+      if (!parsed || !wallId || !Number.isInteger(idx)) return;
+      await dropOnWallHalf(wallId, idx, parsed.source, parsed.label);
+    });
+  });
+
   // Whole-wall drop strips: drop a source here to fill EVERY screen of that wall
   // at once. The strip carries data-wall-ids="id1,id2,…"; stopPropagation so the
   // stage-background handler does not also fire. Re-wired each paint (fresh nodes).
@@ -606,10 +706,10 @@ function attachStageDrop(stageContainer) {
     });
   });
 
-  // Stage-BACKGROUND drop → every current target (the stage selection, or the
-  // whole room in Lecture mode). Cards stopPropagation, so this only fires for
-  // drops on the gaps/background. Wired once — the container node persists across
-  // repaints, so guard against stacking duplicate listeners.
+  // Stage-BACKGROUND drop → every display on the stage (the current selection).
+  // Cards stopPropagation, so this only fires for drops on the gaps/background.
+  // Wired once — the container node persists across repaints, so guard against
+  // stacking duplicate listeners.
   if (stageContainer.__dropWired) return;
   stageContainer.__dropWired = true;
   stageContainer.addEventListener('dragover', (e) => {
@@ -633,80 +733,6 @@ function attachStageDrop(stageContainer) {
   });
 }
 
-// ---- Routing-mode preset buttons (Task 4.6) ----
-//
-// Three modes:
-//   Group Share — default; each display is controlled independently via tile
-//                 clicks and drag-drop. No automatic fan-out.
-//   Lecture     — clicking a toolbox tile sends that source to ALL selected
-//                 displays simultaneously. Essentially the same as clicking a
-//                 tile while every display is selected (sendToDisplays already
-//                 handles multiple targets). This mode visually highlights that
-//                 fact and makes the toolbox tile-click target all at once.
-//   Mirror      — clones the first selected display's current now-playing source
-//                 to all other selected displays via sendToDisplays.
-
-function lectureHint() {
-  const n = roomDisplayIds().length;
-  showToast(n === 0 ? t('mc.routing.lecture_hint_empty') : t('mc.routing.lecture_hint', { n }), 'info');
-}
-
-async function activateMirror() {
-  if (selectedIds.length < 2) {
-    showToast(t('mc.routing.mirror_need_two'), 'info');
-    return;
-  }
-  // Find the first selected display's current source.
-  const sourceDisplay = displayState.get(selectedIds[0]);
-  if (!sourceDisplay || !sourceDisplay.now_playing || sourceDisplay.now_playing.kind === 'idle') {
-    showToast(t('mc.routing.mirror_no_source'), 'info');
-    return;
-  }
-  // Mirror: re-broadcast whatever is "now playing" on display[0] to the others.
-  // We use the playlist_id if available (best fidelity), falling back to a
-  // content-level send. This is a best-effort clone, not a perfect sync.
-  const targets = selectedIds.slice(1);
-  let source = null;
-  if (sourceDisplay.layout_id) {
-    // Complex layout — cannot mirror at content level; guide the operator.
-    showToast(t('mc.routing.mirror_layout'), 'info');
-    return;
-  }
-  // Use the playlist_id from the display state if present.
-  if (sourceDisplay.playlist_id) {
-    source = { playlist_id: sourceDisplay.playlist_id };
-  }
-  if (!source) {
-    showToast(t('mc.routing.mirror_unknown'), 'info');
-    return;
-  }
-  const label = sourceDisplay.now_playing.label || t('mc.tile.content_fallback');
-  await sendToDisplays(source, targets, label);
-}
-
-function attachRoutingModes(topbar) {
-  if (!topbar) return;
-  const btns = topbar.querySelectorAll('[data-routing]');
-  btns.forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const mode = btn.dataset.routing;
-      // Mirror is a one-shot ACTION (clone display 1 → the rest), not a persistent
-      // scope — run it and leave the current Group/Lecture scope highlight intact.
-      if (mode === 'mirror') {
-        btn.classList.add('mc-routing-firing');
-        try { await activateMirror(); } finally { btn.classList.remove('mc-routing-firing'); }
-        return;
-      }
-      // Group / Lecture are persistent target SCOPES for toolbox sends.
-      routingMode = mode;
-      btns.forEach(b => b.classList.toggle('mc-routing-active', b.dataset.routing === mode));
-      paintToolbox();   // re-bind the toolbox tiles to the new target scope
-      paintSummary();
-      if (mode === 'lecture') lectureHint();
-    });
-  });
-}
-
 export async function render() {
   const app = document.getElementById('app');
   app.innerHTML = `
@@ -719,11 +745,6 @@ export async function render() {
           </div>
           <div class="mc-control-controls">
             <div id="mc-broadcast-chip" class="mc-chip mc-chip-live" hidden></div>
-            <div class="mc-routing-modes" role="group" aria-label="${esc(t('mc.routing.label'))}">
-              <button type="button" class="mc-btn mc-routing-btn mc-routing-active" data-routing="group" title="${esc(t('mc.routing.group_title'))}">${esc(t('mc.routing.group'))}</button>
-              <button type="button" class="mc-btn mc-routing-btn" data-routing="lecture" title="${esc(t('mc.routing.lecture_title'))}">${esc(t('mc.routing.lecture'))}</button>
-              <button type="button" class="mc-btn mc-routing-btn" data-routing="mirror" title="${esc(t('mc.routing.mirror_title'))}">${esc(t('mc.routing.mirror'))}</button>
-            </div>
           </div>
         </header>
 
@@ -738,35 +759,54 @@ export async function render() {
                 <a class="mc-section-link" href="#/">${esc(t('mc.section.manage_displays'))}</a>
                 <a class="mc-section-link" href="#/walls">${esc(t('mc.section.video_walls'))}</a>
               </div>
+              <!-- Multiview builder mounts here, directly ABOVE the stage (whose
+                   first card is Classroom 1 Video Wall 1). Toggled by the command
+                   bar's "Multiview" button; lazy-mounted on first open. -->
+              <div id="mc-multiview" class="mc-multiview-host" hidden></div>
               <section id="mc-stage" class="mc-stage" aria-label="${esc(t('mc.section.displays'))}"></section>
             </section>
 
-            <section class="mc-control-zone" aria-labelledby="mc-sources-head">
-              <div class="mc-section-head">
-                <h2 id="mc-sources-head" class="mc-section-title">${esc(t('mc.section.sources'))}</h2>
-              </div>
-              <section id="mc-toolbox" class="mc-toolbox" aria-label="${esc(t('mc.section.sources'))}"></section>
+            <section class="mc-control-bottom" aria-label="${esc(t('mc.rail.label'))}">
+              <div id="mc-presets-host"></div>
+              <div id="mc-recent-host"></div>
+              <section class="mc-setup-panel" aria-labelledby="mc-setup-head">
+                <h3 id="mc-setup-head" class="mc-rail-title">${esc(t('mc.setup.title'))}</h3>
+                <div class="mc-setup-links">
+                  <button type="button" class="mc-setup-link" data-mc-setup="schedules">
+                    <span class="mc-setup-ico" aria-hidden="true">${ICON_SETUP_SCHEDULE}</span>
+                    <span class="mc-setup-link-label">${esc(t('mc.setup.schedules'))}</span>
+                  </button>
+                  <a class="mc-setup-link" href="#/walls">
+                    <span class="mc-setup-ico" aria-hidden="true">${ICON_SETUP_WALLS}</span>
+                    <span class="mc-setup-link-label">${esc(t('mc.setup.walls'))}</span>
+                  </a>
+                </div>
+              </section>
             </section>
           </div>
-
-          <aside class="mc-control-rail" aria-label="${esc(t('mc.rail.label'))}">
-            <div id="mc-presets-host"></div>
-            <div id="mc-recent-host"></div>
-            <section class="mc-rail-panel mc-setup-panel" aria-labelledby="mc-setup-head">
-              <h3 id="mc-setup-head" class="mc-rail-title">${esc(t('mc.setup.title'))}</h3>
-              <div class="mc-setup-links">
-                <button type="button" class="mc-setup-link" data-mc-setup="schedules">
-                  <span class="mc-setup-ico" aria-hidden="true">${ICON_SETUP_SCHEDULE}</span>
-                  <span class="mc-setup-link-label">${esc(t('mc.setup.schedules'))}</span>
-                </button>
-                <a class="mc-setup-link" href="#/walls">
-                  <span class="mc-setup-ico" aria-hidden="true">${ICON_SETUP_WALLS}</span>
-                  <span class="mc-setup-link-label">${esc(t('mc.setup.walls'))}</span>
-                </a>
-              </div>
-            </section>
-          </aside>
         </div>
+
+        <aside id="mc-library-drawer" class="mc-library-drawer" data-open="true" aria-label="${esc(t('mc.section.sources'))}">
+          <button type="button" class="mc-library-tab" data-library-toggle
+                  aria-expanded="true" aria-controls="mc-toolbox"
+                  title="${esc(t('mc.library.toggle'))}">
+            <span class="mc-library-tab-ico" aria-hidden="true">${ICON_CHEVRON}</span>
+            <span class="mc-library-tab-label">${esc(t('mc.library.title'))}</span>
+          </button>
+          <div class="mc-library-inner">
+            <div class="mc-library-head">
+              <h2 id="mc-library-title" class="mc-library-title">${esc(t('mc.library.title'))}</h2>
+              <button type="button" class="mc-library-collapse" data-library-toggle
+                      aria-expanded="true" aria-controls="mc-toolbox"
+                      aria-label="${esc(t('mc.library.collapse'))}" title="${esc(t('mc.library.collapse'))}">
+                <span aria-hidden="true">${ICON_CHEVRON}</span>
+              </button>
+            </div>
+            <div class="mc-library-body">
+              <section id="mc-toolbox" class="mc-toolbox" aria-labelledby="mc-library-title"></section>
+            </div>
+          </div>
+        </aside>
 
         <aside id="mc-inspector" class="mc-inspector" hidden></aside>
       </div>
@@ -785,25 +825,44 @@ export async function render() {
   // so every member immediately sees every shared display (and newly-paired ones
   // appear until the operator deliberately curates the stage). NOT persisted — the
   // moment the operator adds/removes a display, that choice persists instead.
-  if (selectedIds.length === 0) {
-    selectedIds = roomDisplayIds();
+  const onlineIds = onlineRoomDisplayIds();
+  const selectedHasOnline = displayState.getAll().some(d => selectedIds.includes(d.id) && d.online && !wallMemberIds.has(d.id));
+  if (selectedIds.length === 0 || (!selectedHasOnline && onlineIds.length > 0)) {
+    selectedIds = onlineIds.length > 0 ? onlineIds : roomDisplayIds();
+    persistSelection();
   }
-  // A fresh render starts a clean session in the default 'group' scope (routing
-  // mode is UI-only, not persisted) — set it BEFORE the first toolbox paint so
-  // the tiles bind to the stage selection, not a stale scope from last visit.
-  routingMode = 'group';
   paintStage();
   paintToolbox();
   paintSummary();
 
-  attachRoutingModes(document.querySelector('.mc-control-head'));
+  // Multiview builder — mounted directly above the stage (whose first card is
+  // Classroom 1 Video Wall 1) and toggled by the command bar's "Multiview"
+  // button. Lazy-mounted on first open so the heavier composer only renders
+  // when asked for. Sends ride the same routing picker + funnel as every tile.
+  const mvHost = document.getElementById('mc-multiview');
+  let mvMounted = false;
+  async function toggleMultiview() {
+    if (!mvHost) return;
+    const show = mvHost.hidden;
+    mvHost.hidden = !show;
+    if (show) {
+      if (!mvMounted) {
+        mvMounted = true;
+        await renderMultiview(mvHost, { routeSource: routeSourceWithPicker });
+      }
+      try { mvHost.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch { /* */ }
+    }
+  }
 
-  // Mount the classroom command bar (Start Class · Blank all · quick-launch
-  // Share screen / Whiteboard / YouTube / Library) — folds in the retired
-  // Present surface. roomIds() = every controllable (non-wall) display.
+  // Mount the classroom command bar (Multiview · Blank all · quick-launch
+  // Share screen / YouTube / Library). roomIds() = controllable (non-wall)
+  // displays for content sends; blankIds() ALSO includes every wall member so
+  // "Blank all" darkens the physical video-wall screens too.
   renderCommandBar(document.getElementById('mc-cmdbar-host'), {
     roomIds: roomDisplayIds,
+    blankIds: roomCommandIds,
     refreshAfterSend,
+    onMultiview: toggleMultiview,
   });
 
   // Mount the right rail: Room Presets (one-tap scene recall, the Command-360
@@ -823,10 +882,45 @@ export async function render() {
     });
   }
 
+  // Content LIBRARY drawer (right side, collapsible). Toggling flips data-open on
+  // the drawer; both the docked reopen tab and the in-header collapse button drive
+  // it (mirrors the multiview toggle's aria-expanded pattern). The drawer is a
+  // FIXED overlay so collapsing/expanding never reflows the stage — the stage's
+  // ResizeObserver tiling is untouched. Drag-and-drop is unaffected: tiles keep
+  // their draggable + data-drag-source attrs and the drawer never sets
+  // pointer-events:none, so an operator can drag a tile from the open drawer onto
+  // a stage card exactly as before.
+  const libraryDrawer = document.getElementById('mc-library-drawer');
+  if (libraryDrawer) {
+    // When collapsed, mark the (off-screen) drawer BODY inert so keyboard/AT users
+    // don't tab into hidden tiles — but leave the docked reopen tab focusable so
+    // it can be pulled back open. The tab lives OUTSIDE .mc-library-inner.
+    const libraryInner = libraryDrawer.querySelector('.mc-library-inner');
+    const setLibraryOpen = (open) => {
+      libraryDrawer.dataset.open = open ? 'true' : 'false';
+      libraryDrawer.querySelectorAll('[data-library-toggle]').forEach(btn => {
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+      if (libraryInner) {
+        if (open) { libraryInner.removeAttribute('inert'); }
+        else { libraryInner.setAttribute('inert', ''); }
+      }
+    };
+    libraryDrawer.querySelectorAll('[data-library-toggle]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        setLibraryOpen(libraryDrawer.dataset.open !== 'true');
+      });
+    });
+  }
+
   // Mount the persistent live-broadcast chip (Task 4.5). The chip subscribes to
   // the engine singleton so it reflects broadcast state even after navigation.
   if (unsubChip) { unsubChip(); unsubChip = null; }
   unsubChip = mountBroadcastChip(document.getElementById('mc-broadcast-chip'));
+  // Prime signaling + ICE servers outside the user's click gesture. Browsers are
+  // strict about getDisplayMedia() activation; doing network work before the
+  // chooser can make first-click Media Control shares fail intermittently.
+  screenShareEngine.init().catch(() => {});
 
   // Fresh data (status, screenshots, wall changes) repaints the stage. The
   // store re-fetches walls-affecting changes via its own 'wall-changed' refresh;
@@ -854,6 +948,7 @@ export function unmount() {
   // so unmount only detaches this view's subscriptions. Broadcasts persist.
   if (unsub) { unsub(); unsub = null; }
   if (unsubChip) { unsubChip(); unsubChip = null; }
+  teardownMultiview();    // stop any local audio monitor so it can't keep playing
   closeViewModal();       // dismiss any open room-setup overlay (e.g. Schedules)
   stopPreviewRefresh();   // stop poking players once we leave the control surface
   // Close the inspector so a stale panel can't linger across navigations.

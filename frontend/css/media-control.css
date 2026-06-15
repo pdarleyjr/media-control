@@ -123,30 +123,6 @@
    (e.g. the inspector "Stop broadcast" button when no broadcast is active). */
 .mc-btn-danger-sm[hidden] { display: none; }
 
-/* ---- routing-mode segmented control ---- */
-.mc-routing-modes {
-  display: inline-flex; align-items: stretch;
-  border: 1px solid var(--border);
-  border-radius: var(--radius, 8px);
-  background: var(--bg-card);
-  overflow: hidden;
-}
-.mc-control .mc-routing-btn {
-  min-height: var(--tap-min, 48px);
-  padding: 0 var(--space-4, 16px);
-  border: none;
-  border-right: 1px solid var(--border);
-  border-radius: 0;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: var(--font-3, 13px); font-weight: 600;
-}
-.mc-control .mc-routing-btn:last-child { border-right: none; }
-.mc-control .mc-routing-btn:hover { background: var(--bg-secondary); color: var(--text-primary); }
-.mc-control .mc-routing-btn:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
-.mc-control .mc-routing-btn.mc-routing-active { background: var(--accent); color: #fff; }
-.mc-control .mc-routing-btn.mc-routing-active:hover { background: var(--accent-hover); }
-
 /* ---- live-broadcast chip (on-air red, color paired with a label) ---- */
 .mc-control .mc-chip {
   display: inline-flex; align-items: center; gap: var(--space-2, 8px);
@@ -174,6 +150,13 @@
   gap: var(--space-4, 16px);
   justify-content: start;
   align-items: start; /* cards size to content; a portrait display doesn't stretch its row */
+  /* Uniform tiling. renderStage sets --mc-maxcols (the widest wall's column
+     count) and --mc-tile (= stageWidth / maxCols px, kept current by a
+     ResizeObserver). Every wall tile + the Smartboard tile is exactly --mc-tile,
+     so identical 86" panels match across configs and Video Wall 1 fills the
+     stage without any card growing past it. Defaults below apply pre-measure. */
+  --mc-maxcols: 3;
+  --mc-tile: 300px;
 }
 .mc-stage.mc-stage-is-empty { display: block; }
 
@@ -252,7 +235,22 @@
    Spans the full stage width. The screens sit on a dark bezel frame — the one
    place "dark" belongs, because live video lives on black.
    ════════════════════════════════════════════════════════════════════════ */
+/* Each wall (and the single-screen Smartboard tile) sits on its own full-width
+   stage row but is sized to cols x tile and LEFT-aligned, so the card hugs its
+   tiles: Video Wall 1 (3 screens) fills the stage, Video Wall 2 (2) is 2/3 as
+   wide, the Smartboard (1) is one tile — every tile the SAME size (stage/maxCols),
+   capped at --mc-tile-max, never wider than the stage. */
 .mc-wall { grid-column: 1 / -1; padding: var(--space-3, 12px); cursor: default; }
+.mc-wall, .mc-display-card-tile {
+  /* Card width = cols x the shared uniform tile (--mc-tile px, computed by
+     renderStage = stageWidth / maxCols and kept current by a ResizeObserver).
+     So every tile is identical across walls, Video Wall 1 (cols=maxCols) fills
+     the stage, Video Wall 2 is 2/3 as wide, the Smartboard is one tile — and no
+     card exceeds the stage. */
+  width: calc(var(--mc-cols, 1) * var(--mc-tile, 300px));
+  box-sizing: border-box; /* cols x tile is the OUTER width — padding/border never push the card past the stage */
+  justify-self: start;
+}
 .mc-wall:hover { transform: none; box-shadow: var(--mc-shadow-card); border-color: var(--mc-border-light); }
 .mc-wall-head { display: flex; align-items: baseline; gap: var(--space-2, 8px); margin-bottom: var(--mc-space-sm, 8px); }
 .mc-wall-title { font-weight: var(--mc-fw-semibold); font-size: var(--mc-font-size-base); color: var(--mc-text-primary); }
@@ -273,10 +271,17 @@
 .mc-wall-calibrate + .mc-wall-edit { margin-left: 0; }
 .mc-wall-grid {
   position: relative;
-  display: grid; gap: 3px; width: min(100%, 940px); margin-inline: auto;
+  /* The grid FILLS the card (which is itself sized to cols x tile), with equal
+     1fr columns, so the tiles fill their container evenly. Tile size is uniform
+     across walls because the CARD width is cols/maxCols of the stage. */
+  display: grid; gap: 3px; width: 100%;
   background: var(--mc-dark-bg-deep, #0F172A); /* bezel frame behind the screens */
   border-radius: var(--mc-radius-sm); padding: 3px; overflow: hidden;
 }
+/* Classroom 1 Smartboard: one 86" panel, so its card is exactly ONE wall tile
+   (--mc-cols:1) on its own full-width row, left-aligned — matching a single
+   screen in the video walls. Width/max-width come from the shared rule above. */
+.mc-display-card-tile { grid-column: 1 / -1; }
 .mc-wall-span-layer {
   position: absolute;
   inset: 3px;
@@ -289,7 +294,10 @@
 .mc-wall-span-shot { width: 100%; height: 100%; object-fit: cover; display: block; }
 .mc-wall-span-empty { color: var(--mc-text-on-dark-muted, #94A3B8); font-size: var(--mc-font-size-sm); }
 .mc-wall-cell {
-  position: relative; overflow: hidden; min-height: 64px;
+  position: relative; overflow: hidden;
+  /* Tiles are now responsive (1fr of a cols/maxCols-wide card); the panel aspect
+     ratio gives each cell its height so it tracks the width. */
+  aspect-ratio: var(--mc-cell-ar, 16 / 9);
   display: flex; align-items: center; justify-content: center;
   background: var(--mc-bg-secondary); cursor: pointer;
   transition: box-shadow var(--mc-transition-base);
@@ -310,6 +318,21 @@
 /* A physical screen slot with no paired player — dim, non-interactive. */
 .mc-wall-cell-vacant { cursor: default; background: var(--mc-dark-bg, #1E293B); }
 .mc-wall-cell-vacant:hover { box-shadow: none; }
+/* Single-spanning-device split: each column is its own drop target on the ONE
+   window. The inline style carries the per-column screenshot crop (background-
+   image/size/position); we only set the fallback colour + chrome here. */
+.mc-wall-split-one .mc-wall-grid { gap: 8px; }
+.mc-wall-split-half {
+  position: relative; overflow: hidden;
+  aspect-ratio: var(--mc-cell-ar, 16 / 9);
+  display: flex; align-items: center; justify-content: center;
+  background-color: var(--mc-bg-secondary); cursor: pointer;
+  outline: 1px dashed var(--mc-border-light, rgba(148, 163, 184, 0.4)); outline-offset: -1px;
+  transition: box-shadow var(--mc-transition-base);
+}
+.mc-wall-split-half:hover { box-shadow: inset 0 0 0 2px rgba(37, 99, 235, 0.8); }
+.mc-wall-split-half:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
+.mc-wall-split-half.mc-card-dragover { box-shadow: inset 0 0 0 3px var(--accent); }
 .mc-wall-all {
   display: flex; align-items: center; justify-content: center; gap: var(--space-2, 8px);
   margin-top: var(--mc-space-sm, 8px); min-height: 40px; padding: 0 var(--space-3, 12px);
@@ -452,6 +475,57 @@
 }
 .mc-scene-tile { width: 120px; }
 
+/* ---- Camera Feeds tab: collapsible folders of live-camera source tiles ---- */
+.mc-cf-hint {
+  margin: 0 0 var(--mc-space-sm, 8px); font-size: var(--mc-font-size-sm, 13px);
+  color: var(--mc-text-secondary);
+}
+.mc-cf-groups { display: flex; flex-direction: column; gap: var(--mc-space-sm, 8px); }
+.mc-cf-group {
+  border: 1px solid var(--mc-border-light); border-radius: var(--mc-radius-md, 12px);
+  background: var(--mc-bg-secondary, #F2EFEA); overflow: hidden;
+}
+.mc-cf-group-head {
+  display: flex; align-items: center; gap: var(--mc-space-sm, 8px);
+  min-height: var(--tap-min, 48px); padding: var(--space-2, 8px) var(--mc-space-md, 16px);
+  cursor: pointer; list-style: none; user-select: none;
+  font-weight: var(--mc-fw-semibold, 600); color: var(--mc-text-primary);
+}
+.mc-cf-group-head::-webkit-details-marker { display: none; }
+/* Disclosure chevron (rotates when the folder is open). */
+.mc-cf-group-head::before {
+  content: ''; flex: 0 0 auto; width: 8px; height: 8px; margin-right: 2px;
+  border-right: 2px solid var(--mc-text-tertiary, #8A847C);
+  border-bottom: 2px solid var(--mc-text-tertiary, #8A847C);
+  transform: rotate(-45deg); transition: transform var(--mc-transition-base, .2s ease);
+}
+.mc-cf-group[open] > .mc-cf-group-head::before { transform: rotate(45deg); }
+.mc-cf-group-head:hover { background: var(--mc-surface-alt, rgba(0,0,0,.03)); }
+.mc-cf-group-head:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
+.mc-cf-group-ico { flex: 0 0 auto; display: inline-flex; color: var(--accent); }
+.mc-cf-group-ico svg { width: 22px; height: 22px; display: block; }
+.mc-cf-group-title { flex: 1 1 auto; }
+.mc-cf-count {
+  flex: 0 0 auto; font-size: var(--mc-font-size-xs, 11px); font-weight: var(--mc-fw-medium, 500);
+  color: var(--mc-text-secondary); background: var(--mc-surface); border: 1px solid var(--mc-border-light);
+  border-radius: var(--mc-radius-pill, 999px); padding: 2px 10px;
+}
+.mc-cf-group[open] > .mc-tile-grid { padding: var(--mc-space-sm, 8px) var(--mc-space-md, 16px) var(--mc-space-md, 16px); }
+/* Fallback (no provider thumbnail): a category glyph sized like a thumbnail. */
+.mc-cf-tile-ico {
+  display: flex; align-items: center; justify-content: center;
+  width: 72px; height: 54px; border-radius: var(--mc-radius-sm, 8px);
+  background: var(--mc-bg-secondary); color: var(--accent);
+}
+.mc-cf-tile-ico svg { width: 30px; height: 30px; }
+.mc-cf-tile .mc-tile-sub {
+  font-size: 9px; letter-spacing: .03em; text-transform: uppercase;
+  color: var(--mc-text-tertiary, #8A847C);
+}
+@media (prefers-reduced-motion: reduce) {
+  .mc-cf-group-head::before { transition: none; }
+}
+
 /* YouTube / URL form (.mc-yt-input scoped to .mc-control; shared with Present) */
 .mc-yt-form { display: flex; flex-direction: column; gap: var(--mc-space-sm, 8px); max-width: 640px; }
 .mc-tb-label { font-size: var(--mc-font-size-sm); color: var(--mc-text-secondary); font-weight: var(--mc-fw-medium); }
@@ -480,6 +554,78 @@
 .mc-nc-row[data-nc-dir]:hover { background: var(--mc-surface-alt); }
 .mc-nc-icon { flex: 0 0 auto; }
 .mc-nc-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--mc-text-primary); font-size: var(--mc-font-size-sm); }
+
+/* ════════════════════════════════════════════════════════════════════════
+   Content LIBRARY drawer (right-side, collapsible). A fixed overlay so it never
+   reflows the stage; slides off-screen when collapsed, leaving a docked reopen
+   tab. Width (--mc-library-w, 380px) is kept BELOW the inspector's 430px so the
+   inspector (z-index 40) fully covers this drawer (z-index 30) when a display is
+   selected. Scroll lives on .mc-library-body — NOT on #mc-toolbox — because
+   paintToolbox() replaces #mc-toolbox innerHTML wholesale.
+   ════════════════════════════════════════════════════════════════════════ */
+.mc-library-drawer {
+  position: fixed; right: 0; top: 0; height: 100%;
+  width: var(--mc-library-w, 380px); max-width: 92vw;
+  z-index: 30;
+  transition: transform var(--mc-transition-base);
+  will-change: transform;
+}
+.mc-library-drawer[data-open="false"] { transform: translateX(100%); }
+
+/* Docked reopen tab — rides the drawer's left edge, stays visible when the
+   drawer is collapsed off-screen so the operator can pull it back open. */
+.mc-library-tab {
+  position: absolute; top: 50%; right: 100%; transform: translateY(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: var(--space-2, 8px);
+  padding: var(--mc-space-md, 16px) var(--space-2, 8px);
+  background: var(--mc-surface); border: 1px solid var(--mc-border-medium); border-right: none;
+  border-radius: var(--mc-radius-md, 12px) 0 0 var(--mc-radius-md, 12px);
+  box-shadow: -6px 0 16px rgba(41,37,36,0.12);
+  color: var(--mc-text-primary); font-family: var(--mc-font-family-sans);
+  font-size: var(--mc-font-size-sm); cursor: pointer;
+}
+.mc-library-tab:hover { background: var(--mc-surface-alt); border-color: var(--accent); }
+.mc-library-tab:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.mc-library-tab-ico { display: inline-flex; color: var(--accent); transition: transform var(--mc-transition-base); }
+.mc-library-tab-ico svg { width: 18px; height: 18px; display: block; }
+/* Chevron points right (collapse) when open, flips to point left (reopen) when collapsed. */
+.mc-library-drawer[data-open="false"] .mc-library-tab-ico { transform: rotate(180deg); }
+.mc-library-tab-label {
+  writing-mode: vertical-rl; text-orientation: mixed;
+  font-weight: var(--mc-fw-semibold, 600); letter-spacing: 0.04em;
+  text-transform: uppercase; font-size: var(--font-2, 12px); color: var(--mc-text-secondary);
+}
+
+.mc-library-inner {
+  display: flex; flex-direction: column; height: 100%;
+  background: var(--mc-surface); border-left: 1px solid var(--mc-border-medium);
+  box-shadow: -8px 0 24px rgba(41,37,36,0.16);
+}
+.mc-library-head {
+  flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-2, 8px);
+  padding: var(--mc-space-md, 16px) var(--mc-space-lg, 24px);
+  border-bottom: 1px solid var(--mc-border-light);
+}
+.mc-library-title { margin: 0; font-size: var(--mc-font-size-lg, 18px); font-weight: var(--mc-fw-semibold); color: var(--mc-text-primary); }
+.mc-library-collapse {
+  flex: 0 0 auto; width: var(--tap-min, 48px); height: var(--tap-min, 48px);
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; border: none; color: var(--mc-text-secondary);
+  cursor: pointer; border-radius: var(--mc-radius-sm);
+}
+.mc-library-collapse svg { width: 20px; height: 20px; display: block; }
+.mc-library-collapse:hover { color: var(--mc-text-primary); background: var(--mc-surface-alt); }
+.mc-library-collapse:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+/* Scroll lives HERE so paintToolbox() replacing #mc-toolbox innerHTML never
+   wipes the scroll container. */
+.mc-library-body {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  padding: var(--mc-space-lg, 24px);
+}
+/* Inside the drawer the toolbox is just the tab strip + tile grid — its own card
+   chrome (border/radius/bg) is redundant against the drawer surface, so flatten. */
+.mc-library-body .mc-toolbox { background: transparent; border: none; border-radius: 0; padding: 0; }
 
 /* ════════════════════════════════════════════════════════════════════════
    Inspector (slide-in display detail)
@@ -609,14 +755,16 @@
 }
 .mc-tp-group { display: flex; gap: var(--space-1, 4px); flex-wrap: wrap; }
 .mc-tp-btn {
-  min-width: var(--tap-min, 48px); min-height: var(--tap-min, 48px); padding: 0 var(--space-2, 8px);
-  display: inline-flex; align-items: center; justify-content: center;
+  min-width: var(--tap-min, 48px); min-height: var(--tap-min, 48px); padding: 4px var(--space-2, 8px);
+  display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
   background: var(--mc-surface-alt); border: 1px solid var(--mc-border-light);
   border-radius: var(--mc-radius-sm, 8px); color: var(--mc-text-primary);
-  font-size: var(--mc-font-size-base); font-family: var(--mc-font-family-sans);
+  font-family: var(--mc-font-family-sans);
   cursor: pointer; line-height: 1;
   transition: background var(--mc-transition-base), color var(--mc-transition-base), border-color var(--mc-transition-base);
 }
+.mc-tp-ico { font-size: var(--mc-font-size-base); line-height: 1; }
+.mc-tp-text { font-size: 10px; font-weight: 600; line-height: 1; white-space: nowrap; letter-spacing: 0.01em; }
 .mc-tp-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
 .mc-tp-btn:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .mc-tp-btn:disabled { opacity: 0.45; cursor: default; }
@@ -700,7 +848,7 @@
 }
 .mc-cmd-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3, 12px); }
 /* "Start Class" is the single dominant CTA: push it to the primary touch size. */
-.mc-control .mc-cmd-start { min-height: var(--tap-primary, 64px); padding: 0 var(--space-5, 24px); font-size: var(--font-4, 15px); border-radius: var(--radius-lg, 12px); }
+.mc-control .mc-cmd-multiview { min-height: var(--tap-primary, 64px); padding: 0 var(--space-5, 24px); font-size: var(--font-4, 15px); border-radius: var(--radius-lg, 12px); }
 .mc-cmd-launch { display: flex; flex-wrap: wrap; gap: var(--space-2, 8px); margin-left: auto; }
 .mc-cmd-btn-label { white-space: nowrap; }
 /* Blank-all active = the room is dark. Amber (--warning-dim) clears WCAG AA for
@@ -723,16 +871,35 @@
 .mc-cmd-spin svg { animation: mc-spin 0.8s linear infinite; }
 
 /* ════════════════════════════════════════════════════════════════════════
-   Two-column body: main control column + right rail (Presets · Recent). The
-   rail is the Command-360 "Layouts" analog. Sticky on wide screens, stacked
-   below on narrow ones (the rail follows the stage on a tablet/podium).
+   Single-column body: the main control column now spans the full width. The
+   content LIBRARY moved to a fixed right-side collapsible drawer (overlay, see
+   .mc-library-drawer) and the former right-rail panels (Presets · Recent · Room
+   setup) moved to .mc-control-bottom below the stage. A constant right gutter
+   keeps content clear of the open drawer on wide screens WITHOUT reflowing the
+   stage when the drawer collapses (the gutter never changes on toggle, so the
+   stage's ResizeObserver tiling stays stable).
    ════════════════════════════════════════════════════════════════════════ */
-.mc-control-body {
-  display: grid; grid-template-columns: minmax(0, 1fr) 320px;
-  gap: var(--mc-space-xl, 32px); align-items: start;
-}
+.mc-control { --mc-library-w: 380px; }
+.mc-control-body { display: block; }
 .mc-control-main { display: flex; flex-direction: column; gap: var(--mc-space-lg, 24px); min-width: 0; }
-.mc-control-rail { display: flex; flex-direction: column; gap: var(--mc-space-lg, 24px); position: sticky; top: var(--space-4, 16px); }
+
+/* Bottom row: the three former-rail panels (Presets · Recent · Room setup) as a
+   responsive auto-fit row that reuses each panel's existing chrome unchanged. */
+.mc-control-bottom {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--mc-space-lg, 24px); align-items: start;
+}
+
+/* Wide screens: reserve a constant right gutter on the in-flow content so the
+   open library drawer (a fixed overlay) doesn't sit over the content column. The
+   gutter is CONSTANT — it does not change when the drawer collapses — so the
+   stage never reflows on toggle and its ResizeObserver tiling stays stable. The
+   fixed drawer/inspector are NOT in flow, so this padding doesn't move them.
+   Below this breakpoint the drawer becomes a full-width overlay (see responsive
+   block), so no gutter is reserved and the content uses the full width. */
+@media (min-width: 1025px) {
+  .mc-control { padding-right: calc(var(--mc-library-w, 380px) + var(--mc-space-lg, 24px)); }
+}
 
 /* Shared rail-panel chrome */
 .mc-presets, .mc-recent {
@@ -826,9 +993,6 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
   background: rgba(37, 99, 235, 0.04);
 }
 
-/* Mirror is a one-shot action button: a brief blue press confirmation. */
-.mc-control .mc-routing-btn.mc-routing-firing { background: var(--accent); color: #fff; }
-
 /* ════════════════════════════════════════════════════════════════════════
    Consolidation: the Playlists toolbox source, the Room-setup rail panel, and
    the in-dashboard overlay (view-modal) that hosts a folded-in builder
@@ -915,14 +1079,19 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
 @keyframes mc-modal-in { from { transform: translateY(8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 
 /* ---- responsive ---- */
+/* ≤1024px: no right gutter is reserved (see the min-width:1025px rule above), so
+   the content uses the full width and the library drawer becomes a wider overlay
+   that floats over content when opened (operator collapses it to see the stage). */
 @media (max-width: 1024px) {
-  .mc-control-body { grid-template-columns: 1fr; }
-  .mc-control-rail { position: static; }
+  .mc-library-drawer { width: min(420px, 92vw); }
 }
 @media (max-width: 720px) {
   .mc-control-head { align-items: flex-start; }
   .mc-stage { grid-template-columns: 1fr; }
   .mc-inspector { width: 100%; }
+  /* Full-width drawer on phones; the inspector is also full-width and z-index 40
+     still covers it. The reopen tab tucks against the right edge. */
+  .mc-library-drawer { width: 100%; max-width: 100%; }
   .mc-cmd-launch { margin-left: 0; }
   .mc-route-sections, .mc-insp-top-actions, .mc-insp-control-grid { grid-template-columns: 1fr; }
 }
@@ -939,6 +1108,7 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
   .mc-cmd-spin svg { animation: none; }
   .mc-modal-card { animation: none; }
   .mc-setup-link { transition: none; }
+  .mc-library-drawer, .mc-library-tab-ico { transition: none; }
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -962,3 +1132,167 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
 .mc-tile-label { font-size: var(--mc-font-size-xs, 11px); color: var(--mc-text-secondary); text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 80px; }
 .mc-yt-input { flex: 1 1 auto; padding: 8px 12px; background: var(--mc-bg-secondary, #111827); border: 1px solid var(--mc-border-light, #243044); border-radius: var(--mc-radius-sm, 4px); color: var(--mc-text-primary); font-family: var(--mc-font-family-sans); font-size: var(--mc-font-size-sm); }
 .mc-yt-input:focus { outline: none; border-color: var(--mc-accent, #2563eb); }
+
+/* ════════════════════════════════════════════════════════════════════════
+   Multiview Layout composer (multiview.js). A faithful 4-left / 2-center /
+   4-right preview of the grid the display will render: cells are absolutely
+   positioned by the SAME percent rects as /player/grid.html, so the operator
+   builds the wall layout 1:1. Drag a source tile into a frame; click 🔊 to
+   monitor that frame's audio locally. Scoped under .mc-control.
+   ════════════════════════════════════════════════════════════════════════ */
+.mc-multiview-host { margin-top: var(--mc-space-md, 12px); }
+.mc-mv { display: flex; flex-direction: column; gap: var(--mc-space-md, 12px); }
+.mc-mv-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--mc-space-md, 12px); flex-wrap: wrap; }
+.mc-mv-hint { margin: 0; flex: 1 1 260px; color: var(--mc-text-secondary, #94a3b8); font-size: var(--mc-font-size-sm, 13px); line-height: 1.4; }
+.mc-mv-actions { display: flex; gap: var(--mc-space-sm, 8px); flex: 0 0 auto; }
+
+.mc-mv-stage {
+  position: relative; width: 100%; max-width: 960px; margin: 0 auto;
+  aspect-ratio: 16 / 9; background: #000;
+  border: 1px solid var(--mc-border-light, #243044); border-radius: var(--mc-radius-md, 8px);
+  overflow: hidden;
+  touch-action: none;   /* pointer-resize handles must not scroll the page on touch */
+}
+/* Fallback for browsers without aspect-ratio: a padding-top spacer would be
+   needed, but every target browser here (operator desktops) supports it. */
+
+.mc-mv-cell {
+  position: absolute; overflow: hidden; box-sizing: border-box;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  border: 1px dashed var(--mc-border-medium, #334155); background: var(--mc-dark-bg, #0b1220);
+  color: var(--mc-text-secondary, #94a3b8); cursor: default; gap: 2px; text-align: center; padding: 4px;
+}
+.mc-mv-cell[data-side="center"] { background: #0d1526; }
+.mc-mv-cell.filled { border-style: solid; border-color: var(--mc-border-light, #243044); background: #000; cursor: pointer; }
+.mc-mv-cell.dragover { border-color: var(--mc-accent, #2563eb); box-shadow: inset 0 0 0 2px var(--mc-accent, #2563eb); }
+.mc-mv-cell.monitoring { box-shadow: inset 0 0 0 2px var(--mc-broadcasting, #22c55e); }
+.mc-mv-slot-name { font-size: clamp(9px, 0.9vw, 12px); font-weight: var(--mc-fw-semibold, 600); color: var(--mc-text-secondary, #94a3b8); }
+.mc-mv-slot-hint { font-size: clamp(8px, 0.8vw, 10px); color: var(--mc-text-tertiary, #64748b); }
+
+.mc-mv-cell-thumb { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+/* Mirror the wall's fit choice in the preview thumbnail: Fill (cover, default)
+   vs Fit (contain, letterbox). Matches grid.html's per-cell object-fit. */
+.mc-mv-cell[data-fit="contain"] .mc-mv-cell-thumb { object-fit: contain; background: #000; }
+.mc-mv-cell-ico { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--mc-text-secondary, #94a3b8); }
+.mc-mv-cell-ico svg { width: 28%; height: 28%; max-width: 40px; max-height: 40px; opacity: 0.7; }
+
+.mc-mv-cell-actions { position: absolute; top: 4px; right: 4px; z-index: 3; display: flex; gap: 4px; }
+.mc-mv-cell-btn {
+  width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+  border: none; border-radius: 50%; cursor: pointer; padding: 0;
+  background: rgba(0,0,0,0.62); color: #fff;
+}
+.mc-mv-cell-btn svg { width: 15px; height: 15px; }
+.mc-mv-cell-btn:hover { background: rgba(0,0,0,0.85); }
+.mc-mv-listen.active { background: var(--mc-broadcasting, #22c55e); color: #06210f; }
+/* Wall-audio toggle: the frame whose sound plays ON THE DISPLAY (one at a time). */
+.mc-mv-wallaudio.active { background: var(--mc-broadcasting, #22c55e); color: #06210f; }
+/* Fit/Fill toggle: in Fit (contain) mode it reads as "active/non-default" so the
+   operator can see at a glance which frames were switched off the default Fill. */
+.mc-mv-fit.fitmode { background: var(--mc-accent, #2563eb); color: #fff; }
+.mc-mv-clear:hover { background: var(--mc-danger, #ef4444); }
+
+.mc-mv-cell-label {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; pointer-events: none;
+  padding: 6px 8px 4px; font-size: clamp(9px, 0.95vw, 13px); font-weight: var(--mc-fw-semibold, 600); color: #fff;
+  background: linear-gradient(0deg, rgba(0,0,0,0.78), rgba(0,0,0,0));
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left;
+}
+
+.mc-mv-monitor {
+  display: flex; flex-direction: column; gap: var(--mc-space-sm, 8px);
+  max-width: 960px; margin: 0 auto; width: 100%;
+  background: var(--mc-surface, #0f172a); border: 1px solid var(--mc-border-light, #243044);
+  border-radius: var(--mc-radius-md, 8px); padding: var(--mc-space-md, 12px);
+}
+.mc-mv-monitor-head { display: flex; align-items: center; gap: var(--mc-space-sm, 8px); }
+.mc-mv-monitor-title { font-weight: var(--mc-fw-semibold, 600); color: var(--mc-text-primary, #e2e8f0); font-size: var(--mc-font-size-sm, 13px); }
+.mc-mv-monitor-label { flex: 1 1 auto; color: var(--mc-text-secondary, #94a3b8); font-size: var(--mc-font-size-sm, 13px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mc-mv-monitor-box { width: 280px; max-width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: var(--mc-radius-sm, 4px); overflow: hidden; }
+.mc-mv-monitor-box iframe, .mc-mv-monitor-box video { width: 100%; height: 100%; border: 0; display: block; object-fit: contain; background: #000; }
+
+@media (max-width: 640px) {
+  .mc-mv-monitor-box { width: 100%; }
+}
+
+/* ── Multiview reactive resize + screen-share frame (2026-06-07) ────────────
+   Resize handles ride the corners/edges of a FILLED frame (drag to resize;
+   neighbours shrink to fit). The screen-share chip is dragged into a frame; the
+   frame then offers a "Share to display" control. Scoped under .mc-control. */
+.mc-mv-handle {
+  position: absolute; z-index: 4; width: 14px; height: 14px;
+  background: var(--mc-accent, #2563eb); border: 2px solid #fff; border-radius: 50%;
+  opacity: 0; transition: opacity 0.12s ease; touch-action: none;
+}
+.mc-mv-cell.filled:hover .mc-mv-handle,
+.mc-mv-cell.filled:focus-within .mc-mv-handle { opacity: 0.9; }
+.mc-mv-handle-nw { left: -7px; top: -7px; cursor: nwse-resize; }
+.mc-mv-handle-ne { right: -7px; top: -7px; cursor: nesw-resize; }
+.mc-mv-handle-sw { left: -7px; bottom: -7px; cursor: nesw-resize; }
+.mc-mv-handle-se { right: -7px; bottom: -7px; cursor: nwse-resize; }
+.mc-mv-handle-n  { left: calc(50% - 7px); top: -7px; cursor: ns-resize; }
+.mc-mv-handle-s  { left: calc(50% - 7px); bottom: -7px; cursor: ns-resize; }
+.mc-mv-handle-e  { right: -7px; top: calc(50% - 7px); cursor: ew-resize; }
+.mc-mv-handle-w  { left: -7px; top: calc(50% - 7px); cursor: ew-resize; }
+/* The action buttons (top-right) must stay clickable above the ne/e handles. */
+.mc-mv-cell-actions { z-index: 5; }
+
+/* Draggable "Screen share" chip in the composer header. */
+.mc-mv-sharechip {
+  display: inline-flex; align-items: center; gap: 6px; cursor: grab;
+  padding: 6px 12px; border-radius: var(--mc-radius-pill, 999px);
+  background: var(--mc-surface-alt, #1e2d45); color: var(--mc-text-primary, #e2e8f0);
+  border: 1px solid var(--mc-border-medium, #334155); font-size: var(--mc-font-size-sm, 13px);
+  font-weight: var(--mc-fw-medium, 500); font-family: var(--mc-font-family-sans);
+}
+.mc-mv-sharechip:hover { border-color: var(--mc-accent, #2563eb); }
+.mc-mv-sharechip:active { cursor: grabbing; }
+.mc-mv-sharechip-ico svg { width: 16px; height: 16px; display: block; }
+
+/* Screen-share frame: a labelled blue placeholder + Share/Stop controls. */
+.mc-mv-cell-share.filled { background: #0b1220; border-color: rgba(96,165,250,0.45); }
+.mc-mv-cell-ico-share { color: #60a5fa; }
+.mc-mv-share-controls {
+  position: absolute; left: 50%; top: 56%; transform: translate(-50%, -50%); z-index: 3;
+  display: flex; flex-direction: column; align-items: center; gap: 4px; width: 92%;
+}
+.mc-mv-share-on { font-size: clamp(9px, 0.95vw, 12px); color: #93c5fd; font-weight: var(--mc-fw-semibold, 600); text-align: center; }
+
+/* ── Per-card Screensaver dropdown (2026-06-09) ───────────────────────────────
+   A compact <select> on every display + wall card. Sits in the card foot (or
+   the wall head). stopPropagation in JS keeps it from opening the inspector. */
+.mc-screensaver {
+  flex: 0 0 auto; max-width: 9.5rem;
+  font-family: var(--mc-font-family-sans); font-size: var(--mc-font-size-xs);
+  padding: 2px 6px; border-radius: var(--mc-radius-sm);
+  border: 1px solid var(--mc-border-light); background: var(--mc-surface);
+  color: var(--mc-text-secondary); cursor: pointer;
+}
+.mc-screensaver:hover { border-color: var(--mc-border-medium); color: var(--mc-text-primary); }
+.mc-wall-head .mc-screensaver { margin-left: var(--mc-space-sm); }
+
+/* ── Video-wall SPLIT group: independent member cards (2026-06-09) ────────────
+   In Split mode a wall renders its members as their OWN display cards under a
+   compact header (which keeps the Span/Split toggle so they can recombine). The
+   group is sized like the span wall (cols x --mc-tile); the members share it. */
+.mc-wall-split { gap: var(--mc-space-sm); padding-bottom: var(--mc-space-sm); }
+.mc-wall-split-members {
+  display: flex; flex-wrap: wrap; gap: var(--mc-space-md);
+  padding: 0 var(--mc-space-sm) var(--mc-space-sm);
+}
+.mc-wall-split-members .mc-display-card { flex: 1 1 0; min-width: 0; }
+
+/* ── Media-tab folder chips (the "directory" filter, 2026-06-09) ────────────── */
+.mc-tb-folders {
+  display: flex; flex-wrap: wrap; gap: var(--mc-space-xs, 4px);
+  padding: 0 0 var(--mc-space-sm); margin-bottom: var(--mc-space-sm);
+  border-bottom: 1px solid var(--mc-border-light);
+}
+.mc-tb-folder {
+  font-family: var(--mc-font-family-sans); font-size: var(--mc-font-size-xs);
+  padding: 3px 10px; border-radius: var(--mc-radius-full, 999px);
+  border: 1px solid var(--mc-border-light); background: var(--mc-surface);
+  color: var(--mc-text-secondary); cursor: pointer; white-space: nowrap;
+}
+.mc-tb-folder:hover { border-color: var(--mc-border-medium); color: var(--mc-text-primary); }
+.mc-tb-folder.is-active { background: var(--accent, #2563eb); border-color: var(--accent, #2563eb); color: #fff; }

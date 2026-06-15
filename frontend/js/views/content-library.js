@@ -11,6 +11,28 @@ function formatFileSize(bytes) {
   return `${bytes} B`;
 }
 
+// Document classification for the tile fallback. A PDF/Office/ODF row without a
+// thumbnail must NOT render <img src=/file> (that points an image element at
+// raw document bytes → broken image); show a type glyph + label instead. Once a
+// background-generated thumbnail attaches, the thumbnail_path <img> path is used.
+function isDocMime(mt) {
+  return /pdf|presentation|powerpoint|word|spreadsheet|excel|opendocument/.test(mt || '');
+}
+function docGlyph(mt) {
+  if (/pdf/.test(mt)) return '📕';
+  if (/presentation|powerpoint/.test(mt)) return '📊';
+  if (/spreadsheet|excel/.test(mt)) return '📈';
+  if (/word|opendocument\.text/.test(mt)) return '📄';
+  return '📄';
+}
+function docLabel(mt) {
+  if (/pdf/.test(mt)) return t('content.type_pdf');
+  if (/presentation|powerpoint/.test(mt)) return t('content.type_slides');
+  if (/spreadsheet|excel/.test(mt)) return t('content.type_sheet');
+  if (/word|opendocument\.text/.test(mt)) return t('content.type_doc');
+  return t('content.type_document');
+}
+
 export function render(container) {
   container.innerHTML = `
     <div class="page-header">
@@ -381,13 +403,18 @@ async function loadContent() {
                       <polygon points="5 3 19 12 5 21 5 3"/>
                     </svg>
                   </div>`
-                : `<img src="/api/content/${c.id}/file" alt="${esc(c.filename)}" loading="lazy">`
+                : isDocMime(c.mime_type)
+                  ? `<div class="video-icon" style="flex-direction:column;gap:4px">
+                      <span style="font-size:32px;line-height:1">${docGlyph(c.mime_type)}</span>
+                      <span style="font-size:10px;color:var(--text-muted)">${esc(docLabel(c.mime_type))}</span>
+                    </div>`
+                  : `<img src="/api/content/${c.id}/file" alt="${esc(c.filename)}" loading="lazy">`
           }
         </div>
         <div class="content-item-body">
           <div class="content-item-name" title="${esc(c.filename)}">${esc(c.filename)}</div>
           <div class="content-item-size">
-            ${c.mime_type === 'video/youtube' ? t('content.type_youtube') : c.remote_url ? t('content.type_remote') : (c.mime_type?.startsWith('video/') ? t('content.type_video') : t('content.type_image'))}
+            ${c.mime_type === 'video/youtube' ? t('content.type_youtube') : c.remote_url ? t('content.type_remote') : (c.mime_type?.startsWith('video/') ? t('content.type_video') : isDocMime(c.mime_type) ? docLabel(c.mime_type) : t('content.type_image'))}
             ${c.duration_sec ? ` &middot; ${Math.floor(c.duration_sec / 60)}:${String(Math.floor(c.duration_sec % 60)).padStart(2, '0')}` : ''}
             ${c.file_size ? ' &middot; ' + formatFileSize(c.file_size) : ''}
             ${c.width && c.height ? ` &middot; ${c.width}x${c.height}` : ''}

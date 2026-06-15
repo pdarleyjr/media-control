@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Website</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  #shot { width: 100%; height: 100%; object-fit: contain; display: block; }
+  #state {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #94a3b8; font: 15px/1.4 system-ui, -apple-system, sans-serif; text-align: center; padding: 24px;
+  }
+</style>
+</head>
+<body>
+<div id="state">Loading website…</div>
+<img id="shot" alt="">
+<script>
+  // Renders a third-party website as an auto-refreshing server-side screenshot
+  // (bypasses X-Frame-Options). The screenshot endpoint reads the URL from the
+  // content row by id — this page only knows the id, never the raw URL.
+  var q = new URLSearchParams(location.search);
+  var id = q.get('id');
+  var interval = Math.max(5, Math.min(600, parseInt(q.get('interval'), 10) || 20));
+  // Size the shot to THIS frame's viewport: full display when full-screen, the
+  // cell's pixel box when iframed inside a multiview grid cell.
+  var w = parseInt(q.get('w'), 10) || Math.round(window.innerWidth) || 1600;
+  var h = parseInt(q.get('h'), 10) || Math.round(window.innerHeight) || 900;
+  // fit=cover fills the frame (no letterbox) — used when this page is a multiview
+  // cell; default contain preserves standalone behavior.
+  var fit = q.get('fit') === 'cover' ? 'cover' : 'contain';
+  var img = document.getElementById('shot');
+  img.style.objectFit = fit;
+  var state = document.getElementById('state');
+  var fails = 0;
+
+  function shotUrl() {
+    return '/player/site-shot/' + encodeURIComponent(id) +
+      '?w=' + w + '&h=' + h + '&interval=' + interval + '&t=' + Date.now();
+  }
+  function load() {
+    if (!id) { state.textContent = 'No website id'; return; }
+    var u = shotUrl();
+    var pre = new Image();
+    pre.onload = function () { img.src = u; state.style.display = 'none'; fails = 0; };
+    pre.onerror = function () {
+      fails++;
+      if (fails === 1 && state.style.display === 'none') return; // keep last good frame on a transient miss
+      state.style.display = 'flex';
+      state.textContent = 'Unable to render this website';
+    };
+    pre.src = u;
+  }
+  load();
+  setInterval(load, interval * 1000);
+</script>
+</body>
+</html>

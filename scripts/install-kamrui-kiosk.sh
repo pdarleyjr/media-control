@@ -38,7 +38,7 @@ install_packages() {
     asound_pkg="libasound2t64"
   fi
   apt-get install -y --no-install-recommends \
-    ca-certificates curl jq git rsync coreutils procps openssl xdg-utils \
+    ca-certificates curl jq git rsync coreutils procps openssl xdg-utils exfatprogs ntfs-3g \
     cage dbus-x11 xwayland seatd libinput-tools unclutter \
     libgtk-3-0 libnss3 libxss1 "${asound_pkg}" libatk-bridge2.0-0 libdrm2 libgbm1 \
     v4l-utils x11-xserver-utils

@@ -61,8 +61,9 @@
 14. Confirm Guest loads automatically with no login prompt.
 15. Open the top profile dropdown and switch to another member.
 16. Confirm that member's content/settings load.
-17. Disconnect Ethernet and confirm Wi-Fi-only operation.
-18. Test emergency recovery from SSH:
+17. Insert a USB drive, tap USB Import, select one or more files, and confirm only selected files import.
+18. Disconnect Ethernet and confirm Wi-Fi-only operation.
+19. Test emergency recovery from SSH:
    ```bash
    sudo ./scripts/emergency-disable-kiosk.sh
    ```

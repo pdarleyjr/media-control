@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Multiview Layout</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; height: 100%; width: 100%; background: #000; overflow: hidden; }
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    /* The mosaic canvas fills the player iframe. Cells are positioned by the
+       slot's percent rect, so this auto-scales to any 16:9 display or wall. */
+    #grid { position: absolute; inset: 0; background: #000; }
+    .cell {
+      position: absolute; overflow: hidden; background: #000;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06);
+    }
+    .cell > iframe, .cell > video, .cell > img {
+      position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: block;
+    }
+    /* Default = contain: media is shown WITHOUT distortion (letterbox/pillarbox as
+       needed), so an aspect-matched tile pillarboxes only ~3.4% rather than
+       cover-cropping or stretching. A cell tagged data-fit="cover" opts into
+       crop-to-fill. */
+    .cell > video, .cell > img { object-fit: contain; background: #000; }
+    .cell[data-fit="cover"] > video, .cell[data-fit="cover"] > img { object-fit: cover; }
+    /* Per-cell label chip — bottom-left, so a generic-thumbnail feed (e.g. a
+       news channel) is still identifiable on the physical wall. */
+    .cell-label {
+      position: absolute; left: 0; right: 0; bottom: 0; z-index: 5; pointer-events: none;
+      padding: 6px 10px; font-size: clamp(10px, 1.1vw, 16px); font-weight: 600; color: #fff;
+      background: linear-gradient(0deg, rgba(0,0,0,.7), rgba(0,0,0,0));
+      text-shadow: 0 1px 3px rgba(0,0,0,.85);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    /* Empty slots stay pure black on the display (clean, intentional). */
+    /* Screen-share frame: a labelled dark placeholder. The live WebRTC share is
+       mounted ON TOP of this rect by the player's screen-share receiver (wall-tile
+       rect mode), so this is what shows before/without an active share. */
+    .cell-share { background: #0b1220; box-shadow: inset 0 0 0 1px rgba(96,165,250,0.35); }
+    .cell-share-ph {
+      position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+      color: #93c5fd; font-size: clamp(12px, 1.4vw, 22px); font-weight: 600;
+      letter-spacing: 0.02em; text-align: center; padding: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div id="grid"></div>
+  <script src="multiview-core.js"></script>
+  <script>
+    // Multiview composite renderer. The cell→source map (which feed sits in
+    // which of the 4-left / 2-center / 4-right slots) is carried, sanitized, in
+    // the ?cells= base64url param — so this page is self-contained and stateless,
+    // exactly like oz.html / hls.html / deck. The player iframes it as a single
+    // text/html source; each non-empty cell is itself an iframe of the SAME URL
+    // any source tile carries (oz.html / hls.html / cam.html / youtube-nocookie /
+    // /player/deck/<id> / /api/content/<id>/file), so we reuse every existing
+    // per-source player verbatim. All cells are muted on the display (no
+    // cacophony); audio is monitored from the command center, not here.
+    (function () {
+      var MV = window.Multiview;
+      var gridEl = document.getElementById('grid');
+      if (!MV) { return; }
+
+      var params = new URLSearchParams(location.search);
+      var cells = MV.decodeCells(params.get('cells'));
+      // The player appends &aspect=<wall w/h> at render time. When it implies 2+
+      // screens we ignore saved per-cell geometry and use the clean per-screen
+      // aspect tiles (layoutForAspect), so the mosaic fills the wall completely
+      // with ~3.4% pillarbox instead of stretching. On a single 16:9 display the
+      // layout is the unchanged fixed 4+2+4.
+      // If &aspect is absent (e.g. this page is opened directly as a kiosk URL,
+      // not via the player iframe), fall back to our OWN viewport aspect rather
+      // than assuming 16:9 — on a wide wall window that still tiles correctly.
+      var aspectParam = params.get('aspect');
+      var aspectNum = aspectParam == null ? NaN : parseFloat(aspectParam);
+      var aspect;
+      if (isFinite(aspectNum) && aspectNum > 0) {
+        aspect = MV.normalizeAspect(aspectNum);
+      } else {
+        var vw = window.innerWidth || 16, vh = window.innerHeight || 9;
+        aspect = MV.normalizeAspect(vh > 0 ? (vw / vh) : (16 / 9));
+      }
+      var ultrawide = MV.screensFor(aspect) >= 2;
+      var layout = ultrawide ? MV.layoutForAspect(aspect) : null;
+
+      // Explicit column split (single spanning device, e.g. NVIDIA Mosaic fusing
+      // N TVs into one window): the composer appends &split=N to force N
+      // full-height column tiles (L1/R1 ...), overriding the aspect mosaic so each
+      // TV shows exactly one independently-dropped column. The seam lands on the
+      // bezel between TVs.
+      var splitParam = parseInt(params.get('split'), 10);
+      if (isFinite(splitParam) && splitParam >= 2 && typeof MV.splitColumnsLayout === 'function') {
+        ultrawide = true;                          // keep line 143 passing null so layout[id] wins
+        layout = MV.splitColumnsLayout(splitParam);
+      }
+
+      // At most ONE cell plays sound on the wall (operator's pick); the rest stay
+      // muted to avoid cacophony. audioEl is that cell's <video> or live-player
+      // iframe; window.__mcEnableAudio() (called by the display player after the
+      // one-time user gesture that satisfies the autoplay policy) unmutes it.
+      var audioId = MV.audioSlotId(cells);
+      var audioEl = null;
+
+      function esc(s) {
+        return String(s == null ? '' : s)
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+      }
+
+      function makeMedia(cell, isAudio) {
+        var el;
+        if (cell.k === 'v') {
+          el = document.createElement('video');
+          el.src = cell.u;
+          // The wall-audio cell starts UNMUTED (and is captured so a later user
+          // gesture can (re)start it with sound); every other cell stays muted.
+          el.autoplay = true; el.loop = true; el.muted = !isAudio; el.playsInline = true;
+          el.setAttribute('playsinline', '');
+          if (isAudio) { el.volume = 1; audioEl = el; }
+        } else if (cell.k === 'm') {
+          el = document.createElement('img');
+          el.src = cell.u; el.alt = cell.l || '';
+        } else {
+          el = document.createElement('iframe');
+          // For the wall-audio cell, tell our live player (oz/hls) to unmute by
+          // appending &audio=1; it falls back to muted if the browser blocks
+          // unmuted autoplay, then unmutes on __mcEnableAudio (see below).
+          var src = cell.u;
+          if (isAudio) { src += (src.indexOf('?') === -1 ? '?' : '&') + 'audio=1'; }
+          el.src = src;
+          el.setAttribute('allow', 'autoplay; fullscreen; encrypted-media; picture-in-picture');
+          el.setAttribute('referrerpolicy', 'no-referrer-when-downgrade');
+          el.setAttribute('scrolling', 'no');
+          if (isAudio) audioEl = el;
+        }
+        return el;
+      }
+
+      // Render ONLY filled cells. Empty slots are NOT drawn — the black grid
+      // background shows through — so a resized tile can never be occluded by an
+      // empty slot's box (and the wall stays clean). Each cell uses its own
+      // {x,y,w,h} percent rect when the operator resized it (reactive layout),
+      // otherwise its fixed SLOT rect (default 4+2+4 — unchanged).
+      for (var i = 0; i < MV.SLOTS.length; i++) {
+        var slot = MV.SLOTS[i];
+        var cell = cells[slot.id];
+        if (!cell) continue;                          // empty slot -> nothing drawn
+        var isShare = cell.k === 'share';
+        if (!isShare && !cell.u) continue;            // non-share cell needs a url
+        // On ultra-wide we intentionally ignore per-cell saved geometry and use the
+        // clean aspect tiles; on a single display we honor the operator's geometry.
+        var r = MV.rectForCell(slot.id, ultrawide ? null : cell, layout);
+        if (!r) continue;                             // slot has no tile on this target (e.g. C2 on a 3-screen wall)
+        var box = document.createElement('div');
+        box.className = isShare ? 'cell cell-share' : 'cell';
+        box.setAttribute('data-slot', slot.id);
+        // Per-cell media fit (default contain = no distortion; 'cover' = crop-to-fill).
+        // Drives the object-fit of <video>/<img> via CSS; iframe feeds carry fit in
+        // their URL. Only set data-fit for an explicit 'cover'; an omitted/contain f
+        // leaves no attribute so the base CSS (contain) applies.
+        if (cell.f === 'cover') box.setAttribute('data-fit', 'cover');
+        box.style.left = r.x + '%';
+        box.style.top = r.y + '%';
+        box.style.width = r.w + '%';
+        box.style.height = r.h + '%';
+        if (isShare) {
+          // Placeholder behind the live WebRTC screen-share overlay (the receiver
+          // mounts the share on top of this rect via wall-tile mode). Shows the
+          // label so the frame is identifiable before/without an active share.
+          var ph = document.createElement('div');
+          ph.className = 'cell-share-ph';
+          ph.innerHTML = esc(cell.l || 'Screen Share');
+          box.appendChild(ph);
+        } else {
+          box.appendChild(makeMedia(cell, slot.id === audioId));
+          if (cell.l) {
+            var lab = document.createElement('div');
+            lab.className = 'cell-label';
+            lab.innerHTML = esc(cell.l);
+            box.appendChild(lab);
+          }
+        }
+        gridEl.appendChild(box);
+      }
+
+      // Audio unlock. The display player calls __mcEnableAudio() to turn the single
+      // wall-audio cell's sound on — both on the one-time "tap to enable audio"
+      // gesture AND every time the player (re)mounts a grid once the page already
+      // has user activation (so SWITCHING the audio frame by re-sending the layout
+      // takes effect live, without another tap). We unmute the <video>, or call the
+      // live player's own __mcEnableAudio (oz/hls expose it). Idempotent; no-op when
+      // no cell carries audio.
+      var _audioArmed = false;
+      function enableAudioCell() {
+        if (!audioEl) return;
+        try {
+          if (audioEl.tagName === 'VIDEO') {
+            audioEl.muted = false; audioEl.volume = 1;
+            var p = audioEl.play(); if (p && p.catch) p.catch(function () {});
+          } else if (audioEl.contentWindow && typeof audioEl.contentWindow.__mcEnableAudio === 'function') {
+            audioEl.contentWindow.__mcEnableAudio();   // same-origin oz/hls player
+          }
+        } catch (e) { /* cross-origin or not ready — ignore */ }
+      }
+      window.__mcEnableAudio = function () { _audioArmed = true; enableAudioCell(); };
+      // If the audio cell is a live-player iframe, it may not have booted (defined
+      // its own __mcEnableAudio) at the instant the player arms us — retry when it
+      // finishes loading, so an early call before the inner player is ready still
+      // turns sound on.
+      if (audioEl && audioEl.tagName === 'IFRAME') {
+        audioEl.addEventListener('load', function () { if (_audioArmed) enableAudioCell(); });
+      }
+      // Forward Command Center transport to same-origin controllable child players
+      // (notably /player/doc/:id for PDF/PPT page navigation). Cross-origin frames
+      // ignore it safely.
+      window.addEventListener('message', function (event) {
+        var data = event && event.data;
+        if (!data || data.__mc_transport == null) return;
+        var frames = gridEl.querySelectorAll('iframe');
+        for (var i = 0; i < frames.length; i++) {
+          try { if (frames[i].contentWindow) frames[i].contentWindow.postMessage(data, '*'); } catch (e) { /* ignore */ }
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

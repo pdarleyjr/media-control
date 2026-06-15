@@ -247,6 +247,7 @@
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
+  <script src="/player/player-routing.js"></script>
 <script>
 // Expose the player's socket to the screen-share receiver. The player JS
 // calls io('/device', ...) - we monkey-patch io() so the resulting Manager's
@@ -403,6 +404,36 @@
     // leader is allowed to make sound. This helper is the single source of
     // truth used by every code path that would otherwise unmute audio.
     function isWallFollower() { return !!(wallConfig && !wallConfig.is_leader); }
+    const DOC_OFFICE_MIMES = [
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-powerpoint',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'application/vnd.oasis.opendocument.text',
+      'application/vnd.oasis.opendocument.spreadsheet',
+      'application/vnd.oasis.opendocument.presentation',
+    ];
+    function isOfficeMime(mt) { return DOC_OFFICE_MIMES.includes(String(mt || '')); }
+    function isDocumentMime(mt) { return mt === 'application/pdf' || isOfficeMime(mt); }
+    function docPlayerSrc(item, fit) {
+      if (!item || !item.content_id) return null;
+      const q = fit === 'cover' ? '?fit=cover' : '';
+      return '/player/doc/' + encodeURIComponent(item.content_id) + q;
+    }
+    function postTransportToFrames(action) {
+      let posted = false;
+      document.querySelectorAll('#playerContainer iframe, .zone iframe, .wall-stage iframe').forEach((f) => {
+        try {
+          if (f.contentWindow) {
+            f.contentWindow.postMessage({ __mc_transport: action }, '*');
+            posted = true;
+          }
+        } catch (e) { /* cross-origin/none */ }
+      });
+      return posted;
+    }
     // YouTube player state. Declared up front because the cached-playlist restore
     // (a few lines below) may synchronously call into createYoutubeEmbed before the
     // script reaches the original declaration site, which used to throw a temporal
@@ -763,6 +794,18 @@
       if (isWallFollower()) return;
       // Unmute any playing HTML5 video
       document.querySelectorAll('video').forEach(v => { v.muted = false; });
+      // Reach INTO our own same-origin player iframes and turn their sound on: a
+      // full-screen news/cam stream (hls/oz expose __mcEnableAudio) or the multiview
+      // grid (which relays to its single chosen audio cell). querySelectorAll('video')
+      // can't see inside an iframe, so we call the hook the iframe exposes. Now that
+      // the top frame has user activation, their unmuted play() is allowed.
+      // Cross-origin frames throw on access and are skipped.
+      document.querySelectorAll('iframe').forEach(f => {
+        try {
+          const w = f.contentWindow;
+          if (w && typeof w.__mcEnableAudio === 'function') w.__mcEnableAudio();
+        } catch (e) { /* cross-origin — skip */ }
+      });
       // Unmute the active YouTube embed (iframe — querySelectorAll('video') misses it)
       try {
         if (activeYtPlayer && typeof activeYtPlayer.unMute === 'function') {
@@ -1508,10 +1551,8 @@
       function doTransport(action) {
         try {
           const item = playlist[currentIndex] || {};
-          if (item.remote_url) {
-            document.querySelectorAll('#playerContainer iframe, .zone iframe, .wall-stage iframe').forEach((f) => {
-              try { if (f.contentWindow) f.contentWindow.postMessage({ __mc_transport: action }, '*'); } catch (e) { /* cross-origin/none */ }
-            });
+          if (item.remote_url || isDocumentMime(item.mime_type)) {
+            postTransportToFrames(action);
             return;
           }
           const len = playlist.length || 0;
@@ -2139,24 +2180,33 @@
       // than fall through every branch and leave a blank container.
       // 2026-05-28: also accept PDF + Office MIMEs so they don't fall into the
       // "Waiting for content" hole.
-      const OFFICE_MIMES = [
-        'application/msword',
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        'application/vnd.ms-excel',
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        'application/vnd.ms-powerpoint',
-        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-        'application/vnd.oasis.opendocument.text',
-        'application/vnd.oasis.opendocument.spreadsheet',
-        'application/vnd.oasis.opendocument.presentation',
-      ];
+      // URL routing lives in the shared, unit-tested player-routing.js module
+      // (window.PlayerRouting). ownPlayerPath() rewrites our OWN absolute player/
+      // content URLs to root-relative so they load LIVE from this device's own
+      // origin (never the foreign-site screenshot), regardless of which hostname
+      // the content row was saved with. isExternalSite() is now only true for a
+      // genuinely third-party site. See the module header for the full rationale.
+      var PR = window.PlayerRouting || {
+        ownPlayerPath: function () { return null; },
+        isExternalSite: function (u) { return !!u && /^https?:\/\//i.test(u) && (function () { try { return new URL(u).host !== location.host; } catch (e) { return false; } })(); },
+        isGridUrl: function (u) { return typeof u === 'string' && /\/player\/grid\.html(\?|$)/.test(u); },
+        isFramableSite: function () { return false; }
+      };
+      function isExternalSite(u) { return PR.isExternalSite(u, location.host); }
+      function isGridUrl(u) { return PR.isGridUrl(u); }
+      function gridTargetAspect(mountEl) {
+        var w, h;
+        if (wallConfig && wallConfig.player_rect && wallConfig.player_rect.w && wallConfig.player_rect.h) { w = wallConfig.player_rect.w; h = wallConfig.player_rect.h; }
+        else { w = (mountEl && mountEl.clientWidth) || window.innerWidth || 16; h = (mountEl && mountEl.clientHeight) || window.innerHeight || 9; }
+        return h > 0 ? (w / h) : (16 / 9);
+      }
       const hasRenderableType = item && (
         item.widget_id ||
         item.mime_type === 'video/youtube' ||
         item.mime_type === 'application/pdf' ||
         item.mime_type === 'text/html' ||
         (item.remote_url && /\/player\/deck\//.test(item.remote_url)) ||
-        OFFICE_MIMES.includes(item.mime_type) ||
+        isOfficeMime(item.mime_type) ||
         (typeof item.mime_type === 'string' && (item.mime_type.startsWith('video/') || item.mime_type.startsWith('image/')))
       );
       if (!hasRenderableType) {
@@ -2193,7 +2243,7 @@
       const isVideo = !isYoutube && !isWebpage && item.mime_type?.startsWith('video/');
       const isImage = !isWebpage && item.mime_type?.startsWith('image/');
       const isPdf = !isWebpage && item.mime_type === 'application/pdf';
-      const isOffice = !isWebpage && OFFICE_MIMES.includes(item.mime_type);
+      const isOffice = !isWebpage && isOfficeMime(item.mime_type);
       const serverUrl = config.serverUrl;
       const src = item.asset_url || remoteUrl || `${serverUrl}/uploads/content/${item.filepath}`;
       // 2026-05-28: per-item fit_mode override. Null/undefined falls back to
@@ -2218,9 +2268,60 @@
           // the iframe and snap back to slide 1); a multi-item playlist advances by
           // duration like the other branches.
           const frame = document.createElement('iframe');
-          frame.src = src;
+          // External third-party site → render via the server-side screenshot
+          // player, which bypasses X-Frame-Options / CSP frame-ancestors (a
+          // direct iframe of such a site renders blank). Our own /player/* pages
+          // (decks, grid, oz, hls) are root-relative and iframe directly.
+          let webSrc = src;
+          const ownPath = PR.ownPlayerPath(remoteUrl);
+          if (ownPath) {
+            // Our OWN player/content page (grid / hls / oz / cam / deck / uploaded
+            // file). Load it ROOT-RELATIVE from this device's own origin so it
+            // iframes LIVE — even if the content row stored an absolute URL on a
+            // sibling hostname. This is what rescued the video wall from the
+            // foreign-site screenshot path (frozen, silent, 16:9-clamped stills).
+            webSrc = ownPath;
+            if (isGridUrl(ownPath)) {
+              // Multiview grid → append the wall's target aspect so its cells tile
+              // the full wall instead of falling back to the tiny 4+2+4 mosaic.
+              const asp = gridTargetAspect(mount);
+              webSrc = ownPath + (ownPath.indexOf('?') === -1 ? '?' : '&') + 'aspect=' + asp.toFixed(4);
+            } else if (!isFollower && /\/player\/(oz|hls)\.html(\?|$)/.test(ownPath)) {
+              // A single full-screen live stream (news / Ozolio cam) → play WITH
+              // sound on leader/solo (followers stay muted to avoid echo across the
+              // wall). The player falls back to muted if the browser blocks unmuted
+              // autoplay, then unmutes on the one-time "tap to enable audio" gesture.
+              webSrc = ownPath + (ownPath.indexOf('?') === -1 ? '?' : '&') + 'audio=1';
+            }
+          } else if (PR.isFramableSite(remoteUrl)) {
+            // Our OWN dashboard on *.mbfdhub.com (e.g. the live ops wall). It sends
+            // no X-Frame-Options, so iframe it LIVE at the display's full size —
+            // NOT the server-side screenshot (which clamps width to 3840px and
+            // centered it on the 12372px wall, showing only the middle screen).
+            webSrc = remoteUrl;
+          } else if (item.content_id && isExternalSite(remoteUrl)) {
+            // A genuinely third-party site → server-side screenshot (bypasses
+            // X-Frame-Options / CSP frame-ancestors that blank a direct iframe).
+            const sw = Math.max(320, Math.min(3840, Math.round(mount.clientWidth || window.innerWidth || 1600)));
+            const sh = Math.max(240, Math.min(2160, Math.round(mount.clientHeight || window.innerHeight || 900)));
+            webSrc = '/player/site.html?id=' + encodeURIComponent(item.content_id) + '&w=' + sw + '&h=' + sh;
+          }
+          frame.src = webSrc;
           frame.style.cssText = 'width:100%;height:100%;border:none;background:#000';
           frame.allow = 'autoplay; fullscreen';
+          // Multiview audio: once the page has user activation (the one-time "tap to
+          // enable audio"), (re)enable the grid's chosen audio cell on EVERY mount —
+          // so SWITCHING the audio frame by re-sending the layout takes effect live
+          // without another tap (the grid is muted by default and unlockAudio only
+          // fires on a fresh gesture). Followers stay muted (leader-only audio). The
+          // grid is same-origin (root-relative) so we can call into it; it arms +
+          // retries internally if its audio cell hasn't booted yet.
+          if (isGridUrl(ownPath) && !isFollower) {
+            frame.addEventListener('load', () => {
+              if (!userHasInteracted) return;
+              try { if (frame.contentWindow && frame.contentWindow.__mcEnableAudio) frame.contentWindow.__mcEnableAudio(); } catch (e) { /* not ready / cross-origin */ }
+            });
+          }
           mount.appendChild(frame);
           if (!isFollower && playlist.length > 1) {
             advanceTimer = setTimeout(nextItem, (item.duration_sec || 30) * 1000);
@@ -2293,44 +2394,26 @@
           // Leader / single screen drives image advance; follower waits for sync
           if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 10) * 1000);
         } else if (isPdf) {
-          // 2026-05-28: PDF rendering via the browser's native PDF viewer
-          // (Silk Browser on Fire TV inherits Chrome's PDF support). The
-          // #toolbar=0&navpanes=0&scrollbar=0 fragment hides Chrome's PDF
-          // chrome so the page fills the kiosk. The duration_sec from the
-          // playlist item drives advance. For multi-page navigation in
-          // future, swap this for pdf.js with a paged advance loop.
+          // Controllable PDF player: renders cached Poppler page images and
+          // listens for Command Center transport messages. This avoids native
+          // PDF-plugin quirks and lets prev/next move pages/slides reliably.
           const pdfFrame = document.createElement('iframe');
-          pdfFrame.src = src + '#toolbar=0&navpanes=0&scrollbar=0&view=FitH';
+          pdfFrame.src = docPlayerSrc(item, cssFit) || (src + '#toolbar=0&navpanes=0&scrollbar=0&view=FitH');
           pdfFrame.style.cssText = `width:100%;height:100%;border:none;background:#fff;object-fit:${cssFit}`;
           pdfFrame.allow = 'autoplay; fullscreen';
           mount.appendChild(pdfFrame);
-          if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 30) * 1000);
+          if (!isFollower && playlist.length > 1) advanceTimer = setTimeout(nextItem, (item.duration_sec || 30) * 1000);
         } else if (isOffice) {
-          // 2026-05-28: Office documents render through the ONLYOFFICE
-          // Document Server already running at office.mbfdhub.com. The viewer
-          // URL is a public 'apps/preview/' path; if that endpoint isn't
-          // exposed, the file shows as a download instead — non-fatal but
-          // suboptimal. Follow-up: implement server-side conversion to PDF
-          // at upload time so we can always route through the PDF branch.
-          const officeFrame = document.createElement('iframe');
-          // ONLYOFFICE preview URL pattern. The file URL must be publicly
-          // reachable; we use the same /api/content/:id/file route the
-          // player already uses.
-          officeFrame.src = `https://office.mbfdhub.com/web-apps/apps/api/documents/api.js?fileUrl=${encodeURIComponent(src)}`;
-          officeFrame.style.cssText = 'width:100%;height:100%;border:none;background:#fff';
-          officeFrame.allow = 'autoplay; fullscreen';
-          // If the iframe fails to load, fall back to displaying the file
-          // (browsers may offer a download — still better than a black void).
-          officeFrame.onerror = () => {
-            console.warn('ONLYOFFICE iframe error; falling back to direct embed');
-            mount.innerHTML = '';
-            const fallback = document.createElement('iframe');
-            fallback.src = src;
-            fallback.style.cssText = 'width:100%;height:100%;border:none;background:#fff';
-            mount.appendChild(fallback);
-          };
-          mount.appendChild(officeFrame);
-          if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 60) * 1000);
+          // Office/ODF docs are converted to PDF server-side, then displayed by
+          // the same controllable document player. For PowerPoint this means
+          // each slide is one transport-controllable page image.
+          const docFrame = document.createElement('iframe');
+          const docSrc = docPlayerSrc(item, cssFit) || src;
+          docFrame.src = docSrc;
+          docFrame.style.cssText = `width:100%;height:100%;border:none;background:#fff;object-fit:${cssFit}`;
+          docFrame.allow = 'autoplay; fullscreen';
+          mount.appendChild(docFrame);
+          if (!isFollower && playlist.length > 1) advanceTimer = setTimeout(nextItem, (item.duration_sec || 60) * 1000);
         } else if (item.widget_id) {
           const iframe = document.createElement('iframe');
           iframe.src = `${serverUrl}/api/widgets/${item.widget_id}/render`;
@@ -2356,6 +2439,9 @@
         if (!assignment) return;
 
         const isVideo = assignment.mime_type?.startsWith('video/');
+        const isImage = assignment.mime_type?.startsWith('image/');
+        const isPdf = assignment.mime_type === 'application/pdf';
+        const isOffice = isOfficeMime(assignment.mime_type);
         const src = assignment.asset_url || assignment.remote_url || `${config.serverUrl}/uploads/content/${assignment.filepath}`;
 
         const isYoutubeZone = assignment.mime_type === 'video/youtube';
@@ -2376,12 +2462,26 @@
           video.style.cssText = `width:100%;height:100%;object-fit:${zone.fit_mode || 'cover'}`;
           if (!video.loop) video.onended = () => nextItem();
           div.appendChild(video);
-        } else {
+        } else if (isPdf || isOffice) {
+          const iframe = document.createElement('iframe');
+          iframe.src = docPlayerSrc(assignment, zone.fit_mode || 'contain') || src;
+          iframe.style.cssText = 'width:100%;height:100%;border:none;background:#000';
+          iframe.allow = 'autoplay; fullscreen';
+          div.appendChild(iframe);
+          if (playlist.length > 1) advanceTimer = setTimeout(nextItem, (assignment.duration_sec || 30) * 1000);
+        } else if (isImage) {
           const img = document.createElement('img');
           img.src = src;
           img.style.cssText = `width:100%;height:100%;object-fit:${zone.fit_mode || 'cover'}`;
           div.appendChild(img);
           if (playlist.length > 1) advanceTimer = setTimeout(nextItem, (assignment.duration_sec || 10) * 1000);
+        } else {
+          const iframe = document.createElement('iframe');
+          iframe.src = src;
+          iframe.style.cssText = 'width:100%;height:100%;border:none;background:#000';
+          iframe.allow = 'autoplay; fullscreen';
+          div.appendChild(iframe);
+          if (playlist.length > 1) advanceTimer = setTimeout(nextItem, (assignment.duration_sec || 30) * 1000);
         }
 
         container.appendChild(div);

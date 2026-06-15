@@ -45,6 +45,9 @@
 - [ ] Guest loads automatically.
 - [ ] Profile dropdown appears in top header.
 - [ ] Switching profile reloads that member's content/settings.
+- [ ] USB Import opens from the top header.
+- [ ] USB Import lists supported files from a connected USB drive.
+- [ ] Only checked USB files import into Media Control.
 - [ ] Video Wall 1/2, Smartboard, Sources, Content Library, and placeholder controls are visible through Command Center.
 - [ ] Long-press MBFD logo opens admin PIN panel.
 - [ ] Reconnect and Device Info work from admin panel.

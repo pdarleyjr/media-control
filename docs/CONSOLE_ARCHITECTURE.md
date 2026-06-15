@@ -69,6 +69,7 @@ The MBFD Media Control Console turns the Kamrui AK1 Plus and UPERFECT touchscree
   - `POST /kiosk/disable`
 - The API rejects non-loopback clients.
 - USB status is read-only; the agent does not mount, open, or execute USB content.
+- USB import v1 lets the console list supported files from a connected USB drive, stage only selected files, and upload those selected files to the active profile's Media Control library.
 
 ## Kiosk and Recovery
 

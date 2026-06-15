@@ -8,6 +8,8 @@ const ncfs = require('../services/nextcloud-fs');
 const { db } = require('../db/database');
 const sceneEngine = require('../services/scene-engine');
 const { logActivity, getClientIp } = require('../services/activity');
+const { resolveUploadMime } = require('../middleware/upload');
+const { isDocThumbnailMime, kickDocThumbnail } = require('../lib/doc-thumbnail');
 
 // MBFD Media Control Studio — Files (Nextcloud per-user raw-FS) API.
 //
@@ -81,13 +83,11 @@ router.get('/download', async (req, res) => {
 // Mirrors routes/broadcast.js for the write gate, the workspace-membership
 // device validation, and the 409 CONFIRM_ALL_REQUIRED all-displays gate.
 
-// Allow only image/* and video/* imports (a display can render those). The mime
-// is inferred from the file extension by nextcloud-fs (the read service returns
-// no content-type). Everything else (pptx/pdf/text) is rejected with 415 —
-// presentations broadcast via the deck player, not by re-importing bytes.
-function isBroadcastableMime(mime) {
-  const m = String(mime || '');
-  return m.startsWith('image/') || m.startsWith('video/');
+// Allow the same renderable media/documents the normal upload path accepts. The
+// mime is inferred from extension by nextcloud-fs, but we still canonicalize here
+// because Office files often arrive as generic zip/octet-stream.
+function resolveBroadcastMime(file, relPath) {
+  return resolveUploadMime({ mimetype: file && file.mime, originalname: (file && file.name) || relPath });
 }
 
 // Map a broadcastable mime to a safe file extension for the local content file.
@@ -96,6 +96,16 @@ const MIME_EXT = Object.freeze({
   'image/webp': '.webp', 'image/svg+xml': '.svg', 'image/bmp': '.bmp',
   'video/mp4': '.mp4', 'video/webm': '.webm', 'video/quicktime': '.mov',
   'video/x-m4v': '.m4v',
+  'application/pdf': '.pdf',
+  'application/msword': '.doc',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+  'application/vnd.ms-excel': '.xls',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+  'application/vnd.ms-powerpoint': '.ppt',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
+  'application/vnd.oasis.opendocument.text': '.odt',
+  'application/vnd.oasis.opendocument.spreadsheet': '.ods',
+  'application/vnd.oasis.opendocument.presentation': '.odp',
 });
 
 // Clamp a caller-supplied NC path to a safe RELATIVE path before passing it to
@@ -169,19 +179,20 @@ router.post('/broadcast', async (req, res) => {
     return res.status(status).json({ error: e.message || String(e) });
   }
 
-  // Only image/video can be broadcast as bytes (else 415).
-  if (!isBroadcastableMime(file.mime)) {
-    return res.status(415).json({ error: 'Only image and video files can be broadcast', mime: file.mime });
+  const canonicalMime = resolveBroadcastMime(file, relPath);
+  if (!canonicalMime) {
+    return res.status(415).json({ error: 'Only video, image, PDF, and Office document files can be broadcast', mime: file.mime });
   }
 
   // Materialize the NC bytes into a local content file under config.contentDir
   // (GUARDRAIL 2: the display serves from our origin, never from Nextcloud).
   const id = crypto.randomUUID();
-  const ext = MIME_EXT[file.mime] || path.extname(relPath).toLowerCase() || '';
+  const ext = MIME_EXT[canonicalMime] || path.extname(relPath).toLowerCase() || '';
   const localName = `${id}${ext}`;
+  const localPath = path.join(config.contentDir, localName);
   try {
     fs.mkdirSync(config.contentDir, { recursive: true });
-    fs.writeFileSync(path.join(config.contentDir, localName), file.buffer);
+    fs.writeFileSync(localPath, file.buffer);
   } catch (e) {
     return res.status(500).json({ error: 'Failed to materialize file for broadcast' });
   }
@@ -194,8 +205,12 @@ router.post('/broadcast', async (req, res) => {
   `).run(
     id, req.user.id, req.workspaceId,
     file.name || relPath.split('/').pop() || 'nextcloud_file',
-    localName, file.mime, file.buffer.length
+    localName, canonicalMime, file.buffer.length
   );
+
+  if (isDocThumbnailMime(canonicalMime)) {
+    kickDocThumbnail(id, localPath, canonicalMime);
+  }
 
   // Push to each target via the UNMODIFIED shared push path (broadcast.js:62-73).
   const source = { content_id: id, fit_mode: typeof fit_mode === 'string' ? fit_mode : null };

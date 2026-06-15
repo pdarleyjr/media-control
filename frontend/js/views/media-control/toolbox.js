@@ -20,6 +20,7 @@ import { api } from '../../api.js';
 import { sendToDisplays, sentToast } from './send.js';
 import { showToast } from '../../components/toast.js';
 import { confirmDialog } from '../../components/confirm.js';
+import { renderCameraFeedsTab } from './camera-feeds.js';
 
 // Active tab id (persisted only for the lifetime of the rendered toolbox).
 let activeTab = 'media';
@@ -27,6 +28,7 @@ let activeTab = 'media';
 // ---- tab definitions (labels resolved through t() at render time) ----
 const TABS = [
   { id: 'media',         key: 'mc.tab.media' },
+  { id: 'camerafeeds',   key: 'mc.tab.camerafeeds' },
   { id: 'playlists',     key: 'mc.tab.playlists' },
   { id: 'presentations', key: 'mc.tab.presentations' },
   { id: 'youtube',       key: 'mc.tab.youtube' },
@@ -51,6 +53,23 @@ function errorState(msg) {
   return `<div class="mc-tb-state mc-tb-error" role="alert"><span class="mc-tb-state-ico" aria-hidden="true">${ICON_ERROR}</span><span>${esc(msg)}</span></div>`;
 }
 
+// Tile preview: real thumbnail when one exists, else a type-aware glyph so a
+// document never shows the generic image placeholder (or, in the library, a
+// broken <img> pointed at raw document bytes).
+function mediaTileThumb(item) {
+  if (item.thumbnail_url) {
+    return `<img class="mc-tile-thumb" src="${esc(item.thumbnail_url)}" alt="" loading="lazy">`;
+  }
+  const mt = item.mime_type || '';
+  let glyph = '🖼';
+  if (/pdf/.test(mt)) glyph = '📕';
+  else if (/presentation|ms-powerpoint/.test(mt)) glyph = '📊';
+  else if (/wordprocessing|msword|opendocument\.text/.test(mt)) glyph = '📄';
+  else if (/spreadsheet|ms-excel/.test(mt)) glyph = '📈';
+  else if (mt.startsWith('video/')) glyph = '🎬';
+  return `<span class="mc-tile-icon">${glyph}</span>`;
+}
+
 // ---- tab content renderers ----
 
 async function renderMediaTab(container, { selectedIds, onAfterSend, onRouteSource }) {
@@ -68,20 +87,44 @@ async function renderMediaTab(container, { selectedIds, onAfterSend, onRouteSour
     container.innerHTML = emptyState(t('mc.media.empty'));
     return;
   }
-  const tiles = items.slice(0, 48).map(item => {
-    const src = JSON.stringify({ content_id: item.id });
-    const name = item.filename || item.name || t('mc.tile.content_fallback');
-    const thumb = item.thumbnail_url ? `<img class="mc-tile-thumb" src="${esc(item.thumbnail_url)}" alt="" loading="lazy">` : `<span class="mc-tile-icon">🖼</span>`;
-    return `<button type="button" class="mc-tile" draggable="true"
-      data-drag-source='${esc(src)}'
-      data-label="${esc(name)}"
-      title="${esc(name)}">
-      ${thumb}
-      <span class="mc-tile-label">${esc(name)}</span>
-    </button>`;
-  }).join('');
-  container.innerHTML = `<div class="mc-tile-grid">${tiles}</div>`;
-  attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource);
+  // Folder "directory" view: chips built from each item's own folder field. The
+  // operator can browse into a folder (e.g. Wallpaper) or see All. Filtering is
+  // client-side over the already-fetched list (no extra request).
+  const folders = [...new Set(items.map(i => i.folder).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const chipBar = folders.length
+    ? `<div class="mc-tb-folders" role="group" aria-label="${esc(t('mc.media.folders'))}">
+         <button type="button" class="mc-tb-folder is-active" data-folder="">${esc(t('mc.media.all'))}</button>
+         ${folders.map(f => `<button type="button" class="mc-tb-folder" data-folder="${esc(f)}">${esc(f)}</button>`).join('')}
+       </div>`
+    : '';
+  container.innerHTML = chipBar + `<div class="mc-tile-grid" id="mc-media-grid"></div>`;
+  const grid = container.querySelector('#mc-media-grid');
+
+  const paint = (folderFilter) => {
+    const shown = folderFilter ? items.filter(i => i.folder === folderFilter) : items;
+    grid.innerHTML = shown.slice(0, 48).map(item => {
+      const src = JSON.stringify({ content_id: item.id });
+      const name = item.filename || item.name || t('mc.tile.content_fallback');
+      const thumb = mediaTileThumb(item);
+      return `<button type="button" class="mc-tile" draggable="true"
+        data-drag-source='${esc(src)}'
+        data-label="${esc(name)}"
+        title="${esc(name)}">
+        ${thumb}
+        <span class="mc-tile-label">${esc(name)}</span>
+      </button>`;
+    }).join('');
+    // Re-bind tile click/drag handlers to the freshly-rendered tiles.
+    attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource);
+  };
+
+  container.querySelectorAll('.mc-tb-folder[data-folder]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      container.querySelectorAll('.mc-tb-folder').forEach(b => b.classList.toggle('is-active', b === btn));
+      paint(btn.dataset.folder || '');
+    });
+  });
+  paint('');
 }
 
 // Playlists tab — every playlist is a drag-or-tap source ({ playlist_id }); the
@@ -326,7 +369,9 @@ async function renderScenesTab(container, { onAfterSend }) {
 }
 
 // Attach click + dragstart on toolbox tiles that call sendToDisplays.
-function attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource) {
+// Exported so the Camera Feeds tab (camera-feeds.js) reuses the identical
+// tap-to-route + drag-to-card wiring instead of duplicating it.
+export function attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource) {
   container.querySelectorAll('.mc-tile[data-drag-source]').forEach(tile => {
     // Click = explicit target picker in Command Center; fallback preserves the
     // legacy immediate send contract for other callers/tests.
@@ -342,11 +387,18 @@ function attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource) 
 
     // Dragstart = serialize source onto the DataTransfer so stage cards can
     // receive it as a drop and call sendToDisplays({ source }, [deviceId]).
+    // Also carry the tile's thumbnail (if it has a real image, not just an icon)
+    // so the Multiview composer can show that picture inside the cell it's
+    // dropped into. Tiles with only a glyph carry no thumb → the cell falls back
+    // to a category icon + the source label (which still identifies the feed).
     tile.addEventListener('dragstart', (e) => {
       e.dataTransfer.effectAllowed = 'copy';
       e.dataTransfer.setData('text/plain', tile.dataset.dragSource);
       e.dataTransfer.setData('application/x-mc-source', tile.dataset.dragSource);
       e.dataTransfer.setData('application/x-mc-label', tile.dataset.label || t('mc.tile.content_fallback'));
+      const thumbImg = tile.querySelector('img');
+      const thumbSrc = thumbImg && (thumbImg.currentSrc || thumbImg.src);
+      if (thumbSrc) e.dataTransfer.setData('application/x-mc-thumb', thumbSrc);
     });
   });
 }
@@ -357,6 +409,9 @@ async function loadTab(tabId, tabBody, { selectedIds, onAfterSend, onRouteSource
   switch (tabId) {
     case 'media':
       await renderMediaTab(tabBody, { selectedIds, onAfterSend, onRouteSource });
+      break;
+    case 'camerafeeds':
+      renderCameraFeedsTab(tabBody, { selectedIds, onAfterSend, onRouteSource });
       break;
     case 'playlists':
       await renderPlaylistsTab(tabBody, { selectedIds, onAfterSend, onRouteSource });

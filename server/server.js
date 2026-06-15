@@ -279,6 +279,146 @@ app.get('/player/oz-poster', (req, res) => {
   res.redirect(302, u);
 });
 
+// MBFD Media Control — Miami live-NEWS resolver + proxy (Camera Feeds "Live News").
+// /player/news-stream?station=<key> resolves a whitelisted station key to a
+// playable HLS .m3u8 ({source}); /player/hls.html plays it with hls.js. Most
+// stations are a direct CDN master; WSVN is AES-128 + CORS-locked so its source is
+// a /player/hls-proxy URL that relays the playlist + key with ACAO:*. Public under
+// /player (Cloudflare-Access bypass) so unattended displays reach it without OTP;
+// station keys are server-whitelisted (no arbitrary URL -> no SSRF).
+const { resolveNewsStream } = require('./lib/news-streams');
+const { handleProxy } = require('./lib/hls-proxy');
+app.get('/player/news-stream', async (req, res) => {
+  try {
+    const data = await resolveNewsStream(String(req.query.station || '').toLowerCase());
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'public, max-age=30');
+    res.json(data);
+  } catch (e) {
+    res.status(e.status || 502).json({ error: e.message || 'resolve failed' });
+  }
+});
+app.get('/player/hls-proxy', handleProxy);
+
+// MBFD Media Control — server-side website screenshot (Website broadcasting).
+// Renders a third-party site with headless Chromium and serves a JPEG, so sites
+// that block framing (X-Frame-Options / CSP frame-ancestors) still display on
+// walls and inside multiview frames. Public under /player (Cloudflare-Access
+// bypass) so unattended displays reach it without OTP. NOT an open proxy: the
+// URL is read from the content row by id (already operator-chosen + SSRF-checked
+// at creation) and RE-validated here (closes DNS-rebinding); clients never pass
+// a raw URL. The :id is an unguessable UUID, matching the /player/asset model.
+const { getSiteShot, isExternalHttpUrl } = require('./lib/site-shot');
+const { assertRemoteUrlSafe } = require('./lib/ssrf-policy');
+app.get('/player/site-shot/:id', async (req, res) => {
+  try {
+    const { db } = require('./db/database');
+    const c = db.prepare('SELECT id, remote_url, mime_type FROM content WHERE id = ?').get(req.params.id);
+    if (!c || !c.remote_url) return res.status(404).type('text/plain').send('not found');
+    if (c.mime_type !== 'text/html' || !isExternalHttpUrl(c.remote_url)) {
+      return res.status(400).type('text/plain').send('not a website');
+    }
+    const safe = await assertRemoteUrlSafe(c.remote_url);
+    if (!safe.ok) return res.status(400).type('text/plain').send('blocked url');
+    const file = await getSiteShot(c.id, c.remote_url, { width: req.query.w, height: req.query.h, interval: req.query.interval });
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('Cache-Control', 'public, max-age=5');
+    res.setHeader('Content-Type', 'image/jpeg');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.sendFile(file);
+  } catch (e) {
+    console.warn('[site-shot] render failed:', e && e.message);
+    res.status(502).type('text/plain').send('render failed');
+  }
+});
+
+// MBFD Media Control — Office/ODF document playback as PDF (Content > office docs).
+// PPT/PPTX/DOC/DOCX/XLS/XLSX/ODF can't render in a browser frame as raw bytes, and
+// the old ONLYOFFICE api.js iframe URL displayed the JS library as text. Here we
+// convert the document to a PDF with headless LibreOffice (cached) and serve it so
+// the player can show it through the native PDF viewer — the same path PDFs use.
+// Public under /player (Cloudflare-Access bypass) so unattended displays reach it
+// without OTP. Same deployment guard as /api/content/:id/file: only serve docs that
+// are actually referenced by a playlist/widget in their workspace (or are platform
+// templates), so a leaked UUID can't convert+exfiltrate arbitrary private uploads.
+const { getOfficePdf, isConvertibleOfficeMime } = require('./lib/doc-pdf');
+const { canServePublicContent } = require('./lib/public-content-access');
+const { DEFAULT_DPI, clampPage, getPdfPageCount, getRenderablePdf, isDocumentMime, renderPdfPageImage } = require('./lib/doc-render');
+app.get('/player/doc-pdf/:id', async (req, res) => {
+  try {
+    const { db } = require('./db/database');
+    const c = db.prepare('SELECT id, filepath, mime_type, workspace_id FROM content WHERE id = ?').get(req.params.id);
+    if (!c || !c.filepath) return res.status(404).type('text/plain').send('not found');
+    if (!isConvertibleOfficeMime(c.mime_type)) return res.status(400).type('text/plain').send('not an office document');
+    if (!canServePublicContent(db, c)) return res.status(403).type('text/plain').send('not assigned to any playlist or widget');
+    const srcPath = path.resolve(config.contentDir, path.basename(c.filepath));
+    if (!srcPath.startsWith(path.resolve(config.contentDir))) return res.status(403).type('text/plain').send('invalid path');
+    const pdfPath = await getOfficePdf(c.id, srcPath, c.mime_type);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.sendFile(pdfPath);
+  } catch (e) {
+    console.warn('[doc-pdf] convert failed:', e && e.message);
+    res.status(502).type('text/plain').send('conversion failed');
+  }
+});
+
+// Controllable PDF / Office document player. Unlike the browser's native PDF
+// plugin, /player/doc/:id can receive Command Center transport events and move
+// page-by-page through an uploaded PDF or LibreOffice-converted PowerPoint.
+app.get('/player/doc/:id', (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(__dirname, 'player', 'doc.html'));
+});
+
+app.get('/player/doc-meta/:id', async (req, res) => {
+  try {
+    const { db } = require('./db/database');
+    const c = db.prepare('SELECT id, filename, filepath, mime_type, workspace_id FROM content WHERE id = ?').get(req.params.id);
+    if (!c || !c.filepath) return res.status(404).json({ error: 'not found' });
+    if (!isDocumentMime(c.mime_type)) return res.status(400).json({ error: 'not a document' });
+    if (!canServePublicContent(db, c)) return res.status(403).json({ error: 'not assigned to any playlist or widget' });
+    const pdfPath = await getRenderablePdf(c);
+    const pages = await getPdfPageCount(pdfPath);
+    const stat = fs.statSync(pdfPath);
+    res.setHeader('Cache-Control', 'public, max-age=30');
+    res.json({
+      id: c.id,
+      filename: c.filename || 'Document',
+      mime_type: c.mime_type,
+      pages,
+      dpi: DEFAULT_DPI,
+      version: Math.round(stat.mtimeMs),
+    });
+  } catch (e) {
+    console.warn('[doc-player] metadata failed:', e && e.message);
+    res.status(502).json({ error: 'metadata failed' });
+  }
+});
+
+app.get('/player/doc-page/:id/:page.png', async (req, res) => {
+  try {
+    const { db } = require('./db/database');
+    const c = db.prepare('SELECT id, filepath, mime_type, workspace_id FROM content WHERE id = ?').get(req.params.id);
+    if (!c || !c.filepath) return res.status(404).type('text/plain').send('not found');
+    if (!isDocumentMime(c.mime_type)) return res.status(400).type('text/plain').send('not a document');
+    if (!canServePublicContent(db, c)) return res.status(403).type('text/plain').send('not assigned to any playlist or widget');
+    const pdfPath = await getRenderablePdf(c);
+    const pages = await getPdfPageCount(pdfPath);
+    const page = clampPage(req.params.page, pages);
+    const rendered = await renderPdfPageImage(c.id, pdfPath, page);
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+    res.sendFile(rendered.path);
+  } catch (e) {
+    console.warn('[doc-player] page render failed:', e && e.message);
+    res.status(502).type('text/plain').send('render failed');
+  }
+});
+
 // Serve web player at /player (same no-cache for JS/HTML). The index.html
 // route above intercepts the HTML requests; everything else still falls
 // through to this static handler (debug-overlay.js, sw.js, manifest, etc).
@@ -409,25 +549,7 @@ app.get('/api/content/:id/file', (req, res) => {
   const content = db.prepare('SELECT * FROM content WHERE id = ?').get(req.params.id);
   if (!content) return res.status(404).json({ error: 'Content not found' });
   if (!content.filepath) return res.status(404).json({ error: 'No file (remote URL content)' });
-  let inPlaylist, inWidget;
-  if (content.workspace_id) {
-    // Workspace-scoped: only count references inside the content's own workspace.
-    inPlaylist = db.prepare(
-      `SELECT pi.id FROM playlist_items pi
-       JOIN playlists p ON p.id = pi.playlist_id
-       WHERE pi.content_id = ? AND p.workspace_id = ? LIMIT 1`
-    ).get(req.params.id, content.workspace_id);
-    inWidget = inPlaylist ? null : db.prepare(
-      'SELECT id FROM widgets WHERE workspace_id = ? AND config LIKE ? LIMIT 1'
-    ).get(content.workspace_id, `%/api/content/${req.params.id}/%`);
-  } else {
-    // Platform-template (workspace_id IS NULL): globally referenceable.
-    inPlaylist = db.prepare('SELECT id FROM playlist_items WHERE content_id = ? LIMIT 1').get(req.params.id);
-    inWidget = inPlaylist ? null : db.prepare(
-      'SELECT id FROM widgets WHERE config LIKE ? LIMIT 1'
-    ).get(`%/api/content/${req.params.id}/%`);
-  }
-  if (!inPlaylist && !inWidget) return res.status(403).json({ error: 'Content not assigned to any playlist or widget' });
+  if (!canServePublicContent(db, content)) return res.status(403).json({ error: 'Content not assigned to any playlist or widget' });
   const safePath = path.resolve(config.contentDir, path.basename(content.filepath));
   if (!safePath.startsWith(path.resolve(config.contentDir))) return res.status(403).json({ error: 'Invalid path' });
   if (content.mime_type) res.setHeader('Content-Type', content.mime_type);
@@ -543,6 +665,10 @@ function updateFrontendHash() {
     });
     // Include player files in hash so web players detect code updates
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'index.html'))); } catch {}
+    try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'doc.html'))); } catch {}
+    try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'grid.html'))); } catch {}
+    try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'multiview-core.js'))); } catch {}
+    try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'screen-share-receiver.js'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'sw.js'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'debug-overlay.js'))); } catch {}
     frontendHash = crypto.createHash('md5').update(Buffer.concat(files.map(f => Buffer.from(f)))).digest('hex').slice(0, 8);
@@ -749,6 +875,31 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(config.frontendDir, 'index.html'));
 });
 
+// Final error handler (4-arg). Without it, multer's fileFilter rejection and
+// LIMIT_FILE_SIZE bubbled to Express's default handler as a 500 text/html page,
+// so the dashboard could only show an opaque "server error" for a disallowed or
+// oversized upload. Map them to actionable JSON; mirror the tus path's 415.
+// Must be registered AFTER all routes so next(err) reaches it.
+app.use((err, req, res, next) => {
+  if (!err) return next();
+  if (res.headersSent) return next(err);
+  if (err.name === 'MulterError') {
+    const tooBig = err.code === 'LIMIT_FILE_SIZE';
+    return res.status(tooBig ? 413 : 400).json({
+      error: tooBig ? 'File exceeds the maximum allowed upload size' : `Upload error: ${err.message}`,
+    });
+  }
+  if (/files? are allowed/i.test(err.message || '')) {
+    return res.status(415).json({ error: err.message });
+  }
+  const status = Number.isInteger(err.status) ? err.status : 500;
+  if (req.path && req.path.startsWith('/api/')) {
+    return res.status(status).json({ error: err.message || 'Server error' });
+  }
+  console.error('Unhandled error:', err.stack || err);
+  return res.status(status).send('Server error');
+});
+
 const listenPort = hasSsl ? config.httpsPort : config.port;
 const protocol = hasSsl ? 'https' : 'http';
 
@@ -764,6 +915,13 @@ server.listen(listenPort, '0.0.0.0', () => {
 ║  Listening on all interfaces (0.0.0.0)           ║
 ╚══════════════════════════════════════════════════╝
   `);
+  // Self-heal any video that isn't yet a browser-safe MP4 (e.g. a transcode that
+  // a previous deploy/restart killed mid-flight). Deferred + single-flight so it
+  // never blocks startup or stacks ffmpeg processes. Non-fatal.
+  setTimeout(() => {
+    try { require('./lib/media-transcode').resumePendingTranscodes(); }
+    catch (e) { console.warn('resumePendingTranscodes kick failed:', e && e.message); }
+  }, 8000);
 });
 
 // If SSL is enabled, also start an HTTP server that redirects to HTTPS
