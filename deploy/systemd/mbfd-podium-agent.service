@@ -1,0 +1,26 @@
+[Unit]
+Description=MBFD Podium Agent
+Documentation=file:%h/docs/KAMRUI_INSTALL.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/mbfd/media-control-console/config.env
+WorkingDirectory=/opt/mbfd/podium-agent
+ExecStart=/usr/bin/node /opt/mbfd/podium-agent/dist/index.js
+Restart=on-failure
+RestartSec=5s
+User=root
+Group=root
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectSystem=full
+ReadWritePaths=/var/log /run /tmp /opt/mbfd /etc/mbfd
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

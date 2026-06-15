@@ -1,4 +1,4 @@
-import { connectSocket } from './socket.js';
+import { connectSocket, disconnectSocket } from './socket.js';
 import * as dashboard from './views/dashboard.js';
 import * as deviceDetail from './views/device-detail.js';
 import * as contentLibrary from './views/content-library.js';
@@ -29,7 +29,7 @@ import * as workspaceMembers from './views/workspace-members.js';
 import * as mediaControl from './views/media-control.js';
 import { applyBranding } from './branding.js';
 import { t } from './i18n.js';
-import { isPlatformAdmin } from './utils.js';
+import { esc, isPlatformAdmin } from './utils.js';
 import { renderWorkspaceSwitcher } from './components/workspace-switcher.js';
 import { showToast } from './components/toast.js';
 import { api } from './api.js';
@@ -38,6 +38,14 @@ const app = document.getElementById('app');
 const sidebar = document.querySelector('.sidebar');
 let currentView = null;
 const SIDEBAR_COLLAPSED_KEY = 'mc_sidebar_collapsed';
+const CONSOLE_MODE = window.location.pathname.startsWith('/console/');
+const CONSOLE_ROOM_ID = CONSOLE_MODE
+  ? (window.location.pathname.split('/console/')[1] || 'classroom-1').split('/')[0] || 'classroom-1'
+  : null;
+const CONSOLE_DEVICE_ID = new URLSearchParams(window.location.search).get('device_id') || 'classroom-1-podium-console';
+let consoleSessionReady = false;
+let consoleProfiles = [];
+let consoleClockTimer = null;
 
 // ==================== Slice 2C: accept-invite plumbing ====================
 //
@@ -247,6 +255,129 @@ function getCurrentUser() {
   } catch { return null; }
 }
 
+async function requestConsoleSession(profileId, previousProfileId = null) {
+  const res = await fetch('/api/console/session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      room_id: CONSOLE_ROOM_ID || 'classroom-1',
+      device_id: CONSOLE_DEVICE_ID,
+      profile_id: profileId || 'guest',
+      previous_profile_id: previousProfileId,
+    }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || 'Console session failed');
+  return body;
+}
+
+function storeConsoleSession(session) {
+  localStorage.setItem('token', session.token);
+  localStorage.setItem('user', JSON.stringify(session.user));
+  localStorage.setItem('rd_onboarded', '1');
+  localStorage.setItem('mc_console_profile_id', session.user.id);
+  localStorage.setItem('mc_console_room_id', session.room_id || CONSOLE_ROOM_ID || 'classroom-1');
+  localStorage.setItem('mc_console_device_id', session.device_id || CONSOLE_DEVICE_ID);
+  sessionStorage.setItem('mc_console_active_profile', session.user.id);
+  consoleProfiles = Array.isArray(session.profiles) ? session.profiles : [];
+}
+
+function renderConsoleBoot(message) {
+  document.body.classList.add('console-mode');
+  sidebar.style.display = 'none';
+  app.style.marginLeft = '0';
+  app.innerHTML = `
+    <section class="console-boot" aria-live="polite">
+      <div class="console-boot-card">
+        <div class="console-logo" data-console-logo>MBFD</div>
+        <p class="console-kicker">Media Control Console</p>
+        <h1>${esc(message || 'Loading Guest Profile')}</h1>
+        <p>Preparing the trusted classroom control surface.</p>
+      </div>
+    </section>
+  `;
+}
+
+async function ensureConsoleSession() {
+  if (!CONSOLE_MODE || consoleSessionReady) return true;
+  renderConsoleBoot('Loading Guest Profile');
+  try {
+    const initialProfile = sessionStorage.getItem('mc_console_active_profile') || 'guest';
+    const session = await requestConsoleSession(initialProfile);
+    storeConsoleSession(session);
+    consoleSessionReady = true;
+    if (!window.location.hash || window.location.hash === '#/login') window.location.hash = '#/control';
+    connectSocket();
+    applyBranding();
+    await refreshCurrentUser();
+    return true;
+  } catch (err) {
+    renderConsoleBoot(err?.message || 'Console Session Unavailable');
+    return false;
+  }
+}
+
+function updateConsoleClock() {
+  const el = document.getElementById('consoleClock');
+  if (!el) return;
+  el.textContent = new Intl.DateTimeFormat([], { hour: 'numeric', minute: '2-digit' }).format(new Date());
+}
+
+function renderConsoleHeader() {
+  if (!CONSOLE_MODE) return;
+  let header = document.getElementById('consoleHeader');
+  if (!header) {
+    header = document.createElement('header');
+    header.id = 'consoleHeader';
+    header.className = 'console-header';
+    document.body.insertBefore(header, document.body.firstChild);
+  }
+  const current = getCurrentUser();
+  const options = consoleProfiles.map((profile) => `
+    <option value="${esc(profile.id)}" ${profile.id === current?.id ? 'selected' : ''}>${esc(profile.name || profile.email || profile.id)}</option>
+  `).join('');
+  header.innerHTML = `
+    <div class="console-brand" data-console-logo title="Long press for service access">
+      <span class="console-logo-mini">MBFD</span>
+      <div>
+        <strong>MBFD Media Control</strong>
+        <span>Classroom 1</span>
+      </div>
+    </div>
+    <div class="console-status-strip" aria-label="System status">
+      <span class="console-status-dot"></span><span>System Ready</span>
+      <span class="console-status-network">Network Online</span>
+    </div>
+    <label class="console-profile-picker">
+      <span>Profile</span>
+      <select id="consoleProfileSelect" aria-label="Current profile">${options}</select>
+    </label>
+    <time id="consoleClock" class="console-clock"></time>
+  `;
+  const select = document.getElementById('consoleProfileSelect');
+  select?.addEventListener('change', async (event) => {
+    const selected = event.target.value;
+    const previous = localStorage.getItem('mc_console_profile_id');
+    select.disabled = true;
+    try {
+      const session = await requestConsoleSession(selected, previous);
+      storeConsoleSession(session);
+      disconnectSocket();
+      connectSocket();
+      await refreshCurrentUser();
+      showToast(`Loaded ${session.user.name || session.user.email}`, 'success');
+      window.location.hash = '#/control';
+      renderConsoleHeader();
+      await route();
+    } catch (err) {
+      showToast(err?.message || 'Profile switch failed', 'error');
+      renderConsoleHeader();
+    }
+  });
+  updateConsoleClock();
+  if (!consoleClockTimer) consoleClockTimer = setInterval(updateConsoleClock, 15000);
+}
+
 // Refresh the cached user from the server. The server reads plan_id fresh
 // from the DB on every request, but the frontend only wrote `user` into
 // localStorage at login — so plan/role changes made by an admin weren't
@@ -276,6 +407,15 @@ async function route() {
   }
 
   const hash = window.location.hash || '#/';
+
+  if (CONSOLE_MODE) {
+    const ready = await ensureConsoleSession();
+    if (!ready) return;
+    if (hash === '#/login' || hash === '#/' || hash === '#') {
+      window.location.hash = '#/control';
+      return;
+    }
+  }
 
   // Slice 2C - direct hits on #/accept-invite/{id}. Handle BEFORE the
   // auth-redirect-to-login because an unauthed visit needs to stash the
@@ -368,11 +508,20 @@ async function route() {
     return;
   }
 
-  // Show sidebar for authenticated views
-  sidebar.style.display = '';
-  app.style.marginLeft = '';
+  // Show sidebar for authenticated views unless the dedicated physical console
+  // route is active. Console mode has its own touchscreen header/profile picker.
+  if (CONSOLE_MODE) {
+    document.body.classList.add('console-mode');
+    sidebar.style.display = 'none';
+    app.style.marginLeft = '0';
+    renderConsoleHeader();
+  } else {
+    document.body.classList.remove('console-mode');
+    sidebar.style.display = '';
+    app.style.marginLeft = '';
+  }
   const mb = document.getElementById('mobileMenuBtn');
-  if (mb) mb.style.display = '';
+  if (mb) mb.style.display = CONSOLE_MODE ? 'none' : '';
 
   // Update user info in sidebar
   updateSidebarUser();
@@ -557,7 +706,7 @@ window.addEventListener('language-changed', () => {
   translateStaticDom();
 });
 
-if (isAuthenticated()) {
+if (isAuthenticated() && !CONSOLE_MODE) {
   connectSocket();
   applyBranding();
   refreshCurrentUser().then(() => updateSidebarUser());
@@ -628,7 +777,7 @@ setInterval(async () => {
 }, 15000);
 
 // Session timeout warning - check JWT expiry every minute
-if (isAuthenticated()) {
+if (isAuthenticated() && !CONSOLE_MODE) {
   setInterval(() => {
     const token = localStorage.getItem('token');
     if (!token) return;

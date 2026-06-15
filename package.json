@@ -1,0 +1,18 @@
+{
+  "name": "mbfd-media-control",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MBFD Media Control monorepo wrapper for the Linux classroom console appliance.",
+  "packageManager": "pnpm@9.12.0",
+  "scripts": {
+    "dev": "pnpm --filter @mbfd/console-linux dev",
+    "build": "pnpm --filter @mbfd/console-linux build && pnpm --filter @mbfd/podium-agent build",
+    "package:linux": "pnpm --filter @mbfd/console-linux package:linux",
+    "lint": "pnpm --filter @mbfd/console-linux lint && pnpm --filter @mbfd/podium-agent lint",
+    "typecheck": "pnpm --filter @mbfd/console-linux typecheck && pnpm --filter @mbfd/podium-agent typecheck",
+    "test": "pnpm --filter media-control-server test"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  }
+}

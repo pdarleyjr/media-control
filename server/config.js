@@ -94,6 +94,18 @@ module.exports = {
   // For self-hosted internal deployments that don't want the public homepage.
   disableHomepage: ['true', '1'].includes(String(process.env.DISABLE_HOMEPAGE || '').toLowerCase()),
 
+  // Dedicated physical classroom console mode. This does NOT replace normal
+  // dashboard authentication; it mints short-lived dashboard JWTs only for the
+  // trusted podium console route and can be gated by an internal device token.
+  console: {
+    roomId: process.env.ROOM_ID || 'classroom-1',
+    deviceId: process.env.DEVICE_ID || 'classroom-1-podium-console',
+    defaultProfile: process.env.DEFAULT_PROFILE || 'guest',
+    deviceToken: process.env.CONSOLE_DEVICE_TOKEN || process.env.DEVICE_TOKEN || '',
+    guestUserId: process.env.CONSOLE_GUEST_USER_ID || 'guest',
+    guestEmail: process.env.CONSOLE_GUEST_EMAIL || 'guest@mbfd.local',
+  },
+
   // ── MBFD Media Control Studio ────────────────────────────────────────────
   // Local Ollama (server-side ONLY; the frontend never calls this). Reached
   // from inside the container via the Docker bridge gateway. Bound localhost on
