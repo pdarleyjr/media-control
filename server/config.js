@@ -161,4 +161,10 @@ module.exports = {
     videoWallStudio: process.env.ENABLE_VIDEO_WALL_STUDIO !== 'false',
     broadcastCenter: process.env.ENABLE_BROADCAST_CENTER !== 'false',
   },
+  liveStream: {
+    aiDirectorUrl: process.env.AI_DIRECTOR_URL || 'http://127.0.0.1:8766',
+    aiDirectorTimeoutMs: parseInt(process.env.AI_DIRECTOR_TIMEOUT_MS, 10) || 5000,
+    playerBaseUrl: process.env.LIVE_STREAM_PLAYER_BASE_URL || process.env.APP_URL || '',
+    peerTubeWatchUrl: process.env.PEERTUBE_LIVE_WATCH_URL || '',
+  },
 };

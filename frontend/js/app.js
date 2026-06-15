@@ -877,6 +877,40 @@ window.addEventListener('keydown', (e) => {
 
 // Auto-reload on frontend update (no more hard refresh needed)
 let knownHash = null;
+let consoleRefreshInFlight = false;
+async function refreshForFrontendUpdate() {
+  if (CONSOLE_MODE) {
+    if (consoleRefreshInFlight) return;
+    consoleRefreshInFlight = true;
+    try {
+      if (window.mbfdConsoleShell?.refreshContent) {
+        const result = await window.mbfdConsoleShell.refreshContent();
+        if (result?.ok) return;
+      }
+    } catch (error) {
+      console.warn('console shell refresh failed; falling back to browser reload', error);
+    }
+    window.location.reload();
+    return;
+  }
+
+  const toast = document.getElementById('toastContainer');
+  if (!toast) return;
+  const notice = document.createElement('div');
+  notice.className = 'toast info';
+  notice.setAttribute('role', 'status');
+  notice.setAttribute('aria-live', 'polite');
+  const message = document.createElement('span');
+  message.textContent = t('app.update_available') + ' ';
+  const reload = document.createElement('button');
+  reload.type = 'button';
+  reload.textContent = t('app.reload_now');
+  reload.style.cssText = 'color:var(--accent);text-decoration:underline;font-weight:600;background:none;border:0;padding:0;cursor:pointer;font:inherit';
+  reload.addEventListener('click', () => window.location.reload());
+  message.appendChild(reload);
+  notice.appendChild(message);
+  toast.appendChild(notice);
+}
 setInterval(async () => {
   try {
     const res = await fetch('/api/version');
@@ -884,23 +918,7 @@ setInterval(async () => {
     if (knownHash === null) { knownHash = hash; return; }
     if (hash !== knownHash) {
       knownHash = hash;
-      const toast = document.getElementById('toastContainer');
-      if (toast) {
-        const notice = document.createElement('div');
-        notice.className = 'toast info';
-        notice.setAttribute('role', 'status');
-        notice.setAttribute('aria-live', 'polite');
-        const message = document.createElement('span');
-        message.textContent = t('app.update_available') + ' ';
-        const reload = document.createElement('button');
-        reload.type = 'button';
-        reload.textContent = t('app.reload_now');
-        reload.style.cssText = 'color:var(--accent);text-decoration:underline;font-weight:600;background:none;border:0;padding:0;cursor:pointer;font:inherit';
-        reload.addEventListener('click', () => window.location.reload());
-        message.appendChild(reload);
-        notice.appendChild(message);
-        toast.appendChild(notice);
-      }
+      await refreshForFrontendUpdate();
     }
   } catch {}
 }, 15000);

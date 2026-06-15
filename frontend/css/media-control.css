@@ -851,6 +851,17 @@
 .mc-control .mc-cmd-multiview { min-height: var(--tap-primary, 64px); padding: 0 var(--space-5, 24px); font-size: var(--font-4, 15px); border-radius: var(--radius-lg, 12px); }
 .mc-cmd-launch { display: flex; flex-wrap: wrap; gap: var(--space-2, 8px); margin-left: auto; }
 .mc-cmd-btn-label { white-space: nowrap; }
+.mc-control .mc-cmd-live {
+  background: var(--mc-live-dim, #FEF2F2);
+  border-color: rgba(220, 38, 38, 0.28);
+  color: var(--mc-live-text, #B91C1C);
+  font-weight: 800;
+}
+.mc-control .mc-cmd-live:hover:not(:disabled) {
+  background: #FEE2E2;
+  border-color: rgba(220, 38, 38, 0.48);
+}
+.mc-control .mc-cmd-live-busy { opacity: 0.82; }
 /* Blank-all active = the room is dark. Amber (--warning-dim) clears WCAG AA for
    white text; paired with the label flip + banner so it is never colour-only. */
 .mc-control .mc-cmd-blank.mc-cmd-blank-active {

@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
-type AdminAction = 'restart-app' | 'reconnect' | 'exit-kiosk' | 'device-info' | 'reboot-device' | 'disable-kiosk';
+type AdminAction = 'refresh-console' | 'restart-app' | 'reconnect' | 'exit-kiosk' | 'device-info' | 'reboot-device' | 'disable-kiosk';
 
 function injectAdminStyles() {
   if (document.getElementById('mbfd-admin-style')) return;
@@ -58,6 +58,7 @@ function renderAdminActions(overlay: HTMLElement, output: HTMLDivElement | null)
     <h2>Console Maintenance</h2>
     <p>Use these actions only for troubleshooting or recovery.</p>
     <div class="mbfd-admin-actions">
+      <button type="button" data-action="refresh-console">Refresh Console</button>
       <button type="button" data-action="reconnect">Reconnect</button>
       <button type="button" data-action="restart-app">Restart App</button>
       <button type="button" data-action="device-info">Device Info</button>
@@ -104,6 +105,9 @@ contextBridge.exposeInMainWorld('mbfdConsoleShell', {
     const listener = (_event: unknown, status: string) => callback(status);
     ipcRenderer.on('console:status', listener);
     return () => ipcRenderer.removeListener('console:status', listener);
+  },
+  refreshContent() {
+    return ipcRenderer.invoke('console:refresh-content');
   },
 });
 

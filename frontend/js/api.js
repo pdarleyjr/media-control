@@ -282,6 +282,13 @@ export const api = {
   // (instead of throwing) so the UI can prompt and retry with confirm_all:true.
   broadcast: (payload) => requestBroadcast(payload),
 
+  liveStream: {
+    display: () => request('/live-stream/display'),
+    status: () => request('/live-stream/status'),
+    start: () => request('/live-stream/start', { method: 'POST' }),
+    stop: () => request('/live-stream/stop', { method: 'POST' }),
+  },
+
   // ==================== MBFD Media Control Studio: Presentations ====================
   presentations: {
     list: () => request('/presentations'),

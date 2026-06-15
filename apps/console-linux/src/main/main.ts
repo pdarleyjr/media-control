@@ -18,7 +18,7 @@ type ConsoleConfig = {
   enableDevTools: boolean;
 };
 
-type AdminAction = 'restart-app' | 'reconnect' | 'exit-kiosk' | 'device-info' | 'reboot-device' | 'disable-kiosk';
+type AdminAction = 'refresh-console' | 'restart-app' | 'reconnect' | 'exit-kiosk' | 'device-info' | 'reboot-device' | 'disable-kiosk';
 type RendererEntry = { url: string } | { file: string; query: Record<string, string> };
 
 let mainWindow: BrowserWindow | null = null;
@@ -244,6 +244,46 @@ async function connectToConsole() {
   await mainWindow.loadURL(config.consoleUrl);
 }
 
+async function refreshConsoleContent() {
+  if (!mainWindow) return { ok: false, error: 'Console window is not ready' };
+  if (retryTimer) {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+  sendStatus('Refreshing console');
+  let cacheCleared = false;
+  let serviceWorkerUpdated = false;
+  try {
+    await session.defaultSession.clearCache();
+    cacheCleared = true;
+  } catch (error) {
+    log('cache clear failed during refresh', { error: error instanceof Error ? error.message : String(error) });
+  }
+
+  const currentUrl = mainWindow.webContents.getURL();
+  if (!currentUrl || currentUrl === 'about:blank' || isLocalRendererUrl(currentUrl) || !isAllowedUrl(currentUrl)) {
+    await connectToConsole();
+    return { ok: true, mode: 'connect', cacheCleared, serviceWorkerUpdated };
+  }
+
+  try {
+    await mainWindow.webContents.executeJavaScript(`
+      (async () => {
+        if (!('serviceWorker' in navigator)) return false;
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(registrations.map((registration) => registration.update().catch(() => null)));
+        return registrations.length > 0;
+      })()
+    `, true);
+    serviceWorkerUpdated = true;
+  } catch (error) {
+    log('service worker update failed during refresh', { error: error instanceof Error ? error.message : String(error) });
+  }
+
+  mainWindow.webContents.reloadIgnoringCache();
+  return { ok: true, mode: 'reloadIgnoringCache', cacheCleared, serviceWorkerUpdated };
+}
+
 async function showOfflineAndRetry() {
   if (!mainWindow) return;
   await loadLocalRenderer('offline');
@@ -285,6 +325,7 @@ ipcMain.handle('admin:unlock', (event, pin: string) => {
 ipcMain.handle('admin:action', async (event, action: AdminAction) => {
   if (!isAdminUnlocked(event.sender.id)) return { ok: false, error: 'Admin PIN required' };
   log('admin action', { action });
+  if (action === 'refresh-console') return refreshConsoleContent();
   if (action === 'restart-app') {
     app.relaunch();
     app.exit(0);
@@ -318,6 +359,11 @@ ipcMain.handle('admin:action', async (event, action: AdminAction) => {
   if (action === 'reboot-device') return callAgent('/device/reboot', 'POST');
   if (action === 'disable-kiosk') return callAgent('/kiosk/disable', 'POST');
   return { ok: false, error: 'Unknown action' };
+});
+
+ipcMain.handle('console:refresh-content', async () => {
+  log('renderer requested console refresh');
+  return refreshConsoleContent();
 });
 
 app.on('web-contents-created', (_event, contents) => {

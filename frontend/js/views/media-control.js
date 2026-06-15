@@ -331,6 +331,20 @@ function effectiveTargets() {
   return selectedIds;
 }
 
+async function ensureLiveStreamDisplayOnStage() {
+  try {
+    const result = await api.liveStream.display();
+    const id = result && result.display && result.display.id;
+    if (!id || selectedIds.includes(id) || wallMemberIds.has(id)) return;
+    selectedIds = [...selectedIds, id];
+    persistSelection();
+    await displayState.refresh().catch(() => {});
+  } catch (_) {
+    // Optional integration: the console still works if the director target
+    // cannot be created, so never block initial render.
+  }
+}
+
 // Physical screen-power scope for Blank all: EVERY controllable display PLUS
 // every video-wall member device (each wall screen is a real device that must
 // receive its own screen_off/screen_on — the wall card alone never would).
@@ -831,6 +845,8 @@ export async function render() {
     selectedIds = onlineIds.length > 0 ? onlineIds : roomDisplayIds();
     persistSelection();
   }
+  await ensureLiveStreamDisplayOnStage();
+  pruneSelection();
   paintStage();
   paintToolbox();
   paintSummary();
