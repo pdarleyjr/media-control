@@ -340,6 +340,20 @@ function roomCommandIds() {
   return [...ids];
 }
 
+async function ensureLiveStreamDisplayOnStage() {
+  try {
+    const result = await api.liveStream.display();
+    const id = result && result.display && result.display.id;
+    if (!id || selectedIds.includes(id) || wallMemberIds.has(id)) return;
+    selectedIds = [...selectedIds, id];
+    persistSelection();
+    await displayState.refresh().catch(() => {});
+  } catch (_) {
+    // Optional integration: the room controls still work if the director target
+    // cannot be created, so never block initial render.
+  }
+}
+
 function wallDeviceIds(wall) {
   return [...new Set(((wall && wall.devices) || []).map(m => m.device_id).filter(Boolean))];
 }
@@ -831,6 +845,8 @@ export async function render() {
     selectedIds = onlineIds.length > 0 ? onlineIds : roomDisplayIds();
     persistSelection();
   }
+  await ensureLiveStreamDisplayOnStage();
+  pruneSelection();
   paintStage();
   paintToolbox();
   paintSummary();

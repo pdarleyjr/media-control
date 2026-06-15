@@ -22,6 +22,7 @@ import { esc } from '../../utils.js';
 import { t } from '../../i18n.js';
 import { showToast } from '../../components/toast.js';
 import { sendCommand } from '../../socket.js';
+import { api } from '../../api.js';
 import { COMMAND_TYPES } from '../../player-protocol.js';
 import { sendToDisplays } from './send.js';
 
@@ -39,6 +40,7 @@ const ICON_BLANK = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" 
 const ICON_SCREEN = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line><polyline points="9 9 12 6 15 9"></polyline><line x1="12" y1="6" x2="12" y2="14"></line></svg>';
 const ICON_YT = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="3"></rect><polygon points="10 9 16 12 10 15 10 9" fill="currentColor" stroke="none"></polygon></svg>';
 const ICON_LIB = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>';
+const ICON_LIVE = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 8.5a7 7 0 0 1 14 0"></path><path d="M8 8.5a4 4 0 0 1 8 0"></path><circle cx="12" cy="8.5" r="1.7" fill="currentColor" stroke="none"></circle><rect x="4" y="12" width="16" height="8" rx="2"></rect><path d="M10 15.5l4 2-4 2v-4z" fill="currentColor" stroke="none"></path></svg>';
 const ICON_ERROR = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v5M12 16h.01"></path></svg>';
 const ICON_SPIN = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9"></path></svg>';
 
@@ -138,6 +140,31 @@ function promptYouTube(roomIds, refreshAfterSend) {
   input.focus();
 }
 
+async function startLiveStream(btn, refreshAfterSend) {
+  if (!btn || btn.disabled) return;
+  const oldHtml = btn.innerHTML;
+  btn.disabled = true;
+  btn.classList.add('mc-cmd-live-busy');
+  btn.innerHTML = `${ICON_SPIN}<span class="mc-cmd-btn-label">${esc(t('mc.cmd.live_starting'))}</span>`;
+  try {
+    const result = await api.liveStream.start();
+    const displayName = result && result.display && result.display.name ? result.display.name : t('mc.cmd.live_display');
+    if (result && result.stream_started) {
+      showToast(t('mc.cmd.live_started', { display: displayName }), 'success');
+    } else {
+      const msg = result && result.stream_start && (result.stream_start.data?.message || result.stream_start.message);
+      showToast(t('mc.cmd.live_prepared', { display: displayName, message: msg || t('mc.cmd.live_stream_disabled') }), 'info');
+    }
+    if (typeof refreshAfterSend === 'function') refreshAfterSend();
+  } catch (e) {
+    showToast(e?.message || t('mc.cmd.live_failed'), 'error');
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove('mc-cmd-live-busy');
+    btn.innerHTML = oldHtml;
+  }
+}
+
 /**
  * Render the classroom quick-action command bar into `container`.
  *
@@ -189,6 +216,10 @@ export function renderCommandBar(container, { roomIds, blankIds, refreshAfterSen
           <button type="button" class="mc-btn mc-cmd-btn mc-btn-secondary" data-launch="library">
             ${ICON_LIB}
             <span class="mc-cmd-btn-label">${esc(t('mc.cmd.library'))}</span>
+          </button>
+          <button type="button" class="mc-btn mc-cmd-btn mc-cmd-live" data-launch="live-stream">
+            ${ICON_LIVE}
+            <span class="mc-cmd-btn-label">${esc(t('mc.cmd.live_stream'))}</span>
           </button>
         </div>
       </div>
@@ -246,6 +277,7 @@ export function renderCommandBar(container, { roomIds, blankIds, refreshAfterSen
         case 'screen': window.location.hash = '#/screen-share'; break;
         case 'youtube': promptYouTube(roomIds, refreshAfterSend); break;
         case 'library': window.location.hash = '#/content'; break;
+        case 'live-stream': startLiveStream(btn, refreshAfterSend); break;
       }
     });
   });
