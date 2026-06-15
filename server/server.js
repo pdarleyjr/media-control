@@ -226,6 +226,35 @@ app.get('/player/deck/:id', (req, res) => {
   });
 });
 
+// MBFD live stream OBS browser source. This is a tokenized player URL for the
+// managed virtual display named "Content for live stream". It bypasses manual
+// pairing while still using the normal player and device socket protocol.
+app.get('/player/live-stream', (req, res) => {
+  const { loadLiveStreamDisplay } = require('./lib/live-stream-display');
+  const display = loadLiveStreamDisplay(req.query.device_id, req.query.token);
+  if (!display) return res.status(404).type('text/plain').send('live stream display not found');
+  const playerHtmlPath = path.join(__dirname, 'player', 'index.html');
+  fs.readFile(playerHtmlPath, 'utf8', (err, html) => {
+    if (err) return res.status(500).type('text/plain').send('player HTML unavailable');
+    const reportingEnabled = String(process.env.PLAYER_DEBUG_REPORTING || 'on').toLowerCase() !== 'off';
+    const publicConfig = {
+      debugReporting: reportingEnabled,
+      managedDisplay: {
+        deviceId: display.id,
+        deviceToken: display.device_token,
+        deviceName: display.name,
+        serverUrl: `${req.protocol}://${req.get('host')}`,
+      },
+    };
+    const inject = '  <script>window.__playerConfig = ' + JSON.stringify(publicConfig).replace(/</g, '\\u003c') + ';</script>\n';
+    const modified = html.indexOf('<script src="/player/debug-overlay.js"') >= 0
+      ? html.replace('<script src="/player/debug-overlay.js"', inject + '  <script src="/player/debug-overlay.js"')
+      : html.replace('</head>', inject + '</head>');
+    res.type('html').setHeader('Cache-Control', 'no-cache');
+    res.send(modified);
+  });
+});
+
 // MBFD Media Control Studio — public slide-image serving. Under /player/* so it
 // inherits the Cloudflare-Access + CSP bypass: deck images load on unattended
 // displays with no OTP, exactly like the deck HTML itself. ONLY rows that are
@@ -623,6 +652,7 @@ app.use('/api/downloads', requireAuth, resolveTenancy, require('./routes/downloa
 // scope by req.workspaceId and reuse the existing device-content-push path.
 app.use('/api/scenes', requireAuth, resolveTenancy, require('./routes/scenes'));
 app.use('/api/broadcast', requireAuth, resolveTenancy, require('./routes/broadcast'));
+app.use('/api/live-stream', requireAuth, resolveTenancy, requireWorkspaceWrite, require('./routes/live-stream'));
 app.use('/api/activity', requireAuth, resolveTenancy, require('./routes/activity'));
 app.use('/api/white-label', requireAuth, resolveTenancy, require('./routes/white-label'));
 // Kiosk render is public (accessed by devices), CRUD is protected

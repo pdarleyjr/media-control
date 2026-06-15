@@ -368,9 +368,22 @@
       try { return JSON.parse(localStorage.getItem(PLAYLIST_CACHE_KEY) || '[]'); } catch { return []; }
     }
 
+    function applyManagedDisplayConfig() {
+      const managed = window.__playerConfig && window.__playerConfig.managedDisplay;
+      if (!managed || !managed.deviceId || !managed.deviceToken) return;
+      if (config.deviceId && config.deviceId !== managed.deviceId) savePlaylistCache([]);
+      config.serverUrl = managed.serverUrl || window.location.origin;
+      config.deviceId = managed.deviceId;
+      config.deviceToken = managed.deviceToken;
+      config.deviceName = managed.deviceName || 'Content for live stream';
+      config.paired = true;
+      saveConfig(config);
+    }
+
     // ==================== State ====================
     let socket = null;
     let config = getConfig();
+    applyManagedDisplayConfig();
     let playlist = [];
     let currentIndex = -1;
     let isPlaying = false;
