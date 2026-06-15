@@ -75,7 +75,8 @@ install_config() {
     install -m 0600 "${REPO_ROOT}/deploy/config.env.example" "${CONFIG_FILE}"
     sed -i "s/ADMIN_PIN=change-me/ADMIN_PIN=$(openssl rand -hex 3)/" "${CONFIG_FILE}" || true
   fi
-  chmod 0600 "${CONFIG_FILE}"
+  chgrp "${KIOSK_USER}" "${CONFIG_FILE}" 2>/dev/null || true
+  chmod 0640 "${CONFIG_FILE}"
 }
 
 build_apps() {
@@ -99,6 +100,10 @@ install_apps() {
   rsync -a --delete "${REPO_ROOT}/services/podium-agent/dist/" "${AGENT_DIR}/dist/"
   install -m 0644 "${REPO_ROOT}/services/podium-agent/package.json" "${AGENT_DIR}/package.json"
   chown -R "${KIOSK_USER}:${KIOSK_USER}" "${CONSOLE_DIR}"
+  if [[ -f "${CONSOLE_DIR}/chrome-sandbox" ]]; then
+    chown root:root "${CONSOLE_DIR}/chrome-sandbox"
+    chmod 4755 "${CONSOLE_DIR}/chrome-sandbox"
+  fi
 }
 
 install_services() {

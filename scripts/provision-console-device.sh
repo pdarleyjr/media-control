@@ -31,6 +31,7 @@ ENABLE_DEVTOOLS=${ENABLE_DEVTOOLS:-false}
 PODIUM_AGENT_PORT=${PODIUM_AGENT_PORT:-8755}
 EOF
 
-chmod 0600 "${CONFIG_FILE}"
+chgrp mbfdkiosk "${CONFIG_FILE}" 2>/dev/null || true
+chmod 0640 "${CONFIG_FILE}"
 echo "Wrote ${CONFIG_FILE}"
 echo "Admin PIN: ${ADMIN_PIN}"

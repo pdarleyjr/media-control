@@ -27,16 +27,15 @@
 - Docker daemon is reachable by `peter`.
 - General passwordless sudo is not available on the Kamrui. `sudo -n true` fails.
 - A narrow NOPASSWD rule exists for one MBFD Hub ownership command only.
-- Monday installation will need the sudo password typed once at the terminal or a temporary NOPASSWD install window.
+- Sudo credentials were provided during setup and used for installation; do not store them in repo files.
 
 ## Desktop and Display State
 
-- GDM/GNOME is active with a `gdm-autologin` Wayland session.
-- `display-manager` and `gdm3` are active.
+- GDM/GNOME was active before kiosk installation.
+- After installation, the default target is `multi-user.target` and `mbfd-console.service` owns the normal kiosk session.
 - DRM devices exist at `/dev/dri/card0` and `/dev/dri/renderD128`.
-- Display connectors reported disconnected during verification: `DP-1`, `HDMI-A-1`, `HDMI-A-2`.
-- No touchscreen-like input device was detected in `/proc/bus/input/devices` during verification.
-- Interpretation: the UPERFECT HDMI and USB touch cable were not connected, or not detected, at the time of access verification.
+- Touchscreen confirmed after hardware connection: `Silicon Integrated System Co. SiS HID Touch Controller`.
+- `mbfd-console.service` is active and running Cage/Electron on tty1.
 
 ## Network
 
@@ -49,9 +48,8 @@
 
 ## Tooling
 
-- Node.js: `v18.19.1` currently installed.
-- npm: `9.2.0`.
-- pnpm: not installed at verification time.
+- Node.js was upgraded by the installer from `v18.19.1` to Node 22 LTS.
+- pnpm 9.12.0 was enabled through Corepack by the installer.
 - Git: `2.43.0`.
 - Docker: installed and daemon reachable.
 - Docker Compose: installed.
@@ -60,18 +58,12 @@
 
 ## GitHub Readiness
 
-- HTTPS and SSH private repo access were not configured on the Kamrui at verification time.
-- `git ls-remote` to the private repo over HTTPS reached GitHub but failed for credentials.
-- `git ls-remote` over SSH failed with `Permission denied (publickey)`.
-- Monday options:
-  - clone using a temporary GitHub token,
-  - install a deploy key,
-  - use `gh auth login`, or
-  - copy a release bundle over SSH/Tailscale.
+- Private GitHub clone access was not required for the first install because the branch archive was copied over Tailscale SSH from the development workstation.
 
 ## Installation Readiness
 
-- Ready for SSH inspection and user-level work.
-- Ready for Docker work that does not need private GitHub credentials.
-- Not fully ready for unattended install until sudo/password, GitHub repo access, Node 22/pnpm, and display/touch hardware are addressed.
-- The installer will upgrade/install Node 22 and pnpm automatically once sudo is available.
+- Installed under `/home/peter/media-control-console-kiosk` and `/opt/mbfd/media-control-console`.
+- `mbfd-podium-agent.service` is active.
+- `mbfd-console.service` is active and running Cage/Electron.
+- Touchscreen hardware is detected.
+- Console config is installed at `/etc/mbfd/media-control-console/config.env` with group-readable access for `mbfdkiosk`.
