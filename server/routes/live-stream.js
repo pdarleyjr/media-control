@@ -7,7 +7,6 @@ const { buildLiveStreamPlayerUrl, ensureLiveStreamDisplay } = require('../lib/li
 const { logActivity, getClientIp } = require('../services/activity');
 const { audit } = require('../lib/audit');
 
-const MEDIA_CONTROL_SCENE = 'MEDIA_CONTROL_FULL';
 const HOLDING_SCENE = 'HOLDING_SLIDE';
 
 function requestBaseUrl(req) {
@@ -109,21 +108,24 @@ router.post('/start', async (req, res) => {
     });
   }
 
-  const scene = await callDirector('POST', `/scene/${encodeURIComponent(MEDIA_CONTROL_SCENE)}`);
-  if (!scene.ok || (scene.data && scene.data.obs && scene.data.obs.ok === false)) {
+  const mode = await callDirector('POST', '/mode/auto');
+  if (!mode.ok) {
     return res.status(502).json({
       ...payload,
       success: false,
-      error: scene.data && scene.data.obs && scene.data.obs.message || scene.message || 'AI Director could not switch OBS to Media Control',
-      scene,
+      error: mode.message || 'AI Director could not enter auto mode',
+      mode,
     });
   }
+
+  const statusAfterMode = await callDirector('GET', '/status');
 
   const stream = await callDirector('POST', '/stream/start');
   const status = await callDirector('GET', '/status');
   const streamStarted = !!(stream.ok && stream.data && stream.data.ok !== false);
   logLiveStreamAction(req, 'start', {
-    scene: MEDIA_CONTROL_SCENE,
+    mode: 'auto',
+    selected_scene: statusAfterMode.data && statusAfterMode.data.current_scene || null,
     stream_started: streamStarted,
     stream_message: stream.data && stream.data.message || stream.message || null,
   });
@@ -132,7 +134,8 @@ router.post('/start', async (req, res) => {
     ...payload,
     success: true,
     program_url: programUrl,
-    scene,
+    mode,
+    selected_scene: statusAfterMode,
     stream_start: stream,
     stream_started: streamStarted,
     ai_director_status: status,
