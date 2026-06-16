@@ -9,7 +9,7 @@ const config = require('../config');
 const { createLimiter } = require('../lib/socket-rate-limit');
 const { audit } = require('../lib/audit');
 const { getSocketIp } = require('../services/activity');
-const { liveStreamDeviceId, liveStreamProgramState } = require('../lib/live-stream-display');
+const { liveStreamDeviceId, liveStreamProgramState, markLiveContentChanged } = require('../lib/live-stream-display');
 
 // Phase 2.3: workspace-scoped socket rooms + per-command permission gates.
 // Replaces the previous flat dashboardNs.emit broadcast (which leaked every
@@ -121,6 +121,7 @@ module.exports = function setupDashboardSocket(io) {
     if (!state.content_active) return;
     const liveDeviceId = liveStreamDeviceId(device.workspace_id);
     if (liveDeviceId === deviceId) return;
+    markLiveContentChanged(liveDeviceId);
     const room = deviceNs.adapter.rooms.get(liveDeviceId);
     if (room && room.size > 0) {
       deviceNs.to(liveDeviceId).emit('device:command', { type, payload });
