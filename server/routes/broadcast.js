@@ -20,7 +20,30 @@ const { logActivity, getClientIp } = require('../services/activity');
 const { deckPlayerUrl } = require('../lib/deck-player-url');
 const { assertRemoteUrlSafe } = require('../lib/ssrf-policy');
 const { audit } = require('../lib/audit');
-const { ensureLiveStreamDisplay, liveStreamProgramState } = require('../lib/live-stream-display');
+const { ensureLiveStreamDisplay, liveStreamProgramState, markLiveContentChanged } = require('../lib/live-stream-display');
+
+async function notifyLiveProgramUrl(req, url) {
+  const base = String(process.env.AI_DIRECTOR_URL || 'http://host.docker.internal:8766').replace(/\/+$/, '');
+  if (!url || !base) return { ok: false, message: 'missing url or AI Director URL' };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Number(process.env.AI_DIRECTOR_TIMEOUT_MS) || 8000);
+  try {
+    const response = await fetch(`${base}/media-control/program-url`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+    return { ok: response.ok, status: response.status, data };
+  } catch (e) {
+    return { ok: false, message: e && e.message || 'AI Director update failed' };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 router.post('/', async (req, res) => {
   if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
@@ -71,6 +94,7 @@ router.post('/', async (req, res) => {
   if (include_live_stream === true) {
     const liveStreamDisplay = ensureLiveStreamDisplay({ workspaceId: req.workspaceId, userId: req.user.id });
     if (liveStreamDisplay && !requested.includes(liveStreamDisplay.id)) requested.push(liveStreamDisplay.id);
+    if (liveStreamDisplay) markLiveContentChanged(liveStreamDisplay.id);
   }
   const targets = [];
   for (const id of requested) {
@@ -142,8 +166,12 @@ router.post('/', async (req, res) => {
     },
   });
 
-  const liveStream = include_live_stream === true ? liveStreamProgramState(req.workspaceId) : null;
-  res.json({ success: true, sent, failed, total: targets.length, live_stream: liveStream });
+  let liveProgram = null;
+  if (include_live_stream === true) {
+    liveProgram = liveStreamProgramState(req.workspaceId);
+    if (effectiveRemoteUrl) liveProgram.program_url_update = await notifyLiveProgramUrl(req, effectiveRemoteUrl);
+  }
+  res.json({ success: true, sent, failed, total: targets.length, live_stream: liveProgram });
 });
 
 module.exports = router;

@@ -7,6 +7,13 @@ const LIVE_STREAM_DEVICE_PREFIX = 'live-stream-program-';
 const DEFAULT_LIVE_STREAM_DISPLAY_NAME = 'Content for live stream';
 const DEFAULT_LIVE_STREAM_NOTES = 'Managed by Media Control for OBS/PeerTube live-stream program output.';
 
+const liveContentChangeAt = new Map();
+
+function markLiveContentChanged(deviceId) {
+  if (!deviceId) return;
+  liveContentChangeAt.set(String(deviceId), Date.now() / 1000);
+}
+
 function liveStreamDeviceId(workspaceId) {
   if (!workspaceId) throw new Error('workspaceId is required');
   const hash = crypto.createHash('sha256').update(String(workspaceId)).digest('hex').slice(0, 24);
@@ -102,6 +109,7 @@ function liveStreamProgramState(workspaceId) {
     playlist_id: row.playlist_id || null,
     playlist_status: row.playlist_status || null,
     item_count: Array.isArray(items) ? items.length : 0,
+    last_content_change_at: liveContentChangeAt.get(String(row.id)) || null,
   };
 }
 
@@ -126,4 +134,5 @@ module.exports = {
   liveStreamProgramState,
   liveStreamProgramStateAnyWorkspace,
   loadLiveStreamDisplay,
+  markLiveContentChanged,
 };
