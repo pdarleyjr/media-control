@@ -63,7 +63,8 @@ async function callDirector(method, path, body) {
 
 function logLiveStreamAction(req, action, details) {
   try {
-    logActivity(req.user.id, `POST /api/live-stream/${action}`, details, null, getClientIp(req), req.workspaceId);
+    const detailsText = details == null ? null : (typeof details === 'string' ? details : JSON.stringify(details));
+    logActivity(req.user.id, `POST /api/live-stream/${action}`, detailsText, null, getClientIp(req), req.workspaceId);
   } catch (_) {}
   try {
     audit({
