@@ -20,6 +20,7 @@ const { logActivity, getClientIp } = require('../services/activity');
 const { deckPlayerUrl } = require('../lib/deck-player-url');
 const { assertRemoteUrlSafe } = require('../lib/ssrf-policy');
 const { audit } = require('../lib/audit');
+const { ensureLiveStreamDisplay, liveStreamProgramState } = require('../lib/live-stream-display');
 
 router.post('/', async (req, res) => {
   if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
@@ -28,7 +29,7 @@ router.post('/', async (req, res) => {
   }
 
   const {
-    device_ids, content_id, remote_url, playlist_id, presentation_id, fit_mode, confirm_all,
+    device_ids, content_id, remote_url, playlist_id, presentation_id, fit_mode, confirm_all, include_live_stream,
   } = req.body || {};
 
   // Validate the target selection.
@@ -67,6 +68,11 @@ router.post('/', async (req, res) => {
 
   // De-dupe and confirm every target device is in this workspace.
   const requested = [...new Set(device_ids.map(String))];
+  let liveStreamDisplay = null;
+  if (include_live_stream === true) {
+    liveStreamDisplay = ensureLiveStreamDisplay({ workspaceId: req.workspaceId, userId: req.user.id });
+    if (liveStreamDisplay && !requested.includes(liveStreamDisplay.id)) requested.push(liveStreamDisplay.id);
+  }
   const targets = [];
   for (const id of requested) {
     const device = db.prepare('SELECT id, workspace_id FROM devices WHERE id = ?').get(id);
@@ -137,7 +143,8 @@ router.post('/', async (req, res) => {
     },
   });
 
-  res.json({ success: true, sent, failed, total: targets.length });
+  const liveStream = include_live_stream === true ? liveStreamProgramState(req.workspaceId) : null;
+  res.json({ success: true, sent, failed, total: targets.length, live_stream: liveStream });
 });
 
 module.exports = router;

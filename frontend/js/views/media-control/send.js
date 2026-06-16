@@ -20,6 +20,36 @@ import { confirmDialog } from '../../components/confirm.js';
 // YouTube URL detection (same regex as present.js).
 const YT_RE = /^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//i;
 
+let livePromptCache = { at: 0, active: false };
+
+async function shouldOfferLiveStreamInclusion() {
+  const now = Date.now();
+  if (now - livePromptCache.at < 5000) return livePromptCache.active;
+  try {
+    const status = await api.liveStream.status();
+    const director = status && status.ai_director && status.ai_director.data;
+    livePromptCache = {
+      at: now,
+      active: !!(director && director.stream_active),
+    };
+    return livePromptCache.active;
+  } catch (_) {
+    livePromptCache = { at: now, active: false };
+    return false;
+  }
+}
+
+async function confirmLiveStreamInclusion(label) {
+  if (!await shouldOfferLiveStreamInclusion()) return false;
+  return confirmDialog({
+    title: t('mc.send.live_include_title'),
+    message: t('mc.send.live_include_msg', { label }),
+    confirmLabel: t('mc.send.live_include_ok'),
+    cancelLabel: t('mc.send.live_include_no'),
+    tone: 'default',
+  });
+}
+
 /**
  * Shared success toast for a broadcast result: "{label} on N displays" with an
  * "M offline" tail when some targets were unreachable. Used by sendToDisplays
@@ -83,9 +113,10 @@ export async function sendToDisplays(source, targetIds, label = t('mc.tile.conte
     delete resolvedSource.remote_url;   // replace the URL with the content id
   }
 
+  const includeLiveStream = await confirmLiveStreamInclusion(label);
   let result;
   try {
-    result = await api.broadcast({ ...resolvedSource, device_ids: targetIds });
+    result = await api.broadcast({ ...resolvedSource, device_ids: targetIds, include_live_stream: includeLiveStream });
   } catch (e) {
     showToast(e?.message || t('mc.send.failed'), 'error');
     return false;
@@ -101,7 +132,7 @@ export async function sendToDisplays(source, targetIds, label = t('mc.tile.conte
     });
     if (!ok) return false;
     try {
-      result = await api.broadcast({ ...resolvedSource, device_ids: targetIds, confirm_all: true });
+      result = await api.broadcast({ ...resolvedSource, device_ids: targetIds, confirm_all: true, include_live_stream: includeLiveStream });
     } catch (e) {
       showToast(e?.message || t('mc.send.failed'), 'error');
       return false;
