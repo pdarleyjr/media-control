@@ -23,6 +23,7 @@ import { t } from '../../i18n.js';
 import { showToast } from '../../components/toast.js';
 import { sendCommand } from '../../socket.js';
 import { api } from '../../api.js';
+import { confirmDialog } from '../../components/confirm.js';
 import { COMMAND_TYPES } from '../../player-protocol.js';
 import { sendToDisplays } from './send.js';
 
@@ -41,6 +42,8 @@ const ICON_SCREEN = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none"
 const ICON_YT = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="3"></rect><polygon points="10 9 16 12 10 15 10 9" fill="currentColor" stroke="none"></polygon></svg>';
 const ICON_LIB = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>';
 const ICON_LIVE = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 8.5a7 7 0 0 1 14 0"></path><path d="M8 8.5a4 4 0 0 1 8 0"></path><circle cx="12" cy="8.5" r="1.7" fill="currentColor" stroke="none"></circle><rect x="4" y="12" width="16" height="8" rx="2"></rect><path d="M10 15.5l4 2-4 2v-4z" fill="currentColor" stroke="none"></path></svg>';
+const ICON_LIVE_CLEAR = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="14" height="10" rx="2"></rect><path d="M19 9l2-2M21 9l-2-2"></path><line x1="5" y1="19" x2="15" y2="19"></line></svg>';
+const ICON_LIVE_STOP = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><rect x="9" y="9" width="6" height="6" rx="1" fill="currentColor" stroke="none"></rect></svg>';
 const ICON_ERROR = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v5M12 16h.01"></path></svg>';
 const ICON_SPIN = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9"></path></svg>';
 
@@ -165,6 +168,48 @@ async function startLiveStream(btn, refreshAfterSend) {
   }
 }
 
+async function clearLiveContent(btn, refreshAfterSend) {
+  if (!btn || btn.disabled) return;
+  const oldHtml = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `${ICON_SPIN}<span class="mc-cmd-btn-label">${esc(t('mc.cmd.live_clearing'))}</span>`;
+  try {
+    await api.liveStream.clearContent();
+    showToast(t('mc.cmd.live_cleared'), 'success');
+    if (typeof refreshAfterSend === 'function') refreshAfterSend();
+  } catch (e) {
+    showToast(e?.message || t('mc.cmd.live_clear_failed'), 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = oldHtml;
+  }
+}
+
+async function stopLiveStream(btn, refreshAfterSend) {
+  if (!btn || btn.disabled) return;
+  const ok = await confirmDialog({
+    title: t('mc.cmd.live_stop_title'),
+    message: t('mc.cmd.live_stop_msg'),
+    confirmLabel: t('mc.cmd.live_stop_ok'),
+    cancelLabel: t('mc.cmd.cancel'),
+    tone: 'danger',
+  });
+  if (!ok) return;
+  const oldHtml = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `${ICON_SPIN}<span class="mc-cmd-btn-label">${esc(t('mc.cmd.live_stopping'))}</span>`;
+  try {
+    await api.liveStream.stop();
+    showToast(t('mc.cmd.live_stopped'), 'success');
+    if (typeof refreshAfterSend === 'function') refreshAfterSend();
+  } catch (e) {
+    showToast(e?.message || t('mc.cmd.live_stop_failed'), 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = oldHtml;
+  }
+}
+
 /**
  * Render the classroom quick-action command bar into `container`.
  *
@@ -220,6 +265,14 @@ export function renderCommandBar(container, { roomIds, blankIds, refreshAfterSen
           <button type="button" class="mc-btn mc-cmd-btn mc-cmd-live" data-launch="live-stream">
             ${ICON_LIVE}
             <span class="mc-cmd-btn-label">${esc(t('mc.cmd.live_stream'))}</span>
+          </button>
+          <button type="button" class="mc-btn mc-cmd-btn mc-btn-secondary" data-launch="live-clear">
+            ${ICON_LIVE_CLEAR}
+            <span class="mc-cmd-btn-label">${esc(t('mc.cmd.live_clear'))}</span>
+          </button>
+          <button type="button" class="mc-btn mc-cmd-btn mc-cmd-live-stop" data-launch="live-stop">
+            ${ICON_LIVE_STOP}
+            <span class="mc-cmd-btn-label">${esc(t('mc.cmd.live_stop'))}</span>
           </button>
         </div>
       </div>
@@ -278,6 +331,8 @@ export function renderCommandBar(container, { roomIds, blankIds, refreshAfterSen
         case 'youtube': promptYouTube(roomIds, refreshAfterSend); break;
         case 'library': window.location.hash = '#/content'; break;
         case 'live-stream': startLiveStream(btn, refreshAfterSend); break;
+        case 'live-clear': clearLiveContent(btn, refreshAfterSend); break;
+        case 'live-stop': stopLiveStream(btn, refreshAfterSend); break;
       }
     });
   });

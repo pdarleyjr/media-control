@@ -3,7 +3,8 @@
 const express = require('express');
 const router = express.Router();
 const config = require('../config');
-const { buildLiveStreamPlayerUrl, ensureLiveStreamDisplay, liveStreamProgramState } = require('../lib/live-stream-display');
+const { db } = require('../db/database');
+const { buildLiveStreamPlayerUrl, ensureLiveStreamDisplay, liveStreamProgramState, markLiveContentChanged } = require('../lib/live-stream-display');
 const { logActivity, getClientIp } = require('../services/activity');
 const { audit } = require('../lib/audit');
 
@@ -152,6 +153,7 @@ router.post('/stop', async (req, res) => {
   if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
   const payload = displayPayload(req);
   const stream = await callDirector('POST', '/stream/stop');
+  const mode = await callDirector('POST', '/mode/manual');
   const scene = await callDirector('POST', `/scene/${encodeURIComponent(HOLDING_SCENE)}`);
   logLiveStreamAction(req, 'stop', {
     stream_message: stream.data && stream.data.message || stream.message || null,
@@ -161,8 +163,44 @@ router.post('/stop', async (req, res) => {
     ...payload,
     success: stream.ok,
     stream_stop: stream,
+    mode,
     scene,
   });
+});
+
+router.post('/clear-content', async (req, res) => {
+  if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
+  const display = ensureLiveStreamDisplay({ workspaceId: req.workspaceId, userId: req.user.id });
+  let cleared = false;
+  try {
+    const device = db.prepare('SELECT playlist_id FROM devices WHERE id = ?').get(display.id);
+    if (device && device.playlist_id) {
+      db.prepare("UPDATE playlists SET status = 'published', published_snapshot = '[]', updated_at = strftime('%s','now') WHERE id = ?")
+        .run(device.playlist_id);
+      cleared = true;
+    }
+    try {
+      const queue = require('../lib/command-queue');
+      const { buildPlaylistPayload } = require('../ws/deviceSocket');
+      const io = req.app.get('io');
+      const deviceNs = io && io.of('/device');
+      if (deviceNs && typeof queue.queueOrEmitPlaylistUpdate === 'function') {
+        queue.queueOrEmitPlaylistUpdate(deviceNs, display.id, buildPlaylistPayload);
+      }
+    } catch (_) {}
+  } catch (e) {
+    return res.status(500).json({ success: false, error: e.message || 'Failed to clear live content' });
+  }
+  markLiveContentChanged(display.id);
+  const refresh = await callDirector('POST', '/media-control/refresh');
+  logLiveStreamAction(req, 'clear-content', { cleared });
+  res.json({ success: true, cleared, refresh, program_state: liveStreamProgramState(req.workspaceId) });
+});
+
+router.post('/refresh', async (req, res) => {
+  if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
+  const refresh = await callDirector('POST', '/media-control/refresh');
+  res.json({ success: !!refresh.ok, refresh });
 });
 
 module.exports = router;

@@ -288,6 +288,8 @@ export const api = {
     status: () => request('/live-stream/status'),
     start: () => request('/live-stream/start', { method: 'POST' }),
     stop: () => request('/live-stream/stop', { method: 'POST' }),
+    clearContent: () => request('/live-stream/clear-content', { method: 'POST' }),
+    refresh: () => request('/live-stream/refresh', { method: 'POST' }),
   },
 
   // ==================== MBFD Media Control Studio: Presentations ====================

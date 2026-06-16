@@ -22,16 +22,16 @@ const { assertRemoteUrlSafe } = require('../lib/ssrf-policy');
 const { audit } = require('../lib/audit');
 const { ensureLiveStreamDisplay, liveStreamProgramState, markLiveContentChanged } = require('../lib/live-stream-display');
 
-async function notifyLiveProgramUrl(req, url) {
+async function callDirector(path, body) {
   const base = String(process.env.AI_DIRECTOR_URL || 'http://host.docker.internal:8766').replace(/\/+$/, '');
-  if (!url || !base) return { ok: false, message: 'missing url or AI Director URL' };
+  if (!base) return { ok: false, message: 'AI Director URL not configured' };
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), Number(process.env.AI_DIRECTOR_TIMEOUT_MS) || 8000);
   try {
-    const response = await fetch(`${base}/media-control/program-url`, {
+    const response = await fetch(`${base}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url }),
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     });
     const text = await response.text();
@@ -39,7 +39,7 @@ async function notifyLiveProgramUrl(req, url) {
     try { data = text ? JSON.parse(text) : null; } catch { data = text; }
     return { ok: response.ok, status: response.status, data };
   } catch (e) {
-    return { ok: false, message: e && e.message || 'AI Director update failed' };
+    return { ok: false, message: e && e.message || 'AI Director request failed' };
   } finally {
     clearTimeout(timeout);
   }
@@ -169,7 +169,7 @@ router.post('/', async (req, res) => {
   let liveProgram = null;
   if (include_live_stream === true) {
     liveProgram = liveStreamProgramState(req.workspaceId);
-    if (effectiveRemoteUrl) liveProgram.program_url_update = await notifyLiveProgramUrl(req, effectiveRemoteUrl);
+    liveProgram.program_refresh = await callDirector('/media-control/refresh');
   }
   res.json({ success: true, sent, failed, total: targets.length, live_stream: liveProgram });
 });
