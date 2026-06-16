@@ -9,6 +9,7 @@ const config = require('../config');
 const { createLimiter } = require('../lib/socket-rate-limit');
 const { audit } = require('../lib/audit');
 const { getSocketIp } = require('../services/activity');
+const { liveStreamDeviceId, liveStreamProgramState } = require('../lib/live-stream-display');
 
 // Phase 2.3: workspace-scoped socket rooms + per-command permission gates.
 // Replaces the previous flat dashboardNs.emit broadcast (which leaked every
@@ -110,6 +111,25 @@ module.exports = function setupDashboardSocket(io) {
       sourceIp: getSocketIp(socket),
       details,
     });
+  }
+
+  function mirrorTransportToLiveStream(deviceNs, deviceId, type, payload) {
+    if (type !== 'transport') return;
+    const device = db.prepare('SELECT workspace_id FROM devices WHERE id = ?').get(deviceId);
+    if (!device || !device.workspace_id) return;
+    const state = liveStreamProgramState(device.workspace_id);
+    if (!state.content_active) return;
+    const liveDeviceId = liveStreamDeviceId(device.workspace_id);
+    if (liveDeviceId === deviceId) return;
+    const room = deviceNs.adapter.rooms.get(liveDeviceId);
+    if (room && room.size > 0) {
+      deviceNs.to(liveDeviceId).emit('device:command', { type, payload });
+      return;
+    }
+    try {
+      const queue = require('../lib/command-queue');
+      queue.queueCommand(liveDeviceId, type, payload);
+    } catch (_) {}
   }
 
   // Build a per-socket registrar for rate-limited control events. Each accepted
@@ -277,6 +297,7 @@ module.exports = function setupDashboardSocket(io) {
       const room = deviceNs.adapter.rooms.get(device_id);
       if (room && room.size > 0) {
         deviceNs.to(device_id).emit('device:command', { type, payload });
+        mirrorTransportToLiveStream(deviceNs, device_id, type, payload);
         console.log(`Command delivered to device ${device_id}: ${type}`);
         if (typeof ack === 'function') ack({ delivered: true });
         auditDeviceControl(socket, 'display.command', device_id, { type, payload, delivered: true });
@@ -301,6 +322,7 @@ module.exports = function setupDashboardSocket(io) {
         queued = queue.queueCommand(device_id, type, payload);
       } catch (e) { /* command-queue module absent; fall through to lost */ }
       console.log(`Command for offline device ${device_id}: ${type} (queued=${queued})`);
+      mirrorTransportToLiveStream(deviceNs, device_id, type, payload);
       if (typeof ack === 'function') ack({ delivered: false, queued, reason: 'offline' });
       auditDeviceControl(socket, 'display.command', device_id, { type, payload, delivered: false, queued });
     });

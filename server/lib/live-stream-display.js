@@ -78,11 +78,52 @@ function buildLiveStreamPlayerUrl({ baseUrl, display }) {
   return `${base}/player/live-stream?${qs.toString()}`;
 }
 
+function liveStreamProgramState(workspaceId) {
+  if (!workspaceId) return { configured: false, content_active: false };
+  const id = liveStreamDeviceId(workspaceId);
+  const row = db.prepare(`
+    SELECT d.id, d.name, d.workspace_id, d.playlist_id,
+           p.id AS playlist_id, p.status AS playlist_status, p.published_snapshot
+    FROM devices d
+    LEFT JOIN playlists p ON p.id = d.playlist_id
+    WHERE d.id = ?
+  `).get(id);
+  if (!row) return { configured: false, content_active: false, display_id: id };
+  let items = [];
+  try { items = row.published_snapshot ? JSON.parse(row.published_snapshot) : []; } catch { items = []; }
+  const contentActive = row.playlist_status === 'published'
+    && Array.isArray(items)
+    && items.some(item => item && (item.content_id || item.widget_id || item.remote_url || item.filepath));
+  return {
+    configured: true,
+    content_active: contentActive,
+    display_id: row.id,
+    display_name: row.name,
+    playlist_id: row.playlist_id || null,
+    playlist_status: row.playlist_status || null,
+    item_count: Array.isArray(items) ? items.length : 0,
+  };
+}
+
+function liveStreamProgramStateAnyWorkspace() {
+  const row = db.prepare(`
+    SELECT workspace_id
+    FROM devices
+    WHERE id LIKE ?
+    ORDER BY updated_at DESC
+    LIMIT 1
+  `).get(`${LIVE_STREAM_DEVICE_PREFIX}%`);
+  if (!row || !row.workspace_id) return { configured: false, content_active: false };
+  return liveStreamProgramState(row.workspace_id);
+}
+
 module.exports = {
   DEFAULT_LIVE_STREAM_DISPLAY_NAME,
   LIVE_STREAM_DEVICE_PREFIX,
   buildLiveStreamPlayerUrl,
   ensureLiveStreamDisplay,
   liveStreamDeviceId,
+  liveStreamProgramState,
+  liveStreamProgramStateAnyWorkspace,
   loadLiveStreamDisplay,
 };

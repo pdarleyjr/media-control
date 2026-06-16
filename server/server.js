@@ -255,6 +255,12 @@ app.get('/player/live-stream', (req, res) => {
   });
 });
 
+app.get('/api/live-stream/local/program-state', (req, res) => {
+  const { liveStreamProgramStateAnyWorkspace } = require('./lib/live-stream-display');
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(liveStreamProgramStateAnyWorkspace());
+});
+
 // MBFD Media Control Studio — public slide-image serving. Under /player/* so it
 // inherits the Cloudflare-Access + CSP bypass: deck images load on unattended
 // displays with no OTP, exactly like the deck HTML itself. ONLY rows that are

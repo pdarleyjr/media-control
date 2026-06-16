@@ -3,7 +3,7 @@
 const express = require('express');
 const router = express.Router();
 const config = require('../config');
-const { buildLiveStreamPlayerUrl, ensureLiveStreamDisplay } = require('../lib/live-stream-display');
+const { buildLiveStreamPlayerUrl, ensureLiveStreamDisplay, liveStreamProgramState } = require('../lib/live-stream-display');
 const { logActivity, getClientIp } = require('../services/activity');
 const { audit } = require('../lib/audit');
 
@@ -92,6 +92,11 @@ router.get('/status', async (req, res) => {
 router.get('/display', (req, res) => {
   if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
   res.json(displayPayload(req));
+});
+
+router.get('/program-state', (req, res) => {
+  if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
+  res.json(liveStreamProgramState(req.workspaceId));
 });
 
 router.post('/start', async (req, res) => {
