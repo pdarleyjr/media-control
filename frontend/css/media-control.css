@@ -862,6 +862,13 @@
   border-color: rgba(220, 38, 38, 0.48);
 }
 .mc-control .mc-cmd-live-busy { opacity: 0.82; }
+.mc-control .mc-cmd-live-stop {
+  background: var(--mc-live-text, #B91C1C);
+  border-color: #991B1B;
+  color: #fff;
+  font-weight: 800;
+}
+.mc-control .mc-cmd-live-stop:hover:not(:disabled) { background: #991B1B; }
 /* Blank-all active = the room is dark. Amber (--warning-dim) clears WCAG AA for
    white text; paired with the label flip + banner so it is never colour-only. */
 .mc-control .mc-cmd-blank.mc-cmd-blank-active {
