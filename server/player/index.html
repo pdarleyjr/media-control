@@ -437,7 +437,10 @@
     }
     function postTransportToFrames(action) {
       let posted = false;
-      document.querySelectorAll('#playerContainer iframe, .zone iframe, .wall-stage iframe').forEach((f) => {
+      // Post to every iframe on the page (controllable deck/doc/pdf/grid players
+      // live in #playerContainer, .zone, .wall-stage, or a PIP host). Querying
+      // all iframes is safe: non-controllable frames simply ignore the message.
+      document.querySelectorAll('iframe').forEach((f) => {
         try {
           if (f.contentWindow) {
             f.contentWindow.postMessage({ __mc_transport: action }, '*');
@@ -1564,9 +1567,15 @@
       function doTransport(action) {
         try {
           const item = playlist[currentIndex] || {};
-          if (item.remote_url || isDocumentMime(item.mime_type)) {
-            postTransportToFrames(action);
-            return;
+          // A controllable embedded player (deck / Office doc / PDF / grid) owns
+          // its own page/slide navigation. Forward the action to ANY iframe on
+          // the page. If at least one iframe received it, do NOT also advance the
+          // outer playlist (that would reload the iframe back to slide 1).
+          const isControllableEmbed = item.remote_url || isDocumentMime(item.mime_type)
+            || document.querySelector('#playerContainer iframe, .zone iframe, .wall-stage iframe');
+          if (isControllableEmbed) {
+            const posted = postTransportToFrames(action);
+            if (posted) return;
           }
           const len = playlist.length || 0;
           const video = document.querySelector('#playerContainer video');
