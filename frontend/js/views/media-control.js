@@ -322,27 +322,21 @@ function stopPreviewRefresh() {
 // Content-send target scope: the displays on the stage (the current selection).
 // Dragging a source onto a single card always targets just that card.
 function roomDisplayIds() {
-  return displayState.getAll().filter(d => !wallMemberIds.has(d.id)).map(d => d.id);
+  return displayState.getAll().filter(d => !wallMemberIds.has(d.id) && !isLiveStreamTargetId(d.id)).map(d => d.id);
 }
 function onlineRoomDisplayIds() {
-  return displayState.getAll().filter(d => d.online && !wallMemberIds.has(d.id)).map(d => d.id);
+  return displayState.getAll().filter(d => d.online && !wallMemberIds.has(d.id) && !isLiveStreamTargetId(d.id)).map(d => d.id);
+}
+// The managed "Content for live stream" target must NEVER be an implicit
+// broadcast target. It only receives content when the instructor explicitly
+// answers "include in live stream" on a send (server adds it to that one
+// broadcast). Excluding it here stops a stage-background "send to all on stage"
+// drop from leaking classroom content onto the live program.
+function isLiveStreamTargetId(id) {
+  return typeof id === 'string' && id.startsWith('live-stream-program-');
 }
 function effectiveTargets() {
-  return selectedIds;
-}
-
-async function ensureLiveStreamDisplayOnStage() {
-  try {
-    const result = await api.liveStream.display();
-    const id = result && result.display && result.display.id;
-    if (!id || selectedIds.includes(id) || wallMemberIds.has(id)) return;
-    selectedIds = [...selectedIds, id];
-    persistSelection();
-    await displayState.refresh().catch(() => {});
-  } catch (_) {
-    // Optional integration: the console still works if the director target
-    // cannot be created, so never block initial render.
-  }
+  return selectedIds.filter((id) => !isLiveStreamTargetId(id));
 }
 
 // Physical screen-power scope for Blank all: EVERY controllable display PLUS
@@ -845,7 +839,12 @@ export async function render() {
     selectedIds = onlineIds.length > 0 ? onlineIds : roomDisplayIds();
     persistSelection();
   }
-  await ensureLiveStreamDisplayOnStage();
+  // Drop any previously-persisted managed live-stream target from the stage
+  // selection so it is never an implicit broadcast target.
+  if (selectedIds.some(isLiveStreamTargetId)) {
+    selectedIds = selectedIds.filter((id) => !isLiveStreamTargetId(id));
+    persistSelection();
+  }
   pruneSelection();
   paintStage();
   paintToolbox();
