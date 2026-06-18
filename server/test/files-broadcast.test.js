@@ -226,14 +226,14 @@ test('reads with req.user.email — a spoofed X-OpenWebUI-User-Email header is i
 // Media-type gate (415) — only image/video may be broadcast as bytes
 // ══════════════════════════════════════════════════════════════════════════════
 
-test('rejects a non-image/video file with 415 (no insert, no push)', async () => {
-  mockFetch(() => binaryResp(200, Buffer.from('PDF!'), 'application/pdf'));
+test('rejects an unsupported file type with 415 (no insert, no push)', async () => {
+  mockFetch(() => binaryResp(200, Buffer.from('TXT!'), 'text/plain'));
   patchFs();
   const db = makeDb({ devices: DEVS, total: 5 });
   const se = makeSceneEngine();
   const router = loadRouter({ db, sceneEngine: se });
   const handler = getHandler(router, 'POST', '/broadcast');
-  const req = makeReq({ body: { path: 'docs/brief.pdf', device_ids: ['d1'] } });
+  const req = makeReq({ body: { path: 'notes/brief.txt', device_ids: ['d1'] } });
   const res = makeRes();
   await handler(req, res);
 
