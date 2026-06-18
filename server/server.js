@@ -255,6 +255,35 @@ app.get('/player/live-stream', (req, res) => {
   });
 });
 
+// Managed tokenized player for fixed room integrations. This keeps the normal
+// /player pairing flow unchanged while allowing a room-specific wrapper to
+// bypass manual pairing for known displays using their existing device token.
+app.get('/player/managed', (req, res) => {
+  const { loadManagedDisplay } = require('./lib/managed-player-display');
+  const display = loadManagedDisplay(req.query.device_id, req.query.token);
+  if (!display) return res.status(404).type('text/plain').send('managed display not found');
+  const playerHtmlPath = path.join(__dirname, 'player', 'index.html');
+  fs.readFile(playerHtmlPath, 'utf8', (err, html) => {
+    if (err) return res.status(500).type('text/plain').send('player HTML unavailable');
+    const reportingEnabled = String(process.env.PLAYER_DEBUG_REPORTING || 'on').toLowerCase() !== 'off';
+    const publicConfig = {
+      debugReporting: reportingEnabled,
+      managedDisplay: {
+        deviceId: display.id,
+        deviceToken: display.device_token,
+        deviceName: display.name,
+        serverUrl: `${req.protocol}://${req.get('host')}`,
+      },
+    };
+    const inject = '  <script>window.__playerConfig = ' + JSON.stringify(publicConfig).replace(/</g, '\\u003c') + ';</script>\n';
+    const modified = html.indexOf('<script src="/player/debug-overlay.js"') >= 0
+      ? html.replace('<script src="/player/debug-overlay.js"', inject + '  <script src="/player/debug-overlay.js"')
+      : html.replace('</head>', inject + '</head>');
+    res.type('html').setHeader('Cache-Control', 'no-cache');
+    res.send(modified);
+  });
+});
+
 app.get('/api/live-stream/local/program-state', (req, res) => {
   const { liveStreamProgramStateAnyWorkspace } = require('./lib/live-stream-display');
   res.setHeader('Cache-Control', 'no-store');
