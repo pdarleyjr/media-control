@@ -549,6 +549,12 @@ app.use('/api/contact', require('./routes/contact'));
 app.use('/api/player-debug', rateLimit(60000, 10));
 app.use('/api/player-debug', require('./routes/player-debug'));
 
+// Physical classroom console bootstrap. This route intentionally does not use
+// normal user login; it mints a dashboard JWT for the trusted podium device so
+// the room boots directly into Guest and can switch profiles from the header.
+app.use('/api/console', rateLimit(60000, 60));
+app.use('/api/console', require('./routes/console'));
+
 
 // Screenshot route (before protected routes - needs custom auth for img tags)
 const { verifyToken } = require('./middleware/auth');
@@ -715,7 +721,7 @@ function updateFrontendHash() {
       // Command Center is split into feature modules; include them in the
       // frontend hash so inspector/routing hotfixes force active browsers to
       // reload instead of mixing new modules with stale cached dependencies.
-      'css/media-control.css', 'js/views/media-control.js',
+      'css/media-control.css', 'css/console.css', 'js/views/media-control.js',
       'js/views/media-control/command-bar.js', 'js/views/media-control/inspector.js',
       'js/views/media-control/routing-picker.js', 'js/views/media-control/stage.js',
       'js/views/media-control/toolbox.js', 'js/views/media-control/send.js',

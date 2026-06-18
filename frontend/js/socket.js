@@ -5,6 +5,10 @@ const listeners = new Map();
 
 export function connectSocket() {
   const token = localStorage.getItem('token');
+  if (dashboardSocket) {
+    try { dashboardSocket.disconnect(); } catch { /* reconnect best-effort */ }
+    dashboardSocket = null;
+  }
   dashboardSocket = io('/dashboard', {
     auth: { token },
     // Prefer WebSocket; fall back to polling on the same connect attempt.
@@ -70,6 +74,12 @@ export function connectSocket() {
   });
 
   return dashboardSocket;
+}
+
+export function disconnectSocket() {
+  if (!dashboardSocket) return;
+  try { dashboardSocket.disconnect(); } catch { /* disconnect best-effort */ }
+  dashboardSocket = null;
 }
 
 function updateConnectionStatus(connected) {
