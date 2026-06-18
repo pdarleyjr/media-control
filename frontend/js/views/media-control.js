@@ -768,7 +768,7 @@ export async function render() {
                 <a class="mc-section-link" href="#/walls">${esc(t('mc.section.video_walls'))}</a>
               </div>
               <!-- Multiview builder mounts here, directly ABOVE the stage (whose
-                   first card is Classroom 1 Video Wall 1). Toggled by the command
+                   first wall card is the classroom primary wall). Toggled by the command
                    bar's "Multiview" button; lazy-mounted on first open. -->
               <div id="mc-multiview" class="mc-multiview-host" hidden></div>
               <section id="mc-stage" class="mc-stage" aria-label="${esc(t('mc.section.displays'))}"></section>
@@ -850,8 +850,8 @@ export async function render() {
   paintToolbox();
   paintSummary();
 
-  // Multiview builder — mounted directly above the stage (whose first card is
-  // Classroom 1 Video Wall 1) and toggled by the command bar's "Multiview"
+  // Multiview builder — mounted directly above the stage (whose first wall
+  // card is the classroom primary wall) and toggled by the command bar's "Multiview"
   // button. Lazy-mounted on first open so the heavier composer only renders
   // when asked for. Sends ride the same routing picker + funnel as every tile.
   const mvHost = document.getElementById('mc-multiview');

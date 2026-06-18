@@ -219,6 +219,7 @@ function renderWallCard(wall) {
         <div class="device-card-meta">
           <div class="meta-item">${(wall.devices || []).length} ${(wall.devices || []).length === 1 ? 'tile' : 'tiles'}</div>
           <div class="meta-item" style="color:${onlineCount === (wall.devices || []).length ? 'var(--success)' : 'var(--text-muted)'}">${onlineCount} online</div>
+          ${wall.is_locked ? `<div class="meta-item" style="color:#f59e0b">Locked</div>` : ''}
         </div>
       </div>
     </div>

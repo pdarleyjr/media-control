@@ -66,11 +66,12 @@ async function renderList(container) {
             }).join('')}
           </div>
         </div>
-        <div class="content-item-body">
-          <div class="content-item-name">${w.name}</div>
-          <div class="content-item-size">${t('wall.grid_summary', { cols: w.grid_cols, rows: w.grid_rows, n: w.devices?.length || 0 })}</div>
-        </div>
-      </div>
+    <div class="content-item-body">
+      <div class="content-item-name">${w.name}</div>
+      <div class="content-item-size">${t('wall.grid_summary', { cols: w.grid_cols, rows: w.grid_rows, n: w.devices?.length || 0 })}</div>
+      ${w.is_locked ? `<div style="margin-top:6px;display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;background:rgba(245,158,11,.14);color:#f59e0b;font-size:11px;font-weight:700;letter-spacing:.02em">Locked</div>` : ''}
+    </div>
+  </div>
     `).join('');
   } catch (err) { showToast(err.message, 'error'); }
 }
@@ -87,6 +88,7 @@ async function renderWallEditor(container, wallId) {
       api.getPlaylists(),
     ]);
   } catch { container.innerHTML = `<div class="empty-state"><h3>${t('wall.not_found')}</h3></div>`; return; }
+  const locked = !!wall.is_locked;
 
   // Local state — server-roundtripped on Save. Backfill from grid math when
   // canvas_* columns aren't populated (fresh walls or pre-canvas walls).
@@ -169,6 +171,7 @@ async function renderWallEditor(container, wallId) {
     <div class="page-header" style="margin-bottom:12px">
       <h1 style="display:flex;align-items:center;gap:10px">
         <span id="wallTitleText">${esc(wall.name)}</span>
+        ${locked ? `<span style="display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;background:rgba(245,158,11,.14);color:#f59e0b;font-size:11px;font-weight:700;letter-spacing:.02em" title="This wall keeps its member set fixed">Locked</span>` : ''}
         <button class="btn btn-sm" id="renameWallBtn" title="Rename wall" style="padding:2px 8px;font-size:12px">✎</button>
       </h1>
       <div style="display:flex;gap:8px">
@@ -176,9 +179,17 @@ async function renderWallEditor(container, wallId) {
         <button class="btn btn-sm" id="autoArrangeBtn" title="Lay out screens in a grid using the columns/rows/bezel below">Auto-arrange</button>
         <button class="btn btn-sm" id="fitPlayerBtn" title="Snap the player rect to the bounding box of all screens">Fit player to screens</button>
         <button class="btn btn-sm" id="saveLayoutBtn" disabled>Save layout</button>
-        <button class="btn btn-danger btn-sm" id="deleteWallBtn">${t('wall.delete_wall')}</button>
+        <button class="btn btn-danger btn-sm" id="deleteWallBtn" ${locked ? 'disabled title="Locked walls cannot be deleted"' : ''}>${t('wall.delete_wall')}</button>
       </div>
     </div>
+    ${locked ? `
+      <div class="info-card" style="margin:0 0 12px;padding:12px 14px;border-left:4px solid #f59e0b;background:rgba(245,158,11,.06)">
+        <strong style="display:block;margin-bottom:4px">This wall is locked</strong>
+        <div style="font-size:12px;color:var(--text-secondary);line-height:1.5">
+          The member displays are fixed for the classroom. You can still tune geometry, playlists, and span/split playback, but adding or removing screens is disabled.
+        </div>
+      </div>
+    ` : ''}
 
     <div style="display:flex;gap:16px;align-items:flex-start">
       <div style="flex:1;min-width:0">
@@ -218,7 +229,7 @@ async function renderWallEditor(container, wallId) {
       <div style="width:260px;flex-shrink:0">
         <div id="selectionPanel" class="wall-selection-panel" style="margin-bottom:14px"></div>
         <h3 style="font-size:14px;margin-bottom:6px">${t('wall.available_displays')}</h3>
-        <p style="color:var(--text-muted);font-size:11px;margin:0 0 8px">Drag onto the canvas to add. Use the ✕ on a tile to remove.</p>
+        <p style="color:var(--text-muted);font-size:11px;margin:0 0 8px">${locked ? 'Membership is locked on this wall.' : 'Drag onto the canvas to add. Use the ✕ on a tile to remove.'}</p>
         <div id="availableDevices" style="min-height:60px;padding:6px;border:1px dashed var(--border);border-radius:8px"></div>
         <div class="info-card" style="margin-top:14px;padding:10px;font-size:12px;line-height:1.55">
           <strong style="font-size:12px">How it works</strong>
@@ -375,16 +386,18 @@ async function renderWallEditor(container, wallId) {
           <span style="font-size:10px;color:var(--text-muted)">${Math.round(s.w)}×${Math.round(s.h)}</span>
         </div>
       </div>
-      <button class="wall-screen-remove" title="Remove from wall">×</button>
+      ${locked ? '' : '<button class="wall-screen-remove" title="Remove from wall">×</button>'}
       ${resizeHandlesHtml()}
     `;
-    el.querySelector('.wall-screen-remove').addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      screens = screens.filter(x => x.device_id !== s.device_id);
-      if (selected?.type === 'screen' && selected.device_id === s.device_id) selected = null;
-      markDirty();
-      renderAll();
-    });
+    if (!locked) {
+      el.querySelector('.wall-screen-remove').addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        screens = screens.filter(x => x.device_id !== s.device_id);
+        if (selected?.type === 'screen' && selected.device_id === s.device_id) selected = null;
+        markDirty();
+        renderAll();
+      });
+    }
     el.addEventListener('pointerdown', (ev) => {
       if (ev.target.closest('.wall-screen-remove')) return;
       selectScreen(s.device_id);
@@ -443,6 +456,14 @@ async function renderWallEditor(container, wallId) {
 
   function renderSidebar() {
     const sidebar = document.getElementById('availableDevices');
+    if (locked) {
+      sidebar.innerHTML = `
+        <div style="padding:12px;text-align:center;color:var(--text-muted);font-size:12px;line-height:1.5">
+          This wall is locked to its current displays.
+          <br>Unlock it before adding or swapping screens.
+        </div>`;
+      return;
+    }
     const unassigned = getUnassigned();
     sidebar.innerHTML = unassigned.length
       ? unassigned.map(d => `
@@ -562,6 +583,7 @@ async function renderWallEditor(container, wallId) {
   viewport.addEventListener('dragover', (e) => { e.preventDefault(); });
   viewport.addEventListener('drop', (e) => {
     e.preventDefault();
+    if (locked) return;
     let data;
     try { data = JSON.parse(e.dataTransfer.getData('text/plain') || '{}'); } catch { return; }
     if (data.type !== 'sidebar-device' || !data.device_id) return;
@@ -728,6 +750,7 @@ async function renderWallEditor(container, wallId) {
   });
 
   document.getElementById('deleteWallBtn').addEventListener('click', async () => {
+    if (locked) return;
     if (!confirm(`Delete wall "${wall.name}"? This returns all displays to ungrouped.`)) return;
     try {
       await API(`/walls/${wallId}`, { method: 'DELETE' });

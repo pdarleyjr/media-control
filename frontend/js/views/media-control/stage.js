@@ -86,6 +86,10 @@ function statusBadge(s) {
   </span>`;
 }
 
+function wallLockBadge() {
+  return `<span class="mc-wall-locked" title="This wall keeps its member set fixed" style="margin-left:8px;padding:2px 8px;border-radius:999px;background:rgba(245,158,11,.16);color:#f59e0b;font-size:11px;font-weight:700;letter-spacing:.02em">Locked</span>`;
+}
+
 // Real aspect from geometry; fall back to 16/9 when unknown.
 function aspectRatio(width, height) {
   if (width && height && width > 0 && height > 0) return `${width}/${height}`;
@@ -304,6 +308,7 @@ function wallCard(wall, byId) {
     <section class="mc-card mc-wall mc-wall-mode-${mode}" data-wall-id="${esc(wall.id)}" data-layout-mode="${mode}" style="--mc-cols:${cols}; --mc-cell-ar:${cellAr}" aria-label="${esc(t('mc.wall.aria', { name: wall.name }))}">
       <div class="mc-wall-head">
         <span class="mc-wall-title">${esc(wall.name)}</span>
+        ${wall.is_locked ? wallLockBadge() : ''}
         <span class="mc-wall-sub">${esc(tn('mc.wall.screens', slots))}</span>
         <div class="mc-wall-template" role="group" aria-label="${esc(t('mc.wall.template_aria'))}">
           <button type="button" class="mc-wall-tpl${mode === 'span' ? ' is-active' : ''}" data-wall-mode="span" data-wall-id="${esc(wall.id)}" aria-pressed="${mode === 'span'}" title="${esc(t('mc.wall.span_hint'))}">${esc(t('mc.wall.tpl_span'))}</button>
@@ -378,6 +383,7 @@ function wallSplitGroup(wall, byId) {
     <section class="mc-card mc-wall mc-wall-split mc-wall-split-one" data-wall-id="${esc(wall.id)}" data-layout-mode="split" style="--mc-cols:${cols}" aria-label="${esc(t('mc.wall.aria', { name: wall.name }))}">
       <div class="mc-wall-head">
         <span class="mc-wall-title">${esc(wall.name)}</span>
+        ${wall.is_locked ? wallLockBadge() : ''}
         <span class="mc-wall-sub">${esc(t('mc.wall.split_badge'))}</span>
         <div class="mc-wall-template" role="group" aria-label="${esc(t('mc.wall.template_aria'))}">
           <button type="button" class="mc-wall-tpl" data-wall-mode="span" data-wall-id="${esc(wall.id)}" aria-pressed="false" title="${esc(t('mc.wall.span_hint'))}">${esc(t('mc.wall.tpl_span'))}</button>
@@ -405,6 +411,7 @@ function wallSplitGroup(wall, byId) {
     <section class="mc-card mc-wall mc-wall-split" data-wall-id="${esc(wall.id)}" data-layout-mode="split" style="--mc-cols:${cols}" aria-label="${esc(t('mc.wall.aria', { name: wall.name }))}">
       <div class="mc-wall-head">
         <span class="mc-wall-title">${esc(wall.name)}</span>
+        ${wall.is_locked ? wallLockBadge() : ''}
         <span class="mc-wall-sub">${esc(t('mc.wall.split_badge'))}</span>
         <div class="mc-wall-template" role="group" aria-label="${esc(t('mc.wall.template_aria'))}">
           <button type="button" class="mc-wall-tpl" data-wall-mode="span" data-wall-id="${esc(wall.id)}" aria-pressed="false" title="${esc(t('mc.wall.span_hint'))}">${esc(t('mc.wall.tpl_span'))}</button>

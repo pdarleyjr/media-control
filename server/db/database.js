@@ -161,6 +161,9 @@ const migrations = [
   // already supported via player_width/player_height; this completes the spec
   // for "12372x2160 @ 59.94 Hz" wall config that admins can dictate manually.
   "ALTER TABLE video_walls ADD COLUMN refresh_rate_hz REAL",
+  // Wall lock flag: keep a classroom wall's member set fixed while preserving
+  // its span/split playback and layout editing controls.
+  "ALTER TABLE video_walls ADD COLUMN is_locked INTEGER NOT NULL DEFAULT 0",
   // 2026-05-28: stable slot identifiers on layout_zones so playlist_items.zone_id
   // can survive a layout duplicate / template-apply. Existing zones get NULL;
   // new layouts (and the editor's "Save" path) should populate slot_key with a
@@ -207,6 +210,22 @@ const migrations = [
 for (const sql of migrations) {
   try { db.exec(sql); } catch (e) { /* already exists */ }
 }
+
+// Classroom 1 walls are fixed to the room's five-display appliance layout.
+// Keep the classroom wall membership locked on startup even if the DB was
+// restored from an older snapshot that predates the lock column.
+try {
+  db.prepare(`
+    UPDATE video_walls
+    SET is_locked = 1
+    WHERE name IN (
+      'Classroom 1 Video Wall 1',
+      'Classroom 1 Video Wall 2',
+      'Classroom 1 Primary Wall',
+      'Classroom 1 Secondary Wall'
+    )
+  `).run();
+} catch (e) { /* ignore */ }
 
 // Fix assignments table: make content_id nullable (SQLite requires table rebuild)
 try {

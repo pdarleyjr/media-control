@@ -238,6 +238,9 @@ CREATE TABLE IF NOT EXISTS video_walls (
     screen_w_mm     REAL NOT NULL DEFAULT 400,
     screen_h_mm     REAL NOT NULL DEFAULT 225,
     sync_mode       TEXT NOT NULL DEFAULT 'leader',
+    -- Locked walls keep their member set fixed while still allowing content
+    -- routing, span/split mode changes, and per-device layout calibration.
+    is_locked       INTEGER NOT NULL DEFAULT 0,
     leader_device_id TEXT REFERENCES devices(id) ON DELETE SET NULL,
     content_id      TEXT REFERENCES content(id) ON DELETE SET NULL,
     playlist_id     TEXT REFERENCES playlists(id) ON DELETE SET NULL,

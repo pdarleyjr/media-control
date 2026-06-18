@@ -108,7 +108,7 @@ router.post('/', (req, res) => {
     return res.status(403).json({ error: 'Read-only access' });
   }
 
-  const { name, grid_cols, grid_rows, bezel_h_mm, bezel_v_mm, playlist_id } = req.body;
+  const { name, grid_cols, grid_rows, bezel_h_mm, bezel_v_mm, playlist_id, is_locked } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
 
   if (playlist_id) {
@@ -121,10 +121,10 @@ router.post('/', (req, res) => {
 
   const id = uuidv4();
   db.prepare(`
-    INSERT INTO video_walls (id, user_id, workspace_id, name, grid_cols, grid_rows, bezel_h_mm, bezel_v_mm, playlist_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO video_walls (id, user_id, workspace_id, name, grid_cols, grid_rows, bezel_h_mm, bezel_v_mm, playlist_id, is_locked)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(id, req.user.id, req.workspaceId, name, grid_cols || 2, grid_rows || 1,
-    bezel_h_mm || 0, bezel_v_mm || 0, playlist_id || null);
+    bezel_h_mm || 0, bezel_v_mm || 0, playlist_id || null, is_locked ? 1 : 0);
 
   const wall = loadWallWithDevices(id);
   notifyDashboards(req, req.workspaceId);
@@ -165,6 +165,7 @@ router.put('/:id', requireWallWrite, (req, res) => {
     // 2026-06-04: Span/Split template. 'span' = one source stretched across all
     // screens (wall_config); 'split' = each member screen plays independently.
     'layout_mode',
+    'is_locked',
     // 2026-05-28: wall-level refresh_rate_hz override (informational on the player,
     // surfaced in payload.wall_config.refresh_rate_hz so future native players can pick
     // an exact display mode on Fire TV / Android).
@@ -208,6 +209,9 @@ router.put('/:id', requireWallWrite, (req, res) => {
 // Delete wall — clear playlists + wall_id on every former member (matches
 // group-dissolve semantics: leaving the wall returns devices to ungrouped).
 router.delete('/:id', requireWallWrite, (req, res) => {
+  if (req.wall.is_locked) {
+    return res.status(423).json({ error: 'Wall is locked' });
+  }
   const wallWorkspaceId = req.wall.workspace_id; // capture before the DELETE
   const members = db.prepare('SELECT device_id FROM video_wall_devices WHERE wall_id = ?').all(req.params.id);
   const tx = db.transaction(() => {
@@ -249,6 +253,9 @@ router.put('/:id/devices', requireWallWrite, (req, res) => {
   const previousIds = new Set(previous.map(p => p.device_id));
   const incomingIds = new Set(devices.map(d => d.device_id));
   const removedIds = [...previousIds].filter(id => !incomingIds.has(id));
+  if (wall.is_locked && (previousIds.size !== incomingIds.size || removedIds.length > 0)) {
+    return res.status(423).json({ error: 'Wall is locked' });
+  }
 
   const tx = db.transaction(() => {
     db.prepare('DELETE FROM video_wall_devices WHERE wall_id = ?').run(req.params.id);

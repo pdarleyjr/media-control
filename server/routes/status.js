@@ -398,7 +398,31 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
     for (const w of (data.video_walls || [])) {
       const newId = uuid.v4();
       idMap.walls[w.id] = newId;
-      db.prepare(`INSERT INTO video_walls (id, user_id, name, grid_cols, grid_rows, bezel_h_mm, bezel_v_mm, screen_w_mm, screen_h_mm, sync_mode, content_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(newId, userId, w.name, w.grid_cols, w.grid_rows, w.bezel_h_mm || 0, w.bezel_v_mm || 0, w.screen_w_mm || 400, w.screen_h_mm || 225, w.sync_mode || 'leader', w.content_id ? (idMap.content[w.content_id] || null) : null, w.created_at || Math.floor(Date.now() / 1000));
+      db.prepare(`INSERT INTO video_walls (id, user_id, workspace_id, name, grid_cols, grid_rows, bezel_h_mm, bezel_v_mm, screen_w_mm, screen_h_mm, sync_mode, layout_mode, leader_device_id, content_id, playlist_id, player_x, player_y, player_width, player_height, refresh_rate_hz, is_locked, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(
+          newId,
+          userId,
+          workspaceId,
+          w.name,
+          w.grid_cols,
+          w.grid_rows,
+          w.bezel_h_mm || 0,
+          w.bezel_v_mm || 0,
+          w.screen_w_mm || 400,
+          w.screen_h_mm || 225,
+          w.sync_mode || 'leader',
+          w.layout_mode || 'span',
+          w.leader_device_id ? (idMap.devices[w.leader_device_id] || null) : null,
+          w.content_id ? (idMap.content[w.content_id] || null) : null,
+          w.playlist_id ? (idMap.playlists[w.playlist_id] || null) : null,
+          w.player_x ?? null,
+          w.player_y ?? null,
+          w.player_width ?? null,
+          w.player_height ?? null,
+          w.refresh_rate_hz ?? null,
+          w.is_locked ? 1 : 0,
+          w.created_at || Math.floor(Date.now() / 1000),
+        );
       stats.video_walls++;
     }
     for (const wd of (data.video_wall_devices || [])) {
