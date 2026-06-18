@@ -10,6 +10,7 @@ const sceneEngine = require('../services/scene-engine');
 const { logActivity, getClientIp } = require('../services/activity');
 const { resolveUploadMime } = require('../middleware/upload');
 const { isDocThumbnailMime, kickDocThumbnail } = require('../lib/doc-thumbnail');
+const { resolveBroadcastTargets } = require('../lib/broadcast-targets');
 
 // MBFD Media Control Studio — Files (Nextcloud per-user raw-FS) API.
 //
@@ -148,17 +149,12 @@ router.post('/broadcast', async (req, res) => {
     return res.status(400).json({ error: 'device_ids must be a non-empty array' });
   }
 
-  // De-dupe and confirm every target device is in this workspace (broadcast.js:42-51).
+  // De-dupe and confirm target devices are in this workspace. Missing IDs are
+  // stale browser selections; skip them so valid targets still receive content.
   const requested = [...new Set(device_ids.map(String))];
-  const targets = [];
-  for (const id of requested) {
-    const device = db.prepare('SELECT id, workspace_id FROM devices WHERE id = ?').get(id);
-    if (!device) return res.status(404).json({ error: `Device ${id} not found` });
-    if (device.workspace_id !== req.workspaceId) {
-      return res.status(403).json({ error: `Device ${id} is not in this workspace` });
-    }
-    targets.push(id);
-  }
+  const resolvedTargets = resolveBroadcastTargets({ db, requestedIds: requested, workspaceId: req.workspaceId });
+  if (!resolvedTargets.ok) return res.status(resolvedTargets.status).json(resolvedTargets.body);
+  const targets = resolvedTargets.targets;
 
   // Confirmation gate when targeting ALL displays in the workspace (broadcast.js:54-60).
   const totalInWorkspace = db.prepare(
@@ -216,7 +212,7 @@ router.post('/broadcast', async (req, res) => {
   const source = { content_id: id, fit_mode: typeof fit_mode === 'string' ? fit_mode : null };
   const io = req.app.get('io');
   let sent = 0;
-  const failed = [];
+  const failed = resolvedTargets.missing.slice();
   for (const deviceId of targets) {
     const ok = sceneEngine.pushSourceToDevice(io, deviceId, source, {
       workspaceId: req.workspaceId,
@@ -230,14 +226,14 @@ router.post('/broadcast', async (req, res) => {
     logActivity(
       req.user.id,
       'POST /api/files/broadcast',
-      `broadcast nextcloud:${relPath} (content:${id}) to ${sent}/${targets.length} display(s)${targetingAll ? ' (ALL)' : ''}`,
+      `broadcast nextcloud:${relPath} (content:${id}) to ${sent}/${requested.length} display(s)${targetingAll ? ' (ALL)' : ''}`,
       null,
       getClientIp(req),
       req.workspaceId
     );
   } catch (e) { /* logging best-effort */ }
 
-  res.json({ success: true, content_id: id, sent, failed, total: targets.length });
+  res.json({ success: true, content_id: id, sent, failed, total: requested.length });
 });
 
 module.exports = router;

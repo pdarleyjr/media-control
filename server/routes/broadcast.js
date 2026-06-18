@@ -21,6 +21,7 @@ const { deckPlayerUrl } = require('../lib/deck-player-url');
 const { assertRemoteUrlSafe } = require('../lib/ssrf-policy');
 const { audit } = require('../lib/audit');
 const { ensureLiveStreamDisplay, liveStreamProgramState, markLiveContentChanged } = require('../lib/live-stream-display');
+const { resolveBroadcastTargets } = require('../lib/broadcast-targets');
 
 async function callDirector(path, body) {
   const base = String(process.env.AI_DIRECTOR_URL || 'http://host.docker.internal:8766').replace(/\/+$/, '');
@@ -96,15 +97,9 @@ router.post('/', async (req, res) => {
     if (liveStreamDisplay && !requested.includes(liveStreamDisplay.id)) requested.push(liveStreamDisplay.id);
     if (liveStreamDisplay) markLiveContentChanged(liveStreamDisplay.id);
   }
-  const targets = [];
-  for (const id of requested) {
-    const device = db.prepare('SELECT id, workspace_id FROM devices WHERE id = ?').get(id);
-    if (!device) return res.status(404).json({ error: `Device ${id} not found` });
-    if (device.workspace_id !== req.workspaceId) {
-      return res.status(403).json({ error: `Device ${id} is not in this workspace` });
-    }
-    targets.push(id);
-  }
+  const resolvedTargets = resolveBroadcastTargets({ db, requestedIds: requested, workspaceId: req.workspaceId });
+  if (!resolvedTargets.ok) return res.status(resolvedTargets.status).json(resolvedTargets.body);
+  const targets = resolvedTargets.targets;
 
   // Confirmation gate when targeting ALL displays in the workspace.
   const totalInWorkspace = db.prepare(
@@ -119,7 +114,7 @@ router.post('/', async (req, res) => {
   const io = req.app.get('io');
 
   let sent = 0;
-  const failed = [];
+  const failed = resolvedTargets.missing.slice();
   for (const deviceId of targets) {
     const ok = sceneEngine.pushSourceToDevice(io, deviceId, source, {
       workspaceId: req.workspaceId,
@@ -138,7 +133,7 @@ router.post('/', async (req, res) => {
     logActivity(
       req.user.id,
       'POST /api/broadcast',
-      `broadcast ${sourceLabel} to ${sent}/${targets.length} display(s)${targetingAll ? ' (ALL)' : ''}`,
+      `broadcast ${sourceLabel} to ${sent}/${requested.length} display(s)${targetingAll ? ' (ALL)' : ''}`,
       null,
       getClientIp(req),
       req.workspaceId
@@ -160,7 +155,8 @@ router.post('/', async (req, res) => {
       playlist_id: playlist_id || null,
       presentation_id: presentation_id || null,
       remote_url: effectiveRemoteUrl || null,
-      target_count: targets.length,
+      target_count: requested.length,
+      missing_device_count: resolvedTargets.missing.length,
       sent,
       targeting_all: targetingAll,
     },
@@ -171,7 +167,7 @@ router.post('/', async (req, res) => {
     liveProgram = liveStreamProgramState(req.workspaceId);
     liveProgram.program_refresh = await callDirector('/media-control/refresh');
   }
-  res.json({ success: true, sent, failed, total: targets.length, live_stream: liveProgram });
+  res.json({ success: true, sent, failed, total: requested.length, live_stream: liveProgram });
 });
 
 module.exports = router;

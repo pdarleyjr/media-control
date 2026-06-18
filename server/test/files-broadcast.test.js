@@ -262,7 +262,7 @@ test('returns 403 for a device in a different workspace (no fetch, no push)', as
   assert.equal(se._pushes.length, 0);
 });
 
-test('returns 404 for an unknown device id', async () => {
+test('returns 404 when every target device id is stale', async () => {
   mockFetch(() => { throw new Error('fetch must not run'); });
   patchFs();
   const db = makeDb({ devices: DEVS, total: 5 });
@@ -272,6 +272,29 @@ test('returns 404 for an unknown device id', async () => {
   const res = makeRes();
   await handler(req, res);
   assert.equal(res._status, 404);
+  assert.equal(res._json.error, 'No valid target devices found');
+  assert.deepEqual(res._json.missing, ['nope']);
+  assert.equal(fetchCalls.length, 0, 'target validation runs BEFORE reading NC');
+});
+
+test('skips stale target ids and broadcasts to valid displays', async () => {
+  mockFetch(() => binaryResp(200, Buffer.from([0x89, 0x50, 0x4e, 0x47]), 'image/png'));
+  patchFs();
+  const db = makeDb({ devices: DEVS, total: 5 });
+  const se = makeSceneEngine();
+  const router = loadRouter({ db, sceneEngine: se });
+  const handler = getHandler(router, 'POST', '/broadcast');
+  const req = makeReq({ body: { path: 'ok.png', device_ids: ['nope', 'd1'] } });
+  const res = makeRes();
+  await handler(req, res);
+
+  assert.equal(res._status, 200);
+  assert.equal(res._json.success, true);
+  assert.equal(res._json.sent, 1);
+  assert.equal(res._json.total, 2);
+  assert.deepEqual(res._json.failed, ['nope']);
+  assert.equal(se._pushes.length, 1);
+  assert.equal(se._pushes[0].deviceId, 'd1');
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
