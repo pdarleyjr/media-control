@@ -44,8 +44,30 @@ function withLocalAssetUrls(assignments, baseUrl) {
   });
 }
 
+function publicContentAssetUrl(item) {
+  if (!item || typeof item !== 'object') return '';
+  if (!item.content_id || item.remote_url || item.asset_url) return '';
+  return `/api/content/${encodeURIComponent(String(item.content_id))}/file`;
+}
+
+function withPublicContentAssetUrls(assignments) {
+  if (!Array.isArray(assignments)) return assignments;
+
+  return assignments.map((item) => {
+    const assetUrl = publicContentAssetUrl(item);
+    if (!assetUrl) return item;
+    return {
+      ...item,
+      asset_url: assetUrl,
+      asset_proxy: 'public-content',
+    };
+  });
+}
+
 module.exports = {
   normalizeBaseUrl,
   localContentBaseUrlFromEnv,
   withLocalAssetUrls,
+  publicContentAssetUrl,
+  withPublicContentAssetUrls,
 };

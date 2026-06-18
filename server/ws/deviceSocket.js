@@ -6,7 +6,7 @@ const { db, pruneTelemetry, pruneScreenshots } = require('../db/database');
 const config = require('../config');
 const heartbeat = require('../services/heartbeat');
 const commandQueue = require('../lib/command-queue');
-const { withLocalAssetUrls } = require('../lib/local-asset-url');
+const { withLocalAssetUrls, withPublicContentAssetUrls } = require('../lib/local-asset-url');
 const { profileForDevice, isClassroom1Smartboard } = require('../lib/display-profiles');
 const whiteboardState = require('../services/whiteboard-state');
 
@@ -98,7 +98,9 @@ function buildPlaylistPayload(deviceId) {
       }
     } catch (e) { /* live backfill is best-effort */ }
 
-    assignments = withLocalAssetUrls(assignments, config.localContentBaseUrl);
+    assignments = withPublicContentAssetUrls(
+      withLocalAssetUrls(assignments, config.localContentBaseUrl)
+    );
   }
 
   let layout = null;

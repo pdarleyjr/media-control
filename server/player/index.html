@@ -1855,8 +1855,10 @@
 
       const newItems = data.assignments || [];
       applyDisplayProfile(data.display_profile || null);
-      // Build fingerprint from id + url + filename to detect any content change
-      const fingerprint = (items) => items.map(a => `${a.content_id || ''}|${a.widget_id || ''}|${a.remote_url || ''}|${a.filepath || ''}|${a.filename || ''}`).join(',');
+      // Build fingerprint from the fields that affect rendering. asset_url is
+      // included so a server-side routing fix forces stale cached players to
+      // accept the new playable URL instead of keeping a black media element.
+      const fingerprint = (items) => items.map(a => `${a.content_id || ''}|${a.widget_id || ''}|${a.asset_url || ''}|${a.remote_url || ''}|${a.filepath || ''}|${a.filename || ''}|${a.mime_type || ''}|${a.fit_mode || ''}`).join(',');
       const newFp = fingerprint(newItems);
       const oldFp = fingerprint(playlist);
 
@@ -1898,9 +1900,11 @@
       console.log('Playlist changed, updating');
       // Capture old state BEFORE mutating so continuity logic can find what was playing.
       const identityOf = (x) => x ? `${x.content_id || ''}|${x.widget_id || ''}|${x.remote_url || ''}|${x.filepath || ''}` : '';
+      const renderKeyOf = (x) => x ? `${identityOf(x)}|${x.asset_url || ''}|${x.mime_type || ''}|${x.fit_mode || ''}` : '';
       const oldPlaylist = playlist;
       const oldAnchorIdx = currentIndex;
       const oldAnchorId = identityOf(oldPlaylist[oldAnchorIdx]);
+      const oldAnchorRenderKey = renderKeyOf(oldPlaylist[oldAnchorIdx]);
 
       playlist = newItems;
       savePlaylistCache(playlist);
@@ -1914,14 +1918,20 @@
 
       document.getElementById('setupScreen').style.display = 'none';
 
-      // Continuity: if the playing item survives the update, keep playing it.
-      // Just retarget the index pointer - no re-render, no interrupt. It will
-      // advance naturally via onended -> nextItem.
+      // Continuity: if the playing item survives the update and its render
+      // inputs did not change, keep playing it. Wall changes or media URL
+      // changes must re-render immediately; otherwise cached solo playback can
+      // stay mounted after a device enters wall mode, or keep a broken URL.
       if (oldAnchorId && oldAnchorId !== '|||') {
         const stillThereIdx = playlist.findIndex(x => identityOf(x) === oldAnchorId);
         if (stillThereIdx !== -1) {
           currentIndex = stillThereIdx;
+          if (!wallChanged && oldAnchorRenderKey === renderKeyOf(playlist[stillThereIdx])) {
+            isPlaying = true;
+            return;
+          }
           isPlaying = true;
+          playCurrentItem();
           return;
         }
       }
@@ -1997,6 +2007,15 @@
     }
 
     // ==================== Content Rendering ====================
+    function contentSrcForItem(item) {
+      if (!item) return '';
+      if (item.asset_url) return item.asset_url;
+      if (item.remote_url) return item.remote_url;
+      if (item.content_id) return `${config.serverUrl}/api/content/${encodeURIComponent(item.content_id)}/file`;
+      if (item.filepath) return `${config.serverUrl}/uploads/content/${item.filepath}`;
+      return '';
+    }
+
     // Extract YouTube video ID from embed URL
     function extractVideoId(url) {
       try {
@@ -2267,7 +2286,7 @@
       const isPdf = !isWebpage && item.mime_type === 'application/pdf';
       const isOffice = !isWebpage && isOfficeMime(item.mime_type);
       const serverUrl = config.serverUrl;
-      const src = item.asset_url || remoteUrl || `${serverUrl}/uploads/content/${item.filepath}`;
+      const src = contentSrcForItem(item);
       // 2026-05-28: per-item fit_mode override. Null/undefined falls back to
       // 'fill' (wall) / 'contain' (solo). Validated server-side so any value
       // arriving here is a known CSS object-fit token.
@@ -2464,7 +2483,7 @@
         const isImage = assignment.mime_type?.startsWith('image/');
         const isPdf = assignment.mime_type === 'application/pdf';
         const isOffice = isOfficeMime(assignment.mime_type);
-        const src = assignment.asset_url || assignment.remote_url || `${config.serverUrl}/uploads/content/${assignment.filepath}`;
+        const src = contentSrcForItem(assignment);
 
         const isYoutubeZone = assignment.mime_type === 'video/youtube';
 
