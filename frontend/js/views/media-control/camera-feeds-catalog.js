@@ -63,8 +63,22 @@ function news(title, key) {
     url: `https://media.mbfdhub.com/player/hls.html?station=${key}&label=${encodeURIComponent(title)}`,
   };
 }
+function classroom(title, camera) {
+  return {
+    title,
+    url: `https://media.mbfdhub.com/player/classroom-camera.html?camera=${camera}`,
+  };
+}
 
 export const CAMERA_FEED_GROUPS = [
+  {
+    id: 'classroom',
+    nameKey: 'mc.cf.group.classroom',
+    feeds: [
+      classroom('Classroom · WyreStorm Camera', 1),
+      classroom('Classroom · Podium Camera', 2),
+    ],
+  },
   {
     id: 'news',
     nameKey: 'mc.cf.group.news',

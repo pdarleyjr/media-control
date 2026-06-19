@@ -1452,6 +1452,7 @@ export default {
   'mc.cf.feed_count_one': '{n} feed',
   'mc.cf.feed_count_other': '{n} feeds',
   'mc.cf.group.news': 'Live News',
+  'mc.cf.group.classroom': 'Classroom Cameras',
   'mc.cf.group.skyline': 'Traffic · Skyline · Causeways',
   'mc.cf.group.street': 'South Beach Streets',
   'mc.cf.group.beach': 'Beach Cams',

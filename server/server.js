@@ -364,6 +364,11 @@ app.get('/player/news-stream', async (req, res) => {
 });
 app.get('/player/hls-proxy', handleProxy);
 
+// Fixed classroom camera gateway. It exposes only the two MediaMTX paths used by
+// the P3 WyreStorm and Linux podium cameras, and rewrites HLS assets to HTTPS.
+const { handleClassroomCamera } = require('./lib/classroom-camera');
+app.get('/player/classroom-camera/:camera/*', handleClassroomCamera);
+
 // MBFD Media Control — server-side website screenshot (Website broadcasting).
 // Renders a third-party site with headless Chromium and serves a JPEG, so sites
 // that block framing (X-Frame-Options / CSP frame-ancestors) still display on

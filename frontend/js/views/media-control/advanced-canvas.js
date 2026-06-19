@@ -26,8 +26,8 @@ function dragSource(event) {
 
 function outputRect(output, topology) {
   return {
-    x: Number(output.x || 0) - Number(topology.origin_x || 0),
-    y: Number(output.y || 0) - Number(topology.origin_y || 0),
+    x: Number(output.x || 0),
+    y: Number(output.y || 0),
     width: Number(output.width || 1),
     height: Number(output.height || 1),
   };
@@ -85,21 +85,35 @@ function statusLabel(endpoint) {
   return endpoint.status === 'online' ? t('mc.canvas.online') : t('mc.canvas.offline');
 }
 
+function modeMeta(mode) {
+  return {
+    display: { icon: '1', title: 'Single TV', detail: 'Drop on the exact screen' },
+    primary: { icon: '3', title: 'Span Wall 1', detail: 'One image across 3 TVs' },
+    secondary: { icon: '2', title: 'Span Wall 2', detail: 'One image across 2 TVs' },
+    free: { icon: '+', title: 'Freeform', detail: 'Place and resize anywhere' },
+  }[mode];
+}
+
 function layerMarkup(layer, topology, selected) {
   const left = (layer.x / topology.width) * 100;
   const top = (layer.y / topology.height) * 100;
   const width = (layer.width / topology.width) * 100;
   const height = (layer.height / topology.height) * 100;
+  const sourceType = Object.keys(layer.source || {})[0] || t('mc.canvas.source');
   return `
     <div class="mc-canvas-layer${selected ? ' is-selected' : ''}"
          data-canvas-layer="${esc(layer.id)}"
          style="left:${left}%;top:${top}%;width:${width}%;height:${height}%;z-index:${layer.z_index || 0}">
       <div class="mc-canvas-layer-head" data-canvas-move="${esc(layer.id)}">
-        <span>${esc(layer.label || t('mc.canvas.layer'))}</span>
+        <span class="mc-canvas-layer-tally">LIVE</span>
+        <span class="mc-canvas-layer-name">${esc(layer.label || t('mc.canvas.layer'))}</span>
         <button type="button" data-canvas-remove="${esc(layer.id)}"
                 aria-label="${esc(t('mc.canvas.remove_layer'))}">&times;</button>
       </div>
-      <div class="mc-canvas-layer-source">${esc(Object.keys(layer.source || {})[0] || t('mc.canvas.source'))}</div>
+      <div class="mc-canvas-layer-source">
+        <span>${esc(sourceType.replaceAll('_', ' '))}</span>
+        <span>${Math.round(layer.width)} &times; ${Math.round(layer.height)}</span>
+      </div>
       <span class="mc-canvas-resize" data-canvas-resize="${esc(layer.id)}"
             aria-label="${esc(t('mc.canvas.resize_layer'))}"></span>
     </div>`;
@@ -107,14 +121,27 @@ function layerMarkup(layer, topology, selected) {
 
 function outputMarkup(output, topology, index) {
   const rect = outputRect(output, topology);
+  const wall = index < 3 ? 'WALL 1' : 'WALL 2';
   return `
-    <div class="mc-canvas-output" data-output-id="${esc(output.id)}"
+    <div class="mc-canvas-output${index === 3 ? ' is-wall-break' : ''}" data-output-id="${esc(output.id)}"
          style="left:${(rect.x / topology.width) * 100}%;top:${(rect.y / topology.height) * 100}%;
                 width:${(rect.width / topology.width) * 100}%;height:${(rect.height / topology.height) * 100}%">
-      <span class="mc-canvas-output-number">${index + 1}</span>
-      <span class="mc-canvas-output-name">${esc(output.name || output.slug || `${t('mc.canvas.output')} ${index + 1}`)}</span>
+      <span class="mc-canvas-output-number">TV ${index + 1}</span>
+      <span class="mc-canvas-output-wall">${wall}</span>
+      <span class="mc-canvas-output-name">${esc((output.name || output.slug || `${t('mc.canvas.output')} ${index + 1}`).replace('Classroom 1 - ', ''))}</span>
       <span class="mc-canvas-output-size">${Math.round(rect.width)} &times; ${Math.round(rect.height)}</span>
+      <span class="mc-canvas-output-drop">DROP HERE</span>
     </div>`;
+}
+
+function wallZoneMarkup(topology, wall, label) {
+  const rect = unionRects(wallOutputs(topology, wall).map((output) => outputRect(output, topology)));
+  if (!rect) return '';
+  return `<div class="mc-canvas-wall-zone mc-canvas-wall-zone-${wall}"
+    style="left:${(rect.x / topology.width) * 100}%;top:${(rect.y / topology.height) * 100}%;
+           width:${(rect.width / topology.width) * 100}%;height:${(rect.height / topology.height) * 100}%">
+    <span>${esc(label)}</span>
+  </div>`;
 }
 
 function render(state) {
@@ -128,60 +155,96 @@ function render(state) {
   };
   const statusClass = endpoint.status === 'online' ? 'is-online' : 'is-offline';
   const revision = endpoint.scene_revision || 0;
+  const selectedLayer = (endpoint.layers || []).find((layer) => layer.id === state.selectedLayerId);
+  const activeMode = modeMeta(state.snapMode);
   host.innerHTML = `
     <section class="mc-canvas-console" aria-labelledby="mc-canvas-title">
       <header class="mc-canvas-console-head">
-        <div>
-          <p class="mc-canvas-kicker">${esc(t('mc.canvas.kicker'))}</p>
-          <h3 id="mc-canvas-title">${esc(endpoint.name)}</h3>
-          <p>${esc(t('mc.canvas.hint'))}</p>
+        <div class="mc-canvas-console-id">
+          <span class="mc-canvas-brandmark" aria-hidden="true"><i></i><i></i><i></i></span>
+          <div>
+            <p class="mc-canvas-kicker">MBFD ROOM ROUTER</p>
+            <h3 id="mc-canvas-title">${esc(endpoint.name)}</h3>
+          </div>
         </div>
         <div class="mc-canvas-state ${statusClass}">
           <span class="mc-canvas-state-dot" aria-hidden="true"></span>
-          <span>${esc(statusLabel(endpoint))}</span>
-          <span>${esc(t('mc.canvas.revision', { n: revision }))}</span>
+          <strong>${esc(statusLabel(endpoint))}</strong>
+          <span>${(endpoint.layers || []).length} active source${(endpoint.layers || []).length === 1 ? '' : 's'}</span>
+          <span class="mc-canvas-revision">r${revision}</span>
         </div>
       </header>
 
-      <div class="mc-canvas-toolbar" role="toolbar" aria-label="${esc(t('mc.canvas.snap_mode'))}">
-        <span class="mc-canvas-toolbar-label">${esc(t('mc.canvas.snap_mode'))}</span>
-        ${[
-          ['display', 'mc.canvas.mode_display'],
-          ['primary', 'mc.canvas.mode_primary'],
-          ['secondary', 'mc.canvas.mode_secondary'],
-          ['free', 'mc.canvas.mode_free'],
-        ].map(([mode, key]) => `
+      <div class="mc-canvas-toolbar" role="toolbar" aria-label="Drop routing">
+        <div class="mc-canvas-route-label">
+          <span>DROP ROUTING</span>
+          <strong>Where should content go?</strong>
+        </div>
+        <div class="mc-canvas-modes">
+        ${['display', 'primary', 'secondary', 'free'].map((mode) => {
+          const meta = modeMeta(mode);
+          return `
           <button type="button" class="mc-canvas-mode${state.snapMode === mode ? ' is-active' : ''}"
                   data-canvas-mode="${mode}" aria-pressed="${state.snapMode === mode ? 'true' : 'false'}">
-            ${esc(t(key))}
-          </button>`).join('')}
+            <span class="mc-canvas-mode-icon">${meta.icon}</span>
+            <span><strong>${meta.title}</strong><small>${meta.detail}</small></span>
+          </button>`;
+        }).join('')}
+        </div>
         <span class="mc-canvas-toolbar-spacer"></span>
-        <button type="button" class="mc-canvas-action" data-canvas-preview>${esc(t('mc.canvas.live_preview'))}</button>
-        <button type="button" class="mc-canvas-action" data-canvas-camera>${esc(t('mc.canvas.room_camera'))}</button>
-        <button type="button" class="mc-canvas-action mc-canvas-action-danger" data-canvas-clear>${esc(t('mc.canvas.clear'))}</button>
-        <button type="button" class="mc-canvas-action mc-canvas-action-apply" data-canvas-apply>${esc(t('mc.canvas.apply'))}</button>
+        <div class="mc-canvas-actions">
+          <button type="button" class="mc-canvas-action" data-canvas-preview><span class="mc-canvas-action-dot is-cyan"></span>Live control</button>
+          <button type="button" class="mc-canvas-action" data-canvas-camera>Room camera</button>
+          <button type="button" class="mc-canvas-action mc-canvas-action-danger" data-canvas-clear>Clear canvas</button>
+          <button type="button" class="mc-canvas-action mc-canvas-action-apply" data-canvas-apply><span class="mc-canvas-action-dot"></span>Take live</button>
+        </div>
       </div>
 
       <div class="mc-canvas-workspace">
         <div class="mc-canvas-shell">
+          <div class="mc-canvas-programbar">
+            <span class="mc-canvas-program-tally">PROGRAM</span>
+            <strong>${esc(activeMode.title)}</strong>
+            <span>${esc(activeMode.detail)}</span>
+            <span class="mc-canvas-programbar-spacer"></span>
+            <span>Drag any source from the library onto the room</span>
+          </div>
           <div class="mc-canvas-board" data-canvas-board tabindex="0"
-               style="aspect-ratio:${topology.width}/${topology.height}">
+               data-canvas-mode="${esc(state.snapMode)}" style="aspect-ratio:${topology.width}/${topology.height}">
+            ${wallZoneMarkup(topology, 'primary', 'VIDEO WALL 1 / 3 DISPLAYS')}
+            ${wallZoneMarkup(topology, 'secondary', 'VIDEO WALL 2 / 2 DISPLAYS')}
             ${(topology.outputs || []).map((output, index) => outputMarkup(output, topology, index)).join('')}
             ${(endpoint.layers || []).map((layer) => layerMarkup(layer, topology, state.selectedLayerId === layer.id)).join('')}
+            <div class="mc-canvas-drop-preview" data-canvas-drop-preview hidden><span></span></div>
             ${!(endpoint.layers || []).length ? `
               <div class="mc-canvas-empty">
-                <strong>${esc(t('mc.canvas.empty_title'))}</strong>
-                <span>${esc(t('mc.canvas.empty_hint'))}</span>
+                <strong>Drag content onto a TV or span an entire wall</strong>
+                <span>Choose a routing mode above, then drop a source from the library.</span>
               </div>` : ''}
           </div>
           <div class="mc-canvas-axis">
-            <span>0,0</span>
+            <span>CANVAS 0,0</span>
             <span>${Math.round(topology.width)} &times; ${Math.round(topology.height)} px</span>
+          </div>
+          <div class="mc-canvas-layerbar">
+            <div>
+              <span class="mc-canvas-layerbar-label">SCENE</span>
+              <strong>${(endpoint.layers || []).length} layer${(endpoint.layers || []).length === 1 ? '' : 's'}</strong>
+            </div>
+            ${selectedLayer ? `
+              <div class="mc-canvas-selected-layer">
+                <span>Selected: <strong>${esc(selectedLayer.label || t('mc.canvas.layer'))}</strong></span>
+                <div class="mc-canvas-fit" role="group" aria-label="Content fit">
+                  ${['contain', 'cover', 'fill'].map((fit) => `<button type="button"
+                    class="${selectedLayer.fit_mode === fit ? 'is-active' : ''}" data-canvas-fit="${fit}">${fit}</button>`).join('')}
+                </div>
+              </div>` : '<span class="mc-canvas-layerbar-hint">Select a layer to move, resize, or change its fit.</span>'}
           </div>
         </div>
         <aside class="mc-canvas-monitor" data-canvas-monitor hidden>
           <div class="mc-canvas-monitor-head">
-            <strong data-canvas-monitor-title>${esc(t('mc.canvas.live_preview'))}</strong>
+            <span class="mc-canvas-monitor-tally">LIVE</span>
+            <strong data-canvas-monitor-title>Interactive room preview</strong>
             <button type="button" data-canvas-monitor-close aria-label="${esc(t('common.close'))}">&times;</button>
           </div>
           <div class="mc-canvas-video-wrap">
@@ -189,7 +252,7 @@ function render(state) {
             <img data-canvas-camera-image alt="${esc(t('mc.canvas.room_camera'))}" hidden>
             <div class="mc-canvas-video-state" data-canvas-video-state>${esc(t('mc.canvas.preview_waiting'))}</div>
           </div>
-          <p>${esc(t('mc.canvas.kvm_hint'))}</p>
+          <p>Click, drag, scroll, or type directly on this feed to control the P3.</p>
         </aside>
       </div>
     </section>`;
@@ -399,24 +462,79 @@ function requestCamera(state) {
   });
 }
 
+async function publishScene(state, { quiet = false } = {}) {
+  if (state.publishing) return;
+  state.publishing = true;
+  const button = state.host.querySelector('[data-canvas-apply]');
+  if (button) button.disabled = true;
+  try {
+    const result = await api.canvas.publish(state.endpoint.id, state.endpoint.layers);
+    state.endpoint = result.endpoint;
+    if (!quiet) showToast(t('mc.canvas.applied'), 'success');
+    render(state);
+  } catch (error) {
+    showToast(error.message || t('mc.canvas.apply_failed'), 'error');
+  } finally {
+    state.publishing = false;
+    if (button?.isConnected) button.disabled = false;
+  }
+}
+
+function showDropPreview(state, board, event) {
+  const preview = board.querySelector('[data-canvas-drop-preview]');
+  if (!preview) return;
+  const topology = state.endpoint.topology;
+  const point = canvasPoint(board, event, topology);
+  const rect = placementForDrop(state, point.x, point.y);
+  const meta = modeMeta(state.snapMode);
+  preview.style.left = `${(rect.x / topology.width) * 100}%`;
+  preview.style.top = `${(rect.y / topology.height) * 100}%`;
+  preview.style.width = `${(rect.width / topology.width) * 100}%`;
+  preview.style.height = `${(rect.height / topology.height) * 100}%`;
+  preview.querySelector('span').textContent = meta.title;
+  preview.hidden = false;
+}
+
 function wire(state) {
   const board = state.host.querySelector('[data-canvas-board]');
   const topology = state.endpoint.topology;
   state.host.querySelectorAll('[data-canvas-mode]').forEach((button) => {
     button.addEventListener('click', () => {
       state.snapMode = button.dataset.canvasMode;
-      render(state);
+      state.host.querySelectorAll('[data-canvas-mode]').forEach((candidate) => {
+        const active = candidate === button;
+        candidate.classList.toggle('is-active', active);
+        candidate.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
+      board.dataset.canvasMode = state.snapMode;
+      const meta = modeMeta(state.snapMode);
+      const program = state.host.querySelector('.mc-canvas-programbar');
+      if (program) {
+        const strong = program.querySelector('strong');
+        const detail = strong?.nextElementSibling;
+        if (strong) strong.textContent = meta.title;
+        if (detail) detail.textContent = meta.detail;
+      }
     });
   });
   board.addEventListener('dragover', (event) => {
     if (!event.dataTransfer) return;
     event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
     board.classList.add('is-dragover');
+    showDropPreview(state, board, event);
   });
-  board.addEventListener('dragleave', () => board.classList.remove('is-dragover'));
-  board.addEventListener('drop', (event) => {
+  board.addEventListener('dragleave', (event) => {
+    if (board.contains(event.relatedTarget)) return;
+    board.classList.remove('is-dragover');
+    const preview = board.querySelector('[data-canvas-drop-preview]');
+    if (preview) preview.hidden = true;
+  });
+  board.addEventListener('drop', async (event) => {
     event.preventDefault();
     board.classList.remove('is-dragover');
+    const preview = board.querySelector('[data-canvas-drop-preview]');
+    if (preview) preview.hidden = true;
     const parsed = dragSource(event);
     if (!parsed) return;
     const point = canvasPoint(board, event, topology);
@@ -433,6 +551,7 @@ function wire(state) {
     });
     state.selectedLayerId = id;
     render(state);
+    await publishScene(state, { quiet: true });
   });
   state.host.querySelectorAll('[data-canvas-layer]').forEach((layerEl) => {
     layerEl.addEventListener('click', () => {
@@ -457,16 +576,15 @@ function wire(state) {
       render(state);
     });
   });
-  state.host.querySelector('[data-canvas-apply]')?.addEventListener('click', async () => {
-    try {
-      const result = await api.canvas.publish(state.endpoint.id, state.endpoint.layers);
-      state.endpoint = result.endpoint;
-      showToast(t('mc.canvas.applied'), 'success');
+  state.host.querySelectorAll('[data-canvas-fit]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const layer = state.endpoint.layers.find((item) => item.id === state.selectedLayerId);
+      if (!layer) return;
+      layer.fit_mode = button.dataset.canvasFit;
       render(state);
-    } catch (error) {
-      showToast(error.message || t('mc.canvas.apply_failed'), 'error');
-    }
+    });
   });
+  state.host.querySelector('[data-canvas-apply]')?.addEventListener('click', () => publishScene(state));
   state.host.querySelector('[data-canvas-clear]')?.addEventListener('click', async () => {
     try {
       const result = await api.canvas.clear(state.endpoint.id);

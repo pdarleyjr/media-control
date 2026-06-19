@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Classroom Camera</title>
+  <style>
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #000; }
+    video { width: 100%; height: 100%; display: block; object-fit: cover; background: #000; }
+    #state { position: fixed; inset: 0; display: grid; place-items: center; color: #d6e2ee; background: #05070b; font: 600 18px "Segoe UI", sans-serif; }
+    #state[hidden] { display: none; }
+  </style>
+</head>
+<body>
+  <video id="video" autoplay playsinline muted></video>
+  <div id="state">Connecting to classroom camera...</div>
+  <script src="vendor/hls.light.min.js"></script>
+  <script>
+    (function () {
+      var params = new URLSearchParams(location.search);
+      var camera = params.get('camera') === '2' ? '2' : '1';
+      var fit = params.get('fit') === 'contain' ? 'contain' : 'cover';
+      var audio = params.get('audio') === '1';
+      var source = '/player/classroom-camera/' + camera + '/index.m3u8';
+      var video = document.getElementById('video');
+      var state = document.getElementById('state');
+      video.style.objectFit = fit;
+      video.muted = !audio;
+      window.__mcEnableAudio = function () { video.muted = false; video.volume = 1; video.play().catch(function () {}); };
+      function ready() { state.hidden = true; video.play().catch(function () {}); }
+      function failed() { state.hidden = false; state.textContent = 'Camera reconnecting...'; setTimeout(start, 4000); }
+      function start() {
+        state.hidden = false;
+        if (window.Hls && window.Hls.isSupported()) {
+          var hls = new window.Hls({ lowLatencyMode: true, liveSyncDurationCount: 2 });
+          hls.loadSource(source);
+          hls.attachMedia(video);
+          hls.on(window.Hls.Events.MANIFEST_PARSED, ready);
+          hls.on(window.Hls.Events.ERROR, function (_event, data) { if (data && data.fatal) { hls.destroy(); failed(); } });
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          video.src = source;
+          video.addEventListener('loadedmetadata', ready, { once: true });
+          video.addEventListener('error', failed, { once: true });
+        } else {
+          state.textContent = 'HLS playback is not supported.';
+        }
+      }
+      start();
+    })();
+  </script>
+</body>
+</html>
