@@ -194,7 +194,8 @@ function render(state) {
         <span class="mc-canvas-toolbar-spacer"></span>
         <div class="mc-canvas-actions">
           <button type="button" class="mc-canvas-action" data-canvas-preview><span class="mc-canvas-action-dot is-cyan"></span>Live control</button>
-          <button type="button" class="mc-canvas-action" data-canvas-camera>Room camera</button>
+          <button type="button" class="mc-canvas-action" data-canvas-camera="1">Camera 1</button>
+          <button type="button" class="mc-canvas-action" data-canvas-camera="2">Camera 2</button>
           <button type="button" class="mc-canvas-action mc-canvas-action-danger" data-canvas-clear>Clear canvas</button>
           <button type="button" class="mc-canvas-action mc-canvas-action-apply" data-canvas-apply><span class="mc-canvas-action-dot"></span>Take live</button>
         </div>
@@ -250,6 +251,7 @@ function render(state) {
           <div class="mc-canvas-video-wrap">
             <video data-canvas-video autoplay playsinline muted tabindex="0"></video>
             <img data-canvas-camera-image alt="${esc(t('mc.canvas.room_camera'))}" hidden>
+            <iframe data-canvas-camera-frame title="${esc(t('mc.canvas.room_camera'))}" allow="autoplay" hidden></iframe>
             <div class="mc-canvas-video-state" data-canvas-video-state>${esc(t('mc.canvas.preview_waiting'))}</div>
           </div>
           <p>Click, drag, scroll, or type directly on this feed to control the P3.</p>
@@ -364,9 +366,12 @@ async function startPreview(state) {
   const monitor = state.host.querySelector('[data-canvas-monitor]');
   const video = state.host.querySelector('[data-canvas-video]');
   const image = state.host.querySelector('[data-canvas-camera-image]');
+  const frame = state.host.querySelector('[data-canvas-camera-frame]');
   const status = state.host.querySelector('[data-canvas-video-state]');
   monitor.hidden = false;
   image.hidden = true;
+  frame.hidden = true;
+  frame.removeAttribute('src');
   video.hidden = false;
   status.hidden = false;
   status.textContent = t('mc.canvas.preview_connecting');
@@ -442,24 +447,22 @@ function stopPreview(state) {
   state.previewEndedHandler = null;
 }
 
-function requestCamera(state) {
-  const socket = getSocket();
+function requestCamera(state, camera) {
+  stopPreview(state);
   const monitor = state.host.querySelector('[data-canvas-monitor]');
   const video = state.host.querySelector('[data-canvas-video]');
   const image = state.host.querySelector('[data-canvas-camera-image]');
+  const frame = state.host.querySelector('[data-canvas-camera-frame]');
   const status = state.host.querySelector('[data-canvas-video-state]');
   const title = state.host.querySelector('[data-canvas-monitor-title]');
   monitor.hidden = false;
-  title.textContent = t('mc.canvas.room_camera');
+  title.textContent = `Classroom camera ${camera}`;
   video.hidden = true;
   image.hidden = true;
-  status.hidden = false;
-  status.textContent = t('mc.canvas.camera_waiting');
-  socket?.timeout(5000).emit('dashboard:canvas-camera-request', {
-    endpoint_id: state.endpoint.id,
-  }, (error, ack) => {
-    if (error || !ack?.ok) status.textContent = t('mc.canvas.camera_failed');
-  });
+  video.srcObject = null;
+  status.hidden = true;
+  frame.src = `/player/classroom-camera.html?camera=${camera}&fit=contain`;
+  frame.hidden = false;
 }
 
 async function publishScene(state, { quiet = false } = {}) {
@@ -596,7 +599,9 @@ function wire(state) {
     }
   });
   state.host.querySelector('[data-canvas-preview]')?.addEventListener('click', () => startPreview(state));
-  state.host.querySelector('[data-canvas-camera]')?.addEventListener('click', () => requestCamera(state));
+  state.host.querySelectorAll('[data-canvas-camera]').forEach((button) => {
+    button.addEventListener('click', () => requestCamera(state, button.dataset.canvasCamera));
+  });
   state.host.querySelector('[data-canvas-monitor-close]')?.addEventListener('click', () => {
     stopPreview(state);
     const monitor = state.host.querySelector('[data-canvas-monitor]');
@@ -643,11 +648,13 @@ export async function mountAdvancedCanvas(host) {
     if (!payload || payload.endpoint_id !== instance?.endpoint.id) return;
     const image = instance.host.querySelector('[data-canvas-camera-image]');
     const video = instance.host.querySelector('[data-canvas-video]');
+    const frame = instance.host.querySelector('[data-canvas-camera-frame]');
     const status = instance.host.querySelector('[data-canvas-video-state]');
     if (!image) return;
     image.src = payload.image;
     image.hidden = false;
     if (video) video.hidden = true;
+    if (frame) frame.hidden = true;
     if (status) status.hidden = true;
   };
   instance.cameraErrorHandler = (payload) => {
