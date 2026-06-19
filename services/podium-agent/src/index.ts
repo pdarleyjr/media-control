@@ -13,6 +13,7 @@ const deviceId = process.env.DEVICE_ID || 'classroom-1-podium-console';
 const appVersion = process.env.APP_VERSION || '0.1.0';
 const usbMountBase = process.env.USB_MOUNT_BASE || '/mnt/mbfd-usb';
 const usbStagingBase = process.env.USB_STAGING_DIR || '/var/lib/mbfd/podium-agent/usb-staging';
+const cameraDevice = process.env.PODIUM_CAMERA_DEVICE || '/dev/video2';
 
 const allowedUsbExtensions = new Set(['.pdf', '.ppt', '.pptx', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.webp', '.mp4', '.mov', '.mkv']);
 const blockedUsbExtensions = new Set(['.exe', '.msi', '.bat', '.cmd', '.ps1', '.sh', '.scr', '.vbs', '.js', '.jar', '.iso']);
@@ -335,6 +336,43 @@ function serveStagedFile(req: http.IncomingMessage, res: http.ServerResponse, st
   fs.createReadStream(staged.stagedPath).pipe(res);
 }
 
+async function captureCameraSnapshot() {
+  if (process.platform !== 'linux') throw new Error('camera capture is Linux-only');
+  if (!fs.existsSync(cameraDevice)) throw new Error(`camera device not found: ${cameraDevice}`);
+
+  const snapshotPath = path.join('/tmp', `mbfd-podium-camera-${crypto.randomUUID()}.jpg`);
+  try {
+    await command('gst-launch-1.0', [
+      '-q',
+      'v4l2src',
+      `device=${cameraDevice}`,
+      'num-buffers=1',
+      '!',
+      'image/jpeg,width=1920,height=1080,framerate=30/1',
+      '!',
+      'filesink',
+      `location=${snapshotPath}`,
+    ], 15000);
+    const image = await fs.promises.readFile(snapshotPath);
+    if (image.length < 1024) throw new Error('camera returned an empty frame');
+    return image;
+  } finally {
+    await fs.promises.rm(snapshotPath, { force: true }).catch(() => undefined);
+  }
+}
+
+async function serveCameraSnapshot(req: http.IncomingMessage, res: http.ServerResponse) {
+  const image = await captureCameraSnapshot();
+  writeCors(req, res);
+  res.writeHead(200, {
+    'Content-Type': 'image/jpeg',
+    'Content-Length': String(image.length),
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  res.end(image);
+}
+
 async function devicePayload() {
   return {
     hostname: os.hostname(),
@@ -410,6 +448,13 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
     if (req.method === 'GET' && url.pathname === '/health') return json(req, res, 200, { ok: true, service: 'mbfd-podium-agent', room_id: roomId, device_id: deviceId });
     if (req.method === 'GET' && url.pathname === '/device') return json(req, res, 200, await devicePayload());
     if (req.method === 'GET' && url.pathname === '/network') return json(req, res, 200, await networkPayload());
+    if (req.method === 'GET' && url.pathname === '/camera/status') {
+      return json(req, res, 200, {
+        available: process.platform === 'linux' && fs.existsSync(cameraDevice),
+        device: cameraDevice,
+      });
+    }
+    if (req.method === 'GET' && url.pathname === '/camera/snapshot') return serveCameraSnapshot(req, res);
     if (req.method === 'GET' && url.pathname === '/usb/status') return json(req, res, 200, await usbStatus());
     if (req.method === 'GET' && url.pathname === '/usb/files') return json(req, res, 200, await usbFilesPayload());
     if (req.method === 'POST' && url.pathname === '/usb/stage') return json(req, res, 200, await stageUsbFiles(req));
