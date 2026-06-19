@@ -1,6 +1,7 @@
 const setupDeviceSocket = require('./deviceSocket');
 const setupDashboardSocket = require('./dashboardSocket');
 const { setupScreenShareSignaling } = require('./screen-share-signaling');
+const { setupAdvancedCanvas } = require('./advanced-canvas');
 const { canActOnDevice, getDeviceIdForSocket } = require('../lib/socket-permissions');
 
 module.exports = function setupWebSockets(io) {
@@ -19,6 +20,7 @@ module.exports = function setupWebSockets(io) {
     canActOnDevice,
     deviceSocketRegistry: { getDeviceId: getDeviceIdForSocket },
   });
+  const canvasNs = setupAdvancedCanvas(io, dashboardNs);
 
-  return { deviceNs, dashboardNs, screenShare };
+  return { deviceNs, dashboardNs, screenShare, canvasNs };
 };

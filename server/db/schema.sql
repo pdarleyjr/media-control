@@ -622,3 +622,42 @@ CREATE TABLE IF NOT EXISTS whiteboard_sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_whiteboard_sessions_device ON whiteboard_sessions(device_id);
+
+-- Advanced coordinate canvases are additive to the legacy devices table.
+-- Standard TVs continue to use devices/playlists; high-performance endpoints
+-- persist their physical topology and absolute-coordinate layers here.
+CREATE TABLE IF NOT EXISTS advanced_canvas_endpoints (
+    id              TEXT PRIMARY KEY,
+    workspace_id    TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,
+    token_hash      TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'offline',
+    last_heartbeat  INTEGER,
+    topology_json   TEXT,
+    canvas_width    INTEGER NOT NULL DEFAULT 1920,
+    canvas_height   INTEGER NOT NULL DEFAULT 1080,
+    scene_revision  INTEGER NOT NULL DEFAULT 0,
+    active          INTEGER NOT NULL DEFAULT 0,
+    created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    updated_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE TABLE IF NOT EXISTS advanced_canvas_layers (
+    id              TEXT PRIMARY KEY,
+    endpoint_id     TEXT NOT NULL REFERENCES advanced_canvas_endpoints(id) ON DELETE CASCADE,
+    x               REAL NOT NULL,
+    y               REAL NOT NULL,
+    width           REAL NOT NULL,
+    height          REAL NOT NULL,
+    z_index         INTEGER NOT NULL DEFAULT 0,
+    label           TEXT,
+    source_json     TEXT NOT NULL,
+    render_json     TEXT NOT NULL,
+    fit_mode        TEXT NOT NULL DEFAULT 'contain',
+    muted           INTEGER NOT NULL DEFAULT 1,
+    created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    updated_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_advanced_canvas_workspace ON advanced_canvas_endpoints(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_advanced_canvas_layers_endpoint ON advanced_canvas_layers(endpoint_id, z_index);

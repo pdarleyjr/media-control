@@ -70,6 +70,18 @@ export const api = {
   getDisplaysSelection: () => request('/displays/selection'),
   putDisplaysSelection: (device_ids) => request('/displays/selection', { method: 'PUT', body: JSON.stringify({ device_ids }) }),
 
+  // High-performance coordinate canvases. Legacy displays remain on /devices.
+  canvas: {
+    list: () => request('/advanced-canvas'),
+    get: (id) => request(`/advanced-canvas/${id}`),
+    publish: (id, layers) => request(`/advanced-canvas/${id}/scene`, {
+      method: 'PUT',
+      body: JSON.stringify({ layers }),
+    }),
+    clear: (id) => request(`/advanced-canvas/${id}/clear`, { method: 'POST' }),
+    ice: () => request('/screen-share/turn-credentials'),
+  },
+
   // Provisioning
   pairDevice: (pairing_code, name) => request('/provision/pair', {
     method: 'POST',

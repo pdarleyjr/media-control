@@ -18,6 +18,7 @@ import { openViewModal, closeViewModal } from './media-control/view-modal.js';
 import { confirmDialog } from '../components/confirm.js';
 import * as screenShareEngine from '../services/screen-share-engine.js';
 import * as schedulesView from './schedules.js';
+import { mountAdvancedCanvas, unmountAdvancedCanvas } from './media-control/advanced-canvas.js';
 // transport.js is used by stage.js internally — no direct import needed here.
 
 // Rail "Room setup" launcher icons (stroke icons, dashboard SVG vocabulary).
@@ -767,6 +768,7 @@ export async function render() {
                 <a class="mc-section-link" href="#/">${esc(t('mc.section.manage_displays'))}</a>
                 <a class="mc-section-link" href="#/walls">${esc(t('mc.section.video_walls'))}</a>
               </div>
+              <div id="mc-advanced-canvas" class="mc-advanced-canvas-host" hidden></div>
               <!-- Multiview builder mounts here, directly ABOVE the stage (whose
                    first wall card is the classroom primary wall). Toggled by the command
                    bar's "Multiview" button; lazy-mounted on first open. -->
@@ -849,6 +851,7 @@ export async function render() {
   paintStage();
   paintToolbox();
   paintSummary();
+  await mountAdvancedCanvas(document.getElementById('mc-advanced-canvas'));
 
   // Multiview builder — mounted directly above the stage (whose first wall
   // card is the classroom primary wall) and toggled by the command bar's "Multiview"
@@ -966,6 +969,7 @@ export function unmount() {
   teardownMultiview();    // stop any local audio monitor so it can't keep playing
   closeViewModal();       // dismiss any open room-setup overlay (e.g. Schedules)
   stopPreviewRefresh();   // stop poking players once we leave the control surface
+  unmountAdvancedCanvas();
   // Close the inspector so a stale panel can't linger across navigations.
   closeInspector(inspectorEl());
   // Dismiss the add-display picker if it was left open during navigation.
