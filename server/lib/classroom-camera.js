@@ -1,6 +1,6 @@
 'use strict';
 
-const CAMERA_HOST = 'http://host.docker.internal:8888';
+const CAMERA_HOST = 'http://host.docker.internal:8766/camera-hls';
 
 function normalizeCamera(camera) {
   const value = String(camera || '');
@@ -18,7 +18,7 @@ function normalizeAsset(asset) {
 
 function cameraUpstreamUrl(camera, asset) {
   const id = normalizeCamera(camera);
-  return `${CAMERA_HOST}/kamrui-camera-${id}/${normalizeAsset(asset)}`;
+  return `${CAMERA_HOST}/${id}/${normalizeAsset(asset)}`;
 }
 
 function proxyCameraUri(uri, camera) {
