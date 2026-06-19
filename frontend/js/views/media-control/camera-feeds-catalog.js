@@ -66,7 +66,7 @@ function news(title, key) {
 function classroom(title, camera) {
   return {
     title,
-    url: `https://media.mbfdhub.com/player/classroom-camera.html?camera=${camera}`,
+    url: `https://media-control.mbfdhub.com/player/classroom-camera.html?camera=${camera}`,
   };
 }
 
