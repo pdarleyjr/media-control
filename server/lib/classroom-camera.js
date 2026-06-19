@@ -1,6 +1,6 @@
 'use strict';
 
-const CAMERA_HOST = 'http://100.81.154.123:8888';
+const CAMERA_HOST = 'http://host.docker.internal:8888';
 
 function normalizeCamera(camera) {
   const value = String(camera || '');

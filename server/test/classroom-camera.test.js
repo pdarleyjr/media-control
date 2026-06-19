@@ -10,7 +10,7 @@ const {
 test('cameraUpstreamUrl only permits the two fixed classroom cameras', () => {
   assert.equal(
     cameraUpstreamUrl('1', 'index.m3u8'),
-    'http://100.81.154.123:8888/kamrui-camera-1/index.m3u8'
+    'http://host.docker.internal:8888/kamrui-camera-1/index.m3u8'
   );
   assert.throws(() => cameraUpstreamUrl('3', 'index.m3u8'), /camera/);
   assert.throws(() => cameraUpstreamUrl('1', '../config.yml'), /asset/);
