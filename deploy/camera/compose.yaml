@@ -1,0 +1,62 @@
+services:
+  camera-2:
+    image: mbfd/camera-ffmpeg:local
+    container_name: mbfd-kamrui-camera-2
+    restart: unless-stopped
+    labels:
+      mbfd.role: camera-publisher
+    devices:
+      - "${CAMERA_VIDEO_DEVICE:-/dev/video2}:/dev/video2"
+      - "/dev/snd:/dev/snd"
+    command:
+      - -hide_banner
+      - -loglevel
+      - warning
+      - -fflags
+      - +discardcorrupt+nobuffer
+      - -f
+      - v4l2
+      - -input_format
+      - yuyv422
+      - -framerate
+      - "10"
+      - -video_size
+      - 1280x720
+      - -i
+      - /dev/video2
+      - -f
+      - alsa
+      - -ar
+      - "48000"
+      - -ac
+      - "1"
+      - -i
+      - "${CAMERA_AUDIO_DEVICE:-hw:C920,0}"
+      - -vf
+      - format=yuv420p
+      - -c:v
+      - libx264
+      - -preset
+      - ultrafast
+      - -tune
+      - zerolatency
+      - -b:v
+      - 2000k
+      - -maxrate
+      - 2000k
+      - -bufsize
+      - 4000k
+      - -g
+      - "20"
+      - -c:a
+      - aac
+      - -b:a
+      - 128k
+      - -ar
+      - "48000"
+      - -ac
+      - "1"
+      - -shortest
+      - -f
+      - flv
+      - "${CAMERA_RTMP_URL:?Set CAMERA_RTMP_URL in .env}"

@@ -110,6 +110,7 @@ install_services() {
   log "Installing systemd services"
   install -m 0644 "${REPO_ROOT}/deploy/systemd/mbfd-podium-agent.service" /etc/systemd/system/mbfd-podium-agent.service
   install -m 0644 "${REPO_ROOT}/deploy/systemd/mbfd-console.service" /etc/systemd/system/mbfd-console.service
+  install -m 0755 "${REPO_ROOT}/deploy/cage/mbfd-console-session.sh" "${CONSOLE_DIR}/mbfd-console-session.sh"
   install -d -m 0755 /etc/systemd/logind.conf.d
   cat >/etc/systemd/logind.conf.d/mbfd-kiosk.conf <<'EOF'
 [Login]
