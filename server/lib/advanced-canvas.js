@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { db } = require('../db/database');
 const { deckPlayerUrl } = require('./deck-player-url');
+const { canvasAssetUrl } = require('./canvas-asset-signature');
 
 const MAX_LAYERS = 64;
 const MAX_CANVAS_DIMENSION = 32768;
@@ -117,9 +118,15 @@ function getEndpoint(endpointId) {
   return endpointRowToJson(row, row ? getEndpointLayers(endpointId) : []);
 }
 
-function contentRenderDescriptor(content, publicBase) {
+function contentRenderDescriptor(content, publicBase, endpointId, workspaceId, canvasAssetSecret) {
   const mimeType = String(content.mime_type || 'application/octet-stream').toLowerCase();
-  const url = content.remote_url || `${publicBase.replace(/\/+$/, '')}/player/asset/${encodeURIComponent(content.id)}`;
+  const url = content.remote_url || canvasAssetUrl({
+    publicBase,
+    endpointId,
+    contentId: content.id,
+    workspaceId,
+    secret: canvasAssetSecret,
+  });
   let kind = 'frame';
   if (mimeType.startsWith('image/')) kind = 'image';
   else if (mimeType.startsWith('video/')) kind = 'video';
@@ -133,7 +140,7 @@ function contentRenderDescriptor(content, publicBase) {
   };
 }
 
-async function resolveSource(source, workspaceId, publicBase, assertRemoteUrlSafe) {
+async function resolveSource(source, workspaceId, publicBase, endpointId, canvasAssetSecret, assertRemoteUrlSafe) {
   const value = source && typeof source === 'object' ? source : {};
 
   if (value.content_id) {
@@ -146,7 +153,7 @@ async function resolveSource(source, workspaceId, publicBase, assertRemoteUrlSaf
     if (content.workspace_id && content.workspace_id !== workspaceId) {
       throw new Error(`Content ${value.content_id} is not in this workspace`);
     }
-    return contentRenderDescriptor(content, publicBase);
+    return contentRenderDescriptor(content, publicBase, endpointId, workspaceId, canvasAssetSecret);
   }
 
   if (value.presentation_id) {
@@ -186,7 +193,7 @@ async function resolveSource(source, workspaceId, publicBase, assertRemoteUrlSaf
         mime_type: item.mime_type,
         remote_url: item.remote_url,
         duration_sec: item.content_duration,
-      }, publicBase),
+      }, publicBase, endpointId, workspaceId, canvasAssetSecret),
       duration_sec: Number(item.duration_sec) || Number(item.content_duration) || 10,
       fit_mode: item.fit_mode || null,
     }));
@@ -209,6 +216,8 @@ async function normalizeSceneLayers({
   canvasWidth,
   canvasHeight,
   publicBase,
+  endpointId,
+  canvasAssetSecret,
   assertRemoteUrlSafe,
 }) {
   if (!Array.isArray(layers)) throw new Error('layers must be an array');
@@ -222,7 +231,14 @@ async function normalizeSceneLayers({
     const width = clampNumber(layer.width, 1, canvasWidth - x, Math.min(1920, canvasWidth - x));
     const height = clampNumber(layer.height, 1, canvasHeight - y, Math.min(1080, canvasHeight - y));
     const source = layer.source && typeof layer.source === 'object' ? layer.source : {};
-    const render = await resolveSource(source, workspaceId, publicBase, assertRemoteUrlSafe);
+    const render = await resolveSource(
+      source,
+      workspaceId,
+      publicBase,
+      endpointId,
+      canvasAssetSecret,
+      assertRemoteUrlSafe
+    );
     safe.push({
       id: String(layer.id || crypto.randomUUID()).slice(0, 128),
       x,

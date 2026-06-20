@@ -4,6 +4,7 @@ const { db } = require('../db/database');
 const { assertRemoteUrlSafe } = require('../lib/ssrf-policy');
 const { audit } = require('../lib/audit');
 const { getClientIp } = require('../services/activity');
+const config = require('../config');
 const {
   generateEndpointToken,
   getEndpoint,
@@ -100,6 +101,8 @@ router.put('/:id/scene', async (req, res) => {
       canvasWidth: endpoint.canvas_width || 1920,
       canvasHeight: endpoint.canvas_height || 1080,
       publicBase,
+      endpointId: endpoint.id,
+      canvasAssetSecret: config.jwtSecret,
       assertRemoteUrlSafe,
     });
   } catch (error) {

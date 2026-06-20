@@ -290,6 +290,60 @@ app.get('/api/live-stream/local/program-state', (req, res) => {
   res.json(liveStreamProgramStateAnyWorkspace());
 });
 
+// Advanced canvas media is private workspace content, so it cannot use the
+// presentation-only public asset route below. This endpoint accepts only an
+// HMAC-bound endpoint/content/workspace tuple generated while publishing the
+// scene. It exposes no device or user token and checks current DB ownership on
+// every request, so deleting an endpoint immediately revokes its asset URLs.
+app.get('/player/canvas-asset/:endpointId/:contentId/:signature', async (req, res) => {
+  const { db } = require('./db/database');
+  const { verifyCanvasAsset } = require('./lib/canvas-asset-signature');
+  const endpoint = db.prepare(
+    'SELECT id, workspace_id FROM advanced_canvas_endpoints WHERE id = ?'
+  ).get(req.params.endpointId);
+  if (!endpoint) return res.status(404).type('text/plain').send('not found');
+  const content = db.prepare(
+    'SELECT id, workspace_id, filepath, mime_type FROM content WHERE id = ?'
+  ).get(req.params.contentId);
+  if (!content || !content.filepath) return res.status(404).type('text/plain').send('not found');
+  if (content.workspace_id && content.workspace_id !== endpoint.workspace_id) {
+    return res.status(403).type('text/plain').send('forbidden');
+  }
+  if (!verifyCanvasAsset({
+    endpointId: endpoint.id,
+    contentId: content.id,
+    workspaceId: endpoint.workspace_id,
+    secret: config.jwtSecret,
+    signature: req.params.signature,
+  })) {
+    return res.status(403).type('text/plain').send('forbidden');
+  }
+  const safePath = path.resolve(config.contentDir, path.basename(content.filepath));
+  if (!safePath.startsWith(path.resolve(config.contentDir))) {
+    return res.status(403).type('text/plain').send('invalid path');
+  }
+
+  let filePath = safePath;
+  let mimeType = String(content.mime_type || 'application/octet-stream');
+  const { getOfficePdf, isConvertibleOfficeMime } = require('./lib/doc-pdf');
+  if (isConvertibleOfficeMime(mimeType)) {
+    try {
+      filePath = await getOfficePdf(content.id, safePath, mimeType);
+      mimeType = 'application/pdf';
+    } catch (error) {
+      console.warn('[canvas-asset] document conversion failed:', error.message);
+      return res.status(502).type('text/plain').send('document conversion failed');
+    }
+  }
+
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+  res.setHeader('Content-Type', mimeType);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.sendFile(filePath);
+});
+
 // MBFD Media Control Studio — public slide-image serving. Under /player/* so it
 // inherits the Cloudflare-Access + CSP bypass: deck images load on unattended
 // displays with no OTP, exactly like the deck HTML itself. ONLY rows that are
