@@ -72,7 +72,7 @@ function normalizeIds(value) {
 // addEventListener (no inline handlers, no inline magic colors). Mirrors
 // present.js promptYouTube but routes through the shared sendToDisplays funnel
 // (which materializes the URL into a content row so the player embeds it).
-function promptYouTube(roomIds, refreshAfterSend) {
+function promptYouTube(roomIds, refreshAfterSend, onRouteSource) {
   const dlg = document.createElement('dialog');
   dlg.className = 'mc-dialog';
 
@@ -125,12 +125,14 @@ function promptYouTube(roomIds, refreshAfterSend) {
       return;
     }
     const ids = normalizeIds(roomIds && roomIds());
-    if (ids.length === 0) {
+    if (typeof onRouteSource !== 'function' && ids.length === 0) {
       showToast(t('mc.cmd.no_displays'), 'error');
       return;
     }
     goBtn.disabled = true;
-    const ok = await sendToDisplays({ remote_url: url }, ids, url);
+    const ok = typeof onRouteSource === 'function'
+      ? await onRouteSource({ remote_url: url }, url)
+      : await sendToDisplays({ remote_url: url }, ids, url);
     if (ok) {
       cleanup();
       if (typeof refreshAfterSend === 'function') refreshAfterSend();
@@ -226,7 +228,14 @@ async function stopLiveStream(btn, refreshAfterSend) {
  * @param {() => void} [opts.onMultiview]  opens the multiview layout builder
  *   (mounted above the Video Wall 1 card by the host view).
  */
-export function renderCommandBar(container, { roomIds, blankIds, refreshAfterSend, onMultiview } = {}) {
+export function renderCommandBar(container, {
+  roomIds,
+  blankIds,
+  refreshAfterSend,
+  onMultiview,
+  onRouteSource,
+  onBlankChange,
+} = {}) {
   if (!container) return;
 
   // Guard: a usable roomIds() provider is required. Render a composed error
@@ -266,11 +275,11 @@ export function renderCommandBar(container, { roomIds, blankIds, refreshAfterSen
             ${ICON_LIVE}
             <span class="mc-cmd-btn-label">${esc(t('mc.cmd.live_stream'))}</span>
           </button>
-          <button type="button" class="mc-btn mc-cmd-btn mc-btn-secondary" data-launch="live-clear">
+          <button type="button" class="mc-btn mc-cmd-btn mc-btn-secondary" data-launch="live-clear" hidden>
             ${ICON_LIVE_CLEAR}
             <span class="mc-cmd-btn-label">${esc(t('mc.cmd.live_clear'))}</span>
           </button>
-          <button type="button" class="mc-btn mc-cmd-btn mc-cmd-live-stop" data-launch="live-stop">
+          <button type="button" class="mc-btn mc-cmd-btn mc-cmd-live-stop" data-launch="live-stop" hidden>
             ${ICON_LIVE_STOP}
             <span class="mc-cmd-btn-label">${esc(t('mc.cmd.live_stop'))}</span>
           </button>
@@ -283,6 +292,23 @@ export function renderCommandBar(container, { roomIds, blankIds, refreshAfterSen
   const blankBtn = container.querySelector('.mc-cmd-blank');
   const blankLabel = container.querySelector('[data-blank-label]');
   const banner = container.querySelector('.mc-cmd-blank-banner');
+  const liveStartBtn = container.querySelector('[data-launch="live-stream"]');
+  const liveClearBtn = container.querySelector('[data-launch="live-clear"]');
+  const liveStopBtn = container.querySelector('[data-launch="live-stop"]');
+
+  const syncLiveControls = async () => {
+    try {
+      const status = await api.liveStream.status();
+      const active = status?.ai_director?.data?.stream_active === true;
+      if (liveStartBtn) liveStartBtn.hidden = active;
+      if (liveStopBtn) liveStopBtn.hidden = !active;
+      if (liveClearBtn) liveClearBtn.hidden = !active;
+    } catch {
+      if (liveStartBtn) liveStartBtn.hidden = false;
+      if (liveStopBtn) liveStopBtn.hidden = true;
+      if (liveClearBtn) liveClearBtn.hidden = true;
+    }
+  };
 
   // Mirror present.js's reflectBlank: keep the toggle label, active class,
   // aria-pressed, and the visible banner all in sync with the `blanked` flag.
@@ -306,7 +332,22 @@ export function renderCommandBar(container, { roomIds, blankIds, refreshAfterSen
 
   // TOGGLE: Blank all — flip the module flag, then drive every room display to
   // SCREEN_OFF (blanked) or SCREEN_ON (resumed).
-  blankBtn.addEventListener('click', () => {
+  blankBtn.addEventListener('click', async () => {
+    const nextBlanked = !blanked;
+    if (typeof onBlankChange === 'function') {
+      blankBtn.disabled = true;
+      try {
+        await onBlankChange(nextBlanked);
+        blanked = nextBlanked;
+        reflect();
+        showToast(blanked ? t('mc.cmd.blanked') : t('mc.cmd.unblanked'), 'info');
+      } catch (error) {
+        showToast(error?.message || t('mc.cmd.error'), 'error');
+      } finally {
+        blankBtn.disabled = false;
+      }
+      return;
+    }
     // Blank all targets every physical screen, INCLUDING video-wall members
     // (via blankIds); fall back to roomIds when no wall-aware provider is given.
     const blankProvider = (typeof blankIds === 'function') ? blankIds : roomIds;
@@ -325,18 +366,19 @@ export function renderCommandBar(container, { roomIds, blankIds, refreshAfterSen
 
   // SECONDARY quick-launch buttons.
   container.querySelectorAll('[data-launch]').forEach((btn) => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       switch (btn.dataset.launch) {
         case 'screen': window.location.hash = '#/screen-share'; break;
-        case 'youtube': promptYouTube(roomIds, refreshAfterSend); break;
+        case 'youtube': promptYouTube(roomIds, refreshAfterSend, onRouteSource); break;
         case 'library': window.location.hash = '#/content'; break;
-        case 'live-stream': startLiveStream(btn, refreshAfterSend); break;
-        case 'live-clear': clearLiveContent(btn, refreshAfterSend); break;
-        case 'live-stop': stopLiveStream(btn, refreshAfterSend); break;
+        case 'live-stream': await startLiveStream(btn, refreshAfterSend); await syncLiveControls(); break;
+        case 'live-clear': await clearLiveContent(btn, refreshAfterSend); break;
+        case 'live-stop': await stopLiveStream(btn, refreshAfterSend); await syncLiveControls(); break;
       }
     });
   });
 
   // Sync the toggle to the persisted module state on (re-)render.
   reflect();
+  syncLiveControls();
 }

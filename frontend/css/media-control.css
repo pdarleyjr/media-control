@@ -1181,18 +1181,21 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
   background-size: 24px 24px; touch-action: none;
 }
 .mc-canvas-board.is-dragover { outline: 2px solid var(--router-cyan); outline-offset: -2px; }
-.mc-canvas-wall-zone { position: absolute; z-index: 0; pointer-events: none; background: rgba(24, 188, 232, .025); }
+.mc-canvas-live-video { position: absolute; inset: 0; z-index: 0; display: block; width: 100%; height: 100%; object-fit: fill; background: #000; cursor: crosshair; }
+.mc-canvas-live-state { position: absolute; inset: 0; z-index: 1; display: grid; place-items: center; color: var(--router-muted); font-size: 11px; pointer-events: none; }
+.mc-canvas-live-state[hidden] { display: none; }
+.mc-canvas-wall-zone { position: absolute; z-index: 1; pointer-events: none; background: rgba(24, 188, 232, .025); }
 .mc-canvas-wall-zone-secondary { background: rgba(143, 160, 179, .025); }
 .mc-canvas-wall-zone > span {
   position: absolute; left: 50%; top: 6px; transform: translateX(-50%); color: rgba(238, 245, 251, .26);
   font-size: 8px; font-weight: 800; letter-spacing: .14em; white-space: nowrap;
 }
 .mc-canvas-output {
-  position: absolute; z-index: 1; overflow: hidden; border: 1px solid var(--router-line-strong);
-  background: rgba(13, 18, 26, .74); color: var(--router-text); pointer-events: none;
+  position: absolute; z-index: 2; overflow: hidden; border: 1px solid rgba(238, 245, 251, .62);
+  background: rgba(13, 18, 26, .12); color: var(--router-text); pointer-events: none;
 }
 .mc-canvas-output.is-wall-break { border-left: 4px solid var(--router-inset); }
-.mc-canvas-output-number { position: absolute; left: 8px; top: 7px; color: var(--router-text); font-size: 9px; font-weight: 900; letter-spacing: .08em; }
+.mc-canvas-output-number { position: absolute; left: 8px; top: 7px; padding: 2px 5px; border-radius: 3px; background: rgba(5, 7, 11, .78); color: var(--router-text); font-size: 9px; font-weight: 900; letter-spacing: .08em; }
 .mc-canvas-output-wall { position: absolute; right: 7px; top: 7px; color: var(--router-cyan); font-size: 7px; font-weight: 800; letter-spacing: .1em; }
 .mc-canvas-output-name { position: absolute; left: 8px; bottom: 7px; font-size: 9px; font-weight: 700; }
 .mc-canvas-output-size { position: absolute; right: 7px; bottom: 7px; color: var(--router-muted); font-family: "Cascadia Mono", Consolas, monospace; font-size: 7px; }
@@ -1234,6 +1237,7 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
 .mc-canvas-video-wrap { position: relative; min-height: 120px; display: grid; place-items: center; background: #000; }
 .mc-canvas-video-wrap video, .mc-canvas-video-wrap img, .mc-canvas-video-wrap iframe { display: block; width: 100%; object-fit: contain; }
 .mc-canvas-video-wrap iframe { min-height: 320px; border: 0; background: #000; }
+.mc-canvas-video-wrap [hidden] { display: none; }
 .mc-canvas-video-state { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; color: var(--router-muted); font-size: 10px; text-align: center; }
 .mc-canvas-video-state[hidden] { display: none; }
 .mc-canvas-monitor > p { margin: 0; padding: 8px 10px; border-top: 1px solid var(--router-line); color: var(--router-muted); font-size: 9px; }

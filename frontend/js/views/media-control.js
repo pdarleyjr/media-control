@@ -18,7 +18,13 @@ import { openViewModal, closeViewModal } from './media-control/view-modal.js';
 import { confirmDialog } from '../components/confirm.js';
 import * as screenShareEngine from '../services/screen-share-engine.js';
 import * as schedulesView from './schedules.js';
-import { mountAdvancedCanvas, unmountAdvancedCanvas } from './media-control/advanced-canvas.js';
+import {
+  hasAdvancedCanvasEndpoint,
+  mountAdvancedCanvas,
+  routeSourceToAdvancedCanvas,
+  setAdvancedCanvasBlanked,
+  unmountAdvancedCanvas,
+} from './media-control/advanced-canvas.js';
 // transport.js is used by stage.js internally — no direct import needed here.
 
 // Rail "Room setup" launcher icons (stroke icons, dashboard SVG vocabulary).
@@ -385,6 +391,9 @@ async function chooseRouteTargets(label) {
 }
 
 async function routeSourceWithPicker(source, label = t('mc.tile.content_fallback')) {
+  if (hasAdvancedCanvasEndpoint()) {
+    return routeSourceToAdvancedCanvas(source, label);
+  }
   const route = await chooseRouteTargets(label);
   if (!route) return false;
   try {
@@ -399,6 +408,15 @@ async function routeSourceWithPicker(source, label = t('mc.tile.content_fallback
 }
 
 async function routeNextcloudWithPicker(path, label = t('mc.tile.content_fallback')) {
+  if (hasAdvancedCanvasEndpoint()) {
+    try {
+      const imported = await api.files.importForCanvas(path);
+      return routeSourceToAdvancedCanvas({ content_id: imported.content_id }, label);
+    } catch (e) {
+      showToast(e?.message || t('mc.send.failed'), 'error');
+      return false;
+    }
+  }
   const route = await chooseRouteTargets(label);
   if (!route) return false;
   try {
@@ -851,7 +869,15 @@ export async function render() {
   paintStage();
   paintToolbox();
   paintSummary();
-  await mountAdvancedCanvas(document.getElementById('mc-advanced-canvas'));
+  const canvasEndpoint = await mountAdvancedCanvas(document.getElementById('mc-advanced-canvas'));
+  if (canvasEndpoint) {
+    const stage = stageEl();
+    if (stage) stage.hidden = true;
+    const summary = summaryEl();
+    if (summary) {
+      summary.innerHTML = `<span class="mc-summary-item">${esc(canvasEndpoint.name)}</span><span class="mc-summary-dot" aria-hidden="true">·</span><span class="mc-summary-item">${esc(canvasEndpoint.status === 'online' ? t('mc.canvas.online') : t('mc.canvas.offline'))}</span>`;
+    }
+  }
 
   // Multiview builder — mounted directly above the stage (whose first wall
   // card is the classroom primary wall) and toggled by the command bar's "Multiview"
@@ -881,6 +907,8 @@ export async function render() {
     blankIds: roomCommandIds,
     refreshAfterSend,
     onMultiview: toggleMultiview,
+    onRouteSource: routeSourceWithPicker,
+    onBlankChange: canvasEndpoint ? setAdvancedCanvasBlanked : null,
   });
 
   // Mount the right rail: Room Presets (one-tap scene recall, the Command-360

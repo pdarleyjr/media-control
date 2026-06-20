@@ -138,21 +138,23 @@ router.post('/broadcast', async (req, res) => {
     return res.status(403).json({ error: 'Read-only access' });
   }
 
-  const { path: rawPath, device_ids, fit_mode, confirm_all } = req.body || {};
+  const { path: rawPath, device_ids, fit_mode, confirm_all, import_only } = req.body || {};
 
   // Validate the source path (and clamp traversal at this trust boundary).
   const relPath = clampRelPath(rawPath);
   if (!relPath) return res.status(400).json({ error: 'path is required and must be a relative file path' });
 
   // Validate the target selection (mirrors broadcast.js:32-34).
-  if (!Array.isArray(device_ids) || device_ids.length === 0) {
+  if (import_only !== true && (!Array.isArray(device_ids) || device_ids.length === 0)) {
     return res.status(400).json({ error: 'device_ids must be a non-empty array' });
   }
 
   // De-dupe and confirm target devices are in this workspace. Missing IDs are
   // stale browser selections; skip them so valid targets still receive content.
-  const requested = [...new Set(device_ids.map(String))];
-  const resolvedTargets = resolveBroadcastTargets({ db, requestedIds: requested, workspaceId: req.workspaceId });
+  const requested = import_only === true ? [] : [...new Set(device_ids.map(String))];
+  const resolvedTargets = import_only === true
+    ? { ok: true, targets: [], missing: [] }
+    : resolveBroadcastTargets({ db, requestedIds: requested, workspaceId: req.workspaceId });
   if (!resolvedTargets.ok) return res.status(resolvedTargets.status).json(resolvedTargets.body);
   const targets = resolvedTargets.targets;
 
@@ -160,7 +162,7 @@ router.post('/broadcast', async (req, res) => {
   const totalInWorkspace = db.prepare(
     'SELECT COUNT(*) AS c FROM devices WHERE workspace_id = ?'
   ).get(req.workspaceId).c;
-  const targetingAll = totalInWorkspace > 0 && targets.length === totalInWorkspace;
+  const targetingAll = import_only !== true && totalInWorkspace > 0 && targets.length === totalInWorkspace;
   if (targetingAll && confirm_all !== true) {
     return res.status(409).json({ code: 'CONFIRM_ALL_REQUIRED', count: totalInWorkspace });
   }
@@ -206,6 +208,20 @@ router.post('/broadcast', async (req, res) => {
 
   if (isDocThumbnailMime(canonicalMime)) {
     kickDocThumbnail(id, localPath, canonicalMime);
+  }
+
+  if (import_only === true) {
+    try {
+      logActivity(
+        req.user.id,
+        'POST /api/files/broadcast',
+        `imported nextcloud:${relPath} as content:${id} for advanced canvas`,
+        null,
+        getClientIp(req),
+        req.workspaceId
+      );
+    } catch (_) {}
+    return res.json({ success: true, content_id: id, imported: true, sent: 0, failed: [], total: 0 });
   }
 
   // Push to each target via the UNMODIFIED shared push path (broadcast.js:62-73).

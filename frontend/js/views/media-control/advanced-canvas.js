@@ -2,6 +2,7 @@ import { api } from '../../api.js';
 import { esc } from '../../utils.js';
 import { t } from '../../i18n.js';
 import { showToast } from '../../components/toast.js';
+import { confirmDialog } from '../../components/confirm.js';
 import { getSocket } from '../../socket.js';
 
 let instance = null;
@@ -92,6 +93,63 @@ function modeMeta(mode) {
     secondary: { icon: '2', title: 'Span Wall 2', detail: 'One image across 2 TVs' },
     free: { icon: '+', title: 'Freeform', detail: 'Place and resize anywhere' },
   }[mode];
+}
+
+function chooseCanvasTarget(state, label) {
+  const topology = state.endpoint.topology;
+  const outputs = topology.outputs || [];
+  const dialog = document.createElement('dialog');
+  dialog.className = 'mc-dialog mc-route-dialog';
+  const outputButtons = outputs.map((output, index) => `
+    <button type="button" class="mc-route-row" data-canvas-target="display:${index}">
+      <span class="mc-route-row-main">
+        <strong class="mc-route-name">${esc(output.name || `${t('mc.canvas.output')} ${index + 1}`)}</strong>
+        <span class="mc-route-meta">${esc(t('mc.canvas.route_single'))}</span>
+      </span>
+    </button>`).join('');
+  dialog.innerHTML = `
+    <div class="mc-dialog-card mc-route-card">
+      <h3 class="mc-dialog-title">${esc(t('mc.canvas.route_title'))}</h3>
+      <p class="mc-dialog-msg">${esc(t('mc.canvas.route_message', { label }))}</p>
+      <div class="mc-route-list">
+        <button type="button" class="mc-route-row" data-canvas-target="primary"><span class="mc-route-row-main"><strong class="mc-route-name">${esc(t('mc.canvas.mode_primary'))}</strong><span class="mc-route-meta">${esc(t('mc.canvas.route_span_three'))}</span></span></button>
+        <button type="button" class="mc-route-row" data-canvas-target="secondary"><span class="mc-route-row-main"><strong class="mc-route-name">${esc(t('mc.canvas.mode_secondary'))}</strong><span class="mc-route-meta">${esc(t('mc.canvas.route_span_two'))}</span></span></button>
+        <button type="button" class="mc-route-row" data-canvas-target="all"><span class="mc-route-row-main"><strong class="mc-route-name">${esc(t('mc.canvas.route_all'))}</strong><span class="mc-route-meta">${esc(t('mc.canvas.route_span_all'))}</span></span></button>
+        ${outputButtons}
+      </div>
+      <div class="mc-dialog-actions"><button type="button" class="mc-btn mc-btn-ghost" data-canvas-target-cancel>${esc(t('common.cancel'))}</button></div>
+    </div>`;
+  document.body.appendChild(dialog);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (target) => {
+      if (settled) return;
+      settled = true;
+      try { if (dialog.open) dialog.close(); } catch {}
+      dialog.remove();
+      resolve(target);
+    };
+    dialog.addEventListener('cancel', (event) => { event.preventDefault(); finish(null); });
+    dialog.querySelector('[data-canvas-target-cancel]')?.addEventListener('click', () => finish(null));
+    dialog.querySelectorAll('[data-canvas-target]').forEach((button) => {
+      button.addEventListener('click', () => finish(button.dataset.canvasTarget));
+    });
+    dialog.showModal();
+  });
+}
+
+function placementForTarget(state, target) {
+  const topology = state.endpoint.topology;
+  if (target === 'primary' || target === 'secondary') {
+    return unionRects(wallOutputs(topology, target).map((output) => outputRect(output, topology)));
+  }
+  if (target === 'all') return { x: 0, y: 0, width: topology.width, height: topology.height };
+  if (target && target.startsWith('display:')) {
+    const index = Number(target.split(':')[1]);
+    const output = topology.outputs?.[index];
+    return output ? outputRect(output, topology) : null;
+  }
+  return null;
 }
 
 function layerMarkup(layer, topology, selected) {
@@ -193,7 +251,6 @@ function render(state) {
         </div>
         <span class="mc-canvas-toolbar-spacer"></span>
         <div class="mc-canvas-actions">
-          <button type="button" class="mc-canvas-action" data-canvas-preview><span class="mc-canvas-action-dot is-cyan"></span>Live control</button>
           <button type="button" class="mc-canvas-action" data-canvas-camera="1">Camera 1</button>
           <button type="button" class="mc-canvas-action" data-canvas-camera="2">Camera 2</button>
           <button type="button" class="mc-canvas-action mc-canvas-action-danger" data-canvas-clear>Clear canvas</button>
@@ -212,6 +269,9 @@ function render(state) {
           </div>
           <div class="mc-canvas-board" data-canvas-board tabindex="0"
                data-canvas-mode="${esc(state.snapMode)}" style="aspect-ratio:${topology.width}/${topology.height}">
+            <video class="mc-canvas-live-video" data-canvas-video autoplay playsinline muted tabindex="0"
+                   aria-label="${esc(t('mc.canvas.live_preview'))}"></video>
+            <div class="mc-canvas-live-state" data-canvas-video-state>${esc(t('mc.canvas.preview_connecting'))}</div>
             ${wallZoneMarkup(topology, 'primary', 'VIDEO WALL 1 / 3 DISPLAYS')}
             ${wallZoneMarkup(topology, 'secondary', 'VIDEO WALL 2 / 2 DISPLAYS')}
             ${(topology.outputs || []).map((output, index) => outputMarkup(output, topology, index)).join('')}
@@ -249,16 +309,16 @@ function render(state) {
             <button type="button" data-canvas-monitor-close aria-label="${esc(t('common.close'))}">&times;</button>
           </div>
           <div class="mc-canvas-video-wrap">
-            <video data-canvas-video autoplay playsinline muted tabindex="0"></video>
             <img data-canvas-camera-image alt="${esc(t('mc.canvas.room_camera'))}" hidden>
             <iframe data-canvas-camera-frame title="${esc(t('mc.canvas.room_camera'))}" allow="autoplay" hidden></iframe>
-            <div class="mc-canvas-video-state" data-canvas-video-state>${esc(t('mc.canvas.preview_waiting'))}</div>
+            <div class="mc-canvas-video-state" data-canvas-camera-state hidden></div>
           </div>
           <p>Click, drag, scroll, or type directly on this feed to control the P3.</p>
         </aside>
       </div>
     </section>`;
   wire(state);
+  bindPreviewSurface(state);
 }
 
 function canvasPoint(board, event, topology) {
@@ -356,25 +416,40 @@ function wirePreviewInput(state, video) {
   });
 }
 
+function bindPreviewSurface(state) {
+  const video = state.host.querySelector('[data-canvas-video]');
+  const status = state.host.querySelector('[data-canvas-video-state]');
+  if (!video) return;
+  if (state.previewStream) {
+    video.srcObject = state.previewStream;
+    if (status) status.hidden = true;
+  } else if (status) {
+    status.hidden = false;
+    status.textContent = state.previewError || t('mc.canvas.preview_connecting');
+  }
+  wirePreviewInput(state, video);
+}
+
+function schedulePreviewRestart(state) {
+  if (state.previewRestartTimer || instance !== state) return;
+  state.previewRestartTimer = setTimeout(() => {
+    state.previewRestartTimer = null;
+    startPreview(state);
+  }, 2000);
+}
+
 async function startPreview(state) {
+  if (state.previewStarting || state.peer || instance !== state) return;
   const socket = getSocket();
   if (!socket || !socket.connected) {
-    showToast(t('mc.canvas.socket_offline'), 'error');
+    state.previewError = t('mc.canvas.socket_offline');
+    bindPreviewSurface(state);
+    schedulePreviewRestart(state);
     return;
   }
-  stopPreview(state);
-  const monitor = state.host.querySelector('[data-canvas-monitor]');
-  const video = state.host.querySelector('[data-canvas-video]');
-  const image = state.host.querySelector('[data-canvas-camera-image]');
-  const frame = state.host.querySelector('[data-canvas-camera-frame]');
-  const status = state.host.querySelector('[data-canvas-video-state]');
-  monitor.hidden = false;
-  image.hidden = true;
-  frame.hidden = true;
-  frame.removeAttribute('src');
-  video.hidden = false;
-  status.hidden = false;
-  status.textContent = t('mc.canvas.preview_connecting');
+  state.previewStarting = true;
+  state.previewError = null;
+  bindPreviewSurface(state);
 
   const ice = await api.canvas.ice().catch(() => ({ iceServers: [] }));
   state.peer = new RTCPeerConnection({
@@ -382,12 +457,21 @@ async function startPreview(state) {
     iceTransportPolicy: ice.iceTransportPolicy || 'all',
   });
   state.peer.ontrack = (event) => {
-    video.srcObject = event.streams[0];
-    status.hidden = true;
-    video.focus();
+    if (state.previewOfferTimer) clearTimeout(state.previewOfferTimer);
+    state.previewOfferTimer = null;
+    state.previewStream = event.streams[0];
+    state.previewStarting = false;
+    bindPreviewSurface(state);
   };
   state.peer.ondatachannel = (event) => {
     if (event.channel.label === 'control') state.controlChannel = event.channel;
+  };
+  state.peer.onconnectionstatechange = () => {
+    if (!['failed', 'disconnected', 'closed'].includes(state.peer?.connectionState)) return;
+    stopPreview(state, { notify: false });
+    state.previewError = t('mc.canvas.preview_failed');
+    bindPreviewSurface(state);
+    schedulePreviewRestart(state);
   };
   state.peer.onicecandidate = (event) => {
     if (!event.candidate) return;
@@ -412,24 +496,35 @@ async function startPreview(state) {
   };
   state.previewEndedHandler = (payload) => {
     if (!payload || payload.endpoint_id !== state.endpoint.id) return;
-    status.hidden = false;
-    status.textContent = t('mc.canvas.preview_failed');
+    stopPreview(state, { notify: false });
+    state.previewError = t('mc.canvas.preview_failed');
+    bindPreviewSurface(state);
+    schedulePreviewRestart(state);
   };
   socket.on('canvas:preview-offer', state.previewOfferHandler);
   socket.on('canvas:preview-ice', state.previewIceHandler);
   socket.on('canvas:preview-ended', state.previewEndedHandler);
-  wirePreviewInput(state, video);
   socket.timeout(5000).emit('dashboard:canvas-preview-start', {
     endpoint_id: state.endpoint.id,
     ice_servers: ice.iceServers || [],
   }, (error, ack) => {
     if (error || !ack?.ok) {
-      status.textContent = t('mc.canvas.preview_failed');
+      stopPreview(state, { notify: false });
+      state.previewError = t('mc.canvas.preview_failed');
+      bindPreviewSurface(state);
+      schedulePreviewRestart(state);
     }
   });
+  state.previewOfferTimer = setTimeout(() => {
+    if (state.previewStream || instance !== state) return;
+    stopPreview(state, { notify: false });
+    state.previewError = t('mc.canvas.preview_failed');
+    bindPreviewSurface(state);
+    schedulePreviewRestart(state);
+  }, 12000);
 }
 
-function stopPreview(state) {
+function stopPreview(state, { notify = true } = {}) {
   const socket = getSocket();
   if (state.previewOfferHandler) socket?.off('canvas:preview-offer', state.previewOfferHandler);
   if (state.previewIceHandler) socket?.off('canvas:preview-ice', state.previewIceHandler);
@@ -437,10 +532,16 @@ function stopPreview(state) {
   if (state.peer) {
     try { state.peer.close(); } catch {}
   }
-  if (state.endpoint) {
+  if (notify && state.endpoint) {
     socket?.emit('dashboard:canvas-preview-stop', { endpoint_id: state.endpoint.id });
   }
+  if (state.previewRestartTimer) clearTimeout(state.previewRestartTimer);
+  if (state.previewOfferTimer) clearTimeout(state.previewOfferTimer);
+  state.previewRestartTimer = null;
+  state.previewOfferTimer = null;
   state.peer = null;
+  state.previewStream = null;
+  state.previewStarting = false;
   state.controlChannel = null;
   state.previewOfferHandler = null;
   state.previewIceHandler = null;
@@ -448,18 +549,14 @@ function stopPreview(state) {
 }
 
 function requestCamera(state, camera) {
-  stopPreview(state);
   const monitor = state.host.querySelector('[data-canvas-monitor]');
-  const video = state.host.querySelector('[data-canvas-video]');
   const image = state.host.querySelector('[data-canvas-camera-image]');
   const frame = state.host.querySelector('[data-canvas-camera-frame]');
-  const status = state.host.querySelector('[data-canvas-video-state]');
+  const status = state.host.querySelector('[data-canvas-camera-state]');
   const title = state.host.querySelector('[data-canvas-monitor-title]');
   monitor.hidden = false;
   title.textContent = `Classroom camera ${camera}`;
-  video.hidden = true;
   image.hidden = true;
-  video.srcObject = null;
   status.hidden = true;
   frame.src = `/player/classroom-camera.html?camera=${camera}&fit=contain`;
   frame.hidden = false;
@@ -589,6 +686,14 @@ function wire(state) {
   });
   state.host.querySelector('[data-canvas-apply]')?.addEventListener('click', () => publishScene(state));
   state.host.querySelector('[data-canvas-clear]')?.addEventListener('click', async () => {
+    const confirmed = await confirmDialog({
+      title: t('mc.canvas.clear_confirm_title'),
+      message: t('mc.canvas.clear_confirm_message'),
+      confirmLabel: t('mc.canvas.clear_confirm_action'),
+      cancelLabel: t('common.cancel'),
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     try {
       const result = await api.canvas.clear(state.endpoint.id);
       state.endpoint = result.endpoint;
@@ -598,31 +703,29 @@ function wire(state) {
       showToast(error.message || t('mc.canvas.clear_failed'), 'error');
     }
   });
-  state.host.querySelector('[data-canvas-preview]')?.addEventListener('click', () => startPreview(state));
   state.host.querySelectorAll('[data-canvas-camera]').forEach((button) => {
     button.addEventListener('click', () => requestCamera(state, button.dataset.canvasCamera));
   });
   state.host.querySelector('[data-canvas-monitor-close]')?.addEventListener('click', () => {
-    stopPreview(state);
     const monitor = state.host.querySelector('[data-canvas-monitor]');
     if (monitor) monitor.hidden = true;
   });
 }
 
 export async function mountAdvancedCanvas(host) {
-  if (!host) return;
+  if (!host) return null;
   unmountAdvancedCanvas();
   let result;
   try {
     result = await api.canvas.list();
   } catch {
     host.hidden = true;
-    return;
+    return null;
   }
   const endpoint = result?.endpoints?.[0];
   if (!endpoint) {
     host.hidden = true;
-    return;
+    return null;
   }
   host.hidden = false;
   instance = {
@@ -631,6 +734,11 @@ export async function mountAdvancedCanvas(host) {
     snapMode: 'display',
     selectedLayerId: null,
     peer: null,
+    previewStream: null,
+    previewStarting: false,
+    previewError: null,
+    previewRestartTimer: null,
+    previewOfferTimer: null,
     controlChannel: null,
   };
   const socket = getSocket();
@@ -647,19 +755,17 @@ export async function mountAdvancedCanvas(host) {
   instance.cameraHandler = (payload) => {
     if (!payload || payload.endpoint_id !== instance?.endpoint.id) return;
     const image = instance.host.querySelector('[data-canvas-camera-image]');
-    const video = instance.host.querySelector('[data-canvas-video]');
     const frame = instance.host.querySelector('[data-canvas-camera-frame]');
-    const status = instance.host.querySelector('[data-canvas-video-state]');
+    const status = instance.host.querySelector('[data-canvas-camera-state]');
     if (!image) return;
     image.src = payload.image;
     image.hidden = false;
-    if (video) video.hidden = true;
     if (frame) frame.hidden = true;
     if (status) status.hidden = true;
   };
   instance.cameraErrorHandler = (payload) => {
     if (!payload || payload.endpoint_id !== instance?.endpoint.id) return;
-    const status = instance.host.querySelector('[data-canvas-video-state]');
+    const status = instance.host.querySelector('[data-canvas-camera-state]');
     if (!status) return;
     status.hidden = false;
     status.textContent = t('mc.canvas.camera_failed');
@@ -668,6 +774,43 @@ export async function mountAdvancedCanvas(host) {
   socket?.on('canvas:camera-frame', instance.cameraHandler);
   socket?.on('canvas:camera-error', instance.cameraErrorHandler);
   render(instance);
+  startPreview(instance);
+  return endpoint;
+}
+
+export function hasAdvancedCanvasEndpoint() {
+  return !!instance?.endpoint;
+}
+
+export async function routeSourceToAdvancedCanvas(source, label = t('mc.canvas.source')) {
+  if (!instance?.endpoint) return false;
+  const target = await chooseCanvasTarget(instance, label);
+  if (!target) return false;
+  const rect = placementForTarget(instance, target);
+  if (!rect) return false;
+  const layers = Array.isArray(instance.endpoint.layers) ? instance.endpoint.layers : [];
+  const id = crypto.randomUUID();
+  layers.push({
+    id,
+    ...rect,
+    z_index: layers.length,
+    label,
+    source,
+    fit_mode: 'contain',
+    muted: true,
+  });
+  instance.endpoint.layers = layers;
+  instance.selectedLayerId = id;
+  await publishScene(instance);
+  return true;
+}
+
+export async function setAdvancedCanvasBlanked(blanked) {
+  if (!instance?.endpoint) return false;
+  const result = await api.canvas.setActive(instance.endpoint.id, !blanked);
+  instance.endpoint = result.endpoint;
+  render(instance);
+  return true;
 }
 
 export function unmountAdvancedCanvas() {

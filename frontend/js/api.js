@@ -79,6 +79,10 @@ export const api = {
       body: JSON.stringify({ layers }),
     }),
     clear: (id) => request(`/advanced-canvas/${id}/clear`, { method: 'POST' }),
+    setActive: (id, active) => request(`/advanced-canvas/${id}/active`, {
+      method: 'POST',
+      body: JSON.stringify({ active: active === true }),
+    }),
     ice: () => request('/screen-share/turn-credentials'),
   },
 
@@ -360,6 +364,10 @@ export const api = {
     // with confirm_all:true (same as api.broadcast).
     broadcast: (path, device_ids, opts = {}) =>
       requestBroadcast({ path, device_ids, fit_mode: opts.fit_mode, confirm_all: opts.confirm_all }, '/files/broadcast'),
+    importForCanvas: (path) => request('/files/broadcast', {
+      method: 'POST',
+      body: JSON.stringify({ path, import_only: true }),
+    }),
   },
   // Media downloads (by URL).
   downloads: {

@@ -474,7 +474,7 @@ function rehydratePreviewIfNeeded() {
 
 // Sync this view's UI back to the idle state after the engine stops capture
 // (browser "Stop sharing" pill, stopAll, or last-peer drop).
-function syncCaptureStoppedUI() {
+function syncCaptureStoppedUI({ refreshSessions = true } = {}) {
   if (activeContainer) {
     const previewCard = activeContainer.querySelector('#ss-preview-card');
     if (previewCard) previewCard.hidden = true;
@@ -488,7 +488,7 @@ function syncCaptureStoppedUI() {
       cb.disabled = false;
     });
   }
-  refreshSessionList();
+  if (refreshSessions) refreshSessionList();
 }
 
 // ----------------------------------------------------------------------
@@ -504,7 +504,7 @@ function refreshSessionList() {
     list.innerHTML = '';
     // No active broadcast: also collapse the preview/targets if the engine
     // released capture (e.g. last peer stopped from another view / the chip).
-    if (!engine.getStream()) syncCaptureStoppedUI();
+    if (!engine.getStream()) syncCaptureStoppedUI({ refreshSessions: false });
     return;
   }
   section.hidden = false;
