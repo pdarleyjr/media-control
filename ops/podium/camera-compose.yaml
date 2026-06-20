@@ -14,6 +14,8 @@ services:
       - warning
       - -fflags
       - +discardcorrupt+nobuffer
+      - -thread_queue_size
+      - "512"
       - -f
       - v4l2
       - -input_format
@@ -24,6 +26,8 @@ services:
       - 1280x720
       - -i
       - /dev/video2
+      - -thread_queue_size
+      - "512"
       - -f
       - alsa
       - -ar

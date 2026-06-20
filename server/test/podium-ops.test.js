@@ -12,4 +12,5 @@ test('podium ops wait for a display and use clean camera capture settings', () =
   assert.match(session, /stop_cage/);
   assert.match(camera, /- yuyv422/);
   assert.match(camera, /hw:C920,0/);
+  assert.match(camera, /-thread_queue_size/);
 });
