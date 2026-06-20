@@ -295,7 +295,7 @@ app.get('/api/live-stream/local/program-state', (req, res) => {
 // HMAC-bound endpoint/content/workspace tuple generated while publishing the
 // scene. It exposes no device or user token and checks current DB ownership on
 // every request, so deleting an endpoint immediately revokes its asset URLs.
-app.get('/player/canvas-asset/:endpointId/:contentId/:signature', async (req, res) => {
+app.get('/player/canvas-asset/:endpointId/:contentId/:width/:height/:signature', async (req, res) => {
   const { db } = require('./db/database');
   const { verifyCanvasAsset } = require('./lib/canvas-asset-signature');
   const endpoint = db.prepare(
@@ -313,6 +313,8 @@ app.get('/player/canvas-asset/:endpointId/:contentId/:signature', async (req, re
     endpointId: endpoint.id,
     contentId: content.id,
     workspaceId: endpoint.workspace_id,
+    width: req.params.width,
+    height: req.params.height,
     secret: config.jwtSecret,
     signature: req.params.signature,
   })) {
@@ -325,6 +327,22 @@ app.get('/player/canvas-asset/:endpointId/:contentId/:signature', async (req, re
 
   let filePath = safePath;
   let mimeType = String(content.mime_type || 'application/octet-stream');
+  if (mimeType.startsWith('image/')) {
+    try {
+      const { getCanvasImageVariant } = require('./lib/canvas-image-cache');
+      filePath = await getCanvasImageVariant(
+        content.id,
+        safePath,
+        req.params.width,
+        req.params.height,
+        config.contentDir
+      );
+      mimeType = 'image/webp';
+    } catch (error) {
+      console.warn('[canvas-asset] image optimization failed:', error.message);
+      return res.status(502).type('text/plain').send('image optimization failed');
+    }
+  }
   const { getOfficePdf, isConvertibleOfficeMime } = require('./lib/doc-pdf');
   if (isConvertibleOfficeMime(mimeType)) {
     try {

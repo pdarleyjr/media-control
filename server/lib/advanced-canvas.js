@@ -118,13 +118,23 @@ function getEndpoint(endpointId) {
   return endpointRowToJson(row, row ? getEndpointLayers(endpointId) : []);
 }
 
-function contentRenderDescriptor(content, publicBase, endpointId, workspaceId, canvasAssetSecret) {
+function contentRenderDescriptor(
+  content,
+  publicBase,
+  endpointId,
+  workspaceId,
+  canvasAssetSecret,
+  renderWidth,
+  renderHeight
+) {
   const mimeType = String(content.mime_type || 'application/octet-stream').toLowerCase();
   const url = content.remote_url || canvasAssetUrl({
     publicBase,
     endpointId,
     contentId: content.id,
     workspaceId,
+    width: renderWidth,
+    height: renderHeight,
     secret: canvasAssetSecret,
   });
   let kind = 'frame';
@@ -140,7 +150,16 @@ function contentRenderDescriptor(content, publicBase, endpointId, workspaceId, c
   };
 }
 
-async function resolveSource(source, workspaceId, publicBase, endpointId, canvasAssetSecret, assertRemoteUrlSafe) {
+async function resolveSource(
+  source,
+  workspaceId,
+  publicBase,
+  endpointId,
+  canvasAssetSecret,
+  renderWidth,
+  renderHeight,
+  assertRemoteUrlSafe
+) {
   const value = source && typeof source === 'object' ? source : {};
 
   if (value.content_id) {
@@ -153,7 +172,15 @@ async function resolveSource(source, workspaceId, publicBase, endpointId, canvas
     if (content.workspace_id && content.workspace_id !== workspaceId) {
       throw new Error(`Content ${value.content_id} is not in this workspace`);
     }
-    return contentRenderDescriptor(content, publicBase, endpointId, workspaceId, canvasAssetSecret);
+    return contentRenderDescriptor(
+      content,
+      publicBase,
+      endpointId,
+      workspaceId,
+      canvasAssetSecret,
+      renderWidth,
+      renderHeight
+    );
   }
 
   if (value.presentation_id) {
@@ -193,7 +220,7 @@ async function resolveSource(source, workspaceId, publicBase, endpointId, canvas
         mime_type: item.mime_type,
         remote_url: item.remote_url,
         duration_sec: item.content_duration,
-      }, publicBase, endpointId, workspaceId, canvasAssetSecret),
+      }, publicBase, endpointId, workspaceId, canvasAssetSecret, renderWidth, renderHeight),
       duration_sec: Number(item.duration_sec) || Number(item.content_duration) || 10,
       fit_mode: item.fit_mode || null,
     }));
@@ -237,6 +264,8 @@ async function normalizeSceneLayers({
       publicBase,
       endpointId,
       canvasAssetSecret,
+      width,
+      height,
       assertRemoteUrlSafe
     );
     safe.push({

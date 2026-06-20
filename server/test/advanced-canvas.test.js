@@ -118,7 +118,7 @@ test('normalizeSceneLayers clamps coordinates and resolves local media and playl
     assert.equal(layers[0].render.kind, 'image');
     assert.match(
       layers[0].render.url,
-      new RegExp(`^https://media-control\\.example\\.test/player/canvas-asset/${prefix}endpoint/${imageId}/[A-Za-z0-9_-]+$`)
+      new RegExp(`^https://media-control\\.example\\.test/player/canvas-asset/${prefix}endpoint/${imageId}/7680/1080/[A-Za-z0-9_-]+$`)
     );
     assert.equal(layers[1].render.kind, 'playlist');
     assert.equal(layers[1].render.items[0].duration_sec, 12);
