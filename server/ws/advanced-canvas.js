@@ -149,6 +149,8 @@ function setupAdvancedCanvas(io, dashboardNs) {
   });
 
   dashboardNs.on('connection', (socket) => {
+    const activePreviewEndpoints = new Set();
+
     socket.on('dashboard:canvas-preview-start', (data, ack) => {
       const endpointId = data && data.endpoint_id;
       if (!canActOnCanvas(socket, endpointId, 'read')) {
@@ -160,6 +162,7 @@ function setupAdvancedCanvas(io, dashboardNs) {
         dashboard_socket: socket.id,
         ice_servers: Array.isArray(data.ice_servers) ? data.ice_servers : [],
       });
+      activePreviewEndpoints.add(String(endpointId));
       ack && ack({ ok: true });
     });
 
@@ -184,6 +187,7 @@ function setupAdvancedCanvas(io, dashboardNs) {
       canvasNs.to(data.endpoint_id).emit('canvas:preview-stop', {
         dashboard_socket: socket.id,
       });
+      activePreviewEndpoints.delete(String(data.endpoint_id));
     });
 
     socket.on('dashboard:canvas-input', (data) => {
@@ -204,6 +208,15 @@ function setupAdvancedCanvas(io, dashboardNs) {
         dashboard_socket: socket.id,
       });
       ack && ack({ ok: true });
+    });
+
+    socket.on('disconnect', () => {
+      for (const endpointId of activePreviewEndpoints) {
+        canvasNs.to(endpointId).emit('canvas:preview-stop', {
+          dashboard_socket: socket.id,
+        });
+      }
+      activePreviewEndpoints.clear();
     });
   });
 
