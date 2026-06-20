@@ -14,4 +14,5 @@ test('podium camera uses the clean raw 720p mode and stable ALSA card name', () 
   assert.match(compose, /1280x720/);
   assert.match(compose, /hw:C920,0/);
   assert.match(compose, /\+discardcorrupt\+nobuffer/);
+  assert.match(compose, /-thread_queue_size/);
 });
