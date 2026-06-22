@@ -25,6 +25,7 @@ import {
   setAdvancedCanvasBlanked,
   unmountAdvancedCanvas,
 } from './media-control/advanced-canvas.js';
+import { mount as mountWhiteboardSurface } from './media-control/whiteboard.js';
 // transport.js is used by stage.js internally — no direct import needed here.
 
 // Rail "Room setup" launcher icons (stroke icons, dashboard SVG vocabulary).
@@ -489,10 +490,10 @@ function openInspector(deviceId) {
     onDeviceChanged: async () => {
       await displayState.refresh().catch(() => {});
       await loadWalls();
-      pruneSelection();
-      paintStage();
-      paintToolbox();
-      paintSummary();
+pruneSelection();
+  paintStage();
+  paintToolbox();
+  paintSummary();
     },
   });
 }
@@ -870,6 +871,51 @@ export async function render() {
   paintToolbox();
   paintSummary();
   const canvasEndpoint = await mountAdvancedCanvas(document.getElementById('mc-advanced-canvas'));
+
+  // Whiteboard dock stub (Phase 2). Mounts the self-contained whiteboard surface
+  // as a full-stage overlay over the Command Center canvas. Minimal entrypoint:
+  // window.mcOpenWhiteboard() opens it (optionally with an explicit target); the
+  // small dock button in the header is a discoverable launcher for the same call.
+  // Wiring target selection to the stage's current selection is intentionally
+  // light here — the full Command Center target-model integration is a separate
+  // concern and out of scope for this pass.
+  let wbApi = null;
+  let wbHost = null;
+  function whiteboardTarget() {
+    const dev = displayState.getAll().find(d => d.online && selectedIds.includes(d.id) && !wallMemberIds.has(d.id));
+    if (dev) return { target_type: 'display', target_id: dev.id, label: dev.name || dev.id };
+    const w = Array.isArray(walls) && walls[0];
+    if (w && w.id) {
+      return { target_type: 'wall', target_id: (w.leader_device_id || (w.devices && w.devices[0] && w.devices[0].device_id)) || w.id, wall_id: w.id, label: w.name || w.id };
+    }
+    return null;
+  }
+  function closeWhiteboard() {
+    if (wbApi) { try { wbApi.unmount(); } catch { /* best-effort */ } wbApi = null; }
+    if (wbHost && wbHost.parentNode) wbHost.parentNode.removeChild(wbHost);
+    wbHost = null;
+  }
+  window.mcOpenWhiteboard = function (targetArg) {
+    closeWhiteboard();
+    const tgt = targetArg || whiteboardTarget();
+    wbHost = document.createElement('div');
+    wbHost.className = 'mc-wb-host';
+    document.body.appendChild(wbHost);
+    wbApi = mountWhiteboardSurface(wbHost, { onStatus: (m) => showToast(m) });
+    if (tgt) wbApi.setTarget(tgt);
+  };
+  window.mcCloseWhiteboard = closeWhiteboard;
+  const dockHost = document.querySelector('.mc-control-controls');
+  if (dockHost && !document.getElementById('mc-wb-dock-btn')) {
+    const dockBtn = document.createElement('button');
+    dockBtn.type = 'button';
+    dockBtn.id = 'mc-wb-dock-btn';
+    dockBtn.className = 'mc-chip mc-wb-dock-btn';
+    dockBtn.title = esc(t('mc.wb.dock_open'));
+    dockBtn.textContent = t('mc.wb.dock_open');
+    dockBtn.addEventListener('click', () => window.mcOpenWhiteboard());
+    dockHost.appendChild(dockBtn);
+  }
   if (canvasEndpoint) {
     const stage = stageEl();
     if (stage) stage.hidden = true;
@@ -992,6 +1038,11 @@ export async function render() {
 export function unmount() {
   // The view owns NO live broadcast resource (that's the engine singleton),
   // so unmount only detaches this view's subscriptions. Broadcasts persist.
+  // Tear down any open whiteboard overlay so it doesn't outlive this view
+  // (its surface took a window resize + canvas pointer listeners we must release).
+  if (window.mcCloseWhiteboard) { try { window.mcCloseWhiteboard(); } catch { /* */ } }
+  const dockBtn = document.getElementById('mc-wb-dock-btn');
+  if (dockBtn) dockBtn.remove();
   if (unsub) { unsub(); unsub = null; }
   if (unsubChip) { unsubChip(); unsubChip = null; }
   teardownMultiview();    // stop any local audio monitor so it can't keep playing

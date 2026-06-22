@@ -1006,7 +1006,60 @@
         const baseSize = Number(stroke.size) > 0 ? Number(stroke.size) : 4;
         const color = typeof stroke.color === 'string' && stroke.color ? stroke.color : '#ffffff';
 
+        const pts = stroke.points;
+        const px = (p) => (Number(p.x) || 0) * w;
+        const py = (p) => (Number(p.y) || 0) * h;
+
         ctx.save();
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+
+        // ----- Vector tools: text + line/rect/ellipse -----
+        if (stroke.tool === 'text') {
+          const fam = stroke.font === 'serif' ? 'serif' : stroke.font === 'mono' ? 'monospace' : 'sans-serif';
+          const fs = Number(stroke.size) > 0 ? Number(stroke.size) : 24;
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = color;
+          ctx.textBaseline = 'top';
+          ctx.font = String(fs) + 'px ' + fam;
+          try {
+            const lines = String(stroke.text || '').split(/\r\n|\r|\n/);
+            for (let k = 0; k < lines.length; k++) {
+              ctx.fillText(lines[k], px(pts[0]), py(pts[0]) + k * fs * 1.15);
+            }
+          } catch (_) { /* bad font metrics → skip */ }
+          ctx.restore();
+          return;
+        }
+        if (stroke.tool === 'line' || stroke.tool === 'rect' || stroke.tool === 'ellipse') {
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.globalAlpha = 1;
+          ctx.strokeStyle = color;
+          ctx.lineWidth = baseSize;
+          var x0 = px(pts[0]);
+          var y0 = py(pts[0]);
+          var x1 = pts.length > 1 ? px(pts[pts.length - 1]) : x0;
+          var y1 = pts.length > 1 ? py(pts[pts.length - 1]) : y0;
+          ctx.beginPath();
+          if (stroke.tool === 'line') {
+            ctx.moveTo(x0, y0);
+            ctx.lineTo(x1, y1);
+          } else if (stroke.tool === 'rect') {
+            ctx.rect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
+          } else { // ellipse, bounding-box center fit
+            var cx = (x0 + x1) / 2;
+            var cy = (y0 + y1) / 2;
+            var rx = Math.max(0.5, Math.abs(x1 - x0) / 2);
+            var ry = Math.max(0.5, Math.abs(y1 - y0) / 2);
+            ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+          }
+          ctx.stroke();
+          ctx.restore();
+          return;
+        }
+
+        // ----- Ink tools: pen / highlighter / eraser -----
         if (tool === 'eraser') {
           ctx.globalCompositeOperation = 'destination-out';
           ctx.globalAlpha = 1;
@@ -1023,10 +1076,6 @@
           ctx.strokeStyle = color;
           ctx.lineWidth = baseSize;
         }
-
-        const pts = stroke.points;
-        const px = (p) => (Number(p.x) || 0) * w;
-        const py = (p) => (Number(p.y) || 0) * h;
 
         if (pts.length === 1) {
           // A single tap → draw a dot of the right thickness.
@@ -1628,6 +1677,16 @@
         try {
           console.log('Smartboard: undo');
           if (_wb.strokes.length > 0) _wb.strokes.pop();
+          wbRedrawAll();
+        } catch (e) { /* never break playback */ }
+      });
+
+      socket.on('device:wb-redo', (data) => {
+        try {
+          console.log('Smartboard: redo');
+          const stroke = data && data.stroke;
+          if (!stroke) return;
+          wbStoreStroke(stroke);
           wbRedrawAll();
         } catch (e) { /* never break playback */ }
       });

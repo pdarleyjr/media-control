@@ -1496,3 +1496,69 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
 }
 .mc-tb-folder:hover { border-color: var(--mc-border-medium); color: var(--mc-text-primary); }
 .mc-tb-folder.is-active { background: var(--accent, #2563eb); border-color: var(--accent, #2563eb); color: #fff; }
+
+/* ════════════════════════════════════════════════════════════════════════
+   Command Center whiteboard surface (.mc-wb-*)
+   Full-stage overlay mounted over the canvas by views/media-control/whiteboard.js.
+   Touch-first: 48px-min buttons for the Kamrui podium; transparent backdrop
+   so the canvas underneath stays visible while annotating.
+   ───────────────────────────────────────────────────────────────────────── */
+.mc-wb-host { position: fixed; inset: 0; z-index: 2147483640; }
+.mc-wb-overlay {
+  position: fixed; inset: 0; z-index: 2147483641;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: rgba(15, 23, 42, 0.35);
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+  font-family: var(--mc-font-family-sans, system-ui, sans-serif);
+}
+.mc-wb-panel {
+  display: flex; flex-direction: column; width: min(96vw, 1280px); height: min(86vh, 760px);
+  background: #fff; border-radius: var(--mc-radius-lg, 1rem);
+  box-shadow: 0 24px 70px rgba(0,0,0,0.34); overflow: hidden;
+  border: 1px solid var(--mc-border-medium, #d4d0ca);
+}
+.mc-wb-bar {
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--mc-space-sm);
+  padding: var(--mc-space-sm) var(--mc-space-md);
+  background: var(--mc-surface-alt, #f8f6f2);
+  border-bottom: 1px solid var(--mc-border-light, #e8e5e0);
+}
+.mc-wb-title { margin: 0; font-size: var(--mc-font-size-lg); font-weight: 800; color: var(--mc-text-primary); }
+.mc-wb-tools, .mc-wb-actions { display: flex; flex-wrap: wrap; gap: var(--mc-space-xs); }
+.mc-wb-tool, .mc-wb-btn {
+  min-height: 48px; min-width: 48px; padding: 0 14px; border-radius: var(--mc-radius-md, 0.75rem);
+  border: 1px solid var(--mc-border-medium, #d4d0ca); background: var(--mc-surface, #fff);
+  color: var(--mc-text-primary); font-size: var(--mc-font-size-sm); font-weight: 700;
+  cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+}
+.mc-wb-tool:hover, .mc-wb-btn:hover { border-color: var(--mc-border-strong, #c5c1ba); }
+.mc-wb-tool.active { background: var(--accent, #2563eb); border-color: var(--accent, #2563eb); color: #fff; }
+.mc-wb-btn.mc-wb-coming { opacity: 0.5; cursor: not-allowed; }
+.mc-wb-btn.mc-wb-close { margin-left: auto; background: #ef4444; border-color: #ef4444; color: #fff; }
+.mc-wb-swatches { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.mc-wb-swatch {
+  width: 28px; height: 28px; min-width: 28px; min-height: 28px; border-radius: var(--mc-radius-full, 9999px);
+  border: 2px solid var(--mc-border-medium, #d4d0ca); cursor: pointer; padding: 0;
+}
+.mc-wb-swatch.active { border-color: var(--mc-text-primary, #292524); box-shadow: 0 0 0 2px #fff inset; }
+.mc-wb-hex { display: inline-flex; align-items: center; gap: 4px; font-size: var(--mc-font-size-xs); color: var(--mc-text-secondary); }
+.mc-wb-hex input { width: 78px; padding: 4px 6px; border: 1px solid var(--mc-border-medium, #d4d0ca); border-radius: var(--mc-radius-sm, 0.5rem); font-size: var(--mc-font-size-xs); }
+.mc-wb-size { display: inline-flex; align-items: center; gap: 6px; font-size: var(--mc-font-size-xs); color: var(--mc-text-secondary); }
+.mc-wb-size input[type="range"] { width: 120px; min-height: 32px; }
+.mc-wb-scope {
+  display: flex; align-items: center; gap: var(--mc-space-sm);
+  padding: var(--mc-space-xs) var(--mc-space-md);
+  background: var(--mc-surface, #fff); border-bottom: 1px solid var(--mc-border-light, #e8e5e0);
+  font-size: var(--mc-font-size-xs); color: var(--mc-text-secondary);
+}
+.mc-wb-select { min-height: 32px; padding: 4px 8px; border-radius: var(--mc-radius-sm, 0.5rem); border: 1px solid var(--mc-border-medium, #d4d0ca); }
+.mc-wb-target-name { color: var(--mc-text-primary); font-weight: 700; }
+.mc-wb-canvas-wrap { position: relative; flex: 1; background: #fff; overflow: hidden; }
+.mc-wb-canvas-wrap > canvas { width: 100%; height: 100%; display: block; }
+.mc-wb-text-input {
+  position: absolute; z-index: 2; min-width: 120px; min-height: 32px;
+  font-family: var(--mc-font-family-sans, sans-serif); line-height: 1.15;
+  border: 1px dashed var(--accent, #2563eb); background: rgba(255,255,255,0.9);
+  padding: 2px 6px; resize: none; outline: none;
+}
+.mc-wb-dock-btn { min-height: 32px; padding: 0 14px; cursor: pointer; touch-action: manipulation; }
