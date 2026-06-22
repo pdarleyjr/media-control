@@ -1876,6 +1876,12 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
   min-height: 0;
   overflow: hidden;
 }
+/* When the Content Library opens, widen its grid track so the canvas reflows
+   narrower instead of being overlapped. :has() is supported in all current
+   evergreen browsers and the Electron console. */
+.mc-cc-body:has(.mc-library-drawer[data-open="true"]) {
+  grid-template-columns: 72px 1fr min(360px, 40vw);
+}
 
 /* Left collapsed icon rail — narrow, fixed, never expands by default. */
 .mc-cc-rail {
@@ -1924,13 +1930,16 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
   display: flex; justify-content: center; flex-wrap: wrap; gap: 6px;
 }
 .mc-cc-main .mc-stage.mc-cc-canvas {
-  width: min(1120px, 86vw);
+  width: auto;
+  height: 100%;
+  max-width: min(1120px, 86vw);
+  max-height: 100%;
   aspect-ratio: 16 / 9;
   background: #000;
   border-radius: 4px;
   box-shadow: 0 6px 24px rgba(0,0,0,0.45);
-  flex: 0 1 auto;
-  max-height: calc(100vh - 72px - 220px);
+  flex: 1 1 auto;
+  align-self: center;
 }
 .mc-cc-controls {
   width: 100%;
@@ -1949,7 +1958,7 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
 /* Right Content Library tab — collapsed by default to a 56px right rail.
    The existing drawer mechanics (data-open + data-library-toggle) drive the
    slide-in; only the default-collapsed geometry lives here. */
-.mc-cc-body .mc-library-drawer { position: relative; width: 56px; }
+.mc-cc-body .mc-library-drawer { position: relative; width: 100%; }
 .mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-inner { display: none; }
 .mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-tab {
   position: absolute; top: 24px; right: 0;
@@ -1961,7 +1970,7 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
   letter-spacing: 2px;
 }
 .mc-cc-body .mc-library-drawer[data-open="true"] {
-  width: 360px; max-width: 40vw;
+  width: 100%;
 }
 
 /* Responsive: stack rail under controls only when very narrow; keep canvas
@@ -1970,6 +1979,6 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
 @media (max-width: 720px) {
   .mc-cc-body { grid-template-columns: 56px 1fr; }
   .mc-cc-body .mc-library-drawer { display: none; }
-  .mc-cc-main .mc-stage.mc-cc-canvas { width: 94vw; max-height: 50vh; }
+  .mc-cc-main .mc-stage.mc-cc-canvas { width: auto; max-width: 94vw; max-height: 100%; }
   .mc-cc-controls .mc-cc-sub-row { gap: 6px; }
 }
