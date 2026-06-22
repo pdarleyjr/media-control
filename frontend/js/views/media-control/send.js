@@ -13,9 +13,11 @@
 //   • Returns true on success, false on cancel/error (so callers can update UI).
 
 import { api } from '../../api.js';
+import { esc } from '../../utils.js';
 import { t, tn } from '../../i18n.js';
 import { showToast } from '../../components/toast.js';
 import { confirmDialog } from '../../components/confirm.js';
+import { isLiveActive } from './action-dock.js';
 
 // YouTube URL detection (same regex as present.js).
 const YT_RE = /^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//i;
@@ -39,15 +41,84 @@ async function shouldOfferLiveStreamInclusion() {
   }
 }
 
-async function confirmLiveStreamInclusion(label) {
-  if (!await shouldOfferLiveStreamInclusion()) return false;
-  return confirmDialog({
-    title: t('mc.send.live_include_title'),
-    message: t('mc.send.live_include_msg', { label }),
-    confirmLabel: t('mc.send.live_include_ok'),
-    cancelLabel: t('mc.send.live_include_no'),
-    tone: 'default',
+// The Command Center action dock owns the live-active flag (refreshed on mount
+// + after every start/stop). We prefer it for the prompt decision because it is
+// instant and reflects the operator's live state without a network hop. If the
+// dock isn't mounted on this view (the funnel is shared by other callers) we
+// fall back to the cached status fetch so existing behaviour is unchanged.
+async function liveStreamCurrentlyActive() {
+  try { if (isLiveActive()) return true; } catch { /* dock not importable */ }
+  return shouldOfferLiveStreamInclusion();
+}
+
+// confirmDialog only supports two buttons; the live-include choice needs three
+// (Yes add to live / No display only / Cancel abort). We build a tiny transient
+// <dialog> reusing the same .mc-dialog* classes + structure as
+// components/confirm.js so styling stays consistent with no new CSS. Returns
+// 'yes' | 'no' | 'cancel'.
+function chooseLiveStreamInclusion(label) {
+  return new Promise((resolve) => {
+    let dialogEl = null;
+    let settled = false;
+    try {
+      dialogEl = document.createElement('dialog');
+    } catch { resolve('cancel'); return; }
+    dialogEl.className = 'mc-dialog';
+    dialogEl.setAttribute('aria-labelledby', 'mcLiveIncludeTitle');
+    dialogEl.innerHTML = `
+      <form method="dialog" class="mc-dialog-card">
+        <h3 id="mcLiveIncludeTitle" class="mc-dialog-title">${esc(t('mc.send.live_include_title'))}</h3>
+        <p class="mc-dialog-msg">${esc(t('mc.send.live_include_msg', { label }))}</p>
+        <div class="mc-dialog-actions">
+          <button type="button" class="mc-btn mc-btn-ghost" data-mc-live-cancel>${esc(t('mc.send.live_include_cancel'))}</button>
+          <button type="button" class="mc-btn mc-btn-ghost" data-mc-live-no>${esc(t('mc.send.live_include_no_display'))}</button>
+          <button type="button" class="mc-btn mc-btn-confirm" data-mc-live-yes>${esc(t('mc.send.live_include_yes'))}</button>
+        </div>
+      </form>`;
+    document.body.appendChild(dialogEl);
+
+    const cleanup = () => {
+      yesBtn.removeEventListener('click', onYes);
+      noBtn.removeEventListener('click', onNo);
+      cancelBtn.removeEventListener('click', onCancel);
+      dialogEl.removeEventListener('cancel', onCancel);
+      dialogEl.removeEventListener('close', onCancel);
+      if (dialogEl && dialogEl.parentNode) dialogEl.parentNode.removeChild(dialogEl);
+    };
+    const finish = (val) => {
+      if (settled) return;
+      settled = true;
+      try { if (dialogEl.open) dialogEl.close(); } catch { /* noop */ }
+      cleanup();
+      resolve(val);
+    };
+    const yesBtn = dialogEl.querySelector('[data-mc-live-yes]');
+    const noBtn = dialogEl.querySelector('[data-mc-live-no]');
+    const cancelBtn = dialogEl.querySelector('[data-mc-live-cancel]');
+    const onYes = () => finish('yes');
+    const onNo = () => finish('no');
+    const onCancel = (e) => { if (e && e.preventDefault) e.preventDefault(); finish('cancel'); };
+
+    yesBtn.addEventListener('click', onYes);
+    noBtn.addEventListener('click', onNo);
+    cancelBtn.addEventListener('click', onCancel);
+    dialogEl.addEventListener('cancel', onCancel);
+    dialogEl.addEventListener('close', onCancel);
+
+    try { dialogEl.showModal(); } catch (e) { cleanup(); resolve('cancel'); }
   });
+}
+
+// Resolve the live-include choice for a broadcast. Returns null when no stream
+// is active (the existing send path runs unchanged), otherwise 'yes' | 'no' |
+// 'cancel' from the 3-button prompt. Never throws — a status-check failure
+// resolves to null so it never blocks a local broadcast.
+async function resolveLiveStreamChoice(label) {
+  let active = false;
+  try { active = await liveStreamCurrentlyActive(); } catch { active = false; }
+  if (!active) return null;
+  try { return await chooseLiveStreamInclusion(label); }
+  catch { return 'no'; }
 }
 
 /**
@@ -113,7 +184,9 @@ export async function sendToDisplays(source, targetIds, label = t('mc.tile.conte
     delete resolvedSource.remote_url;   // replace the URL with the content id
   }
 
-  const includeLiveStream = await confirmLiveStreamInclusion(label);
+const liveChoice = await resolveLiveStreamChoice(label);
+  if (liveChoice === 'cancel') return false;          // Cancel aborts the whole broadcast
+  const includeLiveStream = liveChoice === 'yes';     // 'no'/null → display only
   let result;
   try {
     result = await api.broadcast({ ...resolvedSource, device_ids: targetIds, include_live_stream: includeLiveStream });
@@ -141,6 +214,13 @@ export async function sendToDisplays(source, targetIds, label = t('mc.tile.conte
 
   if (result && result.success) {
     sentToast(label, result.sent, result.total);
+    // "Yes, add to live stream": the broadcast already reached the display(s);
+    // now refresh the live program so the new content is marked as changed on the
+    // server side (api.liveStream.refresh() -> markLiveContentChanged). Sent
+    // first, refreshed after — the display send is never blocked by this.
+    if (liveChoice === 'yes') {
+      try { await api.liveStream.refresh(); } catch { /* best-effort; display send already succeeded */ }
+    }
     return true;
   }
   // Unexpected non-error non-success response — be silent (server logged it).

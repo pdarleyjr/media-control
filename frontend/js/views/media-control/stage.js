@@ -28,6 +28,12 @@ const SCREENSAVER_OPTIONS = [
   { value: 'content:4798f022-e9d9-4cba-a0b0-56aeb75a6bff', labelKey: 'mc.saver.bw' },
   { value: 'content:1d01b7a0-1a0c-4d3d-b0fd-6d854ce09ae3', labelKey: 'mc.saver.l1' },
   { value: 'content:7c596f36-27f6-4d7b-9bb0-2c682791d25a', labelKey: 'mc.saver.mbfd_map' },
+  // Phase 6: open the media drawer filtered to the seeded "Screensavers" folder
+  // (no broadcast — handled by the caller's folder: prefix path), and a pure
+  // blank-black screensaver (broadcast a 1x1 black still). Kept additive to the
+  // existing fixed classroom defaults above.
+  { value: 'folder:Screensavers', labelKey: 'mc.saver.choose_from_folder' },
+  { value: 'blank:black', labelKey: 'mc.saver.blank_black' },
 ];
 
 // Render the screensaver <select>. `dataAttrs` carries the target wiring:
@@ -589,6 +595,8 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
       let source = null;
       if (val.startsWith('url:')) source = { remote_url: val.slice(4) };
       else if (val.startsWith('content:')) source = { content_id: val.slice(8) };
+      else if (val.startsWith('folder:')) source = { _screensaver: 'folder', folder: val.slice(7) };
+      else if (val.startsWith('blank:')) source = { _screensaver: 'blank', variant: val.slice(6) };
       if (!source) return;
       const opt = SCREENSAVER_OPTIONS.find(o => o.value === val);
       onScreensaver(ids, source, opt ? t(opt.labelKey) : t('mc.saver.title'));

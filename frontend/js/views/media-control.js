@@ -48,7 +48,38 @@ const SCREENSAVER_OPTIONS_CC = [
   { value: 'content:4798f022-e9d9-4cba-a0b0-56aeb75a6bff', labelKey: 'mc.saver.bw' },
   { value: 'content:1d01b7a0-1a0c-4d3d-b0fd-6d854ce09ae3', labelKey: 'mc.saver.l1' },
   { value: 'content:7c596f36-27f6-4d7b-9bb0-2c682791d25a', labelKey: 'mc.saver.mbfd_map' },
+  // Phase 6 (kept in lockstep with stage.js SCREENSAVER_OPTIONS): the seeded
+  // "Screensavers" folder opens the media drawer filtered to it (no broadcast),
+  // and "blank:black" broadcasts a pure black still screensaver.
+  { value: 'folder:Screensavers', labelKey: 'mc.saver.choose_from_folder' },
+  { value: 'blank:black', labelKey: 'mc.saver.blank_black' },
 ];
+
+// A 1x1 black still the player renders as a "blank black" screensaver. The
+// player treats a bare remote_url as a still image; an inline SVG data URL keeps
+// this dependency-free and CSP-friendly (no external fetch).
+const BLACK_SCREENSAVER_URL = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16'%3E%3Crect width='16' height='16' fill='%23000'/%3E%3C/svg%3E";
+
+// Open the media drawer and, best-effort, activate the matching folder chip on
+// the Media tab. Additive: if the toolbox isn't mounted or the chip is absent,
+// it simply opens the drawer and leaves it on "All" (no error path).
+function openContentDrawerFiltered(folderName) {
+  if (!folderName) return;
+  try {
+    const drawer = document.getElementById('mc-library-drawer');
+    if (drawer) drawer.setAttribute('data-open', 'true');
+    const tb = document.getElementById('mc-toolbox');
+    if (!tb) return;
+    const mediaTab = tb.querySelector('.mc-tb-tab[data-tab="media"]');
+    if (mediaTab) mediaTab.click();
+    const tryActivate = (attemptsLeft) => {
+      const chip = tb.querySelector('.mc-tb-folder[data-folder="' + folderName + '"]');
+      if (chip) { chip.click(); return; }
+      if (attemptsLeft > 0) setTimeout(() => tryActivate(attemptsLeft - 1), 120);
+    };
+    tryActivate(12); // ~1.4s for the Media tab to paint
+  } catch { /* best-effort; never block the screensaver UI */ }
+}
 
 // Active Command Center target: the single wall / display rendered large on the
 // central canvas. null = legacy "show the whole room" stage (preserved when no
@@ -276,6 +307,18 @@ function refreshAfterSend(targetIds) {
 // source (the wall.mbfdhub.com dashboard, or a wallpaper image) to that card's
 // device(s). Reuses the same send funnel as every other broadcast.
 function applyScreensaver(ids, source, label) {
+  if (source && source._screensaver === 'folder') {
+    // Open the media drawer filtered to that folder; no broadcast. Lets the
+    // operator pick a screensaver asset from the seeded "Screensavers" folder.
+    openContentDrawerFiltered(source.folder);
+    return;
+  }
+  if (source && source._screensaver === 'blank' && source.variant === 'black') {
+    if (!Array.isArray(ids) || ids.length === 0) return;
+    sendToDisplays({ remote_url: BLACK_SCREENSAVER_URL }, ids, label || t('mc.saver.blank_black'))
+      .then((ok) => { if (ok) refreshAfterSend(ids); });
+    return;
+  }
   if (!Array.isArray(ids) || ids.length === 0 || !source) return;
   sendToDisplays(source, ids, label).then((ok) => { if (ok) refreshAfterSend(ids); });
 }
@@ -941,6 +984,8 @@ function mountScreensaverRow(hostEl) {
     let source = null;
     if (val.startsWith('url:')) source = { remote_url: val.slice(4) };
     else if (val.startsWith('content:')) source = { content_id: val.slice(8) };
+    else if (val.startsWith('folder:')) source = { _screensaver: 'folder', folder: val.slice(7) };
+    else if (val.startsWith('blank:')) source = { _screensaver: 'blank', variant: val.slice(6) };
     if (!source) return;
     const opt = SCREENSAVER_OPTIONS_CC.find((o) => o.value === val);
     applyScreensaver(ids, source, opt ? t(opt.labelKey) : t('mc.cc.saver.label'));
@@ -1002,14 +1047,108 @@ async function blankAllTargets() {
   showToast(t('mc.cmd.blanked'), 'info');
   displayState.refresh().catch(() => {});
 }
-// Open the existing screen-share flow. The active target should default to ONE
-// region (no auto-span) per spec; wiring the active Command Center target to a
-// single region is a Phase-2 concern (TODO) since the share view owns its own
-// picker, so today we open the share flow and let the operator choose.
+// Open the existing screen-share flow. The active Command Center target decides
+// the default share destination per the Phase-8 default-one-region guard:
+//   • display target  → share to that one display directly (no picker)
+//   • wall target     → show a picker (each member TV label + "Span across wall"
+//                       explicit + "Cancel") — auto-stretch across the wall is no
+//                       longer the default; the operator must choose it explicitly
+//   • no target       → open the share view as before (its own picker)
+// The resolved target is handed to the share view via sessionStorage (read by
+// views/screen-share.js) which only PRE-HIGHLIGHTS the matching row — the
+// existing capture-then-check WebRTC signalling is untouched.
 function shareScreenActive() {
-  // TODO(Phase-2): pass activeTarget (single region, not span) into the share view.
-  void activeTarget;
+  shareScreenActiveAsync().catch(() => { window.location.hash = '#/screen-share'; });
+}
+async function shareScreenActiveAsync() {
+  const target = activeTarget;
+  if (target && target.type === 'wall') {
+    const wall = (walls || []).find((w) => w.id === target.id);
+    const members = (wall && Array.isArray(wall.devices)) ? wall.devices : [];
+    const options = members
+      .filter((m) => m && m.device_id)
+      .map((m) => ({ value: 'device:' + m.device_id, label: m.device_name || t('mc.cc.share.member') }));
+    options.push({ value: 'span', label: t('mc.cc.share.span_wall'), tone: 'primary' });
+    if (options.length <= 1) {
+      // Wall has no exposeable members — fall back to spanning the wall explicitly.
+      stagePreselectShareTarget({ kind: 'wall', id: target.id });
+      window.location.hash = '#/screen-share';
+      return;
+    }
+    const choice = await pickOptionDialog({
+      title: t('mc.cc.share.where'),
+      options,
+      cancelLabel: t('mc.cc.share.cancel'),
+    });
+    if (!choice) return; // Cancel — do not open the share view
+    if (choice === 'span') stagePreselectShareTarget({ kind: 'wall', id: target.id });
+    else if (String(choice).startsWith('device:')) stagePreselectShareTarget({ kind: 'device', id: String(choice).slice(7) });
+    window.location.hash = '#/screen-share';
+    return;
+  }
+  if (target && target.type === 'display') {
+    stagePreselectShareTarget({ kind: 'device', id: target.id });
+  } else {
+    stagePreselectShareTarget(null);
+  }
   window.location.hash = '#/screen-share';
+}
+function stagePreselectShareTarget(preselect) {
+  try {
+    if (preselect) sessionStorage.setItem('ss.preselect', JSON.stringify(preselect));
+    else sessionStorage.removeItem('ss.preselect');
+  } catch { /* sessionStorage unavailable — share view just opens normally */ }
+}
+// A transient <dialog> with N options + a Cancel button, reusing the same
+// .mc-dialog* classes / structure as components/confirm.js (consistent style,
+// no new CSS). Resolves the chosen option's value, or null on cancel/Esc/
+// backdrop. Mirrors chooseLiveStreamInclusion() in send.js.
+function pickOptionDialog({ title, message, options = [], cancelLabel } = {}) {
+  return new Promise((resolve) => {
+    let dialogEl = null;
+    let settled = false;
+    try { dialogEl = document.createElement('dialog'); }
+    catch { resolve(null); return; }
+    dialogEl.className = 'mc-dialog';
+    dialogEl.setAttribute('aria-labelledby', 'mcPickOptionTitle');
+    const msgHtml = message ? `<p class="mc-dialog-msg">${esc(message)}</p>` : '';
+    const optButtons = options.map((o, i) => {
+      const cls = o.tone === 'primary' ? 'mc-btn mc-btn-confirm' : 'mc-btn mc-btn-ghost';
+      return `<button type="button" class="${cls}" data-mc-pick="${esc(o.value)}">${esc(o.label)}</button>`;
+    }).join('');
+    dialogEl.innerHTML = `
+      <form method="dialog" class="mc-dialog-card">
+        <h3 id="mcPickOptionTitle" class="mc-dialog-title">${esc(title || '')}</h3>
+        ${msgHtml}
+        <div class="mc-dialog-actions">
+          <button type="button" class="mc-btn mc-btn-ghost" data-mc-pick-cancel>${esc(cancelLabel || 'Cancel')}</button>
+          ${optButtons}
+        </div>
+      </form>`;
+    document.body.appendChild(dialogEl);
+    const cleanup = () => {
+      dialogEl.querySelectorAll('[data-mc-pick]').forEach((b) => b.removeEventListener('click', onPick));
+      cancelBtn.removeEventListener('click', onCancel);
+      dialogEl.removeEventListener('cancel', onCancel);
+      dialogEl.removeEventListener('close', onCancel);
+      if (dialogEl.parentNode) dialogEl.parentNode.removeChild(dialogEl);
+    };
+    const finish = (val) => {
+      if (settled) return;
+      settled = true;
+      try { if (dialogEl.open) dialogEl.close(); } catch { /* noop */ }
+      cleanup();
+      resolve(val);
+    };
+    const onCancel = (e) => { if (e && e.preventDefault) e.preventDefault(); finish(null); };
+    const onPick = (e) => finish(e.currentTarget.dataset.mcPick);
+    const cancelBtn = dialogEl.querySelector('[data-mc-pick-cancel]');
+    cancelBtn.addEventListener('click', onCancel);
+    dialogEl.querySelectorAll('[data-mc-pick]').forEach((b) => b.addEventListener('click', onPick));
+    dialogEl.addEventListener('cancel', onCancel);
+    dialogEl.addEventListener('close', onCancel);
+    try { dialogEl.showModal(); } catch (e) { cleanup(); resolve(null); }
+  });
 }
 async function startLive() {
   const ok = await confirmDialog({
@@ -1204,6 +1343,7 @@ pruneSelection();
     onRemoveLive: removeLive,
     onStopLive: stopLive,
     onAddDisplay: openAddPicker,
+    onLiveChanged: paintChips,
   });
   // Open on ONE large preview per the mockup (first wall, else first display).
   const initialTarget = chooseInitialTarget();

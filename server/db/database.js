@@ -876,6 +876,28 @@ function backfillClassroomGroupMembers() {
 }
 backfillClassroomGroupMembers();
 
+// Phase 6 Screensaver folder seed: ensure every workspace owns a content_folders
+// row named "Screensavers" so the Stage screensaver dropdown can open the media
+// drawer filtered to it. Idempotent (INSERT OR IGNORE + per-workspace existence
+// check) and gated on schema_migrations so it runs exactly once per database.
+// Mirrors the classroom1_group_members harness above. See
+// scripts/seed-screensaver-folder.js.
+const SCREENSAVER_FOLDER_SEED_ID = 'screensaver_folder_seed';
+function seedScreensaverFolderRow() {
+  const already = db.prepare('SELECT 1 FROM schema_migrations WHERE id = ?').get(SCREENSAVER_FOLDER_SEED_ID);
+  if (already) return;
+  try {
+    const { runSeed } = require('../scripts/seed-screensaver-folder');
+    const r = runSeed({ db });
+    if (!r.skipped) {
+      console.log(`[screensaver_folder_seed] seeded ${r.created} folder(s) across ${r.workspaces} workspace(s)`);
+    }
+  } catch (e) {
+    console.warn(`[screensaver_folder_seed] seed failed: ${e.message}`);
+  }
+}
+seedScreensaverFolderRow();
+
 // Prune old telemetry (keep last 24h worth at 15s intervals = ~5760, cap at 6000)
 function pruneTelemetry(deviceId) {
   db.prepare(`

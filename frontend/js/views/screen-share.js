@@ -324,9 +324,36 @@ async function populateTargetList() {
     // change handlers (mirrors the post-capture wiring done in startCapture).
     syncTargetChecksFromEngine();
     wireTargetCheckboxHandlers();
+    applyPreselectHint(listEl);
   } catch (e) {
     listEl.innerHTML = `<div class="muted">Could not load displays: ${escapeHtml(e.message || String(e))}</div>`;
   }
+}
+
+// Phase 8 share-screen guard: the Command Center may hand this view a preselect
+// hint ({ kind: 'wall'|'device', id }) when the operator chose a single wall
+// member / whole wall / single display before opening the share flow. We do NOT
+// auto-broadcast (that needs an active capture first) — we just highlight the
+// matching row + scroll it into view and clear the one-shot hint. Additive &&
+// best-effort: never alters WebRTC signalling.
+function applyPreselectHint(listEl) {
+  let hint = null;
+  try { hint = JSON.parse(sessionStorage.getItem('ss.preselect') || 'null'); }
+  catch { hint = null; }
+  try { sessionStorage.removeItem('ss.preselect'); } catch { /* ignore */ }
+  if (!hint || !listEl) return;
+  try {
+    const selector = hint.kind === 'wall'
+      ? `#ss-target-list input[data-wall-id="${escapeHtml(String(hint.id))}"]`
+      : `#ss-target-list input[data-device-id="${escapeHtml(String(hint.id))}"]`;
+    const cb = listEl.querySelector(selector);
+    const row = cb ? cb.closest('.ss-target-row') : null;
+    if (row) {
+      row.classList.add('ss-target-row--preselect');
+      row.setAttribute('data-preselect', '1');
+      if (typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  } catch { /* best-effort */ }
 }
 
 // Resolve a wall id to the broadcast targets we need to dispatch. Returns
