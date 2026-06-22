@@ -49,8 +49,42 @@ video/
 .ai_plans/
 planning/
 planning/private/
+planning/command-center/
 .agent_notes/
 .cf-work/
+
+# Task/audit docs created during the Classroom-1 Command Center rebuild
+# (audit, planning, migration, rollback notes — kept local only, never pushed)
+docs/ARCHITECTURE_BASELINE.md
+docs/CLASSROOM1_CURRENT_STATE.md
+docs/REPO_OWNERSHIP_PLAN.md
+docs/MIGRATION_AND_BACKUP_PLAN.md
+docs/UI_AUDIT_CURRENT.md
+docs/PEERTUBE_AND_AI_ORCHESTRATOR_AUDIT.md
+docs/WHITEBOARD_AUDIT.md
+docs/P3_AND_KAMRUI_ACCESS_AUDIT.md
+docs/UI_REDESIGN_SPEC.md
+docs/UI_CONTROL_MATRIX.md
+docs/COMMAND_CENTER_TARGET_MODEL.md
+docs/HEARTBEATS_AND_ACKS.md
+docs/COMMAND_EVENT_MODEL.md
+docs/STATE_RECOVERY_PLAN.md
+docs/ASSET_SYNC_ARCHITECTURE.md
+docs/P3_ROOM_AGENT.md
+docs/KAMRUI_ROOM_AGENT.md
+docs/BACKFILL_EXISTING_MEDIA.md
+docs/UNMANAGED_CLIENT_COMPATIBILITY.md
+docs/SCREENSAVER_WORKFLOW.md
+docs/PEERTUBE_LIVE_STREAM_WORKFLOW.md
+docs/AI_ORCHESTRATOR_LIVE_STREAM.md
+docs/SHARE_SCREEN_WORKFLOW.md
+docs/WHITEBOARD_IMPLEMENTATION.md
+docs/TEST_PLAN.md
+docs/ROLLBACK_PLAN.md
+docs/FINAL_IMPLEMENTATION_SUMMARY.md
+
+# Local-only GMKtec overrides (keep canonical docs/ops committed elsewhere)
+ops/gmktec/
 
 # Runtime logs
 logs/
