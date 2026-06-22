@@ -293,6 +293,18 @@
 }
 .mc-wall-span-shot { width: 100%; height: 100%; object-fit: cover; display: block; }
 .mc-wall-span-empty { color: var(--mc-text-on-dark-muted, #94A3B8); font-size: var(--mc-font-size-sm); }
+/* Live content embedded directly in a stage frame (img/video/iframe). Fills the
+   frame edge-to-edge like the screenshot it replaces; iframes carry no border. */
+.mc-live-embed {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border: 0;
+  display: block;
+  background: #000;
+}
 .mc-wall-cell {
   position: relative; overflow: hidden;
   /* Tiles are now responsive (1fr of a cols/maxCols-wide card); the panel aspect

@@ -284,7 +284,7 @@ function refreshPreviewsInPlace() {
   const el = stageEl();
   if (!el) return;
   const byId = new Map(displayState.getAll().map(d => [d.id, d]));
-  el.querySelectorAll('img.mc-card-shot, img.mc-wall-cell-shot, img.mc-wall-span-shot').forEach(img => {
+  el.querySelectorAll('img.mc-card-shot:not(.mc-live-embed), img.mc-wall-cell-shot:not(.mc-live-embed), img.mc-wall-span-shot:not(.mc-live-embed)').forEach(img => {
     const host = img.closest('[data-device-id]');
     const id = host && host.dataset.deviceId;
     const d = id && byId.get(id);
