@@ -741,6 +741,19 @@ function parseDragSource(e) {
   return { source, label };
 }
 
+// Websites must never span a video wall — a webpage stretched across 3 screens
+// is unreadable. A "website" source is a bare external http(s) remote_url (not a
+// YouTube link, which is materialized to a content item, and not a data: URL).
+// Everything else (content_id / playlist_id / presentation_id) honors Span/Split.
+const WEBSITE_URL_RE = /^https?:\/\//i;
+function forcesSingleScreen(source) {
+  if (!source || typeof source.remote_url !== 'string') return false;
+  const u = source.remote_url.trim();
+  if (!WEBSITE_URL_RE.test(u)) return false;       // data:/relative/etc are not websites
+  if (/youtube\.com|youtu\.be/i.test(u)) return false; // YT becomes a content item
+  return true;
+}
+
 function attachStageDrop(stageContainer) {
   // Per-card drop → that ONE display. stopPropagation so the stage-level handler
   // below does not also fire and fan the source out to everyone.
@@ -809,6 +822,16 @@ function attachStageDrop(stageContainer) {
       if (!parsed) return;
       const ids = (zone.dataset.wallIds || '').split(',').filter(Boolean);
       if (!ids.length) { showToast(t('mc.send.no_displays'), 'error'); return; }
+      if (forcesSingleScreen(parsed.source)) {
+        // Website → one screen only. Prefer the wall leader, else the first member.
+        const wallId = zone.closest('.mc-wall[data-wall-id]')?.dataset.wallId;
+        const wall = (walls || []).find((w) => w.id === wallId);
+        const single = (wall && wall.leader_device_id) || ids[0];
+        showToast(t('mc.route.single_screen_only'), 'info');
+        await sendToDisplays(parsed.source, [single], parsed.label);
+        refreshAfterSend([single]);
+        return;
+      }
       await sendToDisplays(parsed.source, ids, parsed.label);
       refreshAfterSend(ids);
     });

@@ -1602,6 +1602,7 @@ export default {
   'mc.route.section_right': 'Right',
   'mc.route.section_meta': '{n} screens',
   'mc.route.section_pick_one': 'Select at least one available wall section.',
+  'mc.route.single_screen_only': 'Websites and screen shares show on one screen of the wall.',
   // Inspector
   'mc.insp.unknown_res': 'Resolution unknown',
   'mc.insp.close': 'Close inspector',
