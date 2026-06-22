@@ -1602,6 +1602,7 @@ export default {
   'mc.route.section_right': 'Right',
   'mc.route.section_meta': '{n} screens',
   'mc.route.section_pick_one': 'Select at least one available wall section.',
+  'mc.route.single_screen_only': 'Websites and screen shares show on one screen of the wall.',
   // Inspector
   'mc.insp.unknown_res': 'Resolution unknown',
   'mc.insp.close': 'Close inspector',
@@ -1788,6 +1789,10 @@ export default {
   'mc.cc.transport.play': 'Play',
   'mc.cc.transport.pause': 'Pause',
   'mc.cc.transport.next': 'Next',
+  'mc.cc.transport.prev_slide': 'Previous slide',
+  'mc.cc.transport.next_slide': 'Next slide',
+  'mc.cc.transport.scroll_up': 'Scroll up',
+  'mc.cc.transport.scroll_down': 'Scroll down',
   'mc.cc.span': 'Span',
   'mc.cc.split': 'Split',
   'mc.cc.saver.label': 'Screensaver / Wallpaper',

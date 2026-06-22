@@ -652,20 +652,27 @@ async function route() {
     return;
   }
 
-  // Show sidebar for authenticated views unless the dedicated physical console
-  // route is active. Console mode has its own touchscreen header/profile picker.
+  // Show sidebar for authenticated views unless a full-screen surface is active:
+  // the dedicated physical console route, or the Command Center (#/control) which
+  // renders its own left icon rail. Either one alongside the legacy .sidebar would
+  // create a duplicate left nav. The else branch restores the sidebar elsewhere.
+  const fullScreenChrome = CONSOLE_MODE || hash === '#/control';
   if (CONSOLE_MODE) {
     document.body.classList.add('console-mode');
-    sidebar.style.display = 'none';
-    app.style.marginLeft = '0';
-    renderConsoleHeader();
   } else {
     document.body.classList.remove('console-mode');
+  }
+  document.body.classList.toggle('cc-fullscreen', hash === '#/control');
+  if (fullScreenChrome) {
+    sidebar.style.display = 'none';
+    app.style.marginLeft = '0';
+  } else {
     sidebar.style.display = '';
     app.style.marginLeft = '';
   }
+  if (CONSOLE_MODE) renderConsoleHeader();
   const mb = document.getElementById('mobileMenuBtn');
-  if (mb) mb.style.display = CONSOLE_MODE ? 'none' : '';
+  if (mb) mb.style.display = fullScreenChrome ? 'none' : '';
 
   // Update user info in sidebar
   updateSidebarUser();

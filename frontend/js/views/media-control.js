@@ -22,13 +22,6 @@ import { openViewModal, closeViewModal } from './media-control/view-modal.js';
 import { confirmDialog } from '../components/confirm.js';
 import * as screenShareEngine from '../services/screen-share-engine.js';
 import * as schedulesView from './schedules.js';
-import {
-  hasAdvancedCanvasEndpoint,
-  mountAdvancedCanvas,
-  routeSourceToAdvancedCanvas,
-  setAdvancedCanvasBlanked,
-  unmountAdvancedCanvas,
-} from './media-control/advanced-canvas.js';
 import { mount as mountWhiteboardSurface } from './media-control/whiteboard.js';
 // transport.js is used by stage.js internally — no direct import needed here.
 
@@ -291,7 +284,7 @@ function refreshPreviewsInPlace() {
   const el = stageEl();
   if (!el) return;
   const byId = new Map(displayState.getAll().map(d => [d.id, d]));
-  el.querySelectorAll('img.mc-card-shot, img.mc-wall-cell-shot, img.mc-wall-span-shot').forEach(img => {
+  el.querySelectorAll('img.mc-card-shot:not(.mc-live-embed), img.mc-wall-cell-shot:not(.mc-live-embed), img.mc-wall-span-shot:not(.mc-live-embed)').forEach(img => {
     const host = img.closest('[data-device-id]');
     const id = host && host.dataset.deviceId;
     const d = id && byId.get(id);
@@ -491,9 +484,6 @@ async function chooseRouteTargets(label) {
 }
 
 async function routeSourceWithPicker(source, label = t('mc.tile.content_fallback')) {
-  if (hasAdvancedCanvasEndpoint()) {
-    return routeSourceToAdvancedCanvas(source, label);
-  }
   const route = await chooseRouteTargets(label);
   if (!route) return false;
   try {
@@ -508,15 +498,6 @@ async function routeSourceWithPicker(source, label = t('mc.tile.content_fallback
 }
 
 async function routeNextcloudWithPicker(path, label = t('mc.tile.content_fallback')) {
-  if (hasAdvancedCanvasEndpoint()) {
-    try {
-      const imported = await api.files.importForCanvas(path);
-      return routeSourceToAdvancedCanvas({ content_id: imported.content_id }, label);
-    } catch (e) {
-      showToast(e?.message || t('mc.send.failed'), 'error');
-      return false;
-    }
-  }
   const route = await chooseRouteTargets(label);
   if (!route) return false;
   try {
@@ -760,6 +741,19 @@ function parseDragSource(e) {
   return { source, label };
 }
 
+// Websites must never span a video wall — a webpage stretched across 3 screens
+// is unreadable. A "website" source is a bare external http(s) remote_url (not a
+// YouTube link, which is materialized to a content item, and not a data: URL).
+// Everything else (content_id / playlist_id / presentation_id) honors Span/Split.
+const WEBSITE_URL_RE = /^https?:\/\//i;
+function forcesSingleScreen(source) {
+  if (!source || typeof source.remote_url !== 'string') return false;
+  const u = source.remote_url.trim();
+  if (!WEBSITE_URL_RE.test(u)) return false;       // data:/relative/etc are not websites
+  if (/youtube\.com|youtu\.be/i.test(u)) return false; // YT becomes a content item
+  return true;
+}
+
 function attachStageDrop(stageContainer) {
   // Per-card drop → that ONE display. stopPropagation so the stage-level handler
   // below does not also fire and fan the source out to everyone.
@@ -828,6 +822,16 @@ function attachStageDrop(stageContainer) {
       if (!parsed) return;
       const ids = (zone.dataset.wallIds || '').split(',').filter(Boolean);
       if (!ids.length) { showToast(t('mc.send.no_displays'), 'error'); return; }
+      if (forcesSingleScreen(parsed.source)) {
+        // Website → one screen only. Prefer the wall leader, else the first member.
+        const wallId = zone.closest('.mc-wall[data-wall-id]')?.dataset.wallId;
+        const wall = (walls || []).find((w) => w.id === wallId);
+        const single = (wall && wall.leader_device_id) || ids[0];
+        showToast(t('mc.route.single_screen_only'), 'info');
+        await sendToDisplays(parsed.source, [single], parsed.label);
+        refreshAfterSend([single]);
+        return;
+      }
       await sendToDisplays(parsed.source, ids, parsed.label);
       refreshAfterSend(ids);
     });
@@ -944,6 +948,8 @@ function mountTransportRow(hostEl) {
       <button type="button" class="mc-cc-tp-btn" data-cc-tp="restart"><span class="mc-cc-tp-ico" aria-hidden="true">↺</span><span class="mc-cc-tp-text">${esc(t('mc.cc.transport.restart'))}</span></button>
       <button type="button" class="mc-cc-tp-btn mc-cc-tp-play" data-cc-tp="play_pause"><span class="mc-cc-tp-ico" aria-hidden="true">⏯</span><span class="mc-cc-tp-text">${esc(t('mc.cc.transport.play'))}</span></button>
       <button type="button" class="mc-cc-tp-btn" data-cc-tp="next"><span class="mc-cc-tp-ico" aria-hidden="true">⏭</span><span class="mc-cc-tp-text">${esc(t('mc.cc.transport.next'))}</span></button>
+      <button type="button" class="mc-cc-tp-btn mc-cc-tp-scroll" data-cc-tp="scroll_up" hidden><span class="mc-cc-tp-ico" aria-hidden="true">▲</span><span class="mc-cc-tp-text">${esc(t('mc.cc.transport.scroll_up'))}</span></button>
+      <button type="button" class="mc-cc-tp-btn mc-cc-tp-scroll" data-cc-tp="scroll_down" hidden><span class="mc-cc-tp-ico" aria-hidden="true">▼</span><span class="mc-cc-tp-text">${esc(t('mc.cc.transport.scroll_down'))}</span></button>
     </div>`;
   const row = hostEl.querySelector('.mc-cc-tp-row');
   hostEl.querySelectorAll('[data-cc-tp]').forEach((btn) => {
@@ -960,12 +966,32 @@ function mountTransportRow(hostEl) {
     repaint() {
       const id = activeTargetTransportId();
       if (row) row.hidden = !id;
+      if (!id) return;
+      const dev = displayState.get(id);
+      const kind = (dev && dev.now_playing && dev.now_playing.kind) || 'idle';
+      const isWeb = kind === 'web';
+      const isPresentation = kind === 'pdf' || kind === 'document';
+      const isVideo = kind === 'video';
+      // Website → scroll controls only; everything else → the transport buttons.
+      const show = (sel, on) => { const b = hostEl.querySelector(sel); if (b) b.hidden = !on; };
+      show('[data-cc-tp="scroll_up"]', isWeb);
+      show('[data-cc-tp="scroll_down"]', isWeb);
+      show('[data-cc-tp="prev"]', !isWeb);
+      show('[data-cc-tp="next"]', !isWeb);
+      show('[data-cc-tp="restart"]', !isWeb);
+      show('[data-cc-tp="play_pause"]', !isWeb);
+      // Relabel prev/next as slide controls for a presentation (they post next/prev
+      // to the deck iframe, which advances slides), else item controls.
+      const prevTxt = hostEl.querySelector('[data-cc-tp="prev"] .mc-cc-tp-text');
+      const nextTxt = hostEl.querySelector('[data-cc-tp="next"] .mc-cc-tp-text');
+      if (prevTxt) prevTxt.textContent = isPresentation ? t('mc.cc.transport.prev_slide') : t('mc.cc.transport.prev');
+      if (nextTxt) nextTxt.textContent = isPresentation ? t('mc.cc.transport.next_slide') : t('mc.cc.transport.next');
       const pp = hostEl.querySelector('[data-cc-tp="play_pause"] .mc-cc-tp-text');
-      if (pp && id) {
-        const dev = displayState.get(id);
+      if (pp) {
         const playing = !!(dev && dev.now_playing && dev.now_playing.kind && dev.now_playing.kind !== 'idle');
         pp.textContent = playing ? t('mc.cc.transport.pause') : t('mc.cc.transport.play');
       }
+      void isVideo; // video uses the default play_pause + restart; no special-casing needed
     },
   };
 }
@@ -1282,7 +1308,6 @@ export async function render() {
         <main class="mc-cc-main">
           <section class="mc-cc-canvas-area">
             <div id="mc-cc-chips" class="mc-cc-chips" aria-live="polite"></div>
-            <div id="mc-advanced-canvas" class="mc-advanced-canvas-host" hidden></div>
             <div id="mc-multiview" class="mc-multiview-host" hidden></div>
             <section id="mc-stage" class="mc-stage mc-cc-canvas" aria-label="${esc(t('mc.section.displays'))}"></section>
           </section>
@@ -1401,7 +1426,6 @@ pruneSelection();
   paintStage();
   paintToolbox();
   paintSummary();
-  const canvasEndpoint = await mountAdvancedCanvas(document.getElementById('mc-advanced-canvas'));
 
   // Phase-2 non-silent ack: surface command:ack ok:false as a toast + chip flip,
   // and refresh chips on display state-sync. Registered for the view's lifetime.
@@ -1452,14 +1476,6 @@ pruneSelection();
     dockBtn.addEventListener('click', () => window.mcOpenWhiteboard());
     dockHost.appendChild(dockBtn);
   }
-  if (canvasEndpoint) {
-    const stage = stageEl();
-    if (stage) stage.hidden = true;
-    const summary = summaryEl();
-    if (summary) {
-      summary.innerHTML = `<span class="mc-summary-item">${esc(canvasEndpoint.name)}</span><span class="mc-summary-dot" aria-hidden="true">·</span><span class="mc-summary-item">${esc(canvasEndpoint.status === 'online' ? t('mc.canvas.online') : t('mc.canvas.offline'))}</span>`;
-    }
-  }
 
   // Multiview builder — mounted directly above the stage (whose first wall
   // card is the classroom primary wall) and toggled by the command bar's "Multiview"
@@ -1491,7 +1507,7 @@ pruneSelection();
   // defined in command-bar.js for a future drawer route). The Action Dock now
   // owns Multiview / Blank / Share / Live-stream on the main surface.
   // The display-target helpers (roomDisplayIds / roomCommandIds /
-  // routeSourceWithPicker / setAdvancedCanvasBlanked) are still wired into the
+  // routeSourceWithPicker) are still wired into the
   // Span|Split + Action Dock + target-selector/transport mounts below.
   // Room Presets + Recent (recent-panel) are likewise removed from the main
   // page; their components remain in room-presets.js / recent-panel.js for a
@@ -1504,7 +1520,7 @@ pruneSelection();
       refreshAfterSend,
       onMultiview: toggleMultiview,
       onRouteSource: routeSourceWithPicker,
-      onBlankChange: canvasEndpoint ? setAdvancedCanvasBlanked : null,
+      onBlankChange: null,
     });
   }
 
@@ -1609,7 +1625,6 @@ export function unmount() {
   teardownMultiview();    // stop any local audio monitor so it can't keep playing
   closeViewModal();       // dismiss any open room-setup overlay (e.g. Schedules)
   stopPreviewRefresh();   // stop poking players once we leave the control surface
-  unmountAdvancedCanvas();
   // Close the inspector so a stale panel can't linger across navigations.
   closeInspector(inspectorEl());
   // Dismiss the add-display picker if it was left open during navigation.

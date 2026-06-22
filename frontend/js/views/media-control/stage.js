@@ -14,6 +14,7 @@
 import { esc } from '../../utils.js';
 import { t, tn } from '../../i18n.js';
 import { renderTransportBar } from './transport.js';
+import { liveEmbedHtml } from './live-preview.js';
 
 // ── Screensaver dropdown (per card) ───────────────────────────────────────
 // A small in-card <select> on every display + wall card that broadcasts a
@@ -159,9 +160,12 @@ function displayCard(display) {
   const pv = previewSource(display);
   const showingPoster = !!(pv && pv.poster);
   const staleCls = (pv && !pv.poster && (f.stale || offline)) ? ' mc-shot-stale' : '';
-  const preview = pv
-    ? `<img class="mc-card-shot${staleCls}${pv.poster ? ' mc-shot-poster' : ''}" src="${esc(pv.src)}" alt="${esc(t('mc.card.preview_alt', { name: display.name }))}" loading="lazy">`
-    : `<div class="mc-card-shot mc-card-shot-empty">${esc(t('mc.card.no_preview'))}</div>`;
+  const live = liveEmbedHtml(display.now_playing, 'mc-card-shot', { fallbackSrc: pv && pv.src });
+  const preview = live
+    ? live
+    : (pv
+      ? `<img class="mc-card-shot${staleCls}${pv.poster ? ' mc-shot-poster' : ''}" src="${esc(pv.src)}" alt="${esc(t('mc.card.preview_alt', { name: display.name }))}" loading="lazy">`
+      : `<div class="mc-card-shot mc-card-shot-empty">${esc(t('mc.card.no_preview'))}</div>`);
   // A poster is always current (it IS what's playing), so show a neutral caption
   // rather than a misleading "Updated Ns ago" about a screenshot we aren't using.
   const captionText = showingPoster ? t('mc.card.now_showing') : f.text;
@@ -224,11 +228,14 @@ function wallCell(member, screenNo, { showPreview = true } = {}) {
   const f = freshness(member.screenshot_at);
   const pv = previewSource(member);
   const staleCls = (pv && !pv.poster && (f.stale || offline)) ? ' mc-shot-stale' : '';
-  const preview = showPreview
-    ? (pv
-      ? `<img class="mc-wall-cell-shot${staleCls}${pv.poster ? ' mc-shot-poster' : ''}" src="${esc(pv.src)}" alt="" loading="lazy">`
-      : `<span class="mc-wall-cell-empty">${esc(t('mc.card.no_preview'))}</span>`)
-    : '';
+  const live = showPreview ? liveEmbedHtml(member.now_playing, 'mc-wall-cell-shot', { allowVideo: false, fallbackSrc: pv && pv.src }) : null;
+  const preview = !showPreview
+    ? ''
+    : (live
+      ? live
+      : (pv
+        ? `<img class="mc-wall-cell-shot${staleCls}${pv.poster ? ' mc-shot-poster' : ''}" src="${esc(pv.src)}" alt="" loading="lazy">`
+        : `<span class="mc-wall-cell-empty">${esc(t('mc.card.no_preview'))}</span>`));
   const np = member.now_playing && member.now_playing.label ? member.now_playing.label : '';
   // The visible cell label is the screen position; the device name + now-playing
   // ride in the title. (No em-dash in the title — anti-slop.)
@@ -246,6 +253,10 @@ function wallCell(member, screenNo, { showPreview = true } = {}) {
 
 function wallSpanPreview(leader) {
   const pv = previewSource(leader);
+  const live = leader ? liveEmbedHtml(leader.now_playing, 'mc-wall-span-shot', { fallbackSrc: pv && pv.src }) : null;
+  if (live) {
+    return `<div class="mc-wall-span-layer" data-device-id="${esc(leader.id)}">${live}</div>`;
+  }
   if (!leader || !pv) {
     return `<div class="mc-wall-span-layer mc-wall-span-empty"><span>${esc(t('mc.card.no_preview'))}</span></div>`;
   }
