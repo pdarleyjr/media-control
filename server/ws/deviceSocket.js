@@ -23,10 +23,28 @@ const pendingOfflines = new Map();
 const OFFLINE_DEBOUNCE_MS = 5000;
 // Phase 2.3: deviceRoom() resolves a device_id to its workspace room so
 // dashboardNs.emit can be scoped instead of broadcast platform-wide.
-const { deviceRoom, emitToWorkspace } = require('../lib/socket-rooms');
+const { deviceRoom, emitToWorkspace, targetRoomsForDevice, displayRoom } = require('../lib/socket-rooms');
+const commandModel = require('../lib/command-model');
 
 function emitToDeviceWorkspace(dashboardNs, deviceId, event, payload) {
   emitToWorkspace(dashboardNs, deviceRoom(deviceId), event, payload);
+}
+
+// Phase 2: have a device socket join its per-target rooms (display:<id>,
+// wall:<wallId>, group:<groupId>) in addition to the existing workspace room
+// and its own deviceId room. Idempotent (Socket.IO join on an already-joined
+// room is a no-op). Best-effort — wall/group backfill may have run before the
+// device row existed, so re-resolve every register instead of caching.
+function joinDeviceTargetRooms(socket, deviceId) {
+  if (!deviceId || !socket) return;
+  try {
+    socket.join(displayRoom(deviceId));
+    for (const room of targetRoomsForDevice(deviceId)) {
+      if (room) socket.join(room);
+    }
+  } catch (e) {
+    console.warn(`joinDeviceTargetRooms failed for ${deviceId}: ${e.message}`);
+  }
 }
 
 // In-memory store for latest screenshot per device (avoids disk writes during streaming)
@@ -299,6 +317,7 @@ module.exports = function setupDeviceSocket(io) {
                   currentDeviceId = existing.device_id;
                   heartbeat.registerConnection(existing.device_id, socket.id);
                   socket.join(existing.device_id);
+                  joinDeviceTargetRooms(socket, existing.device_id);
                   logDeviceStatus(existing.device_id, 'online');
                   emitToDeviceWorkspace(dashboardNs, existing.device_id, 'dashboard:device-status', { device_id: existing.device_id, status: 'online' });
                   // Flush any commands/playlist-updates queued while this device was offline.
@@ -371,6 +390,7 @@ module.exports = function setupDeviceSocket(io) {
 
           heartbeat.registerConnection(device_id, socket.id);
           socket.join(device_id);
+          joinDeviceTargetRooms(socket, device_id);
           socket.emit('device:registered', { device_id, device_token: tokenToSend, status: 'online' });
           logDeviceStatus(device_id, 'online');
           // Flush any commands/playlist-updates queued while this device was offline.
@@ -449,6 +469,7 @@ module.exports = function setupDeviceSocket(io) {
 
         heartbeat.registerConnection(id, socket.id);
         socket.join(id);
+        joinDeviceTargetRooms(socket, id);
         socket.emit('device:registered', { device_id: id, device_token: newToken, status: 'provisioning' });
 
         // Newly-provisioned devices have no workspace_id yet (they'll get one
@@ -496,6 +517,9 @@ module.exports = function setupDeviceSocket(io) {
         }
 
         heartbeat.updateHeartbeat(device_id);
+
+        try { commandModel.recordHeartbeat({ target_type: 'display', target_id: device_id, ts: Date.now() }); }
+        catch (e) { /* command-model heartbeat upsert is best-effort */ }
 
         try {
           db.prepare("UPDATE devices SET status = 'online', last_heartbeat = strftime('%s','now'), updated_at = strftime('%s','now') WHERE id = ?")
@@ -577,6 +601,57 @@ module.exports = function setupDeviceSocket(io) {
       if (device_id !== currentDeviceId) return;
       console.log(`Device ${device_id} content ${content_id}: ${status}`);
       emitToDeviceWorkspace(dashboardNs, device_id, 'dashboard:content-ack', { device_id, content_id, status });
+    });
+
+    // ── Phase 2: reliable command/state model ─────────────────────────────
+    // Device acks a command_id it received via device:command. Server updates
+    // command_logs (bubbling child → parent for wall/group commands), upserts
+    // display_states if a state snapshot is attached, and relays a
+    // command:ack broadcast to the target's per-target room so dashboards
+    // tracking it flip the status chip.
+    socket.on('device:ack', (data) => {
+      try {
+        if (!requireDeviceAuth()) return;
+        const { command_id, ok, error, state } = data || {};
+        if (!command_id) return;
+        commandModel.recordAck({
+          command_id,
+          ok: ok !== false,
+          error: error || null,
+          state: state || null,
+          target_type: 'display',
+          target_id: currentDeviceId,
+        });
+        const room = displayRoom(currentDeviceId);
+        if (room) {
+          try { dashboardNs.to(room).emit('command:ack', {
+            command_id, device_id: currentDeviceId,
+            ok: ok !== false, error: error || null,
+          }); } catch (_) {}
+        }
+      } catch (e) {
+        console.warn(`device:ack handler error: ${e.message}`);
+      }
+    });
+
+    // Periodic / on-demand display state self-report. Server upserts
+    // display_states and emits dashboard:state-sync to the target's room so the
+    // Command Center status chips stay fresh without polling.
+    socket.on('device:state-report', (data) => {
+      try {
+        if (!requireDeviceAuth()) return;
+        const state = data && data.state ? data.state : data;
+        commandModel.mergeDisplayState('display', currentDeviceId, state || {});
+        commandModel.recordHeartbeat({ target_type: 'display', target_id: currentDeviceId, ts: Date.now() });
+        const room = displayRoom(currentDeviceId);
+        if (room) {
+          try { dashboardNs.to(room).emit('dashboard:state-sync', {
+            target_type: 'display', target_id: currentDeviceId, state: state || {},
+          }); } catch (_) {}
+        }
+      } catch (e) {
+        console.warn(`device:state-report handler error: ${e.message}`);
+      }
     });
 
     // Playback state update
@@ -758,13 +833,26 @@ module.exports = function setupDeviceSocket(io) {
       }
     });
 
-    socket.on('device:wb-undo', () => {
+socket.on('device:wb-undo', () => {
       try {
         if (!requireDeviceAuth() || !canUseNativeWhiteboard()) return;
-        const strokes = whiteboardState.undoStroke(null, currentDeviceId);
-        emitToDeviceWorkspace(dashboardNs, currentDeviceId, 'dashboard:wb-undo', { device_id: currentDeviceId, strokes });
+        // undoStroke now returns the popped stroke (or null). We no longer fan
+        // the entire remaining list out — undo is a single-stroke pop and the
+        // player redraws from its own state on 'device:wb-undo'.
+        whiteboardState.undoStroke(null, currentDeviceId);
+        emitToDeviceWorkspace(dashboardNs, currentDeviceId, 'dashboard:wb-undo', { device_id: currentDeviceId });
       } catch (e) {
         console.warn(`device:wb-undo handler error: ${e.message}`);
+      }
+    });
+
+    socket.on('device:wb-redo', () => {
+      try {
+        if (!requireDeviceAuth() || !canUseNativeWhiteboard()) return;
+        const stroke = whiteboardState.redoStroke(null, currentDeviceId);
+        emitToDeviceWorkspace(dashboardNs, currentDeviceId, 'dashboard:wb-redo', { device_id: currentDeviceId, stroke });
+      } catch (e) {
+        console.warn(`device:wb-redo handler error: ${e.message}`);
       }
     });
 

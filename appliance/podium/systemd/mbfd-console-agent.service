@@ -1,0 +1,23 @@
+[Unit]
+Description=MBFD Media Control podium console agent (asset sync + node heartbeat)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/mbfd/media-control-console/config.env
+WorkingDirectory=/opt/mbfd/room-agent
+ExecStart=/usr/bin/node /opt/mbfd/room-agent/agent.js
+Restart=on-failure
+RestartSec=5s
+User=mbfdkiosk
+Group=mbfdkiosk
+SupplementaryGroups=video input
+
+# Cache / manifests live under the working dir (matching DEFAULT_CACHE_DIR on Linux).
+# Ensure they are writable by mbfdkiosk (created by install.sh).
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

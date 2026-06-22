@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MBFD Command Center</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: radial-gradient(120% 80% at 50% 0%, #0b1f3a 0%, #05080f 70%);
+      color: #e8eef7; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      text-align: center; overflow: hidden;
+    }
+    .brand { font-size: clamp(1.6rem, 3vw, 2.6rem); font-weight: 700; letter-spacing: .04em; }
+    .brand small { display: block; font-weight: 500; opacity: .65; font-size: .5em; margin-top: .4em; letter-spacing: .12em; }
+    .status { margin-top: 1.6em; font-size: 1.15rem; opacity: .9; }
+    .spinner {
+      margin: 2em auto 0; width: 54px; height: 54px; border-radius: 50%;
+      border: 4px solid rgba(255,255,255,.12); border-top-color: #4aa3ff;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .attempts { margin-top: 1.2em; font-variant-numeric: tabular-nums; opacity: .65; font-size: .95rem; }
+  </style>
+</head>
+<body>
+  <div class="brand">
+    MBFD Command Center
+    <small>CLASSROOM PODIUM</small>
+  </div>
+  <div class="status" id="status">Reconnecting&hellip;</div>
+  <div class="spinner" aria-hidden="true"></div>
+  <div class="attempts" id="attempts">attempt 0</div>
+
+  <script>
+    // Retry-every-2s ping toward the Command Center URL. When the bridge
+    // reports online, reload into the real CC. If window.mcBridge is missing
+    // (not in the kiosk shell), fall back to a plain HEAD fetch loop.
+    (function () {
+      var CC = 'https://media-control.mbfdhub.com/app';
+      var n = 0;
+      var statusEl = document.getElementById('status');
+      var attemptsEl = document.getElementById('attempts');
+
+      function onlineViaBridge() {
+        try { return window.mcBridge && window.mcBridge.getReconnectState; } catch (e) { return false; }
+      }
+
+      function setOnline(online) {
+        if (online) {
+          statusEl.textContent = 'Reconnected. Loading Command Center\u2026';
+          attemptsEl.textContent = 'connected';
+          // Reload the kiosk's main frame to the real CC URL.
+          setTimeout(function () { window.location.replace(CC); }, 600);
+        } else {
+          n += 1;
+          attemptsEl.textContent = 'attempt ' + n;
+        }
+      }
+
+      function ping() {
+        if (onlineViaBridge()) {
+          window.mcBridge.getReconnectState().then(function (s) {
+            setOnline(!!s.online);
+          }, function () { setOnline(false); });
+          return;
+        }
+        // No bridge: plain HEAD fetch with no-cors tolerance.
+        fetch(CC, { method: 'HEAD', cache: 'no-store', mode: 'no-cors' })
+          .then(function () { setOnline(true); })
+          .catch(function () { setOnline(false); });
+      }
+
+      ping();
+      setInterval(ping, 2000);
+    })();
+  </script>
+</body>
+</html>

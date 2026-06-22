@@ -938,6 +938,13 @@ startHeartbeatChecker(io);
 const commandQueue = require('./lib/command-queue');
 commandQueue.startSweep();
 
+// Start Phase 2 command-ack sweep (times out unacked requires_ack=1 command
+// rows and optionally re-emits retries). The timer is unref()'d so it doesn't
+// keep the event loop alive. Safe no-op while every ingested command is
+// requires_ack=0 (the current additive default).
+const commandModel = require('./lib/command-model');
+commandModel.startAckSweep(io);
+
 // Start scheduler
 const { startScheduler } = require('./services/scheduler');
 startScheduler(io);

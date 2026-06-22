@@ -5,6 +5,7 @@ const { db } = require('../db/database');
 const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
 // Phase 2.2i: workspace-aware access. Same pattern as devices/content/widgets.
 const { accessContext } = require('../lib/tenancy');
+const commandModel = require('../lib/command-model');
 
 const VALID_COLOR = /^#[0-9A-Fa-f]{6}$/;
 const ALLOWED_COMMANDS = ['screen_on', 'screen_off', 'launch', 'update', 'reboot', 'shutdown'];
@@ -305,9 +306,18 @@ router.post('/:id/command', requireGroupWrite, (req, res) => {
   for (const device of devices) {
     const room = deviceNs.adapter.rooms.get(device.id);
     if (room && room.size > 0) {
-      deviceNs.to(device.id).emit('device:command', { type, payload: payload || {} });
-      results.push({ device_id: device.id, name: device.name, status: 'sent' });
+      let cmd = null;
+      try { cmd = commandModel.ingestCommand({
+        target_type: 'display', target_id: device.id, command_type: type,
+        payload: payload || {}, issued_by: req.user && req.user.id, requires_ack: 0,
+      }); } catch (e) { /* command-model ingest is best-effort */ }
+      deviceNs.to(device.id).emit('device:command', { type, payload: payload || {}, command_id: cmd ? cmd.command_id : null });
+      results.push({ device_id: device.id, name: device.name, status: 'sent', command_id: cmd ? cmd.command_id : null });
     } else {
+      try { commandModel.ingestCommand({
+        target_type: 'display', target_id: device.id, command_type: type,
+        payload: payload || {}, issued_by: req.user && req.user.id, requires_ack: 0,
+      }); } catch (e) { /* best-effort */ }
       results.push({ device_id: device.id, name: device.name, status: 'offline' });
     }
   }

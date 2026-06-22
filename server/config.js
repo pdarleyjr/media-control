@@ -1,5 +1,31 @@
 const path = require('path');
+const os = require('os');
 const { localContentBaseUrlFromEnv } = require('./lib/local-asset-url');
+
+// Parse a human-friendly cache-quota string ("60G", "60GB", "6000000000", 60).
+// Used by roomAgentCacheQuotaBytes below + the backfill/agent scripts. Returns
+// bytes as an integer; on any parse failure the caller's fallback is used.
+function parseCacheQuota(raw) {
+  if (raw == null) return null;
+  if (typeof raw === 'number') return Math.max(0, Math.floor(raw));
+  const s = String(raw).trim().toLowerCase().replace(/_+/g, '');
+  if (!s) return null;
+  const m = s.match(/^(\d+(?:\.\d+)?)\s*([kmgt]?i?b?)$/);
+  if (!m) return null;
+  const num = parseFloat(m[1]);
+  if (!Number.isFinite(num)) return null;
+  const unit = m[2] || '';
+  const factors = {
+    '': 1, b: 1,
+    k: 1024, kb: 1024, kib: 1024,
+    m: 1024 ** 2, mb: 1024 ** 2, mib: 1024 ** 2,
+    g: 1024 ** 3, gb: 1024 ** 3, gib: 1024 ** 3,
+    t: 1024 ** 4, tb: 1024 ** 4, tib: 1024 ** 4,
+  };
+  const factor = factors[unit];
+  if (!factor) return null;
+  return Math.max(0, Math.floor(num * factor));
+}
 
 module.exports = {
   appName: process.env.APP_NAME || 'Media Control',
@@ -18,6 +44,15 @@ module.exports = {
   // origin instead of the public Cloudflare hostname, so large media fan-out
   // rides the training-room LAN. Leave empty to preserve direct/public URLs.
   localContentBaseUrl: localContentBaseUrlFromEnv(process.env),
+  // Room-agent asset cache (P3 + Kamrui). Quota is parsed from
+  // MBFD_ROOM_AGENT_CACHE_Q (e.g. "60G"); defaults to 60 GiB. The cache dir
+  // defaults to a platform-appropriate path but is normally overridden on-box
+  // via env: Windows → C:\MBFD\RoomAgent, Linux → /opt/mbfd/room-agent. These
+  // are read by the appliance agents + backfill tooling; the server itself does
+  // not populate the cache, so a missing dir is non-fatal.
+  roomAgentCacheQuotaBytes: parseCacheQuota(process.env.MBFD_ROOM_AGENT_CACHE_Q) || (60 * 1024 ** 3),
+  roomAgentCacheDir: process.env.MBFD_ROOM_AGENT_CACHE_DIR
+    || (os.platform() === 'win32' ? 'C:\\MBFD\\RoomAgent' : '/opt/mbfd/room-agent'),
   // App-level heartbeat. Checker runs every heartbeatInterval and marks
   // devices offline if last_heartbeat is older than heartbeatTimeout.
   // Env override for self-hosters on slow/jittery networks (issue #3:
@@ -28,6 +63,15 @@ module.exports = {
   // offline at emit time (ms). On reconnect within this window, queued events
   // are flushed in order. Past TTL they're dropped. See lib/command-queue.js.
   commandQueueTtlMs: parseInt(process.env.COMMAND_QUEUE_TTL_MS) || 30000,
+  // Phase 2 command/state model (lib/command-model.js). Ack deadline applied
+  // to every requires_ack=1 command row; the sweep marks timed-out rows and
+  // optionally re-emits up to commandMaxRetries. require_ack is per command
+  // type — today everything is ingested with requires_ack=0 (logging only);
+  // ack-per-type is enabled gradually.
+  commandAckTimeoutMs: parseInt(process.env.COMMAND_ACK_TIMEOUT_MS) || 8000,
+  commandMaxRetries:   parseInt(process.env.COMMAND_MAX_RETRIES)   || 2,
+  ackSweepIntervalMs:  parseInt(process.env.ACK_SWEEP_INTERVAL_MS)  || 2500,
+  nodeHeartbeatTimeout: parseInt(process.env.NODE_HEARTBEAT_TIMEOUT) || 60000,
   // Per-socket display-control rate limiting (lib/socket-rate-limit.js). Caps
   // how fast / how many concurrent control events ONE dashboard socket can
   // relay to displays so a malicious or buggy client can't flood a panel.

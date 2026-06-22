@@ -661,3 +661,125 @@ CREATE TABLE IF NOT EXISTS advanced_canvas_layers (
 
 CREATE INDEX IF NOT EXISTS idx_advanced_canvas_workspace ON advanced_canvas_endpoints(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_advanced_canvas_layers_endpoint ON advanced_canvas_layers(endpoint_id, z_index);
+
+-- ===================== PHASE 2: COMMAND / STATE MODEL =====================
+-- Additive command (ingest/ack/timeout) event model. Rows below are written
+-- ONLY by server/lib/command-model.js. Existing fire-and-forget device:command
+-- emits keep working unchanged; requires_ack=0 rows are logged for audit but
+-- never time out. See planning/command-center/COMMAND_EVENT_MODEL.md.
+
+CREATE TABLE IF NOT EXISTS command_logs (
+    command_id         TEXT PRIMARY KEY,
+    target_type        TEXT NOT NULL,                  -- display|wall|group|node|live-program
+    target_id          TEXT NOT NULL,
+    command_type       TEXT NOT NULL,
+    payload            TEXT,
+    revision           INTEGER NOT NULL DEFAULT 0,
+    parent_command_id  TEXT,                           -- set on fanned-out member rows
+    issued_by          TEXT,
+    created_at         INTEGER,
+    requires_ack       INTEGER NOT NULL DEFAULT 0,
+    ack_deadline       INTEGER,
+    status             TEXT NOT NULL DEFAULT 'sent',    -- sent|acked|timeout|failed|stale|superseded
+    ack_at            INTEGER,
+    ack_error         TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_command_logs_target_revision ON command_logs(target_id, revision);
+CREATE INDEX IF NOT EXISTS idx_command_logs_status ON command_logs(status);
+
+-- Last-acked playback state per target (display node). Written on device:ack
+-- / device:state-report; consumed by the Command Center status chips. Kept
+-- distinct from devices.screen_on (on/off) so it never clobbers the legacy flag.
+CREATE TABLE IF NOT EXISTS display_states (
+    target_type           TEXT NOT NULL,               -- display|node
+    target_id             TEXT NOT NULL,
+    workspace_id          TEXT,
+    current_content_id    TEXT,
+    current_asset_id      TEXT,
+    content_type          TEXT,
+    layout_mode           TEXT,
+    slide_index           INTEGER,
+    current_time          REAL,
+    duration              REAL,
+    paused                INTEGER,
+    muted                 INTEGER,
+    volume                INTEGER,
+    local_asset_ready     INTEGER,
+    last_ack_at           INTEGER,
+    last_heartbeat_at     INTEGER,
+    render_state          TEXT,
+    error_state           TEXT,
+    idle_screensaver_id   TEXT,
+    default_screensaver_id TEXT,
+    updated_at            INTEGER,
+    PRIMARY KEY (target_type, target_id)
+);
+
+-- P3/Kamrui managed-node registry. node_token is a per-node bearer (generated
+-- server-side, stored hashed elsewhere); never committed in the clear.
+CREATE TABLE IF NOT EXISTS managed_nodes (
+    node_id          TEXT PRIMARY KEY,
+    node_name        TEXT,
+    node_type        TEXT,
+    room_id         TEXT,
+    workspace_id    TEXT,
+    node_token      TEXT,
+    last_heartbeat  INTEGER,
+    software_version TEXT,
+    free_disk       INTEGER,
+    cache_size      INTEGER,
+    sync_status     TEXT NOT NULL DEFAULT 'idle',
+    audio_endpoint  TEXT,
+    created_at      INTEGER,
+    updated_at      INTEGER
+);
+
+-- Per-node desired asset set (asset sync ledger). PK(asset_id, node_id).
+CREATE TABLE IF NOT EXISTS node_assets (
+    asset_id          TEXT NOT NULL,
+    node_id           TEXT NOT NULL,
+    desired           INTEGER NOT NULL DEFAULT 1,
+    sync_status       TEXT NOT NULL DEFAULT 'pending',
+    local_path        TEXT,
+    checksum_verified INTEGER NOT NULL DEFAULT 0,
+    bytes_downloaded  INTEGER,
+    last_attempt_at   INTEGER,
+    last_success_at   INTEGER,
+    error_message     TEXT,
+    PRIMARY KEY (asset_id, node_id)
+);
+
+-- Canonical asset manifest: checksum + render metadata. content_id UNIQUE so
+-- we have exactly one manifest row per content row (NULL-safe join). CASCADE
+-- on content delete so removing media cleans its manifest.
+CREATE TABLE IF NOT EXISTS asset_checksums (
+    asset_id             TEXT PRIMARY KEY,
+    content_id           TEXT UNIQUE REFERENCES content(id) ON DELETE CASCADE,
+    sha256               TEXT,
+    size_bytes           INTEGER,
+    canonical_path       TEXT,
+    canonical_url        TEXT,
+    poster_path          TEXT,
+    duration_sec         REAL,
+    width                INTEGER,
+    height               INTEGER,
+    is_screensaver       INTEGER NOT NULL DEFAULT 0,
+    screensaver_category TEXT,
+    computed_at          INTEGER
+);
+
+-- Append-only node heartbeat history (analytics). Pruned periodically.
+CREATE TABLE IF NOT EXISTS node_heartbeats (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id          TEXT,
+    ts               INTEGER,
+    software_version TEXT,
+    free_disk        INTEGER,
+    cache_size       INTEGER,
+    sync_status      TEXT,
+    active_displays  TEXT,
+    audio_endpoint   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_node_heartbeats_node_ts ON node_heartbeats(node_id, ts);

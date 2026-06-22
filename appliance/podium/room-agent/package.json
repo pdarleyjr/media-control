@@ -1,0 +1,14 @@
+{
+  "name": "@mbfd/podium-room-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MBFD Kamrui podium room-agent — Socket.IO node client + asset sync worker (Linux).",
+  "main": "agent.js",
+  "scripts": {
+    "start": "node agent.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "socket.io-client": "^4.7.5"
+  }
+}

@@ -2,7 +2,7 @@ const heartbeat = require('../services/heartbeat');
 const { verifyToken } = require('../middleware/auth');
 const { db } = require('../db/database');
 const { accessContext, accessibleWorkspaceIds } = require('../lib/tenancy');
-const { workspaceRoom } = require('../lib/socket-rooms');
+const { workspaceRoom, displayRoom, wallTargetRoom, groupRoom, nodeRoom, liveProgramRoom } = require('../lib/socket-rooms');
 const whiteboardState = require('../services/whiteboard-state');
 const { profileForDevice } = require('../lib/display-profiles');
 const config = require('../config');
@@ -10,6 +10,7 @@ const { createLimiter } = require('../lib/socket-rate-limit');
 const { audit } = require('../lib/audit');
 const { getSocketIp } = require('../services/activity');
 const { liveStreamDeviceId, liveStreamProgramState, markLiveContentChanged } = require('../lib/live-stream-display');
+const commandModel = require('../lib/command-model');
 
 // Phase 2.3: workspace-scoped socket rooms + per-command permission gates.
 // Replaces the previous flat dashboardNs.emit broadcast (which leaked every
@@ -113,7 +114,7 @@ module.exports = function setupDashboardSocket(io) {
     });
   }
 
-  function mirrorTransportToLiveStream(deviceNs, deviceId, type, payload) {
+function mirrorTransportToLiveStream(deviceNs, deviceId, type, payload) {
     if (type !== 'transport') return;
     const device = db.prepare('SELECT workspace_id FROM devices WHERE id = ?').get(deviceId);
     if (!device || !device.workspace_id) return;
@@ -122,9 +123,14 @@ module.exports = function setupDashboardSocket(io) {
     const liveDeviceId = liveStreamDeviceId(device.workspace_id);
     if (liveDeviceId === deviceId) return;
     markLiveContentChanged(liveDeviceId);
+    let cmd = null;
+    try { cmd = commandModel.ingestCommand({
+      target_type: 'display', target_id: liveDeviceId, command_type: type,
+      payload: payload || {}, issued_by: null, requires_ack: 0,
+    }); } catch (_) {}
     const room = deviceNs.adapter.rooms.get(liveDeviceId);
     if (room && room.size > 0) {
-      deviceNs.to(liveDeviceId).emit('device:command', { type, payload });
+      deviceNs.to(liveDeviceId).emit('device:command', { type, payload, command_id: cmd ? cmd.command_id : null });
       return;
     }
     try {
@@ -179,6 +185,46 @@ module.exports = function setupDashboardSocket(io) {
     const wsIds = accessibleWorkspaceIds(socket.userId, socket.userRole);
     for (const wsId of wsIds) socket.join(workspaceRoom(wsId));
     console.log(`Dashboard client connected: ${socket.id} (user: ${socket.userId}, rooms: ${wsIds.length})`);
+
+    // Phase 2: dashboard selects the target it's currently controlling. It
+    // joins the matching per-target room (display:<id>|wall:<id>|group:<id>|
+    // node:<id>|live-program:<ws>) and leaves the previously-joined target
+    // room so events from the old target stop arriving. Membership in the
+    // target room is what delivers dashboard:state-sync, command:ack and the
+    // existing dashboard:device-status broadcasts.
+    function resolveTargetRoom(target_type, target_id) {
+      switch (target_type) {
+        case 'display': return displayRoom(target_id);
+        case 'wall':    return wallTargetRoom(target_id);
+        case 'group':   return groupRoom(target_id);
+        case 'node':    return nodeRoom(target_id);
+        case 'live-program': return liveProgramRoom(target_id);
+        default: return null;
+      }
+    }
+
+    socket.on('dashboard:select-target', (data) => {
+      const target_type = data && data.target_type;
+      const target_id = data && data.target_id;
+      const newRoom = resolveTargetRoom(target_type, target_id);
+      if (!newRoom) return;
+      const prev = socket.currentTargetRoom;
+      if (prev && prev !== newRoom) {
+        try { socket.leave(prev); } catch (e) { /* non-fatal */ }
+      }
+      socket.join(newRoom);
+      socket.currentTargetRoom = newRoom;
+      socket.currentTarget = { target_type, target_id };
+      console.log(`Dashboard ${socket.id} selected target ${target_type}:${target_id} (room ${newRoom})`);
+    });
+
+    socket.on('dashboard:clear-target', () => {
+      if (socket.currentTargetRoom) {
+        try { socket.leave(socket.currentTargetRoom); } catch (e) { /* non-fatal */ }
+      }
+      socket.currentTargetRoom = null;
+      socket.currentTarget = null;
+    });
 
     // Rate-limited registrar for display-control events (token bucket + queue
     // depth, per socket). Non-control events (none here) would use socket.on.
@@ -260,32 +306,81 @@ module.exports = function setupDashboardSocket(io) {
       console.log(`Whiteboard started on device ${device_id}`);
     });
 
+    // Resolve the set of device rooms a whiteboard event should fan out to,
+    // based on the envelope the controller sent:
+    //   - split_device_id present → ONLY that one member TV (wall split mode)
+    //   - wall_id present        → every member TV of the wall (span mode, so a
+    //                              stroke composes across all screens at once)
+    //   - otherwise              → just device_id (the legacy single-target path)
+    // All lookups wrapped so a malformed/unknown wall id degrades silently to
+    // the single-target default rather than dropping the event entirely.
+    function wbTargets(data, deviceId) {
+      try {
+        if (data && data.split_device_id) return [String(data.split_device_id)];
+        if (data && data.wall_id) {
+          const members = db.prepare('SELECT device_id FROM video_wall_devices WHERE wall_id = ?').all(data.wall_id);
+          const ids = members.map(r => r.device_id);
+          if (ids.length > 0) return ids;
+        }
+      } catch { /* fall through to default */ }
+      return deviceId ? [deviceId] : [];
+    }
+
+    function relayToTargets(event, payload, targets) {
+      for (const id of targets) {
+        try { deviceNs.to(id).emit(event, payload); } catch { /* one bad target never blocks the rest */ }
+      }
+    }
+
     onControl('dashboard:wb-stroke', (data) => {
-      const { device_id, stroke } = data || {};
-      if (!canActOnDevice(socket, device_id, 'write')) return;
-      const safeStroke = whiteboardState.appendStroke(null, device_id, stroke);
-      if (!safeStroke) return;
-      deviceNs.to(device_id).emit('device:wb-stroke', { stroke: safeStroke });
+      try {
+        const { device_id, stroke } = data || {};
+        if (!canActOnDevice(socket, device_id, 'write')) return;
+        const safeStroke = whiteboardState.appendStroke(null, device_id, stroke);
+        if (!safeStroke) return;
+        relayToTargets('device:wb-stroke', { stroke: safeStroke }, wbTargets(data, device_id));
+      } catch (e) {
+        console.warn(`dashboard:wb-stroke relay error: ${e.message}`);
+      }
     });
 
     onControl('dashboard:wb-clear', (data) => {
-      const { device_id } = data || {};
-      if (!canActOnDevice(socket, device_id, 'write')) return;
-      whiteboardState.clearSession(null, device_id);
-      deviceNs.to(device_id).emit('device:wb-clear', {});
+      try {
+        const { device_id } = data || {};
+        if (!canActOnDevice(socket, device_id, 'write')) return;
+        whiteboardState.clearSession(null, device_id);
+        relayToTargets('device:wb-clear', {}, wbTargets(data, device_id));
+      } catch (e) {
+        console.warn(`dashboard:wb-clear relay error: ${e.message}`);
+      }
     });
 
     onControl('dashboard:wb-undo', (data) => {
-      const { device_id } = data || {};
-      if (!canActOnDevice(socket, device_id, 'write')) return;
-      whiteboardState.undoStroke(null, device_id);
-      deviceNs.to(device_id).emit('device:wb-undo', {});
+      try {
+        const { device_id } = data || {};
+        if (!canActOnDevice(socket, device_id, 'write')) return;
+        whiteboardState.undoStroke(null, device_id);
+        relayToTargets('device:wb-undo', {}, wbTargets(data, device_id));
+      } catch (e) {
+        console.warn(`dashboard:wb-undo relay error: ${e.message}`);
+      }
+    });
+
+    onControl('dashboard:wb-redo', (data) => {
+      try {
+        const { device_id } = data || {};
+        if (!canActOnDevice(socket, device_id, 'write')) return;
+        const redone = whiteboardState.redoStroke(null, device_id);
+        relayToTargets('device:wb-redo', { stroke: redone }, wbTargets(data, device_id));
+      } catch (e) {
+        console.warn(`dashboard:wb-redo relay error: ${e.message}`);
+      }
     });
 
     onControl('dashboard:wb-stop', (data) => {
       const { device_id } = data || {};
       if (!canActOnDevice(socket, device_id, 'write')) return;
-      deviceNs.to(device_id).emit('device:wb-stop', {});
+      relayToTargets('device:wb-stop', {}, wbTargets(data, device_id));
       console.log(`Whiteboard stopped on device ${device_id}`);
     });
 
@@ -295,9 +390,14 @@ module.exports = function setupDashboardSocket(io) {
         if (typeof ack === 'function') ack({ delivered: false, reason: 'forbidden' });
         return;
       }
-      const room = deviceNs.adapter.rooms.get(device_id);
+const room = deviceNs.adapter.rooms.get(device_id);
       if (room && room.size > 0) {
-        deviceNs.to(device_id).emit('device:command', { type, payload });
+        let cmd = null;
+        try { cmd = commandModel.ingestCommand({
+          target_type: 'display', target_id: device_id, command_type: type,
+          payload: payload || {}, issued_by: socket.userId, requires_ack: 0,
+        }); } catch (e) { /* command-model ingest is best-effort */ }
+        deviceNs.to(device_id).emit('device:command', { type, payload, command_id: cmd ? cmd.command_id : null });
         mirrorTransportToLiveStream(deviceNs, device_id, type, payload);
         console.log(`Command delivered to device ${device_id}: ${type}`);
         if (typeof ack === 'function') ack({ delivered: true });
@@ -316,7 +416,13 @@ module.exports = function setupDashboardSocket(io) {
       // Device offline at emit time. Try to queue (lazy require so reverting
       // the queue commit doesn't break this commit - MODULE_NOT_FOUND on the
       // first try gets cached by Node's module loader, giving consistent
-      // queued=false behavior on every subsequent call).
+      // queued=false behavior on every subsequent call). Ingest the command
+      // row anyway so the audit trail shows it was issued (fire-and-forget:
+      // requires_ack=0, so it never times out).
+      try { commandModel.ingestCommand({
+        target_type: 'display', target_id: device_id, command_type: type,
+        payload: payload || {}, issued_by: socket.userId, requires_ack: 0,
+      }); } catch (e) { /* best-effort */ }
       let queued = false;
       try {
         const queue = require('../lib/command-queue');

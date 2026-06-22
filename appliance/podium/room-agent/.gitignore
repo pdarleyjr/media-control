@@ -1,0 +1,18 @@
+# Room-agent runtime artifacts (secrets + generated state).
+# NEVER commit a real config.local.json / .env / cache / logs to this repo.
+
+node_modules/
+cache/
+manifests/
+logs/
+backups/
+
+# Secrets — populate on-box ONLY; never commit
+*.local.json
+config.local.json
+.env
+.env.*
+!.env.example
+
+# Backfill / audit reports (generated)
+backfill-report-*.json

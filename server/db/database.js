@@ -855,6 +855,27 @@ function migrateAuditLog() {
 }
 migrateAuditLog();
 
+// Phase 2 (Classroom 1 command center): seed the three fixed Classroom-1
+// device-group membership sets from the appliance's wall topology. Idempotent
+// (INSERT OR IGNORE) and gated on schema_migrations so it runs exactly once
+// per database. Mirrors the one-shot harness pattern above. See
+// scripts/backfill-classroom-groups.js.
+const CLASSROOM1_GROUP_MEMBERS_ID = 'classroom1_group_members';
+function backfillClassroomGroupMembers() {
+  const already = db.prepare('SELECT 1 FROM schema_migrations WHERE id = ?').get(CLASSROOM1_GROUP_MEMBERS_ID);
+  if (already) return;
+  try {
+    const { runBackfill } = require('../scripts/backfill-classroom-groups');
+    const r = runBackfill({ db });
+    if (!r.skipped) {
+      console.log(`[classroom1_group_members] backfill: all=${r.report.all} primary=${r.report.primary} secondary=${r.report.secondary}`);
+    }
+  } catch (e) {
+    console.warn(`[classroom1_group_members] backfill failed: ${e.message}`);
+  }
+}
+backfillClassroomGroupMembers();
+
 // Prune old telemetry (keep last 24h worth at 15s intervals = ~5760, cap at 6000)
 function pruneTelemetry(deviceId) {
   db.prepare(`

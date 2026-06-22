@@ -1,0 +1,44 @@
+{
+  "_comment": "Example config for the P3 appliance launcher + agent. Copy to config.local.json and populate on-box ONLY. config.local.json is gitignored and NEVER committed. All token/id fields below are PLACEHOLDERS.",
+  "MC_SERVER_URL": "http://100.81.154.123:8096",
+  "MC_NODE_ID": "PLACEHOLDER_P3_NODE_ID",
+  "MC_NODE_TOKEN": " SECRET — populate on-box only; never commit ",
+  "MC_SOFTWARE_VERSION": "p3-agent-1.0.0",
+  "MC_ACTIVE_DISPLAYS": ["TV1", "TV2", "TV3", "TV4", "TV5"],
+  "MC_AUDIO_ENDPOINT": "eARC",
+  "managedDisplays": [
+    {
+      "wall": 1, "label": "TV1", "display": "0,0",
+      "deviceId": "PLACEHOLDER_DEVICE_ID",
+      "deviceToken": " SECRET — populate on-box only; never commit "
+    },
+    {
+      "wall": 1, "label": "TV2", "display": "1920,0",
+      "deviceId": "PLACEHOLDER_DEVICE_ID",
+      "deviceToken": " SECRET — populate on-box only; never commit "
+    },
+    {
+      "wall": 1, "label": "TV3", "display": "3840,0",
+      "deviceId": "PLACEHOLDER_DEVICE_ID",
+      "deviceToken": " SECRET — populate on-box only; never commit "
+    },
+    {
+      "wall": 2, "label": "TV4", "display": "0,1080",
+      "deviceId": "PLACEHOLDER_DEVICE_ID",
+      "deviceToken": " SECRET — populate on-box only; never commit "
+    },
+    {
+      "wall": 2, "label": "TV5", "display": "1920,1080",
+      "deviceId": "PLACEHOLDER_DEVICE_ID",
+      "deviceToken": " SECRET — populate on-box only; never commit "
+    }
+  ],
+  "advancedCanvas": {
+    "endpointId": "",
+    "endpointToken": " SECRET — populate on-box only; never commit "
+  },
+  "cameraPublisher": {
+    "rtmpUrl": "",
+    "rtmpKey": " SECRET — populate on-box only; never commit "
+  }
+}

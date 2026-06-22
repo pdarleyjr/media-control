@@ -1,0 +1,18 @@
+{
+  "_comment": "Example config for the Kamrui podium agent. Real values live in /etc/mbfd/media-control-console/config.env (gitignored, mode 0600) on-box. All token/id fields below are PLACEHOLDERS.",
+  "MC_SERVER_URL": "http://100.81.154.123:8096",
+  "MC_NODE_ID": "PLACEHOLDER_PODIUM_NODE_ID",
+  "MC_NODE_TOKEN": " SECRET — populate on-box only; never commit ",
+  "MC_NODE_TYPE": "podium",
+  "MC_SOFTWARE_VERSION": "podium-agent-1.0.0",
+  "MC_AGENT_PORT": 8097,
+  "MC_ACTIVE_DISPLAYS": ["podium-touch"],
+  "advancedCanvas": {
+    "endpointId": "",
+    "endpointToken": " SECRET — populate on-box only; never commit "
+  },
+  "cameraPublisher": {
+    "rtmpUrl": "",
+    "rtmpKey": " SECRET — populate on-box only; never commit "
+  }
+}

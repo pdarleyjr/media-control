@@ -1,0 +1,16 @@
+# Electron shell secrets + generated runtime — keep example-only.
+# The shell carries NO secrets by design; cache lives in the agent dir.
+
+node_modules/
+dist/
+cache/
+logs/
+backups/
+
+*.local.json
+config.local.json
+.env
+.env.*
+!.env.example
+
+backfill-report-*.json

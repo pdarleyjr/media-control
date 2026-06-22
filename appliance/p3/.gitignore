@@ -1,0 +1,19 @@
+# P3 Secrets + generated runtime — keep example-only.
+# Populate on-box; never commit.
+
+# Secrets
+*.local.json
+config.local.json
+.env
+.env.*
+!.env.example
+
+# Generated runtime
+node_modules/
+cache/
+manifests/
+logs/
+backups/
+
+# Backfill / audit reports
+backfill-report-*.json

@@ -1,0 +1,14 @@
+{
+  "name": "@mbfd/podium-electron-shell",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MBFD Kamrui podium Electron kiosk shell — thin Command Center + mcmedia:// resolver.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "offline": "electron . --offline-bundle=./offline-fallback"
+  },
+  "dependencies": {
+    "electron": "^31.0.0"
+  }
+}
