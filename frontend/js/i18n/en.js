@@ -1819,4 +1819,6 @@ export default {
   'mc.cc.chip.offline': 'Offline',
   'mc.cc.chip.failed': 'Failed',
   'mc.cc.chip.from_server': 'From server',
+  'mc.cc.cmd_not_ack': 'Command not acknowledged by {target} within 8s',
+  'mc.cc.cmd_failed': 'Command failed on {target}',
 };

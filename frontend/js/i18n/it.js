@@ -1202,5 +1202,7 @@ export default {
   'mc.cc.chip.stale': 'Stale',
   'mc.cc.chip.offline': 'Offline',
   'mc.cc.chip.failed': 'Failed',
-  'mc.cc.chip.from_server': 'From server',
+'mc.cc.chip.from_server': 'From server',
+  'mc.cc.cmd_not_ack': 'Comando non confermato da {target} entro 8s',
+  'mc.cc.cmd_failed': 'Comando non riuscito su {target}',
 };

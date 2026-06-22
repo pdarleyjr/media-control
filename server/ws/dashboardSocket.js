@@ -126,7 +126,7 @@ function mirrorTransportToLiveStream(deviceNs, deviceId, type, payload) {
     let cmd = null;
     try { cmd = commandModel.ingestCommand({
       target_type: 'display', target_id: liveDeviceId, command_type: type,
-      payload: payload || {}, issued_by: null, requires_ack: 0,
+      payload: payload || {}, issued_by: null, requires_ack: commandModel.ackRequiredForType(type),
     }); } catch (_) {}
     const room = deviceNs.adapter.rooms.get(liveDeviceId);
     if (room && room.size > 0) {
@@ -395,7 +395,7 @@ const room = deviceNs.adapter.rooms.get(device_id);
         let cmd = null;
         try { cmd = commandModel.ingestCommand({
           target_type: 'display', target_id: device_id, command_type: type,
-          payload: payload || {}, issued_by: socket.userId, requires_ack: 0,
+          payload: payload || {}, issued_by: socket.userId, requires_ack: commandModel.ackRequiredForType(type),
         }); } catch (e) { /* command-model ingest is best-effort */ }
         deviceNs.to(device_id).emit('device:command', { type, payload, command_id: cmd ? cmd.command_id : null });
         mirrorTransportToLiveStream(deviceNs, device_id, type, payload);

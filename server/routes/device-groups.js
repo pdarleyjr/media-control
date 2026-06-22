@@ -309,7 +309,7 @@ router.post('/:id/command', requireGroupWrite, (req, res) => {
       let cmd = null;
       try { cmd = commandModel.ingestCommand({
         target_type: 'display', target_id: device.id, command_type: type,
-        payload: payload || {}, issued_by: req.user && req.user.id, requires_ack: 0,
+        payload: payload || {}, issued_by: req.user && req.user.id, requires_ack: commandModel.ackRequiredForType(type),
       }); } catch (e) { /* command-model ingest is best-effort */ }
       deviceNs.to(device.id).emit('device:command', { type, payload: payload || {}, command_id: cmd ? cmd.command_id : null });
       results.push({ device_id: device.id, name: device.name, status: 'sent', command_id: cmd ? cmd.command_id : null });

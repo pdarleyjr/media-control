@@ -167,14 +167,16 @@
        wall-stage maps the wall's player_rect into this device's viewport
        using vw/vh — so the device fills its full viewport edge-to-edge
        (no pillarbox at the seam between adjacent screens).
-       object-fit:fill is intentional: it stretches the source to the stage,
-       which keeps vertical position identical between devices that share
-       a viewport height — without that, cover-cropping on different stage
-       aspects (different innerWidths) shifts content vertically. */
+       object-fit:cover (was: fill) makes content reach the bezel edges
+       edge-to-edge on every member screen. Because the stage is a SINGLE
+       element sized to the whole-composite box (player_rect) and clipped
+       per-screen by viewport, cover crops uniformly across the composite,
+       so vertical/horizontal position stays identical between devices that
+       share a viewport — alignment is preserved (no per-screen desync). */
     #playerContainer.wall-mode { overflow: hidden; background: #000; }
     .wall-stage { position: absolute; }
     .wall-stage > video,
-    .wall-stage > img { width: 100%; height: 100%; object-fit: fill; display: block; }
+    .wall-stage > img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .wall-stage > iframe { width: 100%; height: 100%; border: none; display: block; }
     .wall-mode #playerContainer > iframe,
     .wall-mode #playerContainer > div > iframe { position: static !important; width: 100% !important; height: 100% !important; }
@@ -1863,10 +1865,11 @@
 
     // Map the player rect into this device's viewport using vw/vh so the
     // viewport fills edge-to-edge (no pillarbox at the seam between adjacent
-    // screens). With object-fit:fill on the video, the source stretches to
-    // the stage — which keeps the vertical position of every source pixel
-    // identical across devices that share a viewport height (1vh maps to
-    // the same physical pixel on each).
+    // screens). With object-fit:cover on the single stage element, the
+    // source crops to the whole-composite box (player_rect) — every screen
+    // shows its slice edge-to-bezel, and because it's one element clipped
+    // per-screen, vertical position stays identical across devices that
+    // share a viewport height (1vh maps to the same physical pixel on each).
     function styleWallStage(stageEl) {
       if (!wallConfig?.screen_rect || !wallConfig?.player_rect) return;
       const s = wallConfig.screen_rect;
@@ -2350,9 +2353,14 @@
       // 'fill' (wall) / 'contain' (solo). Validated server-side so any value
       // arriving here is a known CSS object-fit token.
       const itemFit = (item.fit_mode || '').trim();
+      // Full-bleed by default in every mode (wall + solo/Split): content
+      // must reach the bezel edges. 'cover' crops to fill edge-to-edge with
+      // no letterbox; an explicit per-item fit_mode overrides this. For
+      // doc/PDF/Office this also flows into docPlayerSrc → ?fit=cover so
+      // doc.html renders pages with object-fit:cover instead of contain.
       const cssFit = wallConfig
-        ? (itemFit || 'fill')
-        : (itemFit || 'contain');
+        ? (itemFit || 'cover')
+        : (itemFit || 'cover');
 
       if (layout && layout.zones && layout.zones.length > 1 && !wallConfig) {
         renderZones(container, item);
@@ -2441,12 +2449,14 @@
           if (!isFollower) video.volume = 1.0;
           video.playsInline = true;
           video.crossOrigin = 'anonymous';
-          // Wall mode uses object-fit:fill so the source stretches to the
-          // stage exactly. Cover would re-crop based on each device's stage
-          // aspect (different innerWidths produce different cover scales),
-          // which is the original vertical-misalignment bug. Fill keeps the
-          // vertical mapping uniform across devices that share a viewport
-          // height. Solo (non-wall) keeps contain to preserve aspect.
+          // object-fit is driven by cssFit, which defaults to 'cover' in
+          // every mode (wall + solo/Split) so content reaches the bezel
+          // edges with no letterbox. On a wall the stage is a SINGLE element
+          // sized to the whole-composite box and clipped per-screen, so
+          // cover crops uniformly across the composite — vertical mapping
+          // stays uniform across devices that share a viewport height (the
+          // per-screen-desync worry only applied if each screen rendered its
+          // own independently-cover-sized element, which we do not).
           video.style.cssText = `width:100%;height:100%;object-fit:${cssFit};background:#000`;
           video.loop = (playlist.length === 1);
           video.onended = () => { if (!video.loop && !isFollower) nextItem(); };

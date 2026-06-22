@@ -68,9 +68,22 @@ export function connectSocket() {
     emit('wall-changed');
   });
 
-  // Content ack
+// Content ack
   dashboardSocket.on('dashboard:content-ack', (data) => {
     emit('content-ack', data);
+  });
+
+  // Command ack / timeout (Phase-2 reliable command model). Server emits
+  // command:ack to the target's workspace room. ok:false (status 'timeout' or
+  // a device-reported failure) is the non-silent failure path: the Command
+  // Center shows a toast and flips the status chip to Stale/Failed.
+  dashboardSocket.on('command:ack', (data) => {
+    emit('command-ack', data);
+  });
+
+  // Display state self-report → also fed to the Command Center chips.
+  dashboardSocket.on('dashboard:state-sync', (data) => {
+    emit('state-sync', data);
   });
 
   return dashboardSocket;

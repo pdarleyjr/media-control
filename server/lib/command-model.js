@@ -31,11 +31,16 @@ const stmts = {
   updateParent:    p(`UPDATE command_logs
     SET status = ?, ack_at = ?, ack_error = ?, requires_ack = requires_ack
     WHERE command_id = ?`),
-  timedOut:        p(`SELECT command_id, target_id, command_type, payload,
+  timedOut:        p(`SELECT command_id, target_type, target_id, command_type, payload,
     revision, requires_ack, parent_command_id
     FROM command_logs
     WHERE status = 'sent' AND requires_ack = 1 AND ack_deadline IS NOT NULL
       AND ack_deadline < ?`),
+  // Resolve the workspace room for a target so the ack-sweep can broadcast a
+  // timed-out command to dashboards tracking that target (non-silent failure).
+  wsForDevice: p('SELECT workspace_id FROM devices WHERE id = ?'),
+  wsForWall:   p('SELECT workspace_id FROM video_walls WHERE id = ?'),
+  wsForGroup:  p('SELECT workspace_id FROM device_groups WHERE id = ?'),
   countRetries:    p(`SELECT COUNT(*) AS n FROM command_logs
     WHERE parent_command_id IS NULL AND target_id = ? AND command_type = ?
       AND status IN ('timeout','failed')`),
@@ -238,15 +243,25 @@ function recordAck(args) {
 }
 
 // Sweep one pass: mark timed-out sent rows and optionally re-emit retries.
-// Returns a list of retry decisions for observability (the caller — or a future
-// retry worker — re-emits the device:command to the target room).
+// Returns { retries, timedOut } for observability. `retryies` are parent rows
+// eligible for re-emit; `timedOut` is EVERY row marked timeout this pass (parent
+// + child) so startAckSweep can broadcast a non-silent command:ack ok:false to
+// dashboards tracking the target — the owner's "toast at 8s" requirement.
 function tickAckTimeouts() {
   const now = Date.now();
   const rows = stmts.timedOut.all(now);
   const retries = [];
+  const timedOut = [];
   const tx = db.transaction(() => {
     for (const r of rows) {
       stmts.markTimeout.run(now, r.command_id);
+      timedOut.push({
+        command_id: r.command_id,
+        target_type: r.target_type,
+        target_id: r.target_id,
+        command_type: r.command_type,
+        parent_command_id: r.parent_command_id,
+      });
       // Retry budget is per (target_id, command_type) across the aggregate
       // command's history. Only the parent (no parent_command_id) is eligible
       // — children's deadlines mirror the parent, so re-issuing the parent
@@ -268,7 +283,30 @@ function tickAckTimeouts() {
     }
   });
   tx();
-  return retries;
+  return { retries, timedOut };
+}
+
+// Resolve the workspace room name for a target so the ack-sweep can broadcast
+// a timed-out command to dashboards tracking that target. Returns null when
+// the target / its workspace can't be resolved (best-effort, non-fatal).
+function workspaceRoomForTarget(target_type, target_id) {
+  if (!target_type || !target_id) return null;
+  let wsId = null;
+  try {
+    if (target_type === 'wall') {
+      wsId = (stmts.wsForWall.get(target_id) || {}).workspace_id || null;
+    } else if (target_type === 'group') {
+      wsId = (stmts.wsForGroup.get(target_id) || {}).workspace_id || null;
+    } else {
+      // display / node / live-program / anything device-like → devices.workspace_id
+      wsId = (stmts.wsForDevice.get(target_id) || {}).workspace_id || null;
+      if (!wsId && target_type === 'display') {
+        // child of a wall/group: parent's wall/group workspace is the same, so
+        // falling back to device lookup is sufficient.
+      }
+    }
+  } catch (_) { /* table missing during early boot is non-fatal */ }
+  return wsId ? ('workspace:' + wsId) : null;
 }
 
 let _sweepTimer = null;
@@ -282,7 +320,32 @@ function startAckSweep(io) {
   if (_sweepTimer) return _sweepTimer;
   _sweepTimer = setInterval(() => {
     try {
-      const retries = tickAckTimeouts();
+      const dashNs = io && io.of ? io.of('/dashboard') : null;
+      const { retries, timedOut } = tickAckTimeouts();
+      // Non-silent timeout: for every row that just expired, broadcast
+      // command:ack {ok:false, status:'timeout'} to the target's workspace room
+      // so any dashboard (Command Center) tracking it flips the chip to
+      // Stale/Failed AND surfaces a toast — the "command not acknowledged
+      // within 8s" requirement. We emit for parent rows (what the operator
+      // sees) to avoid per-child spam on walls/groups.
+      if (dashNs && timedOut && timedOut.length) {
+        for (const t of timedOut) {
+          if (t.parent_command_id) continue; // children mirror parent
+          const room = workspaceRoomForTarget(t.target_type, t.target_id);
+          if (!room) continue;
+          try {
+            dashNs.to(room).emit('command:ack', {
+              command_id: t.command_id,
+              target_type: t.target_type,
+              target_id: t.target_id,
+              ok: false,
+              status: 'timeout',
+              error: 'Command not acknowledged within ' +
+                Math.round(config.commandAckTimeoutMs / 1000) + 's',
+            });
+          } catch (_) { /* broadcast is best-effort */ }
+        }
+      }
       if (retries && retries.length && io) {
         // Re-emit by ingesting a fresh command for the timed-out target. This
         // is the minimal, additive retry path; we don't bypass re-ingest so the
@@ -337,6 +400,20 @@ function recordHeartbeat(args) {
   }
 }
 
+// Command types whose success the operator must SEE: these opt into
+// requires_ack=1 so the dashboard status chip flips to "Applied ✓" on ack
+// and the ack-sweep emits a non-silent timeout chip/toast at ack deadline.
+// Fire-and-forget command types (volume/muted/seek/setcontent/identify/…)
+// stay ack=0 (logged but never time out). List mirrors the operator-facing
+// transport + display-control verbs in COMMAND_EVENT_MODEL.md / TEST_PLAN.
+const ACK_ELIGIBLE_TYPES = new Set([
+  'play', 'pause', 'prev', 'next', 'restart',
+  'blank', 'screensaver', 'grid',
+]);
+function ackRequiredForType(type) {
+  return ACK_ELIGIBLE_TYPES.has(String(type || '').toLowerCase()) ? 1 : 0;
+}
+
 module.exports = {
   ingestCommand,
   recordAck,
@@ -348,4 +425,7 @@ module.exports = {
   mergeDisplayState,
   fanOutTargets,
   nextRevision,
+  ackRequiredForType,
+  workspaceRoomForTarget,
+  ACK_ELIGIBLE_TYPES,
 };

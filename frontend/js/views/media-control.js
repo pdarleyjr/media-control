@@ -2,7 +2,7 @@ import { api } from '../api.js';
 import { esc } from '../utils.js';
 import { t, tn } from '../i18n.js';
 import { showToast } from '../components/toast.js';
-import { identifyDevice, requestScreenshot, sendCommand, getSocket } from '../socket.js';
+import { identifyDevice, requestScreenshot, sendCommand, getSocket, on as socketOn, off as socketOff } from '../socket.js';
 import { COMMAND_TYPES } from '../player-protocol.js';
 import { mountTargetSelector } from './media-control/target-selector.js';
 import { mountSpanSplit } from './media-control/span-split.js';
@@ -93,6 +93,8 @@ let dockApi = null;         // bottom action dock
 
 let unsub = null;
 let unsubChip = null;   // broadcast-chip unsubscribe (Task 4.5)
+let cmdAckHandler = null;   // Phase-2 command:ack (toast on timeout/failure)
+let stateSyncHandler = null;
 let selectedIds = [];   // ids on the stage; re-hydrated from the server, persisted on change
 let wallMemberIds = new Set();   // device ids owned by a video wall (never their own card)
 let walls = [];
@@ -995,6 +997,46 @@ function mountScreensaverRow(hostEl) {
   };
 }
 
+// Phase-2: command:ack surfacing. ok:false (timeout or device-reported failure)
+// is NON-silent — show a toast naming the target + flip the chips to Stale/Failed.
+// We only toast for acks whose target matches the active target so the operator
+// isn't spammed with every command from every target in the shared workspace room.
+function targetLabelOf(targetId) {
+  if (!targetId) return t('mc.cc.chip.offline');
+  const d = displayState.getAll().find((x) => x.id === targetId);
+  if (d && d.name) return d.name;
+  const w = walls.find((x) => x.id === targetId);
+  if (w && w.name) return w.name;
+  return String(targetId).slice(0, 8);
+}
+function activeTargetIds() {
+  if (!activeTarget) return [];
+  if (activeTarget.wall_id) {
+    const w = walls.find((x) => x.id === activeTarget.wall_id);
+    return (w && w.devices ? w.devices.map((d) => d.device_id) : []);
+  }
+  return activeTarget.device_id ? [activeTarget.device_id] : [];
+}
+function handleCommandAck(data) {
+  if (!data) return;
+  const related = activeTargetIds().includes(data.target_id || data.device_id)
+    || (activeTarget && (activeTarget.wall_id === data.target_id || activeTarget.device_id === data.target_id));
+  if (data.ok === false && related) {
+    const label = targetLabelOf(data.target_id || data.device_id);
+    const msg = data.status === 'timeout'
+      ? t('mc.cc.cmd_not_ack', { target: label })
+      : (data.error ? (label + ': ' + data.error) : t('mc.cc.cmd_failed', { target: label }));
+    showToast(msg, 'error');
+    // Force a chip repaint so Stale/Failed reflects immediately.
+    try { paintChips(); } catch (_) {}
+  }
+}
+// Display self-report state → refresh chips (keeps Playing/Paused/Synced live).
+function handleStateSync(data) {
+  try { paintChips(); } catch (_) {}
+  void data;
+}
+
 // Small unobtrusive status chips above the canvas for the active target. Real
 // data only: Online / Synced / Playing-or-Paused / Live / Stale / Offline.
 function paintChips() {
@@ -1357,6 +1399,11 @@ pruneSelection();
   paintSummary();
   const canvasEndpoint = await mountAdvancedCanvas(document.getElementById('mc-advanced-canvas'));
 
+  // Phase-2 non-silent ack: surface command:ack ok:false as a toast + chip flip,
+  // and refresh chips on display state-sync. Registered for the view's lifetime.
+  if (!cmdAckHandler) { cmdAckHandler = (d) => handleCommandAck(d); socketOn('command-ack', cmdAckHandler); }
+  if (!stateSyncHandler) { stateSyncHandler = (d) => handleStateSync(d); socketOn('state-sync', stateSyncHandler); }
+
   // Whiteboard dock stub (Phase 2). Mounts the self-contained whiteboard surface
   // as a full-stage overlay over the Command Center canvas. Minimal entrypoint:
   // window.mcOpenWhiteboard() opens it (optionally with an explicit target); the
@@ -1541,6 +1588,8 @@ export function unmount() {
   if (dockBtn) dockBtn.remove();
   if (unsub) { unsub(); unsub = null; }
   if (unsubChip) { unsubChip(); unsubChip = null; }
+  if (cmdAckHandler) { try { socketOff('command-ack', cmdAckHandler); } catch (_) {} cmdAckHandler = null; }
+  if (stateSyncHandler) { try { socketOff('state-sync', stateSyncHandler); } catch (_) {} stateSyncHandler = null; }
   teardownMultiview();    // stop any local audio monitor so it can't keep playing
   closeViewModal();       // dismiss any open room-setup overlay (e.g. Schedules)
   stopPreviewRefresh();   // stop poking players once we leave the control surface
