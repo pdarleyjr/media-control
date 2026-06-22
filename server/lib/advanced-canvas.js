@@ -106,10 +106,12 @@ function getEndpointLayers(endpointId) {
     label: row.label || '',
     source: parseJson(row.source_json, {}),
     render: parseJson(row.render_json, {}),
-    // Default to 'cover' (was 'contain') so wall content fills the layer box
-    // edge-to-bezel — the classroom/owner #1 priority. An explicitly stored
-    // 'contain'/'fill' still wins (we only fallback to 'cover' when unset).
-    fit_mode: row.fit_mode || 'cover',
+    // Default to 'fill' so wall content fills the layer box edge-to-bezel with no
+    // letterbox and no crop — the operator-confirmed wallpaper behavior for a
+    // video wall. An explicitly stored 'contain'/'cover' still wins (legacy
+    // rows / Split regions are untouched); only an empty/NULL column
+    // fallbacks to 'fill'.
+    fit_mode: row.fit_mode || 'fill',
     muted: !!row.muted,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -285,10 +287,11 @@ async function normalizeSceneLayers({
       label: String(layer.label || `Layer ${index + 1}`).slice(0, 240),
       source,
       render,
-      // Default 'cover' (was 'contain'): wall content must reach the bezel edges.
-      // Operator can still request 'contain'/'fill' per layer; an empty/invalid
-      // fit_mode now resolves to full-bleed 'cover'.
-      fit_mode: ['contain', 'cover', 'fill'].includes(layer.fit_mode) ? layer.fit_mode : 'cover',
+      // Default 'fill' (was 'contain'/'cover'): wall content stretches to fill the
+      // layer box edge-to-bezel — the operator-confirmed wallpaper behavior for
+      // a video wall. An explicit per-layer 'contain'/'cover' still wins; only
+      // an empty/invalid fit_mode now resolves to full-bleed 'fill'.
+      fit_mode: ['contain', 'cover', 'fill'].includes(layer.fit_mode) ? layer.fit_mode : 'fill',
       muted: layer.muted !== false,
     });
   }

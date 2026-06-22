@@ -167,16 +167,16 @@
        wall-stage maps the wall's player_rect into this device's viewport
        using vw/vh — so the device fills its full viewport edge-to-edge
        (no pillarbox at the seam between adjacent screens).
-       object-fit:cover (was: fill) makes content reach the bezel edges
-       edge-to-edge on every member screen. Because the stage is a SINGLE
-       element sized to the whole-composite box (player_rect) and clipped
-       per-screen by viewport, cover crops uniformly across the composite,
-       so vertical/horizontal position stays identical between devices that
-       share a viewport — alignment is preserved (no per-screen desync). */
+       object-fit:fill is the operator-confirmed wallpaper behavior for a
+       video wall: source stretches exactly to the composite rectangle, edge-
+       to-bezel with NO letterbox and NO crop. Alignment across tiles is
+       preserved because the stage is a SINGLE element sized to the whole
+       composite box (player_rect) and clipped per-screen by viewport — a
+       crop like 'cover' would over-zoom non-matching-aspect images. */
     #playerContainer.wall-mode { overflow: hidden; background: #000; }
     .wall-stage { position: absolute; }
     .wall-stage > video,
-    .wall-stage > img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .wall-stage > img { width: 100%; height: 100%; object-fit: fill; display: block; }
     .wall-stage > iframe { width: 100%; height: 100%; border: none; display: block; }
     .wall-mode #playerContainer > iframe,
     .wall-mode #playerContainer > div > iframe { position: static !important; width: 100% !important; height: 100% !important; }
@@ -2353,14 +2353,15 @@
       // 'fill' (wall) / 'contain' (solo). Validated server-side so any value
       // arriving here is a known CSS object-fit token.
       const itemFit = (item.fit_mode || '').trim();
-      // Full-bleed by default in every mode (wall + solo/Split): content
-      // must reach the bezel edges. 'cover' crops to fill edge-to-edge with
-      // no letterbox; an explicit per-item fit_mode overrides this. For
-      // doc/PDF/Office this also flows into docPlayerSrc → ?fit=cover so
-      // doc.html renders pages with object-fit:cover instead of contain.
+      // Wall content stretches to fill exactly (object-fit:fill) edge-to-bezel
+      // with no letterbox and no crop — the operator-confirmed wallpaper
+      // behavior. Solo (non-wall) keeps 'contain' to preserve aspect (no
+      // awkward distortion on a single display). Per-item fit_mode overrides
+      // these. For doc/PDF/Office this also flows into docPlayerSrc → ?fit=
+      // so doc.html renders pages with the matching object-fit.
       const cssFit = wallConfig
-        ? (itemFit || 'cover')
-        : (itemFit || 'cover');
+        ? (itemFit || 'fill')
+        : (itemFit || 'contain');
 
       if (layout && layout.zones && layout.zones.length > 1 && !wallConfig) {
         renderZones(container, item);
@@ -2449,14 +2450,12 @@
           if (!isFollower) video.volume = 1.0;
           video.playsInline = true;
           video.crossOrigin = 'anonymous';
-          // object-fit is driven by cssFit, which defaults to 'cover' in
-          // every mode (wall + solo/Split) so content reaches the bezel
-          // edges with no letterbox. On a wall the stage is a SINGLE element
-          // sized to the whole-composite box and clipped per-screen, so
-          // cover crops uniformly across the composite — vertical mapping
-          // stays uniform across devices that share a viewport height (the
-          // per-screen-desync worry only applied if each screen rendered its
-          // own independently-cover-sized element, which we do not).
+          // object-fit is driven by cssFit, which defaults to 'fill' on a wall
+          // (edge-to-edge wallpaper stretch) and 'contain' solo (no crop).
+          // On a wall the stage is a SINGLE element sized to the whole-composite
+          // box and clipped per-screen, so 'fill' stretches uniformly across the
+          // composite — vertical mapping stays uniform across devices that share
+          // a viewport height (no per-screen desync).
           video.style.cssText = `width:100%;height:100%;object-fit:${cssFit};background:#000`;
           video.loop = (playlist.length === 1);
           video.onended = () => { if (!video.loop && !isFollower) nextItem(); };

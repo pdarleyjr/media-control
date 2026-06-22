@@ -899,32 +899,31 @@ function seedScreensaverFolderRow() {
 seedScreensaverFolderRow();
 
 // Phase-2 follow-up: flip existing advanced-canvas layers' fit_mode from
-// 'contain' (the historical default, which letterboxes wall content — the
-// owner's #1 complaint) to 'cover' so classroom wall content reaches the bezel
-// edge-to-edge in both Span and Split. Additive, idempotent: gated on
-// schema_migrations so it runs exactly once per database; a layer explicitly
-// set to 'contain' is upgraded here (the school-wide edge-to-bleed behavior
-// is the spec — operators may drop a new layer if they want a letterbox).
-// See server/lib/advanced-canvas.js getEndpointLayers/normalizeSceneLayers
-// (default now 'cover') and planning/command-center/FINAL_IMPLEMENTATION_SUMMARY.md.
-const CANVAS_LAYERS_DEFAULT_COVER_ID = 'advanced_canvas_layers_default_cover';
-function applyCanvasLayersDefaultCover() {
-  const already = db.prepare('SELECT 1 FROM schema_migrations WHERE id = ?').get(CANVAS_LAYERS_DEFAULT_COVER_ID);
+// 'contain' or 'cover' (the historical default / a later attempt) to 'fill'
+// — the operator-confirmed wallpaper behavior: wall content stretches to the
+// layer box edge-to-bezel with NO letterbox and NO crop (exactly edge-to-edge
+// of the wall). Additive, idempotent: gated on schema_migrations so it runs
+// exactly once per database. See server/lib/advanced-canvas.js
+// getEndpointLayers/normalizeSceneLayers (default now 'fill') and
+// planning/command-center/FINAL_IMPLEMENTATION_SUMMARY.md.
+const CANVAS_LAYERS_DEFAULT_FILL_ID = 'advanced_canvas_layers_default_fill_v2';
+function applyCanvasLayersDefaultFill() {
+  const already = db.prepare('SELECT 1 FROM schema_migrations WHERE id = ?').get(CANVAS_LAYERS_DEFAULT_FILL_ID);
   if (already) return;
   try {
-    // Skip silently if the additive Phase-2 tables aren't present yet (early boot
-    // before schema migrations array applied on first run).
+    // Skip silently if the additive Phase-2 tables aren't present yet (early
+    // boot before the schema migrations array applied on first run).
     db.prepare('SELECT 1 FROM advanced_canvas_layers LIMIT 1').get();
     const res = db.prepare(`UPDATE advanced_canvas_layers
-      SET fit_mode = 'cover'
-      WHERE fit_mode IS NULL OR fit_mode = '' OR fit_mode = 'contain'`).run();
-    console.log(`[advanced_canvas_layers_default_cover] updated ${res.changes} layer(s) contain -> cover`);
+      SET fit_mode = 'fill'
+      WHERE fit_mode IS NULL OR fit_mode = '' OR fit_mode = 'contain' OR fit_mode = 'cover'`).run();
+    console.log(`[advanced_canvas_layers_default_fill_v2] updated ${res.changes} layer(s) contain/cover -> fill`);
   } catch (e) {
-    console.warn(`[advanced_canvas_layers_default_cover] skipped: ${e.message}`);
+    console.warn(`[advanced_canvas_layers_default_fill_v2] skipped: ${e.message}`);
   }
-  db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(CANVAS_LAYERS_DEFAULT_COVER_ID);
+  db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(CANVAS_LAYERS_DEFAULT_FILL_ID);
 }
-applyCanvasLayersDefaultCover();
+applyCanvasLayersDefaultFill();
 
 // Prune old telemetry (keep last 24h worth at 15s intervals = ~5760, cap at 6000)
 function pruneTelemetry(deviceId) {
