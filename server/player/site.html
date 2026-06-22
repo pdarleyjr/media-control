@@ -7,6 +7,9 @@
 <style>
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
   #shot { width: 100%; height: 100%; object-fit: contain; display: block; }
+  /* Full-screen mode: tall image renders at natural size inside a scroll container */
+  html.mc-fullscreen, html.mc-fullscreen body { overflow: auto; height: auto; }
+  html.mc-fullscreen #shot { height: auto; object-fit: unset; }
   #state {
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     color: #94a3b8; font: 15px/1.4 system-ui, -apple-system, sans-serif; text-align: center; padding: 24px;
@@ -23,15 +26,21 @@
   var q = new URLSearchParams(location.search);
   var id = q.get('id');
   var interval = Math.max(5, Math.min(600, parseInt(q.get('interval'), 10) || 20));
+  // Full-screen = no explicit w/h passed (standalone display, not a multiview cell).
+  var fullScreen = !q.get('w') && !q.get('h');
   // Size the shot to THIS frame's viewport: full display when full-screen, the
   // cell's pixel box when iframed inside a multiview grid cell.
   var w = parseInt(q.get('w'), 10) || Math.round(window.innerWidth) || 1600;
-  var h = parseInt(q.get('h'), 10) || Math.round(window.innerHeight) || 900;
+  // Full-screen: request a tall capture (max 2160) so there is content to scroll.
+  // Multiview cells keep their cell height as before.
+  var h = fullScreen ? 2160 : (parseInt(q.get('h'), 10) || Math.round(window.innerHeight) || 900);
   // fit=cover fills the frame (no letterbox) — used when this page is a multiview
   // cell; default contain preserves standalone behavior.
   var fit = q.get('fit') === 'cover' ? 'cover' : 'contain';
   var img = document.getElementById('shot');
-  img.style.objectFit = fit;
+  if (!fullScreen) img.style.objectFit = fit;
+  // Enable scrollable layout for full-screen mode.
+  if (fullScreen) document.documentElement.classList.add('mc-fullscreen');
   var state = document.getElementById('state');
   var fails = 0;
 
@@ -43,7 +52,14 @@
     if (!id) { state.textContent = 'No website id'; return; }
     var u = shotUrl();
     var pre = new Image();
-    pre.onload = function () { img.src = u; state.style.display = 'none'; fails = 0; };
+    pre.onload = function () {
+      // Preserve scroll position when swapping src (don't reset to top on refresh).
+      var sx = window.scrollX, sy = window.scrollY;
+      img.src = u;
+      if (fullScreen && (sx || sy)) window.scrollTo(sx, sy);
+      state.style.display = 'none';
+      fails = 0;
+    };
     pre.onerror = function () {
       fails++;
       if (fails === 1 && state.style.display === 'none') return; // keep last good frame on a transient miss
@@ -54,6 +70,16 @@
   }
   load();
   setInterval(load, interval * 1000);
+
+  // Transport scroll actions forwarded from the player's postTransportToFrames.
+  // Only meaningful in full-screen mode; multiview cells stay overflow:hidden.
+  var SCROLL_STEP = 0.8; // 80% of the viewport per press
+  window.addEventListener('message', function (e) {
+    var a = e && e.data && e.data.__mc_transport;
+    if (a !== 'scroll_up' && a !== 'scroll_down') return;
+    var dy = Math.round(window.innerHeight * SCROLL_STEP) * (a === 'scroll_down' ? 1 : -1);
+    window.scrollBy({ top: dy, left: 0, behavior: 'smooth' });
+  });
 </script>
 </body>
 </html>
