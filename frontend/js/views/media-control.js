@@ -948,6 +948,8 @@ function mountTransportRow(hostEl) {
       <button type="button" class="mc-cc-tp-btn" data-cc-tp="restart"><span class="mc-cc-tp-ico" aria-hidden="true">↺</span><span class="mc-cc-tp-text">${esc(t('mc.cc.transport.restart'))}</span></button>
       <button type="button" class="mc-cc-tp-btn mc-cc-tp-play" data-cc-tp="play_pause"><span class="mc-cc-tp-ico" aria-hidden="true">⏯</span><span class="mc-cc-tp-text">${esc(t('mc.cc.transport.play'))}</span></button>
       <button type="button" class="mc-cc-tp-btn" data-cc-tp="next"><span class="mc-cc-tp-ico" aria-hidden="true">⏭</span><span class="mc-cc-tp-text">${esc(t('mc.cc.transport.next'))}</span></button>
+      <button type="button" class="mc-cc-tp-btn mc-cc-tp-scroll" data-cc-tp="scroll_up" hidden><span class="mc-cc-tp-ico" aria-hidden="true">▲</span><span class="mc-cc-tp-text">${esc(t('mc.cc.transport.scroll_up'))}</span></button>
+      <button type="button" class="mc-cc-tp-btn mc-cc-tp-scroll" data-cc-tp="scroll_down" hidden><span class="mc-cc-tp-ico" aria-hidden="true">▼</span><span class="mc-cc-tp-text">${esc(t('mc.cc.transport.scroll_down'))}</span></button>
     </div>`;
   const row = hostEl.querySelector('.mc-cc-tp-row');
   hostEl.querySelectorAll('[data-cc-tp]').forEach((btn) => {
@@ -964,12 +966,32 @@ function mountTransportRow(hostEl) {
     repaint() {
       const id = activeTargetTransportId();
       if (row) row.hidden = !id;
+      if (!id) return;
+      const dev = displayState.get(id);
+      const kind = (dev && dev.now_playing && dev.now_playing.kind) || 'idle';
+      const isWeb = kind === 'web';
+      const isPresentation = kind === 'pdf' || kind === 'document';
+      const isVideo = kind === 'video';
+      // Website → scroll controls only; everything else → the transport buttons.
+      const show = (sel, on) => { const b = hostEl.querySelector(sel); if (b) b.hidden = !on; };
+      show('[data-cc-tp="scroll_up"]', isWeb);
+      show('[data-cc-tp="scroll_down"]', isWeb);
+      show('[data-cc-tp="prev"]', !isWeb);
+      show('[data-cc-tp="next"]', !isWeb);
+      show('[data-cc-tp="restart"]', !isWeb);
+      show('[data-cc-tp="play_pause"]', !isWeb);
+      // Relabel prev/next as slide controls for a presentation (they post next/prev
+      // to the deck iframe, which advances slides), else item controls.
+      const prevTxt = hostEl.querySelector('[data-cc-tp="prev"] .mc-cc-tp-text');
+      const nextTxt = hostEl.querySelector('[data-cc-tp="next"] .mc-cc-tp-text');
+      if (prevTxt) prevTxt.textContent = isPresentation ? t('mc.cc.transport.prev_slide') : t('mc.cc.transport.prev');
+      if (nextTxt) nextTxt.textContent = isPresentation ? t('mc.cc.transport.next_slide') : t('mc.cc.transport.next');
       const pp = hostEl.querySelector('[data-cc-tp="play_pause"] .mc-cc-tp-text');
-      if (pp && id) {
-        const dev = displayState.get(id);
+      if (pp) {
         const playing = !!(dev && dev.now_playing && dev.now_playing.kind && dev.now_playing.kind !== 'idle');
         pp.textContent = playing ? t('mc.cc.transport.pause') : t('mc.cc.transport.play');
       }
+      void isVideo; // video uses the default play_pause + restart; no special-casing needed
     },
   };
 }
