@@ -160,7 +160,7 @@ function displayCard(display) {
   const pv = previewSource(display);
   const showingPoster = !!(pv && pv.poster);
   const staleCls = (pv && !pv.poster && (f.stale || offline)) ? ' mc-shot-stale' : '';
-  const live = liveEmbedHtml(display.now_playing, 'mc-card-shot');
+  const live = liveEmbedHtml(display.now_playing, 'mc-card-shot', { fallbackSrc: pv && pv.src });
   const preview = live
     ? live
     : (pv
@@ -228,7 +228,7 @@ function wallCell(member, screenNo, { showPreview = true } = {}) {
   const f = freshness(member.screenshot_at);
   const pv = previewSource(member);
   const staleCls = (pv && !pv.poster && (f.stale || offline)) ? ' mc-shot-stale' : '';
-  const live = showPreview ? liveEmbedHtml(member.now_playing, 'mc-wall-cell-shot') : null;
+  const live = showPreview ? liveEmbedHtml(member.now_playing, 'mc-wall-cell-shot', { allowVideo: false, fallbackSrc: pv && pv.src }) : null;
   const preview = !showPreview
     ? ''
     : (live
@@ -252,11 +252,11 @@ function wallCell(member, screenNo, { showPreview = true } = {}) {
 }
 
 function wallSpanPreview(leader) {
-  const live = leader ? liveEmbedHtml(leader.now_playing, 'mc-wall-span-shot') : null;
+  const pv = previewSource(leader);
+  const live = leader ? liveEmbedHtml(leader.now_playing, 'mc-wall-span-shot', { fallbackSrc: pv && pv.src }) : null;
   if (live) {
     return `<div class="mc-wall-span-layer" data-device-id="${esc(leader.id)}">${live}</div>`;
   }
-  const pv = previewSource(leader);
   if (!leader || !pv) {
     return `<div class="mc-wall-span-layer mc-wall-span-empty"><span>${esc(t('mc.card.no_preview'))}</span></div>`;
   }

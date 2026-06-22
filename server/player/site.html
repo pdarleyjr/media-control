@@ -26,8 +26,8 @@
   var q = new URLSearchParams(location.search);
   var id = q.get('id');
   var interval = Math.max(5, Math.min(600, parseInt(q.get('interval'), 10) || 20));
-  // Full-screen = no explicit w/h passed (standalone display, not a multiview cell).
-  var fullScreen = !q.get('w') && !q.get('h');
+  // Full-screen = explicitly flagged with full=1 (standalone display render path).
+  var fullScreen = q.get('full') === '1';
   // Size the shot to THIS frame's viewport: full display when full-screen, the
   // cell's pixel box when iframed inside a multiview grid cell.
   var w = parseInt(q.get('w'), 10) || Math.round(window.innerWidth) || 1600;

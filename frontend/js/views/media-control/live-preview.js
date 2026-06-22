@@ -14,15 +14,21 @@ import { esc } from '../../utils.js';
 // kinds we can render as ONE live element. youtube is intentionally excluded
 // (now_playing carries no youtube id; its poster fallback is fine). playlist /
 // widget / idle have no single source to embed.
-export function liveEmbedHtml(nowPlaying, cls = '') {
+export function liveEmbedHtml(nowPlaying, cls = '', opts = {}) {
   const np = nowPlaying || null;
   if (!np || !np.contentId) return null;
+  const allowVideo = opts.allowVideo !== false;        // default true
+  const fb = typeof opts.fallbackSrc === 'string' ? opts.fallbackSrc : '';
   const id = encodeURIComponent(np.contentId);
   const klass = `mc-live-embed${cls ? ' ' + esc(cls) : ''}`;
+  // onerror swap for raster embeds: if the public content route 403s (content not
+  // playlist-assigned), fall back to the poster/screenshot rather than show black.
+  const onerr = fb ? ` onerror="this.onerror=null;this.src='${esc(fb)}'"` : '';
   switch (np.kind) {
     case 'image':
-      return `<img class="${klass}" src="/api/content/${id}/file" alt="" loading="lazy">`;
+      return `<img class="${klass}" src="/api/content/${id}/file" alt=""${onerr} loading="lazy">`;
     case 'video':
+      if (!allowVideo) return null; // per-cell wall video -> poster fallback (avoid N decoders)
       return `<video class="${klass}" src="/api/content/${id}/file" autoplay muted loop playsinline></video>`;
     case 'pdf':
     case 'document':
