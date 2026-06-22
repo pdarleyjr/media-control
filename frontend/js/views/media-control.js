@@ -22,13 +22,6 @@ import { openViewModal, closeViewModal } from './media-control/view-modal.js';
 import { confirmDialog } from '../components/confirm.js';
 import * as screenShareEngine from '../services/screen-share-engine.js';
 import * as schedulesView from './schedules.js';
-import {
-  hasAdvancedCanvasEndpoint,
-  mountAdvancedCanvas,
-  routeSourceToAdvancedCanvas,
-  setAdvancedCanvasBlanked,
-  unmountAdvancedCanvas,
-} from './media-control/advanced-canvas.js';
 import { mount as mountWhiteboardSurface } from './media-control/whiteboard.js';
 // transport.js is used by stage.js internally — no direct import needed here.
 
@@ -491,9 +484,6 @@ async function chooseRouteTargets(label) {
 }
 
 async function routeSourceWithPicker(source, label = t('mc.tile.content_fallback')) {
-  if (hasAdvancedCanvasEndpoint()) {
-    return routeSourceToAdvancedCanvas(source, label);
-  }
   const route = await chooseRouteTargets(label);
   if (!route) return false;
   try {
@@ -508,15 +498,6 @@ async function routeSourceWithPicker(source, label = t('mc.tile.content_fallback
 }
 
 async function routeNextcloudWithPicker(path, label = t('mc.tile.content_fallback')) {
-  if (hasAdvancedCanvasEndpoint()) {
-    try {
-      const imported = await api.files.importForCanvas(path);
-      return routeSourceToAdvancedCanvas({ content_id: imported.content_id }, label);
-    } catch (e) {
-      showToast(e?.message || t('mc.send.failed'), 'error');
-      return false;
-    }
-  }
   const route = await chooseRouteTargets(label);
   if (!route) return false;
   try {
@@ -1282,7 +1263,6 @@ export async function render() {
         <main class="mc-cc-main">
           <section class="mc-cc-canvas-area">
             <div id="mc-cc-chips" class="mc-cc-chips" aria-live="polite"></div>
-            <div id="mc-advanced-canvas" class="mc-advanced-canvas-host" hidden></div>
             <div id="mc-multiview" class="mc-multiview-host" hidden></div>
             <section id="mc-stage" class="mc-stage mc-cc-canvas" aria-label="${esc(t('mc.section.displays'))}"></section>
           </section>
@@ -1401,7 +1381,6 @@ pruneSelection();
   paintStage();
   paintToolbox();
   paintSummary();
-  const canvasEndpoint = await mountAdvancedCanvas(document.getElementById('mc-advanced-canvas'));
 
   // Phase-2 non-silent ack: surface command:ack ok:false as a toast + chip flip,
   // and refresh chips on display state-sync. Registered for the view's lifetime.
@@ -1491,7 +1470,7 @@ pruneSelection();
   // defined in command-bar.js for a future drawer route). The Action Dock now
   // owns Multiview / Blank / Share / Live-stream on the main surface.
   // The display-target helpers (roomDisplayIds / roomCommandIds /
-  // routeSourceWithPicker / setAdvancedCanvasBlanked) are still wired into the
+  // routeSourceWithPicker) are still wired into the
   // Span|Split + Action Dock + target-selector/transport mounts below.
   // Room Presets + Recent (recent-panel) are likewise removed from the main
   // page; their components remain in room-presets.js / recent-panel.js for a
@@ -1504,7 +1483,7 @@ pruneSelection();
       refreshAfterSend,
       onMultiview: toggleMultiview,
       onRouteSource: routeSourceWithPicker,
-      onBlankChange: canvasEndpoint ? setAdvancedCanvasBlanked : null,
+      onBlankChange: null,
     });
   }
 
@@ -1609,7 +1588,6 @@ export function unmount() {
   teardownMultiview();    // stop any local audio monitor so it can't keep playing
   closeViewModal();       // dismiss any open room-setup overlay (e.g. Schedules)
   stopPreviewRefresh();   // stop poking players once we leave the control surface
-  unmountAdvancedCanvas();
   // Close the inspector so a stale panel can't linger across navigations.
   closeInspector(inspectorEl());
   // Dismiss the add-display picker if it was left open during navigation.
