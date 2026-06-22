@@ -2,7 +2,11 @@ import { api } from '../api.js';
 import { esc } from '../utils.js';
 import { t, tn } from '../i18n.js';
 import { showToast } from '../components/toast.js';
-import { identifyDevice, requestScreenshot } from '../socket.js';
+import { identifyDevice, requestScreenshot, sendCommand, getSocket } from '../socket.js';
+import { COMMAND_TYPES } from '../player-protocol.js';
+import { mountTargetSelector } from './media-control/target-selector.js';
+import { mountSpanSplit } from './media-control/span-split.js';
+import { mountActionDock } from './media-control/action-dock.js';
 import * as displayState from '../services/display-state.js';
 import { renderStage } from './media-control/stage.js';
 import { renderToolbox } from './media-control/toolbox.js';
@@ -33,6 +37,28 @@ const ICON_SETUP_SCHEDULE = '<svg viewBox="0 0 24 24" fill="none" stroke="curren
 const ICON_SETUP_WALLS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="9" height="8" rx="1"></rect><rect x="13" y="3" width="9" height="8" rx="1"></rect><rect x="2" y="13" width="9" height="8" rx="1"></rect><rect x="13" y="13" width="9" height="8" rx="1"></rect></svg>';
 // Library drawer collapse/expand chevron (points right when open → collapse, left when collapsed → reopen).
 const ICON_CHEVRON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>';
+// Header notification bell (white stroke).
+const ICON_BELL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"></path><line x1="13.5" y1="19" x2="10.5" y2="19"></line></svg>';
+// ── Phase 1 Command Center: screensaver options for the canvas-level control.
+// Mirrors stage.js SCREENSAVER_OPTIONS (kept inline so this view does not depend
+// on stage.js exporting its private list). If an asset is re-uploaded, update the
+// id here AND in stage.js in lockstep.
+const SCREENSAVER_OPTIONS_CC = [
+  { value: 'url:https://wall.mbfdhub.com', labelKey: 'mc.saver.dashboard' },
+  { value: 'content:4798f022-e9d9-4cba-a0b0-56aeb75a6bff', labelKey: 'mc.saver.bw' },
+  { value: 'content:1d01b7a0-1a0c-4d3d-b0fd-6d854ce09ae3', labelKey: 'mc.saver.l1' },
+  { value: 'content:7c596f36-27f6-4d7b-9bb0-2c682791d25a', labelKey: 'mc.saver.mbfd_map' },
+];
+
+// Active Command Center target: the single wall / display rendered large on the
+// central canvas. null = legacy "show the whole room" stage (preserved when no
+// target is chosen). The target selector drives this; changing it is VIEW-ONLY.
+let activeTarget = null;
+let targetApi = null;       // target-selector module API
+let transportApi = null;    // canvas-level transport row
+let spanSplitApi = null;    // Span | Split toggle
+let screensaverApi = null;  // canvas-level screensaver row
+let dockApi = null;         // bottom action dock
 
 let unsub = null;
 let unsubChip = null;   // broadcast-chip unsubscribe (Task 4.5)
@@ -146,11 +172,27 @@ function paintStage() {
   // what each member screen is showing right now.
   const byId = new Map(all.map(d => [d.id, d]));
   const displays = all.filter(d => !wallMemberIds.has(d.id));
+  // Phase 1 Command Center: when a target is selected, render ONLY that target
+  // large on the canvas (its wall card / its single display card). null keeps the
+  // legacy "whole room" stage. The persisted selectedIds (drives content sends)
+  // is untouched — this is a VIEW filter only, so a target switch never drops a
+  // display from the broadcast set.
+  let renderWalls = walls;
+  let renderSelectedIds = selectedIds;
+  if (activeTarget) {
+    if (activeTarget.type === 'wall') {
+      renderWalls = (walls || []).filter((w) => w.id === activeTarget.id);
+      renderSelectedIds = [];
+    } else if (activeTarget.type === 'display') {
+      renderWalls = [];
+      renderSelectedIds = [activeTarget.id];
+    }
+  }
   renderStage(el, {
     displays,
-    walls,
+    walls: renderWalls,
     byId,
-    selectedIds,
+    selectedIds: renderSelectedIds,
     onSelect: openInspector,
     onCalibrateWall: showWallCalibration,
     onAddDisplay: openAddPicker,
@@ -761,22 +803,269 @@ function attachStageDrop(stageContainer) {
   });
 }
 
+// ── Phase 1 Command Center helpers ──────────────────────────────────────────
+//
+// All canvas-level controls (transport row, Span/Split, screensaver, dock, status
+// chips, target switch) are VIEW-ONLY with respect to other targets: switching the
+// active target never emits a stop/blank to whatever was showing before. Only the
+// explicit dock buttons (Blank selected / Blank all / Stop live ...) issue
+// commands, and only to the active target (or every room target for "all").
+
+// Device ids the active target commands: every member of the active wall, or just
+// the active display.
+function activeTargetDeviceIds() {
+  if (!activeTarget) return [];
+  if (activeTarget.type === 'wall') {
+    const w = (walls || []).find((x) => x.id === activeTarget.id);
+    return w ? wallDeviceIds(w) : [];
+  }
+  return activeTarget.id ? [activeTarget.id] : [];
+}
+// Transport (play/pause/prev/next/restart) targets the wall LEADER (which drives
+// wall sync) for a wall, or the display itself.
+function activeTargetTransportId() {
+  if (activeTarget && activeTarget.type === 'wall') {
+    const w = (walls || []).find((x) => x.id === activeTarget.id);
+    if (!w) return null;
+    return w.leader_device_id || (w.devices && w.devices[0] && w.devices[0].device_id) || null;
+  }
+  return (activeTarget && activeTarget.id) || null;
+}
+// The active wall object (or null) — used by the Span/Split toggle.
+function activeWall() {
+  if (!activeTarget || activeTarget.type !== 'wall') return null;
+  return (walls || []).find((x) => x.id === (activeTarget.wall_id || activeTarget.id)) || null;
+}
+// Content currently assigned to the wall? (Any member showing a real source.)
+function wallHasContent(wall) {
+  if (!wall || !Array.isArray(wall.devices)) return false;
+  const byId = new Map(displayState.getAll().map((d) => [d.id, d]));
+  for (const m of wall.devices) {
+    const live = byId.get(m.device_id);
+    const np = live && live.now_playing;
+    if (np && np.kind && np.kind !== 'idle') return true;
+  }
+  return false;
+}
+
+// The active target changed — re-point the canvas + refresh the canvas-level
+// controls. Emits NO command: this is a view-only switch.
+// TODO(Phase-2 target rooms): join a per-target socket room. socket.js does not
+// expose a 'select-target' emit / window.mcSocket today, so we deliberately do
+// NOT emit anything here. Wire `dashboard:select-target` once socket.js grows a
+// helper (getSocket() would be the entry point then).
+function handleTargetChange(tgt) {
+  activeTarget = tgt || null;
+  paintStage();
+  paintSummary();
+  paintChips();
+  if (transportApi && transportApi.repaint) transportApi.repaint();
+  if (spanSplitApi && spanSplitApi.repaint) spanSplitApi.repaint();
+  if (screensaverApi && screensaverApi.repaint) screensaverApi.repaint();
+}
+
+// Pick the initial canvas target so the canvas opens on ONE large preview (per
+// the mockup): the first video wall, else the first online non-wall display,
+// else the first non-wall display. Returns a target object or null.
+function chooseInitialTarget() {
+  if (Array.isArray(walls) && walls.length) {
+    const w = walls.slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))[0];
+    if (w && w.id) return { type: 'wall', id: w.id, wall_id: w.id, supportsModes: true };
+  }
+  const all = displayState.getAll().filter((d) => !wallMemberIds.has(d.id) && !isLiveStreamTargetId(d.id));
+  const d = all.find((x) => x.online) || all[0];
+  return d ? { type: 'display', id: d.id, supportsModes: false } : null;
+}
+
+// Canvas-level transport row (Prev · Restart · Play/Pause · Next) bound to the
+// active target's transport. White rounded buttons styled in media-control.css.
+function mountTransportRow(hostEl) {
+  if (!hostEl) return null;
+  hostEl.innerHTML = `
+    <div class="mc-cc-tp-row" role="toolbar" aria-label="${esc(t('mc.tp.toolbar'))}" hidden>
+      <button type="button" class="mc-cc-tp-btn" data-cc-tp="prev"><span class="mc-cc-tp-ico" aria-hidden="true">⏮</span><span class="mc-cc-tp-text">${esc(t('mc.cc.transport.prev'))}</span></button>
+      <button type="button" class="mc-cc-tp-btn" data-cc-tp="restart"><span class="mc-cc-tp-ico" aria-hidden="true">↺</span><span class="mc-cc-tp-text">${esc(t('mc.cc.transport.restart'))}</span></button>
+      <button type="button" class="mc-cc-tp-btn mc-cc-tp-play" data-cc-tp="play_pause"><span class="mc-cc-tp-ico" aria-hidden="true">⏯</span><span class="mc-cc-tp-text">${esc(t('mc.cc.transport.play'))}</span></button>
+      <button type="button" class="mc-cc-tp-btn" data-cc-tp="next"><span class="mc-cc-tp-ico" aria-hidden="true">⏭</span><span class="mc-cc-tp-text">${esc(t('mc.cc.transport.next'))}</span></button>
+    </div>`;
+  const row = hostEl.querySelector('.mc-cc-tp-row');
+  hostEl.querySelectorAll('[data-cc-tp]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = activeTargetTransportId();
+      if (!id) return;
+      const action = btn.dataset.ccTp; // 'prev' | 'restart' | 'play_pause' | 'next'
+      sendCommand(id, COMMAND_TYPES.TRANSPORT, { action });
+      // Optimistically refresh the Play/Pause label after a toggle.
+      setTimeout(() => transportApi && transportApi.repaint && transportApi.repaint(), 400);
+    });
+  });
+  return {
+    repaint() {
+      const id = activeTargetTransportId();
+      if (row) row.hidden = !id;
+      const pp = hostEl.querySelector('[data-cc-tp="play_pause"] .mc-cc-tp-text');
+      if (pp && id) {
+        const dev = displayState.get(id);
+        const playing = !!(dev && dev.now_playing && dev.now_playing.kind && dev.now_playing.kind !== 'idle');
+        pp.textContent = playing ? t('mc.cc.transport.pause') : t('mc.cc.transport.play');
+      }
+    },
+  };
+}
+
+// Canvas-level Screensaver / Wallpaper dropdown for the active target. Reuses the
+// SAME option list as the per-card screensaver (stage.js) and the existing
+// applyScreensaver() broadcast funnel. The first option is the non-committal
+// "MBFD Default" placeholder per the mockup.
+function mountScreensaverRow(hostEl) {
+  if (!hostEl) return null;
+  const opts = SCREENSAVER_OPTIONS_CC
+    .map((o) => `<option value="${esc(o.value)}">${esc(t(o.labelKey))}</option>`)
+    .join('');
+  hostEl.innerHTML = `
+    <div class="mc-screensaver-row" hidden>
+      <span class="mc-screensaver-label">${esc(t('mc.cc.saver.label'))}:</span>
+      <select class="mc-cc-saver-select" aria-label="${esc(t('mc.cc.saver.label'))}">
+        <option value="">${esc(t('mc.cc.saver.default'))}</option>
+        ${opts}
+      </select>
+    </div>`;
+  const row = hostEl.querySelector('.mc-screensaver-row');
+  const sel = hostEl.querySelector('.mc-cc-saver-select');
+  sel.addEventListener('change', () => {
+    const val = sel.value;
+    sel.value = '';
+    if (!val) return;
+    const ids = activeTargetDeviceIds();
+    if (!ids.length) return;
+    let source = null;
+    if (val.startsWith('url:')) source = { remote_url: val.slice(4) };
+    else if (val.startsWith('content:')) source = { content_id: val.slice(8) };
+    if (!source) return;
+    const opt = SCREENSAVER_OPTIONS_CC.find((o) => o.value === val);
+    applyScreensaver(ids, source, opt ? t(opt.labelKey) : t('mc.cc.saver.label'));
+  });
+  return {
+    repaint() { if (row) row.hidden = !activeTargetDeviceIds().length; },
+  };
+}
+
+// Small unobtrusive status chips above the canvas for the active target. Real
+// data only: Online / Synced / Playing-or-Paused / Live / Stale / Offline.
+function paintChips() {
+  const host = document.getElementById('mc-cc-chips');
+  if (!host) return;
+  const ids = activeTargetDeviceIds();
+  if (!ids.length) { host.innerHTML = ''; return; }
+  const byId = new Map(displayState.getAll().map((d) => [d.id, d]));
+  const devs = ids.map((id) => byId.get(id)).filter(Boolean);
+  if (!devs.length) { host.innerHTML = `<span class="mc-cc-chip mc-cc-chip-offline">${esc(t('mc.cc.chip.offline'))}</span>`; return; }
+  const anyOnline = devs.some((d) => d.online);
+  const allOnline = devs.every((d) => d.online);
+  const anyPlaying = devs.some(isLive);
+  const idle = devs.every((d) => !(d.now_playing && d.now_playing.kind && d.now_playing.kind !== 'idle'));
+  const nowS = Math.floor(Date.now() / 1000);
+  const anyStale = devs.some((d) => d.screenshot_at && (nowS - d.screenshot_at) > 30) || devs.some((d) => !d.screenshot_at);
+  const connected = !!(getSocket && getSocket() && getSocket().connected);
+  const chips = [];
+  if (allOnline) chips.push(['online', t('mc.cc.chip.online')]);
+  else if (anyOnline) chips.push(['online', t('mc.cc.chip.online')]);
+  else chips.push(['offline', t('mc.cc.chip.offline')]);
+  if (connected) chips.push(['synced', t('mc.cc.chip.synced')]);
+  if (idle) chips.push(['paused', t('mc.cc.chip.paused')]);
+  else chips.push(['playing', t('mc.cc.chip.playing')]);
+  if (anyPlaying) chips.push(['live', t('mc.cc.chip.live')]);
+  if (anyOnline && anyStale) chips.push(['stale', t('mc.cc.chip.stale')]);
+  if (!anyOnline) chips.push(['failed', t('mc.cc.chip.failed')]);
+  host.innerHTML = chips.map(([k, l]) => `<span class="mc-cc-chip mc-cc-chip-${k}">${esc(l)}</span>`).join('');
+}
+
+// ---- Action-dock command providers (route to existing functionality) ----
+function blankActiveTarget() {
+  const ids = activeTargetDeviceIds();
+  if (!ids.length) { showToast(t('mc.cmd.no_displays'), 'error'); return; }
+  ids.forEach((id) => sendCommand(id, COMMAND_TYPES.SCREEN_OFF, {}));
+  showToast(t('mc.cmd.blanked'), 'info');
+  displayState.refresh().catch(() => {});
+}
+async function blankAllTargets() {
+  const ids = roomCommandIds();
+  if (!ids.length) { showToast(t('mc.cmd.no_displays'), 'error'); return; }
+  const ok = await confirmDialog({
+    title: t('mc.cc.dock.blank_all'),
+    message: t('mc.cc.confirm.blank_all'),
+    confirmLabel: t('mc.cc.dock.blank_all'),
+    tone: 'danger',
+  });
+  if (!ok) return;
+  ids.forEach((id) => sendCommand(id, COMMAND_TYPES.SCREEN_OFF, {}));
+  showToast(t('mc.cmd.blanked'), 'info');
+  displayState.refresh().catch(() => {});
+}
+// Open the existing screen-share flow. The active target should default to ONE
+// region (no auto-span) per spec; wiring the active Command Center target to a
+// single region is a Phase-2 concern (TODO) since the share view owns its own
+// picker, so today we open the share flow and let the operator choose.
+function shareScreenActive() {
+  // TODO(Phase-2): pass activeTarget (single region, not span) into the share view.
+  void activeTarget;
+  window.location.hash = '#/screen-share';
+}
+async function startLive() {
+  const ok = await confirmDialog({
+    title: t('mc.cc.dock.start_live'),
+    message: t('mc.cc.confirm.start_live'),
+    confirmLabel: t('mc.cc.dock.start_live'),
+    tone: 'default',
+  });
+  if (!ok) return;
+  try {
+    const result = await api.liveStream.start();
+    const displayName = result && result.display && result.display.name ? result.display.name : t('mc.cmd.live_display');
+    showToast(
+      result && result.stream_started ? t('mc.cmd.live_started', { display: displayName }) : t('mc.cmd.live_prepared', { display: displayName, message: t('mc.cmd.live_stream_disabled') }),
+      result && result.stream_started ? 'success' : 'info',
+    );
+  } catch (e) {
+    showToast(e && e.message ? e.message : t('mc.cmd.live_failed'), 'error');
+  }
+}
+async function removeLive() {
+  try { await api.liveStream.clearContent(); showToast(t('mc.cmd.live_cleared'), 'success'); }
+  catch (e) { showToast(e && e.message ? e.message : t('mc.cmd.live_clear_failed'), 'error'); }
+}
+async function stopLive() {
+  const ok = await confirmDialog({
+    title: t('mc.cc.dock.stop_live'),
+    message: t('mc.cc.confirm.stop_live'),
+    confirmLabel: t('mc.cc.dock.stop_live'),
+    tone: 'danger',
+  });
+  if (!ok) return;
+  try { await api.liveStream.stop(); showToast(t('mc.cmd.live_stopped'), 'success'); }
+  catch (e) { showToast(e && e.message ? e.message : t('mc.cmd.live_stop_failed'), 'error'); }
+}
+
 export async function render() {
   const app = document.getElementById('app');
   app.innerHTML = `
-    <div class="mc-studio-surface">
-      <div class="mc-studio-wrap mc-control">
-        <header class="mc-control-head">
-          <div class="mc-control-id">
-            <h1 class="mc-control-title">${esc(t('mc.title'))}</h1>
-            <div id="mc-summary" class="mc-control-summary" aria-live="polite"></div>
+    <div class="mc-studio-surface mc-cc-surface">
+<div class="mc-studio-wrap mc-control mc-cc-wrap">
+        <header class="mc-control-head mc-cc-head">
+          <div class="mc-cc-brand">
+            <span class="mc-cc-logo" aria-hidden="true">M</span>
+            <div class="mc-cc-brand-text">
+              <h1 class="mc-control-title mc-cc-title">${esc(t('mc.cc.brand'))}</h1>
+              <div id="mc-summary" class="mc-control-summary" aria-live="polite"></div>
+            </div>
           </div>
-          <div class="mc-control-controls">
+          <div class="mc-cc-target" id="mc-target-host"></div>
+          <div class="mc-control-controls mc-cc-tools">
             <div id="mc-broadcast-chip" class="mc-chip mc-chip-live" hidden></div>
+            <button type="button" class="mc-cc-bell" id="mc-cc-bell" aria-label="${esc(t('mc.cc.notifications'))}">${ICON_BELL}</button>
+            <span class="mc-cc-avatar" aria-hidden="true">U</span>
           </div>
         </header>
-
-        <div id="mc-cmdbar-host" class="mc-cmdbar-host"></div>
 
         <div class="mc-control-body">
           <div class="mc-control-main">
@@ -787,12 +1076,24 @@ export async function render() {
                 <a class="mc-section-link" href="#/">${esc(t('mc.section.manage_displays'))}</a>
                 <a class="mc-section-link" href="#/walls">${esc(t('mc.section.video_walls'))}</a>
               </div>
+              <div id="mc-cc-chips" class="mc-cc-chips" aria-live="polite"></div>
               <div id="mc-advanced-canvas" class="mc-advanced-canvas-host" hidden></div>
-              <!-- Multiview builder mounts here, directly ABOVE the stage (whose
-                   first wall card is the classroom primary wall). Toggled by the command
-                   bar's "Multiview" button; lazy-mounted on first open. -->
+              <!-- Multiview builder: toggled as an OVERLAY over the canvas by the
+                   command bar's / dock's "Multiview" button; lazy-mounted on first
+                   open (kept hidden by default — Multiview is a MODE, not the default). -->
               <div id="mc-multiview" class="mc-multiview-host" hidden></div>
-              <section id="mc-stage" class="mc-stage" aria-label="${esc(t('mc.section.displays'))}"></section>
+              <section id="mc-stage" class="mc-stage mc-cc-canvas" aria-label="${esc(t('mc.section.displays'))}"></section>
+
+              <!-- Command Center: canvas-level controls, directly UNDER the canvas.
+                   The existing command bar (#mc-cmdbar-host) was above the stage and
+                   is repositioned here; the transport row / Span|Split / screensaver
+                   are new. All existing IDs + wiring are preserved. -->
+              <div id="mc-cmdbar-host" class="mc-cmdbar-host mc-cc-cmdbar-host"></div>
+              <div id="mc-transport-host" class="mc-transport-row-host"></div>
+              <div class="mc-cc-sub-row">
+                <div id="mc-span-split-host" class="mc-span-split-host"></div>
+                <div id="mc-screensaver-host" class="mc-screensaver-row-host"></div>
+              </div>
             </section>
 
             <section class="mc-control-bottom" aria-label="${esc(t('mc.rail.label'))}">
@@ -812,15 +1113,19 @@ export async function render() {
                 </div>
               </section>
             </section>
+
+            <!-- Bottom action dock (large touch-friendly buttons). Add Display at
+                 the lower-right is the blue-plus vertical tab. -->
+            <div id="mc-action-dock-host" class="mc-action-dock-host"></div>
           </div>
         </div>
 
         <aside id="mc-library-drawer" class="mc-library-drawer" data-open="true" aria-label="${esc(t('mc.section.sources'))}">
-          <button type="button" class="mc-library-tab" data-library-toggle
+          <button type="button" class="mc-library-tab mc-cc-lib-tab" data-library-toggle
                   aria-expanded="true" aria-controls="mc-toolbox"
                   title="${esc(t('mc.library.toggle'))}">
-            <span class="mc-library-tab-ico" aria-hidden="true">${ICON_CHEVRON}</span>
             <span class="mc-library-tab-label">${esc(t('mc.library.title'))}</span>
+            <span class="mc-library-tab-ico" aria-hidden="true">${ICON_CHEVRON}</span>
           </button>
           <div class="mc-library-inner">
             <div class="mc-library-head">
@@ -866,7 +1171,47 @@ export async function render() {
     selectedIds = selectedIds.filter((id) => !isLiveStreamTargetId(id));
     persistSelection();
   }
-  pruneSelection();
+pruneSelection();
+
+  // ---- Phase 1 Command Center: target-driven canvas + controls ----
+  // The header dropdown drives the active target rendered large on the canvas.
+  // Switching targets is VIEW-ONLY — it re-points the canvas and emits NO
+  // stop/blank to whatever was showing before. The canvas-level controls
+  // (transport row, Span|Split, screensaver, action dock) reuse existing
+  // functions and route commands to the active target only.
+  targetApi = mountTargetSelector(document.getElementById('mc-target-host'), {
+    walls,
+    displays: displayState.getAll().filter((d) => !wallMemberIds.has(d.id) && !isLiveStreamTargetId(d.id)),
+    onTargetChange: handleTargetChange,
+  });
+  transportApi = mountTransportRow(document.getElementById('mc-transport-host'));
+  spanSplitApi = mountSpanSplit(document.getElementById('mc-span-split-host'), {
+    getActiveTarget: () => activeTarget,
+    getActiveWall: activeWall,
+    onSetWallMode: setWallMode,
+    hasContent: wallHasContent,
+  });
+  screensaverApi = mountScreensaverRow(document.getElementById('mc-screensaver-host'));
+  // Dock callbacks reference toggleMultiview (a hoisted function declaration below)
+  // and openAddPicker (module-level); both resolve at click time, well after the
+  // mvHost / mvMounted consts below are initialized.
+  dockApi = mountActionDock(document.getElementById('mc-action-dock-host'), {
+    onMultiview: () => toggleMultiview(),
+    onBlankSelected: blankActiveTarget,
+    onBlankAll: blankAllTargets,
+    onShare: shareScreenActive,
+    onStartLive: startLive,
+    onRemoveLive: removeLive,
+    onStopLive: stopLive,
+    onAddDisplay: openAddPicker,
+  });
+  // Open on ONE large preview per the mockup (first wall, else first display).
+  const initialTarget = chooseInitialTarget();
+  if (initialTarget && targetApi) {
+    targetApi.setActive(initialTarget);
+    handleTargetChange(initialTarget); // paints stage/chips/transport/span/saver
+  }
+
   paintStage();
   paintToolbox();
   paintSummary();
@@ -1028,6 +1373,17 @@ export async function render() {
       paintStage();
     }
     paintSummary();
+    // Keep the canvas-level controls + dropdown in step with live state.
+    paintChips();
+    if (transportApi && transportApi.repaint) transportApi.repaint();
+    if (spanSplitApi && spanSplitApi.repaint) spanSplitApi.repaint();
+    if (screensaverApi && screensaverApi.repaint) screensaverApi.repaint();
+    if (targetApi) {
+      targetApi.setOptions(
+        walls,
+        displayState.getAll().filter((d) => !wallMemberIds.has(d.id) && !isLiveStreamTargetId(d.id)),
+      );
+    }
   });
 
   // Drive live previews: players only send a screenshot when asked, so poke the
@@ -1053,4 +1409,12 @@ export function unmount() {
   closeInspector(inspectorEl());
   // Dismiss the add-display picker if it was left open during navigation.
   if (pickerEl && pickerEl.open) { try { pickerEl.close(); } catch { /* */ } }
+  // Drop Command Center target + canvas-control state so a stale preview / target
+  // can't survive navigation away from #/control.
+  activeTarget = null;
+  targetApi = null;
+  transportApi = null;
+  spanSplitApi = null;
+  screensaverApi = null;
+  dockApi = null;
 }

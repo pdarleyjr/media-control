@@ -1562,3 +1562,287 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
   padding: 2px 6px; resize: none; outline: none;
 }
 .mc-wb-dock-btn { min-height: 32px; padding: 0 14px; cursor: pointer; touch-action: manipulation; }
+
+/* ════════════════════════════════════════════════════════════════════════
+   Phase 1 Command Center (.mc-cc-*)
+   ─────────────────────────────────────────────────────────────────────────
+   An MBFD-branded touchscreen command surface. The header is a dark-blue
+   gradient band (brand left, target dropdown center, avatar/bell right); the
+   canvas renders ONE large selected-target preview; white rounded transport
+   buttons + Span|Split + a canvas-level Screensaver/Wallpaper dropdown sit
+   directly under it; a bottom action dock of large touch buttons drives the
+   existing classroom functions. Everything below reuses the sacred go-vs-live
+   semantics (--accent go, --danger on-air/destructive, --cta the dominant add)
+   and the 44-56px touch floor, gated by prefers-reduced-motion. No navy token
+   exists in the theme yet, so a tasteful deep navy is hardcoded here only.
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* ---- dark-blue gradient header (3-col: brand · dropdown · tools) ---- */
+.mc-cc-head {
+  --mc-cc-navy-1: #0f2748;
+  --mc-cc-navy-2: #1d3f6f;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: var(--mc-space-md, 16px);
+  min-height: 64px;
+  padding: 0 var(--mc-space-md, 16px) 0 var(--mc-space-lg, 24px);
+  background: linear-gradient(90deg, var(--mc-cc-navy-1), var(--mc-cc-navy-2));
+  border-radius: var(--mc-radius-lg, 12px);
+  color: #fff;
+  box-shadow: 0 6px 20px rgba(15, 39, 72, 0.18);
+}
+.mc-cc-brand { display: flex; align-items: center; gap: var(--space-3, 12px); min-width: 0; }
+.mc-cc-logo {
+  flex: 0 0 auto;
+  width: 36px; height: 36px; min-width: 36px; min-height: 36px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: #fff; color: var(--mc-cc-navy-1, #0f2748);
+  font-weight: var(--mc-fw-bold, 800); font-size: 18px; letter-spacing: -0.02em;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.18);
+}
+.mc-cc-brand-text { display: flex; flex-direction: column; min-width: 0; }
+.mc-cc-title {
+  margin: 0; color: #fff !important;
+  font-size: var(--mc-font-size-xl, 24px) !important;
+  font-weight: var(--mc-fw-bold, 700) !important;
+  letter-spacing: -0.01em; line-height: 1.1;
+}
+/* The summary is relocated to a small chip strip ABOVE the canvas (so the
+   existing #mc-summary wiring still finds it) and styled as muted navy text. */
+.mc-cc-head .mc-control-summary { color: rgba(255,255,255,0.78); font-size: var(--font-2, 12px); }
+.mc-cc-head .mc-summary-muted { color: rgba(255,255,255,0.62); }
+.mc-cc-head .mc-summary-dot { color: rgba(255,255,255,0.5); }
+.mc-cc-head .mc-summary-live { background: var(--live, #ef4444); color: #fff; }
+
+/* centered compact target dropdown */
+.mc-cc-target { display: flex; align-items: center; justify-content: center; min-width: 0; }
+.mc-target-select {
+  min-height: 40px; min-width: 220px; max-width: 60vw;
+  padding: 0 var(--mc-space-md, 16px);
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: var(--mc-radius-md, 12px);
+  background: rgba(10, 24, 48, 0.55);
+  color: #fff; font-family: var(--mc-font-family-sans);
+  font-size: var(--font-3, 13px); font-weight: var(--mc-fw-semibold, 600);
+  cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 36px;
+}
+.mc-target-select:hover { background-color: rgba(10, 24, 48, 0.8); border-color: rgba(255,255,255,0.35); }
+.mc-target-select:focus-visible { outline: 3px solid #ffffff; outline-offset: 2px; }
+.mc-target-select option { color: #1c2536; background: #fff; }
+
+/* right cluster: bell + avatar */
+.mc-cc-tools { justify-content: flex-end; }
+.mc-cc-bell {
+  flex: 0 0 auto; width: 36px; height: 36px; min-width: 36px; min-height: 36px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; background: transparent; color: #fff; cursor: pointer;
+  border-radius: 50%; transition: background var(--mc-transition-base, .18s ease);
+  -webkit-tap-highlight-color: transparent;
+}
+.mc-cc-bell:hover { background: rgba(255,255,255,0.14); }
+.mc-cc-bell:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+.mc-cc-bell svg { width: 20px; height: 20px; display: block; }
+.mc-cc-avatar {
+  flex: 0 0 auto; width: 36px; height: 36px; min-width: 36px; min-height: 36px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; background: rgba(255,255,255,0.22); color: #fff;
+  font-weight: var(--mc-fw-bold, 700); font-size: 14px; border: 1px solid rgba(255,255,255,0.3);
+}
+
+/* ---- status chips strip (above the canvas) ---- */
+.mc-cc-chips {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--mc-space-xs, 4px);
+  min-height: 28px; margin-bottom: var(--mc-space-sm, 8px);
+}
+.mc-cc-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 10px; border-radius: var(--mc-radius-full, 999px);
+  font-size: var(--font-2, 12px); font-weight: var(--mc-fw-semibold, 600); letter-spacing: 0.02em;
+  border: 1px solid var(--mc-border-light, #e8e5e0); background: var(--mc-surface, #fff);
+  color: var(--mc-text-secondary);
+}
+.mc-cc-chip-online { background: rgba(34,197,94,0.12); color: #15803d; border-color: rgba(34,197,94,0.3); }
+.mc-cc-chip-synced { background: rgba(59,130,246,0.12); color: #1d4ed8; border-color: rgba(59,130,246,0.3); }
+.mc-cc-chip-local_ready { background: rgba(14,165,233,0.12); color: #0369a1; border-color: rgba(14,165,233,0.3); }
+.mc-cc-chip-playing { background: var(--accent, #2563eb); color: #fff; border-color: var(--accent, #2563eb); }
+.mc-cc-chip-paused { background: rgba(148,163,184,0.16); color: #475569; border-color: rgba(148,163,184,0.3); }
+.mc-cc-chip-live { background: var(--danger, #ef4444); color: #fff; border-color: var(--danger, #ef4444); }
+.mc-cc-chip-stale { background: rgba(245,158,11,0.14); color: #b45309; border-color: rgba(245,158,11,0.32); }
+.mc-cc-chip-offline { background: rgba(100,116,139,0.16); color: #334155; border-color: rgba(100,116,139,0.32); }
+.mc-cc-chip-failed { background: rgba(220,38,38,0.16); color: #991b1b; border-color: rgba(220,38,38,0.32); }
+.mc-cc-chip-from_server { background: rgba(139,92,246,0.12); color: #6d28d9; border-color: rgba(139,92,246,0.32); }
+
+/* ---- active-target canvas (large single preview) ---- */
+.mc-cc-canvas { min-height: 240px; }
+.mc-cc-canvas .mc-wall { /* one wall big: fill the stage width */ width: 100%; }
+/* visible vertical black dividers between wall screen regions */
+.mc-cc-canvas .mc-wall-grid { gap: 2px; background: #000; }
+.mc-cc-canvas .mc-wall-cell { border-right: 2px solid #000; box-shadow: inset 0 0 0 1px #000; }
+.mc-cc-canvas .mc-wall-cell:last-child { border-right: none; }
+
+/* ---- canvas-level transport row (Prev · Restart · Play/Pause · Next) ---- */
+.mc-cc-cmdbar-host { margin-top: var(--mc-space-md, 16px); }
+.mc-transport-row-host { margin-top: var(--mc-space-sm, 8px); }
+.mc-cc-tp-row {
+  display: flex; align-items: center; justify-content: center; gap: var(--mc-space-sm, 8px);
+  flex-wrap: wrap;
+}
+.mc-cc-tp-btn {
+  flex: 0 0 auto; min-height: 56px; min-width: 56px; padding: 0 var(--mc-space-md, 16px);
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2, 8px);
+  border: 1px solid var(--mc-border-medium, #d4d0ca); border-radius: var(--mc-radius-lg, 14px);
+  background: #fff; color: var(--mc-text-primary, #1c2536);
+  font-family: var(--mc-font-family-sans); font-size: var(--font-3, 13px); font-weight: var(--mc-fw-semibold, 600);
+  cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+  transition: transform var(--mc-transition-base, .18s ease), box-shadow var(--mc-transition-base, .18s ease), border-color var(--mc-transition-base, .18s ease);
+}
+.mc-cc-tp-btn:hover { border-color: var(--accent, #2563eb); box-shadow: 0 4px 12px rgba(37,99,235,0.18); }
+.mc-cc-tp-btn:active { transform: translateY(1px); }
+.mc-cc-tp-btn:focus-visible { outline: 3px solid var(--accent, #2563eb); outline-offset: 2px; }
+.mc-cc-tp-play { background: var(--accent, #2563eb); border-color: var(--accent, #2563eb); color: #fff; }
+.mc-cc-tp-play:hover { background: var(--accent-hover, #1d4ed8); border-color: var(--accent-hover, #1d4ed8); }
+.mc-cc-tp-ico { font-size: 18px; line-height: 1; }
+.mc-cc-tp-text { white-space: nowrap; }
+
+/* ---- sub-row: Span|Split + Screensaver/Wallpaper (under transport) ---- */
+.mc-cc-sub-row {
+  display: flex; align-items: center; justify-content: center; gap: var(--mc-space-md, 16px);
+  flex-wrap: wrap; margin-top: var(--mc-space-sm, 8px);
+}
+.mc-span-split-host, .mc-screensaver-row-host { flex: 0 0 auto; }
+
+/* Span|Split two-option toggle (active = blue) */
+.mc-span-split {
+  display: inline-flex; border: 1px solid var(--mc-border-medium, #d4d0ca);
+  border-radius: var(--mc-radius-md, 12px); overflow: hidden; background: #fff;
+}
+.mc-span-split[hidden] { display: none; }
+.mc-ss-btn {
+  min-height: 44px; min-width: 72px; padding: 0 var(--mc-space-md, 16px);
+  border: none; background: transparent; color: var(--mc-text-secondary, #475569);
+  font-family: var(--mc-font-family-sans); font-size: var(--font-3, 13px); font-weight: var(--mc-fw-semibold, 600);
+  cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  transition: background var(--mc-transition-base, .18s ease), color var(--mc-transition-base, .18s ease);
+}
+.mc-ss-btn:not(:last-child) { border-right: 1px solid var(--mc-border-light, #e8e5e0); }
+.mc-ss-btn:hover { background: var(--mc-surface-alt, #f8f6f2); color: var(--mc-text-primary, #1c2536); }
+.mc-ss-btn.is-active { background: var(--accent, #2563eb); color: #fff; }
+.mc-ss-btn:focus-visible { outline: 3px solid var(--accent, #2563eb); outline-offset: -3px; }
+
+/* canvas-level Screensaver / Wallpaper row */
+.mc-screensaver-row[hidden] { display: none; }
+.mc-screensaver-row {
+  display: inline-flex; align-items: center; gap: var(--space-2, 8px);
+  font-family: var(--mc-font-family-sans); font-size: var(--font-3, 13px); color: var(--mc-text-secondary, #475569);
+}
+.mc-screensaver-label { font-weight: var(--mc-fw-semibold, 600); white-space: nowrap; }
+.mc-cc-saver-select {
+  min-height: 40px; padding: 0 var(--mc-space-md, 16px) 0 12px;
+  border: 1px solid var(--mc-border-medium, #d4d0ca); border-radius: var(--mc-radius-md, 12px);
+  background: #fff; color: var(--mc-text-primary, #1c2536);
+  font-family: var(--mc-font-family-sans); font-size: var(--font-3, 13px); font-weight: var(--mc-fw-semibold, 600);
+  cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+}
+.mc-cc-saver-select:hover { border-color: var(--accent, #2563eb); }
+.mc-cc-saver-select:focus-visible { outline: 3px solid var(--accent, #2563eb); outline-offset: 2px; }
+
+/* ---- bottom action dock ---- */
+.mc-action-dock-host { margin-top: var(--mc-space-lg, 24px); }
+.mc-action-dock {
+  display: flex; align-items: center; justify-content: center; gap: var(--mc-space-sm, 8px);
+  flex-wrap: wrap;
+}
+.mc-dock-btn {
+  flex: 0 0 auto; min-height: 56px; min-width: 56px; padding: 0 var(--mc-space-lg, 24px);
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2, 8px);
+  border: 1px solid var(--mc-border-medium, #d4d0ca); border-radius: var(--mc-radius-lg, 14px);
+  font-family: var(--mc-font-family-sans); font-size: var(--font-3, 13px); font-weight: var(--mc-fw-bold, 700);
+  cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  box-shadow: 0 3px 10px rgba(0,0,0,0.08);
+  transition: transform var(--mc-transition-base, .18s ease), box-shadow var(--mc-transition-base, .18s ease);
+}
+.mc-dock-btn[hidden] { display: none; }
+.mc-dock-btn:active { transform: translateY(1px); }
+.mc-dock-btn:focus-visible { outline: 3px solid var(--accent, #2563eb); outline-offset: 2px; }
+.mc-dock-default { background: #fff; color: var(--mc-text-primary, #1c2536); border-color: var(--mc-border-medium, #d4d0ca); }
+.mc-dock-default:hover { border-color: var(--accent, #2563eb); box-shadow: 0 5px 14px rgba(37,99,235,0.16); }
+.mc-dock-primary { background: var(--cta, #f97316); color: var(--cta-contrast, #fff); border-color: var(--cta, #f97316); }
+.mc-dock-primary:hover { background: var(--cta-hover, #ea670c); border-color: var(--cta-hover, #ea670c); }
+.mc-dock-primary:focus-visible { outline-color: var(--cta, #f97316); }
+/* pale pink bg, red text — the "start" live stream affordance, slightly larger */
+.mc-dock-live {
+  background: rgba(254, 202, 202, 0.55); border-color: rgba(244, 63, 94, 0.4);
+  color: #be123c; min-height: 60px; font-size: var(--font-4, 15px);
+}
+.mc-dock-live:hover { background: rgba(254, 202, 202, 0.85); border-color: var(--danger, #ef4444); }
+.mc-dock-live:focus-visible { outline-color: var(--danger, #ef4444); }
+/* strong red filled white — destructive stop */
+.mc-dock-danger { background: var(--danger, #ef4444); color: #fff; border-color: var(--danger, #ef4444); }
+.mc-dock-danger:hover { background: var(--danger-dim, #dc2626); border-color: var(--danger-dim, #dc2626); }
+.mc-dock-danger:focus-visible { outline-color: var(--danger, #ef4444); }
+/* Add Display: a vertical-text blue-plus tab affixed to the dock */
+.mc-dock-add {
+  flex: 0 0 auto; width: 56px; min-width: 56px; padding: var(--mc-space-md, 16px) 6px;
+  flex-direction: column; gap: var(--mc-space-sm, 8px); border-radius: var(--mc-radius-md, 12px);
+  background: #fff; color: var(--mc-text-primary, #1c2536); border-color: var(--mc-border-medium, #d4d0ca);
+}
+.mc-dock-add:hover { border-color: var(--accent, #2563eb); }
+.mc-dock-add-text {
+  writing-mode: vertical-rl; text-orientation: mixed;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  font-size: var(--font-2, 12px); font-weight: var(--mc-fw-bold, 700); color: var(--mc-text-secondary, #475569);
+}
+.mc-dock-add-plus {
+  flex: 0 0 auto; width: 32px; height: 32px; min-width: 32px; min-height: 32px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; background: var(--accent, #2563eb); color: #fff;
+  font-size: 22px; line-height: 1; font-weight: 800;
+}
+
+/* ---- restyled Content Library tab (rotated text, white rounded, blue chevron) ----
+   Keeps the existing .mc-library-drawer open/close behavior; the .mc-cc-lib-tab
+   modifier overrides surface/ink so it reads as the brand tab on dark-bg walls. */
+.mc-cc-lib-tab {
+  width: 56px; padding: var(--mc-space-md, 16px) 6px;
+  background: #fff; border: 1px solid var(--mc-border-medium, #d4d0ca); border-right: none;
+  color: var(--mc-text-secondary, #475569);
+}
+.mc-cc-lib-tab:hover { background: var(--mc-surface-alt, #f8f6f2); border-color: var(--accent, #2563eb); }
+.mc-cc-lib-tab .mc-library-tab-label {
+  color: var(--mc-text-secondary, #475569); font-weight: var(--mc-fw-bold, 700);
+  text-transform: uppercase; letter-spacing: 0.06em; font-size: var(--font-2, 12px);
+}
+.mc-cc-lib-tab .mc-library-tab-ico { color: var(--accent, #2563eb); }
+
+/* ---- responsive: narrow canvas ---- */
+@media (max-width: 720px) {
+  .mc-cc-head {
+    grid-template-columns: auto 1fr auto;
+    gap: var(--mc-space-sm, 8px);
+    padding: 0 var(--mc-space-sm, 8px);
+  }
+  .mc-cc-title { font-size: var(--mc-font-size-lg, 18px) !important; }
+  .mc-cc-brand-text { display: none; }       /* keep logo + dropdown on tight bars */
+  .mc-target-select { min-width: 0; max-width: 100%; }
+  /* dock wraps to two rows; keep the add-display tab flush right of the top row */
+  .mc-action-dock { flex-wrap: wrap; row-gap: var(--mc-space-sm, 8px); }
+  /* drawer overlays the canvas instead of pushing layout */
+  .mc-library-drawer { width: 100vw; max-width: 100vw; }
+}
+
+/* ---- reduced motion ---- */
+@media (prefers-reduced-motion: reduce) {
+  .mc-dock-btn, .mc-cc-tp-btn, .mc-ss-btn, .mc-target-select, .mc-cc-saver-select,
+  .mc-cc-bell, .mc-cc-lib-tab, .mc-library-tab-ico {
+    transition: none !important;
+  }
+  .mc-dock-btn:active, .mc-cc-tp-btn:active { transform: none !important; }
+}
