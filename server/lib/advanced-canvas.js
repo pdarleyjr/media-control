@@ -106,7 +106,10 @@ function getEndpointLayers(endpointId) {
     label: row.label || '',
     source: parseJson(row.source_json, {}),
     render: parseJson(row.render_json, {}),
-    fit_mode: row.fit_mode || 'contain',
+    // Default to 'cover' (was 'contain') so wall content fills the layer box
+    // edge-to-bezel — the classroom/owner #1 priority. An explicitly stored
+    // 'contain'/'fill' still wins (we only fallback to 'cover' when unset).
+    fit_mode: row.fit_mode || 'cover',
     muted: !!row.muted,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -255,8 +258,12 @@ async function normalizeSceneLayers({
     const layer = layers[index] && typeof layers[index] === 'object' ? layers[index] : {};
     const x = clampNumber(layer.x, 0, canvasWidth - 1, 0);
     const y = clampNumber(layer.y, 0, canvasHeight - 1, 0);
-    const width = clampNumber(layer.width, 1, canvasWidth - x, Math.min(1920, canvasWidth - x));
-    const height = clampNumber(layer.height, 1, canvasHeight - y, Math.min(1080, canvasHeight - y));
+    // Default a unspecified layer to span the WHOLE canvas (full-bleed span),
+    // not a single-screen 1920×1080 cell. The operator can always draw a
+    // smaller sub-region (Split), but absent dimensions it should reach the
+    // bezel edges of the wall rather than the top-left monitor.
+    const width = clampNumber(layer.width, 1, canvasWidth - x, canvasWidth - x);
+    const height = clampNumber(layer.height, 1, canvasHeight - y, canvasHeight - y);
     const source = layer.source && typeof layer.source === 'object' ? layer.source : {};
     const render = await resolveSource(
       source,
@@ -278,7 +285,10 @@ async function normalizeSceneLayers({
       label: String(layer.label || `Layer ${index + 1}`).slice(0, 240),
       source,
       render,
-      fit_mode: ['contain', 'cover', 'fill'].includes(layer.fit_mode) ? layer.fit_mode : 'contain',
+      // Default 'cover' (was 'contain'): wall content must reach the bezel edges.
+      // Operator can still request 'contain'/'fill' per layer; an empty/invalid
+      // fit_mode now resolves to full-bleed 'cover'.
+      fit_mode: ['contain', 'cover', 'fill'].includes(layer.fit_mode) ? layer.fit_mode : 'cover',
       muted: layer.muted !== false,
     });
   }
