@@ -39,6 +39,18 @@ const ICON_SETUP_WALLS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentCo
 const ICON_CHEVRON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>';
 // Header notification bell (white stroke).
 const ICON_BELL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"></path><line x1="13.5" y1="19" x2="10.5" y2="19"></line></svg>';
+
+// Left collapsed icon rail (Command Center shell). Stroke-style SVGs matching
+// the dashboard vocabulary already used by ICON_SETUP_* above. Labels live in
+// i18n keys mc.cc.rail.* (tooltips only, since the rail stays collapsed).
+const ICON_COMMAND = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 19 6 19 14 12 18 5 14 5 6"></polygon><line x1="12" y1="6" x2="12" y2="14"></line><line x1="5" y1="6" x2="12" y2="10"></line><line x1="19" y1="6" x2="12" y2="10"></line></svg>';
+const ICON_DISPLAYS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>';
+const ICON_WHITEBOARD = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19l7-7 3 3-7 7-3-1z"></path><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"></path><path d="M2 2l7.586 7.586"></path><circle cx="11" cy="11" r="2"></circle></svg>';
+const ICON_MEDIA = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>';
+const ICON_DOWNLOADS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>';
+const ICON_ADMIN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>';
+const ICON_LOGS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="8" y1="13" x2="16" y2="13"></line><line x1="8" y1="17" x2="16" y2="17"></line></svg>';
+const ICON_SETTINGS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>';
 // ── Phase 1 Command Center: screensaver options for the canvas-level control.
 // Mirrors stage.js SCREENSAVER_OPTIONS (kept inline so this view does not depend
 // on stage.js exporting its private list). If an asset is re-uploaded, update the
@@ -1229,81 +1241,65 @@ async function stopLive() {
 
 export async function render() {
   const app = document.getElementById('app');
+  // Command Center shell: a single appliance-style screen — fixed header,
+  // left icon rail + center workspace (canvas > playback > span/split+saver >
+  // action dock) + right Content Library tab. NO long scrolling dashboard:
+  // the old Room Presets / Recent / Room Setup / command bar (duplicated
+  // "Blank all" + Start Class + YouTube) are removed from the default page.
+  // Those modules stay defined (renderRoomPresets/renderRecentPanel/
+  // renderCommandBar) for future drawers/routes; nothing is deleted.
   app.innerHTML = `
-    <div class="mc-studio-surface mc-cc-surface">
-<div class="mc-studio-wrap mc-control mc-cc-wrap">
-        <header class="mc-control-head mc-cc-head">
-          <div class="mc-cc-brand">
-            <span class="mc-cc-logo" aria-hidden="true">M</span>
-            <div class="mc-cc-brand-text">
-              <h1 class="mc-control-title mc-cc-title">${esc(t('mc.cc.brand'))}</h1>
-              <div id="mc-summary" class="mc-control-summary" aria-live="polite"></div>
-            </div>
-          </div>
-          <div class="mc-cc-target" id="mc-target-host"></div>
-          <div class="mc-control-controls mc-cc-tools">
-            <div id="mc-broadcast-chip" class="mc-chip mc-chip-live" hidden></div>
-            <button type="button" class="mc-cc-bell" id="mc-cc-bell" aria-label="${esc(t('mc.cc.notifications'))}">${ICON_BELL}</button>
-            <span class="mc-cc-avatar" aria-hidden="true">U</span>
-          </div>
-        </header>
-
-        <div class="mc-control-body">
-          <div class="mc-control-main">
-            <section class="mc-control-zone" aria-labelledby="mc-stage-head">
-              <div class="mc-section-head">
-                <h2 id="mc-stage-head" class="mc-section-title">${esc(t('mc.section.displays'))}</h2>
-                <p class="mc-section-hint">${esc(t('mc.section.displays_hint'))}</p>
-                <a class="mc-section-link" href="#/">${esc(t('mc.section.manage_displays'))}</a>
-                <a class="mc-section-link" href="#/walls">${esc(t('mc.section.video_walls'))}</a>
-              </div>
-              <div id="mc-cc-chips" class="mc-cc-chips" aria-live="polite"></div>
-              <div id="mc-advanced-canvas" class="mc-advanced-canvas-host" hidden></div>
-              <!-- Multiview builder: toggled as an OVERLAY over the canvas by the
-                   command bar's / dock's "Multiview" button; lazy-mounted on first
-                   open (kept hidden by default — Multiview is a MODE, not the default). -->
-              <div id="mc-multiview" class="mc-multiview-host" hidden></div>
-              <section id="mc-stage" class="mc-stage mc-cc-canvas" aria-label="${esc(t('mc.section.displays'))}"></section>
-
-              <!-- Command Center: canvas-level controls, directly UNDER the canvas.
-                   The existing command bar (#mc-cmdbar-host) was above the stage and
-                   is repositioned here; the transport row / Span|Split / screensaver
-                   are new. All existing IDs + wiring are preserved. -->
-              <div id="mc-cmdbar-host" class="mc-cmdbar-host mc-cc-cmdbar-host"></div>
-              <div id="mc-transport-host" class="mc-transport-row-host"></div>
-              <div class="mc-cc-sub-row">
-                <div id="mc-span-split-host" class="mc-span-split-host"></div>
-                <div id="mc-screensaver-host" class="mc-screensaver-row-host"></div>
-              </div>
-            </section>
-
-            <section class="mc-control-bottom" aria-label="${esc(t('mc.rail.label'))}">
-              <div id="mc-presets-host"></div>
-              <div id="mc-recent-host"></div>
-              <section class="mc-setup-panel" aria-labelledby="mc-setup-head">
-                <h3 id="mc-setup-head" class="mc-rail-title">${esc(t('mc.setup.title'))}</h3>
-                <div class="mc-setup-links">
-                  <button type="button" class="mc-setup-link" data-mc-setup="schedules">
-                    <span class="mc-setup-ico" aria-hidden="true">${ICON_SETUP_SCHEDULE}</span>
-                    <span class="mc-setup-link-label">${esc(t('mc.setup.schedules'))}</span>
-                  </button>
-                  <a class="mc-setup-link" href="#/walls">
-                    <span class="mc-setup-ico" aria-hidden="true">${ICON_SETUP_WALLS}</span>
-                    <span class="mc-setup-link-label">${esc(t('mc.setup.walls'))}</span>
-                  </a>
-                </div>
-              </section>
-            </section>
-
-            <!-- Bottom action dock (large touch-friendly buttons). Add Display at
-                 the lower-right is the blue-plus vertical tab. -->
-            <div id="mc-action-dock-host" class="mc-action-dock-host"></div>
+    <div class="mc-cc-shell">
+      <header class="mc-cc-head">
+        <div class="mc-cc-brand">
+          <span class="mc-cc-logo" aria-hidden="true">M</span>
+          <div class="mc-cc-brand-text">
+            <h1 class="mc-cc-title">${esc(t('mc.cc.brand'))}</h1>
+            <div id="mc-summary" class="mc-control-summary" aria-live="polite"></div>
           </div>
         </div>
+        <div class="mc-cc-target" id="mc-target-host"></div>
+        <div class="mc-cc-tools">
+          <div id="mc-broadcast-chip" class="mc-chip mc-chip-live" hidden></div>
+          <button type="button" class="mc-cc-bell" id="mc-cc-bell" aria-label="${esc(t('mc.cc.notifications'))}">${ICON_BELL}</button>
+          <span class="mc-cc-avatar" aria-hidden="true">U</span>
+        </div>
+      </header>
 
-        <aside id="mc-library-drawer" class="mc-library-drawer" data-open="true" aria-label="${esc(t('mc.section.sources'))}">
+      <div class="mc-cc-body">
+        <nav class="mc-cc-rail" aria-label="${esc(t('mc.cc.rail.label'))}">
+          <button type="button" class="mc-cc-rail-btn is-active" data-mc-rail="command" title="${esc(t('mc.cc.rail.command'))}" aria-label="${esc(t('mc.cc.rail.command'))}">${ICON_COMMAND}</button>
+          <button type="button" class="mc-cc-rail-btn" data-mc-rail="displays" title="${esc(t('mc.cc.rail.displays'))}" aria-label="${esc(t('mc.cc.rail.displays'))}">${ICON_DISPLAYS}</button>
+          <button type="button" class="mc-cc-rail-btn" data-mc-rail="whiteboard" title="${esc(t('mc.cc.rail.whiteboard'))}" aria-label="${esc(t('mc.cc.rail.whiteboard'))}">${ICON_WHITEBOARD}</button>
+          <button type="button" class="mc-cc-rail-btn" data-mc-rail="media" title="${esc(t('mc.cc.rail.media'))}" aria-label="${esc(t('mc.cc.rail.media'))}">${ICON_MEDIA}</button>
+          <button type="button" class="mc-cc-rail-btn" data-mc-rail="downloads" title="${esc(t('mc.cc.rail.downloads'))}" aria-label="${esc(t('mc.cc.rail.downloads'))}">${ICON_DOWNLOADS}</button>
+          <span class="mc-cc-rail-spacer"></span>
+          <a class="mc-cc-rail-btn" href="#/walls" title="${esc(t('mc.cc.rail.admin'))}" aria-label="${esc(t('mc.cc.rail.admin'))}">${ICON_ADMIN}</a>
+          <button type="button" class="mc-cc-rail-btn" data-mc-rail="logs" title="${esc(t('mc.cc.rail.logs'))}" aria-label="${esc(t('mc.cc.rail.logs'))}">${ICON_LOGS}</button>
+          <button type="button" class="mc-cc-rail-btn" data-mc-rail="settings" title="${esc(t('mc.cc.rail.settings'))}" aria-label="${esc(t('mc.cc.rail.settings'))}">${ICON_SETTINGS}</button>
+        </nav>
+
+        <main class="mc-cc-main">
+          <section class="mc-cc-canvas-area">
+            <div id="mc-cc-chips" class="mc-cc-chips" aria-live="polite"></div>
+            <div id="mc-advanced-canvas" class="mc-advanced-canvas-host" hidden></div>
+            <div id="mc-multiview" class="mc-multiview-host" hidden></div>
+            <section id="mc-stage" class="mc-stage mc-cc-canvas" aria-label="${esc(t('mc.section.displays'))}"></section>
+          </section>
+
+          <section class="mc-cc-controls">
+            <div id="mc-transport-host" class="mc-transport-row-host"></div>
+            <div class="mc-cc-sub-row">
+              <div id="mc-span-split-host" class="mc-span-split-host"></div>
+              <div id="mc-screensaver-host" class="mc-screensaver-row-host"></div>
+            </div>
+            <div id="mc-action-dock-host" class="mc-action-dock-host"></div>
+          </section>
+        </main>
+
+        <aside id="mc-library-drawer" class="mc-library-drawer" data-open="false" aria-label="${esc(t('mc.section.sources'))}" hidden>
           <button type="button" class="mc-library-tab mc-cc-lib-tab" data-library-toggle
-                  aria-expanded="true" aria-controls="mc-toolbox"
+                  aria-expanded="false" aria-controls="mc-toolbox"
                   title="${esc(t('mc.library.toggle'))}">
             <span class="mc-library-tab-label">${esc(t('mc.library.title'))}</span>
             <span class="mc-library-tab-ico" aria-hidden="true">${ICON_CHEVRON}</span>
@@ -1312,7 +1308,7 @@ export async function render() {
             <div class="mc-library-head">
               <h2 id="mc-library-title" class="mc-library-title">${esc(t('mc.library.title'))}</h2>
               <button type="button" class="mc-library-collapse" data-library-toggle
-                      aria-expanded="true" aria-controls="mc-toolbox"
+                      aria-expanded="false" aria-controls="mc-toolbox"
                       aria-label="${esc(t('mc.library.collapse'))}" title="${esc(t('mc.library.collapse'))}">
                 <span aria-hidden="true">${ICON_CHEVRON}</span>
               </button>
@@ -1326,6 +1322,14 @@ export async function render() {
         <aside id="mc-inspector" class="mc-inspector" hidden></aside>
       </div>
     </div>`;
+
+  // The right Content Library tab is now the only fixed right-edge element — the
+  // collapsed tab (data-open="false") re-shows itself when the drawer toggles.
+  const libDrawer = document.getElementById('mc-library-drawer');
+  if (libDrawer && libDrawer.hidden) {
+    libDrawer.hidden = false;
+    libDrawer.classList.remove('is-open');
+  }
 
   // Re-hydrate the last-controlled selection, learn which devices are wall-owned,
   // and load the live display state — then prune any stale/wall-member ids.
@@ -1480,25 +1484,37 @@ pruneSelection();
   // Share screen / YouTube / Library). roomIds() = controllable (non-wall)
   // displays for content sends; blankIds() ALSO includes every wall member so
   // "Blank all" darkens the physical video-wall screens too.
-  renderCommandBar(document.getElementById('mc-cmdbar-host'), {
-    roomIds: roomDisplayIds,
-    blankIds: roomCommandIds,
-    refreshAfterSend,
-    onMultiview: toggleMultiview,
-    onRouteSource: routeSourceWithPicker,
-    onBlankChange: canvasEndpoint ? setAdvancedCanvasBlanked : null,
-  });
+  //
+  // Command Bar (Start Class / YouTube / Blank all toggle) is REMOVED from the
+  // main instructor page — its "Blank all" duplicated the bottom Action Dock,
+  // and Start Class / YouTube belong in an Advanced/Diagnostics drawer (kept
+  // defined in command-bar.js for a future drawer route). The Action Dock now
+  // owns Multiview / Blank / Share / Live-stream on the main surface.
+  // The display-target helpers (roomDisplayIds / roomCommandIds /
+  // routeSourceWithPicker / setAdvancedCanvasBlanked) are still wired into the
+  // Span|Split + Action Dock + target-selector/transport mounts below.
+  // Room Presets + Recent (recent-panel) are likewise removed from the main
+  // page; their components remain in room-presets.js / recent-panel.js for a
+  // future Logs/Diagnostics route. Renders are skipped (host ids gone).
+  const _legacyCmdbarHost = document.getElementById('mc-cmdbar-host');
+  if (_legacyCmdbarHost) {
+    renderCommandBar(_legacyCmdbarHost, {
+      roomIds: roomDisplayIds,
+      blankIds: roomCommandIds,
+      refreshAfterSend,
+      onMultiview: toggleMultiview,
+      onRouteSource: routeSourceWithPicker,
+      onBlankChange: canvasEndpoint ? setAdvancedCanvasBlanked : null,
+    });
+  }
 
-  // Mount the right rail: Room Presets (one-tap scene recall, the Command-360
-  // "Layouts" analog) + Recent (recent presentations + activity, folding in the
-  // Studio Home panels). Both are read-only/self-contained — no cleanup needed.
-  renderRoomPresets(document.getElementById('mc-presets-host'), { onAfterApply: refreshAfterSend });
-  renderRecentPanel(document.getElementById('mc-recent-host'));
+  const _legacyPresetsHost = document.getElementById('mc-presets-host');
+  if (_legacyPresetsHost) renderRoomPresets(_legacyPresetsHost, { onAfterApply: refreshAfterSend });
+  const _legacyRecentHost = document.getElementById('mc-recent-host');
+  if (_legacyRecentHost) renderRecentPanel(_legacyRecentHost);
 
-  // Room-setup launchers (fold in the retired Operate links): Schedules is
-  // self-contained, so it opens as an in-dashboard overlay — the operator never
-  // leaves #/control. Video walls is a plain link to the canvas editor (a focused
-  // full screen, launched from the dashboard instead of a sidebar item).
+  // Schedules launcher moved to the left rail (Advanced) — the old
+  // [data-mc-setup="schedules"] host no longer exists on the main page.
   const schedBtn = document.querySelector('[data-mc-setup="schedules"]');
   if (schedBtn) {
     schedBtn.addEventListener('click', () => {

@@ -1846,3 +1846,130 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
   }
   .mc-dock-btn:active, .mc-cc-tp-btn:active { transform: none !important; }
 }
+
+/* =====================================================================
+ * Command Center shell — single appliance screen (Phase UI-overhaul).
+ * Replaces the legacy stacked scrolling dashboard with a fixed viewport
+ * grid: header (72px) + body (left rail | center main | right lib tab).
+ * The page must NOT scroll on the Kamrui podium or a normal desktop; the
+ * stage canvas is the dominant element and all other controls live in a
+ * column directly under it. Old cards (Room Presets / Recent / Room Setup
+ * / duplicated command bar / Spatial Canvas) are removed from this shell.
+ * ===================================================================== */
+.mc-cc-shell {
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: 72px 1fr;
+  background: #0b1220;
+  color: #e5e7eb;
+}
+.mc-cc-shell .mc-cc-head {
+  margin: 0;
+  height: 72px;
+  min-height: 72px;
+}
+.mc-cc-body {
+  display: grid;
+  grid-template-columns: 72px 1fr 56px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Left collapsed icon rail — narrow, fixed, never expands by default. */
+.mc-cc-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0;
+  background: #0a1120;
+  border-right: 1px solid rgba(255,255,255,0.06);
+  overflow: hidden;
+}
+.mc-cc-rail .mc-cc-rail-spacer { flex: 1; }
+.mc-cc-rail-btn {
+  width: 44px; height: 44px; min-height: 44px;
+  display: grid; place-items: center;
+  border: 0; border-radius: 10px;
+  background: transparent; color: #94a3b8;
+  cursor: pointer; text-decoration: none;
+  transition: background .15s, color .15s;
+}
+.mc-cc-rail-btn svg { width: 22px; height: 22px; }
+.mc-cc-rail-btn:hover { background: rgba(255,255,255,0.08); color: #e5e7eb; }
+.mc-cc-rail-btn.is-active { background: rgba(249,115,22,0.18); color: #fb923c; }
+
+/* Center workspace: canvas on top, then playback, then span/split+saver,
+   then the bottom action dock. No internal scrolling on normal viewports. */
+.mc-cc-main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  min-width: 0; min-height: 0;
+  padding: 16px 24px 18px;
+  overflow: hidden;
+}
+.mc-cc-canvas-area {
+  width: 100%;
+  display: flex; flex-direction: column; align-items: center;
+  gap: 6px;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+.mc-cc-canvas-area .mc-cc-chips:empty { display: none; }
+.mc-cc-canvas-area .mc-cc-chips {
+  display: flex; justify-content: center; flex-wrap: wrap; gap: 6px;
+}
+.mc-cc-main .mc-stage.mc-cc-canvas {
+  width: min(1120px, 86vw);
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border-radius: 4px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.45);
+  flex: 0 1 auto;
+  max-height: calc(100vh - 72px - 220px);
+}
+.mc-cc-controls {
+  width: 100%;
+  display: flex; flex-direction: column; align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  flex: 0 0 auto;
+}
+.mc-cc-controls .mc-cc-sub-row {
+  width: min(1120px, 86vw);
+  display: flex; justify-content: center; align-items: center;
+  gap: 12px; flex-wrap: wrap;
+}
+.mc-cc-controls .mc-action-dock-host { margin-top: 4px; }
+
+/* Right Content Library tab — collapsed by default to a 56px right rail.
+   The existing drawer mechanics (data-open + data-library-toggle) drive the
+   slide-in; only the default-collapsed geometry lives here. */
+.mc-cc-body .mc-library-drawer { position: relative; width: 56px; }
+.mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-inner { display: none; }
+.mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-tab {
+  position: absolute; top: 24px; right: 0;
+  width: 56px; height: 180px;
+  border-radius: 10px 0 0 10px;
+}
+.mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-tab-label {
+  writing-mode: vertical-rl; transform: rotate(180deg);
+  letter-spacing: 2px;
+}
+.mc-cc-body .mc-library-drawer[data-open="true"] {
+  width: 360px; max-width: 40vw;
+}
+
+/* Responsive: stack rail under controls only when very narrow; keep canvas
+   dominant. The shell stays single-screen — never reverts to the old
+   scrolling dashboard. */
+@media (max-width: 720px) {
+  .mc-cc-body { grid-template-columns: 56px 1fr; }
+  .mc-cc-body .mc-library-drawer { display: none; }
+  .mc-cc-main .mc-stage.mc-cc-canvas { width: 94vw; max-height: 50vh; }
+  .mc-cc-controls .mc-cc-sub-row { gap: 6px; }
+}
