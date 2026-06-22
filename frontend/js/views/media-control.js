@@ -1431,14 +1431,6 @@ pruneSelection();
     dockBtn.addEventListener('click', () => window.mcOpenWhiteboard());
     dockHost.appendChild(dockBtn);
   }
-  if (canvasEndpoint) {
-    const stage = stageEl();
-    if (stage) stage.hidden = true;
-    const summary = summaryEl();
-    if (summary) {
-      summary.innerHTML = `<span class="mc-summary-item">${esc(canvasEndpoint.name)}</span><span class="mc-summary-dot" aria-hidden="true">·</span><span class="mc-summary-item">${esc(canvasEndpoint.status === 'online' ? t('mc.canvas.online') : t('mc.canvas.offline'))}</span>`;
-    }
-  }
 
   // Multiview builder — mounted directly above the stage (whose first wall
   // card is the classroom primary wall) and toggled by the command bar's "Multiview"
