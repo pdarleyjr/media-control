@@ -29,7 +29,7 @@ const ACTIVE_DISPLAYS = (process.env.MC_ACTIVE_DISPLAYS || '').split(',').map((s
 const AUDIO_ENDPOINT = process.env.MC_AUDIO_ENDPOINT || 'eARC';
 
 const HEARTBEAT_MS = 15 * 1000;
-const MANIFEST_REFRESH_MS = 5 * 60 * 1000; // re-pull so new uploads pre-warm
+const MANIFEST_REFRESH_MS = 60 * 1000; // re-pull often so new uploads pre-stage quickly
 
 function log(...a) { console.log(new Date().toISOString(), ...a); }
 function warn(...a) { console.warn(new Date().toISOString(), ...a); }

@@ -205,7 +205,13 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
     // classroom rule, so they are NOT fanned out. Split walls keep per-screen
     // content and are never fanned out.
     try {
-      const isSingleScreenWeb = content.mime_type === 'text/html';
+      // Generic websites + screen-shares stay on the single targeted screen
+      // (per the classroom rule). PRESENTATIONS span the wall: PDFs/office docs
+      // are not text/html, and AI decks / doc viewers are internal player URLs
+      // (/player/deck/, /player/doc/) which SHOULD span across all members.
+      const remote = String(content.remote_url || '');
+      const isInternalPresentation = /\/player\/(deck|doc)\//.test(remote);
+      const isSingleScreenWeb = content.mime_type === 'text/html' && !isInternalPresentation;
       const wall = wallContextForDevice(deviceId);
       if (wall && wall.wall_id && wall.layout_mode !== 'split' && !isSingleScreenWeb) {
         const members = db.prepare(

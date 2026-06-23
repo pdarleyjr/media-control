@@ -76,16 +76,21 @@ function createCacheServer(opts = {}) {
     return true;
   }
 
-  // Proxy from origin. On a plain (non-range) request we tee the body to disk so
-  // the next hit is local. Range requests are proxied straight through (we only
-  // cache full 200 bodies). Redirects followed once.
+  // Proxy from origin while a single-flight BACKGROUND fill caches the full file
+  // so the NEXT request is a local hit. Critically this also runs for Range
+  // requests — videos only ever use Range, so the old "cache only non-range"
+  // path never cached them (every play re-streamed from the server => stutter).
+  // This request itself is served straight from origin (range-aware passthrough).
   function proxyOrigin(req, res, id, depth) {
     const originUrl = `${originBaseUrl}/api/content/${encodeURIComponent(id)}/file`;
     let u;
     try { u = new URL(req._redirect || originUrl); } catch { res.writeHead(502); return res.end('bad origin'); }
+    // Kick off the background full-file cache (single-flight via `downloading`).
+    if (!req._redirect && !fs.existsSync(fileFor(id)) && !downloading.has(id)) {
+      prewarm(id).catch(() => {});
+    }
     const headers = {};
     if (req.headers.range) headers.Range = req.headers.range;
-    const wantCache = !req.headers.range && !downloading.has(id);
     const lib = pickLib(u);
     const oreq = lib.get(u, { headers, timeout: 60000 }, (ores) => {
       if (ores.statusCode >= 300 && ores.statusCode < 400 && ores.headers.location && (depth || 0) < 3) {
@@ -94,50 +99,13 @@ function createCacheServer(opts = {}) {
         return proxyOrigin(req, res, id, (depth || 0) + 1);
       }
       const sc = ores.statusCode || 502;
-      // Mirror status + key headers to the client.
-      const passHeaders = { 'X-MC-Cache': wantCache ? 'miss-store' : 'miss-pass' };
+      const passHeaders = { 'X-MC-Cache': 'miss' };
       if (ores.headers['content-type']) passHeaders['Content-Type'] = ores.headers['content-type'];
       if (ores.headers['content-length']) passHeaders['Content-Length'] = ores.headers['content-length'];
       if (ores.headers['content-range']) passHeaders['Content-Range'] = ores.headers['content-range'];
       if (ores.headers['accept-ranges']) passHeaders['Accept-Ranges'] = ores.headers['accept-ranges'];
       res.writeHead(sc, passHeaders);
-
-      if (sc === 200 && wantCache) {
-        downloading.add(id);
-        const partPath = fileFor(id) + '.part';
-        let out = null;
-        try { out = fs.createWriteStream(partPath, { flags: 'w' }); } catch { out = null; }
-        ores.on('data', (chunk) => {
-          res.write(chunk);
-          if (out) { try { out.write(chunk); } catch (_) { /* ignore */ } }
-        });
-        ores.on('end', () => {
-          res.end();
-          if (out) {
-            out.end(() => {
-              try {
-                fs.renameSync(partPath, fileFor(id));
-                fs.writeFileSync(metaFor(id), JSON.stringify({
-                  content_type: ores.headers['content-type'] || 'application/octet-stream',
-                  size: Number(ores.headers['content-length']) || null,
-                  cached_at: Math.floor(Date.now() / 1000),
-                }));
-                log(`[cache] stored ${id}`);
-              } catch (e) { warn('[cache] finalize failed:', e && e.message); try { fs.unlinkSync(partPath); } catch (_) {} }
-              downloading.delete(id);
-            });
-          } else { downloading.delete(id); }
-        });
-        ores.on('error', (e) => {
-          warn('[cache] origin stream error:', e && e.message);
-          try { res.end(); } catch (_) {}
-          if (out) { try { out.destroy(); } catch (_) {} }
-          try { fs.unlinkSync(partPath); } catch (_) {}
-          downloading.delete(id);
-        });
-      } else {
-        ores.pipe(res);
-      }
+      ores.pipe(res);
     });
     oreq.on('error', (e) => {
       warn('[cache] origin request error:', e && e.message);
@@ -158,7 +126,7 @@ function createCacheServer(opts = {}) {
       let u; try { u = new URL(originUrl); } catch { downloading.delete(id); return resolve(false); }
       const partPath = fileFor(id) + '.part';
       const lib = pickLib(u);
-      const r = lib.get(u, { timeout: 120000 }, (ores) => {
+      const r = lib.get(u, { timeout: 300000 }, (ores) => {
         if ((ores.statusCode || 0) !== 200) { ores.resume(); downloading.delete(id); return resolve(false); }
         let out; try { out = fs.createWriteStream(partPath, { flags: 'w' }); } catch { downloading.delete(id); return resolve(false); }
         ores.pipe(out);
