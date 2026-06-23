@@ -41,7 +41,6 @@ export function mountActionDock(hostEl, opts = {}) {
   hostEl.innerHTML = `
     <div class="mc-action-dock" role="toolbar" aria-label="${esc(t('mc.cc.brand'))}">
       <button type="button" class="mc-dock-btn mc-dock-primary" data-dock="multiview">${esc(t('mc.cc.dock.multiview'))}</button>
-      <button type="button" class="mc-dock-btn mc-dock-default" data-dock="blank-selected">${esc(t('mc.cc.dock.blank_selected'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-default" data-dock="blank-all">${esc(t('mc.cc.dock.blank_all'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-default" data-dock="share">${esc(t('mc.cc.dock.share'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-live" data-dock="start-live">${esc(t('mc.cc.dock.start_live'))}</button>

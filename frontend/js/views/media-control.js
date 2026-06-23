@@ -65,6 +65,45 @@ const SCREENSAVER_OPTIONS_CC = [
 // this dependency-free and CSP-friendly (no external fetch).
 const BLACK_SCREENSAVER_URL = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16'%3E%3Crect width='16' height='16' fill='%23000'/%3E%3C/svg%3E";
 
+// ── Header avatar (real signed-in user, not a hardcoded "U") ───────────────
+// app.js owns the canonical signed-in user in localStorage('user'); we read it
+// here to render the operator's real initials (or avatar image) in the Command
+// Center header. Falls back gracefully so the header never breaks if storage is
+// empty or malformed.
+function ccCurrentUser() {
+  try {
+    const raw = localStorage.getItem('user');
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+// "Peter Darley" -> "PD"; single name -> first two letters; else email's first
+// character; final fallback "U".
+function ccUserInitials(user) {
+  const name = String((user && (user.name || user.full_name || user.username)) || '').trim();
+  if (name) {
+    const parts = name.split(/\s+/).filter(Boolean);
+    let ini = '';
+    if (parts.length === 1) ini = parts[0].slice(0, 2);
+    else ini = (parts[0][0] || '') + (parts[parts.length - 1][0] || '');
+    ini = ini.toUpperCase();
+    if (ini) return ini;
+  }
+  const email = String((user && user.email) || '').trim();
+  if (email) return email[0].toUpperCase();
+  return 'U';
+}
+// Build the header avatar element markup: an <img> when the user has an avatar
+// URL, else a circle with their initials. Title/alt expose the full identity.
+function ccAvatarHtml() {
+  const user = ccCurrentUser();
+  const label = String((user && (user.name || user.full_name || user.email)) || '').trim();
+  const url = user && (user.avatar_url || user.avatar || user.picture);
+  if (url) {
+    return `<img class="mc-cc-avatar mc-cc-avatar-img" src="${esc(url)}" alt="${esc(label)}" title="${esc(label)}">`;
+  }
+  return `<span class="mc-cc-avatar" title="${esc(label)}" role="img" aria-label="${esc(label)}">${esc(ccUserInitials(user))}</span>`;
+}
+
 // Open the media drawer and, best-effort, activate the matching folder chip on
 // the Media tab. Additive: if the toolbox isn't mounted or the chip is absent,
 // it simply opens the drawer and leaves it on "All" (no error path).
@@ -1270,6 +1309,48 @@ async function stopLive() {
   catch (e) { showToast(e && e.message ? e.message : t('mc.cmd.live_stop_failed'), 'error'); }
 }
 
+// Wire the Command Center left icon rail (called from render() after the shell
+// markup is injected). Buttons navigate to their surface or toggle the in-page
+// Content Library drawer; the Admin item is a plain <a> handled by the router.
+function wireCommandRail() {
+  const rail = document.querySelector('.mc-cc-rail');
+  if (!rail) return;
+  rail.querySelectorAll('[data-mc-rail]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      switch (btn.dataset.mcRail) {
+        case 'command':
+          window.location.hash = '#/control';
+          break;
+        case 'displays':
+          window.location.hash = '#/';
+          break;
+        case 'whiteboard':
+          if (typeof window.mcOpenWhiteboard === 'function') window.mcOpenWhiteboard();
+          else window.location.hash = '#/smartboard';
+          break;
+        case 'media': {
+          // Reuse the existing library-drawer toggle so open/close + inert state
+          // stay in lockstep with the docked tab and collapse button.
+          const toggle = document.querySelector('#mc-library-drawer [data-library-toggle]');
+          if (toggle) toggle.click();
+          break;
+        }
+        case 'downloads':
+          window.location.hash = '#/downloads';
+          break;
+        case 'logs':
+          window.location.hash = '#/audit';
+          break;
+        case 'settings':
+          window.location.hash = '#/settings';
+          break;
+        default:
+          break;
+      }
+    });
+  });
+}
+
 export async function render() {
   const app = document.getElementById('app');
   // Command Center shell: a single appliance-style screen — fixed header,
@@ -1283,7 +1364,7 @@ export async function render() {
     <div class="mc-cc-shell">
       <header class="mc-cc-head">
         <div class="mc-cc-brand">
-          <span class="mc-cc-logo" aria-hidden="true">M</span>
+          <img class="mc-cc-logo" src="/assets/mbfd-logo.png" alt="Miami Beach Fire Department" width="40" height="40">
           <div class="mc-cc-brand-text">
             <h1 class="mc-cc-title">${esc(t('mc.cc.brand'))}</h1>
             <div id="mc-summary" class="mc-control-summary" aria-live="polite"></div>
@@ -1293,7 +1374,7 @@ export async function render() {
         <div class="mc-cc-tools">
           <div id="mc-broadcast-chip" class="mc-chip mc-chip-live" hidden></div>
           <button type="button" class="mc-cc-bell" id="mc-cc-bell" aria-label="${esc(t('mc.cc.notifications'))}">${ICON_BELL}</button>
-          <span class="mc-cc-avatar" aria-hidden="true">U</span>
+          ${ccAvatarHtml()}
         </div>
       </header>
 
@@ -1360,6 +1441,12 @@ export async function render() {
     libDrawer.hidden = false;
     libDrawer.classList.remove('is-open');
   }
+
+  // Wire the left icon rail. These buttons previously had NO click handlers, so
+  // the whole rail looked dead (operator feedback: "none of the sidebar items
+  // are clickable"). Each now routes to its surface. The Admin item is already a
+  // real <a href="#/walls"> and the active "command" item is the page itself.
+  wireCommandRail();
 
   // Re-hydrate the last-controlled selection, learn which devices are wall-owned,
   // and load the live display state — then prune any stale/wall-member ids.
