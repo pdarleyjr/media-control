@@ -41,6 +41,17 @@ function createCacheServer(opts = {}) {
     try { return JSON.parse(fs.readFileSync(metaFor(id), 'utf8')); } catch { return null; }
   }
 
+  // The player loads <video crossOrigin="anonymous"> (so screenshots don't taint
+  // the canvas), which makes the media request a CORS request. The origin server
+  // sends CORS on /api/content; the local cache MUST mirror that or the cross-
+  // origin <video> silently fails to load (blank wall) even though curl works.
+  function setCors(res) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Type');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length, Content-Type');
+  }
+
   // Serve a fully-cached file, honoring a single Range request (video seeking).
   function serveLocal(req, res, id) {
     const file = fileFor(id);
@@ -50,6 +61,7 @@ function createCacheServer(opts = {}) {
     const total = st.size;
     const type = meta.content_type || 'application/octet-stream';
     const range = req.headers.range;
+    setCors(res);
     res.setHeader('Content-Type', type);
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Cache-Control', 'public, max-age=2592000, immutable');
@@ -100,6 +112,8 @@ function createCacheServer(opts = {}) {
       }
       const sc = ores.statusCode || 502;
       const passHeaders = { 'X-MC-Cache': 'miss' };
+      passHeaders['Access-Control-Allow-Origin'] = '*';
+      passHeaders['Access-Control-Expose-Headers'] = 'Content-Range, Accept-Ranges, Content-Length, Content-Type';
       if (ores.headers['content-type']) passHeaders['Content-Type'] = ores.headers['content-type'];
       if (ores.headers['content-length']) passHeaders['Content-Length'] = ores.headers['content-length'];
       if (ores.headers['content-range']) passHeaders['Content-Range'] = ores.headers['content-range'];
@@ -172,8 +186,14 @@ function createCacheServer(opts = {}) {
   const server = http.createServer((req, res) => {
     let u;
     try { u = new URL(req.url, `http://${host}:${port}`); } catch { res.writeHead(400); return res.end(); }
+    // CORS preflight (the player uses crossOrigin video/img).
+    if (req.method === 'OPTIONS') {
+      setCors(res);
+      res.writeHead(204);
+      return res.end();
+    }
     if (u.pathname === '/healthz') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
       return res.end(JSON.stringify({ ok: true, ...getStats() }));
     }
     const m = /^\/content\/([^/]+)\/file$/.exec(u.pathname);
