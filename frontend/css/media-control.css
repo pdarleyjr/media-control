@@ -1912,15 +1912,16 @@ body.cc-fullscreen .content {
 }
 .mc-cc-body {
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr) 60px;
+  grid-template-columns: 72px minmax(0, 1fr) 44px;
   min-height: 0;
   overflow: hidden;
 }
 /* When the Content Library opens, widen its grid track so the canvas reflows
-   narrower instead of being overlapped. :has() is supported in all current
+   narrower instead of being overlapped (the displays stay fully visible so an
+   operator can still drag tiles onto them). :has() is supported in all current
    evergreen browsers and the Electron console. */
 .mc-cc-body:has(.mc-library-drawer[data-open="true"]) {
-  grid-template-columns: 72px minmax(0, 1fr) min(360px, 40vw);
+  grid-template-columns: 72px minmax(0, 1fr) min(320px, 34vw);
 }
 
 /* Left collapsed icon rail — narrow, fixed, never expands by default. */
@@ -2015,24 +2016,26 @@ body.cc-fullscreen .content {
 .mc-cc-body .mc-library-drawer[data-open="false"] { transform: none; }
 .mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-inner { display: none; }
 .mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-tab {
-  position: absolute; top: 24px; right: 0;
+  position: absolute; top: 20px; right: 0;
   transform: none;
-  width: 60px; height: 220px;
-  border-radius: 14px 0 0 14px;
+  width: 38px; height: 124px;
+  padding: 8px 4px;
+  border-radius: 10px 0 0 10px;
   background: var(--accent, #2563EB);
   border: 1px solid var(--accent-hover, #1D4ED8);
   border-right: none;
-  box-shadow: -10px 0 24px rgba(37, 99, 235, 0.34);
+  box-shadow: -6px 0 16px rgba(37, 99, 235, 0.28);
 }
 .mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-tab:hover {
   background: var(--accent-hover, #1D4ED8);
 }
 .mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-tab-label {
   writing-mode: vertical-rl; transform: rotate(180deg);
-  letter-spacing: 2px;
+  letter-spacing: 0.5px; font-size: 10px;
   color: #fff; font-weight: var(--mc-fw-bold, 700);
 }
 .mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-tab-ico { color: #fff; }
+.mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-tab-ico svg { width: 14px; height: 14px; }
 .mc-cc-body .mc-library-drawer[data-open="true"] {
   width: 100%;
   background: var(--mc-surface, #fff);

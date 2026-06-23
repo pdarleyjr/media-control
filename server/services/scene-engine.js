@@ -168,7 +168,7 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
     if (!contentId) return false;
 
     // Tenancy guard for explicit content_id.
-    const content = db.prepare('SELECT id, workspace_id FROM content WHERE id = ?').get(contentId);
+    const content = db.prepare('SELECT id, workspace_id, mime_type, remote_url FROM content WHERE id = ?').get(contentId);
     if (!content) return false;
     if (content.workspace_id && device.workspace_id && content.workspace_id !== device.workspace_id) return false;
 
@@ -194,6 +194,39 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
 
     whiteboardState.clearForMedia(io, deviceId);
     pushPlaylistUpdate(io, deviceId);
+
+    // ── Span-wall fan-out ────────────────────────────────────────────────────
+    // A span wall's members SHARE one playlist (rewritten above), but the live
+    // `device:playlist-update` only went to the targeted device. `wall:sync`
+    // carries no bytes, so the OTHER members would stay blank until reconnect.
+    // Re-emit the playlist-update to every other span member so the whole wall
+    // renders the spanning source together. Websites / decks / screen-shares
+    // (text/html) intentionally stay on the single targeted screen per the
+    // classroom rule, so they are NOT fanned out. Split walls keep per-screen
+    // content and are never fanned out.
+    try {
+      const isSingleScreenWeb = content.mime_type === 'text/html';
+      const wall = wallContextForDevice(deviceId);
+      if (wall && wall.wall_id && wall.layout_mode !== 'split' && !isSingleScreenWeb) {
+        const members = db.prepare(
+          'SELECT device_id FROM video_wall_devices WHERE wall_id = ? AND device_id != ?'
+        ).all(wall.wall_id, deviceId);
+        for (const m of members) {
+          if (!m.device_id) continue;
+          try {
+            // Keep each member on the shared span playlist, then live-refresh it.
+            db.prepare('UPDATE devices SET playlist_id = ? WHERE id = ? AND (playlist_id IS NULL OR playlist_id != ?)')
+              .run(playlistId, m.device_id, playlistId);
+            whiteboardState.clearForMedia(io, m.device_id);
+            pushPlaylistUpdate(io, m.device_id);
+          } catch (e) {
+            console.warn(`[scene-engine] span fan-out to ${m.device_id} failed: ${e.message}`);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn(`[scene-engine] span fan-out lookup failed: ${e.message}`);
+    }
     return true;
   } catch (e) {
     console.warn(`[scene-engine] pushSourceToDevice failed for ${deviceId}: ${e.message}`);

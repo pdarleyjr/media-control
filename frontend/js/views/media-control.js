@@ -198,14 +198,31 @@ function isLive(d) {
 function paintSummary() {
   const el = summaryEl();
   if (!el) return;
-  const onStage = displayState.getAll().filter(d => selectedIds.includes(d.id) && !wallMemberIds.has(d.id));
-  const total = onStage.length + (Array.isArray(walls) ? walls.length : 0);
+  // Count the PHYSICAL displays the operator controls: selected standalone
+  // displays PLUS every video-wall member TV (the walls are what the dropdown
+  // targets). The previous version excluded wall members entirely, so a live
+  // classroom of wall TVs reported "0 online". Dedup by id.
+  const byId = new Map(displayState.getAll().map((d) => [d.id, d]));
+  const seen = new Set();
+  const all = [];
+  for (const d of displayState.getAll()) {
+    if (selectedIds.includes(d.id) && !wallMemberIds.has(d.id) && !seen.has(d.id)) {
+      seen.add(d.id); all.push(d);
+    }
+  }
+  for (const w of (Array.isArray(walls) ? walls : [])) {
+    for (const m of (Array.isArray(w.devices) ? w.devices : [])) {
+      const d = byId.get(m.device_id);
+      if (d && !seen.has(d.id)) { seen.add(d.id); all.push(d); }
+    }
+  }
+  const total = all.length;
   if (total === 0) {
     el.innerHTML = `<span class="mc-summary-item mc-summary-muted">${esc(t('mc.summary.empty'))}</span>`;
     return;
   }
-  const online = onStage.filter(d => d.online).length;
-  const live = onStage.filter(isLive).length;
+  const online = all.filter((d) => d.online).length;
+  const live = all.filter(isLive).length;
   const parts = [
     `<span class="mc-summary-item">${esc(tn('mc.summary.displays', total))}</span>`,
     `<span class="mc-summary-dot" aria-hidden="true">·</span>`,
