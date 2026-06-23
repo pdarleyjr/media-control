@@ -1994,3 +1994,53 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
   .mc-cc-main .mc-stage.mc-cc-canvas { width: auto; max-width: 94vw; max-height: 100%; }
   .mc-cc-controls .mc-cc-sub-row { gap: 6px; }
 }
+
+/* ── Command Center "cinema" single-wall view ──────────────────────────────
+   When the canvas shows ONE video wall, render it full-bleed inside the black
+   16:9 frame: the wall keeps its true aspect (cols x 16:9) and is centered with
+   letterbox bands, exactly like the operator rendering. The per-card chrome
+   (title, Locked badge, inline Span/Split, hint, inline transport, edit link,
+   "Add display", whole-wall drop label) is hidden because the transport row,
+   Span/Split toggle, screensaver dropdown and action dock all live BELOW the
+   canvas — the inline copies were duplicating them and shrinking the wall. */
+.mc-cc-canvas.mc-cc-cinema {
+  display: flex; align-items: center; justify-content: center; padding: 0;
+}
+.mc-cc-cinema .mc-add-tile { display: none; }
+.mc-cc-cinema .mc-wall {
+  grid-column: auto;
+  width: 100%; max-width: 100%; height: 100%; min-height: 0;
+  margin: 0; padding: 0; border: 0; border-radius: 0;
+  background: #000; box-shadow: none;
+  display: flex; flex-direction: column; justify-content: center;
+  position: relative; cursor: default;
+}
+.mc-cc-cinema .mc-wall:hover { box-shadow: none; }
+.mc-cc-cinema .mc-wall-head,
+.mc-cc-cinema .mc-wall-hint,
+.mc-cc-cinema .mc-wall-transport { display: none !important; }
+/* Full-width grid; each screen is 1fr x 16:9, so the row is cols x 16:9 and the
+   flex column centers it vertically -> letterbox bands above/below. */
+.mc-cc-cinema .mc-wall-grid {
+  width: 100%; max-height: 100%; margin: 0;
+  gap: 2px; background: #0b1220;
+}
+.mc-cc-cinema .mc-wall-cell {
+  border-radius: 0; min-height: 0;
+}
+/* Span mode: drop anywhere on the wall to span one source. The existing
+   whole-wall drop target becomes an invisible overlay over the live cells; the
+   blue highlight only appears while dragging. */
+.mc-cc-cinema .mc-wall-mode-span .mc-wall-all {
+  position: absolute; inset: 0; margin: 0; padding: 0;
+  min-height: 0; border: 0; border-radius: 0;
+  background: transparent; color: transparent; z-index: 5;
+}
+.mc-cc-cinema .mc-wall-mode-span .mc-wall-all .mc-wall-all-ico { display: none; }
+.mc-cc-cinema .mc-wall-mode-span .mc-wall-all.mc-wall-all-dragover {
+  background: rgba(37, 99, 235, 0.14);
+  box-shadow: inset 0 0 0 3px var(--accent);
+}
+/* Split mode: each screen is its own drop/inspect target, so the overlay strip
+   is not needed. */
+.mc-cc-cinema .mc-wall-mode-split .mc-wall-all { display: none; }

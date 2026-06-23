@@ -238,6 +238,11 @@ function paintStage() {
     onSetWallMode: setWallMode,
     onScreensaver: applyScreensaver,
   });
+  // Cinema mode: when ONE wall fills the canvas, render it full-bleed (letterboxed
+  // to the wall's true aspect, like the operator rendering) and hide the per-card
+  // chrome — the transport row, Span/Split, screensaver and dock all live below
+  // the canvas, so the inline copies would only duplicate them.
+  el.classList.toggle('mc-cc-cinema', !!(activeTarget && activeTarget.type === 'wall'));
   // Re-attach drop handlers on the freshly-rendered cards.
   attachStageDrop(el);
   // Record what we just rendered so screenshot-only updates can patch in place
