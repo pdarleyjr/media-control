@@ -1337,6 +1337,10 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
 .mc-btn-ghost:hover { background: var(--mc-surface-alt, #1e2d45); color: var(--mc-text-primary); }
 .mc-btn:disabled { opacity: 0.55; cursor: default; }
 .mc-chip { display: flex; align-items: center; gap: var(--mc-space-sm, 8px); padding: 4px 10px; background: var(--mc-surface-alt, #1e2d45); border: 1px solid var(--mc-border-light, #243044); border-radius: var(--mc-radius-sm, 4px); color: var(--mc-text-primary); font-size: var(--mc-font-size-sm); }
+/* `.mc-chip { display:flex }` overrides the UA [hidden] rule, so a chip that
+   sets el.hidden=true (e.g. the header broadcast chip when no stream is live)
+   would otherwise render as an empty bar. Restore hidden semantics globally. */
+.mc-chip[hidden] { display: none !important; }
 .mc-chip-dot { color: var(--mc-broadcasting, #22c55e); font-size: 10px; }
 .mc-chip-label { font-size: var(--mc-font-size-xs); }
 .mc-tile { display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 4px; width: 96px; padding: var(--mc-space-sm, 8px); background: var(--mc-surface, #0f172a); border: 1px solid var(--mc-border-light, #243044); border-radius: var(--mc-radius-md, 8px); cursor: pointer; color: var(--mc-text-primary); font-family: var(--mc-font-family-sans); overflow: hidden; transition: box-shadow var(--mc-transition-base), border-color var(--mc-transition-base); }
@@ -1653,8 +1657,9 @@ img.mc-cc-logo { background: transparent; box-shadow: none; padding: 0; }
 .mc-target-select:focus-visible { outline: 3px solid #ffffff; outline-offset: 2px; }
 .mc-target-select option { color: #1c2536; background: #fff; }
 
-/* right cluster: bell + avatar */
-.mc-cc-tools { justify-content: flex-end; }
+/* right cluster: bell + avatar (flush right). Needs display:flex — without it
+   justify-content is inert and the children pile up at the left of the column. */
+.mc-cc-tools { display: flex; align-items: center; justify-content: flex-end; gap: var(--mc-space-sm, 8px); }
 .mc-cc-bell {
   flex: 0 0 auto; width: 36px; height: 36px; min-width: 36px; min-height: 36px;
   display: inline-flex; align-items: center; justify-content: center;
@@ -1907,7 +1912,7 @@ body.cc-fullscreen .content {
 }
 .mc-cc-body {
   display: grid;
-  grid-template-columns: 72px 1fr 60px;
+  grid-template-columns: 72px minmax(0, 1fr) 60px;
   min-height: 0;
   overflow: hidden;
 }
@@ -1915,7 +1920,7 @@ body.cc-fullscreen .content {
    narrower instead of being overlapped. :has() is supported in all current
    evergreen browsers and the Electron console. */
 .mc-cc-body:has(.mc-library-drawer[data-open="true"]) {
-  grid-template-columns: 72px 1fr min(360px, 40vw);
+  grid-template-columns: 72px minmax(0, 1fr) min(360px, 40vw);
 }
 
 /* Left collapsed icon rail — narrow, fixed, never expands by default. */
@@ -2002,9 +2007,16 @@ body.cc-fullscreen .content {
    The existing drawer mechanics (data-open + data-library-toggle) drive the
    slide-in; only the default-collapsed geometry lives here. */
 .mc-cc-body .mc-library-drawer { position: relative; width: 100%; }
+/* The legacy fixed-overlay rule `.mc-library-drawer[data-open="false"]{transform:
+   translateX(100%)}` slides the panel off-screen right. In the CC grid the drawer
+   lives in its own column, so that transform pushes it (and its pull-tab) ~60px
+   off the viewport — leaving only a clipped sliver. Reset it here so the
+   collapsed drawer + tab sit inside the grid column and the tab is fully visible. */
+.mc-cc-body .mc-library-drawer[data-open="false"] { transform: none; }
 .mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-inner { display: none; }
 .mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-tab {
   position: absolute; top: 24px; right: 0;
+  transform: none;
   width: 60px; height: 220px;
   border-radius: 14px 0 0 14px;
   background: var(--accent, #2563EB);
