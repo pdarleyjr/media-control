@@ -54,3 +54,35 @@ is by the owner; nothing here commits a real token.
 `config.local.json`, `.env`, `cache/`, `manifests/`, `logs/`, `backups/` are
 gitignored (see `.gitignore`). No real `device_token` / `node_token` / RTMP key
 lives in any committed file — only the example placeholder.
+
+## Read-through content cache (classroom-only, fallback-safe)
+
+`cache-agent.js` + `cache-server.js` give the classroom video walls a LOCAL copy
+of broadcast media so playback loads from the P3, not the server. It is a
+read-through proxy: a cache miss transparently streams from the origin and is
+saved for next time, so the walls keep playing even before the cache is warm.
+The web player also auto-falls back from a local `asset_url` to the server
+`/api/content/:id/file`, so a down/cold cache can never blank a wall.
+
+Only `socket.io-client` is required (no native build). On-box install:
+1. Portable Node lives at `C:\MBFD\node\...\node.exe` (`node-path.txt` records it).
+2. Agent files in `C:\MBFD\RoomAgent\` (`cache-server.js`, `cache-agent.js`,
+   `package.json`); run `npm install --omit=dev` there.
+3. `run-agent.cmd` sets env and launches the agent; a Scheduled Task
+   `MBFD_RoomCacheAgent` runs it as SYSTEM at startup.
+
+Env (read by `cache-agent.js`):
+| Env | Example | Notes |
+|-----|---------|-------|
+| `MC_SERVER_URL` | `http://100.81.154.123:8096` | origin to proxy/pre-warm from |
+| `MC_NODE_ID` | `classroom-1-p3` | node id (matches server logs) |
+| `MC_NODE_TOKEN` | — | must equal server `CLASSROOM_LOCAL_CACHE_NODE_TOKEN` |
+| `MC_AGENT_PORT` | `8097` | loopback HTTP port the player windows fetch from |
+| `MBFD_ROOM_AGENT_CACHE_DIR` | `C:\MBFD\RoomAgent` | cache root (`cache\content\<id>`) |
+
+Server side (GMKtec `.env`): `CLASSROOM_LOCAL_CACHE_ENABLED=true`,
+`CLASSROOM_LOCAL_CACHE_BASE=http://127.0.0.1:8097`,
+`CLASSROOM_LOCAL_CACHE_WALL_IDS=<primary>,<secondary>`,
+`CLASSROOM_LOCAL_CACHE_NODE_TOKEN=<secret>`. Only displays in those walls get the
+local URL; every other display/room is unaffected. Health check on-box:
+`curl http://127.0.0.1:8097/healthz`.
