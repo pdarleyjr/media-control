@@ -1912,16 +1912,9 @@ body.cc-fullscreen .content {
 }
 .mc-cc-body {
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr) 44px;
+  grid-template-columns: 72px minmax(0, 1fr);
   min-height: 0;
   overflow: hidden;
-}
-/* When the Content Library opens, widen its grid track so the canvas reflows
-   narrower instead of being overlapped (the displays stay fully visible so an
-   operator can still drag tiles onto them). :has() is supported in all current
-   evergreen browsers and the Electron console. */
-.mc-cc-body:has(.mc-library-drawer[data-open="true"]) {
-  grid-template-columns: 72px minmax(0, 1fr) min(320px, 34vw);
 }
 
 /* Left collapsed icon rail — narrow, fixed, never expands by default. */
@@ -2007,41 +2000,43 @@ body.cc-fullscreen .content {
 /* Right Content Library tab — collapsed by default to a 56px right rail.
    The existing drawer mechanics (data-open + data-library-toggle) drive the
    slide-in; only the default-collapsed geometry lives here. */
-.mc-cc-body .mc-library-drawer { position: relative; width: 100%; }
-/* The legacy fixed-overlay rule `.mc-library-drawer[data-open="false"]{transform:
-   translateX(100%)}` slides the panel off-screen right. In the CC grid the drawer
-   lives in its own column, so that transform pushes it (and its pull-tab) ~60px
-   off the viewport — leaving only a clipped sliver. Reset it here so the
-   collapsed drawer + tab sit inside the grid column and the tab is fully visible. */
-.mc-cc-body .mc-library-drawer[data-open="false"] { transform: none; }
-.mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-inner { display: none; }
-.mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-tab {
-  position: absolute; top: 20px; right: 0;
+.mc-cc-body .mc-library-drawer {
+  position: fixed; top: 72px; right: 0; bottom: 0;
+  width: min(320px, 34vw); max-width: 92vw; height: auto;
+  z-index: 40;
+  transition: transform var(--mc-transition-base);
+}
+/* Parked off-screen right (only the pull-tab shows); open slides it in. The
+   stage/grid NEVER reflows, so the displays can't blank or re-tile on toggle. */
+.mc-cc-body .mc-library-drawer[data-open="false"] { transform: translateX(100%); }
+.mc-cc-body .mc-library-drawer[data-open="true"]  { transform: none; }
+.mc-cc-body .mc-library-drawer .mc-library-inner {
+  display: flex; flex-direction: column; height: 100%;
+  background: var(--mc-surface, #fff);
+  border-left: 1px solid var(--mc-border-light, #e8e5e0);
+  box-shadow: -12px 0 30px rgba(41, 37, 36, 0.18);
+}
+/* Small pull-tab riding the drawer's LEFT edge — sticks out at the viewport
+   right edge when parked, becomes the collapse handle when open. */
+.mc-cc-body .mc-library-drawer .mc-library-tab {
+  position: absolute; top: 20px; right: 100%; left: auto;
   transform: none;
-  width: 38px; height: 124px;
-  padding: 8px 4px;
+  width: 38px; height: 124px; padding: 8px 4px;
   border-radius: 10px 0 0 10px;
   background: var(--accent, #2563EB);
-  border: 1px solid var(--accent-hover, #1D4ED8);
-  border-right: none;
+  border: 1px solid var(--accent-hover, #1D4ED8); border-right: none;
   box-shadow: -6px 0 16px rgba(37, 99, 235, 0.28);
 }
-.mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-tab:hover {
-  background: var(--accent-hover, #1D4ED8);
-}
-.mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-tab-label {
+.mc-cc-body .mc-library-drawer .mc-library-tab:hover { background: var(--accent-hover, #1D4ED8); }
+.mc-cc-body .mc-library-drawer .mc-library-tab-label {
   writing-mode: vertical-rl; transform: rotate(180deg);
   letter-spacing: 0.5px; font-size: 10px;
   color: #fff; font-weight: var(--mc-fw-bold, 700);
 }
-.mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-tab-ico { color: #fff; }
-.mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-tab-ico svg { width: 14px; height: 14px; }
-.mc-cc-body .mc-library-drawer[data-open="true"] {
-  width: 100%;
-  background: var(--mc-surface, #fff);
-  border-left: 1px solid var(--mc-border-light, #e8e5e0);
-  box-shadow: -10px 0 28px rgba(41, 37, 36, 0.12);
-}
+.mc-cc-body .mc-library-drawer .mc-library-tab-ico { color: #fff; }
+.mc-cc-body .mc-library-drawer .mc-library-tab-ico svg { width: 14px; height: 14px; }
+/* Chevron points left (open me) when parked, right (close) when open. */
+.mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-tab-ico { transform: rotate(180deg); }
 
 /* Responsive: stack rail under controls only when very narrow; keep canvas
    dominant. The shell stays single-screen — never reverts to the old
