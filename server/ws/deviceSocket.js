@@ -6,7 +6,7 @@ const { db, pruneTelemetry, pruneScreenshots } = require('../db/database');
 const config = require('../config');
 const heartbeat = require('../services/heartbeat');
 const commandQueue = require('../lib/command-queue');
-const { withLocalAssetUrls, withPublicContentAssetUrls } = require('../lib/local-asset-url');
+const { withLocalAssetUrls, withClassroomCacheUrls, withPublicContentAssetUrls } = require('../lib/local-asset-url');
 const { profileForDevice, isClassroom1Smartboard } = require('../lib/display-profiles');
 const whiteboardState = require('../services/whiteboard-state');
 
@@ -25,6 +25,7 @@ const OFFLINE_DEBOUNCE_MS = 5000;
 // dashboardNs.emit can be scoped instead of broadcast platform-wide.
 const { deviceRoom, emitToWorkspace, targetRoomsForDevice, displayRoom } = require('../lib/socket-rooms');
 const commandModel = require('../lib/command-model');
+const nodeRegistry = require('../lib/node-registry');
 
 function emitToDeviceWorkspace(dashboardNs, deviceId, event, payload) {
   emitToWorkspace(dashboardNs, deviceRoom(deviceId), event, payload);
@@ -83,6 +84,27 @@ function logDeviceStatus(deviceId, status) {
 }
 
 
+// Classroom-only local cache scoping. A device qualifies ONLY when the feature
+// is enabled AND it belongs to one of the configured classroom video walls.
+// This is deliberately membership-scoped (not workspace-scoped) so a different
+// room's wall in the SAME workspace (e.g. the EOC wall) is never rerouted, and
+// adding displays anywhere else is unaffected. Computed per call against the
+// small video_wall_devices table; empty wallIds (default) => always false.
+function isClassroomCacheDevice(deviceId) {
+  try {
+    const cc = config.classroomCache;
+    if (!cc || !cc.enabled || !deviceId) return false;
+    if (!Array.isArray(cc.wallIds) || cc.wallIds.length === 0) return false;
+    const placeholders = cc.wallIds.map(() => '?').join(',');
+    const row = db.prepare(
+      `SELECT 1 FROM video_wall_devices WHERE device_id = ? AND wall_id IN (${placeholders}) LIMIT 1`
+    ).get(deviceId, ...cc.wallIds);
+    return !!row;
+  } catch (e) {
+    return false;
+  }
+}
+
 // Build playlist payload with layout and zones
 // Reads from published_snapshot (Phase 3) so draft edits don't affect live devices
 function buildPlaylistPayload(deviceId) {
@@ -116,9 +138,20 @@ function buildPlaylistPayload(deviceId) {
       }
     } catch (e) { /* live backfill is best-effort */ }
 
-    assignments = withPublicContentAssetUrls(
-      withLocalAssetUrls(assignments, config.localContentBaseUrl)
-    );
+    // Asset URL resolution. Classroom-wall displays (when the feature is enabled)
+    // get a read-through local-cache URL pointed at their on-box room-agent;
+    // everyone else keeps the existing LAN/public-content behavior. The player
+    // has an automatic origin fallback, so the local rewrite can never blank a
+    // wall if the cache is down or cold.
+    if (isClassroomCacheDevice(deviceId)) {
+      assignments = withPublicContentAssetUrls(
+        withClassroomCacheUrls(assignments, config.classroomCache.baseUrl)
+      );
+    } else {
+      assignments = withPublicContentAssetUrls(
+        withLocalAssetUrls(assignments, config.localContentBaseUrl)
+      );
+    }
   }
 
   let layout = null;
@@ -250,6 +283,39 @@ module.exports = function setupDeviceSocket(io) {
     console.log(`Device socket connected: ${socket.id}`);
     let currentDeviceId = null;
     let authenticated = false; // Track whether this socket has been authenticated
+
+    // ── Classroom room-agent ("node") branch ────────────────────────────────
+    // A room-agent connects with handshake auth { role:'node', node_id, token }.
+    // It is NOT a display: it never registers a device, never joins display
+    // rooms, and only records heartbeats + receives the content pre-warm
+    // manifest. Gated by a configured node token (feature off => rejected).
+    const hsAuth = (socket.handshake && socket.handshake.auth) || {};
+    if (hsAuth.role === 'node') {
+      const nodeId = String(hsAuth.node_id || '').trim();
+      if (!nodeId || !nodeRegistry.nodeAuthOk(hsAuth)) {
+        socket.emit('node:auth-error', { error: 'invalid_node_token' });
+        try { socket.disconnect(true); } catch (_) {}
+        return;
+      }
+      try { socket.join('node:' + nodeId); } catch (_) {}
+      console.log(`Node connected: ${nodeId} (${hsAuth.node_type || 'node'})`);
+      socket.emit('node:joined', { node_id: nodeId });
+      // Push the initial pre-warm manifest so the cache fills ahead of use.
+      try { socket.emit('node:sync-manifest', nodeRegistry.buildContentManifest(db)); } catch (_) {}
+      socket.on('node:heartbeat', (payload) => {
+        try { nodeRegistry.recordHeartbeat(db, nodeId, payload); } catch (_) {}
+      });
+      socket.on('node:request-manifest', () => {
+        try { socket.emit('node:sync-manifest', nodeRegistry.buildContentManifest(db)); } catch (_) {}
+      });
+      socket.on('join', (data) => {
+        try { if (data && data.room) socket.join(String(data.room)); } catch (_) {}
+      });
+      socket.on('disconnect', (reason) => {
+        console.log(`Node disconnected: ${nodeId} (${reason})`);
+      });
+      return; // a node socket never runs the display registration handlers
+    }
 
     // Device registers with a pairing code (first time) or device_id + device_token (reconnect)
     socket.on('device:register', (data) => {

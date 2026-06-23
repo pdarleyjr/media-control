@@ -150,6 +150,31 @@ module.exports = {
     guestEmail: process.env.CONSOLE_GUEST_EMAIL || 'guest@mbfd.local',
   },
 
+  // ── Classroom-only local content cache (P3 room-agent) ───────────────────
+  // When enabled, ONLY the displays that belong to the listed classroom video
+  // walls get their playlist asset_url rewritten to the on-box room-agent cache
+  // (a read-through proxy that serves cached bytes locally and transparently
+  // falls back to this server on a miss). Every other display in every other
+  // workspace/room is untouched and keeps fetching from the server, so adding
+  // new displays anywhere else is unaffected. The player ALSO has an automatic
+  // origin fallback, so a down/incomplete cache can never blank a wall.
+  //
+  // DEFAULT OFF: with no env set this whole feature is inert (no behavior change).
+  //   CLASSROOM_LOCAL_CACHE_ENABLED=true            turn the rewrite on
+  //   CLASSROOM_LOCAL_CACHE_BASE=http://127.0.0.1:8097   room-agent HTTP base
+  //                                                 (players run ON the P3, so loopback)
+  //   CLASSROOM_LOCAL_CACHE_WALL_IDS=<uuid>,<uuid>  walls whose devices use it
+  //   CLASSROOM_LOCAL_CACHE_NODE_TOKEN=<secret>     per-node auth (heartbeat/manifest)
+  //   CLASSROOM_LOCAL_CACHE_ROOM_ID=classroom-1     room id reported by the node
+  classroomCache: {
+    enabled: ['true', '1'].includes(String(process.env.CLASSROOM_LOCAL_CACHE_ENABLED || '').toLowerCase()),
+    baseUrl: (process.env.CLASSROOM_LOCAL_CACHE_BASE || 'http://127.0.0.1:8097').replace(/\/+$/, ''),
+    wallIds: String(process.env.CLASSROOM_LOCAL_CACHE_WALL_IDS || '')
+      .split(',').map((s) => s.trim()).filter(Boolean),
+    nodeToken: process.env.CLASSROOM_LOCAL_CACHE_NODE_TOKEN || '',
+    roomId: process.env.CLASSROOM_LOCAL_CACHE_ROOM_ID || process.env.ROOM_ID || 'classroom-1',
+  },
+
   // ── MBFD Media Control Studio ────────────────────────────────────────────
   // Local Ollama (server-side ONLY; the frontend never calls this). Reached
   // from inside the container via the Docker bridge gateway. Bound localhost on

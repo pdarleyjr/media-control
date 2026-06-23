@@ -2078,6 +2078,37 @@
       return '';
     }
 
+    // Origin (server) URL for an item, IGNORING any local/LAN asset_url. This is
+    // the SAFETY fallback for local content delivery: if a classroom display is
+    // pointed at a local cache (asset_url -> P3 room-agent) and that fetch fails
+    // (agent down, asset not cached, network blip), the <img>/<video> onerror
+    // handlers swap to this server route so a wall can NEVER go blank because of
+    // the local cache. Returns '' when there is no server-served file (e.g. a
+    // pure remote_url item), in which case callers keep the original src.
+    function originSrcForItem(item) {
+      if (!item) return '';
+      if (item.content_id) return `${config.serverUrl}/api/content/${encodeURIComponent(item.content_id)}/file`;
+      if (item.filepath) return `${config.serverUrl}/uploads/content/${item.filepath}`;
+      return '';
+    }
+    // Wire a one-shot origin fallback onto a media element. Only swaps when the
+    // current src is a local/LAN asset_url that differs from the origin URL, and
+    // only once (this.onerror=null) so a genuinely-broken asset still advances.
+    function attachOriginFallback(el, item, onFinalError) {
+      const origin = originSrcForItem(item);
+      let swapped = false;
+      el.addEventListener('error', function handler() {
+        const usedLocal = item && (item.asset_proxy === 'local' || (item.asset_url && el.src === item.asset_url));
+        if (!swapped && origin && usedLocal && el.src !== origin) {
+          console.warn('[local-cache] asset_url failed, falling back to origin:', origin);
+          swapped = true;
+          el.src = origin; // keep the listener; if origin also fails we reach onFinalError
+          return;
+        }
+        if (typeof onFinalError === 'function') onFinalError();
+      });
+    }
+
     // Extract YouTube video ID from embed URL
     function extractVideoId(url) {
       try {
@@ -2459,10 +2490,12 @@
           video.style.cssText = `width:100%;height:100%;object-fit:${cssFit};background:#000`;
           video.loop = (playlist.length === 1);
           video.onended = () => { if (!video.loop && !isFollower) nextItem(); };
-          video.onerror = (e) => {
-            console.error('Video error:', src, e);
+          // Local-cache safety: swap to the server origin once if a local asset_url
+          // fails, else (origin also failed / non-local) skip to the next item.
+          attachOriginFallback(video, item, () => {
+            console.error('Video error:', src);
             if (!isFollower) advanceTimer = setTimeout(nextItem, 3000);
-          };
+          });
           video.onloadeddata = () => {
             console.log('[wall/audio] video loaded file=' + item.filename + ' role=' + (wallConfig ? (wallConfig.is_leader ? 'leader' : 'follower') : 'solo') + ' muted=' + video.muted + ' volume=' + video.volume);
           };
@@ -2495,10 +2528,10 @@
           const img = document.createElement('img');
           img.src = src;
           img.style.cssText = `width:100%;height:100%;object-fit:${cssFit}`;
-          img.onerror = () => {
+          attachOriginFallback(img, item, () => {
             console.error('Image error');
             if (!isFollower) advanceTimer = setTimeout(nextItem, 3000);
-          };
+          });
           mount.appendChild(img);
           // Leader / single screen drives image advance; follower waits for sync
           if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 10) * 1000);
@@ -2569,6 +2602,7 @@
           video.loop = (playlist.length === 1);
           video.playsInline = true;
           video.style.cssText = `width:100%;height:100%;object-fit:${zone.fit_mode || 'cover'}`;
+          attachOriginFallback(video, assignment);
           if (!video.loop) video.onended = () => nextItem();
           div.appendChild(video);
         } else if (isPdf || isOffice) {
@@ -2582,6 +2616,7 @@
           const img = document.createElement('img');
           img.src = src;
           img.style.cssText = `width:100%;height:100%;object-fit:${zone.fit_mode || 'cover'}`;
+          attachOriginFallback(img, assignment);
           div.appendChild(img);
           if (playlist.length > 1) advanceTimer = setTimeout(nextItem, (assignment.duration_sec || 10) * 1000);
         } else {

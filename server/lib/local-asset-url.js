@@ -50,6 +50,27 @@ function publicContentAssetUrl(item) {
   return `/api/content/${encodeURIComponent(String(item.content_id))}/file`;
 }
 
+// Classroom-only: rewrite each playable item's asset_url to the on-box room-agent
+// READ-THROUGH cache, keyed by content_id (the agent serves cached bytes locally
+// and proxies a miss from this server, then caches it). Only items that have a
+// content_id and a local file (filepath) and no remote_url are rewritten; remote
+// items (YouTube/website) are left alone. The player keeps an automatic origin
+// fallback, so a down/empty cache can never blank a wall. `base` is the agent's
+// HTTP base (e.g. http://127.0.0.1:8097) — empty disables (no-op).
+function withClassroomCacheUrls(assignments, base) {
+  const b = normalizeBaseUrl(base);
+  if (!b || !Array.isArray(assignments)) return assignments;
+  return assignments.map((item) => {
+    if (!item || typeof item !== 'object') return item;
+    if (!item.content_id || item.remote_url || !item.filepath) return item;
+    return {
+      ...item,
+      asset_url: `${b}/content/${encodeURIComponent(String(item.content_id))}/file`,
+      asset_proxy: 'local',
+    };
+  });
+}
+
 function withPublicContentAssetUrls(assignments) {
   if (!Array.isArray(assignments)) return assignments;
 
@@ -68,6 +89,7 @@ module.exports = {
   normalizeBaseUrl,
   localContentBaseUrlFromEnv,
   withLocalAssetUrls,
+  withClassroomCacheUrls,
   publicContentAssetUrl,
   withPublicContentAssetUrls,
 };
