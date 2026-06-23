@@ -2003,15 +2003,21 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
    "Add display", whole-wall drop label) is hidden because the transport row,
    Span/Split toggle, screensaver dropdown and action dock all live BELOW the
    canvas — the inline copies were duplicating them and shrinking the wall. */
-.mc-cc-canvas.mc-cc-cinema {
+/* High specificity (matches the base .mc-cc-main .mc-stage.mc-cc-canvas rule + the
+   cinema class) so these win: fill the whole canvas area, drop the 16:9 lock and
+   the 1120px width cap, and use a transparent background so the wall reads as a
+   floating strip (not a black box inside a black box). */
+.mc-cc-main .mc-stage.mc-cc-canvas.mc-cc-cinema {
+  width: 100%; max-width: 100%; height: 100%; max-height: 100%;
+  aspect-ratio: auto; background: transparent; box-shadow: none; border-radius: 0;
   display: flex; align-items: center; justify-content: center; padding: 0;
 }
 .mc-cc-cinema .mc-add-tile { display: none; }
 .mc-cc-cinema .mc-wall {
   grid-column: auto;
-  width: 100%; max-width: 100%; height: 100%; min-height: 0;
+  width: 100%; max-width: 100%; height: auto; max-height: 100%; min-height: 0;
   margin: 0; padding: 0; border: 0; border-radius: 0;
-  background: #000; box-shadow: none;
+  background: transparent; box-shadow: none;
   display: flex; flex-direction: column; justify-content: center;
   position: relative; cursor: default;
 }
