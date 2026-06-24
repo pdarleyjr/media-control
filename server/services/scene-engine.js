@@ -109,6 +109,8 @@ function resolveRemoteUrlContent(remoteUrl, workspaceId, userId) {
   // blank — the "presentation/deck won't play on the wall" bug.
   let mimeType;
   if (/\.(mp4|webm|mkv|avi|mov|m4v)(?:[?#]|$)/i.test(remoteUrl)) mimeType = 'video/mp4';
+  else if (/\.m3u8(?:[?#]|$)/i.test(remoteUrl)) mimeType = 'application/x-mpegURL';
+  else if (/^rtmp?:\/\//i.test(remoteUrl) || /^rtsp:\/\//i.test(remoteUrl)) mimeType = 'video/mp4';
   else if (/\.(jpe?g|png|gif|webp|bmp|svg|avif)(?:[?#]|$)/i.test(remoteUrl)) mimeType = 'image/jpeg';
   else mimeType = 'text/html';
   let filename;
@@ -205,13 +207,23 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
     // classroom rule, so they are NOT fanned out. Split walls keep per-screen
     // content and are never fanned out.
     try {
-      // Generic websites + screen-shares stay on the single targeted screen
-      // (per the classroom rule). PRESENTATIONS span the wall: PDFs/office docs
-      // are not text/html, and AI decks / doc viewers are internal player URLs
-      // (/player/deck/, /player/doc/) which SHOULD span across all members.
+      // Generic external websites stay on the single targeted screen (per the
+      // classroom rule). Everything else spans the wall:
+      //  - PDFs/Office docs: mime_type != text/html, always fanned out
+      //  - Internal player URLs (/player/hls.html, /player/oz.html, /player/deck/',
+      //    /player/doc/, etc.) — any path under /player/ is our own renderer and
+      //    should fill all panels
+      //  - HLS streams (.m3u8), RTMP, RTSP — live camera/news feeds must span the
+      //    whole wall even when stored with mime_type=text/html by the URL resolver
+      //  - External https:// web pages without a /player/ path — single screen
       const remote = String(content.remote_url || '');
-      const isInternalPresentation = /\/player\/(deck|doc)\//.test(remote);
-      const isSingleScreenWeb = content.mime_type === 'text/html' && !isInternalPresentation;
+      const isInternalPlayer = /\/player\//.test(remote);
+      const isStreamingMedia = /\.m3u8(?:[?#]|$)/i.test(remote)
+        || /^rtmp?:\/\//i.test(remote)
+        || /^rtsp:\/\//i.test(remote);
+      const isSingleScreenWeb = content.mime_type === 'text/html'
+        && !isInternalPlayer
+        && !isStreamingMedia;
       const wall = wallContextForDevice(deviceId);
       if (wall && wall.wall_id && wall.layout_mode !== 'split' && !isSingleScreenWeb) {
         const members = db.prepare(
