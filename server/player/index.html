@@ -742,18 +742,11 @@
         playCurrentItem();
       }
 
-      // Managed kiosk displays connect immediately — no human is present to tap.
-      // userHasInteracted is already true for managed displays (set above), so
-      // content will start unmuted on the wall leader.
-      if (window.__playerConfig && window.__playerConfig.managedDisplay) {
-        if (!isPlaying) showStatus(_t('connecting'));
-        connect(config.serverUrl);
-      } else {
-        // Non-managed displays: show the "Tap anywhere to start" overlay.
-        // Browser autoplay policy is per-document — a localStorage flag from a
-        // prior session does not grant audio autoplay to a fresh page.
-        // The overlay auto-dismisses after 5s and connects muted, so
-        // unattended kiosks still recover without a human tap.
+      // Always show the tap overlay on cold load. Browser autoplay policy is
+      // per-document — a localStorage flag from a prior session does not grant
+      // audio autoplay to a fresh page. The overlay auto-dismisses after 5s and
+      // connects muted, so unattended kiosks still recover without a human tap.
+      {
         const tapOverlay = document.createElement('div');
         tapOverlay.style.cssText = 'position:fixed;inset:0;background:#111827;z-index:2000;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer';
         tapOverlay.innerHTML = `
