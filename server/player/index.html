@@ -401,6 +401,12 @@
     // is the only thing that flips this to true (or its 5s timeout, which keeps
     // playback muted).
     let userHasInteracted = false;
+    // Managed kiosk displays (Electron, autoplay-policy=no-user-gesture-required)
+    // have no user present to dismiss the "tap to enable audio" overlay.
+    // Pre-set userHasInteracted so the wall leader starts unmuted from the first frame.
+    if (window.__playerConfig && window.__playerConfig.managedDisplay) {
+      userHasInteracted = true;
+    }
     let advanceTimer = null;
     // Video wall state. wallConfig is the tile assignment from the server
     // (null when this device isn't in a wall). The leader runs the playlist
@@ -733,11 +739,18 @@
         playCurrentItem();
       }
 
-      // Always show the tap overlay on cold load. Browser autoplay policy is
-      // per-document — a localStorage flag from a prior session does not grant
-      // audio autoplay to a fresh page. The overlay auto-dismisses after 5s and
-      // connects muted, so unattended kiosks still recover without a human tap.
-      {
+      // Managed kiosk displays connect immediately — no human is present to tap.
+      // userHasInteracted is already true for managed displays (set above), so
+      // content will start unmuted on the wall leader.
+      if (window.__playerConfig && window.__playerConfig.managedDisplay) {
+        if (!isPlaying) showStatus(_t('connecting'));
+        connect(config.serverUrl);
+      } else {
+        // Non-managed displays: show the "Tap anywhere to start" overlay.
+        // Browser autoplay policy is per-document — a localStorage flag from a
+        // prior session does not grant audio autoplay to a fresh page.
+        // The overlay auto-dismisses after 5s and connects muted, so
+        // unattended kiosks still recover without a human tap.
         const tapOverlay = document.createElement('div');
         tapOverlay.style.cssText = 'position:fixed;inset:0;background:#111827;z-index:2000;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer';
         tapOverlay.innerHTML = `
@@ -1634,7 +1647,10 @@
           if (action === 'next') { nextItem(); }
           else if (action === 'prev') { if (len) { currentIndex = (currentIndex - 2 + len) % len; nextItem(); } }
           else if (action === 'play_pause') {
-            if (video) { video.paused ? video.play().catch(() => {}) : video.pause(); }
+            if (video) {
+              if (video.paused) { unlockAudio(); video.play().catch(() => {}); }
+              else { video.pause(); }
+            }
           }
           else if (action === 'restart') { currentIndex = -1; nextItem(); }
         } catch (e) { /* never break playback */ }

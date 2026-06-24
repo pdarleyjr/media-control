@@ -5,17 +5,22 @@ services:
     restart: unless-stopped
     labels:
       mbfd.role: camera-publisher
+    network_mode: host
     devices:
       - "${CAMERA_VIDEO_DEVICE:-/dev/video2}:/dev/video2"
       - "/dev/snd:/dev/snd"
+    healthcheck:
+      test: ["CMD-SHELL", "ss -tn state established dst 100.81.154.123:1935 | grep -q ESTAB"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     command:
       - -hide_banner
       - -loglevel
       - warning
-      - -fflags
-      - +discardcorrupt+nobuffer
       - -thread_queue_size
-      - "512"
+      - "2048"
       - -f
       - v4l2
       - -input_format
@@ -27,7 +32,7 @@ services:
       - -i
       - /dev/video2
       - -thread_queue_size
-      - "512"
+      - "2048"
       - -f
       - alsa
       - -ar
@@ -60,7 +65,6 @@ services:
       - "48000"
       - -ac
       - "1"
-      - -shortest
       - -f
       - flv
       - "${CAMERA_RTMP_URL:?Set CAMERA_RTMP_URL in .env}"
