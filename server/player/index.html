@@ -1639,19 +1639,6 @@
           else if (action === 'restart') { currentIndex = -1; nextItem(); }
         } catch (e) { /* never break playback */ }
       }
-          const len = playlist.length || 0;
-          const video = document.querySelector('#playerContainer video');
-          if (action === 'next') { nextItem(); }
-          else if (action === 'prev') { if (len) { currentIndex = (currentIndex - 2 + len) % len; nextItem(); } }
-          else if (action === 'play_pause') {
-            // The video may live inside .wall-stage (a child of #playerContainer)
-            // so querySelector the whole subtree, not just the direct container.
-            const v = document.querySelector('#playerContainer video, .wall-stage video');
-            if (v) { v.paused ? v.play().catch(() => {}) : v.pause(); }
-          }
-          else if (action === 'restart') { currentIndex = -1; nextItem(); }
-        } catch (e) { /* never break playback */ }
-      }
 
       // Phase 2: dashboard "Identify" action — flash a big high-contrast
       // marker on this display for ~5s. Does not disturb playback underneath.
