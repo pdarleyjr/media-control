@@ -403,8 +403,11 @@
     let userHasInteracted = false;
     // Managed kiosk displays (Electron, autoplay-policy=no-user-gesture-required)
     // have no user present to dismiss the "tap to enable audio" overlay.
-    // Pre-set userHasInteracted so the wall leader starts unmuted from the first frame.
-    if (window.__playerConfig && window.__playerConfig.managedDisplay) {
+    // Only unlock audio for the ONE display explicitly designated as the audio
+    // source (audioEnabled:true in its managedDisplay config — TV1/Front-Left,
+    // which feeds the eARC soundbar). ALL other leaders must stay muted so only
+    // the correct speaker plays. Wall followers are always muted via isWallFollower().
+    if (window.__playerConfig?.managedDisplay?.audioEnabled) {
       userHasInteracted = true;
     }
     let advanceTimer = null;

@@ -1698,6 +1698,8 @@ export default {
   'mc.tp.prev': 'Previous',
   'mc.tp.restart': 'Restart',
   'mc.tp.play_pause': 'Play / Pause',
+  'mc.tp.play': 'Play',
+  'mc.tp.pause': 'Pause',
   'mc.tp.next': 'Next',
   'mc.tp.blank': 'Blank',
   'mc.tp.unblank': 'Unblank',

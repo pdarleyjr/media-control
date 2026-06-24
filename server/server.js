@@ -273,6 +273,9 @@ app.get('/player/managed', (req, res) => {
         deviceToken: display.device_token,
         deviceName: display.name,
         serverUrl: `${req.protocol}://${req.get('host')}`,
+        // audioEnabled drives auto-unmute in the player. Passed by the kiosk as
+        // ?audio_enabled=1 only for the TV that feeds the eARC soundbar (TV1).
+        audioEnabled: req.query.audio_enabled === '1',
       },
     };
     const inject = '  <script>window.__playerConfig = ' + JSON.stringify(publicConfig).replace(/</g, '\\u003c') + ';</script>\n';

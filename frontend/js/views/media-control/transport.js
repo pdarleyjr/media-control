@@ -15,7 +15,7 @@
 
 import { esc } from '../../utils.js';
 import { t } from '../../i18n.js';
-import { sendCommand } from '../../socket.js';
+import { sendCommand, on as socketOn, off as socketOff } from '../../socket.js';
 import { COMMAND_TYPES, TRANSPORT_ACTIONS } from '../../player-protocol.js';
 import { showToast } from '../../components/toast.js';
 
@@ -84,6 +84,37 @@ export function renderTransportBar(container, { deviceId, blankDeviceIds, screen
       sendCommand(deviceId, COMMAND_TYPES.TRANSPORT, { action });
     });
   });
+
+  // Live play/pause state: subscribe to dashboard:playback-state from the server
+  // so the ⏯ button label reflects the actual player state on the TV.
+  // The handler targets the wall leader device_id (same as deviceId here).
+  const ppBtn = container.querySelector('[data-tp-action="play_pause"]');
+  function onPlaybackState(data) {
+    if (!ppBtn) return;
+    const targetId = data && (data.device_id || data.deviceId);
+    if (targetId && targetId !== deviceId) return;
+    const isPaused = !!(data && data.paused);
+    ppBtn.title = isPaused ? t('mc.tp.play') : t('mc.tp.pause');
+    ppBtn.setAttribute('aria-label', isPaused ? t('mc.tp.play') : t('mc.tp.pause'));
+    const ico = ppBtn.querySelector('.mc-tp-ico');
+    if (ico) ico.textContent = isPaused ? '▶' : '⏸';
+    const txt = ppBtn.querySelector('.mc-tp-text');
+    if (txt) txt.textContent = isPaused ? t('mc.tp.play') : t('mc.tp.pause');
+    ppBtn.classList.toggle('mc-tp-paused', isPaused);
+  }
+  socketOn('dashboard:playback-state', onPlaybackState);
+
+  // Clean up the socket listener when the transport bar is removed from the DOM.
+  // Uses a MutationObserver on the container's parent to detect disconnection.
+  if (container.parentNode) {
+    const obs = new MutationObserver(() => {
+      if (!container.isConnected) {
+        socketOff('dashboard:playback-state', onPlaybackState);
+        obs.disconnect();
+      }
+    });
+    obs.observe(container.parentNode, { childList: true, subtree: false });
+  }
 
   // Blank / unblank toggle — uses ack callback for authoritative state update.
   const blankBtn = container.querySelector('[data-tp-blank]');
