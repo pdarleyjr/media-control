@@ -36,12 +36,12 @@ export function isLiveActive() {
  * @returns {{ syncLive: ()=>Promise<void> }}
  */
 export function mountActionDock(hostEl, opts = {}) {
-  if (!hostEl) return { syncLive() { return Promise.resolve(); } };
+  if (!hostEl) return { syncLive() { return Promise.resolve(); }, repaintBlank() {} };
   const cb = opts || {};
   hostEl.innerHTML = `
     <div class="mc-action-dock" role="toolbar" aria-label="${esc(t('mc.cc.brand'))}">
       <button type="button" class="mc-dock-btn mc-dock-primary" data-dock="multiview">${esc(t('mc.cc.dock.multiview'))}</button>
-      <button type="button" class="mc-dock-btn mc-dock-default" data-dock="blank-all">${esc(t('mc.cc.dock.blank_all'))}</button>
+      <button type="button" class="mc-dock-btn mc-dock-default" data-dock="blank-toggle" id="mc-dock-blank-btn">${esc(t('mc.cc.dock.blank_all'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-default" data-dock="share">${esc(t('mc.cc.dock.share'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-live" data-dock="start-live">${esc(t('mc.cc.dock.start_live'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-default" data-dock="remove-live" hidden>${esc(t('mc.cc.dock.remove_live'))}</button>
@@ -55,6 +55,28 @@ export function mountActionDock(hostEl, opts = {}) {
   const startBtn = hostEl.querySelector('[data-dock="start-live"]');
   const removeBtn = hostEl.querySelector('[data-dock="remove-live"]');
   const stopBtn = hostEl.querySelector('[data-dock="stop-live"]');
+  const blankBtn = hostEl.querySelector('[data-dock="blank-toggle"]');
+
+  // Repaint the Blank button label based on whether the active target is currently
+  // blanked (any member screen_on===false → show "Unblank"; all on → "Blank").
+  function repaintBlank() {
+    if (!blankBtn) return;
+    const getIds = typeof cb.getActiveTargetDeviceIds === 'function' ? cb.getActiveTargetDeviceIds : () => [];
+    const getDs  = typeof cb.getDisplayState === 'function' ? cb.getDisplayState : () => null;
+    const ids = getIds();
+    const ds  = getDs();
+    if (!ids.length || !ds) {
+      blankBtn.textContent = t('mc.cc.dock.blank_all');
+      blankBtn.classList.remove('mc-dock-blank-active');
+      return;
+    }
+    const all = ds.getAll ? ds.getAll() : [];
+    const byId = new Map(all.map((d) => [d.id, d]));
+    const anyBlanked = ids.some((id) => { const d = byId.get(id); return d && d.screen_on === false; });
+    blankBtn.textContent = anyBlanked ? t('mc.cmd.unblank') : t('mc.cc.dock.blank_all');
+    if (anyBlanked) blankBtn.classList.add('mc-dock-blank-active');
+    else blankBtn.classList.remove('mc-dock-blank-active');
+  }
 
   function repaintLive() {
     if (startBtn) startBtn.hidden = liveActive;
@@ -133,6 +155,11 @@ export function mountActionDock(hostEl, opts = {}) {
       switch (btn.dataset.dock) {
         case 'multiview': if (typeof cb.onMultiview === 'function') cb.onMultiview(); break;
         case 'blank-selected': if (typeof cb.onBlankSelected === 'function') cb.onBlankSelected(); break;
+        case 'blank-toggle':
+          if (typeof cb.onBlankToggle === 'function') await cb.onBlankToggle();
+          else if (typeof cb.onBlankAll === 'function') await cb.onBlankAll();
+          repaintBlank();
+          break;
         case 'blank-all': if (typeof cb.onBlankAll === 'function') await cb.onBlankAll(); break;
         case 'share': if (typeof cb.onShare === 'function') cb.onShare(); break;
         case 'start-live': await onStartLive(); await syncLive(); break;
@@ -144,5 +171,5 @@ export function mountActionDock(hostEl, opts = {}) {
   });
 
   syncLive();
-  return { syncLive };
+  return { syncLive, repaintBlank };
 }

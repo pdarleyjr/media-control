@@ -29,7 +29,8 @@ export function liveEmbedHtml(nowPlaying, cls = '', opts = {}) {
       return `<img class="${klass}" src="/api/content/${id}/file" alt=""${onerr} loading="lazy">`;
     case 'video':
       if (!allowVideo) return null; // per-cell wall video -> poster fallback (avoid N decoders)
-      return `<video class="${klass}" src="/api/content/${id}/file" autoplay muted loop playsinline></video>`;
+      // muted+loop so browser autoplay policy allows it and it mirrors the wall silently.
+      return `<video class="${klass}" src="/api/content/${id}/file" autoplay muted loop playsinline style="pointer-events:none"></video>`;
     case 'pdf':
     case 'document':
       return `<iframe class="${klass}" src="/player/doc/${id}" loading="lazy" referrerpolicy="no-referrer"></iframe>`;

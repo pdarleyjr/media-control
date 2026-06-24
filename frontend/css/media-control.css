@@ -1797,6 +1797,9 @@ img.mc-cc-logo { background: transparent; box-shadow: none; padding: 0; }
 .mc-dock-btn:focus-visible { outline: 3px solid var(--accent, #2563eb); outline-offset: 2px; }
 .mc-dock-default { background: #fff; color: var(--mc-text-primary, #1c2536); border-color: var(--mc-border-medium, #d4d0ca); }
 .mc-dock-default:hover { border-color: var(--accent, #2563eb); box-shadow: 0 5px 14px rgba(37,99,235,0.16); }
+/* Blank toggle shows amber "Blanked" state when active target is blanked */
+.mc-dock-blank-active { background: var(--warning-dim, #92400e); color: #fff !important; border-color: var(--warning-dim, #92400e) !important; }
+.mc-dock-blank-active:hover { background: #7c360b !important; border-color: #7c360b !important; }
 .mc-dock-primary { background: var(--cta, #f97316); color: var(--cta-contrast, #fff); border-color: var(--cta, #f97316); }
 .mc-dock-primary:hover { background: var(--cta-hover, #ea670c); border-color: var(--cta-hover, #ea670c); }
 .mc-dock-primary:focus-visible { outline-color: var(--cta, #f97316); }

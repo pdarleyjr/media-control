@@ -1174,6 +1174,31 @@ function blankActiveTarget() {
   showToast(t('mc.cmd.blanked'), 'info');
   displayState.refresh().catch(() => {});
 }
+// Target-scoped blank toggle for the dock "Blank" button.
+// Behaviour:
+//   • Targets ONLY the active wall / display — never the entire room.
+//   • If ANY member is currently blanked (screen_on === false)  → SCREEN_ON  (unblank).
+//   • If ALL are on                                             → SCREEN_OFF (blank).
+// After sending commands it immediately refreshes display state so the status
+// dots and the dock button label repaint without waiting for the next server push.
+function blankToggleActiveTarget() {
+  const ids = activeTargetDeviceIds();
+  if (!ids.length) { showToast(t('mc.cmd.no_displays'), 'error'); return; }
+  const all = displayState.getAll();
+  const byId = new Map(all.map((d) => [d.id, d]));
+  const anyBlanked = ids.some((id) => {
+    const d = byId.get(id);
+    return d && d.screen_on === false;
+  });
+  const type = anyBlanked ? COMMAND_TYPES.SCREEN_ON : COMMAND_TYPES.SCREEN_OFF;
+  const toastKey = anyBlanked ? 'mc.cmd.unblanked' : 'mc.cmd.blanked';
+  ids.forEach((id) => sendCommand(id, type, {}));
+  showToast(t(toastKey), 'info');
+  // Repaint the dock button label after state refreshes.
+  displayState.refresh().then(() => {
+    if (dockApi && typeof dockApi.repaintBlank === 'function') dockApi.repaintBlank();
+  }).catch(() => {});
+}
 async function blankAllTargets() {
   const ids = roomCommandIds();
   if (!ids.length) { showToast(t('mc.cmd.no_displays'), 'error'); return; }
@@ -1517,6 +1542,7 @@ pruneSelection();
   dockApi = mountActionDock(document.getElementById('mc-action-dock-host'), {
     onMultiview: () => toggleMultiview(),
     onBlankSelected: blankActiveTarget,
+    onBlankToggle: blankToggleActiveTarget,
     onBlankAll: blankAllTargets,
     onShare: shareScreenActive,
     onStartLive: startLive,
@@ -1524,6 +1550,8 @@ pruneSelection();
     onStopLive: stopLive,
     onAddDisplay: openAddPicker,
     onLiveChanged: paintChips,
+    getActiveTargetDeviceIds: activeTargetDeviceIds,
+    getDisplayState: () => displayState,
   });
   // Open on ONE large preview per the mockup (first wall, else first display).
   const initialTarget = chooseInitialTarget();
@@ -1717,6 +1745,20 @@ pruneSelection();
   // Drive live previews: players only send a screenshot when asked, so poke the
   // displays on the stage shortly after the socket connects, then keep them fresh.
   startPreviewRefresh();
+
+  // Listen for real-time play/pause events from wall players so the transport
+  // bar Play/Pause label stays accurate (the player emits device:playback-state
+  // which the server relays as dashboard:playback-state to this dashboard).
+  const playbackStateHandler = (data) => {
+    if (!data || !data.device_id) return;
+    // Immediately repaint the transport controls — the transport API reads
+    // now_playing.kind which doesn't change here, but the label flip from
+    // "Play" to "Pause" depends on the transport bar's repaint firing.
+    if (transportApi && transportApi.repaint) transportApi.repaint();
+    // Repaint the blank button in case a screen-on/off event arrives via this path.
+    if (dockApi && typeof dockApi.repaintBlank === 'function') dockApi.repaintBlank();
+  };
+  socketOn('dashboard:playback-state', playbackStateHandler);
 }
 
 export function unmount() {
@@ -1731,6 +1773,7 @@ export function unmount() {
   if (unsubChip) { unsubChip(); unsubChip = null; }
   if (cmdAckHandler) { try { socketOff('command-ack', cmdAckHandler); } catch (_) {} cmdAckHandler = null; }
   if (stateSyncHandler) { try { socketOff('state-sync', stateSyncHandler); } catch (_) {} stateSyncHandler = null; }
+  try { socketOff('dashboard:playback-state', playbackStateHandler); } catch (_) {}
   teardownMultiview();    // stop any local audio monitor so it can't keep playing
   closeViewModal();       // dismiss any open room-setup overlay (e.g. Schedules)
   stopPreviewRefresh();   // stop poking players once we leave the control surface

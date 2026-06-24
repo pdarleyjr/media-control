@@ -228,7 +228,7 @@ function wallCell(member, screenNo, { showPreview = true } = {}) {
   const f = freshness(member.screenshot_at);
   const pv = previewSource(member);
   const staleCls = (pv && !pv.poster && (f.stale || offline)) ? ' mc-shot-stale' : '';
-  const live = showPreview ? liveEmbedHtml(member.now_playing, 'mc-wall-cell-shot', { allowVideo: false, fallbackSrc: pv && pv.src }) : null;
+  const live = showPreview ? liveEmbedHtml(member.now_playing, 'mc-wall-cell-shot', { allowVideo: showPreview, fallbackSrc: pv && pv.src }) : null;
   const preview = !showPreview
     ? ''
     : (live
@@ -253,7 +253,10 @@ function wallCell(member, screenNo, { showPreview = true } = {}) {
 
 function wallSpanPreview(leader) {
   const pv = previewSource(leader);
-  const live = leader ? liveEmbedHtml(leader.now_playing, 'mc-wall-span-shot', { fallbackSrc: pv && pv.src }) : null;
+  // Always allow video in the span preview — the dashboard must mirror what the
+  // physical wall is showing. Previously allowVideo=false caused a screenshot
+  // fallback which is a black tile for video (canvas capture is tainted).
+  const live = leader ? liveEmbedHtml(leader.now_playing, 'mc-wall-span-shot', { allowVideo: true, fallbackSrc: pv && pv.src }) : null;
   if (live) {
     return `<div class="mc-wall-span-layer" data-device-id="${esc(leader.id)}">${live}</div>`;
   }
