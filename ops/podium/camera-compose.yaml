@@ -15,24 +15,29 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-    # Override the image entrypoint so we can wrap ffmpeg in a reconnect loop.
-    # The while-true/sleep-3 prevents rapid Docker restart cycles that cause
-    # "Device or resource busy" on the v4l2 exclusive lock.
-    entrypoint: ["/bin/sh", "-c"]
-    command: |
-      while true; do
-        ffmpeg -hide_banner -loglevel warning \
-          -thread_queue_size 2048 \
-          -f v4l2 -input_format yuyv422 -framerate 10 -video_size 1280x720 \
-          -i /dev/video2 \
-          -thread_queue_size 2048 \
-          -f alsa -ar 48000 -ac 1 \
-          -i hw:C920,0 \
-          -vf format=yuv420p \
-          -c:v libx264 -preset ultrafast -tune zerolatency \
-          -b:v 2000k -maxrate 2000k -bufsize 4000k -g 20 \
-          -c:a aac -b:a 128k -ar 48000 -ac 1 \
-          -f flv rtmp://100.81.154.123:1935/kamrui-camera-2 || true
-        echo "[cam2] ffmpeg exited, reconnecting in 3s..."
-        sleep 3
-      done
+    # Override the image entrypoint (ffmpeg) so we can wrap ffmpeg in a reconnect
+    # loop. The while-true/sleep-3 prevents rapid Docker restart cycles that cause
+    # "Device or resource busy" on the v4l2 exclusive lock. Using exec-form list
+    # (not block-scalar command:) to avoid the double-/bin/sh-c wrapping that
+    # YAML block-scalars trigger when combined with entrypoint: ["/bin/sh", "-c"].
+    entrypoint: []
+    command:
+      - /bin/sh
+      - -c
+      - |
+        while true; do
+          ffmpeg -hide_banner -loglevel warning \
+            -thread_queue_size 2048 \
+            -f v4l2 -input_format yuyv422 -framerate 10 -video_size 1280x720 \
+            -i /dev/video2 \
+            -thread_queue_size 2048 \
+            -f alsa -ar 48000 -ac 1 \
+            -i hw:C920,0 \
+            -vf format=yuv420p \
+            -c:v libx264 -preset ultrafast -tune zerolatency \
+            -b:v 2000k -maxrate 2000k -bufsize 4000k -g 20 \
+            -c:a aac -b:a 128k -ar 48000 -ac 1 \
+            -f flv rtmp://100.81.154.123:1935/kamrui-camera-2 || true
+          echo '[cam2] ffmpeg exited, reconnecting in 3s...'
+          sleep 3
+        done
