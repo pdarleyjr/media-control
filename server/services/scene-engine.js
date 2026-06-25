@@ -203,24 +203,27 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
     pushPlaylistUpdate(io, deviceId);
 
     // ── Span-wall fan-out ────────────────────────────────────────────────────
-    // A span wall's members SHARE one playlist (rewritten above), but the live
-    // `device:playlist-update` only went to the targeted device. `wall:sync`
-    // carries no bytes, so the OTHER members would stay blank until reconnect.
-    // Re-emit the playlist-update to every other span member so the whole wall
-    // renders the spanning source together. Websites / decks / screen-shares
-    // (text/html) intentionally stay on the single targeted screen per the
-    // classroom rule, so they are NOT fanned out. Split walls keep per-screen
-    // content and are never fanned out.
+    // A span wall's members SHARE one playlist (rewritten above). We update the
+    // DB row for every follower so they have the correct playlist_id, but we do
+    // NOT fire a live device:playlist-update socket message to followers.
+    //
+    // WHY: firing playlist-update to all 5 followers simultaneously caused N×
+    // concurrent HLS / iframe connections from every TV at the same instant,
+    // overwhelming the CDN and the server → "Reconnecting…" on all panels.
+    //
+    // INSTEAD: followers re-render via wall:sync (which the leader broadcasts
+    // every second). When the leader's currentIndex is ahead of a follower's, the
+    // follower calls nextItem() and loads the content from its now-updated DB
+    // playlist. This staggers follower loads by ~1 s and avoids the thundering
+    // herd. For non-web (video/image) content, wall:sync also synchronises the
+    // seek position, so picture-perfect sync is preserved.
+    //
+    // EXCEPTION: if a follower is currently offline it will miss the wall:sync
+    // signal. That's fine — when it reconnects the socket connect handler re-sends
+    // device:playlist-update to bring it up to date.
     try {
       // Generic external websites stay on the single targeted screen (per the
-      // classroom rule). Everything else spans the wall:
-      //  - PDFs/Office docs: mime_type != text/html, always fanned out
-      //  - Internal player URLs (/player/hls.html, /player/oz.html, /player/deck/',
-      //    /player/doc/, etc.) — any path under /player/ is our own renderer and
-      //    should fill all panels
-      //  - HLS streams (.m3u8), RTMP, RTSP — live camera/news feeds must span the
-      //    whole wall even when stored with mime_type=text/html by the URL resolver
-      //  - External https:// web pages without a /player/ path — single screen
+      // classroom rule). Everything else spans the wall (playlist assignment).
       const remote = String(content.remote_url || '');
       const isInternalPlayer = /\/player\//.test(remote);
       const isStreamingMedia = /\.m3u8(?:[?#]|$)/i.test(remote)
@@ -237,13 +240,15 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
         for (const m of members) {
           if (!m.device_id) continue;
           try {
-            // Keep each member on the shared span playlist, then live-refresh it.
+            // Update the DB playlist so the follower has the new content ready
+            // for when wall:sync triggers nextItem(). The live socket push is
+            // deliberately omitted — wall:sync drives followers, not this fan-out.
             db.prepare('UPDATE devices SET playlist_id = ? WHERE id = ? AND (playlist_id IS NULL OR playlist_id != ?)')
               .run(playlistId, m.device_id, playlistId);
             whiteboardState.clearForMedia(io, m.device_id);
-            pushPlaylistUpdate(io, m.device_id);
+            // No pushPlaylistUpdate here — let wall:sync handle follower playback.
           } catch (e) {
-            console.warn(`[scene-engine] span fan-out to ${m.device_id} failed: ${e.message}`);
+            console.warn(`[scene-engine] span fan-out DB update failed for ${m.device_id}: ${e.message}`);
           }
         }
       }
