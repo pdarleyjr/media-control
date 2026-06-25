@@ -1492,6 +1492,7 @@ export default {
   'mc.mv.clear_all': 'Clear all',
   'mc.mv.reset': 'Reset layout',
   'mc.mv.send': 'Send layout to display →',
+  'mc.mv.close': 'Close Multiview',
   'mc.mv.monitor': 'Audio monitor',
   'mc.mv.layout_label': 'Multiview Layout',
   'mc.mv.screen_share': 'Screen share',

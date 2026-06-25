@@ -320,7 +320,12 @@ function stageSignature() {
   const playingSig = (d) => {
     const np = d && d.now_playing;
     if (!np) return '';
-    return [np.kind || '', np.contentId || '', np.label || '', np.poster_url || ''].join('~');
+    // Deliberately include only STRUCTURAL fields (kind, contentId, poster_url) and
+    // NOT the live-updated label. Including label caused a full paintStage() on every
+    // dashboard:playback-progress event (which fires whenever playback advances), which
+    // produced a rapid DOM-rebuild loop and made the wall UI feel laggy. The label is
+    // patched by refreshPreviewsInPlace() without a full repaint.
+    return [np.kind || '', np.contentId || '', np.poster_url || ''].join('~');
   };
   for (const id of selectedIds) {
     if (wallMemberIds.has(id)) continue;
@@ -1629,7 +1634,7 @@ pruneSelection();
     if (show) {
       if (!mvMounted) {
         mvMounted = true;
-        await renderMultiview(mvHost, { routeSource: routeSourceWithPicker });
+        await renderMultiview(mvHost, { routeSource: routeSourceWithPicker, onClose: toggleMultiview });
       }
       try { mvHost.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch { /* */ }
     }

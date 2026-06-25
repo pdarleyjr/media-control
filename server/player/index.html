@@ -762,14 +762,32 @@
         };
         document.body.appendChild(tapOverlay);
 
-        // Auto-dismiss after 5 seconds if no interaction (plays muted)
-        setTimeout(() => {
-          if (tapOverlay.parentNode) {
-            tapOverlay.remove();
-            if (!isPlaying) showStatus(_t('connecting_muted'));
+        // Auto-dismiss. Two paths:
+        //   • Managed audio display (TV1): dismiss immediately with unlockAudio() so the
+        //     designated soundbar display never sits waiting for a human tap that will
+        //     never come. The browser's user-activation gate is bypassed on kiosk windows
+        //     via --autoplay-policy=no-user-gesture-required; calling unlockAudio() here
+        //     also fires the DOM / AudioContext setup so iframes (grid/hls/oz) have their
+        //     audio ready as soon as content loads.
+        //   • All other displays / non-kiosk: auto-dismiss after 5s and connect MUTED
+        //     (same as before). Sound returns on the first real tap.
+        if (userHasInteracted) {
+          // Zero-delay dismiss: managed audio display — start connecting and audio immediately.
+          setTimeout(() => {
+            if (tapOverlay.parentNode) tapOverlay.remove();
+            unlockAudio();
+            if (!isPlaying) showStatus(_t('connecting'));
             connect(config.serverUrl);
-          }
-        }, 5000);
+          }, 0);
+        } else {
+          setTimeout(() => {
+            if (tapOverlay.parentNode) {
+              tapOverlay.remove();
+              if (!isPlaying) showStatus(_t('connecting_muted'));
+              connect(config.serverUrl);
+            }
+          }, 5000);
+        }
       }
     } else {
       // Auto-Continue after 5s if not configured. If user interacts with form (typing in the box), stop the timer.

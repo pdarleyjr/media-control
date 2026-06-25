@@ -86,6 +86,7 @@ let geoms = {};               // slotId -> { x,y,w,h } percent override (absent 
 let shareDevice = {};         // slotId -> deviceId currently receiving this frame's screen share
 let contentIndex = {};        // content_id -> { mime, thumbnail_url, filename }
 let routeSourceFn = null;     // injected: (source, label) => Promise<bool>
+let onCloseFn = null;         // injected: () => void — closes the composer panel
 let monitorSlot = null;       // slot id currently being monitored locally
 let monitorRenderedKey = null;// guard so a re-render doesn't restart the monitor stream
 let unsubShare = null;        // screen-share engine onChange unsubscribe
@@ -458,6 +459,7 @@ function render() {
           <button type="button" class="mc-btn mc-btn-ghost mc-mv-reset"${resized ? '' : ' disabled'}>${esc(t('mc.mv.reset'))}</button>
           <button type="button" class="mc-btn mc-btn-ghost mc-mv-clear-all"${filled ? '' : ' disabled'}>${esc(t('mc.mv.clear_all'))}</button>
           <button type="button" class="mc-btn mc-btn-primary mc-mv-send"${filled ? '' : ' disabled'}>${esc(t('mc.mv.send'))}</button>
+          <button type="button" class="mc-btn mc-btn-ghost mc-mv-close" aria-label="${esc(t('mc.mv.close'))}" title="${esc(t('mc.mv.close'))}">✕</button>
         </div>
       </div>
       <div class="mc-mv-stage" role="application" aria-label="${esc(t('mc.mv.canvas_aria'))}">
@@ -499,10 +501,13 @@ function parseDrag(e) {
 function dropIntoSlot(slotId, parsed) {
   const resolved = resolveCell(parsed.source, parsed.label, parsed.thumb);
   if (resolved.error) { showToast(t(resolved.error), 'error'); return; }
-  // Default every new cell to Fit (contain — no distortion). The operator can
-  // toggle to Fill (cover) per frame; the choice is preserved across re-drops only
-  // by the toggle, not here.
-  if (resolved.kind !== 'share') resolved.fit = 'contain';
+  // Default fill: live streams (news, cameras, YouTube) fill their slot (cover =
+  // crop-to-fill, no letterbox). A 16:9 feed in a 50×50 center cell looks terrible
+  // with letterbox bars. Documents / images default to contain (no distortion).
+  if (resolved.kind !== 'share') {
+    const COVER_CATEGORIES = new Set(['broadcast', 'film']);
+    resolved.fit = COVER_CATEGORIES.has(resolved.category) ? 'cover' : 'contain';
+  }
   cells[slotId] = resolved;
   saveStore();
   if (monitorSlot && monitorSlot !== slotId && !cells[monitorSlot]) monitorSlot = null;
@@ -586,6 +591,8 @@ function attachHandlers() {
   if (clearAllBtn) clearAllBtn.addEventListener('click', clearAll);
   const sendBtn = rootEl.querySelector('.mc-mv-send');
   if (sendBtn) sendBtn.addEventListener('click', sendLayout);
+  const closeBtn = rootEl.querySelector('.mc-mv-close');
+  if (closeBtn) closeBtn.addEventListener('click', () => { if (typeof onCloseFn === 'function') onCloseFn(); });
   const monStop = rootEl.querySelector('.mc-mv-monitor-stop');
   if (monStop) monStop.addEventListener('click', () => { monitorSlot = null; render(); });
 }
@@ -800,11 +807,13 @@ async function sendLayout() {
  * @param {HTMLElement} container
  * @param {object} opts
  * @param {(source:object,label:string)=>Promise<boolean>} opts.routeSource  send funnel (routing picker)
+ * @param {()=>void} [opts.onClose]  called when the operator clicks ✕ to dismiss the composer
  */
-export async function renderMultiview(container, { routeSource } = {}) {
+export async function renderMultiview(container, { routeSource, onClose } = {}) {
   if (!container) return;
   rootEl = container;
   routeSourceFn = routeSource;
+  onCloseFn = onClose || null;
   loadStore();
   // React to screen-share connect/fail/preempt so the frame's Share/Stop button
   // reflects reality (targeted update — does not restart the audio monitor).

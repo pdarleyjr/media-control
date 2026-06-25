@@ -46,7 +46,12 @@ foreach ($d in $displays) {
     continue
   }
   $playerUrl = "$serverUrl/player/managed?deviceId=$([uri]::EscapeDataString($d.deviceId))&deviceToken=$([uri]::EscapeDataString($d.deviceToken))"
-  $args = @('--app="' + $playerUrl + '"', '--no-default-browser-check', '--no-first-run', '--disable-features=Translate', '--kiosk')
+  # --autoplay-policy=no-user-gesture-required: without this, Chrome blocks unmuted
+  # video.play() in nested iframes (news HLS via grid.html → hls.html) even when the
+  # top frame has the userHasInteracted flag set. This is a kiosk — the operator is
+  # never going to tap the screen; media MUST autoplay with sound on TV1 and silently
+  # on every other panel.
+  $args = @('--app="' + $playerUrl + '"', '--no-default-browser-check', '--no-first-run', '--disable-features=Translate', '--kiosk', '--autoplay-policy=no-user-gesture-required')
   # Mute every player EXCEPT TV1 (wall 1 label TV1) so only the Ultimea path sounds.
   # --mute-audio is the correct Chromium command-line flag to start a window muted.
   $isTv1 = ($d.wall -eq 1 -and $d.label -eq 'TV1')
