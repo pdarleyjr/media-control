@@ -1,7 +1,7 @@
 [Unit]
 Description=MBFD Media Control Console kiosk
-After=network-online.target mbfd-podium-agent.service systemd-user-sessions.service
-Wants=network-online.target mbfd-podium-agent.service
+After=network-online.target mbfd-console-agent.service systemd-user-sessions.service
+Wants=network-online.target mbfd-console-agent.service
 Conflicts=getty@tty1.service
 
 [Service]

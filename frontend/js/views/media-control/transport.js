@@ -7,8 +7,14 @@
 // screen_on status reflects the authoritative server-side value (Task 1.4 persists
 // it on the DB side; we update the display-state store client-side on ack here).
 //
+// The Play/Pause button reflects the device's CURRENT playback state: it shows
+// "Pause" when the display is playing and "Play" when it is paused. State comes
+// from display-state.js `now_playing.paused` which is kept live by the
+// dashboard:playback-state event stream. `paused` undefined (no state report
+// yet) defaults to the mid-state label "Play / Pause".
+//
 // Public exports:
-//   renderTransportBar(container, { deviceId, screenOn, onScreenOnChange })
+//   renderTransportBar(container, { deviceId, screenOn, paused, onScreenOnChange })
 //     — Renders the bar into `container` immediately (synchronous DOM write).
 //       The `onScreenOnChange` callback is invoked with the new boolean value
 //       once the device acks the blank/unblank command so callers can repaint.
@@ -19,12 +25,12 @@ import { sendCommand } from '../../socket.js';
 import { COMMAND_TYPES, TRANSPORT_ACTIONS } from '../../player-protocol.js';
 import { showToast } from '../../components/toast.js';
 
-// Button definitions for the four transport actions. Glyph labels stay literal;
-// the accessible name (title/aria) is localized at render time via titleKey.
-const TRANSPORT_BTNS = [
+// Fixed transport buttons — all except play_pause have invariant labels.
+// play_pause is rendered dynamically based on `paused` state (see below).
+const STATIC_TRANSPORT_BTNS = [
   { action: TRANSPORT_ACTIONS[1], label: '⏮', titleKey: 'mc.tp.prev' },        // 'prev'
   { action: TRANSPORT_ACTIONS[3], label: '↺', titleKey: 'mc.tp.restart' },     // 'restart'
-  { action: TRANSPORT_ACTIONS[2], label: '⏯', titleKey: 'mc.tp.play_pause' },  // 'play_pause'
+  // play_pause handled separately below
   { action: TRANSPORT_ACTIONS[0], label: '⏭', titleKey: 'mc.tp.next' },        // 'next'
 ];
 
@@ -35,12 +41,15 @@ const TRANSPORT_BTNS = [
  * @param {object}  opts
  * @param {string}  opts.deviceId          target device id
  * @param {boolean} [opts.screenOn=true]   current screen_on state (drives blank label/colour)
+ * @param {boolean|undefined} [opts.paused]
+ *   Current play/pause state from the device. `undefined` = unknown (shows "Play / Pause");
+ *   `true` = paused (shows "Play"); `false` = playing (shows "Pause").
  * @param {(newValue:boolean)=>void} [opts.onScreenOnChange]
  *   Called after the device acks a blank/unblank command with the new boolean
  *   value. Callers should use this to update display-state so the stage card
  *   re-paints with the correct status dot and "Blanked" label.
  */
-export function renderTransportBar(container, { deviceId, blankDeviceIds, screenOn = true, onScreenOnChange } = {}) {
+export function renderTransportBar(container, { deviceId, blankDeviceIds, screenOn = true, paused, onScreenOnChange } = {}) {
   if (!container) return;
 
   // Blank/unblank target set. For a standalone display this is just [deviceId].
@@ -51,12 +60,23 @@ export function renderTransportBar(container, { deviceId, blankDeviceIds, screen
     ? [...new Set(blankDeviceIds.filter(Boolean))]
     : [deviceId];
 
-  const transportHtml = TRANSPORT_BTNS.map(b => {
+  // Build static transport buttons (prev, restart, next).
+  const staticHtml = STATIC_TRANSPORT_BTNS.map(b => {
     const title = t(b.titleKey);
-    // Glyph + visible text label so each control reads clearly (Previous /
-    // Restart / Play / Pause / Next), not just an icon. title/aria stay for AT.
     return `<button type="button" class="mc-tp-btn" data-tp-action="${esc(b.action)}" title="${esc(title)}" aria-label="${esc(title)}"><span class="mc-tp-ico" aria-hidden="true">${b.label}</span><span class="mc-tp-text">${esc(title)}</span></button>`;
-  }).join('');
+  });
+
+  // Play/Pause button: label reflects actual device state when known.
+  // paused===true  → show "Play"  (clicking will resume)
+  // paused===false → show "Pause" (clicking will pause)
+  // paused===undefined → show "Play / Pause" (state not yet known)
+  const ppLabel = paused === true ? '▶' : paused === false ? '⏸' : '⏯';
+  const ppTitle = paused === true ? t('mc.tp.play') : paused === false ? t('mc.tp.pause') : t('mc.tp.play_pause');
+  const ppHtml = `<button type="button" class="mc-tp-btn mc-tp-playpause" data-tp-action="${esc(TRANSPORT_ACTIONS[2])}" title="${esc(ppTitle)}" aria-label="${esc(ppTitle)}"><span class="mc-tp-ico" aria-hidden="true">${ppLabel}</span><span class="mc-tp-text">${esc(ppTitle)}</span></button>`;
+
+  // Insert play/pause after restart (index 1) so order is: ⏮ ↺ ⏯/▶/⏸ ⏭
+  const allBtns = [...staticHtml.slice(0, 2), ppHtml, ...staticHtml.slice(2)];
+  const transportHtml = allBtns.join('');
 
   const blankLabel = screenOn ? t('mc.tp.blank') : t('mc.tp.unblank');
   const blankTitle = screenOn ? t('mc.tp.blank_title') : t('mc.tp.unblank_title');

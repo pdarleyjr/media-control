@@ -48,10 +48,12 @@ foreach ($d in $displays) {
   $playerUrl = "$serverUrl/player/managed?deviceId=$([uri]::EscapeDataString($d.deviceId))&deviceToken=$([uri]::EscapeDataString($d.deviceToken))"
   $args = @('--app="' + $playerUrl + '"', '--no-default-browser-check', '--no-first-run', '--disable-features=Translate', '--kiosk')
   # Mute every player EXCEPT TV1 (wall 1 label TV1) so only the Ultimea path sounds.
+  # --mute-audio is the correct Chromium command-line flag to start a window muted.
   $isTv1 = ($d.wall -eq 1 -and $d.label -eq 'TV1')
-  if (-not $isTv1) { $args += '--mute' }
-  # Position the window on the target monitor if display is set (Edge flag; harmless if absent).
-  if ($d.display) { $args += @('--window-position', $d.display) }
+  if (-not $isTv1) { $args += '--mute-audio' }
+  # Position the window on the target monitor. Chrome/Edge requires --window-position=X,Y
+  # as a single flag (not two separate arguments).
+  if ($d.display) { $args += "--window-position=$($d.display)" }
   try {
     $p = Start-Process -FilePath $browser -ArgumentList ($args -join ' ') -PassThru
     $pids += $p.Id

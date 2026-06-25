@@ -581,10 +581,15 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
     // per-physical-device command). Transport (play/pause/skip) stays on the
     // leader, which drives wall sync.
     const blankIds = String(host.dataset.blankIds || '').split(',').filter(Boolean);
+    // Pass the current paused state (from now_playing.paused, kept live by
+    // dashboard:playback-state events) so the Play/Pause button shows the
+    // correct label. undefined = no state report yet → shows "Play / Pause".
+    const paused = display.now_playing ? display.now_playing.paused : undefined;
     renderTransportBar(host, {
       deviceId,
       blankDeviceIds: blankIds.length ? blankIds : undefined,
       screenOn: display.screen_on !== false,
+      paused,
       onScreenOnChange: (newValue) => {
         if (typeof onScreenOnChange === 'function') onScreenOnChange(deviceId, newValue);
       },

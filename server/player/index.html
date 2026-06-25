@@ -1627,10 +1627,44 @@
       function doTransport(action) {
         try {
           const item = playlist[currentIndex] || {};
-          // A controllable embedded player (deck / Office doc / PDF / grid) owns
-          // its own page/slide navigation. Forward the action to ANY iframe on
-          // the page. If at least one iframe received it, do NOT also advance the
-          // outer playlist (that would reload the iframe back to slide 1).
+
+          // ── YouTube IFrame API fast path ───────────────────────────────────
+          // activeYtPlayer is the live YT.Player (created by createYoutubeEmbed).
+          // The YouTube iframe does NOT handle __mc_transport postMessages so
+          // postTransportToFrames would return true (frame found) but nothing
+          // would happen. Handle all YouTube actions here via the JS API before
+          // any iframe-postMessage fallback.
+          if (activeYtPlayer) {
+            try {
+              if (action === 'play_pause') {
+                const state = typeof activeYtPlayer.getPlayerState === 'function'
+                  ? activeYtPlayer.getPlayerState() : -1;
+                // YT.PlayerState: 1=playing, 2=paused. Any other state: start playing.
+                if (state === 1) activeYtPlayer.pauseVideo();
+                else activeYtPlayer.playVideo();
+              } else if (action === 'next') {
+                nextItem();
+              } else if (action === 'prev') {
+                if (playlist.length) { currentIndex = (currentIndex - 2 + playlist.length) % playlist.length; nextItem(); }
+              } else if (action === 'restart') {
+                // Restart from the beginning of the video (seek to 0).
+                if (typeof activeYtPlayer.seekTo === 'function') {
+                  activeYtPlayer.seekTo(0, true);
+                  activeYtPlayer.playVideo();
+                } else {
+                  currentIndex = -1; nextItem();
+                }
+              }
+            } catch (e) { /* never break playback */ }
+            return; // always return — IFrame API handled it
+          }
+
+          // ── Controllable embedded player (deck / office doc / PDF / grid) ──
+          // A controllable embed is any content with a remote_url (web page type)
+          // or a document MIME, or containing an iframe we can postMessage. Only
+          // fall through to postTransportToFrames when there IS no activeYtPlayer,
+          // since postTransportToFrames blindly returns `true` for the YouTube
+          // iframe element even though that iframe ignores our messages.
           const isControllableEmbed = item.remote_url || isDocumentMime(item.mime_type)
             || document.querySelector('#playerContainer iframe, .zone iframe, .wall-stage iframe');
           if (isControllableEmbed) {

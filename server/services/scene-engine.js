@@ -112,6 +112,11 @@ function resolveRemoteUrlContent(remoteUrl, workspaceId, userId) {
   else if (/\.m3u8(?:[?#]|$)/i.test(remoteUrl)) mimeType = 'application/x-mpegURL';
   else if (/^rtmp?:\/\//i.test(remoteUrl) || /^rtsp:\/\//i.test(remoteUrl)) mimeType = 'video/mp4';
   else if (/\.(jpe?g|png|gif|webp|bmp|svg|avif)(?:[?#]|$)/i.test(remoteUrl)) mimeType = 'image/jpeg';
+  // YouTube URLs must use video/youtube so the player renders them via the IFrame
+  // API (createYoutubeEmbed). Storing them as text/html makes the player treat
+  // them as an embedded webpage, which falls through to the server-side screenshot
+  // path (/player/site.html) — a frozen, silent still instead of a live video.
+  else if (/(?:youtube\.com\/(?:watch|embed|v|shorts)|youtu\.be\/)/i.test(remoteUrl)) mimeType = 'video/youtube';
   else mimeType = 'text/html';
   let filename;
   try { filename = new URL(remoteUrl).hostname || 'remote'; } catch { filename = 'remote'; }

@@ -55,7 +55,35 @@ function ensureWired() {
       screenshot_at: Math.floor(Date.now() / 1000),
     });
   });
-  onSocket('playback-progress', (d) => { merge(d.device_id || d.id, { progress: d }); });
+  // playback-progress: fired when a new item begins playing (play_start event).
+  // Contains content_name and content_id — use to update the now_playing label
+  // live so stage cards reflect the current item after a Next/Prev/Restart
+  // transport command without waiting for the next full REST refresh.
+  onSocket('playback-progress', (d) => {
+    const id = d.device_id || d.id;
+    const cur = displays.get(id);
+    if (!cur) return;
+    const npPatch = { ...(cur.now_playing || {}) };
+    if (d.content_name) npPatch.label = d.content_name;
+    if (d.content_id)   npPatch.content_id = d.content_id;
+    // A new item just started → no longer paused.
+    npPatch.paused = false;
+    npPatch.kind = 'content';
+    merge(id, { progress: d, now_playing: npPatch });
+  });
+  // playback-state: fired by the player on HTML5 video play/pause events.
+  // Use to reflect real-time pause state in the transport bar so the operator
+  // can tell whether the display is currently playing or paused, and the
+  // Play/Pause button label stays correct ("Play" when paused, "Pause" when
+  // playing).
+  onSocket('playback-state', (d) => {
+    const id = d.device_id || d.id;
+    const cur = displays.get(id);
+    if (!cur) return;
+    const npPatch = { ...(cur.now_playing || {}), paused: !!d.paused };
+    if (d.content_id && !npPatch.content_id) npPatch.content_id = d.content_id;
+    merge(id, { now_playing: npPatch });
+  });
   // Pairing can happen from either the legacy Displays page or Command Center.
   // The server emits this after /api/provision/pair; refresh immediately so the
   // newly claimed display appears without relying on a manual reload.

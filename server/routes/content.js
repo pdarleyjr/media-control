@@ -216,7 +216,18 @@ router.post('/remote', checkRemoteUrl, async (req, res) => {
 
     const id = uuidv4();
     const filename = name || url.split('/').pop()?.split('?')[0] || 'remote_content';
-    const mimeType = mime_type || (url.match(/\.(mp4|webm|mkv|avi|mov)/i) ? 'video/mp4' : 'image/jpeg');
+    // Derive MIME from the URL when the caller doesn't specify one. YouTube URLs
+    // must use video/youtube so the player renders via the IFrame API rather than
+    // the server-side screenshot fallback (which produces a frozen silent still).
+    let mimeType = mime_type;
+    if (!mimeType) {
+      if (/\.(mp4|webm|mkv|avi|mov|m4v)(?:[?#]|$)/i.test(url)) mimeType = 'video/mp4';
+      else if (/\.m3u8(?:[?#]|$)/i.test(url)) mimeType = 'application/x-mpegURL';
+      else if (/^rtmp?:\/\//i.test(url) || /^rtsp:\/\//i.test(url)) mimeType = 'video/mp4';
+      else if (/\.(jpe?g|png|gif|webp|bmp|svg|avif)(?:[?#]|$)/i.test(url)) mimeType = 'image/jpeg';
+      else if (/(?:youtube\.com\/(?:watch|embed|v|shorts)|youtu\.be\/)/i.test(url)) mimeType = 'video/youtube';
+      else mimeType = 'text/html';
+    }
 
     db.prepare(`
       INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, remote_url)
