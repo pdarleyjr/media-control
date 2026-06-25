@@ -4,11 +4,11 @@
 // direct <iframe> would refuse to render — can still be broadcast to displays,
 // video walls, and inside multiview frames/arbitrary rects.
 //
-// Why screenshots, not a rewriting reverse-proxy: a proxy that strips framing
-// headers must also rewrite every sub-resource URL, cookies, XHR/fetch, and
-// websockets, and still breaks on most modern SPAs. A periodically-refreshed
-// Chromium screenshot renders ANY site faithfully and composes with the existing
-// /player/* pattern (the allowlist already permits /player/* in multiview cells).
+// NOTE: This service is ONLY needed for genuinely external third-party websites
+// that block iframes. Our own /player/* pages (hls.html, oz.html, grid.html,
+// deck, YouTube, cameras, presentations) all iframe directly and never reach
+// this code path. site-shot is idle in a classroom that only uses those source
+// types.
 //
 // The public /player/site-shot/:id route (server.js) reads the already-SSRF-
 // validated URL from the content row by id and calls renderSiteShot — clients
@@ -22,6 +22,9 @@ const pexecFile = promisify(execFile);
 const config = require('../config');
 
 const CHROMIUM_BIN = process.env.CHROMIUM_BIN || '/usr/bin/chromium-browser';
+// Set DISABLE_SITESHOT=true to skip all Chromium rendering entirely (safe when
+// you never broadcast raw external websites — returns 503 instead of spinning).
+const DISABLED = process.env.DISABLE_SITESHOT === 'true';
 
 const MIN_W = 320, MAX_W = 3840, MIN_H = 240, MAX_H = 2160;
 const MIN_INTERVAL = 5, MAX_INTERVAL = 600, DEFAULT_INTERVAL = 20;
@@ -49,6 +52,13 @@ function cacheFileName(id, w, h) {
 // displays showing the same site refresh at once) into one Chromium process.
 const inflight = new Map();
 
+// Failure backoff: after a render fails, skip retries for FAILURE_COOLDOWN_MS.
+// Without this, a non-working Chromium binary causes an instant retry storm —
+// each failure takes ~35 s (execFile timeout), multiple callers pile up, and
+// the CPU spike kills WebSocket heartbeats → all devices disconnect at once.
+const FAILURE_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
+const failedAt = new Map(); // outPath → timestamp of last failure
+
 // Render `url` to a JPEG at outPath with headless Chromium. Resolves to outPath.
 async function renderSiteShot(url, { width = 1600, height = 900, outPath }) {
   if (!isExternalHttpUrl(url)) throw new Error('site-shot: non-http url');
@@ -73,17 +83,34 @@ async function renderSiteShot(url, { width = 1600, height = 900, outPath }) {
   return outPath;
 }
 
-// Render with caching + single-flight. Serves the cached JPEG when it is younger
-// than `interval` seconds; otherwise re-renders. Returns the file path or throws.
+// Render with caching + single-flight + failure backoff. Serves the cached JPEG
+// when it is younger than `interval` seconds; otherwise re-renders.
+// Returns the file path or throws.
 async function getSiteShot(id, url, { width, height, interval }) {
+  if (DISABLED) throw new Error('site-shot disabled (DISABLE_SITESHOT=true)');
   const w = clampWidth(width), h = clampHeight(height), iv = clampInterval(interval);
   const outPath = path.join(config.contentDir, cacheFileName(id, w, h));
+
+  // Return cached result if fresh enough.
   try {
     const st = fs.statSync(outPath);
-    if ((Date.now() - st.mtimeMs) / 1000 < iv) return outPath; // fresh enough
+    if ((Date.now() - st.mtimeMs) / 1000 < iv) return outPath;
   } catch { /* no cache yet */ }
+
+  // Failure backoff: never retry a recently-failed render. This prevents a broken
+  // Chromium binary from hammering the CPU with instant-fail execFile calls.
+  const lastFail = failedAt.get(outPath);
+  if (lastFail && (Date.now() - lastFail) < FAILURE_COOLDOWN_MS) {
+    throw new Error('site-shot in backoff after recent failure — will retry in ' +
+      Math.ceil((FAILURE_COOLDOWN_MS - (Date.now() - lastFail)) / 60000) + ' min');
+  }
+
+  // Deduplicate concurrent requests for the same URL.
   if (inflight.has(outPath)) return inflight.get(outPath);
+
   const p = renderSiteShot(url, { width: w, height: h, outPath })
+    .then(r => { failedAt.delete(outPath); return r; })
+    .catch(e => { failedAt.set(outPath, Date.now()); throw e; })
     .finally(() => inflight.delete(outPath));
   inflight.set(outPath, p);
   return p;
@@ -96,4 +123,5 @@ module.exports = {
   clampWidth, clampHeight, clampInterval,
   cacheFileName,
   CHROMIUM_BIN,
+  DISABLED,
 };

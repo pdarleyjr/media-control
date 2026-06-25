@@ -24,16 +24,27 @@ function nowPlayingFromSnapshot(snapshotJson) {
   const name = it.filename || it.name || it.widget_name || it.remote_url || 'Content';
   let kind = 'content';
   const mime = String(it.mime_type || '');
+  const remote = String(it.remote_url || '');
   if (mime === 'video/youtube') kind = 'youtube';
   else if (mime.startsWith('image/')) kind = 'image';
   else if (mime.startsWith('video/')) kind = 'video';
   else if (mime === 'application/pdf') kind = 'pdf';
   else if (/msword|ms-excel|ms-powerpoint|officedocument\.(?:wordprocessing|spreadsheet|presentation)ml|oasis\.opendocument/.test(mime)) kind = 'document';
   else if (it.widget_id) kind = 'widget';
-  else if (it.remote_url) kind = 'web';
+  else if (remote) {
+    // Multiview grid → 'grid' kind so the dashboard embeds it as a LIVE iframe
+    // and never calls site-shot/Chromium (which crashes in Docker and causes the
+    // entire reconnect storm via CPU spike → WebSocket heartbeat timeouts).
+    if (/\/player\/grid\.html/i.test(remote)) kind = 'grid';
+    else kind = 'web';
+  }
   // contentId lets the stage attach the content's poster thumbnail for content
   // whose live screenshot is useless (un-capturable video / deck / web iframes).
-  return { label: name, kind, itemCount: 1, contentId: it.content_id || null };
+  // remoteUrl is passed through so live-preview.js can embed our own /player/*
+  // pages directly as live iframes without going through site.html/site-shot.
+  const result = { label: name, kind, itemCount: 1, contentId: it.content_id || null };
+  if (remote) result.remoteUrl = remote;
+  return result;
 }
 
 module.exports = { nowPlayingFromSnapshot };
