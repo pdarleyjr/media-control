@@ -59,6 +59,10 @@ function ensureWired() {
   // Contains content_name and content_id — use to update the now_playing label
   // live so stage cards reflect the current item after a Next/Prev/Restart
   // transport command without waiting for the next full REST refresh.
+  // IMPORTANT: do NOT override `kind` here. kind is derived from the playlist
+  // snapshot (mime_type → kind mapping in display-state.js server lib) and must
+  // not be reset to 'content' by a live event — that erases 'grid'/'web' and
+  // triggers a stageSignature change → paintStage → no liveEmbed → blank card.
   onSocket('playback-progress', (d) => {
     const id = d.device_id || d.id;
     const cur = displays.get(id);
@@ -66,9 +70,8 @@ function ensureWired() {
     const npPatch = { ...(cur.now_playing || {}) };
     if (d.content_name) npPatch.label = d.content_name;
     if (d.content_id)   npPatch.content_id = d.content_id;
-    // A new item just started → no longer paused.
     npPatch.paused = false;
-    npPatch.kind = 'content';
+    // Preserve existing kind — never override it with a generic fallback.
     merge(id, { progress: d, now_playing: npPatch });
   });
   // playback-state: fired by the player on HTML5 video play/pause events.
