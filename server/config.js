@@ -79,12 +79,14 @@ module.exports = {
   socketControlRatePerSec: parseInt(process.env.SOCKET_CONTROL_RATE_PER_SEC) || 25,
   socketControlBurst:      parseInt(process.env.SOCKET_CONTROL_BURST) || 60,
   socketControlMaxDepth:   parseInt(process.env.SOCKET_CONTROL_MAX_DEPTH) || 60,
-  // Engine.IO transport-level ping/pong. Raised from Socket.IO defaults
-  // (25000/20000) because TV WebKits (LG webOS, older Tizen) miss pongs
-  // under decode load - tighter values cause spurious transport drops.
-  // Worst-case dead-socket detection: pingInterval + pingTimeout = 60s.
-  pingInterval: parseInt(process.env.PING_INTERVAL) || 30000,
-  pingTimeout:  parseInt(process.env.PING_TIMEOUT)  || 30000,
+  // Engine.IO transport-level ping/pong. pingInterval lowered to 10s so a
+  // wedged transport is probed quickly; pingTimeout raised to 60s to tolerate
+  // the high-latency Tailscale DERP relay (~843ms) and CDN-buffered tunnels
+  // without spurious transport drops that trigger disconnect/reconnect cycles
+  // (which reload every cell and stall the wall). Worst-case dead-socket
+  // detection: pingInterval + pingTimeout = 70s.
+  pingInterval: parseInt(process.env.PING_INTERVAL) || 10000,
+  pingTimeout:  parseInt(process.env.PING_TIMEOUT)  || 60000,
   // File-size ceiling for uploaded content. Env-configurable (MAX_FILE_SIZE_BYTES)
   // with a high default for massive ultra-wide master files / long-form video.
   // IMPORTANT: when this app is reached THROUGH Cloudflare (the orange-cloud proxy

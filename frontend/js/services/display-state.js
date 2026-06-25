@@ -72,7 +72,8 @@ function ensureWired() {
     if (d.content_id)   npPatch.content_id = d.content_id;
     npPatch.paused = false;
     // Preserve existing kind — never override it with a generic fallback.
-    merge(id, { progress: d, now_playing: npPatch });
+    merge(id, { progress: d, now_playing: npPatch }, true);
+    scheduleProgressNotify();
   });
   // playback-state: fired by the player on HTML5 video play/pause events.
   // Use to reflect real-time pause state in the transport bar so the operator
@@ -94,9 +95,20 @@ function ensureWired() {
   onSocket('wall-changed', () => { refresh().catch(() => {}); });
 }
 
-function merge(id, patch) {
+function merge(id, patch, silent) {
   const cur = displays.get(id);
   if (!cur) return;
   displays.set(id, { ...cur, ...patch });
-  notify();
+  if (!silent) notify();
+}
+
+// High-frequency playback-progress events can fire many times per second per
+// display (every video timeupdate that crosses a reporting boundary). Each one
+// used to call notify() synchronously, which re-renders every stage subscriber
+// and starves the main thread on a busy wall. Coalesce them: patch the store
+// silently, then notify at most once per second.
+let _progressNotifyTimer = null;
+function scheduleProgressNotify() {
+  if (_progressNotifyTimer) clearTimeout(_progressNotifyTimer);
+  _progressNotifyTimer = setTimeout(() => { _progressNotifyTimer = null; notify(); }, 1000);
 }

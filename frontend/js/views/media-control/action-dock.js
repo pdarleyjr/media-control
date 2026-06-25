@@ -50,6 +50,9 @@ export function mountActionDock(hostEl, opts = {}) {
         <span class="mc-dock-add-text">${esc(t('mc.cc.dock.add_display'))}</span>
         <span class="mc-dock-add-plus" aria-hidden="true">+</span>
       </button>
+      <span class="mc-cam-health" id="mc-cam-health" title="Camera health" aria-live="polite">
+        <span class="mc-cam-health-dot"></span><span class="mc-cam-health-label">--</span>
+      </span>
     </div>`;
 
   const startBtn = hostEl.querySelector('[data-dock="start-live"]');
@@ -84,15 +87,45 @@ export function mountActionDock(hostEl, opts = {}) {
     if (stopBtn) stopBtn.hidden = !liveActive;
   }
 
+  // Camera health badge. The AI Director /status payload reports per-camera
+  // stream state (kamrui_camera_1_stream / kamrui_camera_2_stream /
+  // smartboard_stream). green = all up, yellow = some down, red = all down.
+  function repaintCamHealth(director) {
+    const badge = hostEl.querySelector('#mc-cam-health');
+    if (!badge) return;
+    const dot = badge.querySelector('.mc-cam-health-dot');
+    const lbl = badge.querySelector('.mc-cam-health-label');
+    const data = director && director.data;
+    if (!data) {
+      badge.className = 'mc-cam-health mc-cam-unknown';
+      if (lbl) lbl.textContent = 'cams?';
+      return;
+    }
+    const cams = [
+      !!data.kamrui_camera_1_stream,
+      !!data.kamrui_camera_2_stream,
+      !!data.smartboard_stream,
+    ];
+    const up = cams.filter(Boolean).length;
+    let cls = 'mc-cam-green', txt = 'cams ' + up + '/3';
+    if (up === 0) { cls = 'mc-cam-red'; txt = 'cams down'; }
+    else if (up < cams.length) { cls = 'mc-cam-yellow'; txt = 'cams ' + up + '/3'; }
+    badge.className = 'mc-cam-health ' + cls;
+    if (lbl) lbl.textContent = txt;
+  }
+
   async function syncLive() {
+    let director = null;
     try {
       const status = await api.liveStream.status();
-      const director = status && status.ai_director && status.ai_director.data;
-      liveActive = !!(director && director.stream_active === true);
+      director = status && status.ai_director;
+      const data = director && director.data;
+      liveActive = !!(data && data.stream_active === true);
     } catch {
       liveActive = false;
     }
     repaintLive();
+    repaintCamHealth(director);
   }
 
   async function onStartLive() {

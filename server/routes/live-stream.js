@@ -156,16 +156,42 @@ router.post('/stop', async (req, res) => {
   const stream = await callDirector('POST', '/stream/stop');
   const mode = await callDirector('POST', '/mode/manual');
   const scene = await callDirector('POST', `/scene/${encodeURIComponent(HOLDING_SCENE)}`);
+
+  // Verify the stream actually stopped. The AI Director stop call can return
+  // ok while OBS is still winding down (or silently fail to tear down the
+  // PeerTube/OBS output). Poll /status every 2s for up to 10s; if
+  // stream_active is still true, send a second stop command.
+  let verifiedActive = null;
+  let secondStop = null;
+  try {
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const check = await callDirector('GET', '/status');
+      const active = !!(check && check.data && check.data.stream_active);
+      verifiedActive = active;
+      if (!active) break;
+    }
+    if (verifiedActive) {
+      secondStop = await callDirector('POST', '/stream/stop');
+      verifiedActive = !!(secondStop && secondStop.data && secondStop.data.stream_active);
+    }
+  } catch (_) { /* verification is best-effort; the primary stop already ran */ }
+
   logLiveStreamAction(req, 'stop', {
     stream_message: stream.data && stream.data.message || stream.message || null,
     scene: HOLDING_SCENE,
+    stream_active_after: verifiedActive,
+    second_stop_sent: !!secondStop,
   });
   res.json({
     ...payload,
-    success: stream.ok,
+    success: stream.ok && !verifiedActive,
     stream_stop: stream,
     mode,
     scene,
+    stream_active_after: verifiedActive,
+    second_stop: secondStop,
   });
 });
 

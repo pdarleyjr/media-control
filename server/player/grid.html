@@ -43,6 +43,18 @@
     .cell-preview-dot {
       width: 10px; height: 10px; border-radius: 50%; background: #475569;
     }
+    /* Loading placeholder shown while a live-stream cell waits its turn in the
+       staggered loading queue. Dark panel with a subtle pulsing indicator. */
+    .cell-loading-ph {
+      position: absolute; inset: 0; background: #0f172a;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .cell-loading-ph::after {
+      content: ''; width: 24px; height: 24px; border-radius: 50%;
+      border: 2px solid #334155; border-top-color: #60a5fa;
+      animation: mc-grid-spin 0.8s linear infinite;
+    }
+    @keyframes mc-grid-spin { to { transform: rotate(360deg); } }
     /* Screen-share frame: a labelled dark placeholder. The live WebRTC share is
        mounted ON TOP of this rect by the player's screen-share receiver (wall-tile
        rect mode), so this is what shows before/without an active share. */
@@ -172,6 +184,14 @@
       // empty slot's box (and the wall stays clean). Each cell uses its own
       // {x,y,w,h} percent rect when the operator resized it (reactive layout),
       // otherwise its fixed SLOT rect (default 4+2+4 — unchanged).
+      //
+      // STAGGERED LOADING: cells with live-stream iframes (hls.html, oz.html) are
+      // loaded one at a time with a 1.5-second delay between each. Creating 10
+      // hls.js instances simultaneously in one browser window causes a CPU spike
+      // that starves the Socket.io WebSocket ping handler → ping timeout →
+      // disconnect → reconnect → content reload → infinite cycle. Staggering lets
+      // each stream's hls.js initialize and settle before the next one starts.
+      var cellQueue = []; // {box, slot, cell, isShare} for deferred media creation
       for (var i = 0; i < MV.SLOTS.length; i++) {
         var slot = MV.SLOTS[i];
         var cell = cells[slot.id];
@@ -202,16 +222,53 @@
           ph.className = 'cell-share-ph';
           ph.innerHTML = esc(cell.l || 'Screen Share');
           box.appendChild(ph);
-        } else {
+          gridEl.appendChild(box);
+        } else if (previewMode) {
+          // Preview mode: placeholder only, no media
           box.appendChild(makeMedia(cell, slot.id === audioId));
-          if (cell.l) {
-            var lab = document.createElement('div');
-            lab.className = 'cell-label';
-            lab.innerHTML = esc(cell.l);
-            box.appendChild(lab);
-          }
+          if (cell.l) { var lab0 = document.createElement('div'); lab0.className = 'cell-label'; lab0.innerHTML = esc(cell.l); box.appendChild(lab0); }
+          gridEl.appendChild(box);
+        } else if (cell.k === 'v' || cell.k === 'm') {
+          // Video/image: load immediately (lightweight — single file, no hls.js)
+          box.appendChild(makeMedia(cell, slot.id === audioId));
+          if (cell.l) { var lab1 = document.createElement('div'); lab1.className = 'cell-label'; lab1.innerHTML = esc(cell.l); box.appendChild(lab1); }
+          gridEl.appendChild(box);
+        } else {
+          // Live-stream iframe (hls.html, oz.html, etc.): STAGGER the load.
+          // Box with label is added immediately (so the slot is visible), but the
+          // media iframe is deferred to prevent 10 concurrent hls.js instances
+          // from overwhelming the browser CPU and causing WebSocket ping timeouts.
+          if (cell.l) { var lab2 = document.createElement('div'); lab2.className = 'cell-label'; lab2.innerHTML = esc(cell.l); box.appendChild(lab2); }
+          var placeholder = document.createElement('div');
+          placeholder.className = 'cell-loading-ph';
+          box.appendChild(placeholder);
+          gridEl.appendChild(box);
+          cellQueue.push({ box: box, cell: cell, isAudio: slot.id === audioId, placeholder: placeholder });
         }
-        gridEl.appendChild(box);
+      }
+
+      // Staggered loading: process the deferred live-stream cells one at a time
+      // with a 1.5-second delay between each. This prevents the CPU spike that
+      // occurs when 10 hls.js instances start simultaneously, which was causing
+      // WebSocket ping timeouts → constant disconnect/reconnect → content never
+      // fully loading ("snail pace" / "takes minutes to load").
+      var STAGGER_MS = 1500;
+      function loadNextCell() {
+        if (cellQueue.length === 0) return;
+        var item = cellQueue.shift();
+        var media = makeMedia(item.cell, item.isAudio);
+        if (item.placeholder && item.placeholder.parentNode) {
+          item.placeholder.parentNode.replaceChild(media, item.placeholder);
+        } else {
+          item.box.appendChild(media);
+        }
+        if (cellQueue.length > 0) {
+          setTimeout(loadNextCell, STAGGER_MS);
+        }
+      }
+      // Start loading the first cell immediately, then stagger the rest.
+      if (cellQueue.length > 0) {
+        setTimeout(loadNextCell, 200);
       }
 
       // Audio unlock. The display player calls __mcEnableAudio() to turn the single
@@ -222,6 +279,10 @@
       // live player's own __mcEnableAudio (oz/hls expose it). Idempotent; no-op when
       // no cell carries audio.
       var _audioArmed = false;
+      var _audioRetryTimer = null;
+      var _audioRetryAttempts = 0;
+      var AUDIO_RETRY_MS = 500;
+      var AUDIO_RETRY_MAX = 10;
       function enableAudioCell() {
         if (!audioEl) return;
         try {
@@ -230,16 +291,28 @@
             var p = audioEl.play(); if (p && p.catch) p.catch(function () {});
           } else if (audioEl.contentWindow && typeof audioEl.contentWindow.__mcEnableAudio === 'function') {
             audioEl.contentWindow.__mcEnableAudio();   // same-origin oz/hls player
+          } else if (audioEl.tagName === 'IFRAME') {
+            // The live-player iframe may not have booted (defined its own
+            // __mcEnableAudio) at the instant the player arms us — e.g. the
+            // audio cell is still queued behind the staggered load, or its
+            // inner script hasn't run yet. Retry every 500ms for up to 10
+            // attempts so an early call before the inner player is ready still
+            // turns sound on instead of being silently dropped.
+            if (_audioArmed && _audioRetryAttempts < AUDIO_RETRY_MAX) {
+              _audioRetryAttempts++;
+              if (_audioRetryTimer) clearTimeout(_audioRetryTimer);
+              _audioRetryTimer = setTimeout(enableAudioCell, AUDIO_RETRY_MS);
+            }
           }
         } catch (e) { /* cross-origin or not ready — ignore */ }
       }
-      window.__mcEnableAudio = function () { _audioArmed = true; enableAudioCell(); };
+      window.__mcEnableAudio = function () { _audioArmed = true; _audioRetryAttempts = 0; enableAudioCell(); };
       // If the audio cell is a live-player iframe, it may not have booted (defined
       // its own __mcEnableAudio) at the instant the player arms us — retry when it
       // finishes loading, so an early call before the inner player is ready still
       // turns sound on.
       if (audioEl && audioEl.tagName === 'IFRAME') {
-        audioEl.addEventListener('load', function () { if (_audioArmed) enableAudioCell(); });
+        audioEl.addEventListener('load', function () { if (_audioArmed) { _audioRetryAttempts = 0; enableAudioCell(); } });
       }
       // Forward Command Center transport to same-origin controllable child players
       // (notably /player/doc/:id for PDF/PPT page navigation). Cross-origin frames

@@ -1851,6 +1851,24 @@ img.mc-cc-logo { background: transparent; box-shadow: none; padding: 0; }
   font-size: 22px; line-height: 1; font-weight: 800;
 }
 
+/* ---- camera health badge (action dock) ----
+   Small status pill driven by the AI Director per-camera stream state.
+   green = all cameras up, yellow = some down, red = all down, grey = unknown. */
+.mc-cam-health {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px;
+  align-self: center; padding: 6px 10px; border-radius: 999px;
+  background: #0f172a; color: #e2e8f0; font-size: var(--font-2, 12px);
+  font-weight: var(--mc-fw-bold, 700); letter-spacing: 0.02em;
+  border: 1px solid rgba(255,255,255,0.12);
+}
+.mc-cam-health-dot { width: 9px; height: 9px; border-radius: 50%; background: #64748b; box-shadow: 0 0 6px rgba(0,0,0,0.4); }
+.mc-cam-health.mc-cam-green .mc-cam-health-dot { background: #22c55e; }
+.mc-cam-health.mc-cam-yellow .mc-cam-health-dot { background: #eab308; }
+.mc-cam-health.mc-cam-red .mc-cam-health-dot { background: #ef4444; }
+.mc-cam-health.mc-cam-unknown .mc-cam-health-dot { background: #64748b; }
+.mc-cam-health.mc-cam-red { color: #fca5a5; }
+.mc-cam-health.mc-cam-yellow { color: #fde68a; }
+
 /* ---- restyled Content Library tab (rotated text, white rounded, blue chevron) ----
    Keeps the existing .mc-library-drawer open/close behavior; the .mc-cc-lib-tab
    modifier overrides surface/ink so it reads as the brand tab on dark-bg walls. */

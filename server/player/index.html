@@ -1381,18 +1381,35 @@
 
       socket.on('connect', () => {
         console.log('Connected');
+        // Clear any "reconnecting" overlay shown on disconnect/connect_error.
+        try { hideStatus(); } catch (e) { /* best-effort */ }
         register();
       });
 
       socket.on('disconnect', () => {
         console.log('Disconnected');
         stopHeartbeat();
+        // Show a visible "reconnecting" overlay instead of a blank/frozen page.
+        // Socket.io auto-reconnects underneath; this just tells a human (or a
+        // glance at the wall) that the control channel dropped and is retrying.
+        try {
+          showStatus(_t('connecting'));
+          document.getElementById('statusText').textContent = _t('connecting') + ' (reconnecting)';
+        } catch (e) { /* overlay is best-effort */ }
       });
 
       socket.on('connect_error', (err) => {
         document.getElementById('setupStatus').textContent = 'Connection failed: ' + err.message;
         document.getElementById('setupSpinner').style.display = 'none';
         document.getElementById('connectBtn').disabled = false;
+        // For a paired/managed kiosk display, surface a non-blank "Connecting to
+        // Media Control..." overlay so a dead server doesn't leave the wall black.
+        try {
+          if (config.paired) {
+            showStatus(_t('connecting'));
+            document.getElementById('statusText').textContent = 'Connecting to Media Control...';
+          }
+        } catch (e) { /* overlay is best-effort */ }
       });
 
       socket.on('device:registered', (data) => {

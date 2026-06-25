@@ -51,16 +51,22 @@ foreach ($d in $displays) {
   # top frame has the userHasInteracted flag set. This is a kiosk — the operator is
   # never going to tap the screen; media MUST autoplay with sound on TV1 and silently
   # on every other panel.
-  $args = @('--app="' + $playerUrl + '"', '--no-default-browser-check', '--no-first-run', '--disable-features=Translate', '--kiosk', '--autoplay-policy=no-user-gesture-required')
+  # NOTE: pass --app=<url> WITHOUT inner quotes. Quoting it as `--app="https://..."`
+  # makes Edge/Chrome treat the literal double-quotes as part of the URL, which breaks
+  # the managed-player route. The URL is already a single token (no spaces) so it needs
+  # no quoting. Start-Process -ArgumentList is passed the ARRAY directly (not joined)
+  # so each element is one verbatim argv entry — this also preserves the & and ? in
+  # the query string instead of letting the shell re-parse them.
+  $launchArgs = @('--app=' + $playerUrl, '--no-default-browser-check', '--no-first-run', '--disable-features=Translate', '--kiosk', '--autoplay-policy=no-user-gesture-required')
   # Mute every player EXCEPT TV1 (wall 1 label TV1) so only the Ultimea path sounds.
   # --mute-audio is the correct Chromium command-line flag to start a window muted.
   $isTv1 = ($d.wall -eq 1 -and $d.label -eq 'TV1')
-  if (-not $isTv1) { $args += '--mute-audio' }
+  if (-not $isTv1) { $launchArgs += '--mute-audio' }
   # Position the window on the target monitor. Chrome/Edge requires --window-position=X,Y
   # as a single flag (not two separate arguments).
-  if ($d.display) { $args += "--window-position=$($d.display)" }
+  if ($d.display) { $launchArgs += "--window-position=$($d.display)" }
   try {
-    $p = Start-Process -FilePath $browser -ArgumentList ($args -join ' ') -PassThru
+    $p = Start-Process -FilePath $browser -ArgumentList $launchArgs -PassThru
     $pids += $p.Id
     Write-Host "launched '$($d.label)' pid=$($p.Id) url=$playerUrl mute=$(-not $isTv1)"
   } catch {
