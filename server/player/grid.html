@@ -34,6 +34,15 @@
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     /* Empty slots stay pure black on the display (clean, intentional). */
+    /* Preview-mode placeholder (dashboard embed): dark panel with a dot indicator.
+       Zero network — the dashboard shows the layout without loading any streams. */
+    .cell-preview-ph {
+      position: absolute; inset: 0; background: #0f172a;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .cell-preview-dot {
+      width: 10px; height: 10px; border-radius: 50%; background: #475569;
+    }
     /* Screen-share frame: a labelled dark placeholder. The live WebRTC share is
        mounted ON TOP of this rect by the player's screen-share receiver (wall-tile
        rect mode), so this is what shows before/without an active share. */
@@ -96,11 +105,19 @@
         layout = MV.splitColumnsLayout(splitParam);
       }
 
+      // PREVIEW MODE: when &preview=1 is present (dashboard embed), render each
+      // cell as a labeled placeholder instead of loading live HLS/camera streams.
+      // This lets the dashboard show the multiview layout (which channel is in
+      // which slot) with ZERO network connections — no HLS segments, no hls.js,
+      // no CDN load. The physical TV plays the full live grid (no preview param).
+      var previewMode = params.get('preview') === '1';
+
       // At most ONE cell plays sound on the wall (operator's pick); the rest stay
       // muted to avoid cacophony. audioEl is that cell's <video> or live-player
       // iframe; window.__mcEnableAudio() (called by the display player after the
       // one-time user gesture that satisfies the autoplay policy) unmutes it.
-      var audioId = MV.audioSlotId(cells);
+      // In preview mode no audio cell is created (no media elements at all).
+      var audioId = previewMode ? null : MV.audioSlotId(cells);
       var audioEl = null;
 
       function esc(s) {
@@ -110,6 +127,18 @@
       }
 
       function makeMedia(cell, isAudio) {
+        // PREVIEW MODE: render a labeled placeholder instead of any media element.
+        // Zero HLS streams, zero hls.js, zero CDN connections. The dashboard
+        // shows the layout (which channel is in which slot) without overloading
+        // the CDN when combined with the 5 TVs also loading the live grid.
+        if (previewMode) {
+          var ph = document.createElement('div');
+          ph.className = 'cell-preview-ph';
+          var dot = document.createElement('span');
+          dot.className = 'cell-preview-dot';
+          ph.appendChild(dot);
+          return ph;
+        }
         var el;
         if (cell.k === 'v') {
           el = document.createElement('video');
