@@ -77,7 +77,16 @@ const dashboardCsp = helmet.contentSecurityPolicy({
   useDefaults: true,
   directives: {
     defaultSrc: ["'self'"],
-    scriptSrc: ["'self'"],
+    // Cloudflare auto-injects its web-analytics beacon (static.cloudflareinsights.com)
+    // and an inline bootstrap snippet into every served HTML page at the edge.
+    // Both are blocked by 'self' alone, producing CSP console warnings on every load
+    // and causing Cloudflare's CAPTCHA/bot-check script to fail. Allow them explicitly.
+    // The inline bootstrap hash is stable across Cloudflare edge nodes.
+    scriptSrc: [
+      "'self'",
+      "https://static.cloudflareinsights.com",
+      "'sha256-ZswfTY7H35rbv8WC7NXBoiC7WNu86vSzCDChNWwZZDM='",
+    ],
     scriptSrcAttr: ["'unsafe-inline'"],
     styleSrc: ["'self'", "'unsafe-inline'"],
     styleSrcAttr: ["'unsafe-inline'"],
@@ -85,7 +94,7 @@ const dashboardCsp = helmet.contentSecurityPolicy({
     mediaSrc: ["'self'", 'blob:', 'https:'],
     connectSrc: ["'self'", 'wss:', 'ws:', 'https:'],
     fontSrc: ["'self'", 'data:'],
-    frameSrc: ["'self'", 'https://www.youtube.com', 'https://youtube.com', 'https://*.mbfdhub.com'],
+    frameSrc: ["'self'", 'https://www.youtube.com', 'https://youtube.com', 'https://*.mbfdhub.com', 'https://www.youtube-nocookie.com'],
     objectSrc: ["'none'"],
     baseUri: ["'self'"],
     formAction: ["'self'"],
@@ -93,8 +102,6 @@ const dashboardCsp = helmet.contentSecurityPolicy({
     // External Sites widget. All other origins still rejected.
     frameAncestors: ["'self'", "https://cloud.mbfdhub.com"],
     // Don't force HTTPS — self-hosted deployments may run on HTTP-only LANs.
-    // Public production traffic is upgraded by Cloudflare / the reverse proxy and
-    // protected by the HSTS header set above.
     upgradeInsecureRequests: null,
   },
 });

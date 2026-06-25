@@ -293,6 +293,24 @@
 }
 .mc-wall-span-shot { width: 100%; height: 100%; object-fit: cover; display: block; }
 .mc-wall-span-empty { color: var(--mc-text-on-dark-muted, #94A3B8); font-size: var(--mc-font-size-sm); }
+/* "Now playing" label overlay on the span preview: visible even on dark screenshots */
+.mc-wall-span-np-label {
+  position: absolute;
+  bottom: 6px;
+  left: 6px;
+  right: 6px;
+  background: rgba(0,0,0,.65);
+  backdrop-filter: blur(4px);
+  color: #f1f5f9;
+  font-size: clamp(9px, 1.1cqw, 12px);
+  font-weight: 600;
+  padding: 3px 7px;
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
 /* Live content embedded directly in a stage frame (img/video/iframe). Fills the
    frame edge-to-edge like the screenshot it replaces; iframes carry no border. */
 .mc-live-embed {

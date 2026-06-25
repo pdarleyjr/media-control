@@ -265,8 +265,16 @@ function wallSpanPreview(leader) {
   }
   const f = freshness(leader.screenshot_at);
   const staleCls = (pv && !pv.poster && (f.stale || !leader.online)) ? ' mc-shot-stale' : '';
+  // Always overlay a "now playing" label on the span layer so operators can read
+  // what is on the wall even when the screenshot is dark (e.g. a screensaver,
+  // live ops dashboard, or any dark-background content). The label chip sits at
+  // the bottom-left of the card as a translucent pill.
+  const npLabel = leader.now_playing && leader.now_playing.label && leader.now_playing.kind !== 'idle'
+    ? `<div class="mc-wall-span-np-label">${esc(leader.now_playing.label)}</div>`
+    : '';
   return `<div class="mc-wall-span-layer" data-device-id="${esc(leader.id)}">
     <img class="mc-wall-span-shot${staleCls}${pv.poster ? ' mc-shot-poster' : ''}" src="${esc(pv.src)}" alt="${esc(t('mc.card.preview_alt', { name: leader.name }))}" loading="lazy">
+    ${npLabel}
   </div>`;
 }
 

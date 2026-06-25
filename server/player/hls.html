@@ -76,7 +76,22 @@
       };
 
       var hls = null, reresolves = 0, MAX = 5, stallTimer = null, stopped = false;
-      function showState(on, msg) { if (msg) stateText.textContent = msg; stateEl.classList.toggle('hide', !on); }
+      // After showing "Reconnecting..." we keep trying every 30 s — live streams
+      // go down briefly (CDN origin restarts, midnight slate switches, etc.) and
+      // a player that gives up permanently is useless. Reset reresolves so the
+      // full resolve→attach cycle repeats.
+      var recoveryTimer = null;
+      function clearRecovery() { if (recoveryTimer) { clearInterval(recoveryTimer); recoveryTimer = null; } }
+      function armRecovery() {
+        clearRecovery();
+        recoveryTimer = setInterval(function () { reresolves = 0; resolveAndPlay(); }, 30000);
+      }
+      function showState(on, msg) {
+        if (msg) stateText.textContent = msg;
+        stateEl.classList.toggle('hide', !on);
+        if (on && msg === 'Reconnecting…') armRecovery();
+        else clearRecovery();
+      }
       function clearStall() { if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; } }
       function armStall() { clearStall(); stallTimer = setTimeout(onStall, 45000); }
       function onPlaying() { showState(false); clearStall(); reresolves = 0; }
