@@ -925,6 +925,47 @@ function applyCanvasLayersDefaultFill() {
 }
 applyCanvasLayersDefaultFill();
 
+// ── YouTube MIME self-heal ─────────────────────────────────────────────────────
+// Content rows created before the MIME resolver fix were stored with mime_type
+// 'text/html' or 'image/jpeg' for YouTube URLs. The player routes those through
+// /player/site.html → Chromium headless → YouTube shows "sign in to confirm
+// you're not a bot" → screenshot of the bot-check page plays on the display.
+// Fix: one-time UPDATE of all such rows to mime_type='video/youtube'.
+const YOUTUBE_MIME_HEAL_ID = 'youtube_mime_heal_v1';
+function healYoutubeMimeTypes() {
+  const already = db.prepare('SELECT 1 FROM schema_migrations WHERE id = ?').get(YOUTUBE_MIME_HEAL_ID);
+  if (already) return;
+  try {
+    const updated = db.prepare(`
+      UPDATE content
+      SET mime_type = 'video/youtube'
+      WHERE mime_type IN ('text/html', 'image/jpeg', 'image/png')
+        AND remote_url REGEXP '(?:youtube\.com/(?:watch|embed|v|shorts)|youtu\.be/)'
+    `).run();
+    // SQLite doesn't have REGEXP by default — use a JS loop as a fallback.
+    if (updated === undefined || updated.changes === undefined) throw new Error('regexp_unsupported');
+    console.log(`[boot] YouTube MIME heal: updated ${updated.changes} row(s) to video/youtube`);
+  } catch {
+    // REGEXP not available — iterate with JS
+    try {
+      const rows = db.prepare(
+        "SELECT id, remote_url FROM content WHERE mime_type IN ('text/html','image/jpeg','image/png') AND remote_url LIKE '%youtube%'"
+      ).all();
+      const ytRe = /(?:youtube\.com\/(?:watch|embed|v|shorts)|youtu\.be\/)/i;
+      let count = 0;
+      const stmt = db.prepare("UPDATE content SET mime_type='video/youtube' WHERE id=?");
+      for (const r of rows) {
+        if (ytRe.test(r.remote_url || '')) { stmt.run(r.id); count++; }
+      }
+      console.log(`[boot] YouTube MIME heal (JS): updated ${count} row(s) to video/youtube`);
+    } catch (e2) {
+      console.warn('[boot] YouTube MIME heal skipped:', e2.message);
+    }
+  }
+  try { db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(YOUTUBE_MIME_HEAL_ID); } catch { /* ignore */ }
+}
+healYoutubeMimeTypes();
+
 // Prune old telemetry (keep last 24h worth at 15s intervals = ~5760, cap at 6000)
 function pruneTelemetry(deviceId) {
   db.prepare(`

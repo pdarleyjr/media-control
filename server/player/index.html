@@ -2434,17 +2434,31 @@
       const isFollower = !!wallConfig && !wallConfig.is_leader;
 
       const remoteUrl = item.remote_url;
+      // ── Runtime MIME self-heal ──────────────────────────────────────────────
+      // Older content rows were stored with mime_type='text/html' or 'image/jpeg'
+      // for YouTube URLs before the resolver was fixed. Detect this here and force
+      // the correct type so these items NEVER reach the site.html/Chromium path:
+      //   • Chromium renders YouTube headless → Google shows "sign in to confirm
+      //     you're not a bot" → screenshot of that page → stuck on every display.
+      //   • The YouTube IFrame API (createYoutubeEmbed) is the correct renderer.
+      const _ytPattern = /(?:youtube\.com\/(?:watch|embed|v|shorts)|youtu\.be\/)/i;
+      let _item = item;
+      if (_item.mime_type !== 'video/youtube' && remoteUrl && _ytPattern.test(remoteUrl)) {
+        _item = Object.assign({}, item, { mime_type: 'video/youtube' });
+      }
+      const effectiveMime = _item.mime_type;
+
       // A deck/presentation player page (or any text/html remote_url) is an
       // embedded WEB PAGE rendered in an iframe — never an <img>/<video>. The
       // deck-URL test also rescues legacy content rows still mis-typed image/jpeg
       // (the "presentation won't play on the wall" bug).
-      const isWebpage = item.mime_type === 'text/html' ||
+      const isWebpage = effectiveMime === 'text/html' ||
         (!!remoteUrl && /\/player\/deck\//.test(remoteUrl));
-      const isYoutube = !isWebpage && item.mime_type === 'video/youtube';
-      const isVideo = !isYoutube && !isWebpage && item.mime_type?.startsWith('video/');
-      const isImage = !isWebpage && item.mime_type?.startsWith('image/');
-      const isPdf = !isWebpage && item.mime_type === 'application/pdf';
-      const isOffice = !isWebpage && isOfficeMime(item.mime_type);
+      const isYoutube = !isWebpage && effectiveMime === 'video/youtube';
+      const isVideo = !isYoutube && !isWebpage && effectiveMime?.startsWith('video/');
+      const isImage = !isWebpage && effectiveMime?.startsWith('image/');
+      const isPdf = !isWebpage && effectiveMime === 'application/pdf';
+      const isOffice = !isWebpage && isOfficeMime(effectiveMime);
       const serverUrl = config.serverUrl;
       const src = contentSrcForItem(item);
       // 2026-05-28: per-item fit_mode override. Null/undefined falls back to

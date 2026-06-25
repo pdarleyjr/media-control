@@ -32,10 +32,11 @@ function nowPlayingFromSnapshot(snapshotJson) {
   else if (/msword|ms-excel|ms-powerpoint|officedocument\.(?:wordprocessing|spreadsheet|presentation)ml|oasis\.opendocument/.test(mime)) kind = 'document';
   else if (it.widget_id) kind = 'widget';
   else if (remote) {
-    // Multiview grid → 'grid' kind so the dashboard embeds it as a LIVE iframe
-    // and never calls site-shot/Chromium (which crashes in Docker and causes the
-    // entire reconnect storm via CPU spike → WebSocket heartbeat timeouts).
+    // Multiview grid → 'grid' so live-preview renders a CSS mosaic thumbnail
     if (/\/player\/grid\.html/i.test(remote)) kind = 'grid';
+    // Live streams and camera pages → 'web' so live-preview shows a LIVE badge.
+    // These are never rendered as site.html/Chromium screenshots.
+    else if (/\/player\/(?:hls|oz|cam|classroom-camera)\.html/i.test(remote)) kind = 'web';
     else kind = 'web';
   }
   // contentId lets the stage attach the content's poster thumbnail for content
