@@ -466,17 +466,30 @@
           if (f.contentWindow) {
             f.contentWindow.postMessage({ __mc_transport: action }, '*');
             posted = true;
+            // Direct DOM fallback: if the iframe is same-origin (our own
+            // /player/doc or /player/deck page), we can bypass postMessage
+            // entirely and call the page's handler directly. This is a
+            // belt-and-suspenders fix for Electron kiosks where postMessage
+            // to same-origin iframes sometimes silently fails (Electron's
+            // sandbox/contextIsolation can delay or drop cross-frame
+            // messages under memory pressure or after a renderer reload).
+            try {
+              var doc = f.contentDocument;
+              if (doc) {
+                // doc.html exposes handleAction on window; deck.html listens
+                // on window 'message'. Try both.
+                var w = f.contentWindow;
+                if (w && typeof w.handleAction === 'function') {
+                  w.handleAction(action);
+                }
+              }
+            } catch (e2) { /* cross-origin — postMessage is the only path */ }
           }
         } catch (e) { /* cross-origin/none */ }
       });
       // Retry: the doc/deck iframe may have a contentWindow (about:blank) before
       // its message listener is registered (the page's <script> hasn't run yet).
-      // If no iframe was found at all (content still mounting), or if we posted
-      // but the iframe might not be ready, retry up to 3 times over 1.5s. This
-      // fixes "slide controls non-functional" when the transport command arrives
-      // in the gap between iframe creation and the doc.html/deck.html script
-      // registering its window 'message' listener.
-      if (!posted || document.querySelector('iframe') === null) {
+      if (!posted) {
         let attempts = 0;
         const retry = setInterval(() => {
           attempts++;
@@ -485,12 +498,16 @@
             try {
               if (f.contentWindow) {
                 f.contentWindow.postMessage({ __mc_transport: action }, '*');
+                try {
+                  var w = f.contentWindow;
+                  if (w && typeof w.handleAction === 'function') w.handleAction(action);
+                } catch (_) {}
                 found = true;
               }
             } catch (e) { /* cross-origin/none */ }
           });
-          if (found || attempts >= 3) clearInterval(retry);
-        }, 500);
+          if (found || attempts >= 5) clearInterval(retry);
+        }, 300);
       }
       return posted;
     }

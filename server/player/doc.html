@@ -94,6 +94,11 @@
         else if (action === 'restart') { stopAuto(); render(1, true); }
         else if (action === 'play_pause') toggleAuto();
       }
+      // Expose handleAction on window so the parent player page can call it
+      // directly (same-origin) as a fallback when postMessage is unreliable
+      // (Electron kiosks under memory pressure can silently drop cross-frame
+      // postMessages).
+      window.handleAction = handleAction;
 
       window.addEventListener('message', function (event) {
         var data = event && event.data;

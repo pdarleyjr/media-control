@@ -174,13 +174,19 @@
   // {__mc_transport:'next'|'prev'|'play_pause'|'restart'} to this deck (loaded
   // in its content iframe) via postMessage. No origin trust needed — we only
   // act on a small known set of slide-navigation actions.
-  window.addEventListener('message', function(e){
-    var a = e && e.data && e.data.__mc_transport;
-    if(!a) return;
+  // Also exposed on window so the parent player can call it directly (same-origin
+  // fallback for Electron kiosks where postMessage can be unreliable).
+  function handleAction(a) {
     if(a==='next') next();
     else if(a==='prev') prev();
     else if(a==='play_pause') togglePause();
     else if(a==='restart') show(0);
+  }
+  window.handleAction = handleAction;
+  window.addEventListener('message', function(e){
+    var a = e && e.data && e.data.__mc_transport;
+    if(!a) return;
+    handleAction(a);
   });
 
   show(0);
