@@ -728,15 +728,6 @@ module.exports = function setupDeviceSocket(io) {
       emitToDeviceWorkspace(dashboardNs, currentDeviceId, 'dashboard:playback-state', data);
     });
 
-    // Debug: transport diagnostic from the player (temporary — pinpoints why
-    // slide controls don't work: how many iframes, their srcs, whether the
-    // controllable-embed branch is reached).
-    socket.on('player:debug-transport', (data) => {
-      try {
-        console.log(`[TRANSPORT-DIAG] device=${currentDeviceId} ${JSON.stringify(data)}`);
-      } catch (_) {}
-    });
-
     // Play event logging (proof-of-play)
     socket.on('device:play-event', (data) => {
       if (!requireDeviceAuth()) return;
