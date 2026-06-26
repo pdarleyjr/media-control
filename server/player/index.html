@@ -1683,7 +1683,25 @@
         if (data.type === 'launch') { document.getElementById('screenOffOverlay')?.remove(); }
         if (data.type === 'screen_off') toggleScreenOff();
         if (data.type === 'screen_on') { document.getElementById('screenOffOverlay')?.remove(); }
-        if (data.type === 'transport') doTransport(data.payload && data.payload.action);
+        if (data.type === 'transport') {
+          try {
+            const _item = playlist[currentIndex] || {};
+            const _iframes = document.querySelectorAll('iframe');
+            const _diag = {
+              action: data.payload && data.payload.action,
+              plLen: playlist.length, curIdx: currentIndex,
+              mime: _item.mime_type, remote: _item.remote_url,
+              iframes: _iframes.length,
+              iframeSrcs: Array.from(_iframes).map(f => f.src || f.getAttribute('src') || '(none)').slice(0, 5),
+              wallStage: !!document.querySelector('.wall-stage'),
+              hasWallCfg: !!wallConfig,
+              container: !!document.getElementById('playerContainer'),
+            };
+            console.log('[transport-diag]', JSON.stringify(_diag));
+            if (socket && socket.connected) socket.emit('player:debug-transport', _diag);
+          } catch (_) {}
+          doTransport(data.payload && data.payload.action);
+        }
       });
 
       // Transport (Broadcast Center control bar): next/prev/play_pause/restart.
