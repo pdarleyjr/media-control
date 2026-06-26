@@ -89,7 +89,11 @@ export function mountActionDock(hostEl, opts = {}) {
 
   // Camera health badge. The AI Director /status payload reports per-camera
   // stream state (kamrui_camera_1_stream / kamrui_camera_2_stream /
-  // smartboard_stream). green = all up, yellow = some down, red = all down.
+  // smartboard_stream), but those flags are only true while a feed is actively
+  // publishing. When no live stream is on-air they're all false regardless of
+  // camera availability, so showing "down" then would be misleading. We
+  // therefore only grade the cameras while a stream is live; otherwise we show
+  // a neutral "idle" pill. green = all up, yellow = some down, red = all down.
   function repaintCamHealth(director) {
     const badge = hostEl.querySelector('#mc-cam-health');
     if (!badge) return;
@@ -99,6 +103,11 @@ export function mountActionDock(hostEl, opts = {}) {
     if (!data) {
       badge.className = 'mc-cam-health mc-cam-unknown';
       if (lbl) lbl.textContent = 'cams?';
+      return;
+    }
+    if (!data.stream_active) {
+      badge.className = 'mc-cam-health mc-cam-unknown';
+      if (lbl) lbl.textContent = 'cams idle';
       return;
     }
     const cams = [
