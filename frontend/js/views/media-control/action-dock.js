@@ -98,7 +98,6 @@ export function mountActionDock(hostEl, opts = {}) {
   function repaintCamHealth(director) {
     const badge = hostEl.querySelector('#mc-cam-health');
     if (!badge) return;
-    const dot = badge.querySelector('.mc-cam-health-dot');
     const lbl = badge.querySelector('.mc-cam-health-label');
     const data = director && director.data;
     if (!data) {
