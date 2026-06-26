@@ -11,9 +11,17 @@ const { audit } = require('../lib/audit');
 const HOLDING_SCENE = 'HOLDING_SLIDE';
 
 function requestBaseUrl(req) {
+  // The live-stream player URL is loaded by OBS's browser source on the SAME
+  // machine as the media-control server. Always use localhost (127.0.0.1:8096)
+  // for the OBS browser source so the player's WebSocket + content URLs bypass
+  // the Cloudflare tunnel entirely — the tunnel adds latency and can fail the
+  // WebSocket upgrade, leaving the PIP stuck in "connecting". Direct localhost
+  // is instant and reliable for same-machine OBS.
   const configured = config.liveStream.playerBaseUrl;
   if (configured) return configured;
-  return `${req.protocol}://${req.get('host')}`;
+  // Default to localhost for OBS (same machine). Fall back to the request URL
+  // only if explicitly unset AND no localhost port is available.
+  return 'http://127.0.0.1:8096';
 }
 
 function displayPayload(req) {

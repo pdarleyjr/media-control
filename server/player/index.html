@@ -469,6 +469,29 @@
           }
         } catch (e) { /* cross-origin/none */ }
       });
+      // Retry: the doc/deck iframe may have a contentWindow (about:blank) before
+      // its message listener is registered (the page's <script> hasn't run yet).
+      // If no iframe was found at all (content still mounting), or if we posted
+      // but the iframe might not be ready, retry up to 3 times over 1.5s. This
+      // fixes "slide controls non-functional" when the transport command arrives
+      // in the gap between iframe creation and the doc.html/deck.html script
+      // registering its window 'message' listener.
+      if (!posted || document.querySelector('iframe') === null) {
+        let attempts = 0;
+        const retry = setInterval(() => {
+          attempts++;
+          let found = false;
+          document.querySelectorAll('iframe').forEach((f) => {
+            try {
+              if (f.contentWindow) {
+                f.contentWindow.postMessage({ __mc_transport: action }, '*');
+                found = true;
+              }
+            } catch (e) { /* cross-origin/none */ }
+          });
+          if (found || attempts >= 3) clearInterval(retry);
+        }, 500);
+      }
       return posted;
     }
     // YouTube player state. Declared up front because the cached-playlist restore

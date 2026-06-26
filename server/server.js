@@ -250,7 +250,11 @@ app.get('/player/live-stream', (req, res) => {
         deviceId: display.id,
         deviceToken: display.device_token,
         deviceName: display.name,
-        serverUrl: `${req.protocol}://${req.get('host')}`,
+        // The live-stream player runs inside OBS's browser source on the SAME
+        // machine. Always use localhost so the WebSocket + content bypass the
+        // Cloudflare tunnel (which adds latency and can fail the WS upgrade,
+        // leaving the PIP stuck in "connecting").
+        serverUrl: 'http://127.0.0.1:8096',
       },
     };
     const inject = '  <script>window.__playerConfig = ' + JSON.stringify(publicConfig).replace(/</g, '\\u003c') + ';</script>\n';
