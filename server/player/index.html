@@ -1695,13 +1695,42 @@
       });
 
       socket.on('device:command', (data) => {
-        console.log('Command:', data.type);
+        console.log('Command:', data.type, data.payload);
         if (data.type === 'refresh') location.reload();
         if (data.type === 'launch') { document.getElementById('screenOffOverlay')?.remove(); }
         if (data.type === 'screen_off') toggleScreenOff();
         if (data.type === 'screen_on') { document.getElementById('screenOffOverlay')?.remove(); }
-        if (data.type === 'transport') doTransport(data.payload && data.payload.action);
+        if (data.type === 'transport') {
+          _showTransportDebug('recv: ' + (data.payload && data.payload.action));
+          doTransport(data.payload && data.payload.action);
+        }
       });
+
+      // ── Transport debug overlay ──────────────────────────────────────────
+      // A small persistent status line at the top of the screen that shows the
+      // last transport command received and its result. This is VISIBLE on the
+      // actual TV so the operator can confirm commands are arriving without
+      // needing DevTools. Auto-fades after 5 seconds.
+      var _tdEl = null;
+      var _tdTimer = null;
+      function _showTransportDebug(msg) {
+        if (!_tdEl) {
+          _tdEl = document.createElement('div');
+          _tdEl.style.cssText = 'position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:99999;background:rgba(0,0,0,0.85);color:#22c55e;font:700 14px/1.4 monospace;padding:4px 12px;border-radius:0 0 8px 8px;border:2px solid #22c55e;border-top:none;pointer-events:none;transition:opacity 0.3s;max-width:90vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+          document.body.appendChild(_tdEl);
+        }
+        _tdEl.textContent = '[MC] ' + msg;
+        _tdEl.style.opacity = '1';
+        _tdEl.style.color = '#22c55e';
+        _tdEl.style.borderColor = '#22c55e';
+        if (_tdTimer) clearTimeout(_tdTimer);
+        _tdTimer = setTimeout(function() { _tdEl.style.opacity = '0'; }, 5000);
+      }
+      function _showTransportError(msg) {
+        _showTransportDebug('ERROR: ' + msg);
+        if (_tdEl) { _tdEl.style.color = '#ef4444'; _tdEl.style.borderColor = '#ef4444'; }
+        console.error('[transport]', msg);
+      }
 
       // Transport (Broadcast Center control bar): next/prev/play_pause/restart.
       // If the current item is a broadcast deck / external URL, forward the action
@@ -1714,17 +1743,11 @@
           const item = playlist[currentIndex] || {};
 
           // ── YouTube IFrame API fast path ───────────────────────────────────
-          // activeYtPlayer is the live YT.Player (created by createYoutubeEmbed).
-          // The YouTube iframe does NOT handle __mc_transport postMessages so
-          // postTransportToFrames would return true (frame found) but nothing
-          // would happen. Handle all YouTube actions here via the JS API before
-          // any iframe-postMessage fallback.
           if (activeYtPlayer) {
             try {
               if (action === 'play_pause') {
                 const state = typeof activeYtPlayer.getPlayerState === 'function'
                   ? activeYtPlayer.getPlayerState() : -1;
-                // YT.PlayerState: 1=playing, 2=paused. Any other state: start playing.
                 if (state === 1) activeYtPlayer.pauseVideo();
                 else activeYtPlayer.playVideo();
               } else if (action === 'next') {
@@ -1732,7 +1755,6 @@
               } else if (action === 'prev') {
                 if (playlist.length) { currentIndex = (currentIndex - 2 + playlist.length) % playlist.length; nextItem(); }
               } else if (action === 'restart') {
-                // Restart from the beginning of the video (seek to 0).
                 if (typeof activeYtPlayer.seekTo === 'function') {
                   activeYtPlayer.seekTo(0, true);
                   activeYtPlayer.playVideo();
@@ -1740,16 +1762,102 @@
                   currentIndex = -1; nextItem();
                 }
               }
-            } catch (e) { /* never break playback */ }
-            return; // always return — IFrame API handled it
+            } catch (e) { _showTransportError('YT: ' + e.message); }
+            return;
           }
 
-          // ── Controllable embedded player (deck / office doc / PDF / grid) ──
-          // A controllable embed is any content with a remote_url (web page type)
-          // or a document MIME, or containing an iframe we can postMessage. Only
-          // fall through to postTransportToFrames when there IS no activeYtPlayer,
-          // since postTransportToFrames blindly returns `true` for the YouTube
-          // iframe element even though that iframe ignores our messages.
+          // ── Direct DOM manipulation for same-origin doc/deck iframes ──────
+          // This is the PRIMARY transport mechanism. Instead of relying on
+          // postMessage (which can be silently dropped by Electron's renderer
+          // under memory pressure or after SW reloads), we directly access the
+          // iframe's DOM and manipulate the slide image/page element. This is
+          // the most primitive possible mechanism — no message passing, no
+          // function calls, just direct DOM reads + writes.
+          var iframe = document.querySelector('#playerContainer iframe, .wall-stage iframe, .zone iframe');
+          if (iframe) {
+            var handled = false;
+            try {
+              var idoc = iframe.contentDocument;
+              if (idoc) {
+                // doc.html: the slide image is #page, src is /player/doc-page/ID/N.png
+                var pageImg = idoc.getElementById('page');
+                if (pageImg && pageImg.src) {
+                  // Parse current page number from the img src
+                  var m = pageImg.src.match(/\/(\d+)\.png/);
+                  var curPage = m ? parseInt(m[1], 10) : 1;
+                  // Get total pages from the status text "filename · N / M"
+                  var statusEl = idoc.getElementById('status');
+                  var totalPages = 1;
+                  if (statusEl && statusEl.textContent) {
+                    var tm = statusEl.textContent.match(/(\d+)\s*\/\s*(\d+)/);
+                    if (tm) totalPages = parseInt(tm[2], 10);
+                  }
+                  var newPage = curPage;
+                  if (action === 'next') newPage = Math.min(totalPages, curPage + 1);
+                  else if (action === 'prev') newPage = Math.max(1, curPage - 1);
+                  else if (action === 'restart') newPage = 1;
+                  else if (action === 'play_pause') {
+                    // Toggle auto-advance by calling the iframe's function
+                    try { if (iframe.contentWindow.toggleAuto) iframe.contentWindow.toggleAuto(); } catch(_) {}
+                    handled = true;
+                  }
+                  if (!handled && newPage !== curPage) {
+                    // Build the new page URL from the old one (preserve version query)
+                    var newSrc = pageImg.src.replace(/\/\d+\.png/, '/' + newPage + '.png');
+                    pageImg.src = newSrc;
+                    // Update the status text
+                    if (statusEl) {
+                      var fn = statusEl.textContent.split('·')[0].trim();
+                      statusEl.textContent = fn + ' · ' + newPage + ' / ' + totalPages;
+                    }
+                    handled = true;
+                    _showTransportDebug('slide ' + curPage + '→' + newPage + ' / ' + totalPages);
+                  }
+                }
+                // deck.html: slides are .slide elements with .show class
+                if (!handled) {
+                  var slides = idoc.querySelectorAll('.slide');
+                  if (slides.length > 0) {
+                    var curIdx = 0;
+                    slides.forEach(function(s, i) { if (s.classList.contains('show')) curIdx = i; });
+                    var newIdx = curIdx;
+                    if (action === 'next') newIdx = Math.min(slides.length - 1, curIdx + 1);
+                    else if (action === 'prev') newIdx = Math.max(0, curIdx - 1);
+                    else if (action === 'restart') newIdx = 0;
+                    if (newIdx !== curIdx) {
+                      slides[curIdx].classList.remove('show');
+                      slides[newIdx].classList.add('show');
+                      handled = true;
+                      _showTransportDebug('deck ' + curIdx + '→' + newIdx + ' / ' + slides.length);
+                    }
+                  }
+                }
+              }
+            } catch (domErr) {
+              // Cross-origin or sandboxed — fall through to postMessage
+              _showTransportDebug('DOM access failed: ' + domErr.message + ' — trying postMessage');
+            }
+
+            // Fallback: postMessage + handleAction (for cross-origin or if DOM access failed)
+            if (!handled) {
+              try {
+                if (iframe.contentWindow) {
+                  iframe.contentWindow.postMessage({ __mc_transport: action }, '*');
+                  try {
+                    if (iframe.contentWindow.handleAction) iframe.contentWindow.handleAction(action);
+                  } catch (_) {}
+                  handled = true;
+                  _showTransportDebug('postMessage: ' + action);
+                }
+              } catch (pmErr) {
+                _showTransportError('postMessage failed: ' + pmErr.message);
+              }
+            }
+
+            if (handled) return;
+          }
+
+          // ── No controllable iframe — drive the playlist/video directly ────
           const isControllableEmbed = item.remote_url || isDocumentMime(item.mime_type)
             || document.querySelector('#playerContainer iframe, .zone iframe, .wall-stage iframe');
           if (isControllableEmbed) {
@@ -1757,18 +1865,20 @@
             if (posted) return;
           }
           const len = playlist.length || 0;
-          // Video may be inside .wall-stage (wall content) or directly in #playerContainer.
           const video = document.querySelector('#playerContainer video, .wall-stage video');
-          if (action === 'next') { nextItem(); }
-          else if (action === 'prev') { if (len) { currentIndex = (currentIndex - 2 + len) % len; nextItem(); } }
+          if (action === 'next') { nextItem(); _showTransportDebug('nextItem'); }
+          else if (action === 'prev') { if (len) { currentIndex = (currentIndex - 2 + len) % len; nextItem(); } _showTransportDebug('prevItem'); }
           else if (action === 'play_pause') {
             if (video) {
               if (video.paused) { unlockAudio(); video.play().catch(() => {}); }
               else { video.pause(); }
             }
+            _showTransportDebug('play_pause');
           }
-          else if (action === 'restart') { currentIndex = -1; nextItem(); }
-        } catch (e) { /* never break playback */ }
+          else if (action === 'restart') { currentIndex = -1; nextItem(); _showTransportDebug('restart'); }
+        } catch (e) {
+          _showTransportError('doTransport: ' + e.message);
+        }
       }
 
       // Phase 2: dashboard "Identify" action — flash a big high-contrast
