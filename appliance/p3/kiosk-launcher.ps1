@@ -17,8 +17,10 @@ if (-not (Test-Path $cfgPath)) {
   exit 2
 }
 $cfg = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json
-$serverUrl = $cfg.MC_SERVER_URL
-if (-not $serverUrl) { Write-Error 'config.local.json missing MC_SERVER_URL'; exit 2 }
+$serverUrl = $cfg.MC_SERVER_LAN_URL
+if (-not $serverUrl) { $serverUrl = $cfg.MC_SERVER_URL }
+if (-not $serverUrl) { Write-Error 'config.local.json missing MC_SERVER_URL or MC_SERVER_LAN_URL'; exit 2 }
+$serverUrl = $serverUrl.TrimEnd('/')
 
 # Defaults per planning/command-center/P3_ROOM_AGENT.md: TV1/2/3 = Video Wall 1,
 # TV4/5 = Video Wall 2. managedDisplays entries carry { deviceId, deviceToken,
@@ -45,7 +47,7 @@ foreach ($d in $displays) {
     Write-Warning "display '$($d.label)' missing deviceId/deviceToken -- skipping"
     continue
   }
-  $playerUrl = "$serverUrl/player/managed?deviceId=$([uri]::EscapeDataString($d.deviceId))&deviceToken=$([uri]::EscapeDataString($d.deviceToken))"
+  $playerUrl = "$serverUrl/player/managed?device_id=$([uri]::EscapeDataString($d.deviceId))&token=$([uri]::EscapeDataString($d.deviceToken))"
   # --autoplay-policy=no-user-gesture-required: without this, Chrome blocks unmuted
   # video.play() in nested iframes (news HLS via grid.html → hls.html) even when the
   # top frame has the userHasInteracted flag set. This is a kiosk — the operator is

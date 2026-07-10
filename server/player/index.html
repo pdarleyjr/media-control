@@ -249,6 +249,7 @@
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
+  <script src="/player/device-contract.js"></script>
   <script src="/player/player-routing.js"></script>
 <script>
 // Expose the player's socket to the screen-share receiver. The player JS
@@ -433,6 +434,14 @@
     let currentItemStartedAt = 0;
     let pendingWallStartAt = 0;
     let displayProfile = null;
+    let lastScreenshotSentAt = 0;
+    let lastTransportState = null;
+    let lastTransportAck = null;
+    let lastTransportCommand = null;
+    let playerStateRevision = 0;
+    let pendingDisplayStateRestore = null;
+    let displayStateRestoreTimer = null;
+    let displayStateRestoreAttempt = 0;
     // Followers in a video wall must stay silent — N copies of the same audio
     // slightly out of sync produce a flanged echo across the wall. Only the
     // leader is allowed to make sound. This helper is the single source of
@@ -456,7 +465,149 @@
       const q = fit === 'cover' ? '?fit=cover' : '';
       return '/player/doc/' + encodeURIComponent(item.content_id) + q;
     }
-    function postTransportToFrames(action) {
+    function isRestorableSlideItem(item) {
+      if (!item) return false;
+      if (isDocumentMime(item.mime_type)) return true;
+      const url = String(item.remote_url || item.asset_url || item.filepath || '');
+      return /\/player\/(?:deck|doc)\//.test(url);
+    }
+    function normalizeDisplayStateRestore(state) {
+      if (!state || typeof state !== 'object') return null;
+      const rawSlide = state.slide_index ?? state.slideIndex ?? state.page ?? state.page_index ?? state.slide;
+      const slide = parseInt(rawSlide, 10);
+      if (!Number.isFinite(slide) || slide < 1) return null;
+      const rawTotal = state.slide_total ?? state.slideTotal ?? state.total_pages ?? state.totalPages;
+      const total = parseInt(rawTotal, 10);
+      const restore = {
+        current_content_id: state.current_content_id || state.content_id || null,
+        current_asset_id: state.current_asset_id || state.asset_id || state.content_id || null,
+        content_type: state.content_type || state.media_type || state.kind || null,
+        slide_index: slide,
+        slide_total: Number.isFinite(total) && total > 0 ? total : null,
+        restore_source: state.restore_source || null,
+        restore_source_device_id: state.restore_source_device_id || null,
+        updated_at: state.updated_at || null,
+      };
+      const revision = parseInt(state.state_revision, 10);
+      if (Number.isInteger(revision) && revision >= 0) {
+        restore.state_revision = revision;
+        playerStateRevision = Math.max(playerStateRevision, revision);
+      }
+      return restore;
+    }
+    function clearDisplayStateRestore() {
+      if (displayStateRestoreTimer) {
+        clearTimeout(displayStateRestoreTimer);
+        displayStateRestoreTimer = null;
+      }
+      pendingDisplayStateRestore = null;
+      displayStateRestoreAttempt = 0;
+    }
+    function currentItemMatchesRestore(item, restore) {
+      if (!item || !restore) return false;
+      if (restore.current_content_id && item.content_id && restore.current_content_id !== item.content_id) return false;
+      const itemAssetId = item.asset_id || item.content_id || null;
+      if (restore.current_asset_id && itemAssetId && restore.current_asset_id !== itemAssetId && restore.current_asset_id !== item.content_id) return false;
+      return true;
+    }
+    function shouldHoldStateReportForRestore(state) {
+      const restore = pendingDisplayStateRestore;
+      if (!restore || restore.slide_index <= 1) return false;
+      const item = getCurrentItem();
+      if (!isRestorableSlideItem(item) || !currentItemMatchesRestore(item, restore)) return false;
+      const currentSlide = parseInt(state && state.slide_index, 10);
+      return !Number.isFinite(currentSlide) || currentSlide !== restore.slide_index;
+    }
+    function primeDisplayStateRestore(state, reason) {
+      const restore = normalizeDisplayStateRestore(state);
+      if (!restore || restore.slide_index <= 1) {
+        clearDisplayStateRestore();
+        return false;
+      }
+      pendingDisplayStateRestore = restore;
+      displayStateRestoreAttempt = 0;
+      if (reason) {
+        console.log('[restore] pending slide ' + restore.slide_index + ' from ' + (restore.restore_source || 'display') + ' via ' + reason);
+      }
+      return true;
+    }
+    function childSlideStateReady(childState, restore) {
+      if (!restore) return false;
+      if (!childState || typeof childState !== 'object') return false;
+      const total = parseInt(childState.slide_total ?? childState.total_pages ?? childState.totalPages, 10);
+      if (Number.isFinite(total) && total > 0 && total < restore.slide_index) return false;
+      return true;
+    }
+    function scheduleDisplayStateRestore(reason) {
+      if (!pendingDisplayStateRestore) return;
+      if (displayStateRestoreTimer) clearTimeout(displayStateRestoreTimer);
+      displayStateRestoreTimer = setTimeout(function retryRestore() {
+        displayStateRestoreTimer = null;
+        if (!pendingDisplayStateRestore) return;
+        if (tryApplyDisplayStateRestore(reason)) return;
+        displayStateRestoreAttempt++;
+        if (displayStateRestoreAttempt < 24) {
+          displayStateRestoreTimer = setTimeout(retryRestore, 250);
+          return;
+        }
+        console.warn('[restore] failed to restore slide ' + pendingDisplayStateRestore.slide_index + ' after iframe readiness timeout');
+        clearDisplayStateRestore();
+        publishPlayerState({ force: true });
+      }, 80);
+    }
+    function unwrapTransportPayload(payload) {
+      let current = payload;
+      for (let i = 0; i < 4; i++) {
+        if (!current || typeof current !== 'object' || Array.isArray(current)) break;
+        const nested = current.payload;
+        const wrapped = current.action || current.command || current.type;
+        if (!wrapped || !nested || typeof nested !== 'object' || Array.isArray(nested)) break;
+        current = nested;
+      }
+      return current && typeof current === 'object' && !Array.isArray(current) ? current : {};
+    }
+    function normalizeTransportCommand(input) {
+      if (window.MbfdDeviceContract && typeof window.MbfdDeviceContract.normalizeCommand === 'function') {
+        const normalized = window.MbfdDeviceContract.normalizeCommand(input, {
+          device_id: config && config.deviceId ? config.deviceId : 'unregistered-player',
+          target_scope: 'display',
+        });
+        if (normalized.ok) {
+          return {
+            action: normalized.value.payload.action,
+            payload: normalized.value.payload,
+            command_id: normalized.value.command_id,
+            type: normalized.value.type,
+            version: normalized.value.version,
+            issued_at: normalized.value.issued_at,
+          };
+        }
+      }
+      const command = (input && typeof input === 'object' && !Array.isArray(input)) ? input : { action: input };
+      const rawPayload = command && typeof command.payload === 'object' && !Array.isArray(command.payload) ? command.payload : {};
+      // `device:command` wraps transport as { type:'transport', payload:{action} }.
+      // Prefer the payload action so a transport envelope does not get treated as
+      // the literal string "transport" (which makes next/prev/restart fail).
+      const action = String(
+        rawPayload.action ||
+        rawPayload.command ||
+        command.action ||
+        command.command ||
+        command.type ||
+        ''
+      ).trim();
+      const payload = (rawPayload.action || rawPayload.command || rawPayload.type)
+        ? unwrapTransportPayload(rawPayload)
+        : rawPayload;
+      return {
+        action,
+        payload,
+        command_id: command.command_id || command.commandId || command.id || null,
+        type: command.type || 'transport',
+      };
+    }
+    function postTransportToFrames(command) {
+      const envelope = normalizeTransportCommand(command);
       let posted = false;
       // Post to every iframe on the page (controllable deck/doc/pdf/grid players
       // live in #playerContainer, .zone, .wall-stage, or a PIP host). Querying
@@ -464,26 +615,14 @@
       document.querySelectorAll('iframe').forEach((f) => {
         try {
           if (f.contentWindow) {
-            f.contentWindow.postMessage({ __mc_transport: action }, '*');
+            if (typeof f.contentWindow.handleAction === 'function') {
+              f.contentWindow.handleAction(envelope);
+            } else {
+              const targetOrigin = new URL(f.src, location.href).origin;
+              if (targetOrigin !== location.origin) return;
+              f.contentWindow.postMessage({ __mc_transport: envelope }, targetOrigin);
+            }
             posted = true;
-            // Direct DOM fallback: if the iframe is same-origin (our own
-            // /player/doc or /player/deck page), we can bypass postMessage
-            // entirely and call the page's handler directly. This is a
-            // belt-and-suspenders fix for Electron kiosks where postMessage
-            // to same-origin iframes sometimes silently fails (Electron's
-            // sandbox/contextIsolation can delay or drop cross-frame
-            // messages under memory pressure or after a renderer reload).
-            try {
-              var doc = f.contentDocument;
-              if (doc) {
-                // doc.html exposes handleAction on window; deck.html listens
-                // on window 'message'. Try both.
-                var w = f.contentWindow;
-                if (w && typeof w.handleAction === 'function') {
-                  w.handleAction(action);
-                }
-              }
-            } catch (e2) { /* cross-origin — postMessage is the only path */ }
           }
         } catch (e) { /* cross-origin/none */ }
       });
@@ -497,11 +636,13 @@
           document.querySelectorAll('iframe').forEach((f) => {
             try {
               if (f.contentWindow) {
-                f.contentWindow.postMessage({ __mc_transport: action }, '*');
-                try {
-                  var w = f.contentWindow;
-                  if (w && typeof w.handleAction === 'function') w.handleAction(action);
-                } catch (_) {}
+                const w = f.contentWindow;
+                if (w && typeof w.handleAction === 'function') w.handleAction(envelope);
+                else {
+                  const targetOrigin = new URL(f.src, location.href).origin;
+                  if (targetOrigin !== location.origin) return;
+                  w.postMessage({ __mc_transport: envelope }, targetOrigin);
+                }
                 found = true;
               }
             } catch (e) { /* cross-origin/none */ }
@@ -510,6 +651,78 @@
         }, 300);
       }
       return posted;
+    }
+    function tryApplyDisplayStateRestore(reason) {
+      const restore = pendingDisplayStateRestore;
+      if (!restore) return true;
+
+      const item = getCurrentItem();
+      if (!isRestorableSlideItem(item) || !currentItemMatchesRestore(item, restore)) {
+        console.log('[restore] skipped; current item does not match saved slide state');
+        clearDisplayStateRestore();
+        publishPlayerState({ force: true });
+        return true;
+      }
+
+      const iframe = document.querySelector('#playerContainer iframe, .wall-stage iframe, .zone iframe');
+      if (!iframe) return false;
+
+      let childWindow = null;
+      try {
+        childWindow = iframe.contentWindow;
+      } catch (_) {
+        return false;
+      }
+      if (!childWindow || typeof childWindow.handleAction !== 'function') return false;
+
+      const beforeState = childWindow.__mcTransportState || null;
+      if (!childSlideStateReady(beforeState, restore)) return false;
+
+      const beforeSlide = parseInt(beforeState.slide_index ?? beforeState.page, 10);
+      if (Number.isFinite(beforeSlide) && beforeSlide === restore.slide_index) {
+        lastTransportState = beforeState;
+        clearDisplayStateRestore();
+        console.log('[restore] slide already restored to ' + beforeSlide);
+        publishPlayerState({ force: true });
+        return true;
+      }
+
+      const envelope = {
+        type: 'transport',
+        action: 'go_to_slide',
+        payload: {
+          action: 'go_to_slide',
+          page: restore.slide_index,
+          slide: restore.slide_index,
+          restore: true,
+          restore_source: restore.restore_source || null,
+        },
+      };
+
+      let ack = null;
+      try {
+        ack = childWindow.handleAction(envelope) || {};
+      } catch (err) {
+        console.warn('[restore] child restore failed: ' + (err && err.message ? err.message : String(err || 'unknown')));
+        return false;
+      }
+      if (ack.ok === false) {
+        console.warn('[restore] child rejected slide restore: ' + (ack.error || 'unknown'));
+        return false;
+      }
+
+      const state = (ack && ack.state) || childWindow.__mcTransportState || null;
+      const appliedSlide = parseInt(state && (state.slide_index ?? state.page), 10);
+      if (!Number.isFinite(appliedSlide) || appliedSlide !== restore.slide_index) {
+        return false;
+      }
+
+      lastTransportState = state;
+      const restoredSlide = restore.slide_index;
+      clearDisplayStateRestore();
+      console.log('[restore] restored slide ' + restoredSlide + ' via ' + (reason || 'playlist-update'));
+      publishPlayerState({ force: true });
+      return true;
     }
     // YouTube player state. Declared up front because the cached-playlist restore
     // (a few lines below) may synchronously call into createYoutubeEmbed before the
@@ -1050,6 +1263,303 @@
       return probe.maxTouchPoints >= 2 || probe.pointerCoarse;
     }
 
+    function getCurrentItem() {
+      return playlist[currentIndex] || null;
+    }
+
+    function inferServerPath() {
+      try {
+        const host = String(location.hostname || '').toLowerCase();
+        if (/\.mbfdhub\.com$/.test(host)) return 'Cloudflare';
+        if (/^100\./.test(host) || /\.ts\.net$/.test(host)) return 'Tailnet';
+        if (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.)/.test(host)) return 'LAN';
+        return location.protocol === 'http:' ? 'LAN' : 'Unknown';
+      } catch (_) {
+        return 'Unknown';
+      }
+    }
+
+    function contentKindForItem(item) {
+      if (!item) return null;
+      if (isDocumentMime(item.mime_type)) return 'document';
+      if (item.mime_type === 'video/youtube') return 'youtube';
+      if (item.mime_type === 'text/html' || item.remote_url) return 'web';
+      if (String(item.mime_type || '').startsWith('video/')) return 'video';
+      if (String(item.mime_type || '').startsWith('image/')) return 'image';
+      if (item.widget_id) return 'widget';
+      return item.mime_type || null;
+    }
+
+    function ytPlayerStateLabel() {
+      try {
+        if (!activeYtPlayer || typeof activeYtPlayer.getPlayerState !== 'function') return null;
+        const state = activeYtPlayer.getPlayerState();
+        if (state === 1) return 'playing';
+        if (state === 2) return 'paused';
+        if (state === 3) return 'buffering';
+        if (state === 5) return 'cued';
+        if (state === 0) return 'ended';
+        return 'idle';
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function currentPlaybackSnapshot() {
+      const item = getCurrentItem();
+      const child = lastTransportState && typeof lastTransportState === 'object' ? lastTransportState : null;
+      const snapshot = {
+        current_content_id: item?.content_id || null,
+        current_asset_id: item?.asset_id || item?.content_id || null,
+        content_type: contentKindForItem(item),
+        layout_mode: wallConfig ? (wallConfig.is_leader ? 'wall-leader' : 'wall-follower') : 'solo',
+        slide_index: item ? currentIndex + 1 : null,
+        slide_total: item ? playlist.length : null,
+        current_time: null,
+        duration: null,
+        paused: null,
+        muted: null,
+        volume: null,
+        local_asset_ready: item && item.asset_url ? 1 : 0,
+        render_state: item ? 'playing' : 'idle',
+        error_state: null,
+        media_title: (item && item.filename) || config.deviceName || 'Web Player',
+        media_type: contentKindForItem(item),
+        cache_status: item && item.asset_url ? 'local' : 'direct',
+        wall_state: wallConfig
+          ? ((lastTransportCommand && lastTransportCommand.status === 'failed')
+            ? 'out_of_sync'
+            : ((lastTransportCommand && lastTransportCommand.status === 'pending') ? 'syncing' : 'synced'))
+          : 'standalone',
+        p3_link: null,
+      };
+
+      if (child && typeof child === 'object') {
+        if (child.current_content_id != null) snapshot.current_content_id = child.current_content_id;
+        if (child.current_asset_id != null) snapshot.current_asset_id = child.current_asset_id;
+        if (child.content_type != null) snapshot.content_type = child.content_type;
+        if (child.layout_mode != null) snapshot.layout_mode = child.layout_mode;
+        if (child.slide_index != null) snapshot.slide_index = child.slide_index;
+        if (child.slide_total != null) snapshot.slide_total = child.slide_total;
+        if (child.current_time != null) snapshot.current_time = Number(child.current_time);
+        if (child.duration != null) snapshot.duration = Number(child.duration);
+        if (child.paused != null) snapshot.paused = !!child.paused;
+        if (child.muted != null) snapshot.muted = !!child.muted;
+        if (child.volume != null) snapshot.volume = Number(child.volume);
+        if (child.local_asset_ready != null) snapshot.local_asset_ready = child.local_asset_ready;
+        if (child.render_state != null) snapshot.render_state = child.render_state;
+        if (child.error_state != null) snapshot.error_state = child.error_state;
+        if (child.media_title != null) snapshot.media_title = child.media_title;
+        if (child.media_type != null) snapshot.media_type = child.media_type;
+        if (child.cache_status != null) snapshot.cache_status = child.cache_status;
+        if (child.wall_state != null) snapshot.wall_state = child.wall_state;
+        if (child.p3_link != null) snapshot.p3_link = child.p3_link;
+      }
+
+      if (snapshot.current_time == null) {
+        if (activeYtPlayer && typeof activeYtPlayer.getCurrentTime === 'function') {
+          try { snapshot.current_time = activeYtPlayer.getCurrentTime() || 0; } catch (_) {}
+        } else if (currentVideoEl) {
+          snapshot.current_time = currentVideoEl.currentTime || 0;
+        } else if (item) {
+          snapshot.current_time = Math.max(0, (Date.now() - currentItemStartedAt) / 1000);
+        }
+      }
+      if (snapshot.duration == null) {
+        if (activeYtPlayer && typeof activeYtPlayer.getDuration === 'function') {
+          try { snapshot.duration = activeYtPlayer.getDuration() || null; } catch (_) {}
+        } else if (currentVideoEl && isFinite(currentVideoEl.duration)) {
+          snapshot.duration = currentVideoEl.duration;
+        } else if (item && item.duration_sec != null) {
+          snapshot.duration = Number(item.duration_sec);
+        }
+      }
+      if (snapshot.paused == null) {
+        if (activeYtPlayer) {
+          snapshot.paused = ytPlayerStateLabel() !== 'playing';
+        } else if (currentVideoEl) {
+          snapshot.paused = !!currentVideoEl.paused;
+        } else {
+          snapshot.paused = false;
+        }
+      }
+      if (snapshot.muted == null) {
+        if (currentVideoEl) snapshot.muted = !!currentVideoEl.muted;
+        else snapshot.muted = isWallFollower();
+      }
+      if (snapshot.volume == null) {
+        if (currentVideoEl) snapshot.volume = Number(currentVideoEl.volume);
+        else if (activeYtPlayer && typeof activeYtPlayer.getVolume === 'function') {
+          try { snapshot.volume = activeYtPlayer.getVolume() / 100; } catch (_) {}
+        }
+      }
+      if (!snapshot.render_state) {
+        const ytState = ytPlayerStateLabel();
+        if (ytState) snapshot.render_state = ytState;
+        else snapshot.render_state = snapshot.paused ? 'paused' : (item ? 'playing' : 'idle');
+      }
+      if (snapshot.media_type == null) snapshot.media_type = snapshot.content_type;
+      if (snapshot.slide_total == null && item) snapshot.slide_total = playlist.length;
+      if (snapshot.slide_index == null && item) snapshot.slide_index = currentIndex + 1;
+      if (snapshot.cache_status == null) snapshot.cache_status = item && item.asset_url ? 'local' : 'direct';
+      if (snapshot.wall_state == null) snapshot.wall_state = wallConfig ? 'synced' : 'standalone';
+      if (snapshot.current_asset_id == null && item) snapshot.current_asset_id = item.content_id || item.asset_id || null;
+
+      return snapshot;
+    }
+
+    function buildPlayerTelemetry(snapshot) {
+      return {
+        battery_level: null,
+        battery_charging: false,
+        storage_free_mb: null,
+        storage_total_mb: null,
+        ram_free_mb: null,
+        ram_total_mb: null,
+        cpu_usage: null,
+        wifi_ssid: 'Web Player',
+        wifi_rssi: null,
+        uptime_seconds: Math.floor(performance.now() / 1000),
+        server_path: inferServerPath(),
+        preview_age_ms: lastScreenshotSentAt ? Math.max(0, Date.now() - lastScreenshotSentAt) : null,
+        media_title: snapshot.media_title || null,
+        media_type: snapshot.media_type || null,
+        current_content_id: snapshot.current_content_id || null,
+        current_time: snapshot.current_time != null ? snapshot.current_time : null,
+        duration: snapshot.duration != null ? snapshot.duration : null,
+        slide_index: snapshot.slide_index != null ? snapshot.slide_index : null,
+        slide_total: snapshot.slide_total != null ? snapshot.slide_total : null,
+        paused: snapshot.paused != null ? !!snapshot.paused : null,
+        render_state: snapshot.render_state || null,
+        wall_state: snapshot.wall_state || null,
+        last_command_id: lastTransportCommand && lastTransportCommand.command_id || null,
+        last_command_action: lastTransportCommand && lastTransportCommand.action || null,
+        last_command_status: lastTransportCommand && lastTransportCommand.status || null,
+        last_command_error: lastTransportCommand && lastTransportCommand.error || null,
+        connection: inferServerPath(),
+        cache_status: snapshot.cache_status || null,
+        local_asset_ready: snapshot.local_asset_ready != null ? snapshot.local_asset_ready : null,
+      };
+    }
+
+    function buildPlayerState() {
+      const snapshot = currentPlaybackSnapshot();
+      snapshot.telemetry = buildPlayerTelemetry(snapshot);
+      return snapshot;
+    }
+
+    function publishPlayerState(options = {}) {
+      if (!socket?.connected || !config.deviceId) return null;
+      const state = buildPlayerState();
+      if (!options.force && shouldHoldStateReportForRestore(state)) {
+        console.log('[restore] holding state-report until slide ' + pendingDisplayStateRestore.slide_index + ' is applied');
+        return state;
+      }
+      playerStateRevision += 1;
+      state.device_id = config.deviceId;
+      state.state_revision = playerStateRevision;
+      state.updated_at = new Date().toISOString();
+      state.playback_status = state.render_state || (state.paused ? 'paused' : 'playing');
+      socket.emit('device:state-report', {
+        version: 1,
+        type: 'device:state-report',
+        device_id: config.deviceId,
+        state,
+      });
+      if (options.ack && options.ack.command_id) {
+        socket.emit('device:ack', window.MbfdDeviceContract.createAck({
+          device_id: config.deviceId,
+          command_id: options.ack.command_id,
+          ok: options.ack.ok !== false,
+          error: options.ack.error || null,
+          state,
+        }));
+      }
+      return state;
+    }
+
+    function markTransportCommand(command, status, error) {
+      if (!command) return;
+      lastTransportCommand = {
+        command_id: command.command_id || null,
+        action: command.action || null,
+        payload: command.payload || null,
+        status: status || 'pending',
+        error: error || null,
+        issued_at: Date.now(),
+      };
+      if (status === 'acked' || status === 'failed') {
+        lastTransportAck = {
+          command_id: command.command_id || null,
+          action: command.action || null,
+          ok: status !== 'failed',
+          status,
+          error: error || null,
+        };
+      }
+    }
+
+    function finishTransportCommand(command, ok, error, state) {
+      if (!command) return;
+      lastTransportAck = {
+        command_id: command.command_id || null,
+        action: command.action || null,
+        ok: ok !== false,
+        status: ok === false ? 'failed' : 'acked',
+        error: error || null,
+        state: state || null,
+      };
+      if (command.command_id || (lastTransportCommand && lastTransportCommand.action === command.action)) {
+        lastTransportCommand = {
+          command_id: command.command_id || (lastTransportCommand && lastTransportCommand.command_id) || null,
+          action: command.action || (lastTransportCommand && lastTransportCommand.action) || null,
+          payload: command.payload || (lastTransportCommand && lastTransportCommand.payload) || null,
+          status: ok === false ? 'failed' : 'acked',
+          error: error || null,
+          issued_at: (lastTransportCommand && lastTransportCommand.issued_at) || Date.now(),
+        };
+      }
+      if (state && typeof state === 'object') {
+        lastTransportState = state;
+      }
+      publishPlayerState({ ack: lastTransportAck });
+    }
+
+    function handleTransportMessage(event) {
+      if (!event || event.origin !== location.origin) return;
+      const knownFrame = Array.from(document.querySelectorAll('iframe')).some((frame) => frame.contentWindow === event.source);
+      if (!knownFrame) return;
+      const data = event && event.data;
+      if (!data || (data.__mc_transport_state == null && data.__mc_transport_ack == null && data.__mc_screenshot == null)) return;
+      if (typeof data.__mc_screenshot === 'string' && data.__mc_screenshot.length > 100 && data.__mc_screenshot.length <= 2 * 1024 * 1024) {
+        lastScreenshotSentAt = Date.now();
+        socket.emit('device:screenshot', {
+          device_id: config.deviceId,
+          image_b64: data.__mc_screenshot,
+          captured_at: Number(data.captured_at) || Date.now(),
+        });
+      }
+      if (data.__mc_transport_state && typeof data.__mc_transport_state === 'object') {
+        lastTransportState = data.__mc_transport_state;
+      }
+      if (data.__mc_transport_ack && typeof data.__mc_transport_ack === 'object') {
+        const ack = data.__mc_transport_ack;
+        if (ack.command_id) {
+          const command = {
+            command_id: ack.command_id,
+            action: ack.action || (lastTransportCommand && lastTransportCommand.action) || null,
+            payload: lastTransportCommand && lastTransportCommand.payload || null,
+          };
+          finishTransportCommand(command, ack.ok !== false, ack.error || null, data.__mc_transport_state || ack.state || null);
+          return;
+        }
+        lastTransportAck = ack;
+      }
+      publishPlayerState();
+    }
+
+    window.addEventListener('message', handleTransportMessage);
+
     // Size (or re-size) the whiteboard canvas to the current window, accounting
     // for devicePixelRatio so lines stay crisp on hi-dpi displays.
     function wbFitCanvas() {
@@ -1551,6 +2061,11 @@
       socket.on('device:playlist-update', (data) => {
         console.log('Playlist update:', data.assignments?.length, 'items');
         handlePlaylistUpdate(data);
+        // Refresh the dashboard preview after the new media has painted. The
+        // later pass covers document conversion/iframe startup without making
+        // drag-drop wait on a screenshot round-trip.
+        setTimeout(captureAndSend, 1200);
+        setTimeout(captureAndSend, 6000);
       });
 
       // Video wall sync (leader broadcasts; followers align)
@@ -1668,14 +2183,14 @@
             break;
           case 'KEYCODE_VOLUME_UP':
             // Wall followers ignore volume changes — they stay silent.
-            if (video && !isWallFollower()) { video.volume = Math.min(1, video.volume + 0.1); video.muted = false; }
+            if (video && !isWallFollower()) { video.volume = Math.min(1, video.volume + 0.1); video.muted = false; publishPlayerState(); }
             break;
           case 'KEYCODE_VOLUME_DOWN':
-            if (video) { video.volume = Math.max(0, video.volume - 0.1); }
+            if (video) { video.volume = Math.max(0, video.volume - 0.1); publishPlayerState(); }
             break;
           case 'KEYCODE_MENU':
             // Toggle mute (followers can't unmute)
-            if (video && !(isWallFollower() && video.muted)) { video.muted = !video.muted; }
+            if (video && !(isWallFollower() && video.muted)) { video.muted = !video.muted; publishPlayerState(); }
             break;
           case 'KEYCODE_HOME':
             // Go back to first item
@@ -1695,14 +2210,28 @@
       });
 
       socket.on('device:command', (data) => {
-        console.log('Command:', data.type, data.payload);
-        if (data.type === 'refresh') location.reload();
-        if (data.type === 'launch') { document.getElementById('screenOffOverlay')?.remove(); }
-        if (data.type === 'screen_off') toggleScreenOff();
-        if (data.type === 'screen_on') { document.getElementById('screenOffOverlay')?.remove(); }
-        if (data.type === 'transport') {
-          _showTransportDebug('recv: ' + (data.payload && data.payload.action));
-          doTransport(data.payload && data.payload.action);
+        const command = normalizeTransportCommand(data);
+        const action = command.action;
+        console.log('Command:', action, command.command_id || '');
+        if (action === 'refresh') {
+          finishTransportCommand(command, true, null, buildPlayerState());
+          setTimeout(() => location.reload(), 50);
+        }
+        else if (action === 'launch') {
+          document.getElementById('screenOffOverlay')?.remove();
+          finishTransportCommand(command, true, null, buildPlayerState());
+        }
+        else if (action === 'screen_off') {
+          toggleScreenOff();
+          finishTransportCommand(command, true, null, buildPlayerState());
+        }
+        else if (action === 'screen_on') {
+          document.getElementById('screenOffOverlay')?.remove();
+          finishTransportCommand(command, true, null, buildPlayerState());
+        }
+        else {
+          _showTransportDebug('recv: ' + action + (command.command_id ? ' #' + String(command.command_id).slice(0, 8) : ''));
+          doTransport(command);
         }
       });
 
@@ -1732,15 +2261,139 @@
         console.error('[transport]', msg);
       }
 
+      // Try the same-origin iframe DOM path first. This is the most reliable
+      // route for doc/deck players because it bypasses postMessage timing and
+      // lands directly on the visible child document. If that fails, callers
+      // can still fall back to postMessage or other transport logic.
+      function tryDirectIframeTransport(command) {
+        const envelope = normalizeTransportCommand(command);
+        const action = envelope.action;
+        const payload = envelope.payload || {};
+        const len = playlist.length || 0;
+        const iframe = document.querySelector('#playerContainer iframe, .wall-stage iframe, .zone iframe');
+        if (!iframe) return false;
+
+        try {
+          const childWindow = iframe.contentWindow;
+          if (childWindow && typeof childWindow.handleAction === 'function') {
+            const ack = childWindow.handleAction(envelope) || {};
+            const state = (ack && ack.state) || childWindow.__mcTransportState || null;
+            finishTransportCommand(command, ack.ok !== false, ack.error || null, state || buildPlayerState());
+            _showTransportDebug('child handleAction: ' + action);
+            return true;
+          }
+        } catch (childErr) {
+          finishTransportCommand(command, false, childErr && childErr.message ? childErr.message : String(childErr || 'child handleAction failed'), buildPlayerState());
+          _showTransportError('child handleAction failed: ' + (childErr && childErr.message ? childErr.message : String(childErr || 'unknown')));
+          return true;
+        }
+
+        let domHandled = false;
+        try {
+          const idoc = iframe.contentDocument;
+          if (idoc) {
+            const pageImg = idoc.getElementById('page');
+            if (pageImg && pageImg.src) {
+              const m = pageImg.src.match(/\/(\d+)\.png/);
+              const curPage = m ? parseInt(m[1], 10) : 1;
+              const statusEl = idoc.getElementById('status');
+              let totalPages = 1;
+              if (statusEl && statusEl.textContent) {
+                const tm = statusEl.textContent.match(/(\d+)\s*\/\s*(\d+)/);
+                if (tm) totalPages = parseInt(tm[2], 10);
+              }
+              let newPage = curPage;
+              if (action === 'next') newPage = Math.min(totalPages, curPage + 1);
+              else if (action === 'prev') newPage = Math.max(1, curPage - 1);
+              else if (action === 'restart') newPage = 1;
+              else if (action === 'go_to_slide' || action === 'slide' || action === 'goto') {
+                const targetPage = payload.page !== undefined && payload.page !== null
+                  ? payload.page
+                  : payload.slide !== undefined && payload.slide !== null
+                    ? payload.slide
+                    : payload.index !== undefined && payload.index !== null
+                      ? payload.index
+                      : payload.page_number !== undefined && payload.page_number !== null
+                        ? payload.page_number
+                        : payload.slide_number !== undefined && payload.slide_number !== null
+                          ? payload.slide_number
+                          : null;
+                const parsedTarget = parseInt(targetPage, 10);
+                if (Number.isFinite(parsedTarget)) newPage = Math.max(1, parsedTarget);
+              }
+              else if (action === 'play_pause') {
+                try { if (iframe.contentWindow.toggleAuto) iframe.contentWindow.toggleAuto(); } catch (_) {}
+                domHandled = true;
+              }
+              if (!domHandled && newPage !== curPage) {
+                const newSrc = pageImg.src.replace(/\/\d+\.png/, '/' + newPage + '.png');
+                pageImg.src = newSrc;
+                if (statusEl) {
+                  const fn = statusEl.textContent.split('·')[0].trim();
+                  statusEl.textContent = fn + ' · ' + newPage + ' / ' + totalPages;
+                }
+                domHandled = true;
+                _showTransportDebug('slide ' + curPage + '→' + newPage + ' / ' + totalPages);
+              }
+            }
+            if (!domHandled) {
+              const slides = idoc.querySelectorAll('.slide');
+              if (slides.length > 0) {
+                let curIdx = 0;
+                slides.forEach(function(s, i) { if (s.classList.contains('show')) curIdx = i; });
+                let newIdx = curIdx;
+                if (action === 'next') newIdx = Math.min(slides.length - 1, curIdx + 1);
+                else if (action === 'prev') newIdx = Math.max(0, curIdx - 1);
+                else if (action === 'restart') newIdx = 0;
+                else if (action === 'go_to_slide' || action === 'slide' || action === 'goto') {
+                  const targetSlide = payload.page !== undefined && payload.page !== null
+                    ? payload.page
+                    : payload.slide !== undefined && payload.slide !== null
+                      ? payload.slide
+                      : payload.index !== undefined && payload.index !== null
+                        ? payload.index
+                        : payload.page_number !== undefined && payload.page_number !== null
+                          ? payload.page_number
+                          : payload.slide_number !== undefined && payload.slide_number !== null
+                            ? payload.slide_number
+                            : null;
+                  const parsedTarget = parseInt(targetSlide, 10);
+                  if (Number.isFinite(parsedTarget)) {
+                    newIdx = Math.max(0, Math.min(slides.length - 1, parsedTarget > 0 ? parsedTarget - 1 : parsedTarget));
+                  }
+                }
+                if (newIdx !== curIdx) {
+                  slides[curIdx].classList.remove('show');
+                  slides[newIdx].classList.add('show');
+                  domHandled = true;
+                  _showTransportDebug('deck ' + curIdx + '→' + newIdx + ' / ' + slides.length);
+                }
+              }
+            }
+          }
+        } catch (domErr) {
+          _showTransportDebug('DOM access failed: ' + domErr.message + ' — trying postMessage');
+        }
+
+        if (domHandled) {
+          finishTransportCommand(command, true, null, buildPlayerState());
+          return true;
+        }
+        return false;
+      }
+
       // Transport (Broadcast Center control bar): next/prev/play_pause/restart.
-      // If the current item is a broadcast deck / external URL, forward the action
-      // to the content iframe via postMessage so the DECK advances its own slides
-      // (deck.html listens for window 'message'). Otherwise drive the local
-      // playlist + video, mirroring the device:remote-key handler. Never throws —
-      // playback must survive a malformed command.
-      function doTransport(action) {
+      // The child iframe is authoritative when it exists. We try handleAction
+      // first, then postMessage, and only fall back to DOM manipulation if no
+      // transportable child is available.
+      function doTransport(input) {
+        const command = normalizeTransportCommand(input);
+        const action = command.action;
+        if (!action) return;
         try {
           const item = playlist[currentIndex] || {};
+          markTransportCommand(command, 'pending');
+          publishPlayerState();
 
           // ── YouTube IFrame API fast path ───────────────────────────────────
           if (activeYtPlayer) {
@@ -1761,122 +2414,67 @@
                 } else {
                   currentIndex = -1; nextItem();
                 }
+              } else if (action === 'pause') {
+                if (typeof activeYtPlayer.pauseVideo === 'function') activeYtPlayer.pauseVideo();
+              } else if (action === 'play') {
+                if (typeof activeYtPlayer.playVideo === 'function') activeYtPlayer.playVideo();
               }
-            } catch (e) { _showTransportError('YT: ' + e.message); }
+            } catch (e) {
+              finishTransportCommand(command, false, 'YT: ' + e.message, buildPlayerState());
+              _showTransportError('YT: ' + e.message);
+              return;
+            }
+            finishTransportCommand(command, true, null, buildPlayerState());
             return;
           }
 
-          // ── Direct DOM manipulation for same-origin doc/deck iframes ──────
-          // This is the PRIMARY transport mechanism. Instead of relying on
-          // postMessage (which can be silently dropped by Electron's renderer
-          // under memory pressure or after SW reloads), we directly access the
-          // iframe's DOM and manipulate the slide image/page element. This is
-          // the most primitive possible mechanism — no message passing, no
-          // function calls, just direct DOM reads + writes.
-          var iframe = document.querySelector('#playerContainer iframe, .wall-stage iframe, .zone iframe');
-          if (iframe) {
-            var handled = false;
-            try {
-              var idoc = iframe.contentDocument;
-              if (idoc) {
-                // doc.html: the slide image is #page, src is /player/doc-page/ID/N.png
-                var pageImg = idoc.getElementById('page');
-                if (pageImg && pageImg.src) {
-                  // Parse current page number from the img src
-                  var m = pageImg.src.match(/\/(\d+)\.png/);
-                  var curPage = m ? parseInt(m[1], 10) : 1;
-                  // Get total pages from the status text "filename · N / M"
-                  var statusEl = idoc.getElementById('status');
-                  var totalPages = 1;
-                  if (statusEl && statusEl.textContent) {
-                    var tm = statusEl.textContent.match(/(\d+)\s*\/\s*(\d+)/);
-                    if (tm) totalPages = parseInt(tm[2], 10);
-                  }
-                  var newPage = curPage;
-                  if (action === 'next') newPage = Math.min(totalPages, curPage + 1);
-                  else if (action === 'prev') newPage = Math.max(1, curPage - 1);
-                  else if (action === 'restart') newPage = 1;
-                  else if (action === 'play_pause') {
-                    // Toggle auto-advance by calling the iframe's function
-                    try { if (iframe.contentWindow.toggleAuto) iframe.contentWindow.toggleAuto(); } catch(_) {}
-                    handled = true;
-                  }
-                  if (!handled && newPage !== curPage) {
-                    // Build the new page URL from the old one (preserve version query)
-                    var newSrc = pageImg.src.replace(/\/\d+\.png/, '/' + newPage + '.png');
-                    pageImg.src = newSrc;
-                    // Update the status text
-                    if (statusEl) {
-                      var fn = statusEl.textContent.split('·')[0].trim();
-                      statusEl.textContent = fn + ' · ' + newPage + ' / ' + totalPages;
-                    }
-                    handled = true;
-                    _showTransportDebug('slide ' + curPage + '→' + newPage + ' / ' + totalPages);
-                  }
-                }
-                // deck.html: slides are .slide elements with .show class
-                if (!handled) {
-                  var slides = idoc.querySelectorAll('.slide');
-                  if (slides.length > 0) {
-                    var curIdx = 0;
-                    slides.forEach(function(s, i) { if (s.classList.contains('show')) curIdx = i; });
-                    var newIdx = curIdx;
-                    if (action === 'next') newIdx = Math.min(slides.length - 1, curIdx + 1);
-                    else if (action === 'prev') newIdx = Math.max(0, curIdx - 1);
-                    else if (action === 'restart') newIdx = 0;
-                    if (newIdx !== curIdx) {
-                      slides[curIdx].classList.remove('show');
-                      slides[newIdx].classList.add('show');
-                      handled = true;
-                      _showTransportDebug('deck ' + curIdx + '→' + newIdx + ' / ' + slides.length);
-                    }
-                  }
-                }
-              }
-            } catch (domErr) {
-              // Cross-origin or sandboxed — fall through to postMessage
-              _showTransportDebug('DOM access failed: ' + domErr.message + ' — trying postMessage');
+          const frameTransportable = !!(item && (isDocumentMime(item.mime_type) || item.mime_type === 'text/html'));
+          if (frameTransportable) {
+            if (tryDirectIframeTransport(command)) {
+              return;
             }
-
-            // Fallback: postMessage + handleAction (for cross-origin or if DOM access failed)
-            if (!handled) {
-              try {
-                if (iframe.contentWindow) {
-                  iframe.contentWindow.postMessage({ __mc_transport: action }, '*');
-                  try {
-                    if (iframe.contentWindow.handleAction) iframe.contentWindow.handleAction(action);
-                  } catch (_) {}
-                  handled = true;
-                  _showTransportDebug('postMessage: ' + action);
-                }
-              } catch (pmErr) {
-                _showTransportError('postMessage failed: ' + pmErr.message);
-              }
+            const posted = postTransportToFrames(command);
+            if (posted) {
+              _showTransportDebug('frame transport: ' + action + (command.command_id ? ' #' + String(command.command_id).slice(0, 8) : ''));
+              return;
             }
-
-            if (handled) return;
           }
 
           // ── No controllable iframe — drive the playlist/video directly ────
-          const isControllableEmbed = item.remote_url || isDocumentMime(item.mime_type)
-            || document.querySelector('#playerContainer iframe, .zone iframe, .wall-stage iframe');
-          if (isControllableEmbed) {
-            const posted = postTransportToFrames(action);
-            if (posted) return;
-          }
           const len = playlist.length || 0;
           const video = document.querySelector('#playerContainer video, .wall-stage video');
-          if (action === 'next') { nextItem(); _showTransportDebug('nextItem'); }
-          else if (action === 'prev') { if (len) { currentIndex = (currentIndex - 2 + len) % len; nextItem(); } _showTransportDebug('prevItem'); }
+          let handled = false;
+          if (action === 'next') { nextItem(); handled = true; _showTransportDebug('nextItem'); }
+          else if (action === 'prev') { if (len) { currentIndex = (currentIndex - 2 + len) % len; nextItem(); } handled = true; _showTransportDebug('prevItem'); }
           else if (action === 'play_pause') {
             if (video) {
               if (video.paused) { unlockAudio(); video.play().catch(() => {}); }
               else { video.pause(); }
             }
+            handled = true;
             _showTransportDebug('play_pause');
           }
-          else if (action === 'restart') { currentIndex = -1; nextItem(); _showTransportDebug('restart'); }
+          else if (action === 'restart') { currentIndex = -1; nextItem(); handled = true; _showTransportDebug('restart'); }
+          else if (action === 'pause') {
+            if (video && !video.paused) video.pause();
+            handled = true;
+            _showTransportDebug('pause');
+          }
+          else if (action === 'play') {
+            if (video && video.paused) { unlockAudio(); video.play().catch(() => {}); }
+            handled = true;
+            _showTransportDebug('play');
+          }
+
+          if (handled) {
+            finishTransportCommand(command, true, null, buildPlayerState());
+            return;
+          }
+
+          finishTransportCommand(command, false, 'No controllable media found', buildPlayerState());
+          _showTransportError('No controllable media found for ' + action);
         } catch (e) {
+          finishTransportCommand(command, false, e.message, buildPlayerState());
           _showTransportError('doTransport: ' + e.message);
         }
       }
@@ -1973,21 +2571,12 @@
       stopHeartbeat();
       heartbeatTimer = setInterval(() => {
         if (!socket?.connected || !config.deviceId) return;
+        const state = buildPlayerState();
         socket.emit('device:heartbeat', {
           device_id: config.deviceId,
-          telemetry: {
-            battery_level: null,
-            battery_charging: false,
-            storage_free_mb: null,
-            storage_total_mb: null,
-            ram_free_mb: null,
-            ram_total_mb: null,
-            cpu_usage: null,
-            wifi_ssid: 'Web Player',
-            wifi_rssi: null,
-            uptime_seconds: Math.floor(performance.now() / 1000),
-          }
+          telemetry: state.telemetry,
         });
+        publishPlayerState();
       }, HEARTBEAT_INTERVAL);
     }
 
@@ -2160,6 +2749,7 @@
       }
 
       const newItems = data.assignments || [];
+      const serverRestoreState = data.display_state || null;
       applyDisplayProfile(data.display_profile || null);
       // Build fingerprint from the fields that affect rendering. asset_url is
       // included so a server-side routing fix forces stale cached players to
@@ -2197,9 +2787,11 @@
       }
 
       layout = data.layout || null;
+      const hasDisplayRestore = primeDisplayStateRestore(serverRestoreState, 'playlist-update');
 
       if (newFp === oldFp && playlist.length > 0 && !wallChanged) {
         console.log('Playlist unchanged');
+        if (hasDisplayRestore) scheduleDisplayStateRestore('playlist-unchanged');
         return;
       }
 
@@ -2214,11 +2806,14 @@
 
       playlist = newItems;
       savePlaylistCache(playlist);
+      lastTransportState = null;
 
       if (playlist.length === 0) {
+        clearDisplayStateRestore();
         teardownCurrentMedia();
         showStatus('Waiting for content...');
         isPlaying = false;
+        publishPlayerState();
         return;
       }
 
@@ -2234,6 +2829,7 @@
           currentIndex = stillThereIdx;
           if (!wallChanged && oldAnchorRenderKey === renderKeyOf(playlist[stillThereIdx])) {
             isPlaying = true;
+            if (hasDisplayRestore) scheduleDisplayStateRestore('playlist-continuity');
             return;
           }
           isPlaying = true;
@@ -2273,6 +2869,7 @@
 
       hideStatus();
       const item = playlist[currentIndex];
+      lastTransportState = null;
       console.log('Playing:', item.filename, `(${currentIndex + 1}/${playlist.length})`);
       currentItemStartedAt = pendingWallStartAt || (wallConfig?.is_leader ? Date.now() + 500 : Date.now());
       pendingWallStartAt = 0;
@@ -2290,10 +2887,14 @@
       }
 
       renderContent(item);
+      if (pendingDisplayStateRestore && isRestorableSlideItem(item) && currentItemMatchesRestore(item, pendingDisplayStateRestore)) {
+        scheduleDisplayStateRestore('play-current-item');
+      }
 
       // Push an immediate sync so followers don't have to wait up to 1s for
       // the next periodic tick before snapping to the new item.
       if (wallConfig?.is_leader) emitWallSync();
+      publishPlayerState();
     }
 
     function nextItem() {
@@ -2546,6 +3147,7 @@
         container.innerHTML = '';
       }
       currentVideoEl = null;
+      lastTransportState = null;
     }
 
     function renderContent(item) {
@@ -2590,6 +3192,7 @@
       if (!hasRenderableType) {
         showStatus('Waiting for content...');
         isPlaying = false;
+        publishPlayerState();
         return;
       }
 
@@ -2759,6 +3362,7 @@
                 content_id: item.content_id || null,
               });
             }
+            publishPlayerState();
           };
           video.addEventListener('play',  () => emitPlaybackState(false));
           video.addEventListener('pause', () => emitPlaybackState(true));
@@ -2770,6 +3374,7 @@
           });
           video.onloadeddata = () => {
             console.log('[wall/audio] video loaded file=' + item.filename + ' role=' + (wallConfig ? (wallConfig.is_leader ? 'leader' : 'follower') : 'solo') + ' muted=' + video.muted + ' volume=' + video.volume);
+            publishPlayerState();
           };
           // If anything (browser, scripts, the user) tries to unmute a
           // follower, snap it back. This is the safety net for the audio
@@ -2966,6 +3571,7 @@
         const dataUrl = canvas.toDataURL('image/jpeg', 0.4);
         const base64 = dataUrl.split(',')[1];
         if (base64 && base64.length > 100) {
+          lastScreenshotSentAt = Date.now();
           socket.emit('device:screenshot', { device_id: config.deviceId, image_b64: base64 });
           console.log('Screenshot sent:', base64.length, 'chars', captured ? '(content)' : '(fallback)');
         }

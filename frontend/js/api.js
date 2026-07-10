@@ -57,7 +57,29 @@ async function requestBroadcast(payload, endpoint = '/broadcast') {
   return body;
 }
 
+async function requestStatus(url) {
+  const token = localStorage.getItem('token');
+  const sep = url.includes('?') ? '&' : '?';
+  const res = await fetch(API_BASE + url + (token ? `${sep}token=${encodeURIComponent(token)}` : ''), {
+    headers: { Accept: 'application/json', ...getAuthHeaders() },
+    credentials: 'same-origin',
+  });
+  if (res.status === 401) {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    window.location.hash = '#/login';
+    window.location.reload();
+    throw new Error('Session expired');
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(body.error || 'Request failed');
+  }
+  return res.json();
+}
+
 export const api = {
+  getSystemVersion: () => request('/system/version'),
   // Devices
   getDevices: () => request('/devices'),
   getDevice: (id) => request(`/devices/${id}`),
@@ -218,6 +240,9 @@ export const api = {
   setWallDevices: (id, devices) => request(`/walls/${id}/devices`, { method: 'PUT', body: JSON.stringify({ devices }) }),
   updateWall: (id, data) => request(`/walls/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteWall: (id) => request(`/walls/${id}`, { method: 'DELETE' }),
+
+  // Admin status snapshots
+  getNodeStatus: () => requestStatus('/status/nodes'),
 
   // Playlists
   getPlaylists: () => request('/playlists'),

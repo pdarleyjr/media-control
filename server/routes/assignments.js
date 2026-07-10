@@ -7,6 +7,7 @@ const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
 // already carry workspace_id from Phase 1; this route can use them even
 // though playlists.js itself isn't yet workspace-filtered.
 const { accessContext } = require('../lib/tenancy');
+const { ensureDevicePlaylist: ensureWallAwareDevicePlaylist } = require('../lib/wall-playlists');
 
 // Mark playlist as draft (called after any item mutation)
 function markDraft(playlistId) {
@@ -32,14 +33,7 @@ function checkDeviceAccess(req, res, paramName = 'deviceId', requireWrite = true
 // Phase 2.2j: stamps workspace_id on the auto-created playlist so it remains
 // visible once playlists.js migrates. Mirrors the 2.2i fix in device-groups.js.
 function ensureDevicePlaylist(deviceId, userId) {
-  const device = db.prepare('SELECT playlist_id, workspace_id, name FROM devices WHERE id = ?').get(deviceId);
-  if (device?.playlist_id) return device.playlist_id;
-
-  const playlistId = uuidv4();
-  db.prepare('INSERT INTO playlists (id, user_id, workspace_id, name, is_auto_generated) VALUES (?, ?, ?, ?, 1)')
-    .run(playlistId, userId, device?.workspace_id || null, `${device?.name || 'Display'} playlist`);
-  db.prepare('UPDATE devices SET playlist_id = ? WHERE id = ?').run(playlistId, deviceId);
-  return playlistId;
+  return ensureWallAwareDevicePlaylist(deviceId, userId);
 }
 
 // Standard item query with joined content/widget info

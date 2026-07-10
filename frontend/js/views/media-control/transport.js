@@ -14,10 +14,12 @@
 // yet) defaults to the mid-state label "Play / Pause".
 //
 // Public exports:
-//   renderTransportBar(container, { deviceId, screenOn, paused, onScreenOnChange })
+//   renderTransportBar(container, { deviceId, transportDeviceIds, screenOn, paused, onScreenOnChange, onTransportAction })
 //     — Renders the bar into `container` immediately (synchronous DOM write).
 //       The `onScreenOnChange` callback is invoked with the new boolean value
 //       once the device acks the blank/unblank command so callers can repaint.
+//       The `onTransportAction` callback is invoked after transport sends so
+//       callers can refresh state and preview screenshots.
 
 import { esc } from '../../utils.js';
 import { t } from '../../i18n.js';
@@ -39,7 +41,10 @@ const STATIC_TRANSPORT_BTNS = [
  *
  * @param {HTMLElement} container
  * @param {object}  opts
- * @param {string}  opts.deviceId          target device id
+ * @param {string}  opts.deviceId          primary target device id
+ * @param {string[]} [opts.transportDeviceIds]
+ *   Transport target set. Standalone displays use [deviceId]. Span walls pass
+ *   every member id so document/deck commands advance each physical player.
  * @param {boolean} [opts.screenOn=true]   current screen_on state (drives blank label/colour)
  * @param {boolean|undefined} [opts.paused]
  *   Current play/pause state from the device. `undefined` = unknown (shows "Play / Pause");
@@ -48,9 +53,16 @@ const STATIC_TRANSPORT_BTNS = [
  *   Called after the device acks a blank/unblank command with the new boolean
  *   value. Callers should use this to update display-state so the stage card
  *   re-paints with the correct status dot and "Blanked" label.
+ * @param {(ids:string[], action:string)=>void} [opts.onTransportAction]
+ *   Called after a transport command is sent so callers can refresh the
+ *   authoritative state and request a fresh preview.
  */
-export function renderTransportBar(container, { deviceId, blankDeviceIds, screenOn = true, paused, onScreenOnChange } = {}) {
+export function renderTransportBar(container, { deviceId, transportDeviceIds, blankDeviceIds, screenOn = true, paused, onScreenOnChange, onTransportAction } = {}) {
   if (!container) return;
+
+  const transportIds = (Array.isArray(transportDeviceIds) && transportDeviceIds.length)
+    ? [...new Set(transportDeviceIds.filter(Boolean))]
+    : [deviceId];
 
   // Blank/unblank target set. For a standalone display this is just [deviceId].
   // For a video wall the caller passes every member id (data-blank-ids) so the
@@ -101,7 +113,8 @@ export function renderTransportBar(container, { deviceId, blankDeviceIds, screen
     btn.addEventListener('click', () => {
       const action = btn.dataset.tpAction;
       if (!TRANSPORT_ACTIONS.includes(action)) return;
-      sendCommand(deviceId, COMMAND_TYPES.TRANSPORT, { action });
+      transportIds.forEach(id => sendCommand(id, COMMAND_TYPES.TRANSPORT, { action }));
+      if (typeof onTransportAction === 'function') onTransportAction(transportIds, action);
     });
   });
 

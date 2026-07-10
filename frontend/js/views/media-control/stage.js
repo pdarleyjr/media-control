@@ -132,17 +132,35 @@ function applyTileSize(container, maxCols) {
   container.style.setProperty('--mc-tile', tile + 'px');
 }
 
-// Pick the preview image for a display / wall screen. Content whose live canvas
-// screenshot is black anyway — hardware-decoded video and cross-origin deck /
-// web / YouTube iframes — carries a server-supplied now_playing.poster_url (the
-// content's generated thumbnail). Prefer it so the cell shows a REAL preview of
-// what is playing instead of a black capture. Posters are intentional, not a
-// degraded live frame, so they are never dimmed as "stale". Falls back to the
-// live screenshot, then to nothing.
+// Pick the preview image for a display / wall screen. Video/web/YouTube captures
+// are often black or unhelpful, so they prefer generated posters. Documents and
+// PDFs need to mirror slide navigation, so a live screenshot beats the static
+// first-page poster whenever one is available.
+function shouldPreferPoster(obj) {
+  const kind = String(obj?.now_playing?.kind || obj?.content_type || '').toLowerCase();
+  if (kind === 'document' || kind === 'pdf') return false;
+  return !!(obj && obj.now_playing && obj.now_playing.poster_url);
+}
+
+function epochMs(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n < 1e12 ? n * 1000 : n;
+}
+
+function screenshotMatchesCurrentState(obj) {
+  const capturedAt = epochMs(obj?.screenshot_at);
+  const stateUpdatedAt = epochMs(obj?.state_updated_at ?? obj?.live_state?.state_updated_at);
+  if (!capturedAt || !stateUpdatedAt) return true;
+  return capturedAt >= stateUpdatedAt;
+}
+
 function previewSource(obj) {
   const poster = obj && obj.now_playing && obj.now_playing.poster_url;
+  const currentScreenshot = obj && obj.screenshot_url && screenshotMatchesCurrentState(obj);
+  if (currentScreenshot && !shouldPreferPoster(obj)) return { src: obj.screenshot_url, poster: false };
   if (poster) return { src: poster, poster: true };
-  if (obj && obj.screenshot_url) return { src: obj.screenshot_url, poster: false };
+  if (currentScreenshot) return { src: obj.screenshot_url, poster: false };
   return null;
 }
 
@@ -215,11 +233,22 @@ function wallMemberView(m, byId) {
     online: live.online != null ? live.online : (m.device_status === 'online'),
     screen_on: live.screen_on,
     now_playing: live.now_playing,
+    content_type: live.content_type,
+    state_updated_at: live.state_updated_at ?? live.live_state?.state_updated_at,
     screenshot_url: live.screenshot_url,
     screenshot_at: live.screenshot_at,
     grid_col: m.grid_col,
     grid_row: m.grid_row,
   };
+}
+
+function wallTransportDeviceId(wall, members) {
+  if (!wall || !Array.isArray(members) || members.length === 0) return null;
+  const onlineLeader = members.find(m => m.id === wall.leader_device_id && m.online);
+  if (onlineLeader) return onlineLeader.id;
+  const onlineMember = members.find(m => m.online);
+  if (onlineMember) return onlineMember.id;
+  return wall.leader_device_id || members[0]?.id || null;
 }
 
 function wallCell(member, screenNo, { showPreview = true } = {}) {
@@ -321,6 +350,7 @@ function wallCard(wall, byId) {
   const mode = wall.layout_mode === 'split' ? 'split' : 'span';
   const fillLabel = mode === 'split' ? t('mc.wall.fill_all') : t('mc.wall.fill_span');
   const modeHint = mode === 'split' ? t('mc.wall.split_hint') : t('mc.wall.span_hint');
+  const transportId = wallTransportDeviceId(wall, members);
   // Row-major over every physical screen slot; CSS grid auto-places them in order.
   const cells = [];
   let n = 0;
@@ -353,7 +383,7 @@ function wallCard(wall, byId) {
         ${spanLayer}
         ${cells.join('')}
       </div>
-      ${leader ? `<div class="mc-wall-transport" data-tp-host data-device-id="${esc(leader.id)}" data-blank-ids="${esc(ids)}"></div>` : ''}
+      ${transportId ? `<div class="mc-wall-transport" data-tp-host data-device-id="${esc(transportId)}" data-transport-ids="${esc(ids)}" data-blank-ids="${esc(ids)}"></div>` : ''}
       <div class="mc-wall-all" data-wall-ids="${esc(ids)}">
         <span class="mc-wall-all-ico" aria-hidden="true">${ICON_WALL_ALL}</span>
         <span>${esc(fillLabel)}</span>
@@ -405,6 +435,7 @@ function wallSplitGroup(wall, byId) {
   // into one column of a grid pushed to the single window (see dropOnWallHalf).
   if (members.length === 1 && cols > 1) {
     const leader = members[0];
+    const transportId = wallTransportDeviceId(wall, members) || leader.id;
     const halves = [];
     for (let i = 0; i < cols; i++) halves.push(wallSplitHalfCell(leader, i, cols));
     return `
@@ -427,7 +458,7 @@ function wallSplitGroup(wall, byId) {
       <div class="mc-wall-grid" style="grid-template-columns:repeat(${cols}, 1fr)">
         ${halves.join('')}
       </div>
-      ${leader ? `<div class="mc-wall-transport" data-tp-host data-device-id="${esc(leader.id)}" data-blank-ids="${esc(ids)}"></div>` : ''}
+      ${transportId ? `<div class="mc-wall-transport" data-tp-host data-device-id="${esc(transportId)}" data-transport-ids="${esc(ids)}" data-blank-ids="${esc(ids)}"></div>` : ''}
     </section>`;
   }
 
@@ -496,10 +527,12 @@ function emptyState() {
  * @param {(id:string, screenOn:boolean)=>void} [opts.onScreenOnChange]
  *   Called when a blank/unblank ack changes a display's screen_on value so the
  *   caller can patch display-state and trigger a re-paint.
+ * @param {(ids:string[], action:string)=>void} [opts.onTransportAction]
+ *   Called after transport sends so the caller can refresh state/previews.
  * @param {(ids:string[], source:object, label:string)=>void} [opts.onScreensaver]
  *   A screensaver option was chosen on a card; broadcast `source` to `ids`.
  */
-export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], onSelect, onCalibrateWall, onAddDisplay, onScreenOnChange, onSetWallMode, onScreensaver } = {}) {
+export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], onSelect, onCalibrateWall, onAddDisplay, onScreenOnChange, onTransportAction, onSetWallMode, onScreensaver } = {}) {
   if (!container) return;
   const selected = new Set(selectedIds);
 
@@ -577,17 +610,17 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
   });
 
   // Mount transport bars into each card's [data-tp-host] container. Standalone
-  // display cards resolve from displayMap; the wall card's transport host targets
-  // the wall LEADER (a wall member, so it lives in byId, not displays) — falling
-  // back to byId lets the wall be paused/skipped/blanked like any other display.
+  // display cards resolve from displayMap; wall card state uses the leader, then
+  // fans transport to every member listed in data-transport-ids.
   container.querySelectorAll('[data-tp-host]').forEach(host => {
     const deviceId = host.dataset.deviceId;
     const display  = displayMap.get(deviceId) || byId.get(deviceId);
     if (!deviceId || !display) return;
-    // A wall transport host carries data-blank-ids="id1,id2,…" so the Blank
-    // toggle darkens EVERY wall screen, not just the leader (screen on/off is a
-    // per-physical-device command). Transport (play/pause/skip) stays on the
-    // leader, which drives wall sync.
+    // A wall transport host carries data-transport-ids/data-blank-ids="id1,id2,…".
+    // Transport fans out to every span-wall member so doc/deck slides stay in
+    // lockstep across independent player windows. Blank also darkens every wall
+    // screen because screen on/off is a per-physical-device command.
+    const transportIds = String(host.dataset.transportIds || '').split(',').filter(Boolean);
     const blankIds = String(host.dataset.blankIds || '').split(',').filter(Boolean);
     // Pass the current paused state (from now_playing.paused, kept live by
     // dashboard:playback-state events) so the Play/Pause button shows the
@@ -595,11 +628,15 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
     const paused = display.now_playing ? display.now_playing.paused : undefined;
     renderTransportBar(host, {
       deviceId,
+      transportDeviceIds: transportIds.length ? transportIds : undefined,
       blankDeviceIds: blankIds.length ? blankIds : undefined,
       screenOn: display.screen_on !== false,
       paused,
       onScreenOnChange: (newValue) => {
         if (typeof onScreenOnChange === 'function') onScreenOnChange(deviceId, newValue);
+      },
+      onTransportAction: (ids, action) => {
+        if (typeof onTransportAction === 'function') onTransportAction(transportIds.length ? transportIds : [deviceId], action);
       },
     });
   });

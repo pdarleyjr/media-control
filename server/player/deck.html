@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Media Control — Presentation</title>
+<title>Media Control - Presentation</title>
 <!-- Served under /player/* which is CSP- and Cloudflare-Access-bypassed, so
      inline CSS/JS is intentional here (this page loads unattended on displays).
      The deck (mbfd-deck-v1) is injected as window.__deck by the server, so no
@@ -65,12 +65,13 @@
   <div id="hud"></div>
   <div id="bar"><div id="fill"></div></div>
   <div id="err">This presentation is unavailable.</div>
+<script src="/player/device-contract.js"></script>
 <script>
 (function(){
   var deck = window.__deck;
   var stage = document.getElementById('stage');
   if(!deck || !Array.isArray(deck.slides) || !deck.slides.length){ document.getElementById('err').style.display='flex'; return; }
-  document.title = (deck.title||'Presentation') + ' — Media Control';
+  document.title = (deck.title||'Presentation') + ' - Media Control';
   var slides = deck.slides;
   function esc(s){return String(s==null?'':s).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
 
@@ -142,12 +143,50 @@
   var fill = document.getElementById('fill');
 
   var idx=0, timer=null, t0=0, dur=0, raf=null, paused=false;
+  function currentSlide() { return slides[idx] || null; }
+  function currentState() {
+    var slide = currentSlide();
+    var error = document.getElementById('err').style.display === 'flex';
+    var elapsed = Math.max(0, (performance.now() - t0) / 1000);
+    var slideDuration = dur > 0 ? dur / 1000 : (Number(slide && slide.duration_seconds) > 0 ? Number(slide.duration_seconds) : 12);
+    return {
+      content_id: deck.deck_id || deck.id || null,
+      content_type: 'presentation',
+      kind: 'presentation',
+      title: deck.title || 'Presentation',
+      media_title: deck.title || 'Presentation',
+      media_type: 'presentation',
+      slide_title: slide && (slide.title || slide.subtitle || null) || null,
+      slide_index: idx + 1,
+      slide_total: slides.length,
+      total_pages: slides.length,
+      current_time: elapsed,
+      duration: slideDuration,
+      slide_duration: slideDuration,
+      paused: !!paused,
+      progress: slideDuration > 0 ? Math.max(0, Math.min(1, elapsed / slideDuration)) : 0,
+      render_state: error ? 'error' : (paused ? 'paused' : 'playing'),
+      status: error ? 'error' : (paused ? 'paused' : 'playing'),
+      error_state: error ? 'Deck unavailable.' : null,
+    };
+  }
+  function publishState(ack) {
+    var state = currentState();
+    window.__mcTransportState = state;
+    if (window.parent && window.parent !== window) {
+      var msg = { __mc_transport_state: state };
+      if (ack) msg.__mc_transport_ack = ack;
+      try { window.parent.postMessage(msg, location.origin); } catch (e) {}
+    }
+    return state;
+  }
   function show(i){
     idx=(i+els.length)%els.length;
     els.forEach(function(e,k){ e.classList.toggle('show', k===idx); });
     dotEls.forEach(function(d,k){ d.classList.toggle('on', k===idx); });
     hud.textContent=(idx+1)+' / '+els.length;
     schedule();
+    publishState();
   }
   function schedule(){
     if(timer) clearTimeout(timer);
@@ -160,7 +199,19 @@
   }
   function next(){ show(idx+1); }
   function prev(){ show(idx-1); }
-  function togglePause(){ paused=!paused; if(paused){ if(timer)clearTimeout(timer); if(raf)cancelAnimationFrame(raf);} else { schedule(); } }
+  function togglePause(){ paused=!paused; if(paused){ if(timer)clearTimeout(timer); if(raf)cancelAnimationFrame(raf);} else { schedule(); } publishState(); }
+
+  function unwrapTransportPayload(payload) {
+    var current = payload;
+    for (var i = 0; i < 4; i++) {
+      if (!current || typeof current !== 'object' || Array.isArray(current)) break;
+      var nested = current.payload;
+      var wrapped = current.action || current.command || current.type;
+      if (!wrapped || !nested || typeof nested !== 'object' || Array.isArray(nested)) break;
+      current = nested;
+    }
+    return current && typeof current === 'object' && !Array.isArray(current) ? current : {};
+  }
 
   document.addEventListener('keydown', function(e){
     if(e.key==='ArrowRight'||e.key==='PageDown'){ next(); }
@@ -170,26 +221,77 @@
   });
   document.addEventListener('click', function(){ next(); });
 
-  // Remote transport from the Broadcast Center: the display's player forwards
-  // {__mc_transport:'next'|'prev'|'play_pause'|'restart'} to this deck (loaded
-  // in its content iframe) via postMessage. No origin trust needed — we only
-  // act on a small known set of slide-navigation actions.
-  // Also exposed on window so the parent player can call it directly (same-origin
-  // fallback for Electron kiosks where postMessage can be unreliable).
-  function handleAction(a) {
-    if(a==='next') next();
-    else if(a==='prev') prev();
-    else if(a==='play_pause') togglePause();
-    else if(a==='restart') show(0);
+  function normalizeAction(input) {
+    if (window.MbfdDeviceContract && typeof window.MbfdDeviceContract.normalizeCommand === 'function') {
+      var normalized = window.MbfdDeviceContract.normalizeCommand(input, {
+        device_id: 'deck-child',
+        target_scope: 'display',
+      });
+      if (normalized.ok) {
+        return {
+          action: normalized.value.payload.action,
+          payload: normalized.value.payload,
+          command_id: normalized.value.command_id,
+        };
+      }
+    }
+    var action = '';
+    var payload = {};
+    var commandId = null;
+    if (typeof input === 'string') {
+      action = input;
+    } else if (input && typeof input === 'object') {
+      var rawPayload = input.payload && typeof input.payload === 'object' && !Array.isArray(input.payload) ? input.payload : null;
+      action = (rawPayload && (rawPayload.action || rawPayload.command || rawPayload.type)) || input.action || input.command || input.type || '';
+      payload = rawPayload && (rawPayload.action || rawPayload.command || rawPayload.type)
+        ? unwrapTransportPayload(rawPayload)
+        : (rawPayload || input);
+      commandId = input.command_id || input.commandId || input.id || null;
+    }
+    return { action: String(action || '').trim(), payload: payload || {}, command_id: commandId };
+  }
+  function goToSlide(value) {
+    var parsed = parseInt(value, 10);
+    if (!Number.isFinite(parsed)) throw new Error('Missing slide number');
+    show(Math.max(0, parsed > 0 ? parsed - 1 : parsed));
+  }
+  // Remote transport from the Broadcast Center. The parent player forwards
+  // a command envelope ({action, payload, command_id}) as __mc_transport, and
+  // the deck replies with __mc_transport_state / __mc_transport_ack.
+  function handleAction(input) {
+    var cmd = normalizeAction(input);
+    var action = cmd.action;
+    var ack = { command_id: cmd.command_id || null, action: action || null, ok: true, status: 'acked', type: 'transport' };
+    try {
+      if (action === 'next' || action === 'next_slide') next();
+      else if (action === 'prev' || action === 'previous' || action === 'previous_slide') prev();
+      else if (action === 'play_pause' || action === 'toggle_play_pause') togglePause();
+      else if (action === 'restart' || action === 'restart_deck' || action === 'reset') show(0);
+      else if (action === 'pause' || action === 'pause_deck') { if (!paused) togglePause(); }
+      else if (action === 'play' || action === 'resume' || action === 'resume_deck') { if (paused) togglePause(); }
+      else if (action === 'go_to_slide' || action === 'slide' || action === 'goto') {
+        goToSlide(cmd.payload.page || cmd.payload.slide || cmd.payload.index || cmd.payload.slide_number);
+      } else {
+        throw new Error('Unsupported action: ' + action);
+      }
+    } catch (err) {
+      ack.ok = false;
+      ack.status = 'failed';
+      ack.error = err && err.message ? err.message : String(err || 'Action failed');
+    }
+    ack.state = publishState(ack);
+    return ack;
   }
   window.handleAction = handleAction;
   window.addEventListener('message', function(e){
-    var a = e && e.data && e.data.__mc_transport;
-    if(!a) return;
-    handleAction(a);
+    if(!e || e.origin !== location.origin || e.source !== window.parent) return;
+    var data = e && e.data;
+    if(!data || data.__mc_transport == null) return;
+    handleAction(data.__mc_transport);
   });
 
   show(0);
+  publishState({ action: 'ready', ok: true, status: 'ready' });
 })();
 </script>
 </body>

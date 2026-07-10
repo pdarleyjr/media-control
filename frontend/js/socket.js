@@ -2,6 +2,9 @@ import { t } from './i18n.js';
 
 let dashboardSocket = null;
 const listeners = new Map();
+const nodeStatusById = new Map();
+const nodeStatusByRoom = new Map();
+let selectedTarget = null;
 
 export function connectSocket() {
   const token = localStorage.getItem('token');
@@ -20,6 +23,7 @@ export function connectSocket() {
   dashboardSocket.on('connect', () => {
     console.log('Dashboard connected, socket id:', dashboardSocket.id);
     updateConnectionStatus(true);
+    emitSelectedTarget();
     emit('connected');
   });
 
@@ -36,6 +40,14 @@ export function connectSocket() {
   // Device status updates
   dashboardSocket.on('dashboard:device-status', (data) => {
     emit('device-status', data);
+  });
+
+  dashboardSocket.on('dashboard:node-status', (data) => {
+    if (data && typeof data === 'object') {
+      if (data.node_id) nodeStatusById.set(String(data.node_id), data);
+      if (data.room_id) nodeStatusByRoom.set(String(data.room_id), data);
+    }
+    emit('node-status', data);
   });
 
   // Screenshot ready
@@ -131,6 +143,25 @@ export function requestScreenshot(deviceId) {
   if (dashboardSocket) dashboardSocket.emit('dashboard:request-screenshot', { device_id: deviceId });
 }
 
+function emitSelectedTarget() {
+  if (!dashboardSocket || !dashboardSocket.connected || !selectedTarget) return;
+  dashboardSocket.emit('dashboard:select-target', selectedTarget);
+}
+
+export function selectTarget(targetType, targetId) {
+  if (!targetType || !targetId) {
+    clearTarget();
+    return;
+  }
+  selectedTarget = { target_type: targetType, target_id: targetId };
+  emitSelectedTarget();
+}
+
+export function clearTarget() {
+  selectedTarget = null;
+  if (dashboardSocket && dashboardSocket.connected) dashboardSocket.emit('dashboard:clear-target');
+}
+
 export function startRemote(deviceId) {
   console.log('startRemote:', deviceId, 'socket connected:', dashboardSocket?.connected);
   if (dashboardSocket) dashboardSocket.emit('dashboard:remote-start', { device_id: deviceId });
@@ -157,15 +188,40 @@ export function identifyDevice(deviceId, payload = {}) {
 // With a callback, we use Socket.IO's .timeout() so the callback always fires -
 // either with the ack or with an Error if the server doesn't respond in 5s.
 export function sendCommand(deviceId, type, payload, callback) {
+  const contract = globalThis.MbfdDeviceContract;
+  const envelope = contract && typeof contract.createCommand === 'function'
+    ? contract.createCommand({
+      device_id: deviceId,
+      target_scope: 'display',
+      payload: { ...(payload || {}), action: payload?.action || type },
+    })
+    : null;
+  emit('command-sent', {
+    device_id: deviceId,
+    type,
+    payload,
+    command_id: envelope?.command_id || null,
+    sent_at: Date.now(),
+  });
   if (!dashboardSocket) return;
   if (typeof callback === 'function') {
-    dashboardSocket.timeout(5000).emit('dashboard:device-command', { device_id: deviceId, type, payload }, (err, ack) => {
+    dashboardSocket.timeout(5000).emit('dashboard:device-command', { device_id: deviceId, type, payload, envelope }, (err, ack) => {
       if (err) callback({ delivered: false, reason: 'no_ack' });
       else callback(ack || { delivered: false, reason: 'no_ack' });
     });
   } else {
-    dashboardSocket.emit('dashboard:device-command', { device_id: deviceId, type, payload });
+    dashboardSocket.emit('dashboard:device-command', { device_id: deviceId, type, payload, envelope });
   }
 }
 
 export function getSocket() { return dashboardSocket; }
+
+export function getNodeStatus(idOrRoom) {
+  if (!idOrRoom) return null;
+  const key = String(idOrRoom);
+  return nodeStatusById.get(key) || nodeStatusByRoom.get(key) || null;
+}
+
+export function getAllNodeStatus() {
+  return [...nodeStatusById.values()];
+}

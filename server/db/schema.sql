@@ -88,6 +88,12 @@ CREATE TABLE IF NOT EXISTS content (
     width           INTEGER,
     height          INTEGER,
     remote_url      TEXT,
+    original_filepath TEXT,
+    original_sha256 TEXT,
+    processing_status TEXT NOT NULL DEFAULT 'uploaded',
+    processing_error TEXT,
+    media_probe_json TEXT,
+    updated_at      INTEGER,
     created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
 
@@ -700,6 +706,7 @@ CREATE TABLE IF NOT EXISTS display_states (
     content_type          TEXT,
     layout_mode           TEXT,
     slide_index           INTEGER,
+    slide_count           INTEGER,
     current_time          REAL,
     duration              REAL,
     paused                INTEGER,
@@ -712,6 +719,7 @@ CREATE TABLE IF NOT EXISTS display_states (
     error_state           TEXT,
     idle_screensaver_id   TEXT,
     default_screensaver_id TEXT,
+    state_revision        INTEGER NOT NULL DEFAULT 0,
     updated_at            INTEGER,
     PRIMARY KEY (target_type, target_id)
 );
@@ -731,6 +739,7 @@ CREATE TABLE IF NOT EXISTS managed_nodes (
     cache_size      INTEGER,
     sync_status     TEXT NOT NULL DEFAULT 'idle',
     audio_endpoint  TEXT,
+    network_state_json TEXT,
     created_at      INTEGER,
     updated_at      INTEGER
 );
@@ -779,7 +788,8 @@ CREATE TABLE IF NOT EXISTS node_heartbeats (
     cache_size       INTEGER,
     sync_status      TEXT,
     active_displays  TEXT,
-    audio_endpoint   TEXT
+    audio_endpoint   TEXT,
+    network_state_json TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_node_heartbeats_node_ts ON node_heartbeats(node_id, ts);

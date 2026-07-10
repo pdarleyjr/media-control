@@ -55,6 +55,38 @@ router.get('/backup', (req, res) => {
   res.download(dbPath, `remotedisplay-backup-${new Date().toISOString().split('T')[0]}.db`);
 });
 
+// Managed node snapshot (superadmin only)
+router.get('/nodes', (req, res) => {
+  const token = req.query.token;
+  if (!token) return res.status(401).json({ error: 'Token required' });
+
+  try {
+    const jwt = require('jsonwebtoken');
+    const config = require('../config');
+    const decoded = jwt.verify(token, config.jwtSecret);
+    const user = db.prepare('SELECT role FROM users WHERE id = ?').get(decoded.id);
+    if (!user || !PLATFORM_ROLES.includes(user.role)) return res.status(403).json({ error: 'Platform admin only' });
+  } catch {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+
+  const nodes = db.prepare(`
+    SELECT node_id, node_name, node_type, room_id, workspace_id, last_heartbeat,
+           software_version, free_disk, cache_size, sync_status, audio_endpoint,
+           network_state_json, created_at, updated_at
+    FROM managed_nodes
+    ORDER BY last_heartbeat DESC, node_id ASC
+  `).all().map((node) => {
+    let network_state = null;
+    if (node.network_state_json) {
+      try { network_state = JSON.parse(node.network_state_json); } catch { network_state = null; }
+    }
+    return { ...node, network_state };
+  });
+
+  res.json({ nodes, count: nodes.length });
+});
+
 // User data export (own data only)
 router.get('/export', (req, res) => {
   const token = req.query.token;

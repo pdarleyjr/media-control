@@ -11,9 +11,11 @@ is by the owner; nothing here commits a real token.
   `better-sqlite3`).
 - `audio/` — `audio-enforce.ps1` (idempotent default-device setter),
   `audio-watchdog.ps1` (60s loop + backoff), `audio-restore.ps1` (rollback).
+- `network-enforce.ps1` / `network-watchdog.ps1` — wired-first policy that
+  disables Wi-Fi when Ethernet is active and keeps the P3 on the LAN uplink.
 - `kiosk-launcher.ps1` — launches N `/player/managed` windows (replaces the
   legacy `FiveDisplayKiosk`; non-TV1 windows started with `--mute`).
-- `healthcheck.ps1` — prints `{players, audio, agent}` JSON for watchdogs.
+- `healthcheck.ps1` — prints `{players, audio, network, agent}` JSON for watchdogs.
 - `config.example.json` — placeholders only. Copy to `config.local.json`
   (gitignored) and populate on-box.
 - `install/update.ps1` — registers `MBFD_RoomAgent` + `MBFD_AudioEnforce`
@@ -24,12 +26,14 @@ is by the owner; nothing here commits a real token.
 2. Copy `config.example.json` -> `config.local.json`; fill `MC_NODE_TOKEN`,
    `deviceId`/`deviceToken`, etc. on-box. **Never commit `config.local.json`.**
 3. From an elevated prompt: `powershell -ExecutionPolicy Bypass -File
-   appliance\p3\install\update.ps1`. Creates the Scheduled Tasks and starts them.
+   appliance\p3\install\update.ps1`. Creates the Scheduled Tasks and starts them
+   (including the wired-first network watchdog).
 
 ## Env (read by `agent.js`)
 | Env | Default | Notes |
 |-----|---------|-------|
-| `MC_SERVER_URL` | `http://100.81.154.123:8096` | GMKtec Tailnet origin |
+| `MC_SERVER_LAN_URL` | `http://gmktec.local:8096` | Preferred wired LAN origin when the box is on the same switch |
+| `MC_SERVER_URL` | `http://100.81.154.123:8096` | Tailnet fallback origin |
 | `MC_NODE_TOKEN` | — | per-node secret (REQUIRED, gitignored) |
 | `MC_NODE_ID` | — | node id (REQUIRED) |
 | `MC_SOFTWARE_VERSION` | `p3-agent-1.0.0` | surfaced in heartbeat |
@@ -39,16 +43,17 @@ is by the owner; nothing here commits a real token.
 | `MBFD_ROOM_AGENT_CACHE_Q` | `60G` | LRU quota |
 
 ## Troubleshooting
-- **Agent not connecting**: confirm Tailscale is up + `MC_SERVER_URL` reachable
-  from the P3 (`curl http://100.81.154.123:8096`). Check Task Scheduler history
-  for `MBFD_RoomAgent`.
+- **Agent not connecting**: confirm Ethernet is up, the LAN hostname resolves,
+  and `MC_SERVER_LAN_URL` or `MC_SERVER_URL` is reachable from the P3 (`curl
+  http://gmktec.local:8096` or the configured fallback). Check Task Scheduler
+  history for `MBFD_RoomAgent` and `MBFD_NetworkEnforce`.
 - **Audio wrong device**: optionally `Install-Module AudioDeviceCmdlets -Scope
   CurrentUser` so `audio-enforce.ps1` can actually switch defaults. Without it the
   script logs the chosen endpoint but cannot change it (graceful degradation).
 - **Restart loop**: agent emits stack traces to Task Scheduler output; the 60s
   watchdog restart re-attempts with exponential backoff.
 - **Firewall**: Windows Firewall stays ENABLED (constraint). Do not disable it;
-  the agent only needs outbound Tailnet.
+  the agent only needs outbound LAN access to the GMKtec host.
 
 ## Secrets handling
 `config.local.json`, `.env`, `cache/`, `manifests/`, `logs/`, `backups/` are
@@ -74,7 +79,8 @@ Only `socket.io-client` is required (no native build). On-box install:
 Env (read by `cache-agent.js`):
 | Env | Example | Notes |
 |-----|---------|-------|
-| `MC_SERVER_URL` | `http://100.81.154.123:8096` | origin to proxy/pre-warm from |
+| `MC_SERVER_LAN_URL` | `http://gmktec.local:8096` | preferred wired origin to proxy/pre-warm from |
+| `MC_SERVER_URL` | `http://100.81.154.123:8096` | fallback origin to proxy/pre-warm from |
 | `MC_NODE_ID` | `classroom-1-p3` | node id (matches server logs) |
 | `MC_NODE_TOKEN` | — | must equal server `CLASSROOM_LOCAL_CACHE_NODE_TOKEN` |
 | `MC_AGENT_PORT` | `8097` | loopback HTTP port the player windows fetch from |

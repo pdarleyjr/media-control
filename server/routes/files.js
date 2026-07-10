@@ -10,6 +10,7 @@ const sceneEngine = require('../services/scene-engine');
 const { logActivity, getClientIp } = require('../services/activity');
 const { resolveUploadMime } = require('../middleware/upload');
 const { isDocThumbnailMime, kickDocThumbnail } = require('../lib/doc-thumbnail');
+const { kickHevcTranscodeIfNeeded } = require('../lib/media-transcode');
 const { resolveBroadcastTargets } = require('../lib/broadcast-targets');
 
 // MBFD Media Control Studio — Files (Nextcloud per-user raw-FS) API.
@@ -208,6 +209,9 @@ router.post('/broadcast', async (req, res) => {
 
   if (isDocThumbnailMime(canonicalMime)) {
     kickDocThumbnail(id, localPath, canonicalMime);
+  }
+  if (canonicalMime.startsWith('video/')) {
+    kickHevcTranscodeIfNeeded(id, localPath);
   }
 
   if (import_only === true) {

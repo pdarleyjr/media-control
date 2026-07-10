@@ -30,6 +30,12 @@ COPY --from=deps /app/server/node_modules ./server/node_modules
 # was over-aggressively reused, freezing deployed code at the first build.)
 ARG CACHEBUST=dev
 RUN echo "cachebust=$CACHEBUST"
+ARG GIT_COMMIT=unknown
+ARG GIT_BRANCH=unknown
+ARG BUILD_TIMESTAMP=unknown
+ENV GIT_COMMIT=$GIT_COMMIT
+ENV GIT_BRANCH=$GIT_BRANCH
+ENV BUILD_TIMESTAMP=$BUILD_TIMESTAMP
 COPY server ./server
 COPY frontend ./frontend
 COPY scripts ./scripts

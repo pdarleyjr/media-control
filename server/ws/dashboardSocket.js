@@ -11,6 +11,7 @@ const { audit } = require('../lib/audit');
 const { getSocketIp } = require('../services/activity');
 const { liveStreamDeviceId, liveStreamProgramState, markLiveContentChanged } = require('../lib/live-stream-display');
 const commandModel = require('../lib/command-model');
+const deviceContract = require('../player/device-contract');
 
 // Phase 2.3: workspace-scoped socket rooms + per-command permission gates.
 // Replaces the previous flat dashboardNs.emit broadcast (which leaked every
@@ -114,8 +115,10 @@ module.exports = function setupDashboardSocket(io) {
     });
   }
 
-function mirrorTransportToLiveStream(deviceNs, deviceId, type, payload) {
-    if (type !== 'transport') return;
+function mirrorTransportToLiveStream(deviceNs, deviceId, command) {
+    const envelope = command && command.type === 'device:command' ? command : null;
+    if (!envelope || !envelope.payload || !envelope.payload.action) return;
+    if (!new Set(['next', 'prev', 'go_to_slide', 'play', 'pause', 'play_pause', 'seek', 'restart', 'stop']).has(envelope.payload.action)) return;
     const device = db.prepare('SELECT workspace_id FROM devices WHERE id = ?').get(deviceId);
     if (!device || !device.workspace_id) return;
     const state = liveStreamProgramState(device.workspace_id);
@@ -125,17 +128,22 @@ function mirrorTransportToLiveStream(deviceNs, deviceId, type, payload) {
     markLiveContentChanged(liveDeviceId);
     let cmd = null;
     try { cmd = commandModel.ingestCommand({
-      target_type: 'display', target_id: liveDeviceId, command_type: type,
-      payload: payload || {}, issued_by: null, requires_ack: commandModel.ackRequiredForType(type),
+      target_type: 'display', target_id: liveDeviceId, command_type: envelope.payload.action,
+      payload: envelope.payload, issued_by: null, requires_ack: 1,
     }); } catch (_) {}
+    const liveEnvelope = deviceContract.createCommand({
+      ...envelope,
+      command_id: cmd ? cmd.command_id : undefined,
+      device_id: liveDeviceId,
+    });
     const room = deviceNs.adapter.rooms.get(liveDeviceId);
     if (room && room.size > 0) {
-      deviceNs.to(liveDeviceId).emit('device:command', { type, payload, command_id: cmd ? cmd.command_id : null });
+      deviceNs.to(liveDeviceId).emit('device:command', liveEnvelope);
       return;
     }
     try {
       const queue = require('../lib/command-queue');
-      queue.queueCommand(liveDeviceId, type, payload);
+      queue.queueCommand(liveDeviceId, 'device:command', liveEnvelope);
     } catch (_) {}
   }
 
@@ -385,30 +393,49 @@ function mirrorTransportToLiveStream(deviceNs, deviceId, type, payload) {
     });
 
     onControl('dashboard:device-command', (data, ack) => {
-      const { device_id, type, payload } = data;
+      const { device_id } = data || {};
       if (!canActOnDevice(socket, device_id, 'write')) {
         if (typeof ack === 'function') ack({ delivered: false, reason: 'forbidden' });
         return;
       }
-const room = deviceNs.adapter.rooms.get(device_id);
+      const normalized = deviceContract.normalizeCommand(data && data.envelope ? data.envelope : data, {
+        device_id,
+        target_scope: 'display',
+      });
+      if (!normalized.ok) {
+        if (typeof ack === 'function') ack({ delivered: false, reason: normalized.error.code, error: normalized.error });
+        return;
+      }
+      const envelope = normalized.value;
+      if (normalized.legacy) {
+        console.warn(`[device-contract] normalized legacy dashboard command for ${device_id}`);
+      }
+      const room = deviceNs.adapter.rooms.get(device_id);
+      const commandType = String(envelope.payload.action).toLowerCase();
+      const requiresAck = 1;
       if (room && room.size > 0) {
         let cmd = null;
         try { cmd = commandModel.ingestCommand({
-          target_type: 'display', target_id: device_id, command_type: type,
-          payload: payload || {}, issued_by: socket.userId, requires_ack: commandModel.ackRequiredForType(type),
-        }); } catch (e) { /* command-model ingest is best-effort */ }
-        deviceNs.to(device_id).emit('device:command', { type, payload, command_id: cmd ? cmd.command_id : null });
-        mirrorTransportToLiveStream(deviceNs, device_id, type, payload);
-        console.log(`Command delivered to device ${device_id}: ${type}`);
-        if (typeof ack === 'function') ack({ delivered: true });
-        auditDeviceControl(socket, 'display.command', device_id, { type, payload, delivered: true });
+          target_type: 'display', target_id: device_id, command_type: commandType,
+          payload: envelope.payload, issued_by: socket.userId, requires_ack: requiresAck,
+          command_id: envelope.command_id, created_at: Date.parse(envelope.issued_at),
+        }); } catch (e) {
+          if (typeof ack === 'function') ack({ delivered: false, reason: 'persistence_failed' });
+          console.error(`[device-contract] command persistence failed for ${device_id}/${envelope.command_id}: ${e.message}`);
+          return;
+        }
+        deviceNs.to(device_id).emit('device:command', envelope);
+        mirrorTransportToLiveStream(deviceNs, device_id, envelope);
+        console.log(`[device-contract] delivered ${envelope.command_id} ${commandType} to ${device_id}`);
+        if (typeof ack === 'function') ack({ delivered: true, command_id: cmd ? cmd.command_id : null });
+        auditDeviceControl(socket, 'display.command', device_id, { type: commandType, command_id: envelope.command_id, delivered: true });
         // Unified dashboard: record authoritative on/off ONLY when actually delivered
         // to a live display. Never write it for a merely-queued command — that would
         // make the dashboard lie about reality.
-        if (type === 'screen_off' || type === 'screen_on') {
+        if (commandType === 'screen_off' || commandType === 'screen_on') {
           try {
             db.prepare("UPDATE devices SET screen_on = ?, updated_at = strftime('%s','now') WHERE id = ?")
-              .run(type === 'screen_on' ? 1 : 0, device_id);
+              .run(commandType === 'screen_on' ? 1 : 0, device_id);
           } catch (_) { /* non-fatal */ }
         }
         return;
@@ -420,18 +447,19 @@ const room = deviceNs.adapter.rooms.get(device_id);
       // row anyway so the audit trail shows it was issued (fire-and-forget:
       // requires_ack=0, so it never times out).
       try { commandModel.ingestCommand({
-        target_type: 'display', target_id: device_id, command_type: type,
-        payload: payload || {}, issued_by: socket.userId, requires_ack: 0,
+        target_type: 'display', target_id: device_id, command_type: commandType,
+        payload: envelope.payload, issued_by: socket.userId, requires_ack: 0,
+        command_id: envelope.command_id, created_at: Date.parse(envelope.issued_at),
       }); } catch (e) { /* best-effort */ }
       let queued = false;
       try {
         const queue = require('../lib/command-queue');
-        queued = queue.queueCommand(device_id, type, payload);
+        queued = queue.queueCommand(device_id, 'device:command', envelope);
       } catch (e) { /* command-queue module absent; fall through to lost */ }
-      console.log(`Command for offline device ${device_id}: ${type} (queued=${queued})`);
-      mirrorTransportToLiveStream(deviceNs, device_id, type, payload);
-      if (typeof ack === 'function') ack({ delivered: false, queued, reason: 'offline' });
-      auditDeviceControl(socket, 'display.command', device_id, { type, payload, delivered: false, queued });
+      console.log(`Command for offline device ${device_id}: ${commandType} (queued=${queued})`);
+      mirrorTransportToLiveStream(deviceNs, device_id, envelope);
+      if (typeof ack === 'function') ack({ delivered: false, queued, reason: 'offline', command_id: envelope.command_id });
+      auditDeviceControl(socket, 'display.command', device_id, { type: commandType, command_id: envelope.command_id, delivered: false, queued });
     });
 
     // Phase 3: trigger an Operational Activity ("Scene") — pushes the scene to

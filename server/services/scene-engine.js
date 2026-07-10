@@ -135,7 +135,17 @@ function pushPlaylistUpdate(io, deviceId) {
     if (!io) return { delivered: false };
     const { buildPlaylistPayload } = require('../ws/deviceSocket');
     const commandQueue = require('../lib/command-queue');
-    return commandQueue.queueOrEmitPlaylistUpdate(io.of('/device'), deviceId, buildPlaylistPayload);
+    const deviceNs = io.of('/device');
+    const result = commandQueue.queueOrEmitPlaylistUpdate(deviceNs, deviceId, buildPlaylistPayload);
+    if (result && result.delivered) {
+      for (const delay of [1500, 6500]) {
+        const timer = setTimeout(() => deviceNs.to(deviceId).emit('device:screenshot-request', {
+          reason: 'content-changed',
+        }), delay);
+        if (timer.unref) timer.unref();
+      }
+    }
+    return result;
   } catch (e) {
     console.warn(`[scene-engine] pushPlaylistUpdate failed for ${deviceId}: ${e.message}`);
     return { delivered: false };

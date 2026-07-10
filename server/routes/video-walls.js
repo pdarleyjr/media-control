@@ -7,6 +7,7 @@ const { db } = require('../db/database');
 // dead code after the Phase 2.1 role rename (no users carry role='admin'
 // anymore; team_members is a vestigial table from the pre-workspace model).
 const { accessContext } = require('../lib/tenancy');
+const { ensureDevicePlaylist } = require('../lib/wall-playlists');
 
 // Load a wall + access context. Returns the wall row or null after sending
 // 403/404. requireWrite=true also denies workspace_viewer.
@@ -182,12 +183,24 @@ router.put('/:id', requireWallWrite, (req, res) => {
     db.prepare(`UPDATE video_walls SET ${updates.join(', ')} WHERE id = ?`).run(...values);
   }
 
-  // If playlist changed, propagate to every member device's playlist_id so the
-  // existing buildPlaylistPayload picks up the right items.
-  if (req.body.playlist_id !== undefined) {
+  const nextLayoutMode = req.body.layout_mode !== undefined
+    ? String(req.body.layout_mode)
+    : String(wall.layout_mode || 'span');
+
+  // If playlist changed while the wall is still spanning, propagate to every
+  // member device's playlist_id so the existing buildPlaylistPayload picks up
+  // the right items. Split mode keeps per-device playlists independent.
+  if (req.body.playlist_id !== undefined && nextLayoutMode !== 'split') {
     const members = db.prepare('SELECT device_id FROM video_wall_devices WHERE wall_id = ?').all(req.params.id);
     const stmt = db.prepare('UPDATE devices SET playlist_id = ? WHERE id = ?');
     for (const m of members) stmt.run(req.body.playlist_id || null, m.device_id);
+  }
+
+  // When a wall enters split mode, decouple any member still sharing the wall
+  // playlist so future per-screen changes stay local to that screen.
+  if (nextLayoutMode === 'split') {
+    const members = db.prepare('SELECT device_id FROM video_wall_devices WHERE wall_id = ?').all(req.params.id);
+    for (const m of members) ensureDevicePlaylist(m.device_id, req.user.id);
   }
 
   // Switching a wall back to Span means every physical screen should again play
@@ -272,6 +285,7 @@ router.put('/:id/devices', requireWallWrite, (req, res) => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const updateDevice = db.prepare("UPDATE devices SET wall_id = ?, playlist_id = ? WHERE id = ?");
+    const splitMode = String(wall.layout_mode || 'span') === 'split';
 
     for (const d of devices) {
       insertPos.run(
@@ -280,7 +294,8 @@ router.put('/:id/devices', requireWallWrite, (req, res) => {
         d.canvas_x ?? null, d.canvas_y ?? null,
         d.canvas_width ?? null, d.canvas_height ?? null,
       );
-      updateDevice.run(req.params.id, wall.playlist_id || null, d.device_id);
+      const playlistId = splitMode ? ensureDevicePlaylist(d.device_id, req.user.id) : (wall.playlist_id || null);
+      updateDevice.run(req.params.id, playlistId, d.device_id);
       // A device joining a wall leaves all of its groups (walls and groups
       // are mutually exclusive concepts in this UX).
       db.prepare('DELETE FROM device_group_members WHERE device_id = ?').run(d.device_id);

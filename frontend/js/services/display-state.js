@@ -8,8 +8,19 @@ import { on as onSocket } from '../socket.js';
 let displays = new Map();          // id -> display state
 const subs = new Set();
 let wired = false;
+let notifyScheduled = false;
 
-function notify() { const list = [...displays.values()]; subs.forEach(cb => cb(list)); }
+function notify() {
+  if (notifyScheduled) return;
+  notifyScheduled = true;
+  const run = () => {
+    notifyScheduled = false;
+    const list = [...displays.values()];
+    subs.forEach(cb => cb(list));
+  };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+  else setTimeout(run, 0);
+}
 
 // The screenshot endpoint accepts the JWT via Authorization header OR ?token=.
 // Browser <img src> sends neither header, so it needs ?token= in the URL
@@ -46,6 +57,9 @@ function ensureWired() {
     // when a status event doesn't carry it.
     const patch = { online: d.status === 'online' };
     if (d.screen_on !== undefined) patch.screen_on = !!d.screen_on;
+    if (d.telemetry && typeof d.telemetry === 'object') {
+      patch.telemetry = { ...d.telemetry };
+    }
     merge(d.device_id || d.id, patch);
   });
   onSocket('screenshot-ready', (d) => {
@@ -87,6 +101,19 @@ function ensureWired() {
     const npPatch = { ...(cur.now_playing || {}), paused: !!d.paused };
     if (d.content_id && !npPatch.content_id) npPatch.content_id = d.content_id;
     merge(id, { now_playing: npPatch });
+  });
+  onSocket('state-sync', (d) => {
+    const id = d && (d.target_id || d.device_id || d.id);
+    if (!id) return;
+    const cur = displays.get(id);
+    if (!cur) return;
+    const state = d.state && typeof d.state === 'object' ? d.state : d;
+    const npPatch = { ...(cur.now_playing || {}) };
+    if (state.current_content_id && !npPatch.content_id) npPatch.content_id = state.current_content_id;
+    if (state.media_title) npPatch.label = state.media_title;
+    if (state.content_type) npPatch.kind = state.content_type;
+    if (state.paused !== undefined) npPatch.paused = !!state.paused;
+    merge(id, { ...state, now_playing: npPatch });
   });
   // Pairing can happen from either the legacy Displays page or Command Center.
   // The server emits this after /api/provision/pair; refresh immediately so the

@@ -33,6 +33,7 @@
   <div id="stage"><img id="page" alt="Document page"></div>
   <div id="status" aria-live="polite"></div>
   <div id="error">Document failed to load.</div>
+  <script src="/player/device-contract.js"></script>
   <script>
     (function () {
       'use strict';
@@ -71,36 +72,162 @@
         var im = new Image();
         im.src = pageUrl(n);
       }
+      function currentState() {
+        var paused = !playTimer;
+        var error = document.body.dataset.error === '1';
+        return {
+          content_id: id,
+          content_type: 'document',
+          kind: 'document',
+          title: filename,
+          media_title: filename,
+          media_type: 'document',
+          fit: fit,
+          version: version,
+          page: page,
+          slide_index: page,
+          slide_total: pages,
+          total_pages: pages,
+          current_time: page,
+          duration: pages,
+          paused: paused,
+          render_state: error ? 'error' : (paused ? 'paused' : 'playing'),
+          status: error ? 'error' : (paused ? 'paused' : 'playing'),
+          error_state: error ? 'Document failed to load.' : null,
+        };
+      }
+      function publishState(ack) {
+        var state = currentState();
+        window.__mcTransportState = state;
+        if (window.parent && window.parent !== window) {
+          var msg = { __mc_transport_state: state };
+          if (ack) msg.__mc_transport_ack = ack;
+          try { window.parent.postMessage(msg, location.origin); } catch (e) {}
+        }
+        return state;
+      }
+      function publishScreenshot() {
+        if (!img.complete || !img.naturalWidth || !img.naturalHeight) return;
+        try {
+          var canvas = document.createElement('canvas');
+          canvas.width = 960;
+          canvas.height = 540;
+          var ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          var scaleX = canvas.width / img.naturalWidth;
+          var scaleY = canvas.height / img.naturalHeight;
+          var scale = fit === 'fill' ? null : (fit === 'cover' ? Math.max(scaleX, scaleY) : Math.min(scaleX, scaleY));
+          var width = scale == null ? canvas.width : img.naturalWidth * scale;
+          var height = scale == null ? canvas.height : img.naturalHeight * scale;
+          ctx.drawImage(img, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
+          var base64 = canvas.toDataURL('image/jpeg', 0.58).split(',')[1];
+          if (base64 && window.parent && window.parent !== window) {
+            window.parent.postMessage({ __mc_screenshot: base64, captured_at: Date.now() }, location.origin);
+          }
+        } catch (e) {
+          console.warn('[doc-player] screenshot failed:', e && e.message ? e.message : e);
+        }
+      }
       function render(n, announce) {
         page = Math.max(1, Math.min(pages, parseInt(n, 10) || 1));
         img.src = pageUrl(page);
-        img.onload = function () { prefetch(page + 1); prefetch(page - 1); };
+        img.onload = function () {
+          prefetch(page + 1);
+          prefetch(page - 1);
+          publishScreenshot();
+        };
         if (announce !== false) showStatus();
+        publishState();
       }
       function stopAuto() {
         if (playTimer) clearInterval(playTimer);
         playTimer = null;
+        publishState();
       }
       function toggleAuto() {
-        if (playTimer) { stopAuto(); showStatus(); return; }
-        playTimer = setInterval(function () {
-          render(page >= pages ? 1 : page + 1, true);
-        }, Math.max(2500, parseInt(params.get('interval') || '8000', 10) || 8000));
-        showStatus();
+      if (playTimer) { stopAuto(); showStatus(); return; }
+      playTimer = setInterval(function () {
+        render(page >= pages ? 1 : page + 1, true);
+      }, Math.max(2500, parseInt(params.get('interval') || '8000', 10) || 8000));
+      showStatus();
+      publishState();
+    }
+      function unwrapTransportPayload(payload) {
+        var current = payload;
+        for (var i = 0; i < 4; i++) {
+          if (!current || typeof current !== 'object' || Array.isArray(current)) break;
+          var nested = current.payload;
+          var wrapped = current.action || current.command || current.type;
+          if (!wrapped || !nested || typeof nested !== 'object' || Array.isArray(nested)) break;
+          current = nested;
+        }
+        return current && typeof current === 'object' && !Array.isArray(current) ? current : {};
       }
-      function handleAction(action) {
-        if (action === 'next') render(page + 1, true);
-        else if (action === 'prev') render(page - 1, true);
-        else if (action === 'restart') { stopAuto(); render(1, true); }
-        else if (action === 'play_pause') toggleAuto();
+      function normalizeAction(input) {
+        if (window.MbfdDeviceContract && typeof window.MbfdDeviceContract.normalizeCommand === 'function') {
+          var normalized = window.MbfdDeviceContract.normalizeCommand(input, {
+            device_id: 'document-child',
+            target_scope: 'display',
+          });
+          if (normalized.ok) {
+            return {
+              action: normalized.value.payload.action,
+              payload: normalized.value.payload,
+              command_id: normalized.value.command_id,
+            };
+          }
+        }
+        var action = '';
+        var payload = {};
+        var commandId = null;
+        if (typeof input === 'string') {
+          action = input;
+        } else if (input && typeof input === 'object') {
+          var rawPayload = input.payload && typeof input.payload === 'object' && !Array.isArray(input.payload) ? input.payload : null;
+          action = (rawPayload && (rawPayload.action || rawPayload.command || rawPayload.type)) || input.action || input.command || input.type || '';
+          payload = rawPayload && (rawPayload.action || rawPayload.command || rawPayload.type)
+            ? unwrapTransportPayload(rawPayload)
+            : (rawPayload || input);
+          commandId = input.command_id || input.commandId || input.id || null;
+        }
+        return { action: String(action || '').trim(), payload: payload || {}, command_id: commandId };
+      }
+      function goToPage(value) {
+        var parsed = parseInt(value, 10);
+        if (!Number.isFinite(parsed)) throw new Error('Missing page number');
+        render(parsed, true);
+      }
+      function handleAction(input) {
+        var cmd = normalizeAction(input);
+        var action = cmd.action;
+        var ack = { command_id: cmd.command_id || null, action: action || null, ok: true, status: 'acked', type: 'transport' };
+        try {
+          if (action === 'next' || action === 'next_slide') render(page + 1, true);
+          else if (action === 'prev' || action === 'previous' || action === 'previous_slide') render(page - 1, true);
+          else if (action === 'restart' || action === 'restart_deck' || action === 'reset') { stopAuto(); render(1, true); }
+          else if (action === 'play_pause' || action === 'toggle_play_pause') toggleAuto();
+          else if (action === 'pause' || action === 'pause_deck') stopAuto();
+          else if (action === 'play' || action === 'resume' || action === 'resume_deck') { if (!playTimer) toggleAuto(); }
+          else if (action === 'go_to_slide' || action === 'slide' || action === 'goto') {
+            goToPage(cmd.payload.page || cmd.payload.slide || cmd.payload.index || cmd.payload.page_number);
+          } else {
+            throw new Error('Unsupported action: ' + action);
+          }
+        } catch (err) {
+          ack.ok = false;
+          ack.status = 'failed';
+          ack.error = err && err.message ? err.message : String(err || 'Action failed');
+        }
+        ack.state = publishState(ack);
+        return ack;
       }
       // Expose handleAction on window so the parent player page can call it
-      // directly (same-origin) as a fallback when postMessage is unreliable
-      // (Electron kiosks under memory pressure can silently drop cross-frame
-      // postMessages).
+      // directly (same-origin) as the primary path when it is available.
       window.handleAction = handleAction;
 
       window.addEventListener('message', function (event) {
+        if (!event || event.origin !== location.origin || event.source !== window.parent) return;
         var data = event && event.data;
         if (!data || data.__mc_transport == null) return;
         handleAction(data.__mc_transport);
@@ -119,11 +246,15 @@
           filename = meta.filename || filename;
           version = meta.version || '';
           render(page, true);
+          publishState({ action: 'ready', ok: true, status: 'ready' });
         })
         .catch(function (e) {
           console.error('[doc-player] failed:', e);
           document.body.dataset.error = '1';
+          publishState({ action: 'load', ok: false, status: 'failed', error: e && e.message ? e.message : String(e || 'load failed') });
         });
+
+      publishState();
     })();
   </script>
 </body>

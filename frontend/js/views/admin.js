@@ -126,6 +126,7 @@ async function loadSystem() {
       <div style="display:flex;gap:8px;margin-top:16px">
         <a href="/api/status/backup?token=${token}" class="btn btn-secondary btn-sm" style="text-decoration:none">${t('admin.download_db_backup')}</a>
         <a href="/api/status" target="_blank" class="btn btn-secondary btn-sm" style="text-decoration:none">${t('admin.server_status')}</a>
+        <a href="/api/status/nodes?token=${token}" target="_blank" class="btn btn-secondary btn-sm" style="text-decoration:none">Node status</a>
       </div>
     `;
   } catch (err) { el.innerHTML = `<p style="color:var(--danger)">${esc(err.message)}</p>`; }

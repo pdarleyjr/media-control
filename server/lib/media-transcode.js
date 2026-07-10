@@ -26,6 +26,7 @@ const { execFile, execFileSync } = require('child_process');
 const { promisify } = require('util');
 const { v4: uuidv4 } = require('uuid');
 const config = require('../config');
+const { queueAssetManifest, sha256File } = require('./asset-manifest');
 
 const pexecFile = promisify(execFile);
 
@@ -86,13 +87,28 @@ function needsHevcTranscode(absPath) {
 function probeMedia(absPath) {
   try {
     const json = execFileSync('ffprobe',
-      ['-v', 'quiet', '-print_format', 'json', '-show_format', '-select_streams', 'v:0', '-show_streams', absPath],
+      ['-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', absPath],
       { timeout: 20000 }).toString();
     const info = JSON.parse(json);
-    const v = (info.streams || [])[0] || {};
+    const streams = info.streams || [];
+    const v = streams.find((stream) => stream.codec_type === 'video') || {};
+    const a = streams.find((stream) => stream.codec_type === 'audio') || {};
+    const frameRate = String(v.avg_frame_rate || v.r_frame_rate || '').split('/');
+    const fps = frameRate.length === 2 && Number(frameRate[1])
+      ? Number(frameRate[0]) / Number(frameRate[1])
+      : null;
     return {
       ext: path.extname(absPath).toLowerCase(),
       vcodec: (v.codec_name || '').toLowerCase(),
+      video_codec: (v.codec_name || '').toLowerCase() || null,
+      audio_codec: (a.codec_name || '').toLowerCase() || null,
+      audio_channels: Number(a.channels) || null,
+      audio_sample_rate: Number(a.sample_rate) || null,
+      has_audio: !!a.codec_name,
+      width: Number(v.width) || null,
+      height: Number(v.height) || null,
+      frame_rate: Number.isFinite(fps) ? fps : null,
+      duration_seconds: Number(info.format && info.format.duration) || null,
       pixfmt: (v.pix_fmt || '').toLowerCase(),
       transfer: (v.color_transfer || '').toLowerCase(),
       colorspace: (v.color_space || '').toLowerCase(),
@@ -192,11 +208,30 @@ function transcodeTimeoutMs() {
 function runOneTranscode(job, done) {
   const { contentId, absPath } = job;
   let cls;
+  let sourceProbe;
+  let db;
   try {
     if (!fs.existsSync(absPath)) return done();
-    cls = classifyMedia(probeMedia(absPath));
+    db = require('../db/database').db;
+    sourceProbe = probeMedia(absPath);
+    cls = classifyMedia(sourceProbe);
+    db.prepare(`
+      UPDATE content SET original_filepath=COALESCE(original_filepath, filepath),
+        processing_status='processing', processing_error=NULL, media_probe_json=?, updated_at=?
+      WHERE id=?
+    `).run(sourceProbe ? JSON.stringify(sourceProbe) : null, Math.floor(Date.now() / 1000), contentId);
   } catch { return done(); }
-  if (!cls || cls.webSafe) return done();
+  sha256File(absPath).then((sha) => {
+    try { db.prepare('UPDATE content SET original_sha256=? WHERE id=?').run(sha, contentId); } catch (_) {}
+  }).catch(() => {});
+  if (!cls || cls.webSafe) {
+    try {
+      db.prepare("UPDATE content SET processing_status='ready', processing_error=NULL, updated_at=? WHERE id=?")
+        .run(Math.floor(Date.now() / 1000), contentId);
+      queueAssetManifest(db, contentId, absPath);
+    } catch (_) {}
+    return done();
+  }
 
   const outName = `${uuidv4()}.mp4`;
   const outPath = path.join(config.contentDir, outName);
@@ -205,6 +240,10 @@ function runOneTranscode(job, done) {
   execFile('ffmpeg', args, { timeout: transcodeTimeoutMs() }, (err) => {
     if (err) {
       console.warn(`[transcode] failed for ${contentId}: ${err.message}`);
+      try {
+        db.prepare("UPDATE content SET processing_status='failed', processing_error=?, updated_at=? WHERE id=?")
+          .run(String(err.message || 'transcode_failed').slice(0, 2000), Math.floor(Date.now() / 1000), contentId);
+      } catch (_) {}
       try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch { /* ignore */ }
       return done();
     }
@@ -222,15 +261,29 @@ function runOneTranscode(job, done) {
       execFileSync('ffmpeg', ['-y', '-ss', '5', '-i', outPath, '-vframes', '1', '-vf', `scale=${config.thumbnailWidth}:-1`, path.join(config.contentDir, thumbName)], { timeout: 30000 });
     } catch { thumbName = null; }
     try {
-      const { db } = require('../db/database');
       const prev = db.prepare('SELECT filepath, thumbnail_path FROM content WHERE id = ?').get(contentId);
-      db.prepare("UPDATE content SET filepath = ?, mime_type = 'video/mp4', file_size = ?, duration_sec = ?, width = ?, height = ?, thumbnail_path = COALESCE(?, thumbnail_path) WHERE id = ?")
-        .run(outName, fileSize, durationSec, width, height, thumbName, contentId);
-      if (prev && prev.filepath && prev.filepath !== outName) { try { fs.unlinkSync(path.join(config.contentDir, prev.filepath)); } catch { /* ignore */ } }
+      const outputProbe = probeMedia(outPath);
+      db.prepare(`
+        UPDATE content SET filepath=?, mime_type='video/mp4', file_size=?, duration_sec=?,
+          width=?, height=?, thumbnail_path=COALESCE(?, thumbnail_path),
+          original_filepath=COALESCE(original_filepath, ?), processing_status='ready',
+          processing_error=NULL, media_probe_json=?, updated_at=?
+        WHERE id=?
+      `).run(
+        outName, fileSize, durationSec, width, height, thumbName,
+        prev && prev.filepath || path.basename(absPath),
+        outputProbe ? JSON.stringify(outputProbe) : null,
+        Math.floor(Date.now() / 1000), contentId
+      );
       if (prev && prev.thumbnail_path && thumbName && prev.thumbnail_path !== thumbName) { try { fs.unlinkSync(path.join(config.contentDir, prev.thumbnail_path)); } catch { /* ignore */ } }
+      queueAssetManifest(db, contentId, outPath);
       console.log(`[transcode] ${contentId} -> ${outName} (${width}x${height}, ${durationSec}s, ${Math.round(fileSize / 1e6)}MB)`);
     } catch (e) {
       console.error(`[transcode] failed to update row for ${contentId}: ${e.message}`);
+      try {
+        db.prepare("UPDATE content SET processing_status='failed', processing_error=?, updated_at=? WHERE id=?")
+          .run(String(e.message || 'database_update_failed').slice(0, 2000), Math.floor(Date.now() / 1000), contentId);
+      } catch (_) {}
       try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch { /* ignore */ }
     }
     done();

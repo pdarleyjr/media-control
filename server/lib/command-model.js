@@ -10,6 +10,7 @@
 const crypto = require('crypto');
 const config = require('../config');
 const { db } = require('../db/database');
+const deviceContract = require('../player/device-contract');
 
 // ── prepared statements (memoized per-process) ────────────────────────────
 function p(sql) {
@@ -46,13 +47,13 @@ const stmts = {
       AND status IN ('timeout','failed')`),
   markTimeout:      p(`UPDATE command_logs
     SET status = 'timeout', ack_at = ? WHERE command_id = ? AND status = 'sent'`),
-  displayStateExists: p('SELECT 1 FROM display_states WHERE target_type = ? AND target_id = ?'),
+  displayStateExists: p('SELECT state_revision FROM display_states WHERE target_type = ? AND target_id = ?'),
   insertDisplayState: p(`INSERT INTO display_states
     (target_type, target_id, workspace_id, current_content_id, current_asset_id,
-     content_type, layout_mode, slide_index, current_time, duration, paused, muted,
+     content_type, layout_mode, slide_index, slide_count, current_time, duration, paused, muted,
      volume, local_asset_ready, last_ack_at, last_heartbeat_at, render_state,
-     error_state, idle_screensaver_id, default_screensaver_id, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+     error_state, idle_screensaver_id, default_screensaver_id, state_revision, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
   updateDisplayState: p(`UPDATE display_states SET
      workspace_id = COALESCE(?, workspace_id),
      current_content_id = COALESCE(?, current_content_id),
@@ -60,6 +61,7 @@ const stmts = {
      content_type = COALESCE(?, content_type),
      layout_mode = COALESCE(?, layout_mode),
      slide_index = COALESCE(?, slide_index),
+     slide_count = COALESCE(?, slide_count),
      current_time = COALESCE(?, current_time),
      duration = COALESCE(?, duration),
      paused = COALESCE(?, paused),
@@ -71,6 +73,7 @@ const stmts = {
      error_state = COALESCE(?, error_state),
      idle_screensaver_id = COALESCE(?, idle_screensaver_id),
      default_screensaver_id = COALESCE(?, default_screensaver_id),
+     state_revision = ?,
      updated_at = ?
      WHERE target_type = ? AND target_id = ?`),
   updateHeartbeat: p(`UPDATE display_states
@@ -89,7 +92,7 @@ const stmts = {
 // MUST list these in the same order.
 const STATE_COLS = [
   'workspace_id', 'current_content_id', 'current_asset_id', 'content_type',
-  'layout_mode', 'slide_index', 'current_time', 'duration', 'paused', 'muted',
+  'layout_mode', 'slide_index', 'slide_count', 'current_time', 'duration', 'paused', 'muted',
   'volume', 'local_asset_ready', 'last_ack_at', 'render_state', 'error_state',
   'idle_screensaver_id', 'default_screensaver_id',
 ];
@@ -130,11 +133,12 @@ function ingestCommand(args) {
   const {
     target_type, target_id, command_type,
     payload, issued_by, requires_ack = 0, workspace_id,
+    command_id: suppliedCommandId, created_at: suppliedCreatedAt,
   } = args || {};
   if (!target_type || !target_id || !command_type) return null;
 
-  const command_id = crypto.randomUUID();
-  const created_at = Date.now();
+  const command_id = suppliedCommandId || crypto.randomUUID();
+  const created_at = Number.isFinite(Number(suppliedCreatedAt)) ? Number(suppliedCreatedAt) : Date.now();
   const ack_deadline = requires_ack ? created_at + config.commandAckTimeoutMs : null;
   const payloadStr = payload == null ? null
     : (typeof payload === 'string' ? payload : JSON.stringify(payload));
@@ -170,23 +174,42 @@ function ingestCommand(args) {
 // carried; everything else is ignored so a chatty device can't poison the row.
 // A null/missing value means "don't change" on UPDATE (COALESCE), and a literal
 // NULL on INSERT — except last_ack_at which recordAck stamps explicitly.
+function toSqlScalar(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'boolean') return value ? 1 : 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string' || typeof value === 'bigint') return value;
+  if (value instanceof Date) return value.getTime();
+  return null;
+}
 function mergeDisplayState(target_type, target_id, state) {
-  if (!state || typeof state !== 'object') return;
-  const now = Date.now();
-  const vals = STATE_COLS.map((k) => (state[k] === undefined ? null : state[k]));
-  const exists = stmts.displayStateExists.get(target_type, target_id);
-  if (!exists) {
-    // INSERT: 21 params — pk + 17 cols + last_heartbeat_at(null) + updated_at.
-    stmts.insertDisplayState.run(
-      target_type, target_id,
-      ...vals,
-      null,
-      now
-    );
-    return;
+  if (!state || typeof state !== 'object') return { applied: false, reason: 'invalid_state' };
+  if (!target_type || !target_id) return { applied: false, reason: 'invalid_target' };
+  const tx = db.transaction(() => {
+    const now = Date.now();
+    const vals = STATE_COLS.map((key) => toSqlScalar(state[key]));
+    const exists = stmts.displayStateExists.get(target_type, target_id);
+    const currentRevision = Number(exists?.state_revision) || 0;
+    const suppliedRevision = state.state_revision == null ? Number.NaN : Number(state.state_revision);
+    const hasSuppliedRevision = Number.isInteger(suppliedRevision) && suppliedRevision >= 0;
+    if (hasSuppliedRevision && suppliedRevision < currentRevision) {
+      return { applied: false, reason: 'stale_revision', state_revision: currentRevision };
+    }
+    const stateRevision = hasSuppliedRevision ? suppliedRevision : currentRevision + 1;
+    if (!exists) {
+      stmts.insertDisplayState.run(target_type, target_id, ...vals, null, stateRevision, now);
+    } else {
+      stmts.updateDisplayState.run(...vals, stateRevision, now, target_type, target_id);
+    }
+    return { applied: true, state_revision: stateRevision };
+  });
+  try {
+    return tx();
+  } catch (cause) {
+    const wrapped = new Error(`display state persistence failed for ${target_type}:${target_id}: ${cause.message}`);
+    wrapped.cause = cause;
+    throw wrapped;
   }
-  // UPDATE: 20 params — 17 cols + updated_at + pk.
-  stmts.updateDisplayState.run(...vals, now, target_type, target_id);
 }
 
 // Recompute a parent (wall/group) row's status from its children's ack results.
@@ -236,8 +259,10 @@ function recordAck(args) {
   }
 
   if (state && target_type && target_id) {
-    try { mergeDisplayState(target_type, target_id, { ...state, last_ack_at: now }); }
-    catch (e) { console.warn(`recordAck state upsert failed: ${e.message}`); }
+    const stateResult = mergeDisplayState(target_type, target_id, { ...state, last_ack_at: now });
+    if (stateResult && stateResult.applied === false && stateResult.reason !== 'stale_revision') {
+      throw new Error(`recordAck state was not persisted: ${stateResult.reason}`);
+    }
   }
   return { status, changes: updated.changes };
 }
@@ -360,10 +385,15 @@ function startAckSweep(io) {
             });
             const deviceNs = io.of && io.of('/device');
             if (row && deviceNs) {
-              deviceNs.to(r.target_id).emit('device:command', {
-                command_id: row.command_id, type: r.command_type,
-                payload: r.payload ? JSON.parse(r.payload) : {},
-              });
+              deviceNs.to(r.target_id).emit('device:command', deviceContract.createCommand({
+                command_id: row.command_id,
+                device_id: r.target_id,
+                target_scope: 'display',
+                payload: {
+                  ...(r.payload ? JSON.parse(r.payload) : {}),
+                  action: r.command_type,
+                },
+              }));
             }
           } catch (e) {
             console.warn(`ackSweep re-emit failed for ${r.target_id}/${r.command_type}: ${e.message}`);
@@ -408,6 +438,7 @@ function recordHeartbeat(args) {
 // transport + display-control verbs in COMMAND_EVENT_MODEL.md / TEST_PLAN.
 const ACK_ELIGIBLE_TYPES = new Set([
   'play', 'pause', 'prev', 'next', 'restart',
+  'play_pause', 'transport',
   'blank', 'screensaver', 'grid',
 ]);
 function ackRequiredForType(type) {

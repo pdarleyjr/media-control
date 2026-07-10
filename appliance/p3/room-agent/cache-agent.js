@@ -11,11 +11,15 @@
 // env at runtime; nothing is hard-coded or committed.
 'use strict';
 
-const os = require('os');
 const fs = require('fs');
 const { createCacheServer } = require('./cache-server');
+const { resolveServerUrl } = require('../../common/server-url');
+const { detectNetworkState } = require('../../common/network-state');
 
-const MC_SERVER_URL = (process.env.MC_SERVER_URL || 'http://100.81.154.123:8096').replace(/\/+$/, '');
+const MC_SERVER_URL = resolveServerUrl(process.env, {
+  urlKeys: ['MC_SERVER_LAN_URL', 'MC_SERVER_URL'],
+  defaultUrl: 'http://100.81.154.123:8096',
+});
 const MC_NODE_ID = process.env.MC_NODE_ID || '';
 const MC_NODE_TOKEN = process.env.MC_NODE_TOKEN || '';
 const NODE_TYPE = process.env.MC_NODE_TYPE || 'p3';
@@ -59,6 +63,10 @@ let shuttingDown = false;
 function heartbeat() {
   if (!io || !io.connected) return;
   const stats = cache.getStats();
+  const network = detectNetworkState();
+  const serverUrlCategory = process.env.MC_SERVER_LAN_URL
+    ? 'lan'
+    : (process.env.MC_SERVER_URL ? 'configured' : 'documented_tailnet_fallback');
   io.emit('node:heartbeat', {
     node_id: MC_NODE_ID,
     node_type: NODE_TYPE,
@@ -69,6 +77,24 @@ function heartbeat() {
     sync_status: 'idle',
     active_displays: ACTIVE_DISPLAYS,
     audio_endpoint: AUDIO_ENDPOINT,
+    network: {
+      ...network,
+      selected_server_url_category: serverUrlCategory,
+      effective_ip: network.ethernet?.addresses?.[0] || network.wifi?.addresses?.[0] || null,
+      reachability: io && io.connected ? 'connected' : 'disconnected',
+    },
+    player_version: process.env.MC_PLAYER_VERSION || null,
+    kiosk_version: process.env.MC_KIOSK_VERSION || null,
+    build_hash: process.env.MC_BUILD_HASH || process.env.GIT_COMMIT || null,
+    cache_health: stats.failed > 0 ? 'degraded' : 'ok',
+    cache: stats,
+    display_mapping: ACTIVE_DISPLAYS,
+    current_asset_readiness: stats.failed > 0 ? 'failed' : 'ready',
+    current_renderer: process.env.MC_CURRENT_RENDERER || null,
+    audio_track_present: process.env.MC_AUDIO_TRACK_PRESENT || null,
+    audio_codec: process.env.MC_AUDIO_CODEC || null,
+    last_successful_command: process.env.MC_LAST_SUCCESSFUL_COMMAND || null,
+    last_command_error: process.env.MC_LAST_COMMAND_ERROR || null,
   });
 }
 

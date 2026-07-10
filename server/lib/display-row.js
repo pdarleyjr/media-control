@@ -3,10 +3,12 @@
 // drives Mirror routing mode in the unified dashboard) is unit-testable without
 // spinning up HTTP. Mirrors the existing inline null-handling exactly.
 //
-// `row` is one result of the /state SELECT (devices LEFT JOIN playlists), with
-// the now-playing summary already resolved out of band so this stays pure.
+// `row` is one result of the /state SELECT (devices LEFT JOIN playlists and
+// live state/telemetry lookups), with the now-playing summary already resolved
+// out of band so this stays pure. The mapper only consumes the base display
+// fields plus `shot_at`; extra joined columns are ignored here.
 //   { id, name, status, last_heartbeat, screen_width, screen_height,
-//     screen_on, playlist_id, layout_id, shot_at }
+//     screen_on, playlist_id, layout_id, shot_at, ... }
 // `nowPlaying` is the resolved now-playing summary (see lib/display-state.js).
 // `now` is the current unix time (seconds) used for the online window.
 function mapDisplayRow(row, nowPlaying, now, assetCache = null) {

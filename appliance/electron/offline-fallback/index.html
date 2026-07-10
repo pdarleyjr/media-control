@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src https://media-control.mbfdhub.com http://100.81.154.123:8096 http://127.0.0.1:8096">
   <title>MBFD Command Center</title>
   <style>
     :root { color-scheme: dark; }
@@ -48,12 +49,12 @@
         try { return window.mcBridge && window.mcBridge.getReconnectState; } catch (e) { return false; }
       }
 
-      function setOnline(online) {
+      function setOnline(online, target) {
         if (online) {
           statusEl.textContent = 'Reconnected. Loading Command Center\u2026';
           attemptsEl.textContent = 'connected';
           // Reload the kiosk's main frame to the real CC URL.
-          setTimeout(function () { window.location.replace(CC); }, 600);
+          setTimeout(function () { window.location.replace(target || CC); }, 600);
         } else {
           n += 1;
           attemptsEl.textContent = 'attempt ' + n;
@@ -63,7 +64,7 @@
       function ping() {
         if (onlineViaBridge()) {
           window.mcBridge.getReconnectState().then(function (s) {
-            setOnline(!!s.online);
+            setOnline(!!s.online, s.target);
           }, function () { setOnline(false); });
           return;
         }

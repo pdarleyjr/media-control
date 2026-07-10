@@ -237,8 +237,10 @@ app.get('/player/deck/:id', (req, res) => {
 // managed virtual display named "Content for live stream". It bypasses manual
 // pairing while still using the normal player and device socket protocol.
 app.get('/player/live-stream', (req, res) => {
+  const { normalizePlayerAccessQuery } = require('./lib/player-access');
   const { loadLiveStreamDisplay } = require('./lib/live-stream-display');
-  const display = loadLiveStreamDisplay(req.query.device_id, req.query.token);
+  const { deviceId, token } = normalizePlayerAccessQuery(req.query);
+  const display = loadLiveStreamDisplay(deviceId, token);
   if (!display) return res.status(404).type('text/plain').send('live stream display not found');
   const playerHtmlPath = path.join(__dirname, 'player', 'index.html');
   fs.readFile(playerHtmlPath, 'utf8', (err, html) => {
@@ -270,8 +272,10 @@ app.get('/player/live-stream', (req, res) => {
 // /player pairing flow unchanged while allowing a room-specific wrapper to
 // bypass manual pairing for known displays using their existing device token.
 app.get('/player/managed', (req, res) => {
+  const { normalizePlayerAccessQuery } = require('./lib/player-access');
   const { loadManagedDisplay } = require('./lib/managed-player-display');
-  const display = loadManagedDisplay(req.query.device_id, req.query.token);
+  const { deviceId, token, audioEnabled } = normalizePlayerAccessQuery(req.query);
+  const display = loadManagedDisplay(deviceId, token);
   if (!display) return res.status(404).type('text/plain').send('managed display not found');
   const playerHtmlPath = path.join(__dirname, 'player', 'index.html');
   fs.readFile(playerHtmlPath, 'utf8', (err, html) => {
@@ -286,7 +290,7 @@ app.get('/player/managed', (req, res) => {
         serverUrl: `${req.protocol}://${req.get('host')}`,
         // audioEnabled drives auto-unmute in the player. Passed by the kiosk as
         // ?audio_enabled=1 only for the TV that feeds the eARC soundbar (TV1).
-        audioEnabled: req.query.audio_enabled === '1',
+        audioEnabled,
       },
     };
     const inject = '  <script>window.__playerConfig = ' + JSON.stringify(publicConfig).replace(/</g, '\\u003c') + ';</script>\n';
@@ -802,6 +806,7 @@ app.use('/api/kiosk', (req, res, next) => {
 // Frontend version hash (changes when files are modified, triggers soft reload)
 const crypto = require('crypto');
 let frontendHash = '';
+let playerHash = '';
 function updateFrontendHash() {
   try {
     const files = ['index.html', 'js/app.js', 'js/api.js', 'js/socket.js', 'css/variables.css', 'css/main.css',
@@ -823,12 +828,19 @@ function updateFrontendHash() {
     // Include player files in hash so web players detect code updates
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'index.html'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'doc.html'))); } catch {}
+    try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'deck.html'))); } catch {}
+    try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'device-contract.js'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'grid.html'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'multiview-core.js'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'screen-share-receiver.js'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'sw.js'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'debug-overlay.js'))); } catch {}
     frontendHash = crypto.createHash('md5').update(Buffer.concat(files.map(f => Buffer.from(f)))).digest('hex').slice(0, 8);
+    const playerFiles = ['index.html', 'doc.html', 'deck.html', 'device-contract.js', 'player-routing.js']
+      .map((file) => {
+        try { return fs.readFileSync(path.join(__dirname, 'player', file)); } catch { return Buffer.from(''); }
+      });
+    playerHash = crypto.createHash('sha256').update(Buffer.concat(playerFiles)).digest('hex').slice(0, 12);
   } catch { frontendHash = Date.now().toString(36); }
 }
 updateFrontendHash();
@@ -837,7 +849,14 @@ setInterval(updateFrontendHash, 30000);
 app.get('/api/version', (req, res) => {
   let version = '1.2.0';
   try { version = fs.readFileSync(path.join(__dirname, '..', 'VERSION'), 'utf8').trim(); } catch {}
-  res.json({ hash: frontendHash, version });
+  res.json({ hash: frontendHash, version, player_hash: playerHash, contract_version: 1 });
+});
+
+app.get('/api/system/version', (req, res) => {
+  const { buildSystemVersion } = require('./lib/system-version');
+  const { db } = require('./db/database');
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(buildSystemVersion({ db, frontendHash, playerHash }));
 });
 
 // Public status page

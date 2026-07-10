@@ -22,7 +22,17 @@ import { COMMAND_TYPES } from '../../player-protocol.js';
 import { showToast } from '../../components/toast.js';
 import { confirmDialog } from '../../components/confirm.js';
 import { renderRegionEditor } from './region-editor.js';
-import { getSocket, identifyDevice, requestScreenshot, sendCommand } from '../../socket.js';
+import * as displayState from '../../services/display-state.js';
+import {
+  identifyDevice,
+  requestScreenshot,
+  sendCommand,
+  startRemote,
+  stopRemote,
+  getNodeStatus,
+  on as socketOn,
+  off as socketOff,
+} from '../../socket.js';
 import * as engine from '../../services/screen-share-engine.js';
 
 function geometryLabel(display) {
@@ -44,6 +54,54 @@ function formatUptime(seconds) {
   if (d > 0) return `${d}d ${h}h ${m}m`;
   if (h > 0) return `${h}h ${m}m`;
   return `${m}m`;
+}
+
+function formatClock(seconds) {
+  if (seconds == null || !Number.isFinite(Number(seconds))) return '--';
+  const total = Math.max(0, Math.floor(Number(seconds)));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function formatAge(ms) {
+  if (!Number.isFinite(Number(ms))) return '--';
+  if (ms < 1000) return `${Math.max(0, Math.round(ms))} ms`;
+  return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} s`;
+}
+
+function previewStatusLabel(ageMs, online) {
+  if (!online) return 'Offline';
+  if (!Number.isFinite(Number(ageMs))) return 'Preview unavailable';
+  if (ageMs > 10000) return 'Preview stale';
+  if (ageMs > 5000) return 'Preview stale';
+  return `Live, updated ${formatAge(ageMs)} ago`;
+}
+
+function wallStateLabel(ageMs, commandState, online) {
+  if (!online) return 'Offline';
+  if (commandState?.status === 'pending') return 'Out of Sync';
+  if (commandState?.status === 'failed' || commandState?.status === 'timeout') return 'Out of Sync';
+  if (!Number.isFinite(Number(ageMs))) return 'Online, preview pending';
+  if (ageMs > 10000) return 'Online, preview stale';
+  if (ageMs > 5000) return 'Online, preview stale';
+  return 'Synced';
+}
+
+function formatTransportConnection(node) {
+  const path = String(node?.server_path || node?.network?.server_path || '').toLowerCase();
+  if (path === 'lan' || path === 'ethernet') return 'LAN';
+  if (path === 'tailnet' || path === 'tailscale') return 'Tailnet';
+  if (path === 'cloudflare') return 'Cloudflare';
+  return 'Unknown';
+}
+
+function formatP3Link(node) {
+  const transport = String(node?.network?.primary_transport || node?.network?.primaryTransport || '').toLowerCase();
+  if (transport === 'ethernet') return 'Ethernet';
+  if (transport === 'wifi') return 'Wi-Fi';
+  return 'Unknown';
 }
 
 function commandLabel(type) {
@@ -154,18 +212,30 @@ function optionsHtml(items, selectedId, emptyLabel, labelFn) {
  * @param {HTMLElement} container
  * @param {object} opts
  * @param {object} opts.display          the selected display state row
+ * @param {object} [opts.wall]           the selected display's wall, if any
  * @param {boolean} [opts.isWallMember]  true → Partition disabled (wall member)
  * @param {()=>void} [opts.onClose]      called when the panel is dismissed
  */
-export async function renderInspector(container, { display, isWallMember = false, onClose, onDeviceChanged } = {}) {
+export async function renderInspector(container, { display, wall = null, isWallMember = false, onClose, onDeviceChanged } = {}) {
   if (!container || !display) return;
   container.hidden = false;
   const renderToken = Symbol('inspector-render');
   container.__renderToken = renderToken;
+  if (typeof container.__classroomMonitorCleanup === 'function') {
+    try { container.__classroomMonitorCleanup(); } catch (_) {}
+    container.__classroomMonitorCleanup = null;
+  }
 
-  const inspectorData = await loadInspectorData(display.id);
+  const [inspectorData, systemVersion] = await Promise.all([
+    loadInspectorData(display.id),
+    api.getSystemVersion().catch(() => null),
+  ]);
   if (container.__renderToken !== renderToken) return;
   const device = { ...display, ...(inspectorData.device || {}) };
+  const classroomWall = wall && /classroom\s*1/i.test(String(wall.name || ''));
+  const classroomPreviewId = classroomWall
+    ? (wall.leader_device_id || (Array.isArray(wall.devices) && wall.devices[0] && wall.devices[0].device_id) || device.id)
+    : null;
   const latestTelemetry = device.telemetry?.[0] || {};
   const content = inspectorData.content || [];
   const playlists = inspectorData.playlists || [];
@@ -216,8 +286,17 @@ export async function renderInspector(container, { display, isWallMember = false
           <p class="mc-insp-kv"><span>${esc(t('mc.insp.player_type'))}</span><strong>${esc(playerType)}</strong></p>
           <p class="mc-insp-kv"><span>${esc(t('mc.insp.uptime'))}</span><strong>${esc(formatUptime(latestTelemetry.uptime_seconds))}</strong></p>
           <p class="mc-insp-kv"><span>${esc(t('mc.insp.resolution'))}</span><strong>${esc(geometryLabel(device))}</strong></p>
+          <p class="mc-insp-kv"><span>Server</span><strong>${esc(systemVersion?.api_version || '--')} · ${esc(systemVersion?.git_commit?.slice(0, 8) || '--')}</strong></p>
+          <p class="mc-insp-kv"><span>Frontend / Player</span><strong>${esc(systemVersion?.frontend_bundle_hash || '--')} / ${esc(systemVersion?.player_bundle_hash || '--')}</strong></p>
+          <p class="mc-insp-kv"><span>Command Contract</span><strong>v${esc(systemVersion?.command_contract_version || '--')}</strong></p>
         </div>
       </section>
+
+      ${classroomWall ? `
+      <section class="mc-insp-section mc-insp-classroom-wall" data-classroom-monitor-section>
+        <h3 class="mc-insp-subhead">Classroom 1 Video Wall</h3>
+        <div data-classroom-monitor-host></div>
+      </section>` : ''}
 
       <section class="mc-insp-section mc-insp-playback">
         <h3 class="mc-insp-subhead">${esc(t('mc.insp.playback_setup'))}</h3>
@@ -275,6 +354,163 @@ export async function renderInspector(container, { display, isWallMember = false
 
       <section class="mc-insp-section mc-insp-regions" id="mc-insp-regions"></section>
     </div>`;
+
+  const monitorHost = container.querySelector('[data-classroom-monitor-host]');
+  const classroomRoomId = 'classroom-1';
+  const monitorState = {
+    node: getNodeStatus(classroomRoomId),
+    command: null,
+    commandTimer: null,
+    previewDeviceId: classroomPreviewId,
+  };
+  const monitorMembers = new Set([
+    ...(Array.isArray(wall?.devices) ? wall.devices.map((m) => m && m.device_id).filter(Boolean) : []),
+    wall && wall.id,
+    device.id,
+    classroomPreviewId,
+  ].filter(Boolean));
+
+  function monitorCommandMatches(data) {
+    if (!data || !classroomWall) return false;
+    const targetId = data.device_id || data.target_id || data.id || data.wall_id || data.room_id || null;
+    if (targetId && monitorMembers.has(String(targetId))) return true;
+    if (data.command_id && monitorState.command && monitorState.command.command_id && String(data.command_id) === String(monitorState.command.command_id)) return true;
+    return false;
+  }
+
+  function monitorCommandState(data, status) {
+    const payload = data && typeof data.payload === 'object' ? data.payload : {};
+    const action = String(data && (data.action || data.type || payload.action || payload.command || '')).trim();
+    const targetId = data && (data.device_id || data.target_id || data.id || classroomPreviewId || device.id || null);
+    return {
+      command_id: data && (data.command_id || null) || (monitorState.command && monitorState.command.command_id) || null,
+      action: action || (monitorState.command && monitorState.command.action) || null,
+      label: commandLabel(action || (monitorState.command && monitorState.command.action) || ''),
+      status: status || (data && data.status) || 'pending',
+      error: (data && data.error) || null,
+      target_id: targetId || null,
+      target_type: (data && data.target_type) || (targetId ? 'display' : null),
+      sent_at: (data && data.sent_at) || (monitorState.command && monitorState.command.sent_at) || Date.now(),
+      ack_at: status && status !== 'pending' ? Date.now() : null,
+      state: data && data.state ? data.state : null,
+    };
+  }
+
+  function renderClassroomMonitor() {
+    if (!monitorHost || !classroomWall || container.__renderToken !== renderToken) return;
+    const live = displayState.get(monitorState.previewDeviceId) || displayState.get(device.id) || device;
+    const telemetry = {
+      ...(latestTelemetry || {}),
+      ...(live && live.telemetry && typeof live.telemetry === 'object' ? live.telemetry : {}),
+    };
+    const node = getNodeStatus(classroomRoomId) || monitorState.node || null;
+    const online = live?.online !== false;
+    const previewAgeMs = Number.isFinite(Number(telemetry.preview_age_ms))
+      ? Number(telemetry.preview_age_ms)
+      : (live?.screenshot_at ? Math.max(0, (Date.now() / 1000 - Number(live.screenshot_at)) * 1000) : NaN);
+    const mediaTitle = telemetry.media_title || live?.now_playing?.label || live?.name || device.name || '--';
+    const mediaType = telemetry.media_type || live?.content_type || live?.now_playing?.kind || 'unknown';
+    const playback = telemetry.playback || telemetry.status || live?.render_state || (live?.now_playing?.paused ? 'Paused' : 'Playing');
+    const position = telemetry.current_time != null || live?.current_time != null
+      ? `${formatClock(telemetry.current_time != null ? telemetry.current_time : live.current_time)} / ${formatClock(telemetry.duration != null ? telemetry.duration : live?.duration)}`
+      : '--';
+    const slide = telemetry.slide_index != null || live?.slide_index != null
+      ? `${telemetry.slide_index != null ? telemetry.slide_index : live.slide_index}${(telemetry.slide_total != null || live?.slide_total != null) ? ` / ${telemetry.slide_total != null ? telemetry.slide_total : live.slide_total}` : ''}`
+      : '--';
+    const command = monitorState.command;
+    const commandText = command
+      ? `${command.label || command.action || command.type || 'Command'} · ${command.status === 'pending' ? 'Pending' : (command.status === 'timeout' ? 'Timeout' : (command.status === 'failed' ? 'Failed' : 'Success'))}`
+      : 'Idle';
+    const connection = telemetry.connection || formatTransportConnection(node);
+    const p3Link = telemetry.p3_link || formatP3Link(node);
+    const cache = telemetry.cache_status || telemetry.sync_status || node?.sync_status || 'Unknown';
+    const wallState = telemetry.wall_state || wallStateLabel(previewAgeMs, command, online);
+    const previewLabel = previewStatusLabel(previewAgeMs, online);
+    const previewSrc = live?.screenshot_url || device.screenshot_url || null;
+    const fallback = `
+      <div class="mc-wall-preview-fallback">
+        <strong>${esc(mediaTitle)}</strong>
+        <span>${esc(mediaType)} · ${esc(playback)}</span>
+        <span>${esc(slide !== '--' ? `Slide ${slide}` : 'Slide --')}</span>
+        <span>${esc(position !== '--' ? `Position ${position}` : 'Position --')}</span>
+      </div>`;
+    monitorHost.innerHTML = `
+      <div class="mc-wall-monitor-shell">
+        <div class="mc-wall-preview-card">
+          <div class="mc-wall-preview-head">
+            <strong>Preview</strong>
+            <span>${esc(previewLabel)}</span>
+          </div>
+          <div class="mc-wall-preview-stage">
+            ${previewSrc && online && Number.isFinite(Number(previewAgeMs)) && previewAgeMs <= 10000
+              ? `<img class="mc-wall-preview-img" src="${esc(previewSrc)}" alt="${esc(mediaTitle)}" loading="eager">`
+              : fallback}
+          </div>
+        </div>
+        <div class="mc-insp-info-grid mc-wall-monitor-grid">
+          <p class="mc-insp-kv"><span>Status</span><strong>${esc(online ? 'Online' : 'Offline')}</strong></p>
+          <p class="mc-insp-kv"><span>Currently Playing</span><strong>${esc(mediaTitle)}</strong></p>
+          <p class="mc-insp-kv"><span>Media Type</span><strong>${esc(mediaType)}</strong></p>
+          <p class="mc-insp-kv"><span>Playback</span><strong>${esc(playback)}</strong></p>
+          <p class="mc-insp-kv"><span>Position</span><strong>${esc(position)}</strong></p>
+          <p class="mc-insp-kv"><span>Slide</span><strong>${esc(slide)}</strong></p>
+          <p class="mc-insp-kv"><span>Last Command</span><strong>${esc(commandText)}</strong></p>
+          <p class="mc-insp-kv"><span>Connection</span><strong>${esc(connection)}</strong></p>
+          <p class="mc-insp-kv"><span>P3 Link</span><strong>${esc(p3Link)}</strong></p>
+          <p class="mc-insp-kv"><span>Cache</span><strong>${esc(cache)}</strong></p>
+          <p class="mc-insp-kv"><span>Wall State</span><strong>${esc(wallState)}</strong></p>
+        </div>
+      </div>`;
+  }
+
+  if (classroomWall) {
+    renderClassroomMonitor();
+    const unsubDisplayState = displayState.subscribe(() => {
+      renderClassroomMonitor();
+    });
+    const commandSentHandler = (data) => {
+      if (!monitorCommandMatches(data)) return;
+      monitorState.command = monitorCommandState(data, 'pending');
+      renderClassroomMonitor();
+    };
+    const commandAckHandler = (data) => {
+      if (!monitorCommandMatches(data)) return;
+      const ackState = monitorCommandState(data, data && data.status ? String(data.status) : (data && data.ok === false ? 'failed' : 'acked'));
+      ackState.status = data && data.status ? String(data.status) : (data && data.ok === false ? 'failed' : 'acked');
+      ackState.error = data && data.error ? data.error : null;
+      monitorState.command = ackState;
+      renderClassroomMonitor();
+    };
+    const nodeStatusHandler = (data) => {
+      const node = getNodeStatus(classroomRoomId) || data || null;
+      if (node) {
+        monitorState.node = node;
+        renderClassroomMonitor();
+      }
+    };
+    socketOn('command-sent', commandSentHandler);
+    socketOn('command-ack', commandAckHandler);
+    socketOn('node-status', nodeStatusHandler);
+    container.__classroomMonitorCleanup = () => {
+      try { unsubDisplayState(); } catch (_) {}
+      try { socketOff('command-sent', commandSentHandler); } catch (_) {}
+      try { socketOff('command-ack', commandAckHandler); } catch (_) {}
+      try { socketOff('node-status', nodeStatusHandler); } catch (_) {}
+      try {
+        if (monitorState.previewDeviceId) stopRemote(monitorState.previewDeviceId);
+      } catch (_) {}
+      if (monitorState.commandTimer) {
+        clearTimeout(monitorState.commandTimer);
+        monitorState.commandTimer = null;
+      }
+    };
+    if (monitorState.previewDeviceId) {
+      try { requestScreenshot(monitorState.previewDeviceId); } catch (_) {}
+      try { startRemote(monitorState.previewDeviceId); } catch (_) {}
+    }
+  } else {
+    container.__classroomMonitorCleanup = null;
+  }
 
   const closeBtn = container.querySelector('[data-insp-close]');
   if (closeBtn) {
@@ -566,6 +802,10 @@ async function ensureDisplayLayout(display) {
 /** Hide + clear the inspector (used by the caller when selection is cleared). */
 export function closeInspector(container) {
   if (!container) return;
+  if (typeof container.__classroomMonitorCleanup === 'function') {
+    try { container.__classroomMonitorCleanup(); } catch (_) {}
+    container.__classroomMonitorCleanup = null;
+  }
   // Unsubscribe the engine onChange listener installed by Task 4.5 so it does
   // not accumulate across repeated inspector opens.
   if (typeof container.__unsubEngine === 'function') {

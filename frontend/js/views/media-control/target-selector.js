@@ -1,7 +1,7 @@
 // target-selector.js — Command Center header target dropdown. Drives the active
-// target rendered large on the central canvas. A video wall is one selectable
-// target (its member screens are PASSIVE regions, never selectable individually);
-// individual displays that are NOT wall members are selectable too.
+// target rendered large on the central canvas. The host decides which displays
+// are routable, so split-wall member screens can be listed individually while
+// span walls still remain a single composite target.
 //
 // Selecting a target is a VIEW-ONLY action: it re-points the canvas at one
 // target and never issues a stop / blank / transport command to any other
@@ -31,7 +31,7 @@ function optionTag(value, label) {
  * @param {HTMLElement} hostEl
  * @param {object} opts
  * @param {Array} opts.walls     every video wall (each is a selectable target)
- * @param {Array} opts.displays  individual displays NOT owned by a wall
+ * @param {Array} opts.displays  routable display targets (may include split-wall members)
  * @param {(target:object|null)=>void} [opts.onTargetChange] fired on a real change
  * @returns {{ el: HTMLSelectElement, getActiveTarget: () => (object|null),
  *            setActive: (target:object|null)=>void, setOptions: (walls:boolean|Array, displays?:Array)=>void }|null}

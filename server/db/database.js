@@ -710,6 +710,93 @@ function migrateDisplayViewportColumns() {
 
 migrateDisplayViewportColumns();
 
+// Phase 2: node transport state. Keep node heartbeat transport metadata in
+// sync with the schema even on older databases that predate the column.
+const NODE_TRANSPORT_STATE_ID = 'node_transport_state';
+function migrateNodeTransportStateColumns() {
+  let managedCols = [];
+  let heartbeatCols = [];
+  try {
+    managedCols = db.prepare('PRAGMA table_info(managed_nodes)').all().map((c) => c.name);
+  } catch (e) {
+    console.warn('[node_transport_state] table_info(managed_nodes) failed:', e.message);
+    return;
+  }
+  try {
+    heartbeatCols = db.prepare('PRAGMA table_info(node_heartbeats)').all().map((c) => c.name);
+  } catch (e) {
+    console.warn('[node_transport_state] table_info(node_heartbeats) failed:', e.message);
+    return;
+  }
+
+  const adds = [
+    ['managed_nodes', 'network_state_json', 'ALTER TABLE managed_nodes ADD COLUMN network_state_json TEXT', managedCols],
+    ['node_heartbeats', 'network_state_json', 'ALTER TABLE node_heartbeats ADD COLUMN network_state_json TEXT', heartbeatCols],
+  ];
+
+  for (const [table, column, sql, cols] of adds) {
+    if (cols.includes(column)) continue;
+    try {
+      db.exec(sql);
+      console.log(`[node_transport_state] added column ${table}.${column}`);
+    } catch (e) {
+      console.error(`[node_transport_state] ADD COLUMN ${table}.${column} failed:`, e.message);
+    }
+  }
+
+  try {
+    db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(NODE_TRANSPORT_STATE_ID);
+  } catch (e) {
+    console.warn('[node_transport_state] stamp failed:', e.message);
+  }
+}
+
+migrateNodeTransportStateColumns();
+
+const DISPLAY_STATE_REVISION_ID = 'display_state_revision';
+function migrateDisplayStateRevision() {
+  let cols = [];
+  try { cols = db.prepare('PRAGMA table_info(display_states)').all().map((column) => column.name); }
+  catch (e) { console.warn('[display_state_revision] table_info failed:', e.message); return; }
+  const additions = [
+    ['state_revision', 'ALTER TABLE display_states ADD COLUMN state_revision INTEGER NOT NULL DEFAULT 0'],
+    ['slide_count', 'ALTER TABLE display_states ADD COLUMN slide_count INTEGER'],
+  ];
+  for (const [name, sql] of additions) {
+    if (cols.includes(name)) continue;
+    try { db.exec(sql); }
+    catch (e) { console.error(`[display_state_revision] ${name} failed:`, e.message); return; }
+  }
+  try { db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(DISPLAY_STATE_REVISION_ID); }
+  catch (e) { console.warn('[display_state_revision] stamp failed:', e.message); }
+}
+
+migrateDisplayStateRevision();
+
+const CONTENT_LIFECYCLE_ID = 'content_asset_lifecycle';
+function migrateContentLifecycle() {
+  let cols = [];
+  try { cols = db.prepare('PRAGMA table_info(content)').all().map((column) => column.name); }
+  catch (e) { console.warn('[content_asset_lifecycle] table_info failed:', e.message); return; }
+  const additions = [
+    ['original_filepath', 'ALTER TABLE content ADD COLUMN original_filepath TEXT'],
+    ['original_sha256', 'ALTER TABLE content ADD COLUMN original_sha256 TEXT'],
+    ['processing_status', "ALTER TABLE content ADD COLUMN processing_status TEXT NOT NULL DEFAULT 'uploaded'"],
+    ['processing_error', 'ALTER TABLE content ADD COLUMN processing_error TEXT'],
+    ['media_probe_json', 'ALTER TABLE content ADD COLUMN media_probe_json TEXT'],
+    ['updated_at', 'ALTER TABLE content ADD COLUMN updated_at INTEGER'],
+  ];
+  for (const [name, sql] of additions) {
+    if (cols.includes(name)) continue;
+    try { db.exec(sql); }
+    catch (e) { console.error(`[content_asset_lifecycle] ${name} failed:`, e.message); }
+  }
+  try { db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(CONTENT_LIFECYCLE_ID); }
+  catch (e) { console.warn('[content_asset_lifecycle] stamp failed:', e.message); }
+}
+
+migrateContentLifecycle();
+
 // Phase 3: Operational Activities ("Scenes") + asset placements.
 // A scene is a named snapshot of which content/playlist shows on which display;
 // one tap triggers it and pushes each placement to its device via the existing

@@ -2,7 +2,7 @@ import { api } from '../api.js';
 import { esc } from '../utils.js';
 import { t, tn } from '../i18n.js';
 import { showToast } from '../components/toast.js';
-import { identifyDevice, requestScreenshot, sendCommand, getSocket, on as socketOn, off as socketOff } from '../socket.js';
+import { clearTarget as clearSocketTarget, identifyDevice, requestScreenshot, selectTarget as selectSocketTarget, sendCommand, getSocket, on as socketOn, off as socketOff } from '../socket.js';
 import { COMMAND_TYPES } from '../player-protocol.js';
 import { mountTargetSelector } from './media-control/target-selector.js';
 import { mountSpanSplit } from './media-control/span-split.js';
@@ -19,6 +19,7 @@ import { renderCommandBar } from './media-control/command-bar.js';
 import { renderRoomPresets } from './media-control/room-presets.js';
 import { renderRecentPanel } from './media-control/recent-panel.js';
 import { openViewModal, closeViewModal } from './media-control/view-modal.js';
+import { hasAdvancedCanvasEndpoint, routeSourceToAdvancedCanvas } from './media-control/advanced-canvas.js';
 import { confirmDialog } from '../components/confirm.js';
 import * as screenShareEngine from '../services/screen-share-engine.js';
 import * as schedulesView from './schedules.js';
@@ -139,12 +140,18 @@ let unsub = null;
 let unsubChip = null;   // broadcast-chip unsubscribe (Task 4.5)
 let cmdAckHandler = null;   // Phase-2 command:ack (toast on timeout/failure)
 let stateSyncHandler = null;
+let playbackStateHandler = null;  // dashboard:playback-state listener
 let selectedIds = [];   // ids on the stage; re-hydrated from the server, persisted on change
 let wallMemberIds = new Set();   // device ids owned by a video wall (never their own card)
 let walls = [];
 let previewKickoff = null;   // one-shot "poke players to capture" timer after socket connect
 let previewInterval = null;  // periodic preview refresh for the displays on the stage
 let lastStageSig = null;     // structural signature of the last full stage paint (see paintStage)
+let refreshAfterSendTimer = null;
+let previewRequestTimer = null;
+const pendingPreviewRequestIds = new Set();
+const lastPreviewRequestAt = new Map();
+const PREVIEW_REQUEST_MIN_MS = 8000;
 // Per-wall split-column sources for a SINGLE spanning device (Mosaic): wallId ->
 // array indexed by column (0=left). Survives repaint (kept here, NOT in the DOM)
 // so dropping on the right column never blanks the left — both columns are re-sent
@@ -291,6 +298,7 @@ function paintStage() {
     onCalibrateWall: showWallCalibration,
     onAddDisplay: openAddPicker,
     onScreenOnChange: handleScreenOnChange,
+    onTransportAction: (ids) => refreshAfterSend(ids),
     onSetWallMode: setWallMode,
     onScreensaver: applyScreensaver,
   });
@@ -357,10 +365,10 @@ function refreshPreviewsInPlace() {
     const id = host && host.dataset.deviceId;
     const d = id && byId.get(id);
     if (!d || !d.screenshot_url) return;
-    // A cell intentionally showing the content's poster (un-capturable video /
-    // deck / web, see stage.previewSource) must NOT be clobbered with the black
-    // live screenshot on the next capture tick — leave the poster in place.
-    if (d.now_playing && d.now_playing.poster_url) return;
+    // A cell intentionally showing a poster must NOT be clobbered with a black
+    // live screenshot on the next capture tick. Document/PDF cards may have a
+    // poster available but render live screenshots so slide changes mirror.
+    if (d.now_playing && d.now_playing.poster_url && img.classList.contains('mc-shot-poster')) return;
     if (img.getAttribute('src') !== d.screenshot_url) img.setAttribute('src', d.screenshot_url);
   });
 }
@@ -372,10 +380,40 @@ function refreshPreviewsInPlace() {
 // so the new content has loaded) — that is what makes the preview show what is
 // NOW playing right after a drag-drop / send. `targetIds` is optional; without it
 // we refresh every visible display.
+function scheduleDisplayStateRefresh(delay = 250) {
+  if (refreshAfterSendTimer) clearTimeout(refreshAfterSendTimer);
+  refreshAfterSendTimer = setTimeout(() => {
+    refreshAfterSendTimer = null;
+    displayState.refresh().catch(() => {});
+  }, delay);
+}
+
+function requestScreenshotThrottled(id, force = false) {
+  if (!id) return;
+  const now = Date.now();
+  const last = lastPreviewRequestAt.get(id) || 0;
+  if (!force && now - last < PREVIEW_REQUEST_MIN_MS) return;
+  lastPreviewRequestAt.set(id, now);
+  requestScreenshot(id);
+}
+
+function queuePreviewRequests(ids, delay = 1200, force = false) {
+  for (const id of (Array.isArray(ids) ? ids : [])) {
+    if (id) pendingPreviewRequestIds.add(id);
+  }
+  if (previewRequestTimer) clearTimeout(previewRequestTimer);
+  previewRequestTimer = setTimeout(() => {
+    previewRequestTimer = null;
+    const batch = [...pendingPreviewRequestIds];
+    pendingPreviewRequestIds.clear();
+    for (const id of batch) requestScreenshotThrottled(id, force);
+  }, delay);
+}
+
 function refreshAfterSend(targetIds) {
-  displayState.refresh().catch(() => {});
+  scheduleDisplayStateRefresh();
   const ids = (Array.isArray(targetIds) && targetIds.length) ? targetIds : visibleDeviceIds();
-  setTimeout(() => { for (const id of ids) requestScreenshot(id); }, 1800);
+  queuePreviewRequests(ids, 1200, true);
 }
 
 // A screensaver option was chosen on a card's dropdown: broadcast the chosen
@@ -474,17 +512,19 @@ function visibleDeviceIds() {
   return [...ids];
 }
 function requestVisiblePreviews() {
-  for (const id of visibleDeviceIds()) requestScreenshot(id);
+  queuePreviewRequests(visibleDeviceIds(), 0, false);
 }
 function startPreviewRefresh() {
   stopPreviewRefresh();
   // Let the dashboard socket finish connecting, poke once, then keep them fresh.
   previewKickoff = setTimeout(requestVisiblePreviews, 1500);
-  previewInterval = setInterval(requestVisiblePreviews, 20000);
+  previewInterval = setInterval(requestVisiblePreviews, 60000);
 }
 function stopPreviewRefresh() {
   if (previewKickoff) { clearTimeout(previewKickoff); previewKickoff = null; }
   if (previewInterval) { clearInterval(previewInterval); previewInterval = null; }
+  if (previewRequestTimer) { clearTimeout(previewRequestTimer); previewRequestTimer = null; }
+  pendingPreviewRequestIds.clear();
 }
 
 // Content-send target scope: the displays on the stage (the current selection).
@@ -520,6 +560,14 @@ function wallDeviceIds(wall) {
   return [...new Set(((wall && wall.devices) || []).map(m => m.device_id).filter(Boolean))];
 }
 
+function wallTransportDeviceId(wall) {
+  if (!wall || !Array.isArray(wall.devices) || wall.devices.length === 0) return null;
+  // Span-wall transport must always target the designated leader. Picking a
+  // different online member looks "healthy" in the UI but sends navigation to
+  // the wrong physical screen, which is worse than a stale/offline failure.
+  return wall.leader_device_id || wall.devices[0]?.device_id || null;
+}
+
 async function applyWallRoutingModes(wallSelections) {
   const changes = [];
   for (const selection of (wallSelections || [])) {
@@ -537,7 +585,7 @@ async function applyWallRoutingModes(wallSelections) {
 }
 
 async function chooseRouteTargets(label) {
-  const allDisplays = displayState.getAll().filter(d => !wallMemberIds.has(d.id));
+  const allDisplays = routeableDisplays();
   const result = await pickRoutingTargets({ displays: allDisplays, walls, label });
   if (!result) return null;
   const targetIds = [...new Set([
@@ -552,6 +600,9 @@ async function chooseRouteTargets(label) {
 }
 
 async function routeSourceWithPicker(source, label = t('mc.tile.content_fallback')) {
+  if (hasAdvancedCanvasEndpoint()) {
+    return routeSourceToAdvancedCanvas(source, label);
+  }
   const route = await chooseRouteTargets(label);
   if (!route) return false;
   try {
@@ -566,6 +617,18 @@ async function routeSourceWithPicker(source, label = t('mc.tile.content_fallback
 }
 
 async function routeNextcloudWithPicker(path, label = t('mc.tile.content_fallback')) {
+  if (hasAdvancedCanvasEndpoint()) {
+    try {
+      const imported = await api.files.importForCanvas(path);
+      if (imported && imported.content_id) {
+        return routeSourceToAdvancedCanvas({ content_id: imported.content_id }, label);
+      }
+      throw new Error(t('mc.send.failed'));
+    } catch (e) {
+      showToast(e?.message || t('mc.send.failed'), 'error');
+      return false;
+    }
+  }
   const route = await chooseRouteTargets(label);
   if (!route) return false;
   try {
@@ -634,6 +697,7 @@ function openInspector(deviceId) {
   renderInspector(el, {
     display,
     isWallMember: wallMemberIds.has(deviceId),
+    wall: wallForDeviceId(deviceId),
     onClose: () => { setLibraryInert(false); },
     onDeviceChanged: async () => {
       await displayState.refresh().catch(() => {});
@@ -843,8 +907,8 @@ function attachStageDrop(stageContainer) {
       const parsed = parseDragSource(e);
       const deviceId = card.dataset.deviceId;
       if (!parsed || !deviceId) return;
-      await sendToDisplays(parsed.source, [deviceId], parsed.label);
-      refreshAfterSend([deviceId]); // re-fetch state + refresh THIS card's preview
+      const ok = await sendToDisplays(parsed.source, [deviceId], parsed.label);
+      if (ok) refreshAfterSend([deviceId]); // re-fetch state + refresh THIS card's preview
     });
   });
 
@@ -891,17 +955,17 @@ function attachStageDrop(stageContainer) {
       const ids = (zone.dataset.wallIds || '').split(',').filter(Boolean);
       if (!ids.length) { showToast(t('mc.send.no_displays'), 'error'); return; }
       if (forcesSingleScreen(parsed.source)) {
-        // Website → one screen only. Prefer the wall leader, else the first member.
+        // Website → one screen only. Prefer a live wall member, else the first member.
         const wallId = zone.closest('.mc-wall[data-wall-id]')?.dataset.wallId;
         const wall = (walls || []).find((w) => w.id === wallId);
-        const single = (wall && wall.leader_device_id) || ids[0];
+        const single = wallTransportDeviceId(wall) || ids[0];
         showToast(t('mc.route.single_screen_only'), 'info');
-        await sendToDisplays(parsed.source, [single], parsed.label);
-        refreshAfterSend([single]);
+        const ok = await sendToDisplays(parsed.source, [single], parsed.label);
+        if (ok) refreshAfterSend([single]);
         return;
       }
-      await sendToDisplays(parsed.source, ids, parsed.label);
-      refreshAfterSend(ids);
+      const ok = await sendToDisplays(parsed.source, ids, parsed.label);
+      if (ok) refreshAfterSend(ids);
     });
   });
 
@@ -927,8 +991,8 @@ function attachStageDrop(stageContainer) {
     if (!parsed) return;
     const targets = effectiveTargets();
     if (!targets.length) { showToast(t('mc.send.no_displays'), 'error'); return; }
-    await sendToDisplays(parsed.source, targets, parsed.label);
-    refreshAfterSend(targets);
+    const ok = await sendToDisplays(parsed.source, targets, parsed.label);
+    if (ok) refreshAfterSend(targets);
   });
 }
 
@@ -950,15 +1014,22 @@ function activeTargetDeviceIds() {
   }
   return activeTarget.id ? [activeTarget.id] : [];
 }
-// Transport (play/pause/prev/next/restart) targets the wall LEADER (which drives
-// wall sync) for a wall, or the display itself.
-function activeTargetTransportId() {
+function wallTransportDeviceIds(wall) {
+  if (!wall || wall.layout_mode === 'split') return [];
+  const ids = wallDeviceIds(wall);
+  const leaderId = wallTransportDeviceId(wall);
+  return [...new Set([leaderId, ...ids].filter(Boolean))];
+}
+
+// Transport (play/pause/prev/next/restart) targets every span-wall member or
+// the standalone display itself. Split walls are independent, so their member
+// cards own transport and the wall-level transport row stays hidden.
+function activeTargetTransportIds() {
   if (activeTarget && activeTarget.type === 'wall') {
     const w = (walls || []).find((x) => x.id === activeTarget.id);
-    if (!w) return null;
-    return w.leader_device_id || (w.devices && w.devices[0] && w.devices[0].device_id) || null;
+    return wallTransportDeviceIds(w);
   }
-  return (activeTarget && activeTarget.id) || null;
+  return (activeTarget && activeTarget.id) ? [activeTarget.id] : [];
 }
 // The active wall object (or null) — used by the Span/Split toggle.
 function activeWall() {
@@ -977,14 +1048,41 @@ function wallHasContent(wall) {
   return false;
 }
 
+function wallForDeviceId(deviceId) {
+  if (!deviceId || !Array.isArray(walls)) return null;
+  return walls.find((w) => Array.isArray(w.devices) && w.devices.some((m) => m && m.device_id === deviceId)) || null;
+}
+
+function isSplitWallMemberId(deviceId) {
+  const wall = wallForDeviceId(deviceId);
+  return !!(wall && wall.layout_mode === 'split');
+}
+
+function routeableDisplays() {
+  return displayState.getAll().filter((d) => {
+    if (!d || isLiveStreamTargetId(d.id)) return false;
+    if (!wallMemberIds.has(d.id)) return true;
+    return isSplitWallMemberId(d.id);
+  });
+}
+
+function syncSocketTarget(tgt) {
+  if (!tgt) {
+    clearSocketTarget();
+    return;
+  }
+  const type = tgt.type === 'wall' ? 'wall' : tgt.type === 'display' ? 'display' : null;
+  const id = tgt.id || tgt.wall_id || tgt.device_id;
+  if (!type || !id) clearSocketTarget();
+  else selectSocketTarget(type, id);
+}
+
 // The active target changed — re-point the canvas + refresh the canvas-level
-// controls. Emits NO command: this is a view-only switch.
-// TODO(Phase-2 target rooms): join a per-target socket room. socket.js does not
-// expose a 'select-target' emit / window.mcSocket today, so we deliberately do
-// NOT emit anything here. Wire `dashboard:select-target` once socket.js grows a
-// helper (getSocket() would be the entry point then).
+// controls. This is view-only; the socket target join only selects the live
+// ack/state stream for the web/Electron controller.
 function handleTargetChange(tgt) {
   activeTarget = tgt || null;
+  syncSocketTarget(activeTarget);
   paintStage();
   paintSummary();
   paintChips();
@@ -1022,17 +1120,19 @@ function mountTransportRow(hostEl) {
   const row = hostEl.querySelector('.mc-cc-tp-row');
   hostEl.querySelectorAll('[data-cc-tp]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      const id = activeTargetTransportId();
-      if (!id) return;
+      const ids = activeTargetTransportIds();
+      if (!ids.length) return;
       const action = btn.dataset.ccTp; // 'prev' | 'restart' | 'play_pause' | 'next'
-      sendCommand(id, COMMAND_TYPES.TRANSPORT, { action });
+      ids.forEach(id => sendCommand(id, COMMAND_TYPES.TRANSPORT, { action }));
+      refreshAfterSend(ids);
       // Optimistically refresh the Play/Pause label after a toggle.
       setTimeout(() => transportApi && transportApi.repaint && transportApi.repaint(), 400);
     });
   });
   return {
     repaint() {
-      const id = activeTargetTransportId();
+      const ids = activeTargetTransportIds();
+      const id = ids[0] || null;
       if (row) row.hidden = !id;
       if (!id) return;
       const dev = displayState.get(id);
@@ -1121,17 +1221,19 @@ function activeTargetIds() {
     const w = walls.find((x) => x.id === activeTarget.wall_id);
     return (w && w.devices ? w.devices.map((d) => d.device_id) : []);
   }
-  return activeTarget.device_id ? [activeTarget.device_id] : [];
+  return activeTarget.id ? [activeTarget.id] : [];
 }
 function handleCommandAck(data) {
   if (!data) return;
   const related = activeTargetIds().includes(data.target_id || data.device_id)
-    || (activeTarget && (activeTarget.wall_id === data.target_id || activeTarget.device_id === data.target_id));
+    || (activeTarget && (activeTarget.id === data.target_id || activeTarget.wall_id === data.target_id || activeTarget.device_id === data.target_id));
   if (data.ok === false && related) {
     const label = targetLabelOf(data.target_id || data.device_id);
     const msg = data.status === 'timeout'
       ? t('mc.cc.cmd_not_ack', { target: label })
-      : (data.error ? (label + ': ' + data.error) : t('mc.cc.cmd_failed', { target: label }));
+      : (data.error
+        ? (label + ': ' + (data.error.message || data.error.code || String(data.error)))
+        : t('mc.cc.cmd_failed', { target: label }));
     showToast(msg, 'error');
     // Force a chip repaint so Stale/Failed reflects immediately.
     try { paintChips(); } catch (_) {}
@@ -1532,7 +1634,7 @@ pruneSelection();
   // functions and route commands to the active target only.
   targetApi = mountTargetSelector(document.getElementById('mc-target-host'), {
     walls,
-    displays: displayState.getAll().filter((d) => !wallMemberIds.has(d.id) && !isLiveStreamTargetId(d.id)),
+    displays: routeableDisplays(),
     onTargetChange: handleTargetChange,
   });
   transportApi = mountTransportRow(document.getElementById('mc-transport-host'));
@@ -1744,7 +1846,7 @@ pruneSelection();
     if (targetApi) {
       targetApi.setOptions(
         walls,
-        displayState.getAll().filter((d) => !wallMemberIds.has(d.id) && !isLiveStreamTargetId(d.id)),
+        routeableDisplays(),
       );
     }
   });
@@ -1756,7 +1858,7 @@ pruneSelection();
   // Listen for real-time play/pause events from wall players so the transport
   // bar Play/Pause label stays accurate (the player emits device:playback-state
   // which the server relays as dashboard:playback-state to this dashboard).
-  const playbackStateHandler = (data) => {
+  playbackStateHandler = (data) => {
     if (!data || !data.device_id) return;
     // Immediately repaint the transport controls — the transport API reads
     // now_playing.kind which doesn't change here, but the label flip from
@@ -1780,10 +1882,12 @@ export function unmount() {
   if (unsubChip) { unsubChip(); unsubChip = null; }
   if (cmdAckHandler) { try { socketOff('command-ack', cmdAckHandler); } catch (_) {} cmdAckHandler = null; }
   if (stateSyncHandler) { try { socketOff('state-sync', stateSyncHandler); } catch (_) {} stateSyncHandler = null; }
-  try { socketOff('dashboard:playback-state', playbackStateHandler); } catch (_) {}
+  try { if (playbackStateHandler) socketOff('dashboard:playback-state', playbackStateHandler); } catch (_) {}
   teardownMultiview();    // stop any local audio monitor so it can't keep playing
   closeViewModal();       // dismiss any open room-setup overlay (e.g. Schedules)
   stopPreviewRefresh();   // stop poking players once we leave the control surface
+  if (refreshAfterSendTimer) { clearTimeout(refreshAfterSendTimer); refreshAfterSendTimer = null; }
+  clearSocketTarget();
   // Close the inspector so a stale panel can't linger across navigations.
   closeInspector(inspectorEl());
   // Dismiss the add-display picker if it was left open during navigation.
@@ -1796,4 +1900,5 @@ export function unmount() {
   spanSplitApi = null;
   screensaverApi = null;
   dockApi = null;
+  playbackStateHandler = null;
 }

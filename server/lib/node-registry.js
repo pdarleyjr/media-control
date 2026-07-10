@@ -14,6 +14,7 @@
 
 const crypto = require('crypto');
 const config = require('../config');
+const { canonicalAssetPath, queueAssetManifest } = require('./asset-manifest');
 
 function nodeAuthOk(handshakeAuth) {
   const cc = config.classroomCache || {};
@@ -39,13 +40,14 @@ function recordHeartbeat(db, nodeId, payload) {
   const now = Math.floor(Date.now() / 1000);
   const p = payload || {};
   const activeDisplays = Array.isArray(p.active_displays) ? p.active_displays.join(',') : (p.active_displays || '');
+  const networkStateJson = p.network ? JSON.stringify(p.network) : null;
   try {
     db.prepare(`
       INSERT INTO managed_nodes
         (node_id, node_name, node_type, room_id, workspace_id, last_heartbeat,
-         software_version, free_disk, cache_size, sync_status, audio_endpoint, created_at, updated_at)
+         software_version, free_disk, cache_size, sync_status, audio_endpoint, network_state_json, created_at, updated_at)
       VALUES (@node_id, @node_name, @node_type, @room_id, @workspace_id, @ts,
-         @software_version, @free_disk, @cache_size, @sync_status, @audio_endpoint, @ts, @ts)
+         @software_version, @free_disk, @cache_size, @sync_status, @audio_endpoint, @network_state_json, @ts, @ts)
       ON CONFLICT(node_id) DO UPDATE SET
         node_type=excluded.node_type,
         room_id=COALESCE(excluded.room_id, managed_nodes.room_id),
@@ -55,6 +57,7 @@ function recordHeartbeat(db, nodeId, payload) {
         cache_size=excluded.cache_size,
         sync_status=excluded.sync_status,
         audio_endpoint=excluded.audio_endpoint,
+        network_state_json=excluded.network_state_json,
         updated_at=excluded.updated_at
     `).run({
       node_id: nodeId,
@@ -68,6 +71,7 @@ function recordHeartbeat(db, nodeId, payload) {
       cache_size: Number.isFinite(p.cache_size) ? p.cache_size : null,
       sync_status: p.sync_status || 'idle',
       audio_endpoint: p.audio_endpoint || null,
+      network_state_json: networkStateJson,
     });
   } catch (e) {
     // managed_nodes may be absent on very old DBs — degrade silently.
@@ -75,12 +79,12 @@ function recordHeartbeat(db, nodeId, payload) {
   }
   try {
     db.prepare(`
-      INSERT INTO node_heartbeats (node_id, ts, software_version, free_disk, cache_size, sync_status, active_displays, audio_endpoint)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO node_heartbeats (node_id, ts, software_version, free_disk, cache_size, sync_status, active_displays, audio_endpoint, network_state_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(nodeId, now, p.software_version || null,
       Number.isFinite(p.free_disk) ? p.free_disk : null,
       Number.isFinite(p.cache_size) ? p.cache_size : null,
-      p.sync_status || 'idle', activeDisplays, p.audio_endpoint || null);
+      p.sync_status || 'idle', activeDisplays, p.audio_endpoint || null, networkStateJson);
     // Keep the history bounded (last ~7 days).
     db.prepare("DELETE FROM node_heartbeats WHERE ts < strftime('%s','now') - 604800").run();
   } catch (e) { /* analytics table optional */ }
@@ -93,14 +97,35 @@ function recordHeartbeat(db, nodeId, payload) {
 // (size_bytes included as a hint). We include ALL library content that has a
 // filepath (so "existing content" is staged) — new uploads are added by a
 // re-push on upload and are also cached on first broadcast via read-through.
-function buildContentManifest(db) {
+function buildContentManifest(db, options = {}) {
   if (!db) return [];
   try {
-    const rows = db.prepare(
-      "SELECT id AS content_id, file_size AS size_bytes FROM content WHERE filepath IS NOT NULL AND filepath <> ''"
-    ).all();
-    return rows.map((r) => ({ content_id: r.content_id, size_bytes: r.size_bytes || null }));
+    const rows = db.prepare(`
+      SELECT c.id AS content_id, c.file_size AS size_bytes,
+             a.asset_id, a.sha256, a.size_bytes AS canonical_size
+      FROM content c
+      LEFT JOIN asset_checksums a ON a.content_id = c.id
+      WHERE c.filepath IS NOT NULL AND c.filepath <> ''
+    `).all();
+    const manifest = [];
+    for (const row of rows) {
+      if (!/^[0-9a-f]{64}$/i.test(String(row.sha256 || ''))) {
+        if (options.queueMissing !== false) queueAssetManifest(db, row.content_id);
+        continue;
+      }
+      const size = row.canonical_size || row.size_bytes || null;
+      manifest.push({
+        asset_id: row.asset_id || row.content_id,
+        content_id: row.content_id,
+        sha256: row.sha256,
+        size,
+        size_bytes: size,
+        canonical_url: canonicalAssetPath(row.content_id),
+      });
+    }
+    return manifest;
   } catch (e) {
+    console.warn('[node-registry] manifest build failed:', e.message);
     return [];
   }
 }
