@@ -124,10 +124,21 @@ test('document player publishes the actual rendered slide to the parent screensh
   assert.match(doc, /function publishScreenshot\(\)/);
   assert.match(doc, /__mc_screenshot: base64/);
   assert.match(doc, /img\.onload = function \(\)/);
+  assert.match(doc, /window\.publishScreenshot = publishScreenshot/);
+  assert.match(doc, /data\.__mc_screenshot_request === true/);
   assert.match(player, /data\.__mc_screenshot\.length <= 2 \* 1024 \* 1024/);
   assert.match(player, /image_b64: data\.__mc_screenshot/);
   assert.match(player, /setTimeout\(captureAndSend, 1200\)/);
   assert.match(player, /setTimeout\(captureAndSend, 6000\)/);
+});
+
+test('parent screenshot requests never overwrite iframe content with a fake fallback card', () => {
+  const player = fs.readFileSync(path.join(__dirname, '..', 'player', 'index.html'), 'utf8');
+
+  assert.match(player, /function requestIframeScreenshot\(\)/);
+  assert.match(player, /typeof childWindow\.publishScreenshot === 'function'/);
+  assert.match(player, /__mc_screenshot_request: true/);
+  assert.match(player, /if \(requestIframeScreenshot\(\)\) return/);
 });
 
 test('server requests fresh previews after delivered content changes', () => {

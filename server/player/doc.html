@@ -107,7 +107,7 @@
         return state;
       }
       function publishScreenshot() {
-        if (!img.complete || !img.naturalWidth || !img.naturalHeight) return;
+        if (!img.complete || !img.naturalWidth || !img.naturalHeight) return false;
         try {
           var canvas = document.createElement('canvas');
           canvas.width = 960;
@@ -124,10 +124,12 @@
           var base64 = canvas.toDataURL('image/jpeg', 0.58).split(',')[1];
           if (base64 && window.parent && window.parent !== window) {
             window.parent.postMessage({ __mc_screenshot: base64, captured_at: Date.now() }, location.origin);
+            return true;
           }
         } catch (e) {
           console.warn('[doc-player] screenshot failed:', e && e.message ? e.message : e);
         }
+        return false;
       }
       function render(n, announce) {
         page = Math.max(1, Math.min(pages, parseInt(n, 10) || 1));
@@ -225,11 +227,17 @@
       // Expose handleAction on window so the parent player page can call it
       // directly (same-origin) as the primary path when it is available.
       window.handleAction = handleAction;
+      window.publishScreenshot = publishScreenshot;
 
       window.addEventListener('message', function (event) {
         if (!event || event.origin !== location.origin || event.source !== window.parent) return;
         var data = event && event.data;
-        if (!data || data.__mc_transport == null) return;
+        if (!data) return;
+        if (data.__mc_screenshot_request === true) {
+          publishScreenshot();
+          return;
+        }
+        if (data.__mc_transport == null) return;
         handleAction(data.__mc_transport);
       });
       window.addEventListener('keydown', function (event) {

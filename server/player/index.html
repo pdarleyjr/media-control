@@ -3510,8 +3510,27 @@
     }
 
     // ==================== Screenshots ====================
+    function requestIframeScreenshot() {
+      const iframe = document.querySelector('#playerContainer iframe, .wall-stage iframe, .zone iframe');
+      if (!iframe) return false;
+      try {
+        const childWindow = iframe.contentWindow;
+        if (childWindow && typeof childWindow.publishScreenshot === 'function') {
+          childWindow.publishScreenshot();
+        } else if (childWindow) {
+          childWindow.postMessage({ __mc_screenshot_request: true }, location.origin);
+        }
+      } catch (error) {
+        console.warn('Child screenshot request failed:', error && error.message ? error.message : error);
+      }
+      // iframe pixels cannot be captured by the parent canvas. Never overwrite
+      // the last real child frame with the generic Web Player fallback card.
+      return true;
+    }
+
     function captureAndSend() {
       if (!socket?.connected) return;
+      if (requestIframeScreenshot()) return;
       const canvas = document.createElement('canvas');
       canvas.width = 960;
       canvas.height = 540;
