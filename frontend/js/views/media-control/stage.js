@@ -155,7 +155,7 @@ function screenshotMatchesCurrentState(obj) {
   return capturedAt >= stateUpdatedAt;
 }
 
-function previewSource(obj) {
+export function previewSource(obj) {
   const poster = obj && obj.now_playing && obj.now_playing.poster_url;
   const currentScreenshot = obj && obj.screenshot_url && screenshotMatchesCurrentState(obj);
   if (currentScreenshot && !shouldPreferPoster(obj)) return { src: obj.screenshot_url, poster: false };

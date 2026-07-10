@@ -7,7 +7,9 @@
 //     TV plays the full live grid; the dashboard shows a lightweight preview.
 //   • Individual HLS/camera streams: embed live ONLY in the span preview (one
 //     stream), never in every wall cell (N streams = CDN rate-limit = reconnect).
-//   • Images/videos/docs: embed live (cheap, single resource).
+//   • Documents/PDFs: never embed a second player. The dashboard must render the
+//     physical device's screenshot or it will remain on slide 1 while the TV advances.
+//   • Images/videos: embed live (cheap, single resource).
 //
 // Returns an HTML string (live iframe/video/img) or null (caller uses screenshot).
 
@@ -61,7 +63,7 @@ export function liveEmbedHtml(nowPlaying, cls = '', opts = {}) {
 
     case 'pdf':
     case 'document':
-      return `<iframe class="${klass}" src="/player/doc/${id}" loading="lazy" referrerpolicy="no-referrer"></iframe>`;
+      return null;
 
     case 'grid': {
       // Multiview grid in the DASHBOARD: embed grid.html with &preview=1 so it

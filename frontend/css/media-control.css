@@ -1907,6 +1907,18 @@ img.mc-cc-logo { background: transparent; box-shadow: none; padding: 0; }
   font-weight: var(--mc-fw-bold, 700); letter-spacing: 0.02em;
   border: 1px solid rgba(255,255,255,0.12);
 }
+.mc-cam-health-wrap { position: relative; flex: 0 0 auto; align-self: center; }
+.mc-cam-health { cursor: pointer; font: inherit; }
+.mc-cam-health-detail {
+  position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 30;
+  min-width: 220px; padding: 8px; border: 1px solid rgba(255,255,255,.16);
+  border-radius: 10px; background: #0f172a; color: #e2e8f0;
+  box-shadow: 0 12px 30px rgba(15,23,42,.32);
+}
+.mc-cam-detail-row { display: flex; justify-content: space-between; gap: 14px; padding: 6px 7px; border-radius: 6px; }
+.mc-cam-detail-row.is-active { background: rgba(34,197,94,.16); color: #dcfce7; }
+.mc-cam-detail-row em { color: #94a3b8; font-style: normal; white-space: nowrap; }
+.mc-cam-detail-row.is-active em { color: #86efac; }
 .mc-cam-health-dot { width: 9px; height: 9px; border-radius: 50%; background: #64748b; box-shadow: 0 0 6px rgba(0,0,0,0.4); }
 .mc-cam-health.mc-cam-green .mc-cam-health-dot { background: #22c55e; }
 .mc-cam-health.mc-cam-yellow .mc-cam-health-dot { background: #eab308; }

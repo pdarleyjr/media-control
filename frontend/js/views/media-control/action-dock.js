@@ -36,7 +36,7 @@ export function isLiveActive() {
  * @returns {{ syncLive: ()=>Promise<void> }}
  */
 export function mountActionDock(hostEl, opts = {}) {
-  if (!hostEl) return { syncLive() { return Promise.resolve(); }, repaintBlank() {} };
+  if (!hostEl) return { syncLive() { return Promise.resolve(); }, repaintBlank() {}, destroy() {} };
   const cb = opts || {};
   hostEl.innerHTML = `
     <div class="mc-action-dock" role="toolbar" aria-label="${esc(t('mc.cc.brand'))}">
@@ -50,9 +50,13 @@ export function mountActionDock(hostEl, opts = {}) {
         <span class="mc-dock-add-text">${esc(t('mc.cc.dock.add_display'))}</span>
         <span class="mc-dock-add-plus" aria-hidden="true">+</span>
       </button>
-      <span class="mc-cam-health" id="mc-cam-health" title="Camera health" aria-live="polite">
-        <span class="mc-cam-health-dot"></span><span class="mc-cam-health-label">--</span>
-      </span>
+      <div class="mc-cam-health-wrap">
+        <button type="button" class="mc-cam-health mc-cam-unknown" id="mc-cam-health"
+                title="${esc(t('mc.cc.camera.details'))}" aria-live="polite" aria-expanded="false">
+          <span class="mc-cam-health-dot"></span><span class="mc-cam-health-label">${esc(t('mc.cc.camera.loading'))}</span>
+        </button>
+        <div class="mc-cam-health-detail" id="mc-cam-health-detail" role="status" hidden></div>
+      </div>
     </div>`;
 
   const startBtn = hostEl.querySelector('[data-dock="start-live"]');
@@ -87,43 +91,49 @@ export function mountActionDock(hostEl, opts = {}) {
     if (stopBtn) stopBtn.hidden = !liveActive;
   }
 
-  // Camera health badge. The AI Director /status payload reports per-camera
-  // stream state (kamrui_camera_1_stream / kamrui_camera_2_stream /
-  // annke_camera_3_stream / smartboard_stream), but those flags are only true
-  // while a feed is actively publishing. When no live stream is on-air they're
-  // all false regardless of camera availability, so showing "down" then would
-  // be misleading. We therefore only grade the cameras while a stream is live;
-  // otherwise we show a neutral "idle" pill. green = all up, yellow = some
-  // down, red = all down.
+  // Camera source health is independent from whether PeerTube is on-air. Show
+  // the director-selected camera and live source count at all times, then poll
+  // so the badge is operational telemetry rather than a static "cams idle" label.
   function repaintCamHealth(director) {
     const badge = hostEl.querySelector('#mc-cam-health');
+    const detail = hostEl.querySelector('#mc-cam-health-detail');
     if (!badge) return;
     const lbl = badge.querySelector('.mc-cam-health-label');
     const data = director && director.data;
     if (!data) {
       badge.className = 'mc-cam-health mc-cam-unknown';
-      if (lbl) lbl.textContent = 'cams?';
-      return;
-    }
-    if (!data.stream_active) {
-      badge.className = 'mc-cam-health mc-cam-unknown';
-      if (lbl) lbl.textContent = 'cams idle';
+      if (lbl) lbl.textContent = t('mc.cc.camera.unavailable');
+      if (detail) detail.innerHTML = `<span>${esc(t('mc.cc.camera.unavailable'))}</span>`;
       return;
     }
     const cams = [
-      !!data.kamrui_camera_1_stream,
-      !!data.kamrui_camera_2_stream,
-      !!data.annke_camera_3_stream,
+      { n: 1, name: 'Focus 210', online: !!data.kamrui_camera_1_stream },
+      { n: 2, name: 'Camera 2', online: !!data.kamrui_camera_2_stream },
+      { n: 3, name: 'ANNKE', online: !!data.annke_camera_3_stream },
     ];
-    const up = cams.filter(Boolean).length;
-    let cls = 'mc-cam-green', txt = 'cams ' + up + '/3';
-    if (up === 0) { cls = 'mc-cam-red'; txt = 'cams down'; }
-    else if (up < cams.length) { cls = 'mc-cam-yellow'; txt = 'cams ' + up + '/3'; }
+    const up = cams.filter((cam) => cam.online).length;
+    const active = Number(data.director && data.director.active_camera) || null;
+    let cls = up === cams.length ? 'mc-cam-green' : (up > 0 ? 'mc-cam-yellow' : 'mc-cam-red');
+    let txt = active && cams.some((cam) => cam.n === active && cam.online)
+      ? t('mc.cc.camera.active', { n: active, count: up })
+      : t('mc.cc.camera.online', { count: up });
     badge.className = 'mc-cam-health ' + cls;
     if (lbl) lbl.textContent = txt;
+    if (detail) {
+      detail.innerHTML = cams.map((cam) => {
+        const selected = active === cam.n;
+        const state = selected && cam.online
+          ? t('mc.cc.camera.selected')
+          : (cam.online ? t('mc.cc.camera.ready') : t('mc.cc.camera.offline'));
+        return `<span class="mc-cam-detail-row${selected ? ' is-active' : ''}"><b>${esc(cam.name)}</b><em>${esc(state)}</em></span>`;
+      }).join('');
+    }
   }
 
+  let syncingLive = false;
   async function syncLive() {
+    if (syncingLive) return;
+    syncingLive = true;
     let director = null;
     try {
       const status = await api.liveStream.status();
@@ -132,9 +142,20 @@ export function mountActionDock(hostEl, opts = {}) {
       liveActive = !!(data && data.stream_active === true);
     } catch {
       liveActive = false;
+    } finally {
+      syncingLive = false;
     }
     repaintLive();
     repaintCamHealth(director);
+  }
+
+  const cameraBadge = hostEl.querySelector('#mc-cam-health');
+  const cameraDetail = hostEl.querySelector('#mc-cam-health-detail');
+  if (cameraBadge && cameraDetail) {
+    cameraBadge.addEventListener('click', () => {
+      cameraDetail.hidden = !cameraDetail.hidden;
+      cameraBadge.setAttribute('aria-expanded', cameraDetail.hidden ? 'false' : 'true');
+    });
   }
 
   async function onStartLive() {
@@ -213,5 +234,10 @@ export function mountActionDock(hostEl, opts = {}) {
   });
 
   syncLive();
-  return { syncLive, repaintBlank };
+  const healthTimer = setInterval(() => syncLive(), 5000);
+  return {
+    syncLive,
+    repaintBlank,
+    destroy() { clearInterval(healthTimer); },
+  };
 }

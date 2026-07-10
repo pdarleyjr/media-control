@@ -8,7 +8,7 @@ import { mountTargetSelector } from './media-control/target-selector.js';
 import { mountSpanSplit } from './media-control/span-split.js';
 import { mountActionDock } from './media-control/action-dock.js';
 import * as displayState from '../services/display-state.js';
-import { renderStage } from './media-control/stage.js';
+import { previewSource, renderStage } from './media-control/stage.js';
 import { renderToolbox } from './media-control/toolbox.js';
 import { sendToDisplays, sentToast } from './media-control/send.js';
 import { renderInspector, closeInspector } from './media-control/inspector.js';
@@ -333,21 +333,23 @@ function stageSignature() {
     // dashboard:playback-progress event (which fires whenever playback advances), which
     // produced a rapid DOM-rebuild loop and made the wall UI feel laggy. The label is
     // patched by refreshPreviewsInPlace() without a full repaint.
-    return [np.kind || '', np.contentId || '', np.poster_url || ''].join('~');
+    const preview = previewSource(d);
+    const previewKind = preview ? (preview.poster ? 'poster' : 'screenshot') : 'none';
+    return [np.kind || '', np.contentId || '', np.poster_url || '', previewKind].join('~');
   };
   for (const id of selectedIds) {
     if (wallMemberIds.has(id)) continue;
     const d = byId.get(id);
     if (!d) continue;
     parts.push('c:' + id + ':' + (d.online ? 1 : 0) + ':' + (d.screen_on === false ? 0 : 1) +
-      ':' + playingSig(d) + ':' + (d.screenshot_url ? 1 : 0) + ':' + ((d.now_playing && d.now_playing.poster_url) ? 'p' : ''));
+      ':' + playingSig(d) + ':' + (d.screenshot_url ? 1 : 0));
   }
   for (const w of (walls || [])) {
     parts.push('w:' + w.id + ':' + (w.grid_cols || 0) + 'x' + (w.grid_rows || 0) + ':' + (w.leader_device_id || '') + ':' + (w.layout_mode || 'span'));
     for (const m of (w.devices || [])) {
       const d = byId.get(m.device_id) || {};
       parts.push('m:' + m.device_id + ':' + (d.online ? 1 : 0) + ':' + (d.screen_on === false ? 0 : 1) +
-        ':' + playingSig(d) + ':' + (d.screenshot_url ? 1 : 0) + ':' + ((d.now_playing && d.now_playing.poster_url) ? 'p' : ''));
+        ':' + playingSig(d) + ':' + (d.screenshot_url ? 1 : 0));
     }
   }
   return parts.join('|');
@@ -364,12 +366,10 @@ function refreshPreviewsInPlace() {
     const host = img.closest('[data-device-id]');
     const id = host && host.dataset.deviceId;
     const d = id && byId.get(id);
-    if (!d || !d.screenshot_url) return;
-    // A cell intentionally showing a poster must NOT be clobbered with a black
-    // live screenshot on the next capture tick. Document/PDF cards may have a
-    // poster available but render live screenshots so slide changes mirror.
-    if (d.now_playing && d.now_playing.poster_url && img.classList.contains('mc-shot-poster')) return;
-    if (img.getAttribute('src') !== d.screenshot_url) img.setAttribute('src', d.screenshot_url);
+    const preview = d && previewSource(d);
+    if (!preview || preview.poster) return;
+    img.classList.remove('mc-shot-poster');
+    if (img.getAttribute('src') !== preview.src) img.setAttribute('src', preview.src);
   });
 }
 
@@ -1880,6 +1880,7 @@ export function unmount() {
   if (dockBtn) dockBtn.remove();
   if (unsub) { unsub(); unsub = null; }
   if (unsubChip) { unsubChip(); unsubChip = null; }
+  if (dockApi && typeof dockApi.destroy === 'function') dockApi.destroy();
   if (cmdAckHandler) { try { socketOff('command-ack', cmdAckHandler); } catch (_) {} cmdAckHandler = null; }
   if (stateSyncHandler) { try { socketOff('state-sync', stateSyncHandler); } catch (_) {} stateSyncHandler = null; }
   try { if (playbackStateHandler) socketOff('dashboard:playback-state', playbackStateHandler); } catch (_) {}

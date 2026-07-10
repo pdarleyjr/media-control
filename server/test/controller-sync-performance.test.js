@@ -63,11 +63,25 @@ test('transport actions refresh state and force previews so dashboard mirrors sl
 test('document previews prefer live screenshots over static posters after slide changes', () => {
   const main = read('frontend/js/views/media-control.js');
   const stage = read('frontend/js/views/media-control/stage.js');
+  const livePreview = read('frontend/js/views/media-control/live-preview.js');
 
   assert.match(stage, /function shouldPreferPoster\(obj\)/);
   assert.match(stage, /kind === 'document' \|\| kind === 'pdf'/);
   assert.match(stage, /if \(currentScreenshot && !shouldPreferPoster\(obj\)\)/);
-  assert.match(main, /img\.classList\.contains\('mc-shot-poster'\)/);
+  assert.match(livePreview, /case 'pdf':[\s\S]*case 'document':[\s\S]*return null/);
+  assert.doesNotMatch(livePreview, /src="\/player\/doc\/\$\{id\}"/);
+  assert.match(main, /const preview = previewSource\(d\)/);
+  assert.match(main, /preview \? \(preview\.poster \? 'poster' : 'screenshot'\) : 'none'/);
+});
+
+test('camera status reports active sources continuously instead of a static idle label', () => {
+  const dock = read('frontend/js/views/media-control/action-dock.js');
+
+  assert.doesNotMatch(dock, /textContent = ['"]cams idle['"]/);
+  assert.match(dock, /data\.director && data\.director\.active_camera/);
+  assert.match(dock, /mc\.cc\.camera\.active/);
+  assert.match(dock, /setInterval\(\(\) => syncLive\(\), 5000\)/);
+  assert.match(dock, /destroy\(\) \{ clearInterval\(healthTimer\); \}/);
 });
 
 test('dashboard never lets an old screenshot override newer authoritative display state', () => {
