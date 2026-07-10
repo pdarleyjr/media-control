@@ -142,25 +142,15 @@ function shouldPreferPoster(obj) {
   return !!(obj && obj.now_playing && obj.now_playing.poster_url);
 }
 
-function epochMs(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  return n < 1e12 ? n * 1000 : n;
-}
-
-function screenshotMatchesCurrentState(obj) {
-  const capturedAt = epochMs(obj?.screenshot_at);
-  const stateUpdatedAt = epochMs(obj?.state_updated_at ?? obj?.live_state?.state_updated_at);
-  if (!capturedAt || !stateUpdatedAt) return true;
-  return capturedAt >= stateUpdatedAt;
-}
-
 export function previewSource(obj) {
   const poster = obj && obj.now_playing && obj.now_playing.poster_url;
-  const currentScreenshot = obj && obj.screenshot_url && screenshotMatchesCurrentState(obj);
-  if (currentScreenshot && !shouldPreferPoster(obj)) return { src: obj.screenshot_url, poster: false };
+  const screenshot = obj && obj.screenshot_url;
+  // A screenshot is the physical device's frame. Do not compare it with
+  // display_states.updated_at: periodic state reports advance that timestamp even
+  // when the rendered pixels have not changed, which incorrectly hid valid slides.
+  if (screenshot && !shouldPreferPoster(obj)) return { src: screenshot, poster: false };
   if (poster) return { src: poster, poster: true };
-  if (currentScreenshot) return { src: obj.screenshot_url, poster: false };
+  if (screenshot) return { src: screenshot, poster: false };
   return null;
 }
 

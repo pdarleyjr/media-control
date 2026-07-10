@@ -67,7 +67,7 @@ test('document previews prefer live screenshots over static posters after slide 
 
   assert.match(stage, /function shouldPreferPoster\(obj\)/);
   assert.match(stage, /kind === 'document' \|\| kind === 'pdf'/);
-  assert.match(stage, /if \(currentScreenshot && !shouldPreferPoster\(obj\)\)/);
+  assert.match(stage, /if \(screenshot && !shouldPreferPoster\(obj\)\)/);
   assert.match(livePreview, /case 'pdf':[\s\S]*case 'document':[\s\S]*return null/);
   assert.doesNotMatch(livePreview, /src="\/player\/doc\/\$\{id\}"/);
   assert.match(main, /const preview = previewSource\(d\)/);
@@ -84,14 +84,13 @@ test('camera status reports active sources continuously instead of a static idle
   assert.match(dock, /destroy\(\) \{ clearInterval\(healthTimer\); \}/);
 });
 
-test('dashboard never lets an old screenshot override newer authoritative display state', () => {
+test('periodic state timestamps never hide an authoritative device screenshot', () => {
   const stage = read('frontend/js/views/media-control/stage.js');
 
-  assert.match(stage, /function screenshotMatchesCurrentState\(obj\)/);
-  assert.match(stage, /obj\?\.state_updated_at \?\? obj\?\.live_state\?\.state_updated_at/);
-  assert.match(stage, /capturedAt >= stateUpdatedAt/);
-  assert.match(stage, /const currentScreenshot = obj && obj\.screenshot_url && screenshotMatchesCurrentState\(obj\)/);
-  assert.match(stage, /state_updated_at: live\.state_updated_at \?\? live\.live_state\?\.state_updated_at/);
+  assert.doesNotMatch(stage, /screenshotMatchesCurrentState/);
+  assert.doesNotMatch(stage, /capturedAt >= stateUpdatedAt/);
+  assert.match(stage, /const screenshot = obj && obj\.screenshot_url/);
+  assert.match(stage, /periodic state reports advance that timestamp/);
 });
 
 test('display state store coalesces subscriber notifications by animation frame', () => {
