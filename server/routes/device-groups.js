@@ -297,6 +297,10 @@ router.post('/:id/command', requireGroupWrite, (req, res) => {
 
   const deviceNs = req.app.get('io').of('/device');
   const results = [];
+  const screenState = type === 'screen_on' ? 1 : type === 'screen_off' ? 0 : null;
+  const updateScreenState = screenState == null
+    ? null
+    : db.prepare("UPDATE devices SET screen_on = ?, updated_at = strftime('%s','now') WHERE id = ?");
 
   for (const device of devices) {
     const room = deviceNs.adapter.rooms.get(device.id);
@@ -307,6 +311,7 @@ router.post('/:id/command', requireGroupWrite, (req, res) => {
         payload: payload || {}, issued_by: req.user && req.user.id, requires_ack: commandModel.ackRequiredForType(type),
       }); } catch (e) { /* command-model ingest is best-effort */ }
       deviceNs.to(device.id).emit('device:command', { type, payload: payload || {}, command_id: cmd ? cmd.command_id : null });
+      if (updateScreenState) updateScreenState.run(screenState, device.id);
       results.push({ device_id: device.id, name: device.name, status: 'sent', command_id: cmd ? cmd.command_id : null });
     } else {
       try { commandModel.ingestCommand({

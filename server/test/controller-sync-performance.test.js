@@ -155,3 +155,11 @@ test('playlist reconnect payload carries authoritative display restore state', (
   assert.match(source, /restore_source: 'wall_leader'/);
   assert.match(source, /display_state: restoreStateForDevice\(deviceId, device, wall\)/);
 });
+
+test('delivered group blank commands persist the screen state shown by the dashboard', () => {
+  const source = read('server/routes/device-groups.js');
+
+  assert.match(source, /const screenState = type === 'screen_on' \? 1 : type === 'screen_off' \? 0 : null/);
+  assert.match(source, /UPDATE devices SET screen_on = \?, updated_at = strftime\('%s','now'\) WHERE id = \?/);
+  assert.match(source, /deviceNs\.to\(device\.id\)\.emit\('device:command'[^\n]+\);\s+if \(updateScreenState\) updateScreenState\.run\(screenState, device\.id\)/);
+});
