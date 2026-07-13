@@ -880,9 +880,31 @@
 .mc-pick-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mc-pick-offline { flex: 0 0 auto; font-size: var(--font-2, 12px); font-weight: 500; color: var(--mc-text-secondary); }
 
-/* Explicit content-routing picker (toolbox tap -> choose displays / wall mode). */
-.mc-route-card { width: min(640px, 92vw); }
-.mc-route-list { display: flex; flex-direction: column; gap: var(--space-2, 8px); max-height: 58vh; overflow: auto; }
+/* Explicit content-routing picker (toolbox tap -> choose displays / wall mode).
+   Size the native dialog itself, not only its child card. Otherwise the generic
+   460px dialog cap clips the wider routing controls and action buttons. */
+.mc-route-dialog {
+  box-sizing: border-box;
+  width: min(720px, calc(100vw - var(--space-4, 16px) - var(--space-4, 16px)));
+  max-width: none;
+  margin: auto;
+  max-height: calc(100vh - var(--space-4, 16px) - var(--space-4, 16px));
+  max-height: calc(100dvh - var(--space-4, 16px) - var(--space-4, 16px));
+  overflow: hidden;
+}
+.mc-route-card {
+  box-sizing: border-box;
+  width: 100%;
+  max-height: calc(100vh - var(--space-4, 16px) - var(--space-4, 16px));
+  max-height: calc(100dvh - var(--space-4, 16px) - var(--space-4, 16px));
+  overflow: hidden;
+}
+.mc-route-list {
+  display: flex; flex: 1 1 auto; flex-direction: column; gap: var(--space-2, 8px);
+  min-height: 0; max-height: none; overflow-x: hidden; overflow-y: auto;
+  padding-right: var(--space-1, 4px); scrollbar-gutter: stable;
+}
+.mc-route-card > .mc-dialog-actions { flex: 0 0 auto; }
 .mc-route-group {
   margin: var(--space-2, 8px) 0 0; font-size: var(--font-2, 12px); font-weight: 700;
   text-transform: uppercase; letter-spacing: 0.06em; color: var(--mc-text-secondary);
@@ -905,8 +927,8 @@
   padding: var(--space-3, 12px); border: 1px solid var(--mc-border-light); border-radius: var(--mc-radius-lg);
 }
 .mc-route-wall-choice legend { padding: 0 var(--space-1, 4px); font-weight: 700; color: var(--mc-text-primary); }
-.mc-route-sections { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-2, 8px); }
-.mc-route-section { flex-direction: column; align-items: flex-start; gap: 2px; }
+.mc-route-sections { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-2, 8px); }
+.mc-route-section { min-width: 0; flex-direction: column; align-items: flex-start; gap: 2px; }
 .mc-route-section.is-disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* ════════════════════════════════════════════════════════════════════════
