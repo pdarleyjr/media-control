@@ -298,6 +298,10 @@ function render(state) {
                 <div class="mc-canvas-fit" role="group" aria-label="Content fit">
                   ${['contain', 'cover', 'fill'].map((fit) => `<button type="button"
                     class="${selectedLayer.fit_mode === fit ? 'is-active' : ''}" data-canvas-fit="${fit}">${fit}</button>`).join('')}
+                  <button type="button" class="${selectedLayer.muted === false ? 'is-active' : ''}"
+                    data-canvas-audio aria-pressed="${selectedLayer.muted === false ? 'true' : 'false'}">
+                    ${selectedLayer.muted === false ? 'Audio on TV 1' : 'Muted'}
+                  </button>
                 </div>
               </div>` : '<span class="mc-canvas-layerbar-hint">Select a layer to move, resize, or change its fit.</span>'}
           </div>
@@ -647,7 +651,7 @@ function wire(state) {
       label: parsed.label,
       source: parsed.source,
       fit_mode: 'contain',
-      muted: true,
+      muted: false,
     });
     state.selectedLayerId = id;
     render(state);
@@ -683,6 +687,12 @@ function wire(state) {
       layer.fit_mode = button.dataset.canvasFit;
       render(state);
     });
+  });
+  state.host.querySelector('[data-canvas-audio]')?.addEventListener('click', () => {
+    const layer = state.endpoint.layers.find((item) => item.id === state.selectedLayerId);
+    if (!layer) return;
+    layer.muted = layer.muted === false;
+    render(state);
   });
   state.host.querySelector('[data-canvas-apply]')?.addEventListener('click', () => publishScene(state));
   state.host.querySelector('[data-canvas-clear]')?.addEventListener('click', async () => {
@@ -797,7 +807,7 @@ export async function routeSourceToAdvancedCanvas(source, label = t('mc.canvas.s
     label,
     source,
     fit_mode: 'contain',
-    muted: true,
+    muted: false,
   });
   instance.endpoint.layers = layers;
   instance.selectedLayerId = id;
