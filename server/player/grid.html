@@ -123,13 +123,15 @@
       // which slot) with ZERO network connections — no HLS segments, no hls.js,
       // no CDN load. The physical TV plays the full live grid (no preview param).
       var previewMode = params.get('preview') === '1';
+      var audioPreview = previewMode && params.get('audio_preview') === '1';
 
       // At most ONE cell plays sound on the wall (operator's pick); the rest stay
       // muted to avoid cacophony. audioEl is that cell's <video> or live-player
       // iframe; window.__mcEnableAudio() (called by the display player after the
       // one-time user gesture that satisfies the autoplay policy) unmutes it.
-      // In preview mode no audio cell is created (no media elements at all).
-      var audioId = previewMode ? null : MV.audioSlotId(cells);
+      // Dashboard preview mode normally remains zero-stream. When audio_preview=1,
+      // only the selected audio cell is loaded; every other cell stays a placeholder.
+      var audioId = (!previewMode || audioPreview) ? MV.audioSlotId(cells) : null;
       var audioEl = null;
 
       function esc(s) {
@@ -143,7 +145,7 @@
         // Zero HLS streams, zero hls.js, zero CDN connections. The dashboard
         // shows the layout (which channel is in which slot) without overloading
         // the CDN when combined with the 5 TVs also loading the live grid.
-        if (previewMode) {
+        if (previewMode && !(audioPreview && isAudio)) {
           var ph = document.createElement('div');
           ph.className = 'cell-preview-ph';
           var dot = document.createElement('span');
@@ -223,7 +225,7 @@
           ph.innerHTML = esc(cell.l || 'Screen Share');
           box.appendChild(ph);
           gridEl.appendChild(box);
-        } else if (previewMode) {
+        } else if (previewMode && !(audioPreview && slot.id === audioId)) {
           // Preview mode: placeholder only, no media
           box.appendChild(makeMedia(cell, slot.id === audioId));
           if (cell.l) { var lab0 = document.createElement('div'); lab0.className = 'cell-label'; lab0.innerHTML = esc(cell.l); box.appendChild(lab0); }
@@ -261,6 +263,11 @@
           item.placeholder.parentNode.replaceChild(media, item.placeholder);
         } else {
           item.box.appendChild(media);
+        }
+        // The parent commonly arms audio before this staggered iframe exists.
+        // Re-run the unlock as soon as the selected cell is mounted.
+        if (item.isAudio && _audioArmed) {
+          setTimeout(enableAudioCell, 0);
         }
         if (cellQueue.length > 0) {
           setTimeout(loadNextCell, STAGGER_MS);
@@ -313,6 +320,15 @@
       // turns sound on.
       if (audioEl && audioEl.tagName === 'IFRAME') {
         audioEl.addEventListener('load', function () { if (_audioArmed) { _audioRetryAttempts = 0; enableAudioCell(); } });
+      }
+      // The dashboard is an operator-controlled surface and requests exactly one
+      // program-audio stream. Arm it automatically; a later user gesture retries
+      // through the same idempotent hook if browser autoplay policy intervenes.
+      if (audioPreview) {
+        window.__mcEnableAudio();
+        ['pointerdown', 'keydown'].forEach(function (eventName) {
+          window.addEventListener(eventName, window.__mcEnableAudio, { once: true });
+        });
       }
       // Forward Command Center transport to same-origin controllable child players
       // (notably /player/doc/:id for PDF/PPT page navigation). Cross-origin frames

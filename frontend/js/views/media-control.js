@@ -20,6 +20,7 @@ import { renderRoomPresets } from './media-control/room-presets.js';
 import { renderRecentPanel } from './media-control/recent-panel.js';
 import { openViewModal, closeViewModal } from './media-control/view-modal.js';
 import { hasAdvancedCanvasEndpoint, routeSourceToAdvancedCanvas } from './media-control/advanced-canvas.js';
+import { enableLivePreviewAudio } from './media-control/live-preview.js';
 import { confirmDialog } from '../components/confirm.js';
 import * as screenShareEngine from '../services/screen-share-engine.js';
 import * as schedulesView from './schedules.js';
@@ -141,6 +142,7 @@ let unsubChip = null;   // broadcast-chip unsubscribe (Task 4.5)
 let cmdAckHandler = null;   // Phase-2 command:ack (toast on timeout/failure)
 let stateSyncHandler = null;
 let playbackStateHandler = null;  // dashboard:playback-state listener
+let previewAudioGestureHandler = null;
 let selectedIds = [];   // ids on the stage; re-hydrated from the server, persisted on change
 let wallMemberIds = new Set();   // device ids owned by a video wall (never their own card)
 let walls = [];
@@ -314,6 +316,9 @@ function paintStage() {
   // Record what we just rendered so screenshot-only updates can patch in place
   // (see stageSignature / refreshPreviewsInPlace) instead of rebuilding + flashing.
   lastStageSig = stageSignature();
+  // Electron can autoplay immediately; normal browsers retry on the operator's
+  // next gesture through the view-level handler installed by render().
+  setTimeout(() => enableLivePreviewAudio(el), 0);
 }
 
 // A compact signature of the STRUCTURE the stage renders: which cards/wall cells
@@ -1585,6 +1590,12 @@ export async function render() {
       </div>
     </div>`;
 
+  if (!previewAudioGestureHandler) {
+    previewAudioGestureHandler = () => enableLivePreviewAudio(app);
+    document.addEventListener('pointerdown', previewAudioGestureHandler, true);
+    document.addEventListener('keydown', previewAudioGestureHandler, true);
+  }
+
   // The right Content Library tab is now the only fixed right-edge element — the
   // collapsed tab (data-open="false") re-shows itself when the drawer toggles.
   const libDrawer = document.getElementById('mc-library-drawer');
@@ -1879,6 +1890,11 @@ export function unmount() {
   const dockBtn = document.getElementById('mc-wb-dock-btn');
   if (dockBtn) dockBtn.remove();
   if (unsub) { unsub(); unsub = null; }
+  if (previewAudioGestureHandler) {
+    document.removeEventListener('pointerdown', previewAudioGestureHandler, true);
+    document.removeEventListener('keydown', previewAudioGestureHandler, true);
+    previewAudioGestureHandler = null;
+  }
   if (unsubChip) { unsubChip(); unsubChip = null; }
   if (dockApi && typeof dockApi.destroy === 'function') dockApi.destroy();
   if (cmdAckHandler) { try { socketOff('command-ack', cmdAckHandler); } catch (_) {} cmdAckHandler = null; }

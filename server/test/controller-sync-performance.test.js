@@ -74,6 +74,23 @@ test('document previews prefer live screenshots over static posters after slide 
   assert.match(main, /preview \? \(preview\.poster \? 'poster' : 'screenshot'\) : 'none'/);
 });
 
+test('multiview audio survives staggered loading and is audible in the dashboard preview', () => {
+  const livePreview = read('frontend/js/views/media-control/live-preview.js');
+  const grid = read('server/player/grid.html');
+
+  assert.match(livePreview, /preview=1&audio_preview=1/);
+  assert.doesNotMatch(livePreview, /autoplay muted loop/);
+  assert.match(livePreview, /export function enableLivePreviewAudio/);
+  assert.match(livePreview, /video\.muted = false/);
+  assert.match(livePreview, /child\.__mcEnableAudio\(\)/);
+  const main = read('frontend/js/views/media-control.js');
+  assert.match(main, /enableLivePreviewAudio\(app\)/);
+  assert.match(main, /document\.addEventListener\('pointerdown', previewAudioGestureHandler, true\)/);
+  assert.match(grid, /var audioPreview = previewMode && params\.get\('audio_preview'\) === '1'/);
+  assert.match(grid, /if \(item\.isAudio && _audioArmed\)[\s\S]*setTimeout\(enableAudioCell, 0\)/);
+  assert.match(grid, /if \(audioPreview\)[\s\S]*window\.__mcEnableAudio\(\)/);
+});
+
 test('camera status reports active sources continuously instead of a static idle label', () => {
   const dock = read('frontend/js/views/media-control/action-dock.js');
 

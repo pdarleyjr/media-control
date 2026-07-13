@@ -44,6 +44,20 @@ function isOwnPlayer(url) {
   } catch { return false; }
 }
 
+export function enableLivePreviewAudio(root = document) {
+  root.querySelectorAll('video.mc-live-embed').forEach((video) => {
+    video.muted = false;
+    video.volume = 1;
+    video.play().catch(() => {});
+  });
+  root.querySelectorAll('iframe.mc-live-embed').forEach((frame) => {
+    try {
+      const child = frame.contentWindow;
+      if (child && typeof child.__mcEnableAudio === 'function') child.__mcEnableAudio();
+    } catch { /* Cross-origin previews cannot expose the same-origin audio hook. */ }
+  });
+}
+
 // kinds we can render as ONE live element.
 export function liveEmbedHtml(nowPlaying, cls = '', opts = {}) {
   const np = nowPlaying || null;
@@ -59,7 +73,7 @@ export function liveEmbedHtml(nowPlaying, cls = '', opts = {}) {
 
     case 'video':
       if (!allowVideo) return null;
-      return `<video class="${klass}" src="/api/content/${id}/file" autoplay muted loop playsinline style="pointer-events:none"></video>`;
+      return `<video class="${klass}" src="/api/content/${id}/file" autoplay loop playsinline controls></video>`;
 
     case 'pdf':
     case 'document':
@@ -74,7 +88,9 @@ export function liveEmbedHtml(nowPlaying, cls = '', opts = {}) {
       if (np.remoteUrl) {
         const src = toRootRelative(np.remoteUrl);
         // Append &preview=1 (the grid URL already has ?cells=)
-        const previewSrc = src + (src.includes('?') ? '&' : '?') + 'preview=1';
+        // Keep the visual preview lightweight, but load the one operator-selected
+        // audio cell so the podium mirrors the program audio.
+        const previewSrc = src + (src.includes('?') ? '&' : '?') + 'preview=1&audio_preview=1';
         return `<iframe class="${klass}" src="${esc(previewSrc)}" loading="lazy" allow="autoplay; fullscreen" referrerpolicy="no-referrer" style="pointer-events:none"></iframe>`;
       }
       return null;
