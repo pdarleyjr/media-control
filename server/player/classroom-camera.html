@@ -6,14 +6,31 @@
   <title>Classroom Camera</title>
   <style>
     html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #000; }
-    video { width: 100%; height: 100%; display: block; object-fit: cover; background: #000; }
+    #viewport { position: fixed; inset: 0; overflow: hidden; background: #000; }
+    video { width: 100%; height: 100%; display: block; object-fit: cover; background: #000; transform-origin: 50% 50%; transition: transform 180ms ease-out; }
     #state { position: fixed; inset: 0; display: grid; place-items: center; color: #d6e2ee; background: #05070b; font: 600 18px "Segoe UI", sans-serif; }
     #state[hidden] { display: none; }
+    #eptz { position: fixed; right: 16px; bottom: 16px; z-index: 2; display: none; grid-template-columns: repeat(3, 48px); gap: 6px; padding: 10px; border-radius: 12px; background: rgba(5,7,11,.82); }
+    #eptz.is-visible { display: grid; }
+    #eptz button { min-width: 48px; min-height: 48px; border: 1px solid #526173; border-radius: 8px; background: #16202d; color: #f8fafc; font: 700 15px "Segoe UI", sans-serif; cursor: pointer; }
+    #eptz button:hover, #eptz button:focus-visible { background: #2563eb; outline: none; }
+    #eptz [data-eptz="wide"] { grid-column: 1 / -1; }
   </style>
 </head>
 <body>
-  <video id="video" autoplay playsinline muted></video>
+  <div id="viewport"><video id="video" autoplay playsinline muted></video></div>
   <div id="state">Connecting to classroom camera...</div>
+  <div id="eptz" aria-label="Digital camera controls">
+    <button type="button" data-eptz="zoom-in" aria-label="Zoom in">+</button>
+    <button type="button" data-eptz="up" aria-label="Pan up">&#8593;</button>
+    <button type="button" data-eptz="zoom-out" aria-label="Zoom out">-</button>
+    <button type="button" data-eptz="left" aria-label="Pan left">&#8592;</button>
+    <button type="button" data-eptz="wide">Wide</button>
+    <button type="button" data-eptz="right" aria-label="Pan right">&#8594;</button>
+    <button type="button" data-eptz="wall-1">Wall 1</button>
+    <button type="button" data-eptz="down" aria-label="Pan down">&#8595;</button>
+    <button type="button" data-eptz="wall-2">Wall 2</button>
+  </div>
   <script src="vendor/hls.light.min.js"></script>
   <script>
     (function () {
@@ -24,27 +41,72 @@
       var source = '/player/classroom-camera/' + camera + '/index.m3u8';
       var video = document.getElementById('video');
       var state = document.getElementById('state');
+      var controls = document.getElementById('eptz');
+      var hls = null;
+      var reconnectTimer = null;
+      var lastVideoTime = -1;
+      var lastProgressAt = Date.now();
+      var eptz = { zoom: 1, x: 0, y: 0 };
       video.style.objectFit = fit;
       video.muted = !audio;
       window.__mcEnableAudio = function () { video.muted = false; video.volume = 1; video.play().catch(function () {}); };
-      function ready() { state.hidden = true; video.play().catch(function () {}); }
-      function failed() { state.hidden = false; state.textContent = 'Camera reconnecting...'; setTimeout(start, 4000); }
+      function ready() { state.hidden = true; lastProgressAt = Date.now(); video.play().catch(function () {}); }
+      function scheduleReconnect() {
+        if (reconnectTimer) return;
+        reconnectTimer = setTimeout(function () { reconnectTimer = null; start(); }, 2000);
+      }
+      function failed() { state.hidden = false; state.textContent = 'Camera reconnecting...'; scheduleReconnect(); }
       function start() {
+        if (hls) { try { hls.destroy(); } catch (_error) {} hls = null; }
+        video.removeAttribute('src');
+        video.load();
         state.hidden = false;
+        lastVideoTime = -1;
+        lastProgressAt = Date.now();
+        var freshSource = source + '?fresh=' + Date.now();
         if (window.Hls && window.Hls.isSupported()) {
-          var hls = new window.Hls({ lowLatencyMode: true, liveSyncDurationCount: 2 });
-          hls.loadSource(source);
+          hls = new window.Hls({ lowLatencyMode: true, liveSyncDurationCount: 1, liveMaxLatencyDurationCount: 3, maxLiveSyncPlaybackRate: 1.5 });
+          hls.loadSource(freshSource);
           hls.attachMedia(video);
           hls.on(window.Hls.Events.MANIFEST_PARSED, ready);
           hls.on(window.Hls.Events.ERROR, function (_event, data) { if (data && data.fatal) { hls.destroy(); failed(); } });
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-          video.src = source;
+          video.src = freshSource;
           video.addEventListener('loadedmetadata', ready, { once: true });
           video.addEventListener('error', failed, { once: true });
         } else {
           state.textContent = 'HLS playback is not supported.';
         }
       }
+      function applyEptz() {
+        video.style.transform = 'translate(' + eptz.x + '%, ' + eptz.y + '%) scale(' + eptz.zoom + ')';
+      }
+      function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
+      function setPreset(name) {
+        if (name === 'wall-1') eptz = { zoom: 2.15, x: 22, y: 0 };
+        else if (name === 'wall-2') eptz = { zoom: 2.1, x: -8, y: 20 };
+        else eptz = { zoom: 1, x: 0, y: 0 };
+        applyEptz();
+      }
+      controls.addEventListener('click', function (event) {
+        var action = event.target && event.target.getAttribute('data-eptz');
+        if (!action) return;
+        if (action === 'wide' || action === 'wall-1' || action === 'wall-2') return setPreset(action);
+        if (action === 'zoom-in') eptz.zoom = clamp(eptz.zoom + 0.2, 1, 3);
+        if (action === 'zoom-out') eptz.zoom = clamp(eptz.zoom - 0.2, 1, 3);
+        if (action === 'left') eptz.x = clamp(eptz.x + 5, -35, 35);
+        if (action === 'right') eptz.x = clamp(eptz.x - 5, -35, 35);
+        if (action === 'up') eptz.y = clamp(eptz.y + 5, -35, 35);
+        if (action === 'down') eptz.y = clamp(eptz.y - 5, -35, 35);
+        applyEptz();
+      });
+      if (camera === '1' && (params.get('controls') === '1' || window.top === window.self)) controls.classList.add('is-visible');
+      video.addEventListener('timeupdate', function () {
+        if (video.currentTime !== lastVideoTime) { lastVideoTime = video.currentTime; lastProgressAt = Date.now(); }
+      });
+      setInterval(function () {
+        if (!document.hidden && !video.paused && Date.now() - lastProgressAt > 10000) failed();
+      }, 2000);
       start();
     })();
   </script>

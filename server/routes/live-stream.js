@@ -9,6 +9,34 @@ const { logActivity, getClientIp } = require('../services/activity');
 const { audit } = require('../lib/audit');
 
 const HOLDING_SCENE = 'HOLDING_SLIDE';
+const DEAD_SCENES = new Set([HOLDING_SCENE, 'EMERGENCY_FALLBACK']);
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function waitForDirector(predicate, timeoutMs = 12000) {
+  const deadline = Date.now() + timeoutMs;
+  let latest = null;
+  while (Date.now() < deadline) {
+    latest = await callDirector('GET', '/status');
+    if (latest.ok && predicate(latest.data || {})) return latest;
+    await sleep(750);
+  }
+  return latest;
+}
+
+function sceneMatchesProgramState(data, contentActive) {
+  const scene = String(data && data.current_scene || '');
+  const director = data && data.director || {};
+  const activeCamera = Number(director.active_camera) || null;
+  if (data.mode !== 'auto' || DEAD_SCENES.has(scene)) return false;
+  if (!!director.content_active !== !!contentActive) return false;
+  if (!activeCamera) return contentActive && scene === 'MEDIA_CONTROL_FULL';
+  if (!contentActive) return scene === `KAMRUI_CAMERA_${activeCamera}_FULL`;
+  if (scene === 'MEDIA_CONTROL_FULL') return true;
+  return scene.includes(`CAM${activeCamera}`) || scene.includes(`CAMERA_${activeCamera}`);
+}
 
 function requestBaseUrl(req) {
   // The live-stream player URL is loaded by OBS's browser source on the SAME
@@ -112,6 +140,7 @@ router.get('/program-state', (req, res) => {
 router.post('/start', async (req, res) => {
   if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
   const payload = displayPayload(req);
+  const programState = liveStreamProgramState(req.workspaceId);
 
   const programUrl = await callDirector('POST', '/media-control/program-url', { url: payload.player_url });
   if (!programUrl.ok || (programUrl.data && programUrl.data.ok === false)) {
@@ -133,11 +162,46 @@ router.post('/start', async (req, res) => {
     });
   }
 
-  const statusAfterMode = await callDirector('GET', '/status');
+  const statusAfterMode = await waitForDirector(
+    data => sceneMatchesProgramState(data, programState.content_active),
+  );
+  if (!statusAfterMode || !statusAfterMode.ok
+      || !sceneMatchesProgramState(statusAfterMode.data, programState.content_active)) {
+    return res.status(503).json({
+      ...payload,
+      success: false,
+      error: 'AI Director did not prepare a current camera scene; the stream was not started',
+      program_state: programState,
+      selected_scene: statusAfterMode,
+    });
+  }
 
   const stream = await callDirector('POST', '/stream/start');
-  const status = await callDirector('GET', '/status');
   const streamStarted = !!(stream.ok && stream.data && stream.data.ok !== false);
+  if (!streamStarted) {
+    return res.status(502).json({
+      ...payload,
+      success: false,
+      error: stream.data && stream.data.message || stream.message || 'OBS could not start the live stream',
+      program_state: programState,
+      selected_scene: statusAfterMode,
+      stream_start: stream,
+    });
+  }
+  const status = await waitForDirector(data => data.stream_active === true, 8000);
+  const streamVerified = !!(status && status.ok && status.data && status.data.stream_active === true);
+  if (!streamVerified) {
+    await callDirector('POST', '/stream/stop');
+    return res.status(502).json({
+      ...payload,
+      success: false,
+      error: 'OBS did not confirm that the live stream became active',
+      program_state: programState,
+      selected_scene: statusAfterMode,
+      stream_start: stream,
+      ai_director_status: status,
+    });
+  }
   logLiveStreamAction(req, 'start', {
     mode: 'auto',
     selected_scene: statusAfterMode.data && statusAfterMode.data.current_scene || null,
@@ -148,6 +212,7 @@ router.post('/start', async (req, res) => {
   res.json({
     ...payload,
     success: true,
+    program_state: programState,
     program_url: programUrl,
     mode,
     selected_scene: statusAfterMode,
