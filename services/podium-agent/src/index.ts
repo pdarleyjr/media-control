@@ -14,6 +14,13 @@ const appVersion = process.env.APP_VERSION || '0.1.0';
 const usbMountBase = process.env.USB_MOUNT_BASE || '/mnt/mbfd-usb';
 const usbStagingBase = process.env.USB_STAGING_DIR || '/var/lib/mbfd/podium-agent/usb-staging';
 const cameraDevice = process.env.PODIUM_CAMERA_DEVICE || '/dev/video2';
+const consoleHealthPaths = [
+  '/home/mbfdkiosk/.config/@mbfd/console-linux/console-health.json',
+  '/home/mbfdkiosk/.config/mbfd-media-control-console/console-health.json',
+  '/home/mbfdkiosk/.config/MBFD Media Control Console/console-health.json',
+];
+const maxLogBytes = 5 * 1024 * 1024;
+let logWriteQueue = Promise.resolve();
 
 const allowedUsbExtensions = new Set(['.pdf', '.ppt', '.pptx', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.webp', '.mp4', '.mov', '.mkv']);
 const blockedUsbExtensions = new Set(['.exe', '.msi', '.bat', '.cmd', '.ps1', '.sh', '.scr', '.vbs', '.js', '.jar', '.iso']);
@@ -40,23 +47,37 @@ type StagedUsbFile = UsbFile & { stagedId: string; stagedPath: string; url: stri
 function log(message: string, details?: unknown) {
   const line = JSON.stringify({ timestamp: new Date().toISOString(), service: 'mbfd-podium-agent', message, details: details ?? null });
   console.log(line);
-  try {
-    fs.appendFileSync('/var/log/mbfd-podium-agent.log', `${line}\n`);
-  } catch {
-    try {
-      const dir = path.join(os.homedir(), '.local', 'state', 'mbfd-podium-agent');
-      fs.mkdirSync(dir, { recursive: true });
-      fs.appendFileSync(path.join(dir, 'agent.log'), `${line}\n`);
-    } catch { /* journald stdout remains available */ }
-  }
+  logWriteQueue = logWriteQueue.then(async () => {
+    const primary = '/var/log/mbfd-podium-agent.log';
+    const fallbackDir = path.join(os.homedir(), '.local', 'state', 'mbfd-podium-agent');
+    const candidates = [primary, path.join(fallbackDir, 'agent.log')];
+    for (const logFile of candidates) {
+      try {
+        await fs.promises.mkdir(path.dirname(logFile), { recursive: true });
+        const stat = await fs.promises.stat(logFile).catch(() => null);
+        if (stat && stat.size >= maxLogBytes) {
+          await fs.promises.rm(`${logFile}.1`, { force: true }).catch(() => undefined);
+          await fs.promises.rename(logFile, `${logFile}.1`).catch(() => undefined);
+        }
+        await fs.promises.appendFile(logFile, `${line}\n`, 'utf8');
+        return;
+      } catch { /* try the fallback; journald stdout always remains available */ }
+    }
+  });
 }
 
 function writeCors(req: http.IncomingMessage, res: http.ServerResponse) {
   const origin = String(req.headers.origin || '');
+  const allowedOrigins = new Set([
+    'https://media-control.mbfdhub.com',
+    'http://192.168.1.116:8096',
+    'http://100.81.154.123:8096',
+    ...String(process.env.PODIUM_AGENT_ALLOWED_ORIGINS || '').split(',').map((value) => value.trim()).filter(Boolean),
+  ]);
   const allowed = origin === 'null'
     || origin.startsWith('http://localhost')
     || origin.startsWith('http://127.0.0.1')
-    || origin === 'https://media-control.mbfdhub.com';
+    || allowedOrigins.has(origin);
   if (allowed && origin) res.setHeader('Access-Control-Allow-Origin', origin);
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
@@ -174,7 +195,7 @@ function flattenDevices(devices: BlockDevice[] = [], inheritedRemovable = false)
 }
 
 async function blockDevices() {
-  const output = await command('lsblk', ['-J', '-o', 'NAME,RM,TYPE,MOUNTPOINTS,LABEL,SIZE,MODEL,FSTYPE'], 5000);
+  const output = await command('lsblk', ['-J', '-e', '7', '-o', 'NAME,RM,TYPE,MOUNTPOINTS,LABEL,SIZE,MODEL,FSTYPE'], 5000);
   const parsed = JSON.parse(output) as { blockdevices?: BlockDevice[] };
   return flattenDevices(parsed.blockdevices || []);
 }
@@ -399,6 +420,147 @@ async function networkPayload() {
   };
 }
 
+function readTextFile(filePath: string, maxLength = 256 * 1024) {
+  try { return fs.readFileSync(filePath, 'utf8').slice(0, maxLength).trim(); }
+  catch { return null; }
+}
+
+function readJsonFile(filePath: string) {
+  const raw = readTextFile(filePath, 2 * 1024 * 1024);
+  if (!raw) return null;
+  try { return JSON.parse(raw) as JsonValue; } catch { return null; }
+}
+
+function filesystemDiagnostics() {
+  return ['/', '/mnt/data'].filter((mountPoint) => fs.existsSync(mountPoint)).map((mountPoint) => {
+    const stat = fs.statfsSync(mountPoint);
+    const blockSize = Number(stat.bsize || 0);
+    const totalBytes = Number(stat.blocks || 0) * blockSize;
+    const availableBytes = Number(stat.bavail || 0) * blockSize;
+    return {
+      mountPoint,
+      totalBytes,
+      availableBytes,
+      usedPercent: totalBytes > 0 ? Math.round((1 - availableBytes / totalBytes) * 1000) / 10 : null,
+    };
+  });
+}
+
+function pressureDiagnostics() {
+  return {
+    cpu: readTextFile('/proc/pressure/cpu'),
+    memory: readTextFile('/proc/pressure/memory'),
+    io: readTextFile('/proc/pressure/io'),
+  };
+}
+
+function thermalDiagnostics() {
+  if (!fs.existsSync('/sys/class/thermal')) return [];
+  return fs.readdirSync('/sys/class/thermal')
+    .filter((name) => name.startsWith('thermal_zone'))
+    .map((name) => {
+      const root = path.join('/sys/class/thermal', name);
+      const rawTemp = Number(readTextFile(path.join(root, 'temp')) || NaN);
+      return {
+        zone: name,
+        type: readTextFile(path.join(root, 'type')),
+        celsius: Number.isFinite(rawTemp) ? rawTemp / 1000 : null,
+      };
+    });
+}
+
+function networkLinkDiagnostics() {
+  if (!fs.existsSync('/sys/class/net')) return [];
+  return fs.readdirSync('/sys/class/net').map((name) => ({
+    name,
+    operstate: readTextFile(path.join('/sys/class/net', name, 'operstate')),
+    carrier: readTextFile(path.join('/sys/class/net', name, 'carrier')),
+    speedMbps: readTextFile(path.join('/sys/class/net', name, 'speed')),
+  }));
+}
+
+async function diskInventoryDiagnostics() {
+  try {
+    const output = await command('lsblk', ['-J', '-e', '7', '-o', 'NAME,PATH,TYPE,SIZE,MODEL,SERIAL,ROTA,TRAN,FSTYPE,MOUNTPOINTS'], 5000);
+    return JSON.parse(output) as JsonValue;
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+async function smartDiagnostics() {
+  try { await command('smartctl', ['--version'], 3000); }
+  catch {
+    return { available: false, reason: 'smartctl is not installed; no SMART pass/fail result is claimed', devices: [] };
+  }
+  const devices: Array<Record<string, unknown>> = [];
+  let scan: { devices?: Array<{ name?: string }> } = {};
+  try { scan = JSON.parse(await command('smartctl', ['--scan-open', '--json'], 10000)) as typeof scan; }
+  catch (error) { return { available: true, error: error instanceof Error ? error.message : String(error), devices }; }
+  for (const device of scan.devices || []) {
+    if (!device.name) continue;
+    try {
+      const raw = await command('smartctl', ['--json', '-H', '-A', device.name], 15000);
+      devices.push({ path: device.name, report: JSON.parse(raw) });
+    } catch (error) {
+      devices.push({ path: device.name, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return { available: true, devices };
+}
+
+async function journalDiagnostics() {
+  const current = await command('journalctl', ['--no-pager', '-b', '-p', 'warning..alert', '-n', '200', '-o', 'short-iso'], 10000)
+    .catch((error) => `unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  const previous = await command('journalctl', ['--no-pager', '-b', '-1', '-p', 'warning..alert', '-n', '200', '-o', 'short-iso'], 10000)
+    .catch((error) => `unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  return { currentBoot: current, previousBoot: previous };
+}
+
+function consoleHealthDiagnostics() {
+  for (const healthPath of consoleHealthPaths) {
+    const value = readJsonFile(healthPath);
+    if (value) return { path: healthPath, value };
+  }
+  return { path: null, value: null };
+}
+
+function coreDumpDiagnostics() {
+  const corePath = '/opt/mbfd/media-control-console/core';
+  try {
+    const stat = fs.statSync(corePath);
+    return { path: corePath, exists: true, size: stat.size, modifiedAt: stat.mtime.toISOString() };
+  } catch { return { path: corePath, exists: false }; }
+}
+
+async function systemDiagnosticsPayload() {
+  const [disks, smart, journals, processes] = await Promise.all([
+    diskInventoryDiagnostics(),
+    smartDiagnostics(),
+    journalDiagnostics(),
+    command('ps', ['-eo', 'pid,ppid,comm,%cpu,%mem,rss,etime,args', '--sort=-%cpu'], 5000)
+      .then((output) => output.split('\n').slice(0, 31).join('\n'))
+      .catch((error) => `unavailable: ${error instanceof Error ? error.message : String(error)}`),
+  ]);
+  return {
+    capturedAt: new Date().toISOString(),
+    hostname: os.hostname(),
+    uptimeSeconds: Math.round(os.uptime()),
+    loadAverage: os.loadavg(),
+    memory: { totalBytes: os.totalmem(), freeBytes: os.freemem() },
+    filesystems: filesystemDiagnostics(),
+    pressure: pressureDiagnostics(),
+    thermal: thermalDiagnostics(),
+    networkLinks: networkLinkDiagnostics(),
+    disks,
+    smart,
+    journals,
+    consoleHealth: consoleHealthDiagnostics(),
+    coreDump: coreDumpDiagnostics(),
+    processes,
+  };
+}
+
 async function probe(url: string) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5000);
@@ -448,6 +610,7 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
     if (req.method === 'GET' && url.pathname === '/health') return json(req, res, 200, { ok: true, service: 'mbfd-podium-agent', room_id: roomId, device_id: deviceId });
     if (req.method === 'GET' && url.pathname === '/device') return json(req, res, 200, await devicePayload());
     if (req.method === 'GET' && url.pathname === '/network') return json(req, res, 200, await networkPayload());
+    if (req.method === 'GET' && url.pathname === '/diagnostics/system') return json(req, res, 200, await systemDiagnosticsPayload());
     if (req.method === 'GET' && url.pathname === '/camera/status') {
       return json(req, res, 200, {
         available: process.platform === 'linux' && fs.existsSync(cameraDevice),

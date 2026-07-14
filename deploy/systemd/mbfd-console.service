@@ -28,6 +28,8 @@ ExecStartPre=-/usr/bin/setterm -blank 0 -powerdown 0 -powersave off
 ExecStart=/opt/mbfd/media-control-console/mbfd-console-session.sh
 Restart=on-failure
 RestartSec=5s
+KillMode=mixed
+TimeoutStopSec=20s
 
 [Install]
 WantedBy=multi-user.target

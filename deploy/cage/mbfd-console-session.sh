@@ -4,6 +4,7 @@ set -euo pipefail
 export XDG_SESSION_TYPE=wayland
 export ELECTRON_OZONE_PLATFORM_HINT="${ELECTRON_OZONE_PLATFORM_HINT:-auto}"
 export ELECTRON_ENABLE_LOGGING="${ELECTRON_ENABLE_LOGGING:-1}"
+export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
 
 disconnect_grace="${MBFD_DISPLAY_DISCONNECT_GRACE_SECONDS:-15}"
 cage_pid=""
@@ -27,7 +28,7 @@ while true; do
     sleep 2
   done
 
-  cage -d -- /opt/mbfd/media-control-console/mbfd-media-control-console &
+  nice -n 5 ionice -c 2 -n 7 cage -d -- /opt/mbfd/media-control-console/mbfd-media-control-console &
   cage_pid="$!"
   disconnected_at=0
 
