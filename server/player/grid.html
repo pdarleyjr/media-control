@@ -117,13 +117,17 @@
         layout = MV.splitColumnsLayout(splitParam);
       }
 
-      // PREVIEW MODE: when &preview=1 is present (dashboard embed), render each
+      // STATIC PREVIEW MODE: when &preview=1 is explicitly present, render each
       // cell as a labeled placeholder instead of loading live HLS/camera streams.
       // This lets the dashboard show the multiview layout (which channel is in
       // which slot) with ZERO network connections — no HLS segments, no hls.js,
       // no CDN load. The physical TV plays the full live grid (no preview param).
       var previewMode = params.get('preview') === '1';
-      var audioPreview = previewMode && params.get('audio_preview') === '1';
+      // OPERATOR PREVIEW keeps every cell live, but is instantiated only once by
+      // the Command Center for the active target. This preserves real playback
+      // without multiplying an entire grid into every display card.
+      var operatorPreview = params.get('operator_preview') === '1';
+      var audioPreview = (previewMode || operatorPreview) && params.get('audio_preview') === '1';
 
       // At most ONE cell plays sound on the wall (operator's pick); the rest stay
       // muted to avoid cacophony. audioEl is that cell's <video> or live-player
@@ -254,7 +258,7 @@
       // occurs when 10 hls.js instances start simultaneously, which was causing
       // WebSocket ping timeouts → constant disconnect/reconnect → content never
       // fully loading ("snail pace" / "takes minutes to load").
-      var STAGGER_MS = 1500;
+      var STAGGER_MS = operatorPreview ? 600 : 1500;
       function loadNextCell() {
         if (cellQueue.length === 0) return;
         var item = cellQueue.shift();

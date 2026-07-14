@@ -2,13 +2,14 @@
 // card so the Command Center shows ACTUAL live content, not static screenshots.
 //
 // Key rules to avoid the CDN overload / "Reconnecting" cascade:
-//   • Grid (multiview): embed grid.html with &preview=1 — grid shows labeled
-//     cells (channel names per slot) but loads ZERO HLS streams. The physical
-//     TV plays the full live grid; the dashboard shows a lightweight preview.
+//   • Grid (multiview): embed one operator preview with all cells live. Only the
+//     selected Command Center target gets this preview, so opening the dashboard
+//     does not multiply the grid across every wall card.
 //   • Individual HLS/camera streams: embed live ONLY in the span preview (one
 //     stream), never in every wall cell (N streams = CDN rate-limit = reconnect).
-//   • Documents/PDFs: never embed a second player. The dashboard must render the
-//     physical device's screenshot or it will remain on slide 1 while the TV advances.
+//   • Documents/decks: render one same-origin preview at the slide index reported
+//     by the physical player. The parent keeps it synchronized without sending a
+//     second command to the display.
 //   • Images/videos: embed live (cheap, single resource).
 //
 // Returns an HTML string (live iframe/video/img) or null (caller uses screenshot).
@@ -44,6 +45,29 @@ function isOwnPlayer(url) {
   } catch { return false; }
 }
 
+function appendQuery(url, values) {
+  try {
+    const parsed = new URL(url, location.origin);
+    Object.entries(values).forEach(([key, value]) => parsed.searchParams.set(key, String(value)));
+    if (parsed.origin === location.origin) return parsed.pathname + parsed.search + parsed.hash;
+    return parsed.toString();
+  } catch { return url; }
+}
+
+function slideNumber(nowPlaying) {
+  const parsed = parseInt(nowPlaying?.slideIndex ?? nowPlaying?.slide_index ?? 1, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+}
+
+function playbackSeconds(nowPlaying) {
+  const parsed = Number(nowPlaying?.currentTime ?? nowPlaying?.current_time ?? 0);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function presentationFrameHtml(src, klass, slide) {
+  return `<iframe class="${klass}" src="${esc(src)}" loading="eager" allow="autoplay; fullscreen" referrerpolicy="no-referrer" style="pointer-events:none" data-mc-presentation="1" data-mc-slide-index="${slide}"></iframe>`;
+}
+
 export function enableLivePreviewAudio(root = document) {
   root.querySelectorAll('video.mc-live-embed').forEach((video) => {
     video.muted = false;
@@ -61,36 +85,53 @@ export function enableLivePreviewAudio(root = document) {
 // kinds we can render as ONE live element.
 export function liveEmbedHtml(nowPlaying, cls = '', opts = {}) {
   const np = nowPlaying || null;
-  if (!np || !np.contentId) return null;
+  if (!np) return null;
   const allowVideo  = opts.allowVideo !== false;
+  const audioPreview = opts.audioPreview === true;
   const fallbackSrc = typeof opts.fallbackSrc === 'string' ? opts.fallbackSrc : '';
-  const id   = encodeURIComponent(np.contentId);
+  const id   = np.contentId ? encodeURIComponent(np.contentId) : '';
   const klass = `mc-live-embed${cls ? ' ' + esc(cls) : ''}`;
+  const slide = slideNumber(np);
+
+  if (np.remoteUrl && isOwnPlayer(np.remoteUrl)) {
+    const ownPath = new URL(np.remoteUrl, location.origin).pathname;
+    if (ownPath.startsWith('/player/doc/') || ownPath.startsWith('/player/deck/')) {
+      const key = ownPath.startsWith('/player/doc/') ? 'page' : 'slide';
+      const src = appendQuery(toRootRelative(np.remoteUrl), { [key]: slide, preview: 1 });
+      return presentationFrameHtml(src, klass, slide);
+    }
+  }
 
   switch (np.kind) {
     case 'image':
+      if (!id) return null;
       return `<img class="${klass}" src="/api/content/${id}/file" alt="" loading="lazy">`;
 
     case 'video':
-      if (!allowVideo) return null;
-      return `<video class="${klass}" src="/api/content/${id}/file" autoplay loop playsinline controls></video>`;
+      if (!allowVideo || !id) return null;
+      return `<video class="${klass}" src="/api/content/${id}/file"${np.paused === true ? '' : ' autoplay'}${audioPreview ? '' : ' muted'} loop playsinline controls data-mc-video="1" data-mc-current-time="${playbackSeconds(np)}" data-mc-paused="${np.paused === true ? '1' : '0'}"></video>`;
 
     case 'pdf':
-    case 'document':
-      return null;
+    case 'document': {
+      if (!id) return null;
+      const src = appendQuery(`/player/doc/${id}`, { page: slide, preview: 1 });
+      return presentationFrameHtml(src, klass, slide);
+    }
+
+    case 'presentation':
+    case 'deck': {
+      if (!id) return null;
+      const src = appendQuery(`/player/deck/${id}`, { slide, preview: 1 });
+      return presentationFrameHtml(src, klass, slide);
+    }
 
     case 'grid': {
-      // Multiview grid in the DASHBOARD: embed grid.html with &preview=1 so it
-      // shows labeled cells (which channel is in which slot) but does NOT load
-      // any HLS streams. The physical TV plays the full live grid; the dashboard
-      // shows a zero-bandwidth preview. This prevents the CDN overload that caused
-      // every camera feed to show "Reconnecting" when the dashboard opened the grid.
+      // Multiview grid in the dashboard: load every cell in one operator preview.
+      // The stage renders a live element for only activePreviewDeviceId, avoiding
+      // the old N-cards-times-N-streams cascade while preserving real playback.
       if (np.remoteUrl) {
         const src = toRootRelative(np.remoteUrl);
-        // Append &preview=1 (the grid URL already has ?cells=)
-        // Keep the visual preview lightweight, but load the one operator-selected
-        // audio cell so the podium mirrors the program audio.
-        const previewSrc = src + (src.includes('?') ? '&' : '?') + 'preview=1&audio_preview=1';
+        const previewSrc = src + (src.includes('?') ? '&' : '?') + 'operator_preview=1' + (audioPreview ? '&audio_preview=1' : '');
         return `<iframe class="${klass}" src="${esc(previewSrc)}" loading="lazy" allow="autoplay; fullscreen" referrerpolicy="no-referrer" style="pointer-events:none"></iframe>`;
       }
       return null;

@@ -20,6 +20,7 @@ import { esc } from '../../utils.js';
 import { t, tn } from '../../i18n.js';
 import { attachTileHandlers } from './toolbox.js';
 import { CAMERA_FEED_GROUPS } from './camera-feeds-catalog.js';
+import { openViewModal } from './view-modal.js';
 
 // Folder glyphs — stroke icons in the dashboard's SVG vocabulary (24x24, no fill).
 const GROUP_ICONS = {
@@ -107,8 +108,34 @@ export function renderCameraFeedsTab(container, { selectedIds, onAfterSend, onRo
     return;
   }
   const hint = `<p class="mc-cf-hint">${esc(t('mc.cf.hint'))}</p>`;
-  container.innerHTML = hint + `<div class="mc-cf-groups">${groups.map(groupHtml).join('')}</div>`;
+  const focusControl = `<div class="mc-cf-control-card">
+    <div class="mc-cf-control-copy">
+      <strong>${esc(t('mc.cf.focus_control'))}</strong>
+      <span>${esc(t('mc.cf.focus_control_hint'))}</span>
+    </div>
+    <button type="button" class="mc-btn mc-btn-primary mc-cf-control-open">${esc(t('mc.cf.open_control'))}</button>
+  </div>`;
+  container.innerHTML = hint + focusControl + `<div class="mc-cf-groups">${groups.map(groupHtml).join('')}</div>`;
   // Reuse the toolbox tile wiring verbatim: tap = route via picker, drag = serialize
   // the { remote_url } source onto the DataTransfer for a drop on a stage card.
   attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource);
+
+  container.querySelector('.mc-cf-control-open')?.addEventListener('click', () => {
+    let frame = null;
+    openViewModal({
+      title: t('mc.cf.focus_control_title'),
+      render(body) {
+        frame = document.createElement('iframe');
+        frame.className = 'mc-camera-control-frame';
+        frame.title = t('mc.cf.focus_control_title');
+        frame.allow = 'autoplay';
+        frame.src = '/player/classroom-camera.html?camera=1&controls=1&preset=wide&fit=contain';
+        body.appendChild(frame);
+      },
+      cleanup() {
+        if (frame) frame.src = 'about:blank';
+        frame = null;
+      },
+    });
+  });
 }

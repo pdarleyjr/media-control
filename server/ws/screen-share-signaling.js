@@ -46,6 +46,9 @@ const ICE_CANDIDATE_BURST = 100;
 const ICE_CANDIDATE_WINDOW_MS = 10_000;
 const BROADCASTER_RECONNECT_GRACE_MS = 30_000;
 const REAPER_INTERVAL_MS = 5_000;
+const RELAY_FRAME_MIN_INTERVAL_MS = 120;
+const RELAY_FRAME_MAX_BASE64_CHARS = 1_200_000;
+const RELAY_FRAME_MAX_TARGETS = 16;
 
 const activeSessions = new Map();
 
@@ -173,8 +176,52 @@ function setupScreenShareSignaling({ dashboardNs, deviceNs, canActOnDevice, devi
       if (!canActOnDevice(socket, device_id, 'write')) {
         return ack && ack({ ok: false, error: 'forbidden' });
       }
+      session.offerAt = Date.now();
       deviceNs.to(device_id).emit('device:screen-share-offer', { sdp });
+      console.log(`[screen-share] offer: device=${device_id} broadcaster=${socket.id}`);
       ack && ack({ ok: true });
+    });
+
+    // Reliable fallback for networks where WebRTC negotiation is blocked.
+    // The broadcaster encodes one bounded JPEG and names all intended targets;
+    // the server fans it out only to sessions owned by that authenticated socket.
+    socket.on('screen-share:frame', (data, ack) => {
+      const rawIds = data && Array.isArray(data.device_ids) ? data.device_ids : [];
+      const imageB64 = data && data.image_b64;
+      if (rawIds.length === 0 || rawIds.length > RELAY_FRAME_MAX_TARGETS) {
+        return ack && ack({ ok: false, error: 'invalid_targets' });
+      }
+      if (typeof imageB64 !== 'string' || imageB64.length < 100 || imageB64.length > RELAY_FRAME_MAX_BASE64_CHARS) {
+        return ack && ack({ ok: false, error: 'invalid_frame' });
+      }
+
+      const now = Date.now();
+      const lastFrameAt = Number(socket.data.__screenShareLastFrameAt || 0);
+      if (now - lastFrameAt < RELAY_FRAME_MIN_INTERVAL_MS) {
+        return ack && ack({ ok: false, error: 'rate_limited' });
+      }
+      socket.data.__screenShareLastFrameAt = now;
+
+      let delivered = 0;
+      const uniqueIds = [...new Set(rawIds.map((value) => String(value || '')).filter(Boolean))];
+      for (const deviceId of uniqueIds) {
+        const session = activeSessions.get(deviceId);
+        if (!session || session.broadcasterSocketId !== socket.id) continue;
+        if (!canActOnDevice(socket, deviceId, 'write')) continue;
+        const room = deviceNs.adapter.rooms.get(deviceId);
+        if (!room || room.size === 0) continue;
+        if (!session.relayStartedAt) {
+          session.relayStartedAt = now;
+          console.log(`[screen-share] relay active: device=${deviceId} broadcaster=${socket.id}`);
+        }
+        session.lastFrameAt = now;
+        deviceNs.to(deviceId).emit('device:screen-share-frame', {
+          image_b64: imageB64,
+          captured_at: Number(data && data.captured_at) || now,
+        });
+        delivered += 1;
+      }
+      ack && ack({ ok: delivered > 0, delivered });
     });
 
     socket.on('screen-share:ice-candidate', (data) => {
@@ -259,7 +306,9 @@ function setupScreenShareSignaling({ dashboardNs, deviceNs, canActOnDevice, devi
       if (!session) return;
       const broadcaster = dashboardNs.sockets.get(session.broadcasterSocketId);
       if (!broadcaster) return;
+      session.answerAt = Date.now();
       broadcaster.emit('screen-share:answer', { device_id: deviceId, sdp });
+      console.log(`[screen-share] answer: device=${deviceId} broadcaster=${session.broadcasterSocketId}`);
     });
 
     socket.on('device:screen-share-ice-candidate', (data) => {
@@ -289,6 +338,28 @@ function setupScreenShareSignaling({ dashboardNs, deviceNs, canActOnDevice, devi
       activeSessions.delete(deviceId);
       console.log(`[screen-share] ended by device: device=${deviceId}`);
     });
+
+    socket.on('device:screen-share-status', (data) => {
+      const deviceId = deviceSocketRegistry.getDeviceId(socket);
+      if (!deviceId) return;
+      const session = activeSessions.get(deviceId);
+      if (!session) return;
+      const status = String(data && data.status || 'unknown').slice(0, 64);
+      const reason = String(data && data.reason || '').slice(0, 160);
+      if (session.receiverStatus !== status || session.receiverReason !== reason) {
+        session.receiverStatus = status;
+        session.receiverReason = reason;
+        console.log(`[screen-share] receiver status: device=${deviceId} status=${status}${reason ? ` reason=${reason}` : ''}`);
+      }
+      const broadcaster = dashboardNs.sockets.get(session.broadcasterSocketId);
+      if (broadcaster) {
+        broadcaster.emit('screen-share:receiver-status', {
+          device_id: deviceId,
+          status,
+          reason: reason || null,
+        });
+      }
+    });
   });
 
   return {
@@ -300,6 +371,11 @@ function setupScreenShareSignaling({ dashboardNs, deviceNs, canActOnDevice, devi
           broadcaster_socket: s.broadcasterSocketId,
           started_at: s.startedAt,
           disconnected_at: s.disconnectedAt,
+          offer_at: s.offerAt || null,
+          answer_at: s.answerAt || null,
+          relay_started_at: s.relayStartedAt || null,
+          last_frame_at: s.lastFrameAt || null,
+          receiver_status: s.receiverStatus || null,
         });
       }
       return out;

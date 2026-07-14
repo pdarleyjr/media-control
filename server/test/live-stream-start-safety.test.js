@@ -16,3 +16,11 @@ test('live start reports failure unless OBS confirms the stream is active', () =
   assert.match(source, /waitForDirector\(data => data\.stream_active === true, 8000\)/);
   assert.match(source, /if \(!streamVerified\)[\s\S]*callDirector\('POST', '\/stream\/stop'\)/);
 });
+
+test('live start replaces and refreshes the OBS browser source before scene selection', () => {
+  assert.match(source, /function freshProgramUrl/);
+  assert.match(source, /_mc_live_session/);
+  assert.match(source, /callDirector\('POST', '\/media-control\/program-url', \{ url: playerUrl \}\)/);
+  assert.match(source, /callDirector\('POST', '\/media-control\/refresh'\)/);
+  assert.match(source, /if \(!programRefresh\.ok[\s\S]*return res\.status\(502\)/);
+});

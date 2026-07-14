@@ -38,8 +38,13 @@ function optionTag(value, label) {
  */
 export function mountTargetSelector(hostEl, { walls = [], displays = [], onTargetChange } = {}) {
   if (!hostEl) return null;
-  hostEl.innerHTML = `<select class="mc-target-select" aria-label="${esc(t('mc.cc.target.placeholder'))}"></select>`;
+  hostEl.innerHTML = `
+    <div class="mc-target-control">
+      <div class="mc-target-wall-tabs" role="group" aria-label="Video walls"></div>
+      <select class="mc-target-select" aria-label="${esc(t('mc.cc.target.placeholder'))}"></select>
+    </div>`;
   const sel = hostEl.querySelector('select.mc-target-select');
+  const wallTabs = hostEl.querySelector('.mc-target-wall-tabs');
 
   let active = null;
   let currentWalls = Array.isArray(walls) ? walls : [];
@@ -52,40 +57,65 @@ export function mountTargetSelector(hostEl, { walls = [], displays = [], onTarge
     return set;
   }
 
+  function valueForTarget(target) {
+    if (!target || !target.id) return '';
+    return target.type === 'wall' ? `wall:${target.id}` : `display:${target.id}`;
+  }
+
+  function targetForValue(value) {
+    const sep = value.indexOf(':');
+    const type = sep > 0 ? value.slice(0, sep) : '';
+    const id = sep > 0 ? value.slice(sep + 1) : '';
+    if (type === 'wall') return { type: 'wall', id, wall_id: id, supportsModes: true };
+    if (type === 'display') return { type: 'display', id, supportsModes: false };
+    return null;
+  }
+
+  function paintActiveControls() {
+    const value = valueForTarget(active);
+    sel.value = [...sel.options].some((option) => option.value === value) ? value : '';
+    wallTabs.querySelectorAll('[data-target-value]').forEach((button) => {
+      const pressed = button.dataset.targetValue === value;
+      button.classList.toggle('is-active', pressed);
+      button.setAttribute('aria-pressed', pressed ? 'true' : 'false');
+    });
+  }
+
+  function activateValue(value, notify = true) {
+    active = targetForValue(value);
+    paintActiveControls();
+    if (notify && typeof onTargetChange === 'function') onTargetChange(active);
+  }
+
   function rebuild() {
-    const prev = sel.value;
+    const prev = valueForTarget(active) || sel.value;
     const opts = [optionTag('', t('mc.cc.target.placeholder'))];
-    for (const w of currentWalls) opts.push(optionTag(`wall:${w.id}`, wallLabel(w)));
     for (const d of currentDisplays) opts.push(optionTag(`display:${d.id}`, d.name || d.id));
     sel.innerHTML = opts.join('');
-    // Preserve the current selection if it still exists; otherwise reset to the placeholder.
-    sel.value = validValues().has(prev) ? prev : '';
+    sel.hidden = currentDisplays.length === 0;
+    wallTabs.innerHTML = currentWalls.map((wall) => `
+      <button type="button" class="mc-target-wall-btn" data-target-value="wall:${esc(wall.id)}" aria-pressed="false">
+        ${esc(wallLabel(wall))}
+      </button>`).join('');
+    wallTabs.hidden = currentWalls.length === 0;
+    if (!validValues().has(prev)) active = null;
+    paintActiveControls();
   }
   rebuild();
 
-  sel.addEventListener('change', () => {
-    const val = sel.value;
-    if (!val) { active = null; if (typeof onTargetChange === 'function') onTargetChange(null); return; }
-    const sep = val.indexOf(':');
-    const type = sep > 0 ? val.slice(0, sep) : '';
-    const id = sep > 0 ? val.slice(sep + 1) : '';
-    if (type === 'wall') {
-      active = { type: 'wall', id, wall_id: id, supportsModes: true };
-    } else if (type === 'display') {
-      active = { type: 'display', id, supportsModes: false };
-    } else {
-      active = null;
-    }
-    if (typeof onTargetChange === 'function') onTargetChange(active);
+  wallTabs.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-target-value]');
+    if (!button || !wallTabs.contains(button)) return;
+    activateValue(button.dataset.targetValue);
   });
+  sel.addEventListener('change', () => activateValue(sel.value));
 
   return {
     el: sel,
     getActiveTarget: () => active,
     setActive: (tgt) => {
-      if (!tgt) { active = null; sel.value = ''; return; }
-      active = tgt;
-      sel.value = tgt.type === 'wall' ? `wall:${tgt.id}` : `display:${tgt.id}`;
+      active = tgt || null;
+      paintActiveControls();
     },
     setOptions: (nextWalls, nextDisplays) => {
       currentWalls = Array.isArray(nextWalls) ? nextWalls : [];

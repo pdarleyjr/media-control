@@ -18,6 +18,30 @@ body.console-mode .content {
     linear-gradient(180deg, #f8fafc 0%, #eef4fb 100%);
 }
 
+/* Command Center owns a fixed viewport while the appliance header remains
+   visible. Pin it below that header so its bottom controls are never clipped. */
+body.console-mode.cc-fullscreen .content {
+  position: fixed;
+  inset: var(--console-header-h) 0 0;
+  height: auto;
+  min-height: 0;
+  padding: 0 !important;
+  overflow: hidden;
+}
+
+body.console-mode.cc-fullscreen .mc-cc-shell {
+  height: 100%;
+}
+
+body.console-mode .mc-modal-body,
+body.console-mode .mc-route-scroll,
+body.console-mode .mc-library-body,
+.console-usb-body {
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  scrollbar-gutter: stable;
+}
+
 .console-header {
   position: fixed;
   inset: 0 0 auto 0;

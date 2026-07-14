@@ -63,10 +63,14 @@ function news(title, key) {
     url: `https://media.mbfdhub.com/player/hls.html?station=${key}&label=${encodeURIComponent(title)}`,
   };
 }
-function classroom(title, camera) {
+function classroom(title, camera, preset = '') {
+  const presetParam = preset ? `&preset=${encodeURIComponent(preset)}` : '';
   return {
     title,
-    url: `https://media-control.mbfdhub.com/player/classroom-camera.html?camera=${camera}`,
+    // Stay on the controller/player origin. This avoids an unnecessary
+    // Cloudflare round trip for classroom-local cameras and keeps the HLS
+    // proxy, player, and control surface under one origin.
+    url: `/player/classroom-camera.html?camera=${camera}${presetParam}`,
   };
 }
 
@@ -75,8 +79,9 @@ export const CAMERA_FEED_GROUPS = [
     id: 'classroom',
     nameKey: 'mc.cf.group.classroom',
     feeds: [
-      classroom('Classroom · WyreStorm Camera', 1),
-      classroom('Classroom · Podium Camera', 2),
+      classroom('Focus 210 · Wide Room', 1, 'wide'),
+      classroom('Focus 210 · Video Wall 2', 1, 'wall-2'),
+      classroom('ANNKE · Video Wall 1', 3),
     ],
   },
   {

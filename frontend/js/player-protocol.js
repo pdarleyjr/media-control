@@ -22,7 +22,8 @@ export const WB = Object.freeze({
 // Screen-share signaling (broadcaster -> server -> device:screen-share-*).
 export const SS = Object.freeze({
   START: 'screen-share:start', OFFER: 'screen-share:offer',
-  ICE: 'screen-share:ice-candidate', STOP: 'screen-share:stop',
+  ICE: 'screen-share:ice-candidate', FRAME: 'screen-share:frame',
+  STOP: 'screen-share:stop',
 });
 
 export const FIT_MODES = Object.freeze(['cover', 'contain', 'fill', 'none', 'scale-down']);

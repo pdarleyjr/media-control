@@ -24,13 +24,18 @@ test('dashboard socket exposes selected target helpers and reselects after recon
   assert.match(source, /dashboardSocket\.on\('connect'[\s\S]*emitSelectedTarget\(\)/);
 });
 
-test('media control drag drop coalesces refreshes and throttles preview screenshots', () => {
+test('media control drag drop refreshes the active visual truth without polling every display', () => {
   const source = read('frontend/js/views/media-control.js');
-  assert.match(source, /const PREVIEW_REQUEST_MIN_MS = 8000/);
+  assert.match(source, /const ACTIVE_PREVIEW_INTERVAL_MS = 1000/);
+  assert.match(source, /const BACKGROUND_PREVIEW_INTERVAL_MS = 60000/);
+  assert.match(source, /function requestActivePreview/);
+  assert.match(source, /function activePreviewDeviceId/);
   assert.match(source, /function scheduleDisplayStateRefresh/);
   assert.match(source, /function queuePreviewRequests/);
   assert.match(source, /displayState\.refresh\(\)\.catch/);
-  assert.match(source, /setInterval\(requestVisiblePreviews, 60000\)/);
+  assert.match(source, /setInterval\(requestActivePreview, ACTIVE_PREVIEW_INTERVAL_MS\)/);
+  assert.match(source, /setInterval\(requestVisiblePreviews, BACKGROUND_PREVIEW_INTERVAL_MS\)/);
+  assert.match(source, /for \(const delay of \[350, 1400\]\)/);
   assert.match(source, /const ok = await sendToDisplays\(parsed\.source, \[deviceId\], parsed\.label\)/);
   assert.match(source, /if \(ok\) refreshAfterSend\(\[deviceId\]\)/);
 });
@@ -47,6 +52,13 @@ test('span wall transport controls fan out to every wall member', () => {
   assert.match(transport, /transportIds\.forEach\(id => sendCommand\(id, COMMAND_TYPES\.TRANSPORT/);
 });
 
+test('an independently selected split-wall member remains renderable as a display target', () => {
+  const main = read('frontend/js/views/media-control.js');
+
+  assert.match(main, /!wallMemberIds\.has\(d\.id\)[\s\S]*activeTarget\.type === 'display'[\s\S]*activeTarget\.id === d\.id/);
+  assert.match(main, /return isSplitWallMemberId\(d\.id\)/);
+});
+
 test('transport actions refresh state and force previews so dashboard mirrors slide changes', () => {
   const main = read('frontend/js/views/media-control.js');
   const stage = read('frontend/js/views/media-control/stage.js');
@@ -60,35 +72,78 @@ test('transport actions refresh state and force previews so dashboard mirrors sl
   assert.match(transport, /if \(typeof onTransportAction === 'function'\) onTransportAction\(transportIds, action\)/);
 });
 
-test('document previews prefer live screenshots over static posters after slide changes', () => {
+test('presentation previews follow the authoritative physical slide state', () => {
   const main = read('frontend/js/views/media-control.js');
   const stage = read('frontend/js/views/media-control/stage.js');
   const livePreview = read('frontend/js/views/media-control/live-preview.js');
+  const displayState = read('frontend/js/services/display-state.js');
+  const deck = read('server/player/deck.html');
 
   assert.match(stage, /function shouldPreferPoster\(obj\)/);
   assert.match(stage, /kind === 'document' \|\| kind === 'pdf'/);
   assert.match(stage, /if \(screenshot && !shouldPreferPoster\(obj\)\)/);
-  assert.match(livePreview, /case 'pdf':[\s\S]*case 'document':[\s\S]*return null/);
-  assert.doesNotMatch(livePreview, /src="\/player\/doc\/\$\{id\}"/);
+  assert.match(displayState, /if \(state\.slide_index != null\) npPatch\.slideIndex = state\.slide_index/);
+  assert.match(displayState, /if \(state\.slide_count != null\) npPatch\.slideCount = state\.slide_count/);
+  assert.match(livePreview, /case 'pdf':[\s\S]*case 'document':[\s\S]*\/player\/doc\//);
+  assert.match(livePreview, /case 'presentation':/);
+  assert.match(livePreview, /data-mc-presentation="1"/);
+  assert.match(main, /iframe\.mc-live-embed\[data-mc-presentation="1"\]/);
+  assert.match(main, /__mc_transport:[\s\S]*action: 'go_to_slide'/);
+  assert.match(deck, /params\.get\('slide'\)/);
+  assert.match(deck, /params\.get\('preview'\) === '1'/);
   assert.match(main, /const preview = previewSource\(d\)/);
   assert.match(main, /preview \? \(preview\.poster \? 'poster' : 'screenshot'\) : 'none'/);
 });
 
-test('multiview audio survives staggered loading and is audible in the dashboard preview', () => {
+test('wall documents pass fill mode into the child player instead of centering on one TV', () => {
+  const player = read('server/player/index.html');
+  const doc = read('server/player/doc.html');
+
+  assert.match(player, /fit === 'cover' \|\| fit === 'fill'/);
+  assert.match(player, /'\?fit=' \+ encodeURIComponent\(normalizedFit\)/);
+  assert.match(doc, /body\[data-fit="fill"\] #page \{ object-fit: fill; \}/);
+});
+
+test('embedded live playback is the default while screenshot-only mode is an explicit opt-out', () => {
   const livePreview = read('frontend/js/views/media-control/live-preview.js');
+  const stage = read('frontend/js/views/media-control/stage.js');
   const grid = read('server/player/grid.html');
 
-  assert.match(livePreview, /preview=1&audio_preview=1/);
+  assert.match(livePreview, /opts\.audioPreview === true/);
+  assert.match(livePreview, /operator_preview=1/);
+  assert.match(livePreview, /audioPreview \? '&audio_preview=1' : ''/);
+  assert.doesNotMatch(livePreview, /preview=1&audio_preview=1/);
   assert.doesNotMatch(livePreview, /autoplay muted loop/);
   assert.match(livePreview, /export function enableLivePreviewAudio/);
   assert.match(livePreview, /video\.muted = false/);
   assert.match(livePreview, /child\.__mcEnableAudio\(\)/);
+  assert.match(stage, /livePreviewDeviceId/);
+  assert.match(stage, /audioPreview: livePreview/);
   const main = read('frontend/js/views/media-control.js');
+  assert.match(main, /const LIVE_EMBED_PREVIEWS = new URLSearchParams\(window\.location\.search\)\.get\('live_preview'\) !== '0'/);
+  assert.match(main, /livePreviewDeviceId: LIVE_EMBED_PREVIEWS \? activePreviewDeviceId\(\) : null/);
+  assert.match(main, /const PREVIEW_REQUEST_MIN_MS = 750/);
+  assert.match(main, /const ACTIVE_PREVIEW_INTERVAL_MS = 1000/);
   assert.match(main, /enableLivePreviewAudio\(app\)/);
   assert.match(main, /document\.addEventListener\('pointerdown', previewAudioGestureHandler, true\)/);
-  assert.match(grid, /var audioPreview = previewMode && params\.get\('audio_preview'\) === '1'/);
+  assert.match(grid, /var operatorPreview = params\.get\('operator_preview'\) === '1'/);
+  assert.match(grid, /var audioPreview = \(previewMode \|\| operatorPreview\) && params\.get\('audio_preview'\) === '1'/);
+  assert.match(grid, /var STAGGER_MS = operatorPreview \? 600 : 1500/);
   assert.match(grid, /if \(item\.isAudio && _audioArmed\)[\s\S]*setTimeout\(enableAudioCell, 0\)/);
   assert.match(grid, /if \(audioPreview\)[\s\S]*window\.__mcEnableAudio\(\)/);
+});
+
+test('video previews reconcile seek and play state from the physical player', () => {
+  const livePreview = read('frontend/js/views/media-control/live-preview.js');
+  const main = read('frontend/js/views/media-control.js');
+
+  assert.match(livePreview, /data-mc-video="1"/);
+  assert.match(livePreview, /data-mc-current-time/);
+  assert.match(livePreview, /data-mc-paused/);
+  assert.match(main, /video\.mc-live-embed\[data-mc-video="1"\]/);
+  assert.match(main, /Math\.abs\(video\.currentTime - target\) > 1\.25/);
+  assert.match(main, /if \(paused\) video\.pause\(\)/);
+  assert.match(main, /else video\.play\(\)\.catch/);
 });
 
 test('camera status reports active sources continuously instead of a static idle label', () => {
@@ -99,6 +154,19 @@ test('camera status reports active sources continuously instead of a static idle
   assert.match(dock, /mc\.cc\.camera\.active/);
   assert.match(dock, /setInterval\(\(\) => syncLive\(\), 5000\)/);
   assert.match(dock, /destroy\(\) \{ clearInterval\(healthTimer\); \}/);
+});
+
+test('camera catalog maps Focus to wall 2 and ANNKE to wall 1', () => {
+  const catalog = read('frontend/js/views/media-control/camera-feeds-catalog.js');
+  const canvas = read('frontend/js/views/media-control/advanced-canvas.js');
+
+  assert.match(catalog, /, 1, 'wall-2'\)/);
+  assert.doesNotMatch(catalog, /, 1, 'wall-1'\)/);
+  assert.match(catalog, /Video Wall 1', 3\)/);
+  assert.match(canvas, /data-canvas-preset="wall-1"/);
+  assert.match(canvas, /data-canvas-preset="wall-2"/);
+  assert.match(canvas, /data-canvas-camera="3"/);
+  assert.match(canvas, /preset: button\.dataset\.canvasPreset/);
 });
 
 test('periodic state timestamps never hide an authoritative device screenshot', () => {
@@ -163,6 +231,26 @@ test('server requests fresh previews after delivered content changes', () => {
   assert.match(sceneEngine, /for \(const delay of \[1500, 6500\]\)/);
   assert.match(sceneEngine, /emit\('device:screenshot-request'/);
   assert.match(sceneEngine, /reason: 'content-changed'/);
+});
+
+test('span-wall broadcasts push revised playlists to every follower', () => {
+  const sceneEngine = fs.readFileSync(path.join(__dirname, '..', 'services', 'scene-engine.js'), 'utf8');
+  assert.match(sceneEngine, /followers\.push\(m\.device_id\)/);
+  assert.match(sceneEngine, /const deliver = \(\) => pushPlaylistUpdate\(io, followerId\)/);
+  assert.match(sceneEngine, /setTimeout\(deliver, index \* 100\)/);
+  assert.doesNotMatch(sceneEngine, /No pushPlaylistUpdate here/);
+});
+
+test('players reconcile missed playlist pushes by stable revision within seconds', () => {
+  const server = read('server/ws/deviceSocket.js');
+  const player = read('server/player/index.html');
+
+  assert.match(server, /payload\.playlist_revision = crypto\.createHash\('sha256'\)/);
+  assert.match(server, /socket\.on\('device:playlist-sync'/);
+  assert.match(server, /appliedRevision !== payload\.playlist_revision/);
+  assert.match(player, /socket\.emit\('device:playlist-sync'/);
+  assert.match(player, /playlist_revision: appliedPlaylistRevision/);
+  assert.match(player, /}, 3000\);/);
 });
 
 test('playlist reconnect payload carries authoritative display restore state', () => {

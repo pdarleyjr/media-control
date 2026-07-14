@@ -83,7 +83,10 @@ function ensureWired() {
     if (!cur) return;
     const npPatch = { ...(cur.now_playing || {}) };
     if (d.content_name) npPatch.label = d.content_name;
-    if (d.content_id)   npPatch.content_id = d.content_id;
+    if (d.content_id) {
+      npPatch.contentId = d.content_id;
+      npPatch.content_id = d.content_id;
+    }
     npPatch.paused = false;
     // Preserve existing kind — never override it with a generic fallback.
     merge(id, { progress: d, now_playing: npPatch }, true);
@@ -99,7 +102,10 @@ function ensureWired() {
     const cur = displays.get(id);
     if (!cur) return;
     const npPatch = { ...(cur.now_playing || {}), paused: !!d.paused };
-    if (d.content_id && !npPatch.content_id) npPatch.content_id = d.content_id;
+    if (d.content_id) {
+      npPatch.contentId = d.content_id;
+      npPatch.content_id = d.content_id;
+    }
     merge(id, { now_playing: npPatch });
   });
   onSocket('state-sync', (d) => {
@@ -109,10 +115,16 @@ function ensureWired() {
     if (!cur) return;
     const state = d.state && typeof d.state === 'object' ? d.state : d;
     const npPatch = { ...(cur.now_playing || {}) };
-    if (state.current_content_id && !npPatch.content_id) npPatch.content_id = state.current_content_id;
+    if (state.current_content_id) {
+      npPatch.contentId = state.current_content_id;
+      npPatch.content_id = state.current_content_id;
+    }
     if (state.media_title) npPatch.label = state.media_title;
     if (state.content_type) npPatch.kind = state.content_type;
     if (state.paused !== undefined) npPatch.paused = !!state.paused;
+    if (state.slide_index != null) npPatch.slideIndex = state.slide_index;
+    if (state.slide_count != null) npPatch.slideCount = state.slide_count;
+    else if (state.slide_total != null) npPatch.slideCount = state.slide_total;
     merge(id, { ...state, now_playing: npPatch });
   });
   // Pairing can happen from either the legacy Displays page or Command Center.

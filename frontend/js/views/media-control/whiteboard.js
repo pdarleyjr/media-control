@@ -23,7 +23,7 @@
 //   options.plan                    optional map of feature flags (overrides)
 //   options.initialTarget           optional target passed straight to setTarget
 
-import { getSocket } from '../../socket.js';
+import { getSocket, off as socketOff, on as socketOn, requestScreenshot } from '../../socket.js';
 import { t } from '../../i18n.js';
 import { esc } from '../../utils.js';
 
@@ -38,13 +38,10 @@ const DEFAULT_COLOR = '#111827';
 const DEFAULT_SIZE = 6;
 const STROKE_FLUSH_MS = 50;
 const WHITE_BG = '#ffffff';
+const SCREENSHOT_REFRESH_MS = 2000;
 
-// Honest capability matrix. PDF + background import are NOT feasible without a
-// new dependency / a server storage table that is out of scope for this pass,
-// so they ship as DISABLED "coming soon". Everything else is genuinely wired.
 const PLAN_DEFAULTS = {
   pdf: false,
-  background: false,
 };
 
 function toolLabel(tool) {
@@ -59,12 +56,12 @@ export function mount(containerEl, options) {
   const plan = Object.assign({}, PLAN_DEFAULTS, opts.plan || {});
   const onStatus = typeof opts.onStatus === 'function' ? opts.onStatus : () => {};
   const host = containerEl || document.body;
+  let targets = (Array.isArray(opts.targets) ? opts.targets : []).map(normalizeTarget).filter(Boolean);
 
   // Target envelope. setTarget() is the public seam the Command Center uses:
   //   { target_type:'display'|'wall'|'split', target_id, wall_id, split_device_id, label }
   let target = normalizeTarget(opts.initialTarget) || null;
-  // Broadcast scope derived from what the target offers.
-  let scope = 'display';
+  let whiteboardMode = opts.initialMode === 'blank' ? 'blank' : 'overlay';
 
   // Local redraw mirror of committed strokes (server is the source of truth).
   let strokes = [];
@@ -73,7 +70,7 @@ export function mount(containerEl, options) {
   let currentSize = DEFAULT_SIZE;
 
   // Drawing state.
-  let canvas = null, ctx = null, wrap = null;
+  let canvas = null, ctx = null, wrap = null, backgroundImage = null;
   let drawing = false;
   let activePointerId = null;
   let activeStrokeId = null;
@@ -81,6 +78,8 @@ export function mount(containerEl, options) {
   let pendingPoints = [];
   let pendingPhase = 'append';
   let flushTimer = null;
+  let screenshotTimer = null;
+  let closed = false;
   // Effective size for the in-progress stroke (slider value, possibly reduced
   // by pen pressure). Kept separate from currentSize so the slider value the
   // operator sees isn't silently mutated mid-stroke.
@@ -92,28 +91,53 @@ export function mount(containerEl, options) {
 
   renderOverlay();
 
-  return { unmount, setTarget };
+  return { unmount, setTarget, setTargets, setMode };
 
   // ------------------------------------------------------------------
   // Public API
   // ------------------------------------------------------------------
   function setTarget(t) {
+    const previous = target;
     target = normalizeTarget(t);
-    scope = pickDefaultScope(target);
-    refreshScopeDropdown();
+    if (previous && targetKey(previous) !== targetKey(target)) emitForTarget('dashboard:wb-stop', {}, previous);
+    refreshTargetDropdown();
+    applyTargetGeometry();
+    updateBackgroundFromTarget();
+    startScreenshotRefresh();
+    void startSessionFromTarget();
     status(keyFor('status_ready'));
   }
 
+  function setTargets(nextTargets) {
+    targets = (Array.isArray(nextTargets) ? nextTargets : []).map(normalizeTarget).filter(Boolean);
+    refreshTargetDropdown();
+  }
+
+  function setMode(mode) {
+    whiteboardMode = mode === 'blank' ? 'blank' : 'overlay';
+    applyMode();
+    startScreenshotRefresh();
+    void startSessionFromTarget();
+  }
+
   function unmount() {
+    if (closed) return;
+    closed = true;
     // Tell the target to hide its overlay so the board doesn't linger on the
     // display after the operator closes it here.
     broadcast('dashboard:wb-stop', {});
     detachAll();
     clearFlush();
+    stopScreenshotRefresh();
     if (textInput) { textInput.remove(); textInput = null; }
     if (wrap && wrap.parentNode) wrap.parentNode.removeChild(wrap);
     wrap = null; canvas = null; ctx = null;
     strokes = [];
+  }
+
+  function close() {
+    unmount();
+    try { if (typeof opts.onClose === 'function') opts.onClose(); } catch { /* ignore */ }
   }
 
   // ------------------------------------------------------------------
@@ -156,21 +180,22 @@ export function mount(containerEl, options) {
             <button type="button" class="mc-wb-btn" id="mc-wb-png" title="${esc(t('mc.wb.export_png'))}">${esc(t('mc.wb.export_png'))}</button>
             <button type="button" class="mc-wb-btn mc-wb-coming" disabled aria-disabled="true"
               title="${esc(t('mc.wb.coming_soon'))}" id="mc-wb-pdf">${esc(t('mc.wb.export_pdf'))}</button>
-            <button type="button" class="mc-wb-btn mc-wb-coming" disabled aria-disabled="true"
-              title="${esc(t('mc.wb.coming_soon'))}" id="mc-wb-bg">${esc(t('mc.wb.background'))}</button>
             <button type="button" class="mc-wb-btn mc-wb-close" id="mc-wb-close" title="${esc(t('mc.wb.close'))}">${esc(t('mc.wb.close'))}</button>
           </div>
         </header>
         <div class="mc-wb-scope">
-          <label for="mc-wb-scope-select">${esc(t('mc.wb.scope'))}</label>
-          <select id="mc-wb-scope-select" class="mc-wb-select">
-            <option value="display">${esc(t('mc.wb.scope_display'))}</option>
-            <option value="wall" hidden>${esc(t('mc.wb.scope_wall'))}</option>
-            <option value="split" hidden>${esc(t('mc.wb.scope_split'))}</option>
+          <label for="mc-wb-target-select">${esc(t('mc.wb.target'))}</label>
+          <select id="mc-wb-target-select" class="mc-wb-select">
+            ${targetOptionsHtml()}
           </select>
-          <span class="mc-wb-target-name" id="mc-wb-target-name">${esc((target && target.label) || t('mc.wb.status_no_target'))}</span>
+          <div class="mc-wb-modes" role="group" aria-label="${esc(t('mc.wb.mode'))}">
+            <button type="button" class="mc-wb-mode" data-wb-mode="overlay" aria-pressed="${whiteboardMode === 'overlay'}">${esc(t('mc.wb.mode_overlay'))}</button>
+            <button type="button" class="mc-wb-mode" data-wb-mode="blank" aria-pressed="${whiteboardMode === 'blank'}">${esc(t('mc.wb.mode_blank'))}</button>
+          </div>
+          <span class="mc-wb-live-truth">${esc(t('mc.wb.live_truth'))}</span>
         </div>
         <div class="mc-wb-canvas-wrap" id="mc-wb-canvas-wrap">
+          <img class="mc-wb-background" alt="" draggable="false">
           <canvas id="mc-wb-canvas" tabindex="0"></canvas>
         </div>
       </div>`;
@@ -178,6 +203,7 @@ export function mount(containerEl, options) {
     host.appendChild(wrap);
 
     canvas = wrap.querySelector('#mc-wb-canvas');
+    backgroundImage = wrap.querySelector('.mc-wb-background');
     ctx = canvas ? canvas.getContext('2d') : null;
     if (!canvas || !ctx) { status(keyFor('status_error')); return; }
     canvas.style.touchAction = 'none';
@@ -187,7 +213,10 @@ export function mount(containerEl, options) {
     attachAll();
     setTool(currentTool);
     setColor(currentColor);
-    refreshScopeDropdown();
+    refreshTargetDropdown();
+    applyTargetGeometry();
+    applyMode();
+    updateBackgroundFromTarget();
 
     // Seed from the server if we already have a target. Best-effort: a missing
     // target shows an empty board with a status hint.
@@ -209,9 +238,15 @@ export function mount(containerEl, options) {
     wrap.querySelector('#mc-wb-redo')?.addEventListener('click', redo);
     wrap.querySelector('#mc-wb-clear')?.addEventListener('click', clearBoard);
     wrap.querySelector('#mc-wb-png')?.addEventListener('click', exportPng);
-    wrap.querySelector('#mc-wb-close')?.addEventListener('click', unmount);
-    const scopeSel = wrap.querySelector('#mc-wb-scope-select');
-    if (scopeSel) scopeSel.addEventListener('change', () => { scope = scopeSel.value; status(keyFor('status_ready')); });
+    wrap.querySelector('#mc-wb-close')?.addEventListener('click', close);
+    const targetSel = wrap.querySelector('#mc-wb-target-select');
+    if (targetSel) targetSel.addEventListener('change', () => {
+      const next = targets.find((candidate) => targetKey(candidate) === targetSel.value) || null;
+      setTarget(next);
+    });
+    wrap.querySelectorAll('[data-wb-mode]').forEach((btn) => {
+      btn.addEventListener('click', () => setMode(btn.dataset.wbMode));
+    });
   }
 
   // ------------------------------------------------------------------
@@ -224,43 +259,49 @@ export function mount(containerEl, options) {
       target_id: String(t.target_id),
       wall_id: t.wall_id ? String(t.wall_id) : null,
       split_device_id: t.split_device_id ? String(t.split_device_id) : null,
+      preview_device_id: String(t.preview_device_id || t.split_device_id || t.target_id),
       label: t.label || t.target_id,
+      screenshot_url: t.screenshot_url || null,
+      width: Number(t.width) || 1920,
+      height: Number(t.height) || 1080,
     };
   }
 
-  function pickDefaultScope(tg) {
-    if (!tg) return 'display';
-    if (tg.split_device_id) return 'split';
-    if (tg.wall_id) return 'wall';
-    return 'display';
+  function targetKey(tg) {
+    if (!tg) return '';
+    return [tg.target_type, tg.target_id, tg.wall_id || '', tg.split_device_id || ''].join(':');
   }
 
-  function refreshScopeDropdown() {
-    const sel = wrap && wrap.querySelector('#mc-wb-scope-select');
-    const nameEl = wrap && wrap.querySelector('#mc-wb-target-name');
-    if (nameEl) nameEl.textContent = (target && target.label) || t('mc.wb.status_no_target');
+  function targetOptionsHtml() {
+    const options = ['<option value="">' + esc(t('mc.wb.status_no_target')) + '</option>'];
+    for (const candidate of targets) {
+      options.push(`<option value="${esc(targetKey(candidate))}">${esc(candidate.label)}</option>`);
+    }
+    return options.join('');
+  }
+
+  function refreshTargetDropdown() {
+    const sel = wrap && wrap.querySelector('#mc-wb-target-select');
     if (!sel) return;
-    const wallOpt = sel.querySelector('option[value="wall"]');
-    const splitOpt = sel.querySelector('option[value="split"]');
-    if (wallOpt) wallOpt.hidden = !target || !target.wall_id;
-    if (splitOpt) splitOpt.hidden = !target || !target.split_device_id;
-    sel.value = scope;
-    sel.disabled = !target;
+    sel.innerHTML = targetOptionsHtml();
+    sel.value = targetKey(target);
+    sel.disabled = targets.length === 0;
   }
 
-  // Envelope stamped onto every wb-* emission, derived from the active scope.
-  function envelope() {
-    if (!target) return {};
-    const base = { device_id: target.target_id };
-    if (scope === 'wall' && target.wall_id) return Object.assign(base, { wall_id: target.wall_id });
-    if (scope === 'split' && target.split_device_id) return Object.assign(base, { split_device_id: target.split_device_id });
+  function envelopeFor(tg) {
+    if (!tg) return {};
+    const base = { device_id: tg.target_id, mode: whiteboardMode };
+    if (tg.split_device_id) return Object.assign(base, { split_device_id: tg.split_device_id });
+    if (tg.wall_id) return Object.assign(base, { wall_id: tg.wall_id });
     return base;
   }
+
+  function envelope() { return envelopeFor(target); }
 
   async function startSessionFromTarget() {
     if (!target) { status(keyFor('status_no_target')); return; }
     try {
-      const ack = await emitAck('dashboard:wb-start', Object.assign({}, envelope()));
+      const ack = await emitAck('dashboard:wb-start', Object.assign({}, envelope(), { mode: whiteboardMode }));
       if (Array.isArray(ack && ack.strokes)) {
         strokes = ack.strokes.slice();
         repaint();
@@ -277,13 +318,14 @@ export function mount(containerEl, options) {
   function getIo() { return getSocket(); }
 
   function broadcast(event, payload) {
+    emitForTarget(event, payload, target);
+  }
+
+  function emitForTarget(event, payload, destination) {
     const sock = getIo();
     if (!sock || !sock.connected) return;
-    if (!target) return;
-    // Scope filters: split scope MUST reach only its member device; wall scope
-    // reaches every member via the server's fan-out. We always stamp device_id
-    // (the persistence/permission primary) plus the scope id.
-    const env = envelope();
+    if (!destination) return;
+    const env = envelopeFor(destination);
     sock.emit(event, Object.assign({}, payload, env));
   }
 
@@ -300,6 +342,68 @@ export function mount(containerEl, options) {
         resolve(ack || { ok: true });
       });
     });
+  }
+
+  function previewDeviceId() {
+    return target && (target.preview_device_id || target.split_device_id || target.target_id);
+  }
+
+  function applyTargetGeometry() {
+    const surface = wrap && wrap.querySelector('.mc-wb-canvas-wrap');
+    if (!surface) return;
+    const width = Math.max(1, Number(target && target.width) || 1920);
+    const height = Math.max(1, Number(target && target.height) || 1080);
+    surface.style.aspectRatio = `${width} / ${height}`;
+    requestAnimationFrame(() => sizeCanvas());
+  }
+
+  function updateBackground(src) {
+    if (!backgroundImage || !src) return;
+    if (backgroundImage.getAttribute('src') !== src) backgroundImage.setAttribute('src', src);
+  }
+
+  function updateBackgroundFromTarget() {
+    if (!target || whiteboardMode !== 'overlay') return;
+    const fallback = target.screenshot_url;
+    if (fallback) updateBackground(fallback + (fallback.includes('?') ? '&' : '?') + 'wb=' + Date.now());
+  }
+
+  function applyMode() {
+    const surface = wrap && wrap.querySelector('.mc-wb-canvas-wrap');
+    if (surface) surface.classList.toggle('is-blank', whiteboardMode === 'blank');
+    if (backgroundImage) backgroundImage.hidden = whiteboardMode !== 'overlay';
+    wrap?.querySelectorAll('[data-wb-mode]').forEach((btn) => {
+      const active = btn.dataset.wbMode === whiteboardMode;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+  }
+
+  function requestPhysicalScreenshot() {
+    const id = previewDeviceId();
+    if (id && whiteboardMode === 'overlay') requestScreenshot(id);
+  }
+
+  function startScreenshotRefresh() {
+    stopScreenshotRefresh();
+    if (!previewDeviceId() || whiteboardMode !== 'overlay') return;
+    requestPhysicalScreenshot();
+    screenshotTimer = setInterval(requestPhysicalScreenshot, SCREENSHOT_REFRESH_MS);
+  }
+
+  function stopScreenshotRefresh() {
+    if (screenshotTimer) clearInterval(screenshotTimer);
+    screenshotTimer = null;
+  }
+
+  function onScreenshotReady(data) {
+    if (!data || String(data.device_id || data.id || '') !== String(previewDeviceId() || '')) return;
+    if (whiteboardMode !== 'overlay') return;
+    if (typeof data.image_data === 'string' && data.image_data.startsWith('data:image/')) {
+      updateBackground(data.image_data);
+      return;
+    }
+    updateBackground(`/api/devices/${encodeURIComponent(previewDeviceId())}/screenshot?t=${Date.now()}`);
   }
 
   // ------------------------------------------------------------------
@@ -343,10 +447,10 @@ export function mount(containerEl, options) {
   function repaint() {
     if (!ctx || !canvas) return;
     ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = 1;
-    ctx.fillStyle = WHITE_BG;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.restore();
     for (const s of strokes) drawStroke(ctx, s);
     // Live in-progress ink preview is drawn by drawStrokeSegment() right after
@@ -392,7 +496,8 @@ export function mount(containerEl, options) {
 
     const tool = s.tool === 'highlighter' || s.tool === 'eraser' ? s.tool : 'pen';
     if (tool === 'eraser') {
-      c.strokeStyle = WHITE_BG; c.globalAlpha = 1; c.lineWidth = size * 2.5;
+      c.globalCompositeOperation = 'destination-out';
+      c.strokeStyle = '#000000'; c.globalAlpha = 1; c.lineWidth = size * 2.5;
     } else if (tool === 'highlighter') {
       c.strokeStyle = color; c.globalAlpha = 0.35; c.lineWidth = size * 2.5;
     } else {
@@ -401,7 +506,7 @@ export function mount(containerEl, options) {
     const pts = s.points;
     if (pts.length === 1) {
       c.beginPath();
-      c.fillStyle = tool === 'eraser' ? WHITE_BG : color;
+      c.fillStyle = tool === 'eraser' ? '#000000' : color;
       c.globalAlpha = tool === 'highlighter' ? 0.35 : 1;
       c.arc(px(pts[0]), py(pts[0]), Math.max(0.5, c.lineWidth / 2), 0, Math.PI * 2);
       c.fill();
@@ -659,7 +764,7 @@ export function mount(containerEl, options) {
   async function resyncFromServer() {
     if (!target) return;
     try {
-      const ack = await emitAck('dashboard:wb-start', Object.assign({}, envelope()));
+      const ack = await emitAck('dashboard:wb-start', Object.assign({}, envelope(), { mode: whiteboardMode }));
       if (Array.isArray(ack && ack.strokes)) { strokes = ack.strokes.slice(); repaint(); }
     } catch { /* best-effort */ }
   }
@@ -673,9 +778,17 @@ export function mount(containerEl, options) {
       const off = document.createElement('canvas');
       off.width = W; off.height = H;
       const octx = off.getContext('2d');
-      octx.fillStyle = WHITE_BG;
-      octx.fillRect(0, 0, W, H);
-      for (const s of strokes) drawStroke(octx, s);
+      if (whiteboardMode === 'overlay' && backgroundImage && backgroundImage.complete && backgroundImage.naturalWidth > 0) {
+        octx.drawImage(backgroundImage, 0, 0, W, H);
+      } else {
+        octx.fillStyle = WHITE_BG;
+        octx.fillRect(0, 0, W, H);
+      }
+      const ink = document.createElement('canvas');
+      ink.width = W; ink.height = H;
+      const inkCtx = ink.getContext('2d');
+      for (const s of strokes) drawStroke(inkCtx, s);
+      octx.drawImage(ink, 0, 0);
       const url = off.toDataURL('image/png');
       const a = document.createElement('a');
       a.href = url;
@@ -702,6 +815,8 @@ export function mount(containerEl, options) {
     canvas.addEventListener('pointermove', bound.move);
     canvas.addEventListener('pointerup', bound.up);
     canvas.addEventListener('pointercancel', bound.up);
+    socketOn('screenshot-ready', onScreenshotReady);
+    startScreenshotRefresh();
   }
 
   function detachAll() {
@@ -714,6 +829,7 @@ export function mount(containerEl, options) {
         canvas.removeEventListener('pointercancel', bound.up);
       }
     }
+    try { socketOff('screenshot-ready', onScreenshotReady); } catch { /* ignore */ }
   }
 
   // ------------------------------------------------------------------

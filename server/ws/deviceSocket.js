@@ -329,7 +329,7 @@ function buildPlaylistPayload(deviceId) {
     }
   }
 
-  return {
+  const payload = {
     assignments,
     layout,
     orientation: device?.orientation || 'landscape',
@@ -346,6 +346,19 @@ function buildPlaylistPayload(deviceId) {
     },
     display_profile: profileForDevice(device),
   };
+
+  // Stable revision for missed-push reconciliation. Playback state is excluded:
+  // slide/time updates must not make the player rebuild otherwise unchanged
+  // media. The player sends this value in a lightweight periodic sync check.
+  payload.playlist_revision = crypto.createHash('sha256').update(JSON.stringify({
+    assignments: payload.assignments,
+    layout: payload.layout,
+    orientation: payload.orientation,
+    wall_config: payload.wall_config,
+    device_geometry: payload.device_geometry,
+    display_profile: payload.display_profile,
+  })).digest('hex').slice(0, 24);
+  return payload;
 }
 
 // Device access gating (billing/trial/device-limit) has been removed.
@@ -381,6 +394,7 @@ module.exports = function setupDeviceSocket(io) {
     console.log(`Device socket connected: ${socket.id}`);
     let currentDeviceId = null;
     let authenticated = false; // Track whether this socket has been authenticated
+    let lastPlaylistSyncAt = 0;
 
     // ── Classroom room-agent ("node") branch ────────────────────────────────
     // A room-agent connects with handshake auth { role:'node', node_id, token }.
@@ -740,6 +754,33 @@ module.exports = function setupDeviceSocket(io) {
       } catch (e) {
         // Catch-all so a malformed payload never escapes the event loop.
         console.error(`device:heartbeat handler crashed: ${e.message}`, e.stack);
+      }
+    });
+
+    // Repair a missed live playlist push without re-registering or reloading the
+    // whole kiosk page. The client sends only its applied revision; a full
+    // payload is returned only when DB/wall geometry actually differs.
+    socket.on('device:playlist-sync', (data, acknowledge) => {
+      try {
+        if (!requireDeviceAuth()) return;
+        const now = Date.now();
+        if (now - lastPlaylistSyncAt < 1000) {
+          if (typeof acknowledge === 'function') acknowledge({ ok: false, rate_limited: true });
+          return;
+        }
+        lastPlaylistSyncAt = now;
+        const payload = buildPlaylistPayload(currentDeviceId);
+        const appliedRevision = data && typeof data.playlist_revision === 'string'
+          ? data.playlist_revision
+          : null;
+        const changed = !appliedRevision || appliedRevision !== payload.playlist_revision;
+        if (changed) socket.emit('device:playlist-update', payload);
+        if (typeof acknowledge === 'function') {
+          acknowledge({ ok: true, changed, playlist_revision: payload.playlist_revision });
+        }
+      } catch (e) {
+        console.warn(`device:playlist-sync failed for ${currentDeviceId}: ${e.message}`);
+        if (typeof acknowledge === 'function') acknowledge({ ok: false, error: 'sync_failed' });
       }
     });
 

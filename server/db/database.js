@@ -6,10 +6,12 @@ const config = require('../config');
 const dbDir = path.dirname(config.dbPath);
 if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
 
-const db = new Database(config.dbPath);
+const db = new Database(config.dbPath, { timeout: 10000 });
 
 // Enable WAL mode and foreign keys
+db.pragma('busy_timeout = 10000');
 db.pragma('journal_mode = WAL');
+db.pragma('synchronous = NORMAL');
 db.pragma('foreign_keys = ON');
 
 // Run schema

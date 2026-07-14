@@ -154,7 +154,7 @@ export function previewSource(obj) {
   return null;
 }
 
-function displayCard(display) {
+function displayCard(display, { livePreview = false } = {}) {
   const s = statusOf(display);
   const f = freshness(display.screenshot_at);
   const nowPlaying = display.now_playing && display.now_playing.label
@@ -168,7 +168,9 @@ function displayCard(display) {
   const pv = previewSource(display);
   const showingPoster = !!(pv && pv.poster);
   const staleCls = (pv && !pv.poster && (f.stale || offline)) ? ' mc-shot-stale' : '';
-  const live = liveEmbedHtml(display.now_playing, 'mc-card-shot', { fallbackSrc: pv && pv.src });
+  const live = livePreview
+    ? liveEmbedHtml(display.now_playing, 'mc-card-shot', { fallbackSrc: pv && pv.src, audioPreview: livePreview })
+    : null;
   const preview = live
     ? live
     : (pv
@@ -241,13 +243,15 @@ function wallTransportDeviceId(wall, members) {
   return wall.leader_device_id || members[0]?.id || null;
 }
 
-function wallCell(member, screenNo, { showPreview = true } = {}) {
+function wallCell(member, screenNo, { showPreview = true, livePreview = false } = {}) {
   const s = statusOf(member);
   const offline = !member.online;
   const f = freshness(member.screenshot_at);
   const pv = previewSource(member);
   const staleCls = (pv && !pv.poster && (f.stale || offline)) ? ' mc-shot-stale' : '';
-  const live = showPreview ? liveEmbedHtml(member.now_playing, 'mc-wall-cell-shot', { allowVideo: showPreview, fallbackSrc: pv && pv.src }) : null;
+  const live = showPreview && livePreview
+    ? liveEmbedHtml(member.now_playing, 'mc-wall-cell-shot', { allowVideo: true, fallbackSrc: pv && pv.src, audioPreview: livePreview })
+    : null;
   const preview = !showPreview
     ? ''
     : (live
@@ -270,12 +274,14 @@ function wallCell(member, screenNo, { showPreview = true } = {}) {
     </div>`;
 }
 
-function wallSpanPreview(leader) {
+function wallSpanPreview(leader, livePreview = false) {
   const pv = previewSource(leader);
   // Always allow video in the span preview — the dashboard must mirror what the
   // physical wall is showing. Previously allowVideo=false caused a screenshot
   // fallback which is a black tile for video (canvas capture is tainted).
-  const live = leader ? liveEmbedHtml(leader.now_playing, 'mc-wall-span-shot', { allowVideo: true, fallbackSrc: pv && pv.src }) : null;
+  const live = leader && livePreview
+    ? liveEmbedHtml(leader.now_playing, 'mc-wall-span-shot', { allowVideo: true, fallbackSrc: pv && pv.src, audioPreview: livePreview })
+    : null;
   if (live) {
     return `<div class="mc-wall-span-layer" data-device-id="${esc(leader.id)}">${live}</div>`;
   }
@@ -312,7 +318,7 @@ function wallEmptySlot(screenNo) {
 // mirror the wall's leader (single-player walls drive every screen from one
 // player), so all N screens reflect the wall's content. Each screen is its own
 // drop/inspect target; the footer strip fills every screen at once.
-function wallCard(wall, byId) {
+function wallCard(wall, byId, livePreviewDeviceId = null) {
   const members = (wall.devices || []).map(m => wallMemberView(m, byId));
   const cols = Math.max(1, wall.grid_cols || members.reduce((mx, m) => Math.max(mx, (m.grid_col || 0) + 1), 1));
   const rows = Math.max(1, wall.grid_rows || members.reduce((mx, m) => Math.max(mx, (m.grid_row || 0) + 1), 1));
@@ -348,10 +354,10 @@ function wallCard(wall, byId) {
     for (let c = 0; c < cols; c++) {
       n++;
       const m = byPos.get(c + ',' + r) || leader;
-      cells.push(m ? wallCell(m, n, { showPreview: mode === 'split' }) : wallEmptySlot(n));
+      cells.push(m ? wallCell(m, n, { showPreview: mode === 'split', livePreview: m.id === livePreviewDeviceId }) : wallEmptySlot(n));
     }
   }
-  const spanLayer = mode === 'span' ? wallSpanPreview(leader) : '';
+  const spanLayer = mode === 'span' ? wallSpanPreview(leader, !!leader && leader.id === livePreviewDeviceId) : '';
   return `
     <section class="mc-card mc-wall mc-wall-mode-${mode}" data-wall-id="${esc(wall.id)}" data-layout-mode="${mode}" style="--mc-cols:${cols}; --mc-cell-ar:${cellAr}" aria-label="${esc(t('mc.wall.aria', { name: wall.name }))}">
       <div class="mc-wall-head">
@@ -413,7 +419,7 @@ function wallSplitHalfCell(leader, half, cols) {
     </div>`;
 }
 
-function wallSplitGroup(wall, byId) {
+function wallSplitGroup(wall, byId, livePreviewDeviceId = null) {
   const members = (wall.devices || []).map(m => wallMemberView(m, byId));
   const ids = [...new Set(members.map(m => m.id))].join(',');
   const cols = Math.max(1, wall.grid_cols || members.length || 1);
@@ -454,7 +460,7 @@ function wallSplitGroup(wall, byId) {
 
   // Multi-device split: each physical screen is its OWN device → its own card.
   const memberCards = members
-    .map(m => { const live = byId.get(m.id); return live ? displayCard(live) : ''; })
+    .map(m => { const live = byId.get(m.id); return live ? displayCard(live, { livePreview: live.id === livePreviewDeviceId }) : ''; })
     .join('');
   return `
     <section class="mc-card mc-wall mc-wall-split" data-wall-id="${esc(wall.id)}" data-layout-mode="split" style="--mc-cols:${cols}" aria-label="${esc(t('mc.wall.aria', { name: wall.name }))}">
@@ -522,7 +528,7 @@ function emptyState() {
  * @param {(ids:string[], source:object, label:string)=>void} [opts.onScreensaver]
  *   A screensaver option was chosen on a card; broadcast `source` to `ids`.
  */
-export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], onSelect, onCalibrateWall, onAddDisplay, onScreenOnChange, onTransportAction, onSetWallMode, onScreensaver } = {}) {
+export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], livePreviewDeviceId = null, onSelect, onCalibrateWall, onAddDisplay, onScreenOnChange, onTransportAction, onSetWallMode, onScreensaver } = {}) {
   if (!container) return;
   const selected = new Set(selectedIds);
 
@@ -551,11 +557,13 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
   const cards = displays
     .filter(d => selected.has(d.id))
     .sort((a, b) => (isSmartboard(a) ? 1 : 0) - (isSmartboard(b) ? 1 : 0))
-    .map(displayCard)
+    .map((display) => displayCard(display, { livePreview: display.id === livePreviewDeviceId }))
     .join('');
   // Span walls render as one composite card; SPLIT walls render each member as
   // its own independent display card (see wallSplitGroup).
-  const wallCards = wallList.map(w => (w.layout_mode === 'split' ? wallSplitGroup(w, byId) : wallCard(w, byId))).join('');
+  const wallCards = wallList.map(w => (w.layout_mode === 'split'
+    ? wallSplitGroup(w, byId, livePreviewDeviceId)
+    : wallCard(w, byId, livePreviewDeviceId))).join('');
 
   const isEmpty = !cards && !wallCards;
   container.classList.toggle('mc-stage-is-empty', isEmpty);

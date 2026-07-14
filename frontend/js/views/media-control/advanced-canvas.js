@@ -251,8 +251,9 @@ function render(state) {
         </div>
         <span class="mc-canvas-toolbar-spacer"></span>
         <div class="mc-canvas-actions">
-          <button type="button" class="mc-canvas-action" data-canvas-camera="1">Camera 1</button>
-          <button type="button" class="mc-canvas-action" data-canvas-camera="2">Camera 2</button>
+          <button type="button" class="mc-canvas-action" data-canvas-camera="1" data-canvas-preset="wall-1">Wall 1</button>
+          <button type="button" class="mc-canvas-action" data-canvas-camera="1" data-canvas-preset="wall-2">Wall 2</button>
+          <button type="button" class="mc-canvas-action" data-canvas-camera="3">Room overview</button>
           <button type="button" class="mc-canvas-action mc-canvas-action-danger" data-canvas-clear>Clear canvas</button>
           <button type="button" class="mc-canvas-action mc-canvas-action-apply" data-canvas-apply><span class="mc-canvas-action-dot"></span>Take live</button>
         </div>
@@ -552,17 +553,24 @@ function stopPreview(state, { notify = true } = {}) {
   state.previewEndedHandler = null;
 }
 
-function requestCamera(state, camera) {
+function requestCamera(state, { camera, preset = '' }) {
   const monitor = state.host.querySelector('[data-canvas-monitor]');
   const image = state.host.querySelector('[data-canvas-camera-image]');
   const frame = state.host.querySelector('[data-canvas-camera-frame]');
   const status = state.host.querySelector('[data-canvas-camera-state]');
   const title = state.host.querySelector('[data-canvas-monitor-title]');
   monitor.hidden = false;
-  title.textContent = `Classroom camera ${camera}`;
+  title.textContent = preset === 'wall-1'
+    ? 'Focus 210 - Video Wall 1'
+    : preset === 'wall-2'
+      ? 'Focus 210 - Video Wall 2'
+      : 'ANNKE - Full wall overview';
   image.hidden = true;
   status.hidden = true;
-  frame.src = `/player/classroom-camera.html?camera=${camera}&fit=contain`;
+  const query = new URLSearchParams({ camera, fit: 'contain' });
+  if (camera === '1') query.set('controls', '1');
+  if (preset) query.set('preset', preset);
+  frame.src = `/player/classroom-camera.html?${query}`;
   frame.hidden = false;
 }
 
@@ -714,7 +722,10 @@ function wire(state) {
     }
   });
   state.host.querySelectorAll('[data-canvas-camera]').forEach((button) => {
-    button.addEventListener('click', () => requestCamera(state, button.dataset.canvasCamera));
+    button.addEventListener('click', () => requestCamera(state, {
+      camera: button.dataset.canvasCamera,
+      preset: button.dataset.canvasPreset || '',
+    }));
   });
   state.host.querySelector('[data-canvas-monitor-close]')?.addEventListener('click', () => {
     const monitor = state.host.querySelector('[data-canvas-monitor]');

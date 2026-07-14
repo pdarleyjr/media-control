@@ -143,17 +143,26 @@ let cmdAckHandler = null;   // Phase-2 command:ack (toast on timeout/failure)
 let stateSyncHandler = null;
 let playbackStateHandler = null;  // dashboard:playback-state listener
 let previewAudioGestureHandler = null;
+let multiviewEscapeHandler = null;
 let selectedIds = [];   // ids on the stage; re-hydrated from the server, persisted on change
 let wallMemberIds = new Set();   // device ids owned by a video wall (never their own card)
 let walls = [];
-let previewKickoff = null;   // one-shot "poke players to capture" timer after socket connect
-let previewInterval = null;  // periodic preview refresh for the displays on the stage
+let previewKickoff = null;
+let activePreviewInterval = null;
+let backgroundPreviewInterval = null;
+let activePreviewCursor = 0;
 let lastStageSig = null;     // structural signature of the last full stage paint (see paintStage)
 let refreshAfterSendTimer = null;
 let previewRequestTimer = null;
+const postActionPreviewTimers = new Set();
 const pendingPreviewRequestIds = new Set();
 const lastPreviewRequestAt = new Map();
-const PREVIEW_REQUEST_MIN_MS = 8000;
+// Keep one embedded player for the active target so the operator sees real
+// playback. `live_preview=0` is an explicit diagnostics/fallback mode only.
+const LIVE_EMBED_PREVIEWS = new URLSearchParams(window.location.search).get('live_preview') !== '0';
+const PREVIEW_REQUEST_MIN_MS = 750;
+const ACTIVE_PREVIEW_INTERVAL_MS = 1000;
+const BACKGROUND_PREVIEW_INTERVAL_MS = 60000;
 // Per-wall split-column sources for a SINGLE spanning device (Mosaic): wallId ->
 // array indexed by column (0=left). Survives repaint (kept here, NOT in the DOM)
 // so dropping on the right column never blanks the left — both columns are re-sent
@@ -274,7 +283,8 @@ function paintStage() {
   // Live state of EVERY display, incl. wall members, so wall composites can show
   // what each member screen is showing right now.
   const byId = new Map(all.map(d => [d.id, d]));
-  const displays = all.filter(d => !wallMemberIds.has(d.id));
+  const displays = all.filter((d) => !wallMemberIds.has(d.id)
+    || (activeTarget && activeTarget.type === 'display' && activeTarget.id === d.id));
   // Phase 1 Command Center: when a target is selected, render ONLY that target
   // large on the canvas (its wall card / its single display card). null keeps the
   // legacy "whole room" stage. The persisted selectedIds (drives content sends)
@@ -296,6 +306,7 @@ function paintStage() {
     walls: renderWalls,
     byId,
     selectedIds: renderSelectedIds,
+    livePreviewDeviceId: LIVE_EMBED_PREVIEWS ? activePreviewDeviceId() : null,
     onSelect: openInspector,
     onCalibrateWall: showWallCalibration,
     onAddDisplay: openAddPicker,
@@ -318,7 +329,10 @@ function paintStage() {
   lastStageSig = stageSignature();
   // Electron can autoplay immediately; normal browsers retry on the operator's
   // next gesture through the view-level handler installed by render().
-  setTimeout(() => enableLivePreviewAudio(el), 0);
+  setTimeout(() => {
+    refreshPreviewsInPlace();
+    enableLivePreviewAudio(el);
+  }, 0);
 }
 
 // A compact signature of the STRUCTURE the stage renders: which cards/wall cells
@@ -376,6 +390,53 @@ function refreshPreviewsInPlace() {
     img.classList.remove('mc-shot-poster');
     if (img.getAttribute('src') !== preview.src) img.setAttribute('src', preview.src);
   });
+  el.querySelectorAll('iframe.mc-live-embed[data-mc-presentation="1"]').forEach((frame) => {
+    const host = frame.closest('[data-device-id]');
+    const id = host && host.dataset.deviceId;
+    const display = id && byId.get(id);
+    const slide = parseInt(display?.now_playing?.slideIndex ?? display?.slide_index, 10);
+    if (!Number.isFinite(slide) || slide < 1 || String(slide) === frame.dataset.mcSlideIndex) return;
+    try {
+      frame.contentWindow?.postMessage({
+        __mc_transport: {
+          action: 'go_to_slide',
+          payload: { action: 'go_to_slide', slide },
+        },
+      }, location.origin);
+      frame.dataset.mcSlideIndex = String(slide);
+    } catch { /* The next state refresh retries if the preview frame is reloading. */ }
+  });
+  el.querySelectorAll('video.mc-live-embed[data-mc-video="1"]').forEach((video) => {
+    const host = video.closest('[data-device-id]');
+    const id = host && host.dataset.deviceId;
+    const display = id && byId.get(id);
+    if (!display) return;
+    const nowPlaying = display.now_playing || {};
+    const reported = Number(nowPlaying.currentTime ?? display.current_time ?? 0);
+    if (!Number.isFinite(reported) || reported < 0) return;
+    const paused = (nowPlaying.paused ?? display.paused) === true;
+    let target = reported;
+    const rawUpdatedAt = Number(display.state_updated_at ?? nowPlaying.updated_at ?? 0);
+    const updatedAt = rawUpdatedAt > 0 && rawUpdatedAt < 10_000_000_000
+      ? rawUpdatedAt * 1000
+      : rawUpdatedAt;
+    if (!paused && updatedAt > 0) {
+      target += Math.max(0, Math.min(5, (Date.now() - updatedAt) / 1000));
+    }
+    const duration = Number(nowPlaying.duration ?? display.duration);
+    if (Number.isFinite(duration) && duration > 0) target = Math.min(target, duration);
+    const seek = () => {
+      if (Number.isFinite(video.duration) && Math.abs(video.currentTime - target) > 1.25) {
+        try { video.currentTime = target; } catch {}
+      }
+      video.dataset.mcCurrentTime = String(reported);
+      video.dataset.mcPaused = paused ? '1' : '0';
+      if (paused) video.pause();
+      else video.play().catch(() => {});
+    };
+    if (video.readyState >= 1) seek();
+    else video.addEventListener('loadedmetadata', seek, { once: true });
+  });
 }
 
 // After a successful send we re-FETCH display state (not just repaint) so the
@@ -416,9 +477,16 @@ function queuePreviewRequests(ids, delay = 1200, force = false) {
 }
 
 function refreshAfterSend(targetIds) {
-  scheduleDisplayStateRefresh();
+  scheduleDisplayStateRefresh(100);
   const ids = (Array.isArray(targetIds) && targetIds.length) ? targetIds : visibleDeviceIds();
-  queuePreviewRequests(ids, 1200, true);
+  for (const delay of [350, 1400]) {
+    const timer = setTimeout(() => {
+      postActionPreviewTimers.delete(timer);
+      for (const id of ids) requestScreenshotThrottled(id, true);
+      displayState.refresh().catch(() => {});
+    }, delay);
+    postActionPreviewTimers.add(timer);
+  }
 }
 
 // A screensaver option was chosen on a card's dropdown: broadcast the chosen
@@ -519,16 +587,40 @@ function visibleDeviceIds() {
 function requestVisiblePreviews() {
   queuePreviewRequests(visibleDeviceIds(), 0, false);
 }
+function requestActivePreview() {
+  if (!activeTarget) return;
+  if (activeTarget.type === 'display') {
+    queuePreviewRequests([activeTarget.id], 0, false);
+    return;
+  }
+  const wall = (walls || []).find((candidate) => candidate.id === activeTarget.id);
+  if (!wall) return;
+  if (wall.layout_mode !== 'split') {
+    queuePreviewRequests([wallTransportDeviceId(wall)], 0, false);
+    return;
+  }
+  const ids = wallDeviceIds(wall);
+  if (!ids.length) return;
+  const id = ids[activePreviewCursor % ids.length];
+  activePreviewCursor = (activePreviewCursor + 1) % ids.length;
+  queuePreviewRequests([id], 0, false);
+}
 function startPreviewRefresh() {
   stopPreviewRefresh();
-  // Let the dashboard socket finish connecting, poke once, then keep them fresh.
-  previewKickoff = setTimeout(requestVisiblePreviews, 1500);
-  previewInterval = setInterval(requestVisiblePreviews, 60000);
+  previewKickoff = setTimeout(() => {
+    requestActivePreview();
+    requestVisiblePreviews();
+  }, 350);
+  activePreviewInterval = setInterval(requestActivePreview, ACTIVE_PREVIEW_INTERVAL_MS);
+  backgroundPreviewInterval = setInterval(requestVisiblePreviews, BACKGROUND_PREVIEW_INTERVAL_MS);
 }
 function stopPreviewRefresh() {
   if (previewKickoff) { clearTimeout(previewKickoff); previewKickoff = null; }
-  if (previewInterval) { clearInterval(previewInterval); previewInterval = null; }
+  if (activePreviewInterval) { clearInterval(activePreviewInterval); activePreviewInterval = null; }
+  if (backgroundPreviewInterval) { clearInterval(backgroundPreviewInterval); backgroundPreviewInterval = null; }
   if (previewRequestTimer) { clearTimeout(previewRequestTimer); previewRequestTimer = null; }
+  for (const timer of postActionPreviewTimers) clearTimeout(timer);
+  postActionPreviewTimers.clear();
   pendingPreviewRequestIds.clear();
 }
 
@@ -1087,6 +1179,7 @@ function syncSocketTarget(tgt) {
 // ack/state stream for the web/Electron controller.
 function handleTargetChange(tgt) {
   activeTarget = tgt || null;
+  activePreviewCursor = 0;
   syncSocketTarget(activeTarget);
   paintStage();
   paintSummary();
@@ -1094,6 +1187,8 @@ function handleTargetChange(tgt) {
   if (transportApi && transportApi.repaint) transportApi.repaint();
   if (spanSplitApi && spanSplitApi.repaint) spanSplitApi.repaint();
   if (screensaverApi && screensaverApi.repaint) screensaverApi.repaint();
+  const previewId = activePreviewDeviceId();
+  if (previewId) queuePreviewRequests([previewId], 50, true);
 }
 
 // Pick the initial canvas target so the canvas opens on ONE large preview (per
@@ -1227,6 +1322,12 @@ function activeTargetIds() {
     return (w && w.devices ? w.devices.map((d) => d.device_id) : []);
   }
   return activeTarget.id ? [activeTarget.id] : [];
+}
+function activePreviewDeviceId() {
+  if (!activeTarget) return null;
+  if (activeTarget.type === 'display') return activeTarget.id || null;
+  const wall = (walls || []).find((candidate) => candidate.id === activeTarget.id);
+  return wall ? wallTransportDeviceId(wall) : null;
 }
 function handleCommandAck(data) {
   if (!data) return;
@@ -1550,7 +1651,8 @@ export async function render() {
         <main class="mc-cc-main">
           <section class="mc-cc-canvas-area">
             <div id="mc-cc-chips" class="mc-cc-chips" aria-live="polite"></div>
-            <div id="mc-multiview" class="mc-multiview-host" hidden></div>
+            <div id="mc-multiview" class="mc-multiview-host" role="dialog"
+                 aria-modal="true" aria-label="${esc(t('mc.cmd.multiview'))}" tabindex="-1" hidden></div>
             <section id="mc-stage" class="mc-stage mc-cc-canvas" aria-label="${esc(t('mc.section.displays'))}"></section>
           </section>
 
@@ -1689,37 +1791,93 @@ pruneSelection();
   if (!cmdAckHandler) { cmdAckHandler = (d) => handleCommandAck(d); socketOn('command-ack', cmdAckHandler); }
   if (!stateSyncHandler) { stateSyncHandler = (d) => handleStateSync(d); socketOn('state-sync', stateSyncHandler); }
 
-  // Whiteboard dock stub (Phase 2). Mounts the self-contained whiteboard surface
-  // as a full-stage overlay over the Command Center canvas. Minimal entrypoint:
-  // window.mcOpenWhiteboard() opens it (optionally with an explicit target); the
-  // small dock button in the header is a discoverable launcher for the same call.
-  // Wiring target selection to the stage's current selection is intentionally
-  // light here — the full Command Center target-model integration is a separate
-  // concern and out of scope for this pass.
+  // Whiteboard defaults to the active canvas target and exposes every wall and
+  // independently-routable display in its own target selector.
   let wbApi = null;
   let wbHost = null;
-  function whiteboardTarget() {
-    const dev = displayState.getAll().find(d => d.online && selectedIds.includes(d.id) && !wallMemberIds.has(d.id));
-    if (dev) return { target_type: 'display', target_id: dev.id, label: dev.name || dev.id };
-    const w = Array.isArray(walls) && walls[0];
-    if (w && w.id) {
-      return { target_type: 'wall', target_id: (w.leader_device_id || (w.devices && w.devices[0] && w.devices[0].device_id)) || w.id, wall_id: w.id, label: w.name || w.id };
-    }
-    return null;
+  function whiteboardDisplayTarget(device, wall = null) {
+    if (!device || !device.id) return null;
+    const split = wall && wall.layout_mode === 'split';
+    return {
+      target_type: split ? 'split' : 'display',
+      target_id: device.id,
+      split_device_id: split ? device.id : null,
+      wall_id: split ? wall.id : null,
+      preview_device_id: device.id,
+      label: wall ? `${wall.name}: ${device.name || device.id}` : (device.name || device.id),
+      screenshot_url: device.screenshot_url || null,
+      width: device.width || 1920,
+      height: device.height || 1080,
+    };
   }
-  function closeWhiteboard() {
-    if (wbApi) { try { wbApi.unmount(); } catch { /* best-effort */ } wbApi = null; }
+  function whiteboardWallTarget(wall, byId) {
+    if (!wall || !wall.id) return null;
+    const leaderId = wallTransportDeviceId(wall) || wallDeviceIds(wall)[0];
+    const leader = leaderId ? byId.get(leaderId) : null;
+    if (!leaderId) return null;
+    return {
+      target_type: 'wall',
+      target_id: leaderId,
+      wall_id: wall.id,
+      preview_device_id: leaderId,
+      label: wall.name || wall.id,
+      screenshot_url: leader && leader.screenshot_url,
+      width: leader && leader.width || 1920,
+      height: leader && leader.height || 1080,
+    };
+  }
+  function whiteboardTargets() {
+    const all = displayState.getAll();
+    const byId = new Map(all.map((d) => [d.id, d]));
+    const result = [];
+    for (const wall of (Array.isArray(walls) ? walls : [])) {
+      const wallTarget = whiteboardWallTarget(wall, byId);
+      if (wallTarget) result.push(wallTarget);
+      if (wall.layout_mode === 'split') {
+        for (const id of wallDeviceIds(wall)) {
+          const memberTarget = whiteboardDisplayTarget(byId.get(id), wall);
+          if (memberTarget) result.push(memberTarget);
+        }
+      }
+    }
+    for (const device of all) {
+      if (!device || wallMemberIds.has(device.id) || isLiveStreamTargetId(device.id)) continue;
+      const displayTarget = whiteboardDisplayTarget(device);
+      if (displayTarget) result.push(displayTarget);
+    }
+    return result;
+  }
+  function whiteboardTargetFromActive() {
+    const all = displayState.getAll();
+    const byId = new Map(all.map((d) => [d.id, d]));
+    if (activeTarget && activeTarget.type === 'wall') {
+      return whiteboardWallTarget((walls || []).find((w) => w.id === activeTarget.id), byId);
+    }
+    if (activeTarget && activeTarget.type === 'display') {
+      return whiteboardDisplayTarget(byId.get(activeTarget.id), wallForDeviceId(activeTarget.id));
+    }
+    return whiteboardTargets()[0] || null;
+  }
+  function removeWhiteboardHost() {
     if (wbHost && wbHost.parentNode) wbHost.parentNode.removeChild(wbHost);
     wbHost = null;
   }
+  function closeWhiteboard() {
+    if (wbApi) { try { wbApi.unmount(); } catch { /* best-effort */ } wbApi = null; }
+    removeWhiteboardHost();
+  }
   window.mcOpenWhiteboard = function (targetArg) {
     closeWhiteboard();
-    const tgt = targetArg || whiteboardTarget();
+    const tgt = targetArg || whiteboardTargetFromActive();
     wbHost = document.createElement('div');
     wbHost.className = 'mc-wb-host';
     document.body.appendChild(wbHost);
-    wbApi = mountWhiteboardSurface(wbHost, { onStatus: (m) => showToast(m) });
-    if (tgt) wbApi.setTarget(tgt);
+    wbApi = mountWhiteboardSurface(wbHost, {
+      initialTarget: tgt,
+      targets: whiteboardTargets(),
+      onStatus: (m) => { if (m) showToast(m); },
+      onClose: () => { wbApi = null; removeWhiteboardHost(); },
+    });
   };
   window.mcCloseWhiteboard = closeWhiteboard;
   const dockHost = document.querySelector('.mc-control-controls');
@@ -1745,11 +1903,28 @@ pruneSelection();
     const show = mvHost.hidden;
     mvHost.hidden = !show;
     if (show) {
+      document.body.classList.add('mc-multiview-open');
+      multiviewEscapeHandler = (event) => {
+        if (event.key === 'Escape' && !mvHost.hidden && !document.querySelector('dialog[open]')) {
+          event.preventDefault();
+          toggleMultiview();
+        }
+      };
+      document.addEventListener('keydown', multiviewEscapeHandler);
       if (!mvMounted) {
         mvMounted = true;
         await renderMultiview(mvHost, { routeSource: routeSourceWithPicker, onClose: toggleMultiview });
       }
-      try { mvHost.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch { /* */ }
+      mvHost.scrollTop = 0;
+      const closeButton = mvHost.querySelector('.mc-mv-close');
+      try { (closeButton || mvHost).focus({ preventScroll: true }); } catch { /* */ }
+    } else {
+      document.body.classList.remove('mc-multiview-open');
+      if (multiviewEscapeHandler) {
+        document.removeEventListener('keydown', multiviewEscapeHandler);
+        multiviewEscapeHandler = null;
+      }
+      try { document.querySelector('[data-dock="multiview"]')?.focus({ preventScroll: true }); } catch { /* */ }
     }
   }
 
@@ -1895,6 +2070,11 @@ export function unmount() {
     document.removeEventListener('keydown', previewAudioGestureHandler, true);
     previewAudioGestureHandler = null;
   }
+  if (multiviewEscapeHandler) {
+    document.removeEventListener('keydown', multiviewEscapeHandler);
+    multiviewEscapeHandler = null;
+  }
+  document.body.classList.remove('mc-multiview-open');
   if (unsubChip) { unsubChip(); unsubChip = null; }
   if (dockApi && typeof dockApi.destroy === 'function') dockApi.destroy();
   if (cmdAckHandler) { try { socketOff('command-ack', cmdAckHandler); } catch (_) {} cmdAckHandler = null; }

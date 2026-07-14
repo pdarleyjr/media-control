@@ -402,6 +402,7 @@
     let isPlaying = false;
     let heartbeatTimer = null;
     let refreshTimer = null;
+    let appliedPlaylistRevision = null;
     let remoteStreaming = false;
     let streamTimer = null;
     let layout = null;
@@ -462,7 +463,8 @@
     function isDocumentMime(mt) { return mt === 'application/pdf' || isOfficeMime(mt); }
     function docPlayerSrc(item, fit) {
       if (!item || !item.content_id) return null;
-      const q = fit === 'cover' ? '?fit=cover' : '';
+      const normalizedFit = fit === 'cover' || fit === 'fill' ? fit : 'contain';
+      const q = normalizedFit === 'contain' ? '' : '?fit=' + encodeURIComponent(normalizedFit);
       return '/player/doc/' + encodeURIComponent(item.content_id) + q;
     }
     function isRestorableSlideItem(item) {
@@ -1227,6 +1229,7 @@
       tool: 'pen',
       color: '#ffffff',
       size: 8,
+      mode: 'overlay',
     };
 
     function runtimeProbe() {
@@ -1827,15 +1830,17 @@
       } catch (e) { /* never break playback */ }
     }
 
-    // Create the fullscreen whiteboard overlay (idempotent). Does NOT disturb
-    // the underlying playback — it overlays on top.
-    //
-    // Classroom-UX (2026-05-29): the overlay background is TRANSPARENT so the
-    // instructor annotates live OVER whatever is currently on the display (a
-    // slide, a video, a screen-share) — annotate-over-content, the signature
-    // capability a browser-client display has that dumb HDMI/cast sinks cannot.
-    // (Was an opaque #10151c blank board; if a clean board is wanted, Blank the
-    // display first, then draw.)
+    function wbApplyMode(mode) {
+      _wb.mode = mode === 'blank' ? 'blank' : 'overlay';
+      if (_wb.overlay) {
+        _wb.overlay.style.background = _wb.mode === 'blank' ? '#ffffff' : 'transparent';
+        const label = _wb.overlay.querySelector('#smartboardLabel');
+        if (label) label.textContent = _wb.mode === 'blank' ? 'Blank whiteboard' : 'Annotating live content';
+      }
+    }
+
+    // Create the fullscreen whiteboard overlay (idempotent). Overlay mode leaves
+    // playback visible; blank mode supplies a clean white drawing surface.
     function wbShow(options) {
       try {
         const initialStrokes = Array.isArray(options && options.strokes) ? options.strokes : null;
@@ -1846,6 +1851,7 @@
             wbRedrawAll();
           }
           wbApplyNativeTouch(nativeTouch);
+          wbApplyMode(options && options.mode);
           return;
         }
         const ov = document.createElement('div');
@@ -1865,7 +1871,7 @@
           'letter-spacing:max(0.3px,0.05vw);color:#fff;background:rgba(16,21,28,0.7);' +
           'padding:max(3px,0.3vh) max(8px,1vw);border-radius:999px;' +
           'pointer-events:none;user-select:none';
-        label.textContent = '✎ Annotating';
+        label.textContent = 'Annotating live content';
 
         ov.appendChild(canvas);
         ov.appendChild(label);
@@ -1875,6 +1881,7 @@
         _wb.canvas = canvas;
         _wb.ctx = canvas.getContext('2d');
         _wb.strokes = initialStrokes ? initialStrokes.slice() : [];
+        wbApplyMode(options && options.mode);
         wbFitCanvas();
         wbRedrawAll();
         wbApplyNativeTouch(nativeTouch);
@@ -1912,6 +1919,7 @@
         _wb.ctx = null;
         _wb.toolbar = null;
         _wb.nativeTouch = false;
+        _wb.mode = 'overlay';
         _wb.drawing = false;
         _wb.activePointerId = null;
         _wb.livePoints = [];
@@ -2583,17 +2591,20 @@
     function stopHeartbeat() { if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; } }
 
     function startPlaylistRefresh() {
-      // No longer needed — server pushes playlist updates instantly via WebSocket.
-      // Kept as a fallback with a long interval in case a push is missed.
+      // WebSocket pushes remain the instant path. This lightweight revision
+      // check repairs a missed push within seconds instead of leaving a wall on
+      // stale content until the old five-minute re-register fallback fires.
       if (refreshTimer) clearInterval(refreshTimer);
+      const reconcile = () => {
+        if (!socket?.connected || !config.deviceId || !config.paired) return;
+        socket.emit('device:playlist-sync', {
+          playlist_revision: appliedPlaylistRevision,
+        });
+      };
+      setTimeout(reconcile, 750);
       refreshTimer = setInterval(() => {
-        if (socket?.connected && config.deviceId && config.paired) {
-          const data = { device_id: config.deviceId, device_info: {} };
-          if (config.deviceToken) data.device_token = config.deviceToken;
-          console.log(`[refresh-register] device_id=${config.deviceId}, has_token=${!!config.deviceToken}`);
-          socket.emit('device:register', data);
-        }
-      }, 300000); // 5 minutes fallback
+        reconcile();
+      }, 3000);
     }
 
     // ==================== Auto-reload on code update ====================
@@ -2749,6 +2760,9 @@
       }
 
       const newItems = data.assignments || [];
+      appliedPlaylistRevision = typeof data.playlist_revision === 'string'
+        ? data.playlist_revision
+        : null;
       const serverRestoreState = data.display_state || null;
       applyDisplayProfile(data.display_profile || null);
       // Build fingerprint from the fields that affect rendering. asset_url is

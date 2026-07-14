@@ -26,10 +26,22 @@ async function broadcast(token, contentId, deviceIds) {
   return body;
 }
 
+async function fetchDisplayStates(token) {
+  const response = await fetch('http://127.0.0.1:3001/api/displays/state', {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const body = await response.json();
+  if (!response.ok || !Array.isArray(body.displays)) {
+    throw new Error(`display state fetch failed (${response.status}): ${JSON.stringify(body)}`);
+  }
+  return body.displays;
+}
+
 function connectDashboard(token) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket('ws://127.0.0.1:3001/socket.io/?EIO=4&transport=websocket');
     const pending = new Map();
+    const handlers = new Map();
     let nextAckId = 1;
     const timer = setTimeout(() => reject(new Error('dashboard socket connect timeout')), 10000);
     ws.onerror = () => reject(new Error('dashboard websocket error'));
@@ -47,6 +59,11 @@ function connectDashboard(token) {
         clearTimeout(timer);
         resolve({
           close: () => ws.close(),
+          on(name, handler) {
+            if (!handlers.has(name)) handlers.set(name, new Set());
+            handlers.get(name).add(handler);
+            return () => handlers.get(name)?.delete(handler);
+          },
           emitWithAck(name, data) {
             return new Promise((ackResolve, ackReject) => {
               const id = nextAckId++;
@@ -61,6 +78,12 @@ function connectDashboard(token) {
         });
         return;
       }
+      const eventMatch = message.match(/^42\/dashboard,(?:\d+)?(\[.*\])$/s);
+      if (eventMatch) {
+        const [name, data] = JSON.parse(eventMatch[1]);
+        for (const handler of handlers.get(name) || []) handler(data);
+        return;
+      }
       const ackMatch = message.match(/^43\/dashboard,(\d+)(.*)$/s);
       if (!ackMatch) return;
       const id = Number(ackMatch[1]);
@@ -72,6 +95,25 @@ function connectDashboard(token) {
       waiter.resolve(values[0]);
     };
   });
+}
+
+async function waitForControllerTruth(socketStates, token, deviceIds) {
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    const apiStates = (await fetchDisplayStates(token)).filter((display) => deviceIds.includes(display.id));
+    const socketReady = deviceIds.every((id) => {
+      const state = socketStates.get(id);
+      return state && state.slide_index === 2 && state.slide_count >= 2;
+    });
+    const apiReady = apiStates.length === deviceIds.length && apiStates.every((display) => (
+      display.slide_index === 2
+      && display.slide_count >= 2
+      && display.now_playing?.slideIndex === 2
+    ));
+    if (socketReady && apiReady) return apiStates;
+    await sleep(500);
+  }
+  throw new Error(`controller truth timeout: ${JSON.stringify({ socket: [...socketStates], api: await fetchDisplayStates(token) })}`);
 }
 
 function sendCommand(socket, deviceId, action, payload = {}) {
@@ -123,6 +165,12 @@ async function main() {
     await broadcast(token, contentId, deviceIds);
     await sleep(12000);
     socket = await connectDashboard(token);
+    const socketStates = new Map();
+    socket.on('dashboard:state-sync', (event) => {
+      const id = event && (event.target_id || event.device_id || event.id);
+      const state = event && event.state && typeof event.state === 'object' ? event.state : event;
+      if (id && state) socketStates.set(id, state);
+    });
     const before = states(deviceIds);
     const goToTwo = await Promise.all(deviceIds.map((id) => sendCommand(socket, id, 'go_to_slide', { slide: 2 })));
     await waitForDeviceAcks(goToTwo);
@@ -142,7 +190,28 @@ async function main() {
       && state.state_revision > (before.find((item) => item.target_id === state.target_id)?.state_revision || 0)
     ));
     if (!valid) throw new Error(`authoritative state mismatch: ${JSON.stringify({ before, after })}`);
-    console.log(JSON.stringify({ ok: true, commands: [...goToTwo, ...next, ...previous], before, after }, null, 2));
+    const controllerStates = await waitForControllerTruth(socketStates, token, deviceIds);
+    const holdMs = Math.max(0, Math.min(120000, Number(process.env.SMOKE_HOLD_MS) || 0));
+    console.log(JSON.stringify({
+      ok: true,
+      commands: [...goToTwo, ...next, ...previous],
+      before,
+      after,
+      socket: [...socketStates].map(([target_id, state]) => ({
+        target_id,
+        slide_index: state.slide_index,
+        slide_count: state.slide_count,
+        state_revision: state.state_revision,
+      })),
+      controller: controllerStates.map((display) => ({
+        id: display.id,
+        slide_index: display.slide_index,
+        slide_count: display.slide_count,
+        now_playing_slide_index: display.now_playing?.slideIndex,
+      })),
+      hold_ms: holdMs,
+    }, null, 2));
+    if (holdMs) await sleep(holdMs);
   } catch (error) {
     smokeError = error;
   } finally {

@@ -308,8 +308,9 @@ function mirrorTransportToLiveStream(deviceNs, deviceId, command) {
         strokes: session.strokes,
         touch_enabled: !!profile,
         display_profile: profile,
+        mode: data && data.mode === 'blank' ? 'blank' : 'overlay',
       };
-      deviceNs.to(device_id).emit('device:wb-show', payload);
+      relayToTargets('device:wb-show', payload, wbTargets(data, device_id));
       if (typeof ack === 'function') ack({ ok: true, ...payload });
       console.log(`Whiteboard started on device ${device_id}`);
     });

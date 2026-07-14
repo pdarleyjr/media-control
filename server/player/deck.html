@@ -69,6 +69,8 @@
 <script>
 (function(){
   var deck = window.__deck;
+  var params = new URLSearchParams(location.search || '');
+  var previewMode = params.get('preview') === '1';
   var stage = document.getElementById('stage');
   if(!deck || !Array.isArray(deck.slides) || !deck.slides.length){ document.getElementById('err').style.display='flex'; return; }
   document.title = (deck.title||'Presentation') + ' - Media Control';
@@ -142,7 +144,8 @@
   var hud = document.getElementById('hud');
   var fill = document.getElementById('fill');
 
-  var idx=0, timer=null, t0=0, dur=0, raf=null, paused=false;
+  var requestedSlide = parseInt(params.get('slide') || '1', 10) || 1;
+  var idx=Math.max(0, Math.min(slides.length-1, requestedSlide-1)), timer=null, t0=0, dur=0, raf=null, paused=previewMode;
   function currentSlide() { return slides[idx] || null; }
   function currentState() {
     var slide = currentSlide();
@@ -290,7 +293,7 @@
     handleAction(data.__mc_transport);
   });
 
-  show(0);
+  show(idx);
   publishState({ action: 'ready', ok: true, status: 'ready' });
 })();
 </script>

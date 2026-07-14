@@ -52,6 +52,12 @@ function requestBaseUrl(req) {
   return 'http://127.0.0.1:8096';
 }
 
+function freshProgramUrl(playerUrl) {
+  const url = new URL(playerUrl);
+  url.searchParams.set('_mc_live_session', `${Date.now()}`);
+  return url.toString();
+}
+
 function displayPayload(req) {
   const display = ensureLiveStreamDisplay({ workspaceId: req.workspaceId, userId: req.user.id });
   return {
@@ -141,14 +147,29 @@ router.post('/start', async (req, res) => {
   if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
   const payload = displayPayload(req);
   const programState = liveStreamProgramState(req.workspaceId);
+  const playerUrl = freshProgramUrl(payload.player_url);
 
-  const programUrl = await callDirector('POST', '/media-control/program-url', { url: payload.player_url });
+  const programUrl = await callDirector('POST', '/media-control/program-url', { url: playerUrl });
   if (!programUrl.ok || (programUrl.data && programUrl.data.ok === false)) {
     return res.status(502).json({
       ...payload,
       success: false,
       error: programUrl.data && programUrl.data.message || programUrl.message || 'AI Director could not update OBS Media Control source',
       program_url: programUrl,
+    });
+  }
+
+  // A unique URL plus refreshnocache forces OBS's browser source to discard a
+  // prior presentation frame before scene selection. Without this preflight,
+  // an idle browser source can survive between broadcasts and reappear as PIP.
+  const programRefresh = await callDirector('POST', '/media-control/refresh');
+  if (!programRefresh.ok || (programRefresh.data && programRefresh.data.ok === false)) {
+    return res.status(502).json({
+      ...payload,
+      success: false,
+      error: programRefresh.data && programRefresh.data.message || programRefresh.message || 'AI Director could not refresh the OBS Media Control source',
+      program_url: programUrl,
+      program_refresh: programRefresh,
     });
   }
 
@@ -214,6 +235,7 @@ router.post('/start', async (req, res) => {
     success: true,
     program_state: programState,
     program_url: programUrl,
+    program_refresh: programRefresh,
     mode,
     selected_scene: statusAfterMode,
     stream_start: stream,
