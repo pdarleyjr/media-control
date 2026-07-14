@@ -35,3 +35,29 @@ test('multiview remains reachable inside the fixed command center viewport', () 
   assert.match(view, /id="mc-multiview"[\s\S]*?role="dialog"[\s\S]*?aria-modal="true"/);
   assert.match(view, /event\.key === 'Escape'/);
 });
+
+test('podium library drag and drop preserves the source contract through physical wall verification', () => {
+  const toolbox = read('frontend/js/views/media-control/toolbox.js');
+  const view = read('frontend/js/views/media-control.js');
+  const smoke = read('scripts/live-console-ui-smoke.js');
+
+  assert.match(toolbox, /draggable="true"[\s\S]*?data-drag-source=/);
+  assert.match(toolbox, /addEventListener\('dragstart'[\s\S]*?application\/x-mc-source/);
+  assert.match(view, /\.mc-wall-all\[data-wall-ids\][\s\S]*?addEventListener\('drop'/);
+  assert.match(smoke, /new DragEvent\('dragstart'/);
+  assert.match(smoke, /new DragEvent\('drop'/);
+  assert.match(smoke, /waitForPhysicalContent\(db, dragConfig\.deviceIds, dragConfig\.contentId\)/);
+  assert.match(smoke, /restoreDragDropContent\(db, dragConfig\)/);
+});
+
+test('podium browser smoke exercises both whiteboard modes and a real pointer stroke', () => {
+  const smoke = read('scripts/live-console-ui-smoke.js');
+
+  assert.match(smoke, /\[data-mc-rail="whiteboard"\]/);
+  assert.match(smoke, /\[data-wb-mode="blank"\]/);
+  assert.match(smoke, /\[data-wb-mode="overlay"\]/);
+  assert.match(smoke, /new PointerEvent\(type/);
+  assert.match(smoke, /drawing_changed:/);
+  assert.match(smoke, /#mc-wb-clear/);
+  assert.match(smoke, /#mc-wb-close/);
+});

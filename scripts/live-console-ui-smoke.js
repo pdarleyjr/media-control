@@ -127,8 +127,72 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function csv(value) {
+  return String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+function dragDropConfig() {
+  const contentId = String(process.env.SMOKE_DRAG_CONTENT_ID || '').trim();
+  if (!contentId) return null;
+  const config = {
+    contentId,
+    wallId: required('SMOKE_DRAG_WALL_ID'),
+    deviceIds: csv(required('SMOKE_DRAG_DEVICE_IDS')),
+    restoreContentId: required('SMOKE_DRAG_RESTORE_CONTENT_ID'),
+    restoreUserEmail: String(process.env.SMOKE_DRAG_RESTORE_USER_EMAIL || 'peterdarley@miamibeachfl.gov').trim().toLowerCase(),
+  };
+  if (!config.deviceIds.length) throw new Error('SMOKE_DRAG_DEVICE_IDS must contain at least one display');
+  return config;
+}
+
+async function waitForPhysicalContent(db, deviceIds, contentId, timeoutMs = 20000) {
+  const placeholders = deviceIds.map(() => '?').join(',');
+  const deadline = Date.now() + timeoutMs;
+  let rows = [];
+  while (Date.now() < deadline) {
+    rows = db.prepare(`
+      SELECT target_id, current_content_id, render_state, error_state, state_revision
+      FROM display_states
+      WHERE target_type = 'display' AND target_id IN (${placeholders})
+      ORDER BY target_id
+    `).all(...deviceIds);
+    if (rows.length === deviceIds.length && rows.every((row) => (
+      row.current_content_id === contentId
+      && row.render_state === 'playing'
+      && !row.error_state
+    ))) return rows;
+    await sleep(250);
+  }
+  throw new Error(`display state did not converge to ${contentId}: ${JSON.stringify(rows)}`);
+}
+
+async function restoreDragDropContent(db, config) {
+  const { generateToken } = require('../server/middleware/auth');
+  const user = db.prepare('SELECT * FROM users WHERE lower(email) = ?').get(config.restoreUserEmail);
+  if (!user) throw new Error(`drag restore user not found: ${config.restoreUserEmail}`);
+  const target = db.prepare('SELECT workspace_id FROM devices WHERE id = ?').get(config.deviceIds[0]);
+  if (!target?.workspace_id) throw new Error('drag restore target workspace not found');
+  const membership = db.prepare('SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+    .get(target.workspace_id, user.id);
+  if (!membership && user.role !== 'platform_admin') throw new Error('drag restore user cannot access the target workspace');
+  const response = await fetch('http://127.0.0.1:3001/api/broadcast', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${generateToken(user, target.workspace_id)}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ content_id: config.restoreContentId, device_ids: config.deviceIds }),
+  });
+  const body = await response.json();
+  if (!response.ok || body.sent !== config.deviceIds.length) {
+    throw new Error(`drag restore failed (${response.status}): ${JSON.stringify(body)}`);
+  }
+  return waitForPhysicalContent(db, config.deviceIds, config.restoreContentId);
+}
+
 async function main() {
   const deviceToken = required('CONSOLE_DEVICE_TOKEN');
+  const dragConfig = dragDropConfig();
   const url = String(process.env.SMOKE_CONSOLE_URL || 'http://127.0.0.1:3001/console/classroom-1#/control');
   const screenshotPath = String(process.env.SMOKE_SCREENSHOT_PATH || '/tmp/console-ui-smoke.png');
   const cameraScreenshotPath = screenshotPath.replace(/(\.png)?$/i, '-camera.png');
@@ -186,6 +250,125 @@ async function main() {
           .find((item) => item.textContent.trim().includes(${JSON.stringify(label)}));
         return !!button && button.getAttribute('aria-pressed') === 'true' && button.classList.contains('is-active');
       })()`, `${label} selection`);
+    }
+
+    let dragDrop = null;
+    if (dragConfig) {
+      const { db } = require('../server/db/database');
+      await waitFor(cdp, `(() => {
+        const contentId = ${JSON.stringify(dragConfig.contentId)};
+        const wallId = ${JSON.stringify(dragConfig.wallId)};
+        const tile = [...document.querySelectorAll('.mc-tile[data-drag-source]')].find((item) => {
+          try { return JSON.parse(item.dataset.dragSource || '{}').content_id === contentId; } catch { return false; }
+        });
+        return !!tile && !!document.querySelector('.mc-wall[data-wall-id="' + wallId + '"] .mc-wall-all');
+      })()`, 'podium drag source and wall target', 30000);
+
+      let dispatched = false;
+      try {
+        const browserResult = await evaluate(cdp, `(() => {
+          const contentId = ${JSON.stringify(dragConfig.contentId)};
+          const wallId = ${JSON.stringify(dragConfig.wallId)};
+          const tile = [...document.querySelectorAll('.mc-tile[data-drag-source]')].find((item) => {
+            try { return JSON.parse(item.dataset.dragSource || '{}').content_id === contentId; } catch { return false; }
+          });
+          const target = document.querySelector('.mc-wall[data-wall-id="' + wallId + '"] .mc-wall-all');
+          if (!tile || !target) return { ok: false, reason: 'source or target missing' };
+          const dataTransfer = new DataTransfer();
+          tile.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer }));
+          const source = dataTransfer.getData('application/x-mc-source');
+          const label = dataTransfer.getData('application/x-mc-label');
+          target.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer }));
+          target.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }));
+          return { ok: true, source, label, types: [...dataTransfer.types] };
+        })()`);
+        assert(browserResult?.ok, `podium drag event failed: ${JSON.stringify(browserResult)}`);
+        assert(browserResult.types.includes('application/x-mc-source'), 'podium drag event omitted the media-control source MIME');
+        dispatched = true;
+        const probeState = await waitForPhysicalContent(db, dragConfig.deviceIds, dragConfig.contentId);
+        dragDrop = { browser: browserResult, probe_state: probeState };
+      } finally {
+        if (dispatched) {
+          const restoredState = await restoreDragDropContent(db, dragConfig);
+          dragDrop = { ...(dragDrop || {}), restored_state: restoredState };
+        }
+      }
+    }
+
+    const whiteboardOpened = await evaluate(cdp, `(() => {
+      const button = document.querySelector('[data-mc-rail="whiteboard"]');
+      if (!button) return false;
+      button.click();
+      return true;
+    })()`);
+    assert(whiteboardOpened, 'Whiteboard rail action is missing');
+    let whiteboard = null;
+    try {
+      await waitFor(cdp, `(() => {
+        const overlay = document.querySelector('.mc-wb-overlay');
+        const canvas = overlay?.querySelector('#mc-wb-canvas');
+        const target = overlay?.querySelector('#mc-wb-target-select');
+        return !!overlay && !!canvas && canvas.width > 0 && canvas.height > 0 && !!target?.value;
+      })()`, 'whiteboard overlay', 30000);
+
+      const modeResult = await evaluate(cdp, `(() => {
+        const overlay = document.querySelector('.mc-wb-overlay');
+        const blank = overlay?.querySelector('[data-wb-mode="blank"]');
+        const canvas = overlay?.querySelector('#mc-wb-canvas');
+        if (!blank || !canvas) return { ok: false };
+        blank.click();
+        return { ok: true, width: canvas.width, height: canvas.height };
+      })()`);
+      assert(modeResult?.ok, 'Whiteboard Blank mode control is missing');
+      await waitFor(cdp, `document.querySelector('[data-wb-mode="blank"]')?.getAttribute('aria-pressed') === 'true'`, 'whiteboard Blank mode');
+      await evaluate(cdp, `document.querySelector('[data-wb-mode="overlay"]')?.click()`);
+      await waitFor(cdp, `document.querySelector('[data-wb-mode="overlay"]')?.getAttribute('aria-pressed') === 'true'`, 'whiteboard Overlay mode');
+
+      const drawResult = await evaluate(cdp, `(() => {
+        const overlay = document.querySelector('.mc-wb-overlay');
+        const canvas = overlay?.querySelector('#mc-wb-canvas');
+        if (!canvas) return { ok: false };
+        const rect = canvas.getBoundingClientRect();
+        const before = canvas.toDataURL();
+        const point = (type, x, y, buttons) => canvas.dispatchEvent(new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 41,
+          pointerType: 'mouse',
+          isPrimary: true,
+          buttons,
+          clientX: rect.left + x,
+          clientY: rect.top + y,
+        }));
+        point('pointerdown', Math.max(20, rect.width * 0.25), Math.max(20, rect.height * 0.35), 1);
+        point('pointermove', Math.max(40, rect.width * 0.50), Math.max(40, rect.height * 0.55), 1);
+        point('pointerup', Math.max(60, rect.width * 0.70), Math.max(60, rect.height * 0.65), 0);
+        return {
+          ok: true,
+          before,
+          target: overlay.querySelector('#mc-wb-target-select')?.selectedOptions?.[0]?.textContent?.trim() || '',
+          options: [...overlay.querySelectorAll('#mc-wb-target-select option')].map((item) => item.textContent.trim()),
+        };
+      })()`);
+      assert(drawResult?.ok, 'Whiteboard canvas is missing');
+      await sleep(250);
+      const drawingChanged = await evaluate(cdp, `(() => {
+        const canvas = document.querySelector('.mc-wb-overlay #mc-wb-canvas');
+        return !!canvas && canvas.toDataURL() !== ${JSON.stringify(drawResult.before)};
+      })()`);
+      assert(drawingChanged, 'Whiteboard pointer stroke did not render on the operator canvas');
+      whiteboard = {
+        target: drawResult.target,
+        targets: drawResult.options,
+        blank_mode: true,
+        overlay_mode: true,
+        drawing_changed: drawingChanged,
+        canvas: { width: modeResult.width, height: modeResult.height },
+      };
+      await evaluate(cdp, `document.querySelector('.mc-wb-overlay #mc-wb-clear')?.click()`);
+    } finally {
+      await evaluate(cdp, `document.querySelector('.mc-wb-overlay #mc-wb-close')?.click()`).catch(() => {});
+      await waitFor(cdp, `!document.querySelector('.mc-wb-overlay')`, 'whiteboard close').catch(() => {});
     }
 
     const viewport = await evaluate(cdp, `(() => {
@@ -304,6 +487,8 @@ async function main() {
       multiview,
       route_dialog: routeDialog,
       camera_control: cameraControl,
+      drag_drop: dragDrop,
+      whiteboard,
       runtime_exceptions: runtimeExceptions.length,
       screenshot: screenshotPath,
       camera_screenshot: cameraScreenshotPath,

@@ -617,8 +617,13 @@ function rateLimit(windowMs, maxRequests) {
   };
 }
 
+const { createLoginFailureRateLimit } = require('./lib/login-rate-limit');
+
 // Auth routes (public, rate limited)
-app.use('/api/auth/login', rateLimit(60000, 10)); // 10 attempts per minute
+// Count only failed authentication, keyed by account+IP with an aggregate IP
+// ceiling. Successful coworkers behind the same classroom/NAT address must not
+// lock one another out just because they sign in during the same minute.
+app.use('/api/auth/login', createLoginFailureRateLimit({ getClientIp }));
 app.use('/api/auth/register', rateLimit(60000, 5)); // 5 registrations per minute
 // Admin password-reset endpoint: even if an admin's session is compromised,
 // cap the blast radius to 20 resets/min/IP. Express matches the longest
