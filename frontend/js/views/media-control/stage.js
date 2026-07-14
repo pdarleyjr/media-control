@@ -139,6 +139,13 @@ function applyTileSize(container, maxCols) {
 function shouldPreferPoster(obj) {
   const kind = String(obj?.now_playing?.kind || obj?.content_type || '').toLowerCase();
   if (kind === 'document' || kind === 'pdf') return false;
+  if (kind === 'image') {
+    const capturedAt = Number(obj?.screenshot_at);
+    const age = Number.isFinite(capturedAt)
+      ? Math.max(0, Math.floor(Date.now() / 1000) - capturedAt)
+      : Infinity;
+    return age > STALE_AFTER_S;
+  }
   return !!(obj && obj.now_playing && obj.now_playing.poster_url);
 }
 
@@ -148,6 +155,8 @@ export function previewSource(obj) {
   // A screenshot is the physical device's frame. Do not compare it with
   // display_states.updated_at: periodic state reports advance that timestamp even
   // when the rendered pixels have not changed, which incorrectly hid valid slides.
+  // Still images are the exception: once their device frame is stale, the current
+  // content-bound poster is safer than pixels left over from the previous item.
   if (screenshot && !shouldPreferPoster(obj)) return { src: screenshot, poster: false };
   if (poster) return { src: poster, poster: true };
   if (screenshot) return { src: screenshot, poster: false };

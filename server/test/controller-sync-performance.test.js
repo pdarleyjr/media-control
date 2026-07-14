@@ -178,6 +178,19 @@ test('periodic state timestamps never hide an authoritative device screenshot', 
   assert.match(stage, /periodic state reports advance that timestamp/);
 });
 
+test('split image cells replace a stale prior-media screenshot with current content', () => {
+  const stage = read('frontend/js/views/media-control/stage.js');
+  const displays = read('server/routes/displays.js');
+  const player = read('server/player/index.html');
+
+  assert.match(displays, /new Set\(\['image', 'video', 'web', 'youtube', 'pdf', 'document'\]\)/);
+  assert.match(stage, /kind === 'image'[\s\S]*age > STALE_AFTER_S/);
+  assert.match(stage, /content-bound poster is safer than pixels left over from the previous item/);
+  assert.match(player, /img\.crossOrigin = 'anonymous'/);
+  assert.match(player, /img\.addEventListener\('load'[\s\S]*captureAndSend\(\)/);
+  assert.match(player, /img\.src = src;[\s\S]*mount\.appendChild\(img\)/);
+});
+
 test('display state store coalesces subscriber notifications by animation frame', () => {
   const source = read('frontend/js/services/display-state.js');
   assert.match(source, /let notifyScheduled = false/);

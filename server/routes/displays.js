@@ -137,9 +137,11 @@ router.get('/state', (req, res) => {
   // playing, expose the content's generated poster (the sharp image / ffmpeg
   // video-frame thumbnail made at upload, served by the public, token-less
   // /api/content/:id/thumbnail route) so the dashboard shows a real preview
-  // instead of a black tile. A still image captures fine, so images keep the
-  // live screenshot; anything without a generated poster falls back to it too.
-  const POSTERABLE = new Set(['video', 'web', 'youtube', 'pdf', 'document']);
+  // instead of a black tile. Images expose their thumbnail as a content-bound
+  // fallback when a device capture is delayed; fresh image screenshots still
+  // win in the stage. Anything without a generated poster falls back to the
+  // live screenshot.
+  const POSTERABLE = new Set(['image', 'video', 'web', 'youtube', 'pdf', 'document']);
   const posterStmt = db.prepare('SELECT thumbnail_path FROM content WHERE id = ?');
   for (const d of displays) {
     const np = d.now_playing;

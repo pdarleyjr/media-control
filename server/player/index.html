@@ -3417,12 +3417,22 @@
           setTimeout(() => { if (video.paused) { video.muted = true; video.play().catch(() => {}); } }, wallStartDelayMs + 2000);
         } else if (isImage) {
           const img = document.createElement('img');
-          img.src = src;
+          // Classroom displays normally read images from the P3 cache, which is
+          // a different origin from the player. Anonymous CORS keeps the image
+          // drawable to the preview canvas instead of tainting it and leaving
+          // the dashboard stuck on the preceding media frame.
+          img.crossOrigin = 'anonymous';
           img.style.cssText = `width:100%;height:100%;object-fit:${cssFit}`;
+          img.addEventListener('load', () => {
+            requestAnimationFrame(() => {
+              if (img.isConnected && container.contains(img)) captureAndSend();
+            });
+          }, { once: true });
           attachOriginFallback(img, item, () => {
             console.error('Image error');
             if (!isFollower) advanceTimer = setTimeout(nextItem, 3000);
           });
+          img.src = src;
           mount.appendChild(img);
           // Leader / single screen drives image advance; follower waits for sync
           if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 10) * 1000);
