@@ -13,8 +13,9 @@
 
 const fs = require('fs');
 const { createCacheServer } = require('./cache-server');
-const { resolveServerUrl } = require('../../common/server-url');
-const { detectNetworkState } = require('../../common/network-state');
+const { loadCommonModule } = require('./common-loader');
+const { resolveServerUrl } = loadCommonModule('server-url');
+const { detectNetworkState } = loadCommonModule('network-state');
 
 const MC_SERVER_URL = resolveServerUrl(process.env, {
   urlKeys: ['MC_SERVER_LAN_URL', 'MC_SERVER_URL'],

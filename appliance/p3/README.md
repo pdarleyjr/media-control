@@ -72,7 +72,9 @@ The web player also auto-falls back from a local `asset_url` to the server
 Only `socket.io-client` is required (no native build). On-box install:
 1. Portable Node lives at `C:\MBFD\node\...\node.exe` (`node-path.txt` records it).
 2. Agent files in `C:\MBFD\RoomAgent\` (`cache-server.js`, `cache-agent.js`,
-   `package.json`); run `npm install --omit=dev` there.
+   `common-loader.js`, `package.json`) and shared runtime modules in
+   `C:\MBFD\common\` (`server-url.js`, `network-state.js`); run
+   `npm install --omit=dev` in `C:\MBFD\RoomAgent`.
 3. `run-agent.cmd` sets env and launches the agent; a Scheduled Task
    `MBFD_RoomCacheAgent` runs it as SYSTEM at startup.
 

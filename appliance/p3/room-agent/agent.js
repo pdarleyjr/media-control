@@ -16,8 +16,9 @@
 const fs = require('fs');
 
 const syncWorker = require('./sync-worker');
-const { resolveServerUrl } = require('../../common/server-url');
-const { detectNetworkState } = require('../../common/network-state');
+const { loadCommonModule } = require('./common-loader');
+const { resolveServerUrl } = loadCommonModule('server-url');
+const { detectNetworkState } = loadCommonModule('network-state');
 
 const DEFAULT_SERVER_URL = 'http://100.81.154.123:8096'; // GMKtec Tailnet (documented default)
 const HEARTBEAT_INTERVAL_MS = 15 * 1000;
