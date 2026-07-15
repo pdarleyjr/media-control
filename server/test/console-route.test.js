@@ -91,3 +91,27 @@ test('console session rejects an invalid trusted-device token', async (t) => {
   const body = await res.json();
   assert.equal(body.error, 'Console device token rejected');
 });
+
+test('console can select a local profile by username', async (t) => {
+  db.prepare(`
+    INSERT INTO users (id, email, username, name, auth_provider, role, plan_id)
+    VALUES (?, ?, ?, ?, 'local', 'user', 'enterprise')
+  `).run('test-union-user', 'mbfd_union@mbfd.local', 'MBFD_Union', 'MBFD Union');
+
+  const server = await createConsoleServer(t);
+  const res = await fetch(`${baseUrl(server)}/api/console/session`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-MBFD-Device-Token': 'test-console-token',
+    },
+    body: JSON.stringify({ profile_id: 'mbfd_union' }),
+  });
+
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.user.id, 'test-union-user');
+  assert.equal(body.user.username, 'MBFD_Union');
+  assert.equal(body.user.workspace_role, 'workspace_editor');
+  assert.ok(body.profiles.some((profile) => profile.username === 'MBFD_Union'));
+});

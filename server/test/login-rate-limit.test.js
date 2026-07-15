@@ -5,8 +5,8 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { createLoginFailureRateLimit } = require('../lib/login-rate-limit');
 
-function attempt(limiter, { email, ip = '192.0.2.10', status = 200 }) {
-  const req = { body: { email }, ip };
+function attempt(limiter, { email, identifier, username, ip = '192.0.2.10', status = 200 }) {
+  const req = { body: { email, identifier, username }, ip };
   const res = new EventEmitter();
   res.statusCode = status;
   res.status = (code) => { res.statusCode = code; return res; };
@@ -59,4 +59,19 @@ test('aggregate failed attempts remain bounded across many account names', () =>
   const blocked = attempt(limiter, { email: 'guess3@example.test', status: 401 });
   assert.equal(blocked.allowed, false);
   assert.equal(blocked.status, 429);
+});
+
+test('username identifiers receive the same per-account protection as emails', () => {
+  const limiter = createLoginFailureRateLimit({
+    getClientIp: (req) => req.ip,
+    maxAccountFailures: 2,
+    maxIpFailures: 10,
+  });
+
+  assert.equal(attempt(limiter, { identifier: 'MBFD_Union', status: 401 }).allowed, true);
+  assert.equal(attempt(limiter, { username: 'mbfd_union', status: 401 }).allowed, true);
+  const blocked = attempt(limiter, { identifier: 'MBFD_UNION', status: 401 });
+  assert.equal(blocked.allowed, false);
+  assert.equal(blocked.status, 429);
+  assert.equal(attempt(limiter, { identifier: 'another_user', status: 200 }).allowed, true);
 });

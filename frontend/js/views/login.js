@@ -35,8 +35,8 @@ export async function render(container) {
           <!-- Local Auth Form -->
           <div id="localAuthForm">
             <div class="form-group">
-              <label>${t('auth.email')}</label>
-              <input type="email" id="loginEmail" class="input" placeholder="${t('auth.placeholder_email')}" autocomplete="email">
+              <label>${isSetup ? t('auth.email') : t('auth.identifier')}</label>
+              <input type="${isSetup ? 'email' : 'text'}" id="loginEmail" class="input" placeholder="${isSetup ? t('auth.placeholder_email') : t('auth.placeholder_identifier')}" autocomplete="${isSetup ? 'email' : 'username'}">
             </div>
             <div class="form-group">
               <label>${t('auth.password')}</label>
@@ -182,15 +182,16 @@ function setupHandlers(config, isSetup) {
   });
 
   async function doLogin() {
-    const email = document.getElementById('loginEmail').value.trim();
+    const identifier = document.getElementById('loginEmail').value.trim();
     const password = document.getElementById('loginPassword').value;
-    if (!email || !password) { showError(t('auth.error_email_password_required')); return; }
+    if (!identifier || !password) { showError(t('auth.error_identifier_password_required')); return; }
 
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
+        // Keep email during rolling upgrades while the server adopts identifier.
+        body: JSON.stringify({ identifier, email: identifier, password })
       });
       const data = await res.json();
       if (!res.ok) { showError(data.error); return; }

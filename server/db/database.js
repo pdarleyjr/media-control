@@ -64,6 +64,10 @@ function ensureMultitenancyMigration() {
 
 // Migrations for existing databases
 const migrations = [
+  // Optional username login. Email remains required in storage for backwards
+  // compatibility, while the partial index permits legacy users with no username.
+  'ALTER TABLE users ADD COLUMN username TEXT',
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_nocase ON users(username COLLATE NOCASE) WHERE username IS NOT NULL AND trim(username) <> ''",
   'ALTER TABLE content ADD COLUMN remote_url TEXT',
   'ALTER TABLE devices ADD COLUMN user_id TEXT REFERENCES users(id)',
   'ALTER TABLE content ADD COLUMN user_id TEXT REFERENCES users(id)',

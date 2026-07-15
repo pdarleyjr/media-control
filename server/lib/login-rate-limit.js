@@ -29,8 +29,9 @@ function createLoginFailureRateLimit({
     const timestamp = now();
     const cutoff = timestamp - windowMs;
     const ip = String(getClientIp(req) || 'unknown');
-    const email = String(req.body?.email || '').trim().toLowerCase().slice(0, 320) || '<missing>';
-    const accountKey = `account:${ip}:${email}`;
+    const identifier = String(req.body?.identifier || req.body?.username || req.body?.email || '')
+      .trim().toLowerCase().slice(0, 320) || '<missing>';
+    const accountKey = `account:${ip}:${identifier}`;
     const ipKey = `ip:${ip}`;
     const accountFailures = active(accountKey, cutoff);
     const ipFailures = active(ipKey, cutoff);

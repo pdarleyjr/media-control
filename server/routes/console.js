@@ -35,6 +35,7 @@ function publicUser(row) {
   return {
     id: row.id,
     email: row.email,
+    username: row.username || null,
     name: row.name,
     role: row.role,
     auth_provider: row.auth_provider,
@@ -54,11 +55,11 @@ function loadUserByProfileId(profileId) {
   const id = String(profileId || '').trim();
   if (!id) return null;
   if (id.toLowerCase() === 'guest') {
-    return db.prepare('SELECT id, email, name, role, auth_provider, avatar_url, plan_id FROM users WHERE id = ? OR lower(email) = lower(?) LIMIT 1')
+    return db.prepare('SELECT id, email, username, name, role, auth_provider, avatar_url, plan_id FROM users WHERE id = ? OR lower(email) = lower(?) LIMIT 1')
       .get(config.console.guestUserId, config.console.guestEmail);
   }
-  return db.prepare('SELECT id, email, name, role, auth_provider, avatar_url, plan_id FROM users WHERE id = ? OR lower(email) = lower(?) LIMIT 1')
-    .get(id, id);
+  return db.prepare('SELECT id, email, username, name, role, auth_provider, avatar_url, plan_id FROM users WHERE id = ? OR lower(email) = lower(?) OR lower(username) = lower(?) LIMIT 1')
+    .get(id, id, id);
 }
 
 function ensureGuestProfile() {
@@ -73,7 +74,7 @@ function ensureGuestProfile() {
     INSERT INTO users (id, email, name, password_hash, auth_provider, role, plan_id)
     VALUES (?, ?, 'Guest', NULL, 'console_guest', 'instructor', 'enterprise')
   `).run(id, config.console.guestEmail.toLowerCase());
-  const guest = db.prepare('SELECT id, email, name, role, auth_provider, avatar_url, plan_id FROM users WHERE id = ?').get(id);
+  const guest = db.prepare('SELECT id, email, username, name, role, auth_provider, avatar_url, plan_id FROM users WHERE id = ?').get(id);
   const workspaceId = ensurePrimaryWorkspaceMembership(db, guest);
   return { ...guest, workspace_id: workspaceId };
 }
@@ -81,7 +82,7 @@ function ensureGuestProfile() {
 function profileRows() {
   const workspaceId = primaryWorkspaceId();
   const rows = db.prepare(`
-    SELECT u.id, u.email, u.name, u.role, u.auth_provider, u.avatar_url, u.plan_id,
+    SELECT u.id, u.email, u.username, u.name, u.role, u.auth_provider, u.avatar_url, u.plan_id,
            wm.workspace_id, wm.role AS workspace_role
     FROM users u
     LEFT JOIN workspace_members wm ON wm.user_id = u.id AND wm.workspace_id = ?

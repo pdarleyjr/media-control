@@ -26,6 +26,7 @@ VALUES
 CREATE TABLE IF NOT EXISTS users (
     id              TEXT PRIMARY KEY,
     email           TEXT UNIQUE NOT NULL,
+    username        TEXT,
     name            TEXT NOT NULL DEFAULT '',
     password_hash   TEXT,
     auth_provider   TEXT NOT NULL DEFAULT 'local',
