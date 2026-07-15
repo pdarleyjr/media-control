@@ -503,6 +503,7 @@ app.get('/player/site-shot/:id', async (req, res) => {
 // templates), so a leaked UUID can't convert+exfiltrate arbitrary private uploads.
 const { getOfficePdf, isConvertibleOfficeMime } = require('./lib/doc-pdf');
 const { canServePublicContent } = require('./lib/public-content-access');
+const nodeRegistry = require('./lib/node-registry');
 const { DEFAULT_DPI, clampPage, getPdfPageCount, getRenderablePdf, isDocumentMime, renderPdfPageImage } = require('./lib/doc-render');
 app.get('/player/doc-pdf/:id', async (req, res) => {
   try {
@@ -713,7 +714,8 @@ app.get('/api/content/:id/file', (req, res) => {
   const content = db.prepare('SELECT * FROM content WHERE id = ?').get(req.params.id);
   if (!content) return res.status(404).json({ error: 'Content not found' });
   if (!content.filepath) return res.status(404).json({ error: 'No file (remote URL content)' });
-  if (!canServePublicContent(db, content)) return res.status(403).json({ error: 'Content not assigned to any playlist or widget' });
+  const nodeAuthorized = nodeRegistry.nodeHttpAuthOk(req);
+  if (!nodeAuthorized && !canServePublicContent(db, content)) return res.status(403).json({ error: 'Content not assigned to any playlist or widget' });
   const safePath = path.resolve(config.contentDir, path.basename(content.filepath));
   if (!safePath.startsWith(path.resolve(config.contentDir))) return res.status(403).json({ error: 'Invalid path' });
   if (content.mime_type) res.setHeader('Content-Type', content.mime_type);

@@ -16,11 +16,10 @@ const crypto = require('crypto');
 const config = require('../config');
 const { canonicalAssetPath, queueAssetManifest } = require('./asset-manifest');
 
-function nodeAuthOk(handshakeAuth) {
-  const cc = config.classroomCache || {};
-  const expected = String(cc.nodeToken || '');
+function nodeTokenMatches(givenValue, expectedValue) {
+  const expected = String(expectedValue || '');
   if (!expected) return false; // no token configured => nodes disabled
-  const given = String((handshakeAuth && handshakeAuth.token) || '');
+  const given = String(givenValue || '');
   if (!given) return false;
   try {
     const a = Buffer.from(expected);
@@ -29,6 +28,21 @@ function nodeAuthOk(handshakeAuth) {
   } catch {
     return false;
   }
+}
+
+function nodeAuthOk(handshakeAuth) {
+  const cc = config.classroomCache || {};
+  return nodeTokenMatches(handshakeAuth && handshakeAuth.token, cc.nodeToken);
+}
+
+function nodeHttpAuthOk(req, classroomCache = config.classroomCache || {}) {
+  let token = '';
+  try {
+    token = req && typeof req.get === 'function'
+      ? req.get('x-mbfd-node-token')
+      : req && req.headers && req.headers['x-mbfd-node-token'];
+  } catch (_) { /* invalid request shape */ }
+  return nodeTokenMatches(token, classroomCache.nodeToken);
 }
 
 // Upsert managed_nodes + append a node_heartbeats row. All best-effort: any
@@ -172,4 +186,4 @@ function requestContentPrewarm(io, db, options = {}) {
   }
 }
 
-module.exports = { nodeAuthOk, recordHeartbeat, buildContentManifest, requestContentPrewarm };
+module.exports = { nodeAuthOk, nodeHttpAuthOk, recordHeartbeat, buildContentManifest, requestContentPrewarm };

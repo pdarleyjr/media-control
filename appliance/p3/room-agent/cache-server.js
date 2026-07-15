@@ -34,6 +34,9 @@ function createCacheServer(opts = {}) {
   const contentDir = path.join(cacheDir, 'content');
   const port = parseInt(opts.port, 10) || 8097;
   const host = opts.host || '127.0.0.1';
+  const nodeToken = String(opts.nodeToken || '');
+  let originAuthority = '';
+  try { originAuthority = new URL(originBaseUrl).origin; } catch (_) { /* invalid origin fails closed */ }
   const log = opts.log || (() => {});
   const warn = opts.warn || (() => {});
   const downloads = new Map(); // content_id -> shared fill Promise
@@ -83,6 +86,13 @@ function createCacheServer(opts = {}) {
     res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length, Content-Type');
   }
 
+  function addOriginNodeAuth(headers, url) {
+    if (nodeToken && originAuthority && url.origin === originAuthority) {
+      headers['X-MBFD-Node-Token'] = nodeToken;
+    }
+    return headers;
+  }
+
   // Serve a fully-cached file, honoring a single Range request (video seeking).
   function serveLocal(req, res, id) {
     const file = fileFor(id);
@@ -129,6 +139,7 @@ function createCacheServer(opts = {}) {
     try { u = new URL(req._redirect || originUrl); } catch { res.writeHead(502); return res.end('bad origin'); }
     const headers = {};
     if (req.headers.range) headers.Range = req.headers.range;
+    addOriginNodeAuth(headers, u);
     const lib = pickLib(u);
     const oreq = lib.get(u, { headers, timeout: 60000 }, (ores) => {
       if (ores.statusCode >= 300 && ores.statusCode < 400 && ores.headers.location && (depth || 0) < 3) {
@@ -189,7 +200,8 @@ function createCacheServer(opts = {}) {
         }
         resolve(ok);
       };
-      const r = lib.get(u, { timeout: 300000 }, (ores) => {
+      const headers = addOriginNodeAuth({}, u);
+      const r = lib.get(u, { headers, timeout: 300000 }, (ores) => {
         if ((ores.statusCode || 0) !== 200) {
           ores.resume();
           return finish(false, `origin_status_${ores.statusCode || 0}`);

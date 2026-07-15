@@ -45,7 +45,15 @@ if (!MC_NODE_ID || !MC_NODE_TOKEN) {
 }
 
 // 1) Start the local read-through cache immediately (independent of the socket).
-const cache = createCacheServer({ originBaseUrl: MC_SERVER_URL, cacheDir: CACHE_DIR, port: AGENT_PORT, host: AGENT_HOST, log, warn });
+const cache = createCacheServer({
+  originBaseUrl: MC_SERVER_URL,
+  nodeToken: MC_NODE_TOKEN,
+  cacheDir: CACHE_DIR,
+  port: AGENT_PORT,
+  host: AGENT_HOST,
+  log,
+  warn,
+});
 cache.listen();
 
 function freeDiskBytes() {

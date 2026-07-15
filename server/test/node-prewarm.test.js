@@ -1,7 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
-const { requestContentPrewarm } = require('../lib/node-registry');
+const { nodeHttpAuthOk, requestContentPrewarm } = require('../lib/node-registry');
 
 function fakeDb({ member = true } = {}) {
   return {
@@ -80,4 +82,21 @@ test('prewarm signal is skipped for targets outside configured classroom walls',
   assert.equal(result.requested, false);
   assert.equal(result.reason, 'targets_not_cached');
   assert.deepEqual(events, []);
+});
+
+test('cache HTTP access requires the configured node token', () => {
+  const request = {
+    get(name) {
+      return String(name).toLowerCase() === 'x-mbfd-node-token' ? 'node-secret' : undefined;
+    },
+  };
+  assert.equal(nodeHttpAuthOk(request, { nodeToken: 'node-secret' }), true);
+  assert.equal(nodeHttpAuthOk(request, { nodeToken: 'different-secret' }), false);
+  assert.equal(nodeHttpAuthOk({ get: () => '' }, { nodeToken: 'node-secret' }), false);
+});
+
+test('public content route allows a valid cache node without weakening browser access', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  assert.match(source, /const nodeAuthorized = nodeRegistry\.nodeHttpAuthOk\(req\)/);
+  assert.match(source, /if \(!nodeAuthorized && !canServePublicContent\(db, content\)\)/);
 });

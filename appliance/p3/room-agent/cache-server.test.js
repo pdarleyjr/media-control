@@ -54,10 +54,12 @@ test('concurrent cold video ranges wait for one cache fill instead of stampeding
   const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
   const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-read-through-'));
   let originRequests = 0;
+  let originNodeToken = null;
 
   const origin = http.createServer((req, res) => {
     originRequests += 1;
     assert.equal(req.url, `/api/content/${contentId}/file`);
+    originNodeToken = req.headers['x-mbfd-node-token'] || null;
     res.setHeader('Content-Type', 'video/mp4');
     res.setHeader('Accept-Ranges', 'bytes');
     const match = /^bytes=(\d+)-(\d+)$/.exec(String(req.headers.range || ''));
@@ -81,6 +83,7 @@ test('concurrent cold video ranges wait for one cache fill instead of stampeding
     cache = createCacheServer({
       originBaseUrl: `http://127.0.0.1:${originPort}`,
       cacheDir,
+      nodeToken: 'classroom-node-token',
     });
     const cachePort = await listen(cache.server);
     const item = { content_id: contentId, sha256, size: bytes.length };
@@ -96,6 +99,7 @@ test('concurrent cold video ranges wait for one cache fill instead of stampeding
     await fill;
 
     assert.equal(originRequests, 1);
+    assert.equal(originNodeToken, 'classroom-node-token');
     for (const response of responses) {
       assert.equal(response.status, 206);
       assert.equal(response.headers['x-mc-cache'], 'hit');
@@ -159,6 +163,43 @@ test('overlapping manifest refreshes stay serial and download each asset once', 
   } finally {
     if (cache) await close(cache.server);
     await close(origin);
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test('node token is never forwarded to a cross-origin redirect', async () => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-cache-redirect-'));
+  let redirectedToken = 'not-requested';
+  const redirected = http.createServer((req, res) => {
+    redirectedToken = req.headers['x-mbfd-node-token'] || null;
+    res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': 2 });
+    res.end('ok');
+  });
+  const origin = http.createServer((req, res) => {
+    assert.equal(req.headers['x-mbfd-node-token'], 'classroom-node-token');
+    res.writeHead(302, { Location: `http://127.0.0.1:${redirected.address().port}/asset` });
+    res.end();
+  });
+
+  let cache;
+  try {
+    await listen(redirected);
+    const originPort = await listen(origin);
+    cache = createCacheServer({
+      originBaseUrl: `http://127.0.0.1:${originPort}`,
+      nodeToken: 'classroom-node-token',
+      cacheDir,
+    });
+    const cachePort = await listen(cache.server);
+    const response = await requestBytes(`http://127.0.0.1:${cachePort}/content/redirected-video/file`);
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.toString(), 'ok');
+    assert.equal(redirectedToken, null);
+  } finally {
+    if (cache) await close(cache.server);
+    await close(origin);
+    await close(redirected);
     fs.rmSync(cacheDir, { recursive: true, force: true });
   }
 });
