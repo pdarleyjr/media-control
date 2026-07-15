@@ -45,3 +45,22 @@ test('node manifest contains only checksum-ready canonical assets', () => {
     canonical_url: '/api/content/ready/file',
   }]);
 });
+
+test('node manifest stages videos first and newest content first within a media class', () => {
+  const fakeDb = {
+    prepare() {
+      return {
+        all() {
+          return [
+            { content_id: 'old-image', size_bytes: 1, sha256: 'a'.repeat(64), mime_type: 'image/png', created_at: 10 },
+            { content_id: 'new-image', size_bytes: 2, sha256: 'b'.repeat(64), mime_type: 'image/png', created_at: 30 },
+            { content_id: 'video', size_bytes: 3, sha256: 'c'.repeat(64), mime_type: 'video/mp4', created_at: 5 },
+          ];
+        },
+      };
+    },
+  };
+
+  const manifest = buildContentManifest(fakeDb, { queueMissing: false });
+  assert.deepEqual(manifest.map((item) => item.content_id), ['video', 'new-image', 'old-image']);
+});

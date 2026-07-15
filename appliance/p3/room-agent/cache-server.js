@@ -2,14 +2,13 @@
 //
 // Serves GET /content/:id/file to the on-box player windows (loopback only).
 //   • cache HIT  → stream bytes from disk with Content-Type + Range support
-//   • cache MISS → proxy from the origin server, stream to the client AND tee a
-//                  copy to disk so the next request is a local hit
+//   • cache MISS → perform one full, verified origin fill; concurrent player
+//                  requests wait for that same fill and then read from disk
 //
-// This is a READ-THROUGH proxy: a miss is never an error, so the classroom walls
-// keep playing even before the cache is warm. Combined with the player's origin
-// fallback (asset_url -> /api/content/:id/file), a dead/incomplete cache can
-// never blank a wall. Node built-ins only (no better-sqlite3 / native deps), so
-// install on Windows is just `npm i socket.io-client`.
+// This cache-first gate avoids a cold-cache fan-out where every display streams
+// the same high-bitrate video across the classroom uplink. If the fill fails,
+// the request still falls back to the origin proxy. Node built-ins only (no
+// better-sqlite3 / native deps), so Windows install stays dependency-light.
 'use strict';
 
 const fs = require('fs');
@@ -37,8 +36,12 @@ function createCacheServer(opts = {}) {
   const host = opts.host || '127.0.0.1';
   const log = opts.log || (() => {});
   const warn = opts.warn || (() => {});
-  const downloading = new Set(); // content_ids with a tee-write in flight
+  const downloads = new Map(); // content_id -> shared fill Promise
   const manifestById = new Map();
+  const pendingManifest = new Map();
+  let manifestSweep = null;
+  let failureCount = 0;
+  let lastFailure = null;
 
   try { fs.mkdirSync(contentDir, { recursive: true }); } catch (_) { /* ignore */ }
 
@@ -47,6 +50,26 @@ function createCacheServer(opts = {}) {
 
   function readMeta(id) {
     try { return JSON.parse(fs.readFileSync(metaFor(id), 'utf8')); } catch { return null; }
+  }
+
+  function cacheEntryMatches(id, expected = null) {
+    let st;
+    try { st = fs.statSync(fileFor(id)); } catch { return false; }
+    if (!st.isFile() || st.size <= 0) return false;
+    const meta = readMeta(id);
+    if (!meta || meta.checksum_verified !== true || !SHA256_RE.test(String(meta.sha256 || ''))) return false;
+    if (Number(meta.size) !== st.size) return false;
+    const expectedSha = String(expected && expected.sha256 || '').toLowerCase();
+    const expectedSize = Number(expected && (expected.size || expected.size_bytes)) || null;
+    if (expectedSha && meta.sha256 !== expectedSha) return false;
+    if (expectedSize && st.size !== expectedSize) return false;
+    return true;
+  }
+
+  function removeCacheEntry(id) {
+    try { fs.unlinkSync(fileFor(id)); } catch (_) {}
+    try { fs.unlinkSync(metaFor(id)); } catch (_) {}
+    try { fs.unlinkSync(fileFor(id) + '.part'); } catch (_) {}
   }
 
   // The player loads <video crossOrigin="anonymous"> (so screenshots don't taint
@@ -87,28 +110,23 @@ function createCacheServer(opts = {}) {
           'Content-Range': `bytes ${start}-${end}/${total}`,
           'Content-Length': end - start + 1,
         });
-        fs.createReadStream(file, { start, end }).pipe(res);
+        if (req.method === 'HEAD') res.end();
+        else fs.createReadStream(file, { start, end }).pipe(res);
         return true;
       }
     }
     res.writeHead(200, { 'Content-Length': total });
-    fs.createReadStream(file).pipe(res);
+    if (req.method === 'HEAD') res.end();
+    else fs.createReadStream(file).pipe(res);
     return true;
   }
 
-  // Proxy from origin while a single-flight BACKGROUND fill caches the full file
-  // so the NEXT request is a local hit. Critically this also runs for Range
-  // requests — videos only ever use Range, so the old "cache only non-range"
-  // path never cached them (every play re-streamed from the server => stutter).
-  // This request itself is served straight from origin (range-aware passthrough).
+  // Last-resort origin proxy. Normal cache misses do not enter this path until a
+  // shared full-file fill has failed, preventing one origin stream per display.
   function proxyOrigin(req, res, id, depth) {
     const originUrl = `${originBaseUrl}/api/content/${encodeURIComponent(id)}/file`;
     let u;
     try { u = new URL(req._redirect || originUrl); } catch { res.writeHead(502); return res.end('bad origin'); }
-    // Kick off the background full-file cache (single-flight via `downloading`).
-    if (!req._redirect && !fs.existsSync(fileFor(id)) && !downloading.has(id)) {
-      prewarm(id).catch(() => {});
-    }
     const headers = {};
     if (req.headers.range) headers.Range = req.headers.range;
     const lib = pickLib(u);
@@ -137,32 +155,48 @@ function createCacheServer(opts = {}) {
     oreq.on('timeout', () => { try { oreq.destroy(new Error('origin timeout')); } catch (_) {} });
   }
 
-  // Pre-warm one content id by issuing an internal cache fill (no client). Used
-  // by the manifest handler so existing library content is staged ahead of use.
+  // Pre-warm one content id with a single shared Promise. It also supports a
+  // request arriving before the checksum manifest: bytes are hashed locally,
+  // then revalidated against the manifest when it arrives.
   function prewarm(id, manifestItem) {
-    return new Promise((resolve) => {
-      if (!ID_RE.test(String(id || ''))) return resolve(false);
-      const expected = manifestItem || manifestById.get(String(id)) || null;
-      const expectedSha = String(expected && expected.sha256 || '').toLowerCase();
-      const expectedSize = Number(expected && (expected.size || expected.size_bytes)) || null;
-      if (fs.existsSync(fileFor(id))) {
-        const meta = readMeta(id) || {};
-        if (meta.checksum_verified === true && meta.sha256 === expectedSha && (!expectedSize || meta.size === expectedSize)) {
-          return resolve(true);
-        }
-        try { fs.unlinkSync(fileFor(id)); } catch (_) {}
-        try { fs.unlinkSync(metaFor(id)); } catch (_) {}
-      }
-      if (downloading.has(id)) return resolve(true);
-      if (!SHA256_RE.test(expectedSha)) return resolve(false);
-      downloading.add(id);
-      const originUrl = `${originBaseUrl}/api/content/${encodeURIComponent(id)}/file`;
-      let u; try { u = new URL(originUrl); } catch { downloading.delete(id); return resolve(false); }
-      const partPath = fileFor(id) + '.part';
+    const normalizedId = String(id || '');
+    if (!ID_RE.test(normalizedId)) return Promise.resolve(false);
+    if (manifestItem) manifestById.set(normalizedId, manifestItem);
+    const expected = manifestItem || manifestById.get(normalizedId) || null;
+    if (cacheEntryMatches(normalizedId, expected)) return Promise.resolve(true);
+    if (downloads.has(normalizedId)) return downloads.get(normalizedId);
+    if (fs.existsSync(fileFor(normalizedId)) || fs.existsSync(metaFor(normalizedId))) removeCacheEntry(normalizedId);
+
+    const expectedSha = String(expected && expected.sha256 || '').toLowerCase();
+    const expectedSize = Number(expected && (expected.size || expected.size_bytes)) || null;
+    const originUrl = `${originBaseUrl}/api/content/${encodeURIComponent(normalizedId)}/file`;
+    let u;
+    try { u = new URL(originUrl); } catch { return Promise.resolve(false); }
+
+    const task = new Promise((resolve) => {
+      const partPath = fileFor(normalizedId) + '.part';
       const lib = pickLib(u);
+      let settled = false;
+      const finish = (ok, error) => {
+        if (settled) return;
+        settled = true;
+        downloads.delete(normalizedId);
+        if (!ok) {
+          try { fs.unlinkSync(partPath); } catch (_) {}
+          failureCount += 1;
+          lastFailure = { content_id: normalizedId, error: String(error || 'cache_fill_failed'), at: Math.floor(Date.now() / 1000) };
+          warn(`[cache] fill failed ${normalizedId}: ${lastFailure.error}`);
+        }
+        resolve(ok);
+      };
       const r = lib.get(u, { timeout: 300000 }, (ores) => {
-        if ((ores.statusCode || 0) !== 200) { ores.resume(); downloading.delete(id); return resolve(false); }
-        let out; try { out = fs.createWriteStream(partPath, { flags: 'w' }); } catch { downloading.delete(id); return resolve(false); }
+        if ((ores.statusCode || 0) !== 200) {
+          ores.resume();
+          return finish(false, `origin_status_${ores.statusCode || 0}`);
+        }
+        let out;
+        try { out = fs.createWriteStream(partPath, { flags: 'w' }); }
+        catch (error) { return finish(false, error.message); }
         const hash = crypto.createHash('sha256');
         ores.on('data', (chunk) => hash.update(chunk));
         ores.pipe(out);
@@ -170,37 +204,66 @@ function createCacheServer(opts = {}) {
           try {
             const actualSha = hash.digest('hex');
             const actualSize = fs.statSync(partPath).size;
-            if (actualSha !== expectedSha) throw new Error('sha256_mismatch');
+            if (SHA256_RE.test(expectedSha) && actualSha !== expectedSha) throw new Error('sha256_mismatch');
             if (expectedSize && actualSize !== expectedSize) throw new Error('size_mismatch');
-            fs.renameSync(partPath, fileFor(id));
-            fs.writeFileSync(metaFor(id), JSON.stringify({
+            fs.renameSync(partPath, fileFor(normalizedId));
+            fs.writeFileSync(metaFor(normalizedId), JSON.stringify({
               content_type: ores.headers['content-type'] || 'application/octet-stream',
               size: actualSize,
               sha256: actualSha,
               checksum_verified: true,
               cached_at: Math.floor(Date.now() / 1000),
             }));
-            log(`[cache] prewarmed ${id}`);
-          } catch (e) { try { fs.unlinkSync(partPath); } catch (_) {} }
-          downloading.delete(id);
-          resolve(true);
+            log(`[cache] prewarmed ${normalizedId}`);
+            finish(true);
+          } catch (error) {
+            finish(false, error.message);
+          }
         });
-        ores.on('error', () => { try { out.destroy(); } catch (_) {} try { fs.unlinkSync(partPath); } catch (_) {} downloading.delete(id); resolve(false); });
+        out.on('error', (error) => { try { ores.destroy(); } catch (_) {} finish(false, error.message); });
+        ores.on('error', (error) => { try { out.destroy(); } catch (_) {} finish(false, error.message); });
       });
-      r.on('error', () => { downloading.delete(id); resolve(false); });
-      r.on('timeout', () => { try { r.destroy(); } catch (_) {} });
+      r.on('error', (error) => finish(false, error.message));
+      r.on('timeout', () => { try { r.destroy(new Error('origin_timeout')); } catch (_) {} });
     });
+    downloads.set(normalizedId, task);
+    return task;
   }
 
-  async function prewarmManifest(items) {
-    if (!Array.isArray(items)) return;
+  function startManifestSweep() {
+    if (manifestSweep) return manifestSweep;
+    manifestSweep = (async () => {
+      while (pendingManifest.size > 0) {
+        const [id, item] = pendingManifest.entries().next().value;
+        pendingManifest.delete(id);
+        try { await prewarm(id, item); } catch (_) { /* keep warming the remainder */ }
+      }
+    })().finally(() => { manifestSweep = null; });
+    return manifestSweep;
+  }
+
+  function prewarmManifest(items) {
+    if (!Array.isArray(items)) return Promise.resolve();
     for (const it of items) {
       const id = it && (it.content_id || it.id);
       if (id) {
-        manifestById.set(String(id), it);
-        try { await prewarm(String(id), it); } catch (_) { /* keep going */ }
+        const normalizedId = String(id);
+        manifestById.set(normalizedId, it);
+        if (!cacheEntryMatches(normalizedId, it) && !downloads.has(normalizedId)) {
+          pendingManifest.set(normalizedId, it);
+        }
       }
     }
+    return startManifestSweep();
+  }
+
+  function prewarmPriority(item) {
+    const id = item && (item.content_id || item.id);
+    if (!id) return Promise.resolve(false);
+    const normalizedId = String(id);
+    manifestById.set(normalizedId, item);
+    pendingManifest.delete(normalizedId);
+    return prewarm(normalizedId, item);
   }
 
   function getStats() {
@@ -211,7 +274,28 @@ function createCacheServer(opts = {}) {
         try { const st = fs.statSync(path.join(contentDir, name)); if (st.isFile()) { bytes += st.size; count++; } } catch (_) {}
       }
     } catch (_) {}
-    return { cache_size: bytes, file_count: count, content_dir: contentDir };
+    return {
+      cache_size: bytes,
+      file_count: count,
+      content_dir: contentDir,
+      downloading: downloads.size,
+      queued: pendingManifest.size,
+      sync_status: downloads.size || pendingManifest.size ? 'syncing' : 'ready',
+      failed: lastFailure && (Math.floor(Date.now() / 1000) - lastFailure.at) < 300 ? 1 : 0,
+      failure_count: failureCount,
+      last_failure: lastFailure,
+    };
+  }
+
+  function serveAfterCacheFill(req, res, id) {
+    prewarm(id, manifestById.get(id)).then((ready) => {
+      if (res.destroyed || res.writableEnded) return;
+      if (ready && serveLocal(req, res, id)) return;
+      proxyOrigin(req, res, id, 0);
+    }).catch((error) => {
+      warn('[cache] fill gate error:', error && error.message);
+      if (!res.destroyed && !res.writableEnded) proxyOrigin(req, res, id, 0);
+    });
   }
 
   const server = http.createServer((req, res) => {
@@ -231,10 +315,10 @@ function createCacheServer(opts = {}) {
     if (m) {
       const id = decodeURIComponent(m[1]);
       if (!ID_RE.test(id)) { res.writeHead(400); return res.end('bad id'); }
-      if (fs.existsSync(fileFor(id)) && !downloading.has(id)) {
+      if (cacheEntryMatches(id, manifestById.get(id))) {
         if (serveLocal(req, res, id)) return;
       }
-      return proxyOrigin(req, res, id, 0);
+      return serveAfterCacheFill(req, res, id);
     }
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: false, error: 'not_found' }));
@@ -245,7 +329,7 @@ function createCacheServer(opts = {}) {
   }
   function close() { try { server.close(); } catch (_) {} }
 
-  return { listen, close, prewarm, prewarmManifest, getStats, server };
+  return { listen, close, prewarm, prewarmManifest, prewarmPriority, getStats, server };
 }
 
 module.exports = { checksumMatches, createCacheServer };

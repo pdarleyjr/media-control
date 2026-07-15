@@ -53,6 +53,15 @@ test('player restores persisted document slide state after reconnect before publ
   assert.ok(html.includes('publishPlayerState({ force: true })'), 'player should publish authoritative state after restore completes');
 });
 
+test('player reports local cache readiness from completed media loading, not URL presence', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'player', 'index.html'), 'utf8');
+  assert.ok(html.includes('let currentLocalAssetReady = null'));
+  assert.ok(html.includes('local_asset_ready: currentLocalAssetReady'));
+  assert.ok(html.includes("currentCacheStatus = localPlayableAsset ? 'staging' : 'direct'"));
+  assert.ok(html.includes("currentLocalAssetReady = true"));
+  assert.ok(!html.includes('local_asset_ready: item && item.asset_url ? 1 : 0'));
+});
+
 test('doc player transport normalization unwraps nested payload wrappers before go_to_slide', () => {
   const snippet = readSnippet(
     path.join(__dirname, '..', 'player', 'doc.html'),

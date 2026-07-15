@@ -33,7 +33,7 @@ const ACTIVE_DISPLAYS = (process.env.MC_ACTIVE_DISPLAYS || '').split(',').map((s
 const AUDIO_ENDPOINT = process.env.MC_AUDIO_ENDPOINT || 'eARC';
 
 const HEARTBEAT_MS = 15 * 1000;
-const MANIFEST_REFRESH_MS = 60 * 1000; // re-pull often so new uploads pre-stage quickly
+const MANIFEST_REFRESH_MS = 15 * 1000; // new uploads enter the local cache before an instructor selects them
 
 function log(...a) { console.log(new Date().toISOString(), ...a); }
 function warn(...a) { console.warn(new Date().toISOString(), ...a); }
@@ -74,7 +74,7 @@ function heartbeat() {
     software_version: SOFTWARE_VERSION,
     free_disk: freeDiskBytes(),
     cache_size: stats.cache_size,
-    sync_status: 'idle',
+    sync_status: stats.sync_status || 'idle',
     active_displays: ACTIVE_DISPLAYS,
     audio_endpoint: AUDIO_ENDPOINT,
     network: {
@@ -133,6 +133,23 @@ function connect() {
     const n = Array.isArray(manifest) ? manifest.length : 0;
     log(`[cache-agent] manifest received: ${n} items — pre-warming`);
     cache.prewarmManifest(manifest).catch((err) => warn('[cache-agent] prewarm error:', err && err.message));
+  });
+  io.on('node:prewarm-content', async (item, acknowledge) => {
+    const contentId = item && (item.content_id || item.id);
+    const startedAt = Date.now();
+    const ok = await cache.prewarmPriority(item).catch((err) => {
+      warn('[cache-agent] priority prewarm error:', err && err.message);
+      return false;
+    });
+    const result = {
+      ok,
+      content_id: contentId || null,
+      elapsed_ms: Date.now() - startedAt,
+      cache: cache.getStats(),
+    };
+    log(`[cache-agent] priority prewarm ${contentId || 'unknown'} ${ok ? 'ready' : 'failed'} in ${result.elapsed_ms}ms`);
+    if (typeof acknowledge === 'function') acknowledge(result);
+    try { io.emit('node:prewarm-result', result); } catch (_) {}
   });
   io.on('connect_error', (err) => warn('[cache-agent] connect_error:', err && err.message));
   io.on('disconnect', (reason) => { log('[cache-agent] disconnected:', reason); if (hbTimer) { clearInterval(hbTimer); hbTimer = null; } });

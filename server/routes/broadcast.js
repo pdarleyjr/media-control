@@ -22,6 +22,7 @@ const { assertRemoteUrlSafe } = require('../lib/ssrf-policy');
 const { audit } = require('../lib/audit');
 const { ensureLiveStreamDisplay, liveStreamProgramState, markLiveContentChanged } = require('../lib/live-stream-display');
 const { resolveBroadcastTargets } = require('../lib/broadcast-targets');
+const nodeRegistry = require('../lib/node-registry');
 
 async function callDirector(path, body) {
   const base = String(process.env.AI_DIRECTOR_URL || 'http://host.docker.internal:8766').replace(/\/+$/, '');
@@ -112,6 +113,9 @@ router.post('/', async (req, res) => {
 
   const source = { content_id, remote_url: effectiveRemoteUrl, playlist_id, fit_mode };
   const io = req.app.get('io');
+  const cachePrewarm = content_id
+    ? nodeRegistry.requestContentPrewarm(io, db, { deviceIds: targets, contentId: content_id })
+    : { requested: false, reason: 'not_local_content' };
 
   let sent = 0;
   const failed = resolvedTargets.missing.slice();
@@ -161,6 +165,7 @@ router.post('/', async (req, res) => {
       missing_device_count: resolvedTargets.missing.length,
       sent,
       targeting_all: targetingAll,
+      cache_prewarm_requested: cachePrewarm.requested === true,
     },
   });
 
@@ -169,7 +174,7 @@ router.post('/', async (req, res) => {
     liveProgram = liveStreamProgramState(req.workspaceId);
     liveProgram.program_refresh = await callDirector('/media-control/refresh');
   }
-  res.json({ success: true, sent, failed, total: requested.length, live_stream: liveProgram });
+  res.json({ success: true, sent, failed, total: requested.length, cache_prewarm: cachePrewarm, live_stream: liveProgram });
 });
 
 module.exports = router;

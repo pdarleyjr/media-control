@@ -171,6 +171,7 @@ module.exports = {
   classroomCache: {
     enabled: ['true', '1'].includes(String(process.env.CLASSROOM_LOCAL_CACHE_ENABLED || '').toLowerCase()),
     baseUrl: (process.env.CLASSROOM_LOCAL_CACHE_BASE || 'http://127.0.0.1:8097').replace(/\/+$/, ''),
+    nodeId: process.env.CLASSROOM_LOCAL_CACHE_NODE_ID || 'classroom-1-p3',
     wallIds: String(process.env.CLASSROOM_LOCAL_CACHE_WALL_IDS || '')
       .split(',').map((s) => s.trim()).filter(Boolean),
     nodeToken: process.env.CLASSROOM_LOCAL_CACHE_NODE_TOKEN || '',

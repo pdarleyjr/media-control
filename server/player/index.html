@@ -432,6 +432,8 @@
     let wallSyncTimer = null;
     let lastWallSync = null;
     let currentVideoEl = null;
+    let currentLocalAssetReady = null;
+    let currentCacheStatus = 'direct';
     let currentItemStartedAt = 0;
     let pendingWallStartAt = 0;
     let displayProfile = null;
@@ -1293,6 +1295,11 @@
       return item.mime_type || null;
     }
 
+    function usesClassroomLocalAsset(item) {
+      const kind = contentKindForItem(item);
+      return !!(item && item.asset_proxy === 'local' && (kind === 'video' || kind === 'image'));
+    }
+
     function ytPlayerStateLabel() {
       try {
         if (!activeYtPlayer || typeof activeYtPlayer.getPlayerState !== 'function') return null;
@@ -1323,12 +1330,12 @@
         paused: null,
         muted: null,
         volume: null,
-        local_asset_ready: item && item.asset_url ? 1 : 0,
+        local_asset_ready: currentLocalAssetReady,
         render_state: item ? 'playing' : 'idle',
         error_state: null,
         media_title: (item && item.filename) || config.deviceName || 'Web Player',
         media_type: contentKindForItem(item),
-        cache_status: item && item.asset_url ? 'local' : 'direct',
+        cache_status: currentCacheStatus,
         wall_state: wallConfig
           ? ((lastTransportCommand && lastTransportCommand.status === 'failed')
             ? 'out_of_sync'
@@ -1404,7 +1411,7 @@
       if (snapshot.media_type == null) snapshot.media_type = snapshot.content_type;
       if (snapshot.slide_total == null && item) snapshot.slide_total = playlist.length;
       if (snapshot.slide_index == null && item) snapshot.slide_index = currentIndex + 1;
-      if (snapshot.cache_status == null) snapshot.cache_status = item && item.asset_url ? 'local' : 'direct';
+      if (snapshot.cache_status == null) snapshot.cache_status = currentCacheStatus;
       if (snapshot.wall_state == null) snapshot.wall_state = wallConfig ? 'synced' : 'standalone';
       if (snapshot.current_asset_id == null && item) snapshot.current_asset_id = item.content_id || item.asset_id || null;
 
@@ -2961,6 +2968,9 @@
         if (!swapped && origin && usedLocal && el.src !== origin) {
           console.warn('[local-cache] asset_url failed, falling back to origin:', origin);
           swapped = true;
+          currentLocalAssetReady = false;
+          currentCacheStatus = 'origin-fallback';
+          publishPlayerState();
           el.src = origin; // keep the listener; if origin also fails we reach onFinalError
           return;
         }
@@ -3166,6 +3176,10 @@
 
     function renderContent(item) {
       teardownCurrentMedia();
+
+      const localPlayableAsset = usesClassroomLocalAsset(item);
+      currentLocalAssetReady = localPlayableAsset ? false : null;
+      currentCacheStatus = localPlayableAsset ? 'staging' : 'direct';
 
       const container = document.getElementById('playerContainer');
       container.style.display = 'block';
@@ -3387,6 +3401,10 @@
             if (!isFollower) advanceTimer = setTimeout(nextItem, 3000);
           });
           video.onloadeddata = () => {
+            if (currentCacheStatus === 'staging') {
+              currentLocalAssetReady = true;
+              currentCacheStatus = 'local';
+            }
             console.log('[wall/audio] video loaded file=' + item.filename + ' role=' + (wallConfig ? (wallConfig.is_leader ? 'leader' : 'follower') : 'solo') + ' muted=' + video.muted + ' volume=' + video.volume);
             publishPlayerState();
           };
@@ -3424,6 +3442,11 @@
           img.crossOrigin = 'anonymous';
           img.style.cssText = `width:100%;height:100%;object-fit:${cssFit}`;
           img.addEventListener('load', () => {
+            if (currentCacheStatus === 'staging') {
+              currentLocalAssetReady = true;
+              currentCacheStatus = 'local';
+              publishPlayerState();
+            }
             requestAnimationFrame(() => {
               if (img.isConnected && container.contains(img)) captureAndSend();
             });

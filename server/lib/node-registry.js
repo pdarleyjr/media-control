@@ -101,12 +101,22 @@ function buildContentManifest(db, options = {}) {
   if (!db) return [];
   try {
     const rows = db.prepare(`
-      SELECT c.id AS content_id, c.file_size AS size_bytes,
+      SELECT c.id AS content_id, c.file_size AS size_bytes, c.mime_type,
+             c.created_at, c.updated_at, a.computed_at,
              a.asset_id, a.sha256, a.size_bytes AS canonical_size
       FROM content c
       LEFT JOIN asset_checksums a ON a.content_id = c.id
       WHERE c.filepath IS NOT NULL AND c.filepath <> ''
     `).all();
+    rows.sort((a, b) => {
+      const aVideo = String(a.mime_type || '').startsWith('video/') ? 0 : 1;
+      const bVideo = String(b.mime_type || '').startsWith('video/') ? 0 : 1;
+      if (aVideo !== bVideo) return aVideo - bVideo;
+      const aTime = Number(a.updated_at || a.created_at || a.computed_at) || 0;
+      const bTime = Number(b.updated_at || b.created_at || b.computed_at) || 0;
+      if (aTime !== bTime) return bTime - aTime;
+      return String(a.content_id || '').localeCompare(String(b.content_id || ''));
+    });
     const manifest = [];
     for (const row of rows) {
       if (!/^[0-9a-f]{64}$/i.test(String(row.sha256 || ''))) {
@@ -130,4 +140,36 @@ function buildContentManifest(db, options = {}) {
   }
 }
 
-module.exports = { nodeAuthOk, recordHeartbeat, buildContentManifest };
+function requestContentPrewarm(io, db, options = {}) {
+  const deviceIds = [...new Set((options.deviceIds || []).filter(Boolean).map(String))];
+  const contentId = String(options.contentId || '');
+  const cc = options.classroomCache || config.classroomCache || {};
+  if (!cc.enabled || !contentId || deviceIds.length === 0 || !Array.isArray(cc.wallIds) || cc.wallIds.length === 0) {
+    return { requested: false, reason: 'cache_disabled' };
+  }
+
+  try {
+    const deviceSlots = deviceIds.map(() => '?').join(',');
+    const wallSlots = cc.wallIds.map(() => '?').join(',');
+    const cachedTarget = db.prepare(`
+      SELECT 1 AS found
+      FROM video_wall_devices
+      WHERE device_id IN (${deviceSlots}) AND wall_id IN (${wallSlots})
+      LIMIT 1
+    `).get(...deviceIds, ...cc.wallIds);
+    if (!cachedTarget) return { requested: false, reason: 'targets_not_cached' };
+
+    const item = buildContentManifest(db, { queueMissing: true })
+      .find((entry) => entry.content_id === contentId);
+    if (!item) return { requested: false, reason: 'manifest_pending' };
+    if (!io || typeof io.of !== 'function') return { requested: false, reason: 'socket_unavailable' };
+
+    const nodeId = String(cc.nodeId || 'classroom-1-p3');
+    io.of('/device').to(`node:${nodeId}`).emit('node:prewarm-content', item);
+    return { requested: true, node_id: nodeId, content_id: contentId };
+  } catch (error) {
+    return { requested: false, reason: 'prewarm_error', error: error.message };
+  }
+}
+
+module.exports = { nodeAuthOk, recordHeartbeat, buildContentManifest, requestContentPrewarm };
