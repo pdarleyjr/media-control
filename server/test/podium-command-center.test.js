@@ -23,6 +23,9 @@ test('podium command center occupies only the viewport below the appliance heade
   assert.match(css, /inset:\s*var\(--console-header-h\) 0 0/);
   assert.match(css, /body\.console-mode\.cc-fullscreen \.mc-cc-shell\s*\{[\s\S]*?height:\s*100%/);
   assert.match(css, /touch-action:\s*pan-y/);
+  assert.match(css, /body\.console-mode select\s*\{[\s\S]*?min-height:\s*52px/);
+  assert.match(css, /body\.console-mode select option\s*\{[\s\S]*?font-size:\s*18px/);
+  assert.match(css, /body\.console-mode \.mc-target-wall-btn[\s\S]*?min-height:\s*52px/);
 });
 
 test('multiview remains reachable inside the fixed command center viewport', () => {

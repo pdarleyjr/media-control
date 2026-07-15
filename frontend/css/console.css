@@ -372,3 +372,45 @@ body.console-mode .mc-library-body,
   .console-clock { justify-self: stretch; }
   .console-profile-picker select { width: 100%; }
 }
+
+/* The podium is a dedicated touch appliance. Native Chromium select popups use
+   the control font size, so the prior 13px/40px controls were hard to hit even
+   though the touchscreen itself was mapped correctly to the only display. */
+body.console-mode select {
+  min-height: 52px;
+  font-size: 17px;
+  line-height: 1.35;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body.console-mode .console-profile-picker select {
+  min-height: 56px;
+  font-size: 18px;
+}
+
+body.console-mode select option {
+  min-height: 48px;
+  padding: 10px 12px;
+  font-size: 18px;
+  line-height: 1.5;
+}
+
+body.console-mode .mc-target-wall-btn,
+body.console-mode .mc-ss-btn,
+body.console-mode .mc-cc-rail-btn,
+body.console-mode .mc-modal-close,
+body.console-mode .mc-library-collapse {
+  min-width: 52px;
+  min-height: 52px;
+  font-size: 16px;
+  touch-action: manipulation;
+}
+
+body.console-mode .mc-target-select,
+body.console-mode .mc-cc-saver-select {
+  min-height: 52px;
+  font-size: 17px;
+  padding-left: 16px;
+  padding-right: 42px;
+}

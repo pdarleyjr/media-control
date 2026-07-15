@@ -1809,6 +1809,7 @@ export default {
   'mc.cc.split': 'Split',
   'mc.cc.saver.label': 'Screensaver / Wallpaper',
   'mc.cc.saver.default': 'MBFD Default',
+  'mc.cc.saver.mixed': 'Mixed / Custom',
   'mc.cc.dock.multiview': 'Multiview',
   'mc.cc.dock.blank_selected': 'Blank selected',
   'mc.cc.dock.blank_all': 'Blank all',

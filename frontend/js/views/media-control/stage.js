@@ -15,6 +15,11 @@ import { esc } from '../../utils.js';
 import { t, tn } from '../../i18n.js';
 import { renderTransportBar } from './transport.js';
 import { liveEmbedHtml } from './live-preview.js';
+import {
+  MIXED_SCREENSAVER_VALUE,
+  SCREENSAVER_OPTIONS,
+  screensaverValueForDisplays,
+} from './screensaver-state.js';
 
 // ── Screensaver dropdown (per card) ───────────────────────────────────────
 // A small in-card <select> on every display + wall card that broadcasts a
@@ -22,31 +27,18 @@ import { liveEmbedHtml } from './live-preview.js';
 //   • Dashboard    → the live wall.mbfdhub.com ops dashboard (framable; the
 //                    player iframes *.mbfdhub.com live, not a screenshot)
 //   • B&W Wallpaper / L1 Wallpaper → uploaded image content items.
-// Content ids are workspace-stable assets in the Wallpaper folder; if an asset
-// is ever re-uploaded, update the id here.
-const SCREENSAVER_OPTIONS = [
-  { value: 'url:https://wall.mbfdhub.com', labelKey: 'mc.saver.dashboard' },
-  { value: 'content:4798f022-e9d9-4cba-a0b0-56aeb75a6bff', labelKey: 'mc.saver.bw' },
-  { value: 'content:1d01b7a0-1a0c-4d3d-b0fd-6d854ce09ae3', labelKey: 'mc.saver.l1' },
-  { value: 'content:7c596f36-27f6-4d7b-9bb0-2c682791d25a', labelKey: 'mc.saver.mbfd_map' },
-  // Phase 6: open the media drawer filtered to the seeded "Screensavers" folder
-  // (no broadcast — handled by the caller's folder: prefix path), and a pure
-  // blank-black screensaver (broadcast a 1x1 black still). Kept additive to the
-  // existing fixed classroom defaults above.
-  { value: 'folder:Screensavers', labelKey: 'mc.saver.choose_from_folder' },
-  { value: 'blank:black', labelKey: 'mc.saver.blank_black' },
-];
-
 // Render the screensaver <select>. `dataAttrs` carries the target wiring:
 // `data-device-id="X"` (single display / split member) or `data-wall-ids="a,b"`
-// (whole wall). The first option is a non-committal placeholder.
-function screensaverSelect(dataAttrs) {
+// (whole wall). Its selected value is derived from current player state.
+function screensaverSelect(dataAttrs, selectedValue = '') {
   const opts = SCREENSAVER_OPTIONS
-    .map(o => `<option value="${esc(o.value)}">${esc(t(o.labelKey))}</option>`)
+    .map(o => `<option value="${esc(o.value)}"${o.value === selectedValue ? ' selected' : ''}>${esc(t(o.labelKey))}</option>`)
     .join('');
   return `<select class="mc-screensaver" ${dataAttrs}
+            data-current-value="${esc(selectedValue)}"
             aria-label="${esc(t('mc.saver.aria'))}" title="${esc(t('mc.saver.title'))}">
-            <option value="">${esc(t('mc.saver.placeholder'))}</option>
+            <option value=""${selectedValue === '' ? ' selected' : ''}>${esc(t('mc.saver.placeholder'))}</option>
+            <option value="${MIXED_SCREENSAVER_VALUE}" disabled${selectedValue === MIXED_SCREENSAVER_VALUE ? ' selected' : ''}>${esc(t('mc.cc.saver.mixed'))}</option>
             ${opts}
           </select>`;
 }
@@ -202,7 +194,7 @@ function displayCard(display, { livePreview = false } = {}) {
       </div>
       <div class="mc-card-foot">
         <span class="mc-card-title">${esc(display.name)}</span>
-        ${screensaverSelect(`data-device-id="${esc(display.id)}"`)}
+        ${screensaverSelect(`data-device-id="${esc(display.id)}"`, screensaverValueForDisplays([display]))}
       </div>
       <div class="mc-card-nowplaying" title="${nowPlaying}">${nowPlaying}</div>
       <div class="mc-card-transport" data-tp-host data-device-id="${esc(display.id)}"></div>
@@ -380,7 +372,7 @@ function wallCard(wall, byId, livePreviewDeviceId = null) {
         <button type="button" class="mc-wall-calibrate" data-wall-calibrate
                 data-wall-ids="${esc(ids)}" data-wall-name="${esc(wall.name)}"
                 title="${esc(t('mc.wall.calibrate_title'))}">${esc(t('mc.wall.calibrate'))}</button>
-        ${screensaverSelect(`data-wall-ids="${esc(ids)}"`)}
+        ${screensaverSelect(`data-wall-ids="${esc(ids)}"`, screensaverValueForDisplays(members))}
         <a class="mc-wall-edit" href="#/walls">${esc(t('mc.wall.edit'))}</a>
       </div>
       <div class="mc-wall-hint">${esc(modeHint)}</div>
@@ -456,7 +448,7 @@ function wallSplitGroup(wall, byId, livePreviewDeviceId = null) {
         <button type="button" class="mc-wall-calibrate" data-wall-calibrate
                 data-wall-ids="${esc(ids)}" data-wall-name="${esc(wall.name)}"
                 title="${esc(t('mc.wall.calibrate_title'))}">${esc(t('mc.wall.calibrate'))}</button>
-        ${screensaverSelect(`data-wall-ids="${esc(ids)}"`)}
+        ${screensaverSelect(`data-wall-ids="${esc(ids)}"`, screensaverValueForDisplays(members))}
         <a class="mc-wall-edit" href="#/walls">${esc(t('mc.wall.edit'))}</a>
       </div>
       <div class="mc-wall-hint">${esc(t('mc.wall.split_one_hint'))}</div>
@@ -649,16 +641,14 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
   });
 
   // Per-card Screensaver dropdown. stopPropagation so opening/changing it never
-  // bubbles to the card's inspector-open click. Reset to the placeholder after a
-  // pick so choosing the same option again re-fires. Target = this card's device
-  // (data-device-id) or the whole wall (data-wall-ids).
+  // bubbles to the card's inspector-open click. Keep the chosen option visible;
+  // the next authoritative display-state paint confirms or corrects it.
   container.querySelectorAll('select.mc-screensaver').forEach(sel => {
     ['pointerdown', 'mousedown', 'click'].forEach(ev => sel.addEventListener(ev, e => e.stopPropagation()));
     sel.addEventListener('change', (e) => {
       e.stopPropagation();
       const val = sel.value;
-      sel.value = '';
-      if (!val || typeof onScreensaver !== 'function') return;
+      if (!val || val === MIXED_SCREENSAVER_VALUE || typeof onScreensaver !== 'function') return;
       const ids = sel.dataset.deviceId
         ? [sel.dataset.deviceId]
         : String(sel.dataset.wallIds || '').split(',').filter(Boolean);
@@ -670,7 +660,11 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
       else if (val.startsWith('blank:')) source = { _screensaver: 'blank', variant: val.slice(6) };
       if (!source) return;
       const opt = SCREENSAVER_OPTIONS.find(o => o.value === val);
-      onScreensaver(ids, source, opt ? t(opt.labelKey) : t('mc.saver.title'));
+      if (source._screensaver === 'folder') sel.value = sel.dataset.currentValue || '';
+      const result = onScreensaver(ids, source, opt ? t(opt.labelKey) : t('mc.saver.title'));
+      Promise.resolve(result).then((ok) => {
+        if (ok === false) sel.value = sel.dataset.currentValue || '';
+      }).catch(() => { sel.value = sel.dataset.currentValue || ''; });
     });
   });
 

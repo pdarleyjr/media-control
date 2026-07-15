@@ -21,6 +21,12 @@ import { renderRecentPanel } from './media-control/recent-panel.js';
 import { openViewModal, closeViewModal } from './media-control/view-modal.js';
 import { hasAdvancedCanvasEndpoint, routeSourceToAdvancedCanvas } from './media-control/advanced-canvas.js';
 import { enableLivePreviewAudio } from './media-control/live-preview.js';
+import {
+  BLACK_SCREENSAVER_URL,
+  MIXED_SCREENSAVER_VALUE,
+  SCREENSAVER_OPTIONS,
+  screensaverValueForDisplays,
+} from './media-control/screensaver-state.js';
 import { confirmDialog } from '../components/confirm.js';
 import * as screenShareEngine from '../services/screen-share-engine.js';
 import * as schedulesView from './schedules.js';
@@ -46,27 +52,6 @@ const ICON_DOWNLOADS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColo
 const ICON_ADMIN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>';
 const ICON_LOGS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="8" y1="13" x2="16" y2="13"></line><line x1="8" y1="17" x2="16" y2="17"></line></svg>';
 const ICON_SETTINGS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>';
-// ── Phase 1 Command Center: screensaver options for the canvas-level control.
-// Mirrors stage.js SCREENSAVER_OPTIONS (kept inline so this view does not depend
-// on stage.js exporting its private list). If an asset is re-uploaded, update the
-// id here AND in stage.js in lockstep.
-const SCREENSAVER_OPTIONS_CC = [
-  { value: 'url:https://wall.mbfdhub.com', labelKey: 'mc.saver.dashboard' },
-  { value: 'content:4798f022-e9d9-4cba-a0b0-56aeb75a6bff', labelKey: 'mc.saver.bw' },
-  { value: 'content:1d01b7a0-1a0c-4d3d-b0fd-6d854ce09ae3', labelKey: 'mc.saver.l1' },
-  { value: 'content:7c596f36-27f6-4d7b-9bb0-2c682791d25a', labelKey: 'mc.saver.mbfd_map' },
-  // Phase 6 (kept in lockstep with stage.js SCREENSAVER_OPTIONS): the seeded
-  // "Screensavers" folder opens the media drawer filtered to it (no broadcast),
-  // and "blank:black" broadcasts a pure black still screensaver.
-  { value: 'folder:Screensavers', labelKey: 'mc.saver.choose_from_folder' },
-  { value: 'blank:black', labelKey: 'mc.saver.blank_black' },
-];
-
-// A 1x1 black still the player renders as a "blank black" screensaver. The
-// player treats a bare remote_url as a still image; an inline SVG data URL keeps
-// this dependency-free and CSP-friendly (no external fetch).
-const BLACK_SCREENSAVER_URL = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16'%3E%3Crect width='16' height='16' fill='%23000'/%3E%3C/svg%3E";
-
 // ── Header avatar (real signed-in user, not a hardcoded "U") ───────────────
 // app.js owns the canonical signed-in user in localStorage('user'); we read it
 // here to render the operator's real initials (or avatar image) in the Command
@@ -497,16 +482,15 @@ function applyScreensaver(ids, source, label) {
     // Open the media drawer filtered to that folder; no broadcast. Lets the
     // operator pick a screensaver asset from the seeded "Screensavers" folder.
     openContentDrawerFiltered(source.folder);
-    return;
+    return Promise.resolve(true);
   }
   if (source && source._screensaver === 'blank' && source.variant === 'black') {
-    if (!Array.isArray(ids) || ids.length === 0) return;
-    sendToDisplays({ remote_url: BLACK_SCREENSAVER_URL }, ids, label || t('mc.saver.blank_black'))
-      .then((ok) => { if (ok) refreshAfterSend(ids); });
-    return;
+    if (!Array.isArray(ids) || ids.length === 0) return Promise.resolve(false);
+    return sendToDisplays({ remote_url: BLACK_SCREENSAVER_URL }, ids, label || t('mc.saver.blank_black'))
+      .then((ok) => { if (ok) refreshAfterSend(ids); return ok; });
   }
-  if (!Array.isArray(ids) || ids.length === 0 || !source) return;
-  sendToDisplays(source, ids, label).then((ok) => { if (ok) refreshAfterSend(ids); });
+  if (!Array.isArray(ids) || ids.length === 0 || !source) return Promise.resolve(false);
+  return sendToDisplays(source, ids, label).then((ok) => { if (ok) refreshAfterSend(ids); return ok; });
 }
 
 function showWallCalibration(deviceIds, wallName) {
@@ -1270,7 +1254,7 @@ function mountTransportRow(hostEl) {
 // "MBFD Default" placeholder per the mockup.
 function mountScreensaverRow(hostEl) {
   if (!hostEl) return null;
-  const opts = SCREENSAVER_OPTIONS_CC
+  const opts = SCREENSAVER_OPTIONS
     .map((o) => `<option value="${esc(o.value)}">${esc(t(o.labelKey))}</option>`)
     .join('');
   hostEl.innerHTML = `
@@ -1278,15 +1262,44 @@ function mountScreensaverRow(hostEl) {
       <span class="mc-screensaver-label">${esc(t('mc.cc.saver.label'))}:</span>
       <select class="mc-cc-saver-select" aria-label="${esc(t('mc.cc.saver.label'))}">
         <option value="">${esc(t('mc.cc.saver.default'))}</option>
+        <option value="${MIXED_SCREENSAVER_VALUE}" disabled>${esc(t('mc.cc.saver.mixed'))}</option>
         ${opts}
       </select>
     </div>`;
   const row = hostEl.querySelector('.mc-screensaver-row');
   const sel = hostEl.querySelector('.mc-cc-saver-select');
+  let pending = null;
+
+  const targetKey = (ids) => ids.slice().sort().join(',');
+  const authoritativeValue = (ids) => {
+    const byId = new Map(displayState.getAll().map((display) => [display.id, display]));
+    return screensaverValueForDisplays(ids.map((id) => byId.get(id) || null));
+  };
+  const repaint = () => {
+    const ids = activeTargetDeviceIds();
+    if (row) row.hidden = ids.length === 0;
+    if (!ids.length) {
+      pending = null;
+      sel.value = '';
+      return;
+    }
+    const confirmed = authoritativeValue(ids);
+    const key = targetKey(ids);
+    if (pending && pending.targetKey === key && Date.now() < pending.expiresAt) {
+      if (confirmed === pending.value) pending = null;
+      else {
+        sel.value = pending.value;
+        return;
+      }
+    } else {
+      pending = null;
+    }
+    sel.value = confirmed;
+  };
+
   sel.addEventListener('change', () => {
     const val = sel.value;
-    sel.value = '';
-    if (!val) return;
+    if (!val || val === MIXED_SCREENSAVER_VALUE) return;
     const ids = activeTargetDeviceIds();
     if (!ids.length) return;
     let source = null;
@@ -1295,11 +1308,27 @@ function mountScreensaverRow(hostEl) {
     else if (val.startsWith('folder:')) source = { _screensaver: 'folder', folder: val.slice(7) };
     else if (val.startsWith('blank:')) source = { _screensaver: 'blank', variant: val.slice(6) };
     if (!source) return;
-    const opt = SCREENSAVER_OPTIONS_CC.find((o) => o.value === val);
-    applyScreensaver(ids, source, opt ? t(opt.labelKey) : t('mc.cc.saver.label'));
+    if (source._screensaver === 'folder') {
+      applyScreensaver(ids, source, t('mc.saver.choose_from_folder'));
+      repaint();
+      return;
+    }
+    pending = { targetKey: targetKey(ids), value: val, expiresAt: Date.now() + 15000 };
+    const opt = SCREENSAVER_OPTIONS.find((o) => o.value === val);
+    sel.setAttribute('aria-busy', 'true');
+    applyScreensaver(ids, source, opt ? t(opt.labelKey) : t('mc.cc.saver.label'))
+      .then((ok) => {
+        if (!ok) pending = null;
+        return displayState.refresh().catch(() => {});
+      })
+      .catch(() => { pending = null; })
+      .finally(() => {
+        sel.removeAttribute('aria-busy');
+        repaint();
+      });
   });
   return {
-    repaint() { if (row) row.hidden = !activeTargetDeviceIds().length; },
+    repaint,
   };
 }
 
