@@ -237,6 +237,7 @@ router.post('/broadcast', async (req, res) => {
     const ok = sceneEngine.pushSourceToDevice(io, deviceId, source, {
       workspaceId: req.workspaceId,
       userId: req.user.id,
+      targetDeviceIds: targets,
     });
     if (ok) sent++; else failed.push(deviceId);
   }

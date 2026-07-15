@@ -119,6 +119,7 @@ router.post('/', async (req, res) => {
     const ok = sceneEngine.pushSourceToDevice(io, deviceId, source, {
       workspaceId: req.workspaceId,
       userId: req.user.id,
+      targetDeviceIds: targets,
     });
     if (ok) sent++; else failed.push(deviceId);
   }
@@ -155,6 +156,7 @@ router.post('/', async (req, res) => {
       playlist_id: playlist_id || null,
       presentation_id: presentation_id || null,
       remote_url: effectiveRemoteUrl || null,
+      device_ids: targets,
       target_count: requested.length,
       missing_device_count: resolvedTargets.missing.length,
       sent,

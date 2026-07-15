@@ -68,17 +68,40 @@ function clonePlaylistForDevice(deviceId, userId, sourcePlaylistId) {
   return playlistId;
 }
 
-function ensureDevicePlaylist(deviceId, userId) {
+function mutableDeviceSet(deviceId, mutableDeviceIds) {
+  const ids = new Set(
+    Array.isArray(mutableDeviceIds)
+      ? mutableDeviceIds.filter(Boolean).map(String)
+      : []
+  );
+  ids.add(String(deviceId));
+  return ids;
+}
+
+function playlistIsExclusiveToDevices(playlistId, deviceIds) {
+  const holders = db.prepare('SELECT id FROM devices WHERE playlist_id = ?').all(playlistId);
+  return holders.every((row) => deviceIds.has(String(row.id)));
+}
+
+function ensureDevicePlaylist(deviceId, userId, { mutableDeviceIds = null } = {}) {
   const device = db.prepare('SELECT playlist_id, workspace_id, name, user_id FROM devices WHERE id = ?').get(deviceId);
   if (!device) return null;
 
   if (device.playlist_id) {
     const existing = db.prepare('SELECT id, is_auto_generated FROM playlists WHERE id = ?').get(device.playlist_id);
     if (existing) {
+      // Content broadcasts replace playlist items in place. Reuse is safe only
+      // for an auto-playlist whose every holder is part of the same operation.
+      // A prior "send playlist to all" can make unrelated walls share one id;
+      // copy-on-write here prevents a later wall drop mutating the other wall.
+      const mutableIds = mutableDeviceSet(deviceId, mutableDeviceIds);
       const wall = wallContextForDevice(deviceId);
-      const isSharedSplitWallPlaylist = !!(wall && wall.layout_mode === 'split' && wall.wall_playlist_id === existing.id);
-      const isSharedSpanWallPlaylist = !!(wall && wall.layout_mode !== 'split' && wall.wall_playlist_id === existing.id);
-      if (!isSharedSplitWallPlaylist && (existing.is_auto_generated || isSharedSpanWallPlaylist)) {
+      const isSplitWallSource = !!(
+        wall
+        && wall.layout_mode === 'split'
+        && wall.wall_playlist_id === existing.id
+      );
+      if (!isSplitWallSource && existing.is_auto_generated && playlistIsExclusiveToDevices(existing.id, mutableIds)) {
         return existing.id;
       }
     }
@@ -91,5 +114,6 @@ module.exports = {
   buildPlaylistSnapshot,
   clonePlaylistForDevice,
   ensureDevicePlaylist,
+  playlistIsExclusiveToDevices,
   wallContextForDevice,
 };
