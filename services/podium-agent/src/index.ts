@@ -38,6 +38,7 @@ type BlockDevice = {
   size?: string | null;
   model?: string | null;
   fstype?: string | null;
+  tran?: string | null;
   children?: BlockDevice[];
 };
 type UsbMount = { name: string; device: string; mountPoint: string; label: string | null; size: string | null; model: string | null; mountedByAgent: boolean };
@@ -184,18 +185,23 @@ function deviceMountpoints(device: BlockDevice) {
   return points.filter((point): point is string => typeof point === 'string' && point.length > 0);
 }
 
-function flattenDevices(devices: BlockDevice[] = [], inheritedRemovable = false): Array<BlockDevice & { removable: boolean }> {
+function flattenDevices(
+  devices: BlockDevice[] = [],
+  inheritedRemovable = false,
+  inheritedUsbTransport = false,
+): Array<BlockDevice & { removable: boolean }> {
   const result: Array<BlockDevice & { removable: boolean }> = [];
   for (const device of devices) {
-    const removable = inheritedRemovable || isRemovable(device.rm);
+    const usbTransport = inheritedUsbTransport || String(device.tran || '').toLowerCase() === 'usb';
+    const removable = inheritedRemovable || usbTransport || isRemovable(device.rm);
     result.push({ ...device, removable });
-    result.push(...flattenDevices(device.children || [], removable));
+    result.push(...flattenDevices(device.children || [], removable, usbTransport));
   }
   return result;
 }
 
 async function blockDevices() {
-  const output = await command('lsblk', ['-J', '-e', '7', '-o', 'NAME,RM,TYPE,MOUNTPOINTS,LABEL,SIZE,MODEL,FSTYPE'], 5000);
+  const output = await command('lsblk', ['-J', '-e', '7', '-o', 'NAME,RM,TYPE,MOUNTPOINTS,LABEL,SIZE,MODEL,FSTYPE,TRAN'], 5000);
   const parsed = JSON.parse(output) as { blockdevices?: BlockDevice[] };
   return flattenDevices(parsed.blockdevices || []);
 }
