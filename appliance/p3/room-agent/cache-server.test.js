@@ -6,7 +6,12 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 
-const { checksumMatches, createCacheServer } = require('./cache-server');
+const {
+  calculateTransferDeadlineMs,
+  checksumMatches,
+  classifyOrigin,
+  createCacheServer,
+} = require('./cache-server');
 
 function listen(server) {
   return new Promise((resolve, reject) => {
@@ -46,6 +51,14 @@ test('checksumMatches validates SHA256 and rejects absent or mismatched digests'
   assert.equal(checksumMatches(bytes, expected), true);
   assert.equal(checksumMatches(bytes, 'b'.repeat(64)), false);
   assert.equal(checksumMatches(bytes, ''), false);
+});
+
+test('adaptive transfer deadlines grow with file size and classify private origins', () => {
+  assert.equal(calculateTransferDeadlineMs(0), 300_000);
+  assert.ok(calculateTransferDeadlineMs(20 * 1024 * 1024 * 1024) > calculateTransferDeadlineMs(1024));
+  assert.equal(classifyOrigin('http://192.168.1.116:8096'), 'lan');
+  assert.equal(classifyOrigin('http://100.81.154.123:8096'), 'tailscale');
+  assert.equal(classifyOrigin('https://media.mbfdhub.com'), 'internet');
 });
 
 test('concurrent cold video ranges wait for one cache fill instead of stampeding the origin', async () => {
@@ -105,6 +118,12 @@ test('concurrent cold video ranges wait for one cache fill instead of stampeding
       assert.equal(response.headers['x-mc-cache'], 'hit');
       assert.equal(response.body.length, 1024);
     }
+    const stats = cache.getStats();
+    assert.equal(stats.cache_hits, 3);
+    assert.equal(stats.cache_misses, 3);
+    assert.equal(stats.fill_failures, 0);
+    assert.ok(stats.last_successful_fill);
+    assert.equal(stats.last_successful_fill.content_id, contentId);
   } finally {
     if (cache) await close(cache.server);
     await close(origin);
@@ -223,6 +242,9 @@ test('a checksum mismatch fails the fill and never publishes corrupt cache bytes
     assert.equal(ok, false);
     assert.equal(fs.existsSync(path.join(cacheDir, 'content', 'bad-video')), false);
     assert.equal(cache.getStats().failed, 1);
+    assert.equal(cache.getStats().checksum_failures, 1);
+    assert.equal(cache.getStats().fill_failures, 1);
+    assert.equal(cache.getStats().last_failure_reason, 'sha256_mismatch');
   } finally {
     if (cache) await close(cache.server);
     await close(origin);

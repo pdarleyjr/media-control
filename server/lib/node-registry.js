@@ -45,6 +45,92 @@ function nodeHttpAuthOk(req, classroomCache = config.classroomCache || {}) {
   return nodeTokenMatches(token, classroomCache.nodeToken);
 }
 
+function boundedText(value, max = 256) {
+  if (value == null) return null;
+  return String(value).slice(0, max);
+}
+
+function boundedNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function normalizeTransfer(value) {
+  if (!value || typeof value !== 'object') return null;
+  return {
+    content_id: boundedText(value.content_id, 128),
+    bytes_downloaded: boundedNumber(value.bytes_downloaded ?? value.bytes),
+    total_bytes: boundedNumber(value.total_bytes),
+    instantaneous_mbps: boundedNumber(value.instantaneous_mbps),
+    rolling_average_mbps: boundedNumber(value.rolling_average_mbps ?? value.average_mbps),
+    elapsed_ms: boundedNumber(value.elapsed_ms),
+    eta_seconds: boundedNumber(value.eta_seconds),
+    waiting_players: boundedNumber(value.waiting_players),
+    origin_category: boundedText(value.origin_category, 32),
+    retries: boundedNumber(value.retries),
+    at: boundedNumber(value.at),
+  };
+}
+
+function normalizeLanHealthTest(value) {
+  if (!value || typeof value !== 'object') return null;
+  return {
+    ok: value.ok === true,
+    at: boundedNumber(value.at),
+    bytes: boundedNumber(value.bytes),
+    elapsed_ms: boundedNumber(value.elapsed_ms),
+    ttfb_ms: boundedNumber(value.ttfb_ms),
+    mbps: boundedNumber(value.mbps),
+    status: boundedText(value.status, 32),
+    degraded: typeof value.degraded === 'boolean' ? value.degraded : null,
+    degraded_reason: boundedText(value.degraded_reason, 128),
+    error: boundedText(value.error, 128),
+  };
+}
+
+function normalizeNodeTelemetry(payload) {
+  const p = payload && typeof payload === 'object' ? payload : {};
+  const sourceCache = p.cache && typeof p.cache === 'object' ? p.cache : {};
+  return {
+    agent_uptime_sec: boundedNumber(p.agent_uptime_sec),
+    kiosk_uptime_sec: boundedNumber(p.kiosk_uptime_sec),
+    player_version: boundedText(p.player_version, 128),
+    kiosk_version: boundedText(p.kiosk_version, 128),
+    build_hash: boundedText(p.build_hash, 128),
+    configuration_schema_version: boundedNumber(p.configuration_schema_version),
+    cache_health: boundedText(p.cache_health, 32),
+    current_asset_readiness: boundedText(p.current_asset_readiness, 32),
+    current_renderer: boundedText(p.current_renderer, 64),
+    audio_track_present: typeof p.audio_track_present === 'boolean' ? p.audio_track_present : null,
+    audio_codec: boundedText(p.audio_codec, 64),
+    last_successful_command: boundedText(p.last_successful_command, 128),
+    last_command_error: boundedText(p.last_command_error, 256),
+    display_mapping: Array.isArray(p.display_mapping)
+      ? p.display_mapping.slice(0, 16).map((value) => boundedText(value, 128))
+      : [],
+    lan_health_test: normalizeLanHealthTest(p.lan_health_test),
+    cache: {
+      current_content_id: boundedText(sourceCache.current_content_id, 128),
+      current_transfer: normalizeTransfer(sourceCache.current_transfer),
+      cache_size: boundedNumber(sourceCache.cache_size),
+      file_count: boundedNumber(sourceCache.file_count),
+      downloading: boundedNumber(sourceCache.downloading),
+      queued: boundedNumber(sourceCache.queued),
+      sync_status: boundedText(sourceCache.sync_status, 32),
+      cache_hits: boundedNumber(sourceCache.cache_hits),
+      cache_misses: boundedNumber(sourceCache.cache_misses),
+      fill_failures: boundedNumber(sourceCache.fill_failures),
+      timeout_count: boundedNumber(sourceCache.timeout_count),
+      checksum_failures: boundedNumber(sourceCache.checksum_failures),
+      disk_write_failures: boundedNumber(sourceCache.disk_write_failures),
+      last_successful_fill: normalizeTransfer(sourceCache.last_successful_fill),
+      last_failure_reason: boundedText(sourceCache.last_failure_reason, 256),
+      last_failure_type: boundedText(sourceCache.last_failure_type, 64),
+      origin_category: boundedText(sourceCache.origin_category, 32),
+    },
+  };
+}
+
 // Upsert managed_nodes + append a node_heartbeats row. All best-effort: any
 // error is swallowed so a malformed heartbeat never throws inside the socket
 // handler. Returns true on a recorded heartbeat.
@@ -55,13 +141,14 @@ function recordHeartbeat(db, nodeId, payload) {
   const p = payload || {};
   const activeDisplays = Array.isArray(p.active_displays) ? p.active_displays.join(',') : (p.active_displays || '');
   const networkStateJson = p.network ? JSON.stringify(p.network) : null;
+  const telemetryJson = JSON.stringify(normalizeNodeTelemetry(p));
   try {
     db.prepare(`
       INSERT INTO managed_nodes
         (node_id, node_name, node_type, room_id, workspace_id, last_heartbeat,
-         software_version, free_disk, cache_size, sync_status, audio_endpoint, network_state_json, created_at, updated_at)
+         software_version, free_disk, cache_size, sync_status, audio_endpoint, network_state_json, telemetry_json, created_at, updated_at)
       VALUES (@node_id, @node_name, @node_type, @room_id, @workspace_id, @ts,
-         @software_version, @free_disk, @cache_size, @sync_status, @audio_endpoint, @network_state_json, @ts, @ts)
+         @software_version, @free_disk, @cache_size, @sync_status, @audio_endpoint, @network_state_json, @telemetry_json, @ts, @ts)
       ON CONFLICT(node_id) DO UPDATE SET
         node_type=excluded.node_type,
         room_id=COALESCE(excluded.room_id, managed_nodes.room_id),
@@ -72,6 +159,7 @@ function recordHeartbeat(db, nodeId, payload) {
         sync_status=excluded.sync_status,
         audio_endpoint=excluded.audio_endpoint,
         network_state_json=excluded.network_state_json,
+        telemetry_json=excluded.telemetry_json,
         updated_at=excluded.updated_at
     `).run({
       node_id: nodeId,
@@ -86,6 +174,7 @@ function recordHeartbeat(db, nodeId, payload) {
       sync_status: p.sync_status || 'idle',
       audio_endpoint: p.audio_endpoint || null,
       network_state_json: networkStateJson,
+      telemetry_json: telemetryJson,
     });
   } catch (e) {
     // managed_nodes may be absent on very old DBs — degrade silently.
@@ -93,12 +182,12 @@ function recordHeartbeat(db, nodeId, payload) {
   }
   try {
     db.prepare(`
-      INSERT INTO node_heartbeats (node_id, ts, software_version, free_disk, cache_size, sync_status, active_displays, audio_endpoint, network_state_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO node_heartbeats (node_id, ts, software_version, free_disk, cache_size, sync_status, active_displays, audio_endpoint, network_state_json, telemetry_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(nodeId, now, p.software_version || null,
       Number.isFinite(p.free_disk) ? p.free_disk : null,
       Number.isFinite(p.cache_size) ? p.cache_size : null,
-      p.sync_status || 'idle', activeDisplays, p.audio_endpoint || null, networkStateJson);
+      p.sync_status || 'idle', activeDisplays, p.audio_endpoint || null, networkStateJson, telemetryJson);
     // Keep the history bounded (last ~7 days).
     db.prepare("DELETE FROM node_heartbeats WHERE ts < strftime('%s','now') - 604800").run();
   } catch (e) { /* analytics table optional */ }
@@ -186,4 +275,11 @@ function requestContentPrewarm(io, db, options = {}) {
   }
 }
 
-module.exports = { nodeAuthOk, nodeHttpAuthOk, recordHeartbeat, buildContentManifest, requestContentPrewarm };
+module.exports = {
+  buildContentManifest,
+  nodeAuthOk,
+  nodeHttpAuthOk,
+  normalizeNodeTelemetry,
+  recordHeartbeat,
+  requestContentPrewarm,
+};

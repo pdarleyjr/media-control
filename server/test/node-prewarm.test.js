@@ -3,7 +3,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { nodeHttpAuthOk, requestContentPrewarm } = require('../lib/node-registry');
+const {
+  nodeHttpAuthOk,
+  normalizeNodeTelemetry,
+  requestContentPrewarm,
+} = require('../lib/node-registry');
 
 function fakeDb({ member = true } = {}) {
   return {
@@ -99,4 +103,84 @@ test('public content route allows a valid cache node without weakening browser a
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   assert.match(source, /const nodeAuthorized = nodeRegistry\.nodeHttpAuthOk\(req\)/);
   assert.match(source, /if \(!nodeAuthorized && !canServePublicContent\(db, content\)\)/);
+});
+
+test('node telemetry persists only bounded diagnostics fields and excludes secrets', () => {
+  const telemetry = normalizeNodeTelemetry({
+    agent_uptime_sec: 120,
+    kiosk_uptime_sec: 3600,
+    player_version: 'player-1',
+    kiosk_version: 'kiosk-2',
+    build_hash: 'abc123',
+    configuration_schema_version: 1,
+    cache_health: 'degraded',
+    current_renderer: 'video',
+    audio_track_present: true,
+    audio_codec: 'aac',
+    last_successful_command: 'transport:next',
+    last_command_error: 'x'.repeat(400),
+    display_mapping: ['front-left', 'front-center'],
+    lan_health_test: {
+      ok: true,
+      at: 1_720_000_000,
+      bytes: 67_108_864,
+      elapsed_ms: 5500,
+      ttfb_ms: 4,
+      mbps: 97.61,
+      status: 'critical',
+      degraded: true,
+      degraded_reason: 'throughput_below_1_gbps_class',
+      token: 'must-not-persist',
+    },
+    cache: {
+      current_content_id: 'video-id',
+      cache_hits: 10,
+      cache_misses: 2,
+      timeout_count: 1,
+      last_failure_reason: 'idle_timeout',
+      token: 'must-not-persist',
+    },
+    token: 'must-not-persist',
+  });
+
+  assert.equal(telemetry.agent_uptime_sec, 120);
+  assert.equal(telemetry.kiosk_uptime_sec, 3600);
+  assert.equal(telemetry.configuration_schema_version, 1);
+  assert.equal(telemetry.current_renderer, 'video');
+  assert.equal(telemetry.audio_track_present, true);
+  assert.equal(telemetry.last_command_error.length, 256);
+  assert.deepEqual(telemetry.display_mapping, ['front-left', 'front-center']);
+  assert.equal(telemetry.lan_health_test.mbps, 97.61);
+  assert.equal(telemetry.lan_health_test.token, undefined);
+  assert.equal(telemetry.cache.current_content_id, 'video-id');
+  assert.equal(telemetry.cache.timeout_count, 1);
+  assert.equal(telemetry.token, undefined);
+  assert.equal(telemetry.cache.token, undefined);
+});
+
+test('node diagnostics schema and secured status response include telemetry JSON', () => {
+  const database = fs.readFileSync(path.join(__dirname, '..', 'db', 'database.js'), 'utf8');
+  const status = fs.readFileSync(path.join(__dirname, '..', 'routes', 'status.js'), 'utf8');
+  const admin = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'js', 'views', 'admin.js'), 'utf8');
+  assert.match(database, /managed_nodes ADD COLUMN telemetry_json TEXT/);
+  assert.match(database, /node_heartbeats ADD COLUMN telemetry_json TEXT/);
+  assert.match(status, /telemetry_json/);
+  assert.match(status, /JSON\.parse\(node\.telemetry_json\)/);
+  assert.match(status, /nodeRegistry\.nodeHttpAuthOk\(req\)/);
+  assert.match(status, /activeLanHealthTests\.get\(testId\)/);
+  assert.match(status, /LAN_HEALTH_COOLDOWN_MS/);
+  assert.match(status, /node:run-lan-health-test/);
+  assert.match(admin, /networkDiagnostics/);
+  assert.match(admin, /Negotiated link/);
+  assert.match(admin, /Run LAN test when idle/);
+  assert.match(admin, /Build mismatch/);
+});
+
+test('P3 agent reconciles manifests slowly but keeps priority and LAN tests event driven', () => {
+  const agent = fs.readFileSync(path.join(__dirname, '..', '..', 'appliance', 'p3', 'room-agent', 'cache-agent.js'), 'utf8');
+  assert.match(agent, /10 \* 60 \* 1000/);
+  assert.match(agent, /Math\.min\(15 \* 60 \* 1000, Math\.max\(5 \* 60 \* 1000/);
+  assert.match(agent, /node:prewarm-content/);
+  assert.match(agent, /node:run-lan-health-test/);
+  assert.match(agent, /cacheStats: cache\.getStats\(\)/);
 });

@@ -741,6 +741,7 @@ CREATE TABLE IF NOT EXISTS managed_nodes (
     sync_status     TEXT NOT NULL DEFAULT 'idle',
     audio_endpoint  TEXT,
     network_state_json TEXT,
+    telemetry_json  TEXT,
     created_at      INTEGER,
     updated_at      INTEGER
 );
@@ -790,7 +791,8 @@ CREATE TABLE IF NOT EXISTS node_heartbeats (
     sync_status      TEXT,
     active_displays  TEXT,
     audio_endpoint   TEXT,
-    network_state_json TEXT
+    network_state_json TEXT,
+    telemetry_json  TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_node_heartbeats_node_ts ON node_heartbeats(node_id, ts);

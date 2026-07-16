@@ -12,10 +12,14 @@
 'use strict';
 
 const fs = require('fs');
+const crypto = require('crypto');
+const path = require('path');
 const { createCacheServer } = require('./cache-server');
 const { loadCommonModule } = require('./common-loader');
 const { resolveServerUrl } = loadCommonModule('server-url');
-const { detectNetworkState } = loadCommonModule('network-state');
+const { applyLinkTelemetry, detectNetworkState } = loadCommonModule('network-state');
+const { createWindowsNetworkProbe } = loadCommonModule('windows-network-probe');
+const { runLanHealthTest } = require('./lan-health-test');
 
 const MC_SERVER_URL = resolveServerUrl(process.env, {
   urlKeys: ['MC_SERVER_LAN_URL', 'MC_SERVER_URL'],
@@ -24,7 +28,10 @@ const MC_SERVER_URL = resolveServerUrl(process.env, {
 const MC_NODE_ID = process.env.MC_NODE_ID || '';
 const MC_NODE_TOKEN = process.env.MC_NODE_TOKEN || '';
 const NODE_TYPE = process.env.MC_NODE_TYPE || 'p3';
-const SOFTWARE_VERSION = process.env.MC_SOFTWARE_VERSION || 'p3-cache-agent-1.0.0';
+const PACKAGE_VERSION = (() => {
+  try { return require('./package.json').version; } catch { return '1.1.0'; }
+})();
+const SOFTWARE_VERSION = process.env.MC_SOFTWARE_VERSION || `p3-cache-agent-${PACKAGE_VERSION}`;
 const AGENT_PORT = parseInt(process.env.MC_AGENT_PORT, 10) || 8097;
 const AGENT_HOST = process.env.MC_AGENT_HOST || '127.0.0.1';
 const CACHE_DIR = process.env.MBFD_ROOM_AGENT_CACHE_DIR
@@ -34,7 +41,28 @@ const ACTIVE_DISPLAYS = (process.env.MC_ACTIVE_DISPLAYS || '').split(',').map((s
 const AUDIO_ENDPOINT = process.env.MC_AUDIO_ENDPOINT || 'eARC';
 
 const HEARTBEAT_MS = 15 * 1000;
-const MANIFEST_REFRESH_MS = 15 * 1000; // new uploads enter the local cache before an instructor selects them
+const requestedManifestRefresh = parseInt(process.env.MC_MANIFEST_REFRESH_MS, 10) || 10 * 60 * 1000;
+const MANIFEST_REFRESH_MS = Math.min(15 * 60 * 1000, Math.max(5 * 60 * 1000, requestedManifestRefresh));
+const probeWindowsNetwork = createWindowsNetworkProbe({ ttlMs: 60 * 1000 });
+const AGENT_STARTED_AT = Date.now();
+
+function packageVersion(filePath) {
+  try { return JSON.parse(fs.readFileSync(filePath, 'utf8')).version || null; } catch { return null; }
+}
+
+function agentBuildHash() {
+  try {
+    const hash = crypto.createHash('sha256');
+    for (const file of [__filename, path.join(__dirname, 'cache-server.js')]) {
+      hash.update(fs.readFileSync(file));
+    }
+    return `sha256:${hash.digest('hex').slice(0, 16)}`;
+  } catch { return null; }
+}
+
+const KIOSK_VERSION = process.env.MC_KIOSK_VERSION
+  || packageVersion('C:\\MBFD\\FiveDisplayKiosk\\package.json');
+const AGENT_BUILD_HASH = process.env.MC_BUILD_HASH || process.env.GIT_COMMIT || agentBuildHash();
 
 function log(...a) { console.log(new Date().toISOString(), ...a); }
 function warn(...a) { console.warn(new Date().toISOString(), ...a); }
@@ -68,14 +96,21 @@ let io = null;
 let hbTimer = null;
 let manifestTimer = null;
 let shuttingDown = false;
+let lastLanHealthTest = null;
 
 function heartbeat() {
   if (!io || !io.connected) return;
   const stats = cache.getStats();
   const network = detectNetworkState();
+  const windowsDiagnostics = probeWindowsNetwork();
   const serverUrlCategory = process.env.MC_SERVER_LAN_URL
     ? 'lan'
-    : (process.env.MC_SERVER_URL ? 'configured' : 'documented_tailnet_fallback');
+    : (process.env.MC_SERVER_URL ? 'tailscale' : 'documented_tailnet_fallback');
+  const networkTelemetry = applyLinkTelemetry(network, windowsDiagnostics, {
+    server_url_category: serverUrlCategory,
+  });
+  const effectiveIp = [...(network.ethernet?.addresses || []), ...(network.wifi?.addresses || [])]
+    .find((address) => /^\d{1,3}(?:\.\d{1,3}){3}$/.test(String(address))) || null;
   io.emit('node:heartbeat', {
     node_id: MC_NODE_ID,
     node_type: NODE_TYPE,
@@ -87,16 +122,20 @@ function heartbeat() {
     active_displays: ACTIVE_DISPLAYS,
     audio_endpoint: AUDIO_ENDPOINT,
     network: {
-      ...network,
+      ...networkTelemetry,
       selected_server_url_category: serverUrlCategory,
-      effective_ip: network.ethernet?.addresses?.[0] || network.wifi?.addresses?.[0] || null,
+      effective_ip: effectiveIp,
       reachability: io && io.connected ? 'connected' : 'disconnected',
     },
     player_version: process.env.MC_PLAYER_VERSION || null,
-    kiosk_version: process.env.MC_KIOSK_VERSION || null,
-    build_hash: process.env.MC_BUILD_HASH || process.env.GIT_COMMIT || null,
+    kiosk_version: KIOSK_VERSION,
+    build_hash: AGENT_BUILD_HASH,
+    configuration_schema_version: 1,
     cache_health: stats.failed > 0 ? 'degraded' : 'ok',
     cache: stats,
+    lan_health_test: lastLanHealthTest,
+    agent_uptime_sec: Math.floor((Date.now() - AGENT_STARTED_AT) / 1000),
+    kiosk_uptime_sec: windowsDiagnostics && windowsDiagnostics.kiosk_uptime_sec,
     display_mapping: ACTIVE_DISPLAYS,
     current_asset_readiness: stats.failed > 0 ? 'failed' : 'ready',
     current_renderer: process.env.MC_CURRENT_RENDERER || null,
@@ -159,6 +198,29 @@ function connect() {
     log(`[cache-agent] priority prewarm ${contentId || 'unknown'} ${ok ? 'ready' : 'failed'} in ${result.elapsed_ms}ms`);
     if (typeof acknowledge === 'function') acknowledge(result);
     try { io.emit('node:prewarm-result', result); } catch (_) {}
+  });
+  io.on('node:run-lan-health-test', async (request, acknowledge) => {
+    const requestedAt = Math.floor(Date.now() / 1000);
+    try {
+      lastLanHealthTest = await runLanHealthTest({
+        originBaseUrl: MC_SERVER_URL,
+        nodeToken: MC_NODE_TOKEN,
+        testId: request && request.test_id,
+        cacheStats: cache.getStats(),
+        warningMbps: process.env.MC_LAN_HEALTH_WARNING_MBPS,
+        healthyMbps: process.env.MC_LAN_HEALTH_HEALTHY_MBPS,
+      });
+      log(`[cache-agent] admin LAN health test ${lastLanHealthTest.mbps} Mbps (${lastLanHealthTest.status})`);
+    } catch (error) {
+      lastLanHealthTest = {
+        ok: false,
+        at: requestedAt,
+        error: String(error && error.message || 'health_test_failed').slice(0, 128),
+      };
+      warn('[cache-agent] admin LAN health test refused/failed:', lastLanHealthTest.error);
+    }
+    heartbeat();
+    if (typeof acknowledge === 'function') acknowledge(lastLanHealthTest);
   });
   io.on('connect_error', (err) => warn('[cache-agent] connect_error:', err && err.message));
   io.on('disconnect', (reason) => { log('[cache-agent] disconnected:', reason); if (hbTimer) { clearInterval(hbTimer); hbTimer = null; } });

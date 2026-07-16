@@ -738,6 +738,8 @@ function migrateNodeTransportStateColumns() {
   const adds = [
     ['managed_nodes', 'network_state_json', 'ALTER TABLE managed_nodes ADD COLUMN network_state_json TEXT', managedCols],
     ['node_heartbeats', 'network_state_json', 'ALTER TABLE node_heartbeats ADD COLUMN network_state_json TEXT', heartbeatCols],
+    ['managed_nodes', 'telemetry_json', 'ALTER TABLE managed_nodes ADD COLUMN telemetry_json TEXT', managedCols],
+    ['node_heartbeats', 'telemetry_json', 'ALTER TABLE node_heartbeats ADD COLUMN telemetry_json TEXT', heartbeatCols],
   ];
 
   for (const [table, column, sql, cols] of adds) {

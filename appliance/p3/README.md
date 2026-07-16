@@ -72,8 +72,9 @@ The web player also auto-falls back from a local `asset_url` to the server
 Only `socket.io-client` is required (no native build). On-box install:
 1. Portable Node lives at `C:\MBFD\node\...\node.exe` (`node-path.txt` records it).
 2. Agent files in `C:\MBFD\RoomAgent\` (`cache-server.js`, `cache-agent.js`,
-   `common-loader.js`, `package.json`) and shared runtime modules in
-   `C:\MBFD\common\` (`server-url.js`, `network-state.js`); run
+   `common-loader.js`, `lan-health-test.js`, `package.json`) and shared runtime
+   modules in `C:\MBFD\common\` (`server-url.js`, `network-state.js`,
+   `windows-network-probe.js`); run
    `npm install --omit=dev` in `C:\MBFD\RoomAgent`.
 3. `run-agent.cmd` sets env and launches the agent; a Scheduled Task
    `MBFD_RoomCacheAgent` runs it as SYSTEM at startup.
@@ -87,6 +88,9 @@ Env (read by `cache-agent.js`):
 | `MC_NODE_TOKEN` | — | must equal server `CLASSROOM_LOCAL_CACHE_NODE_TOKEN` |
 | `MC_AGENT_PORT` | `8097` | loopback HTTP port the player windows fetch from |
 | `MBFD_ROOM_AGENT_CACHE_DIR` | `C:\MBFD\RoomAgent` | cache root (`cache\content\<id>`) |
+| `MC_MANIFEST_REFRESH_MS` | `600000` | bounded to 5-15 minutes; assignments still prewarm immediately |
+| `MC_LAN_HEALTH_WARNING_MBPS` | `800` | critical threshold for the admin-triggered LAN test |
+| `MC_LAN_HEALTH_HEALTHY_MBPS` | `2000` | healthy threshold for the admin-triggered LAN test |
 
 Server side (GMKtec `.env`): `CLASSROOM_LOCAL_CACHE_ENABLED=true`,
 `CLASSROOM_LOCAL_CACHE_BASE=http://127.0.0.1:8097`,
@@ -94,3 +98,9 @@ Server side (GMKtec `.env`): `CLASSROOM_LOCAL_CACHE_ENABLED=true`,
 `CLASSROOM_LOCAL_CACHE_NODE_TOKEN=<secret>`. Only displays in those walls get the
 local URL; every other display/room is unaffected. Health check on-box:
 `curl http://127.0.0.1:8097/healthz`.
+
+The secured diagnostics page reports negotiated link speed, driver, packet
+errors, cache transfers, runtime builds, and agent/kiosk uptime. Its LAN health
+test is platform-admin-only, refuses to run during cache activity, requires a
+short-lived test ID plus the node token, and has a five-minute cooldown. It is
+never scheduled and does not leave a benchmark listener running.
