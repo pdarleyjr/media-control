@@ -44,3 +44,15 @@ test('whiteboard start fans out to every resolved wall target and carries mode t
   assert.match(player, /_wb\.mode = mode === 'blank' \? 'blank' : 'overlay'/);
   assert.match(player, /wbApplyMode\(options && options\.mode\)/);
 });
+
+test('whiteboard ignores stale session hydration after a local edit or target mode change', () => {
+  const board = read('frontend/js/views/media-control/whiteboard.js');
+
+  assert.match(board, /let sessionRequestRevision = 0/);
+  assert.match(board, /let localEditRevision = 0/);
+  assert.match(board, /const requestRevision = \+\+sessionRequestRevision/);
+  assert.match(board, /const editRevision = localEditRevision/);
+  assert.match(board, /requestRevision !== sessionRequestRevision/);
+  assert.match(board, /editRevision !== localEditRevision/);
+  assert.match(board, /localEditRevision \+= 1/);
+});

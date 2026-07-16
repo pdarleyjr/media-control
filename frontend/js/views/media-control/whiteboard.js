@@ -80,6 +80,10 @@ export function mount(containerEl, options) {
   let flushTimer = null;
   let screenshotTimer = null;
   let closed = false;
+  // Session hydration is asynchronous. Track both request ordering and local
+  // edits so a delayed response cannot erase ink drawn after the request.
+  let sessionRequestRevision = 0;
+  let localEditRevision = 0;
   // Effective size for the in-progress stroke (slider value, possibly reduced
   // by pen pressure). Kept separate from currentSize so the slider value the
   // operator sees isn't silently mutated mid-stroke.
@@ -123,6 +127,7 @@ export function mount(containerEl, options) {
   function unmount() {
     if (closed) return;
     closed = true;
+    sessionRequestRevision += 1;
     // Tell the target to hide its overlay so the board doesn't linger on the
     // display after the operator closes it here.
     broadcast('dashboard:wb-stop', {});
@@ -300,15 +305,26 @@ export function mount(containerEl, options) {
 
   async function startSessionFromTarget() {
     if (!target) { status(keyFor('status_no_target')); return; }
+    const requestRevision = ++sessionRequestRevision;
+    const editRevision = localEditRevision;
+    const requestedTarget = targetKey(target);
+    const requestedMode = whiteboardMode;
     try {
       const ack = await emitAck('dashboard:wb-start', Object.assign({}, envelope(), { mode: whiteboardMode }));
+      if (
+        closed ||
+        requestRevision !== sessionRequestRevision ||
+        editRevision !== localEditRevision ||
+        requestedTarget !== targetKey(target) ||
+        requestedMode !== whiteboardMode
+      ) return;
       if (Array.isArray(ack && ack.strokes)) {
         strokes = ack.strokes.slice();
         repaint();
       }
       status(keyFor('status_ready'));
     } catch {
-      status(keyFor('status_error'));
+      if (!closed && requestRevision === sessionRequestRevision) status(keyFor('status_error'));
     }
   }
 
@@ -552,6 +568,7 @@ export function mount(containerEl, options) {
   function onPointerDown(e) {
     if (drawing) return;
     if (!target) { status(keyFor('status_no_target')); return; }
+    localEditRevision += 1;
     if (currentTool === 'text') { beginText(e); e.preventDefault(); return; }
     if (SHAPE_TOOLS.includes(currentTool)) { beginShape(e); e.preventDefault(); return; }
 
@@ -741,13 +758,17 @@ export function mount(containerEl, options) {
   // ------------------------------------------------------------------
   function undo() {
     if (!target) return;
-    if (strokes.length > 0) strokes.pop();
+    if (strokes.length > 0) {
+      localEditRevision += 1;
+      strokes.pop();
+    }
     repaint();
     broadcast('dashboard:wb-undo', {});
   }
 
   function redo() {
     if (!target) return;
+    localEditRevision += 1;
     broadcast('dashboard:wb-redo', {});
     // Mirror: ask the server for the redone stroke by re-reading the session.
     // The server is the source of truth; we re-sync so the local board matches.
@@ -756,17 +777,14 @@ export function mount(containerEl, options) {
 
   function clearBoard() {
     if (!target) return;
+    localEditRevision += 1;
     strokes = [];
     repaint();
     broadcast('dashboard:wb-clear', {});
   }
 
   async function resyncFromServer() {
-    if (!target) return;
-    try {
-      const ack = await emitAck('dashboard:wb-start', Object.assign({}, envelope(), { mode: whiteboardMode }));
-      if (Array.isArray(ack && ack.strokes)) { strokes = ack.strokes.slice(); repaint(); }
-    } catch { /* best-effort */ }
+    await startSessionFromTarget();
   }
 
   // ------------------------------------------------------------------
