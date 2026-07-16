@@ -3177,11 +3177,21 @@
     // The source image is a composite classroom map, not a conventional photo.
     // Its library default remains aspect-preserving on a solo TV, but a wall must
     // stretch the composite once and then clip the correct slice per display.
-    const WALL_FILL_CONTENT_IDS = new Set(['7c596f36-27f6-4d7b-9bb0-2c682791d25a']);
+    const WALL_FILL_CONTENT_IDS = new Set([
+      '7c596f36-27f6-4d7b-9bb0-2c682791d25a',
+      '5b4b2a38-b6b2-45ed-adb8-2879a38f0505',
+    ]);
+    const WALL_FILL_FILENAMES = new Set(['mbfd_map.png']);
+    function isWallFillContent(item) {
+      if (!item) return false;
+      const contentId = String(item.content_id || '').trim();
+      const filename = String(item.filename || '').trim().toLowerCase();
+      return WALL_FILL_CONTENT_IDS.has(contentId) || WALL_FILL_FILENAMES.has(filename);
+    }
     function contentFitMode(item, isWall) {
       const requested = String((item && item.fit_mode) || '').trim();
-      if (item && isWall && WALL_FILL_CONTENT_IDS.has(item.content_id)) return 'fill';
-      if (item && WALL_FILL_CONTENT_IDS.has(item.content_id)) return 'contain';
+      if (item && isWall && isWallFillContent(item)) return 'fill';
+      if (item && isWallFillContent(item)) return 'contain';
       return requested || (isWall ? 'fill' : 'contain');
     }
 

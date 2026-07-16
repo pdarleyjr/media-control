@@ -1024,7 +1024,7 @@ applyCanvasLayersDefaultFill();
 // with a per-item "contain" override, which overruled the wall player's fill
 // default and letterboxed the map. Heal that known content row without changing
 // the fit policy of unrelated images.
-const MBFD_MAP_WALL_FILL_ID = 'mbfd_map_wall_fill_v1';
+const MBFD_MAP_WALL_FILL_ID = 'mbfd_map_wall_fill_v2';
 function healMbfdMapWallFit() {
   const already = db.prepare('SELECT 1 FROM schema_migrations WHERE id = ?').get(MBFD_MAP_WALL_FILL_ID);
   if (already) return;
@@ -1032,11 +1032,12 @@ function healMbfdMapWallFit() {
     const updated = db.prepare(`
       UPDATE content
       SET default_fit_mode = 'fill'
-      WHERE id = '7c596f36-27f6-4d7b-9bb0-2c682791d25a'
+      WHERE lower(trim(filename)) = 'mbfd_map.png'
+        AND (default_fit_mode IS NULL OR lower(trim(default_fit_mode)) <> 'fill')
     `).run();
-    console.log(`[mbfd_map_wall_fill_v1] updated ${updated.changes} content row(s)`);
+    console.log(`[mbfd_map_wall_fill_v2] updated ${updated.changes} content row(s)`);
   } catch (e) {
-    console.warn(`[mbfd_map_wall_fill_v1] skipped: ${e.message}`);
+    console.warn(`[mbfd_map_wall_fill_v2] skipped: ${e.message}`);
   }
   try { db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(MBFD_MAP_WALL_FILL_ID); }
   catch { /* best-effort stamp */ }
