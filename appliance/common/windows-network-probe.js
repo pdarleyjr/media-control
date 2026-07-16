@@ -6,21 +6,20 @@ const PROBE_SCRIPT = [
   "$adapter=Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object {$_.Status -eq 'Up'} | Sort-Object @{Expression={if($_.Name -match 'Ethernet|LAN'){0}else{1}}},Name | Select-Object -First 1",
   'if(-not $adapter){exit 0}',
   "$stats=Get-NetAdapterStatistics -Name $adapter.Name -ErrorAction SilentlyContinue",
-  "$driver=Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue | Where-Object {$_.DeviceID -eq $adapter.PnPDeviceID} | Select-Object -First 1",
-  "$kiosk=Get-CimInstance Win32_Process -Filter \"Name='electron.exe'\" -ErrorAction SilentlyContinue | Where-Object {$_.CommandLine -match 'FiveDisplayKiosk'} | Sort-Object CreationDate | Select-Object -First 1",
-  '$kioskUptime=if($kiosk -and $kiosk.CreationDate){[math]::Max(0,[int64]((Get-Date)-$kiosk.CreationDate).TotalSeconds)}else{$null}',
+  "$kiosk=Get-Process electron -ErrorAction SilentlyContinue | Sort-Object StartTime | Select-Object -First 1",
+  '$kioskUptime=if($kiosk -and $kiosk.StartTime){[math]::Max(0,[int64]((Get-Date)-$kiosk.StartTime).TotalSeconds)}else{$null}',
   "$duplex=if($adapter.FullDuplex -eq $true){'Full'}elseif($adapter.FullDuplex -eq $false){'Half'}else{$null}",
   '[pscustomobject]@{',
   'adapter_name=$adapter.Name;',
   'adapter_description=$adapter.InterfaceDescription;',
   'link_speed_display=[string]$adapter.LinkSpeed;',
   'duplex=$duplex;',
-  'driver_version=$driver.DriverVersion;',
+  'driver_version=$adapter.DriverVersion;',
   'interface_errors=[int64](($stats.ReceivedPacketErrors)+($stats.OutboundPacketErrors));',
   'interface_discards=[int64](($stats.ReceivedDiscardedPackets)+($stats.OutboundDiscardedPackets));',
   'kiosk_uptime_sec=$kioskUptime',
   '} | ConvertTo-Json -Compress',
-].join(';');
+].join('\n');
 
 function boundedString(value, max = 256) {
   if (value == null) return null;

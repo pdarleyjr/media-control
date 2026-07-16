@@ -56,3 +56,12 @@ test('createWindowsNetworkProbe is inert off Windows and fails closed', () => {
   });
   assert.equal(probe(), null);
 });
+
+test('the production PowerShell probe executes on Windows', {
+  skip: process.platform !== 'win32',
+}, () => {
+  const result = createWindowsNetworkProbe({ ttlMs: 15_000 })();
+  assert.ok(result);
+  assert.ok(result.adapter_name);
+  assert.ok(result.link_speed_display);
+});
