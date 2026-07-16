@@ -2410,6 +2410,23 @@
       // The child iframe is authoritative when it exists. We try handleAction
       // first, then postMessage, and only fall back to DOM manipulation if no
       // transportable child is available.
+      function readSeekPosition(command) {
+        const payload = command && command.payload && typeof command.payload === 'object'
+          ? command.payload
+          : {};
+        const position = Number(payload.position_seconds ?? payload.position ?? payload.time);
+        return Number.isFinite(position) && position >= 0 ? position : null;
+      }
+
+      function applySeekToVideo(video, position) {
+        const duration = Number(video && video.duration);
+        const boundedPosition = Number.isFinite(duration) && duration > 0
+          ? Math.min(position, Math.max(0, duration - 0.05))
+          : position;
+        video.currentTime = boundedPosition;
+        return boundedPosition;
+      }
+
       function doTransport(input) {
         const command = normalizeTransportCommand(input);
         const action = command.action;
@@ -2438,6 +2455,12 @@
                 } else {
                   currentIndex = -1; nextItem();
                 }
+              } else if (action === 'seek') {
+                const position = readSeekPosition(command);
+                if (position === null || typeof activeYtPlayer.seekTo !== 'function') {
+                  throw new Error('Invalid or unsupported seek target');
+                }
+                activeYtPlayer.seekTo(position, true);
               } else if (action === 'pause') {
                 if (typeof activeYtPlayer.pauseVideo === 'function') activeYtPlayer.pauseVideo();
               } else if (action === 'play') {
@@ -2488,6 +2511,38 @@
             if (video && video.paused) { unlockAudio(); video.play().catch(() => {}); }
             handled = true;
             _showTransportDebug('play');
+          }
+          else if (action === 'seek') {
+            const position = readSeekPosition(command);
+            if (video && position !== null) {
+              if (video.readyState >= 1) {
+                const applied = applySeekToVideo(video, position);
+                handled = true;
+                _showTransportDebug('seek ' + applied.toFixed(2) + 's');
+              } else {
+                let settled = false;
+                const onMetadata = () => {
+                  if (settled) return;
+                  settled = true;
+                  clearTimeout(timeout);
+                  try {
+                    const applied = applySeekToVideo(video, position);
+                    _showTransportDebug('seek ' + applied.toFixed(2) + 's');
+                    finishTransportCommand(command, true, null, buildPlayerState());
+                  } catch (e) {
+                    finishTransportCommand(command, false, e.message, buildPlayerState());
+                  }
+                };
+                const timeout = setTimeout(() => {
+                  if (settled) return;
+                  settled = true;
+                  video.removeEventListener('loadedmetadata', onMetadata);
+                  finishTransportCommand(command, false, 'Video metadata unavailable for seek', buildPlayerState());
+                }, 3000);
+                video.addEventListener('loadedmetadata', onMetadata, { once: true });
+                return;
+              }
+            }
           }
 
           if (handled) {

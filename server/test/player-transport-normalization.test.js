@@ -42,6 +42,21 @@ test('player direct iframe transport handles go_to_slide targets', () => {
   );
 });
 
+test('player applies validated seek commands to YouTube and HTML5 video', () => {
+  const snippet = readSnippet(
+    path.join(__dirname, '..', 'player', 'index.html'),
+    'function readSeekPosition(command) {',
+    '// Phase 2: dashboard "Identify" action'
+  );
+
+  assert.ok(snippet.includes('position_seconds'), 'seek should accept the canonical position_seconds field');
+  assert.ok(snippet.includes('payload.position'), 'seek should retain the legacy position alias');
+  assert.ok(snippet.includes('payload.time'), 'seek should retain the legacy time alias');
+  assert.ok(snippet.includes("action === 'seek'"), 'transport should recognize seek');
+  assert.ok(snippet.includes('activeYtPlayer.seekTo(position, true)'), 'YouTube seek should use the IFrame API');
+  assert.ok(snippet.includes('video.currentTime = boundedPosition'), 'HTML5 video seek should update currentTime');
+});
+
 test('player restores persisted document slide state after reconnect before publishing stale state', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'player', 'index.html'), 'utf8');
 
