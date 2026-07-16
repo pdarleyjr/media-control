@@ -17,6 +17,10 @@ test('MBFD Map fills a spanned wall without changing its solo-display fit', () =
   assert.match(player, /isWall && isWallFillContent\(item\)/);
   assert.match(player, /isWallFillContent\(item\)\) return 'contain'/);
   assert.match(player, /const cssFit = contentFitMode\(item, !!wallConfig\)/);
+  assert.ok(
+    player.indexOf('const WALL_FILL_CONTENT_IDS') < player.indexOf('const cachedPlaylist = loadPlaylistCache()'),
+    'wall-fill constants must initialize before cached playback starts',
+  );
   assert.match(database, /mbfd_map_wall_fill_v2/);
   assert.match(database, /UPDATE content[\s\S]*?SET default_fit_mode = 'fill'[\s\S]*?lower\(trim\(filename\)\) = 'mbfd_map\.png'/);
 });

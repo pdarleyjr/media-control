@@ -371,6 +371,15 @@
       try { return JSON.parse(localStorage.getItem(PLAYLIST_CACHE_KEY) || '[]'); } catch { return []; }
     }
 
+    // These constants must be initialized before cached playback can call
+    // playCurrentItem() during bootstrap. Function declarations are hoisted,
+    // but const bindings remain in the temporal dead zone until this point.
+    const WALL_FILL_CONTENT_IDS = new Set([
+      '7c596f36-27f6-4d7b-9bb0-2c682791d25a',
+      '5b4b2a38-b6b2-45ed-adb8-2879a38f0505',
+    ]);
+    const WALL_FILL_FILENAMES = new Set(['mbfd_map.png']);
+
     function applyManagedDisplayConfig() {
       const managed = window.__playerConfig && window.__playerConfig.managedDisplay;
       if (!managed || !managed.deviceId || !managed.deviceToken) return;
@@ -3177,11 +3186,6 @@
     // The source image is a composite classroom map, not a conventional photo.
     // Its library default remains aspect-preserving on a solo TV, but a wall must
     // stretch the composite once and then clip the correct slice per display.
-    const WALL_FILL_CONTENT_IDS = new Set([
-      '7c596f36-27f6-4d7b-9bb0-2c682791d25a',
-      '5b4b2a38-b6b2-45ed-adb8-2879a38f0505',
-    ]);
-    const WALL_FILL_FILENAMES = new Set(['mbfd_map.png']);
     function isWallFillContent(item) {
       if (!item) return false;
       const contentId = String(item.content_id || '').trim();
