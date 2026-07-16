@@ -283,6 +283,19 @@ function storeConsoleSession(session) {
   consoleProfiles = Array.isArray(session.profiles) ? session.profiles : [];
 }
 
+async function activateConsoleProfile(profileId) {
+  const current = getCurrentUser();
+  if (!profileId || profileId === current?.id) return current;
+  const previous = localStorage.getItem('mc_console_profile_id');
+  const session = await requestConsoleSession(profileId, previous);
+  storeConsoleSession(session);
+  disconnectSocket();
+  connectSocket();
+  await refreshCurrentUser();
+  renderConsoleHeader();
+  return session.user;
+}
+
 function renderConsoleBoot(message) {
   document.body.classList.add('console-mode');
   sidebar.style.display = 'none';
@@ -363,17 +376,11 @@ function renderConsoleHeader() {
   const select = document.getElementById('consoleProfileSelect');
   select?.addEventListener('change', async (event) => {
     const selected = event.target.value;
-    const previous = localStorage.getItem('mc_console_profile_id');
     select.disabled = true;
     try {
-      const session = await requestConsoleSession(selected, previous);
-      storeConsoleSession(session);
-      disconnectSocket();
-      connectSocket();
-      await refreshCurrentUser();
-      showToast(`Loaded ${session.user.name || session.user.email}`, 'success');
+      const user = await activateConsoleProfile(selected);
+      showToast(`Loaded ${user.name || user.email}`, 'success');
       window.location.hash = '#/control';
-      renderConsoleHeader();
       await route();
     } catch (err) {
       showToast(err?.message || 'Profile switch failed', 'error');
@@ -439,6 +446,12 @@ async function openConsoleUsbPanel() {
     body.innerHTML = `
       <p class="console-usb-help">Select only the files you want to copy into your Media Control library. Nothing is imported automatically.</p>
       <form id="consoleUsbForm" class="console-usb-list">
+        <label class="console-usb-account">
+          <span>Import into account</span>
+          <select id="consoleUsbProfile" aria-label="Import into account">
+            ${consoleProfiles.map((profile) => `<option value="${esc(profile.id)}" ${profile.id === getCurrentUser()?.id ? 'selected' : ''}>${esc(profile.name || profile.email || profile.id)}</option>`).join('')}
+          </select>
+        </label>
         ${files.map((file) => `
           <label class="console-usb-row">
             <input type="checkbox" name="file" value="${esc(file.id)}">
@@ -464,7 +477,8 @@ async function openConsoleUsbPanel() {
         showToast('Select at least one USB file to import', 'error');
         return;
       }
-      await importSelectedUsbFiles(selected, body);
+      const profileId = body.querySelector('#consoleUsbProfile')?.value || getCurrentUser()?.id;
+      await importSelectedUsbFiles(selected, body, profileId);
     });
   } catch (err) {
     body.innerHTML = `
@@ -484,12 +498,15 @@ function formatBytes(bytes) {
   return `${(n / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
-async function importSelectedUsbFiles(fileIds, body) {
+async function importSelectedUsbFiles(fileIds, body, profileId) {
   const progress = body.querySelector('#consoleUsbProgress');
   if (progress) {
     progress.hidden = false;
-    progress.textContent = 'Copying selected files from USB...';
+    progress.textContent = 'Opening the selected account...';
   }
+
+  await activateConsoleProfile(profileId);
+  if (progress) progress.textContent = 'Copying selected files from USB...';
 
   const staged = await agentFetch('/usb/stage', {
     method: 'POST',

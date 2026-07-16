@@ -1020,6 +1020,29 @@ function applyCanvasLayersDefaultFill() {
 }
 applyCanvasLayersDefaultFill();
 
+// The MBFD Map is authored as one full-wall composite. Older imports saved it
+// with a per-item "contain" override, which overruled the wall player's fill
+// default and letterboxed the map. Heal that known content row without changing
+// the fit policy of unrelated images.
+const MBFD_MAP_WALL_FILL_ID = 'mbfd_map_wall_fill_v1';
+function healMbfdMapWallFit() {
+  const already = db.prepare('SELECT 1 FROM schema_migrations WHERE id = ?').get(MBFD_MAP_WALL_FILL_ID);
+  if (already) return;
+  try {
+    const updated = db.prepare(`
+      UPDATE content
+      SET default_fit_mode = 'fill'
+      WHERE id = '7c596f36-27f6-4d7b-9bb0-2c682791d25a'
+    `).run();
+    console.log(`[mbfd_map_wall_fill_v1] updated ${updated.changes} content row(s)`);
+  } catch (e) {
+    console.warn(`[mbfd_map_wall_fill_v1] skipped: ${e.message}`);
+  }
+  try { db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(MBFD_MAP_WALL_FILL_ID); }
+  catch { /* best-effort stamp */ }
+}
+healMbfdMapWallFit();
+
 // ── YouTube MIME self-heal ─────────────────────────────────────────────────────
 // Content rows created before the MIME resolver fix were stored with mime_type
 // 'text/html' or 'image/jpeg' for YouTube URLs. The player routes those through

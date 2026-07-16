@@ -934,6 +934,16 @@
   border-radius: var(--mc-radius-md, 12px); cursor: pointer;
 }
 .mc-route-row:hover, .mc-route-mode:hover, .mc-route-section:hover { border-color: var(--accent); background: var(--mc-surface); }
+.mc-target-choice-list { padding: 2px; }
+.mc-target-choice {
+  width: 100%;
+  min-height: 58px;
+  color: var(--mc-text-primary);
+  text-align: left;
+}
+.mc-target-choice > strong,
+.mc-target-choice > span { display: block; }
+.mc-target-choice > span { color: var(--mc-text-secondary); font-size: var(--mc-font-size-sm); }
 .mc-route-row input, .mc-route-mode input, .mc-route-section input { width: 18px; height: 18px; flex: 0 0 auto; accent-color: var(--accent); }
 .mc-route-row-main, .mc-route-mode span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .mc-route-name { color: var(--mc-text-primary); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2317,4 +2327,23 @@ body.cc-fullscreen .content {
 .mc-cc-cinema .mc-display-card .mc-card-shot,
 .mc-cc-cinema .mc-display-card .mc-live-embed {
   width: 100%; height: 100%; object-fit: contain;
+}
+
+/* Chromium does not synthesize HTML5 drag events for touch. The toolbox uses a
+   pointer-driven drag ghost on touch/pen while mouse users retain native drag. */
+.mc-touch-drag-ghost {
+  position: fixed;
+  z-index: 10000;
+  width: 168px;
+  min-height: 84px;
+  transform: translate(-50%, -115%);
+  pointer-events: none;
+  opacity: .94;
+  border: 2px solid var(--accent);
+  border-radius: 12px;
+  background: var(--surface, #fff);
+  box-shadow: 0 16px 38px rgba(15, 23, 42, .32);
+}
+@media (pointer: coarse) {
+  .mc-tile[data-drag-source] { touch-action: none; }
 }

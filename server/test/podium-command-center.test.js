@@ -53,6 +53,58 @@ test('podium library drag and drop preserves the source contract through physica
   assert.match(smoke, /restoreDragDropContent\(db, dragConfig\)/);
 });
 
+test('podium touch drag uses pointer events while preserving desktop drag and drop', () => {
+  const toolbox = read('frontend/js/views/media-control/toolbox.js');
+  const view = read('frontend/js/views/media-control.js');
+  const css = read('frontend/css/media-control.css');
+
+  assert.match(toolbox, /addEventListener\('pointerdown'/);
+  assert.match(toolbox, /event\.pointerType === 'touch' \|\| event\.pointerType === 'pen'/);
+  assert.match(toolbox, /new CustomEvent\('mc:source-drop'/);
+  assert.match(view, /addEventListener\('mc:source-drop'/);
+  assert.match(css, /\.mc-touch-drag-ghost/);
+  assert.match(css, /@media \(pointer: coarse\)[\s\S]*?touch-action:\s*none/);
+  assert.match(toolbox, /addEventListener\('dragstart'[\s\S]*?application\/x-mc-source/);
+});
+
+test('a split-wall tile selects only that member for transport controls', () => {
+  const view = read('frontend/js/views/media-control.js');
+
+  assert.match(view, /function selectStageDisplayTarget\(deviceId\)/);
+  assert.match(view, /wall\.layout_mode === 'split'/);
+  assert.match(view, /const target = \{ type: 'display', id: deviceId, supportsModes: false \}/);
+  assert.match(view, /targetApi\.setActive\(target\)/);
+  assert.match(view, /handleTargetChange\(target\)/);
+  assert.match(view, /onSelect:\s*selectStageDisplayTarget/);
+});
+
+test('podium rail surfaces remain inside the persistent command center', () => {
+  const view = read('frontend/js/views/media-control.js');
+  const railStart = view.indexOf('function wireCommandRail()');
+  const railEnd = view.indexOf('\nexport async function render()', railStart);
+  const rail = view.slice(railStart, railEnd);
+
+  assert.match(view, /import \* as downloadsView from '.\/downloads\.js'/);
+  assert.match(view, /import \* as auditLogView from '.\/audit-log\.js'/);
+  assert.match(view, /import \* as settingsView from '.\/settings\.js'/);
+  assert.match(view, /data-mc-rail="admin"/);
+  assert.match(rail, /openViewModal\(\{ title: 'Downloads', module: downloadsView \}\)/);
+  assert.match(rail, /openViewModal\(\{ title: 'System Logs', module: auditLogView \}\)/);
+  assert.match(rail, /openViewModal\(\{ title: 'Settings', module: settingsView \}\)/);
+  assert.doesNotMatch(rail, /window\.location\.hash = '#\/(?:downloads|audit|settings|)'/);
+  assert.match(read('frontend/css/media-control.css'), /\.mc-target-choice\s*\{[\s\S]*?min-height:\s*58px/);
+});
+
+test('USB import lets the podium operator choose the owning account', () => {
+  const app = read('frontend/js/app.js');
+
+  assert.match(app, /id="consoleUsbProfile"/);
+  assert.match(app, /Import into account/);
+  assert.match(app, /async function activateConsoleProfile\(profileId\)/);
+  assert.match(app, /await activateConsoleProfile\(profileId\)/);
+  assert.match(app, /importSelectedUsbFiles\(selected, body, profileId\)/);
+});
+
 test('podium browser smoke exercises both whiteboard modes and a real pointer stroke', () => {
   const smoke = read('scripts/live-console-ui-smoke.js');
 

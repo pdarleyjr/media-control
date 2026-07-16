@@ -3174,6 +3174,17 @@
       lastTransportState = null;
     }
 
+    // The source image is a composite classroom map, not a conventional photo.
+    // Its library default remains aspect-preserving on a solo TV, but a wall must
+    // stretch the composite once and then clip the correct slice per display.
+    const WALL_FILL_CONTENT_IDS = new Set(['7c596f36-27f6-4d7b-9bb0-2c682791d25a']);
+    function contentFitMode(item, isWall) {
+      const requested = String((item && item.fit_mode) || '').trim();
+      if (item && isWall && WALL_FILL_CONTENT_IDS.has(item.content_id)) return 'fill';
+      if (item && WALL_FILL_CONTENT_IDS.has(item.content_id)) return 'contain';
+      return requested || (isWall ? 'fill' : 'contain');
+    }
+
     function renderContent(item) {
       teardownCurrentMedia();
 
@@ -3272,16 +3283,13 @@
       // 2026-05-28: per-item fit_mode override. Null/undefined falls back to
       // 'fill' (wall) / 'contain' (solo). Validated server-side so any value
       // arriving here is a known CSS object-fit token.
-      const itemFit = (item.fit_mode || '').trim();
       // Wall content stretches to fill exactly (object-fit:fill) edge-to-bezel
       // with no letterbox and no crop — the operator-confirmed wallpaper
       // behavior. Solo (non-wall) keeps 'contain' to preserve aspect (no
       // awkward distortion on a single display). Per-item fit_mode overrides
       // these. For doc/PDF/Office this also flows into docPlayerSrc → ?fit=
       // so doc.html renders pages with the matching object-fit.
-      const cssFit = wallConfig
-        ? (itemFit || 'fill')
-        : (itemFit || 'contain');
+      const cssFit = contentFitMode(item, !!wallConfig);
 
       if (layout && layout.zones && layout.zones.length > 1 && !wallConfig) {
         renderZones(container, item);

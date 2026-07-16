@@ -247,6 +247,24 @@ body.console-mode .mc-library-body,
   gap: 12px;
 }
 
+.console-usb-account {
+  display: grid;
+  grid-template-columns: minmax(140px, .55fr) minmax(220px, 1fr);
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid #dbe5f0;
+  border-radius: 14px;
+  background: white;
+  font-weight: 700;
+}
+
+.console-usb-account select {
+  width: 100%;
+  min-height: 52px;
+  font-size: 18px;
+}
+
 .console-usb-row {
   display: grid;
   grid-template-columns: 34px 1fr;

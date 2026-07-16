@@ -30,6 +30,10 @@ import {
 import { confirmDialog } from '../components/confirm.js';
 import * as screenShareEngine from '../services/screen-share-engine.js';
 import * as schedulesView from './schedules.js';
+import * as downloadsView from './downloads.js';
+import * as auditLogView from './audit-log.js';
+import * as settingsView from './settings.js';
+import * as videoWallView from './video-wall.js';
 import { mount as mountWhiteboardSurface } from './media-control/whiteboard.js';
 // transport.js is used by stage.js internally — no direct import needed here.
 
@@ -292,7 +296,7 @@ function paintStage() {
     byId,
     selectedIds: renderSelectedIds,
     livePreviewDeviceId: LIVE_EMBED_PREVIEWS ? activePreviewDeviceId() : null,
-    onSelect: openInspector,
+    onSelect: selectStageDisplayTarget,
     onCalibrateWall: showWallCalibration,
     onAddDisplay: openAddPicker,
     onScreenOnChange: handleScreenOnChange,
@@ -318,6 +322,17 @@ function paintStage() {
     refreshPreviewsInPlace();
     enableLivePreviewAudio(el);
   }, 0);
+}
+
+function selectStageDisplayTarget(deviceId) {
+  const wall = wallForDeviceId(deviceId);
+  if (wall && wall.layout_mode === 'split') {
+    const target = { type: 'display', id: deviceId, supportsModes: false };
+    if (targetApi) targetApi.setActive(target);
+    handleTargetChange(target);
+    return;
+  }
+  openInspector(deviceId);
 }
 
 // A compact signature of the STRUCTURE the stage renders: which cards/wall cells
@@ -945,6 +960,13 @@ function dragHasSource(e) {
     e.dataTransfer.types.includes('text/plain'));
 }
 function parseDragSource(e) {
+  if (e.detail && e.detail.source) {
+    return {
+      source: e.detail.source,
+      label: e.detail.label || t('mc.tile.content_fallback'),
+    };
+  }
+  if (!e.dataTransfer) return null;
   const raw = e.dataTransfer.getData('application/x-mc-source') ||
               e.dataTransfer.getData('text/plain');
   if (!raw) return null;
@@ -981,7 +1003,7 @@ function attachStageDrop(stageContainer) {
       card.classList.add('mc-card-dragover');
     });
     card.addEventListener('dragleave', () => card.classList.remove('mc-card-dragover'));
-    card.addEventListener('drop', async (e) => {
+    const handleDrop = async (e) => {
       e.preventDefault();
       e.stopPropagation();
       card.classList.remove('mc-card-dragover');
@@ -990,7 +1012,9 @@ function attachStageDrop(stageContainer) {
       if (!parsed || !deviceId) return;
       const ok = await sendToDisplays(parsed.source, [deviceId], parsed.label);
       if (ok) refreshAfterSend([deviceId]); // re-fetch state + refresh THIS card's preview
-    });
+    };
+    card.addEventListener('drop', handleDrop);
+    card.addEventListener('mc:source-drop', handleDrop);
   });
 
   // Single-spanning-device split halves: drop a source onto ONE column of a wall
@@ -1004,7 +1028,7 @@ function attachStageDrop(stageContainer) {
       half.classList.add('mc-card-dragover');
     });
     half.addEventListener('dragleave', () => half.classList.remove('mc-card-dragover'));
-    half.addEventListener('drop', async (e) => {
+    const handleDrop = async (e) => {
       e.preventDefault();
       e.stopPropagation();
       half.classList.remove('mc-card-dragover');
@@ -1013,7 +1037,9 @@ function attachStageDrop(stageContainer) {
       const idx = parseInt(half.dataset.splitHalf, 10);
       if (!parsed || !wallId || !Number.isInteger(idx)) return;
       await dropOnWallHalf(wallId, idx, parsed.source, parsed.label);
-    });
+    };
+    half.addEventListener('drop', handleDrop);
+    half.addEventListener('mc:source-drop', handleDrop);
   });
 
   // Whole-wall drop strips: drop a source here to fill EVERY screen of that wall
@@ -1027,7 +1053,7 @@ function attachStageDrop(stageContainer) {
       zone.classList.add('mc-wall-all-dragover');
     });
     zone.addEventListener('dragleave', () => zone.classList.remove('mc-wall-all-dragover'));
-    zone.addEventListener('drop', async (e) => {
+    const handleDrop = async (e) => {
       e.preventDefault();
       e.stopPropagation();
       zone.classList.remove('mc-wall-all-dragover');
@@ -1047,7 +1073,9 @@ function attachStageDrop(stageContainer) {
       }
       const ok = await sendToDisplays(parsed.source, ids, parsed.label);
       if (ok) refreshAfterSend(ids);
-    });
+    };
+    zone.addEventListener('drop', handleDrop);
+    zone.addEventListener('mc:source-drop', handleDrop);
   });
 
   // Stage-BACKGROUND drop → every display on the stage (the current selection).
@@ -1066,6 +1094,16 @@ function attachStageDrop(stageContainer) {
     if (!stageContainer.contains(e.relatedTarget)) stageContainer.classList.remove('mc-stage-dragover');
   });
   stageContainer.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    stageContainer.classList.remove('mc-stage-dragover');
+    const parsed = parseDragSource(e);
+    if (!parsed) return;
+    const targets = effectiveTargets();
+    if (!targets.length) { showToast(t('mc.send.no_displays'), 'error'); return; }
+    const ok = await sendToDisplays(parsed.source, targets, parsed.label);
+    if (ok) refreshAfterSend(targets);
+  });
+  stageContainer.addEventListener('mc:source-drop', async (e) => {
     e.preventDefault();
     stageContainer.classList.remove('mc-stage-dragover');
     const parsed = parseDragSource(e);
@@ -1595,9 +1633,39 @@ async function stopLive() {
   catch (e) { showToast(e && e.message ? e.message : t('mc.cmd.live_stop_failed'), 'error'); }
 }
 
-// Wire the Command Center left icon rail (called from render() after the shell
-// markup is injected). Buttons navigate to their surface or toggle the in-page
-// Content Library drawer; the Admin item is a plain <a> handled by the router.
+function openTargetPickerModal() {
+  let controller;
+  controller = openViewModal({
+    title: 'Choose a display',
+    render: (body) => {
+      const displayTargets = routeableDisplays();
+      body.innerHTML = `<div class="mc-route-list mc-target-choice-list">
+        ${(walls || []).map((wall) => `<button type="button" class="mc-route-row mc-target-choice" data-type="wall" data-id="${esc(wall.id)}">
+          <strong>${esc(wall.name || wall.id)}</strong><span>${esc(wall.layout_mode === 'split' ? 'Split mode' : 'Span mode')}</span>
+        </button>`).join('')}
+        ${displayTargets.map((display) => `<button type="button" class="mc-route-row mc-target-choice" data-type="display" data-id="${esc(display.id)}">
+          <strong>${esc(display.name || display.id)}</strong><span>${esc(display.online ? 'Connected' : 'Not connected')}</span>
+        </button>`).join('')}
+      </div>`;
+      body.querySelectorAll('[data-type][data-id]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const isWall = button.dataset.type === 'wall';
+          const target = {
+            type: isWall ? 'wall' : 'display',
+            id: button.dataset.id,
+            ...(isWall ? { wall_id: button.dataset.id, supportsModes: true } : { supportsModes: false }),
+          };
+          if (targetApi) targetApi.setActive(target);
+          handleTargetChange(target);
+          controller.close();
+        });
+      });
+    },
+  });
+}
+
+// Keep every rail surface inside the fixed Command Center. Hash navigation hid
+// the rail in console mode and stranded touch users on a secondary page.
 function wireCommandRail() {
   const rail = document.querySelector('.mc-cc-rail');
   if (!rail) return;
@@ -1605,10 +1673,10 @@ function wireCommandRail() {
     btn.addEventListener('click', () => {
       switch (btn.dataset.mcRail) {
         case 'command':
-          window.location.hash = '#/control';
+          closeViewModal();
           break;
         case 'displays':
-          window.location.hash = '#/';
+          openTargetPickerModal();
           break;
         case 'whiteboard':
           if (typeof window.mcOpenWhiteboard === 'function') window.mcOpenWhiteboard();
@@ -1622,13 +1690,16 @@ function wireCommandRail() {
           break;
         }
         case 'downloads':
-          window.location.hash = '#/downloads';
+          openViewModal({ title: 'Downloads', module: downloadsView });
+          break;
+        case 'admin':
+          openViewModal({ title: 'Video Walls', module: videoWallView });
           break;
         case 'logs':
-          window.location.hash = '#/audit';
+          openViewModal({ title: 'System Logs', module: auditLogView });
           break;
         case 'settings':
-          window.location.hash = '#/settings';
+          openViewModal({ title: 'Settings', module: settingsView });
           break;
         default:
           break;
@@ -1672,7 +1743,7 @@ export async function render() {
           <button type="button" class="mc-cc-rail-btn" data-mc-rail="media" title="${esc(t('mc.cc.rail.media'))}" aria-label="${esc(t('mc.cc.rail.media'))}">${ICON_MEDIA}</button>
           <button type="button" class="mc-cc-rail-btn" data-mc-rail="downloads" title="${esc(t('mc.cc.rail.downloads'))}" aria-label="${esc(t('mc.cc.rail.downloads'))}">${ICON_DOWNLOADS}</button>
           <span class="mc-cc-rail-spacer"></span>
-          <a class="mc-cc-rail-btn" href="#/walls" title="${esc(t('mc.cc.rail.admin'))}" aria-label="${esc(t('mc.cc.rail.admin'))}">${ICON_ADMIN}</a>
+          <button type="button" class="mc-cc-rail-btn" data-mc-rail="admin" title="${esc(t('mc.cc.rail.admin'))}" aria-label="${esc(t('mc.cc.rail.admin'))}">${ICON_ADMIN}</button>
           <button type="button" class="mc-cc-rail-btn" data-mc-rail="logs" title="${esc(t('mc.cc.rail.logs'))}" aria-label="${esc(t('mc.cc.rail.logs'))}">${ICON_LOGS}</button>
           <button type="button" class="mc-cc-rail-btn" data-mc-rail="settings" title="${esc(t('mc.cc.rail.settings'))}" aria-label="${esc(t('mc.cc.rail.settings'))}">${ICON_SETTINGS}</button>
         </nav>
