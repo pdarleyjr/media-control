@@ -819,6 +819,7 @@ function updateFrontendHash() {
     const files = ['index.html', 'js/app.js', 'js/api.js', 'js/socket.js', 'css/variables.css', 'css/main.css',
       'js/views/dashboard.js', 'js/views/device-detail.js', 'js/views/content-library.js',
       'js/views/settings.js', 'js/views/login.js',
+      'js/views/admin.js',
       'js/views/layout-editor.js', 'js/views/schedule.js', 'js/views/widgets.js',
       'js/views/video-wall.js', 'js/views/reports.js', 'js/views/designer.js',
       'js/views/activity.js', 'js/views/kiosk.js', 'js/views/smartboard.js',

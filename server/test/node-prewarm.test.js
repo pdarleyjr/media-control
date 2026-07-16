@@ -161,6 +161,7 @@ test('node telemetry persists only bounded diagnostics fields and excludes secre
 test('node diagnostics schema and secured status response include telemetry JSON', () => {
   const database = fs.readFileSync(path.join(__dirname, '..', 'db', 'database.js'), 'utf8');
   const status = fs.readFileSync(path.join(__dirname, '..', 'routes', 'status.js'), 'utf8');
+  const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   const admin = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'js', 'views', 'admin.js'), 'utf8');
   assert.match(database, /managed_nodes ADD COLUMN telemetry_json TEXT/);
   assert.match(database, /node_heartbeats ADD COLUMN telemetry_json TEXT/);
@@ -174,6 +175,7 @@ test('node diagnostics schema and secured status response include telemetry JSON
   assert.match(admin, /Negotiated link/);
   assert.match(admin, /Run LAN test when idle/);
   assert.match(admin, /Build mismatch/);
+  assert.match(server, /'js\/views\/admin\.js'/);
 });
 
 test('P3 agent reconciles manifests slowly but keeps priority and LAN tests event driven', () => {
