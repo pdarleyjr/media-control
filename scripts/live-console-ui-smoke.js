@@ -316,6 +316,47 @@ async function main() {
           dragDrop = { ...(dragDrop || {}), restored_state: restoredState };
         }
       }
+
+      let touchDispatched = false;
+      try {
+        const touchResult = await evaluate(cdp, `(() => {
+          const contentId = ${JSON.stringify(dragConfig.contentId)};
+          const wallId = ${JSON.stringify(dragConfig.wallId)};
+          const tile = [...document.querySelectorAll('.mc-tile[data-drag-source]')].find((item) => {
+            try { return JSON.parse(item.dataset.dragSource || '{}').content_id === contentId; } catch { return false; }
+          });
+          const target = document.querySelector('.mc-wall[data-wall-id="' + wallId + '"] .mc-wall-all');
+          if (!tile || !target) return { ok: false, reason: 'touch source or target missing' };
+          const from = tile.getBoundingClientRect();
+          const to = target.getBoundingClientRect();
+          const pointerId = 73;
+          const event = (type, x, y, buttons) => new PointerEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            pointerId,
+            pointerType: 'touch',
+            isPrimary: true,
+            clientX: x,
+            clientY: y,
+            buttons,
+          });
+          tile.dispatchEvent(event('pointerdown', from.left + from.width / 2, from.top + from.height / 2, 1));
+          tile.dispatchEvent(event('pointermove', to.left + to.width / 2, to.top + to.height / 2, 1));
+          const ghostVisible = !!document.querySelector('.mc-touch-drag-ghost');
+          tile.dispatchEvent(event('pointerup', to.left + to.width / 2, to.top + to.height / 2, 0));
+          return { ok: true, ghost_visible: ghostVisible };
+        })()`);
+        assert(touchResult?.ok, `podium touch drag failed: ${JSON.stringify(touchResult)}`);
+        assert(touchResult.ghost_visible, 'podium touch drag did not enter dragging state');
+        touchDispatched = true;
+        const touchProbeState = await waitForPhysicalContent(db, dragConfig.deviceIds, dragConfig.contentId);
+        dragDrop = { ...(dragDrop || {}), touch_browser: touchResult, touch_probe_state: touchProbeState };
+      } finally {
+        if (touchDispatched) {
+          const touchRestoredState = await restoreDragDropContent(db, dragConfig);
+          dragDrop = { ...(dragDrop || {}), touch_restored_state: touchRestoredState };
+        }
+      }
     }
 
     const whiteboardOpened = await evaluate(cdp, `(() => {
