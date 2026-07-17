@@ -1525,6 +1525,12 @@
       }
     }
 
+    function acceptChildTransportState(state) {
+      if (!state || typeof state !== 'object') return null;
+      lastTransportState = state;
+      return state;
+    }
+
     function finishTransportCommand(command, ok, error, state) {
       if (!command) return;
       lastTransportAck = {
@@ -1545,9 +1551,11 @@
           issued_at: (lastTransportCommand && lastTransportCommand.issued_at) || Date.now(),
         };
       }
-      if (state && typeof state === 'object') {
-        lastTransportState = state;
-      }
+      // `state` is the acknowledgement snapshot, not necessarily child-frame
+      // state. Parent HTML5 snapshots must never be persisted in
+      // lastTransportState because that would override the live media clock on
+      // every later report. Child callers explicitly accept their state before
+      // finishing the command.
       publishPlayerState({ ack: lastTransportAck });
     }
 
@@ -1566,7 +1574,7 @@
         });
       }
       if (data.__mc_transport_state && typeof data.__mc_transport_state === 'object') {
-        lastTransportState = data.__mc_transport_state;
+        acceptChildTransportState(data.__mc_transport_state);
       }
       if (data.__mc_transport_ack && typeof data.__mc_transport_ack === 'object') {
         const ack = data.__mc_transport_ack;
@@ -1576,7 +1584,9 @@
             action: ack.action || (lastTransportCommand && lastTransportCommand.action) || null,
             payload: lastTransportCommand && lastTransportCommand.payload || null,
           };
-          finishTransportCommand(command, ack.ok !== false, ack.error || null, data.__mc_transport_state || ack.state || null);
+          const childState = data.__mc_transport_state || ack.state || null;
+          acceptChildTransportState(childState);
+          finishTransportCommand(command, ack.ok !== false, ack.error || null, childState);
           return;
         }
         lastTransportAck = ack;
@@ -2312,6 +2322,7 @@
               result.then((asyncAck) => {
                 const ack = asyncAck || {};
                 const state = (ack && ack.state) || childWindow.__mcTransportState || null;
+                acceptChildTransportState(state);
                 finishTransportCommand(command, ack.ok !== false, ack.error || null, state || buildPlayerState());
               }).catch((error) => {
                 finishTransportCommand(command, false, error && error.message ? error.message : String(error), buildPlayerState());
@@ -2321,6 +2332,7 @@
             }
             const ack = result || {};
             const state = (ack && ack.state) || childWindow.__mcTransportState || null;
+            acceptChildTransportState(state);
             finishTransportCommand(command, ack.ok !== false, ack.error || null, state || buildPlayerState());
             _showTransportDebug('child handleAction: ' + action);
             return true;

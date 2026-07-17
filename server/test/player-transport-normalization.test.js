@@ -88,6 +88,20 @@ test('player teardown prevents stale YouTube transport from hijacking local vide
   );
 });
 
+test('parent media acknowledgements do not freeze the authoritative playback clock', () => {
+  const html = readPlayerFile('index.html');
+  const finish = readSnippet(
+    path.join(__dirname, '..', 'player', 'index.html'),
+    'function finishTransportCommand(command, ok, error, state) {',
+    'function handleTransportMessage(event)'
+  );
+
+  assert.ok(html.includes('function acceptChildTransportState(state)'), 'child playback state should have an explicit ownership boundary');
+  assert.ok(!finish.includes('lastTransportState = state'), 'parent acknowledgement snapshots must not override the live media clock');
+  assert.ok(html.includes('acceptChildTransportState(data.__mc_transport_state)'), 'verified child frame state should remain authoritative');
+  assert.ok(html.includes('acceptChildTransportState(state);\n                finishTransportCommand'), 'direct child acknowledgements should persist child state before publishing');
+});
+
 test('HLS child player implements canonical video transport and state reporting', () => {
   const hls = readPlayerFile('hls.html');
   assert.ok(hls.includes('window.MbfdDeviceContract.normalizeCommand'), 'child player should normalize the canonical command envelope');
