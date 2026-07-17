@@ -68,7 +68,8 @@ function playbackStates(deviceIds) {
   const placeholders = deviceIds.map(() => '?').join(',');
   return db.prepare(`
     SELECT target_id, current_content_id, content_type, current_time, duration,
-           paused, ended, render_state, error_state, state_revision
+           paused, CASE WHEN render_state = 'ended' THEN 1 ELSE 0 END AS ended,
+           render_state, error_state, state_revision
     FROM display_states
     WHERE target_type = 'display' AND target_id IN (${placeholders})
     ORDER BY target_id
