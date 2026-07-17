@@ -3606,6 +3606,7 @@
           }
         } else if (isVideo) {
           const video = document.createElement('video');
+          let videoHasStarted = false;
           video.src = src;
           const wallStartDelayMs = wallConfig && currentItemStartedAt > Date.now() + 40
             ? Math.min(2000, currentItemStartedAt - Date.now())
@@ -3662,6 +3663,7 @@
             });
           });
           video.addEventListener('playing', () => {
+            videoHasStarted = true;
             currentMediaEnded = false;
             currentMediaError = null;
           });
@@ -3706,8 +3708,15 @@
           });
           if (wallStartDelayMs > 0) setTimeout(startVideo, wallStartDelayMs);
           else startVideo();
-          // Fallback: force play if not started after 2s
-          setTimeout(() => { if (video.paused) { video.muted = true; video.play().catch(() => {}); } }, wallStartDelayMs + 2000);
+          // Fallback only covers an autoplay that never started. Once playback
+          // has begun, a paused element reflects an operator transport command
+          // and must not be restarted by this startup timer.
+          setTimeout(() => {
+            if (!videoHasStarted && video.paused) {
+              video.muted = true;
+              video.play().catch(() => {});
+            }
+          }, wallStartDelayMs + 2000);
         } else if (isImage) {
           const img = document.createElement('img');
           // Classroom displays normally read images from the P3 cache, which is

@@ -67,7 +67,7 @@ function connectDashboard(token) {
 function playbackStates(deviceIds) {
   const placeholders = deviceIds.map(() => '?').join(',');
   return db.prepare(`
-    SELECT target_id, current_content_id, content_type, current_time, duration,
+    SELECT target_id, current_content_id, content_type, "current_time" AS current_time, duration,
            paused, CASE WHEN render_state = 'ended' THEN 1 ELSE 0 END AS ended,
            render_state, error_state, state_revision
     FROM display_states

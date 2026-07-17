@@ -105,6 +105,11 @@ const STATE_COLS = [
   'idle_screensaver_id', 'default_screensaver_id', 'wall_id', 'layout_id',
   'group_id', 'member_id', 'playback_revision', 'command_revision',
 ];
+const STATE_NUMERIC_COLS = new Set([
+  'slide_index', 'slide_count', 'current_time', 'duration', 'volume',
+  'last_ack_at', 'playback_revision',
+]);
+const STATE_BOOLEAN_COLS = new Set(['paused', 'muted', 'local_asset_ready']);
 
 // Compute the next per-target revision (monotonic optimistic-lock counter).
 function nextRevision(targetId) {
@@ -191,12 +196,25 @@ function toSqlScalar(value) {
   if (value instanceof Date) return value.getTime();
   return null;
 }
+function toStateScalar(key, value) {
+  if (value === undefined || value === null) return null;
+  if (STATE_BOOLEAN_COLS.has(key)) {
+    if (value === true || value === 1 || value === '1') return 1;
+    if (value === false || value === 0 || value === '0') return 0;
+    return null;
+  }
+  if (STATE_NUMERIC_COLS.has(key)) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+  return toSqlScalar(value);
+}
 function mergeDisplayState(target_type, target_id, state) {
   if (!state || typeof state !== 'object') return { applied: false, reason: 'invalid_state' };
   if (!target_type || !target_id) return { applied: false, reason: 'invalid_target' };
   const tx = db.transaction(() => {
     const now = Date.now();
-    const vals = STATE_COLS.map((key) => toSqlScalar(state[key]));
+    const vals = STATE_COLS.map((key) => toStateScalar(key, state[key]));
     const exists = stmts.displayStateExists.get(target_type, target_id);
     const currentRevision = Number(exists?.state_revision) || 0;
     const suppliedRevision = state.state_revision == null ? Number.NaN : Number(state.state_revision);

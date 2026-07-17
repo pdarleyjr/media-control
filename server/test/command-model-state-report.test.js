@@ -99,3 +99,35 @@ test('mergeDisplayState assigns monotonic revisions and rejects stale reports', 
       .run('display', targetId);
   }
 });
+
+test('mergeDisplayState rejects malformed numeric and boolean telemetry', () => {
+  const targetId = `test-state-types-${crypto.randomUUID()}`;
+  try {
+    mergeDisplayState('display', targetId, {
+      current_time: '14:31:43',
+      duration: 'not-a-duration',
+      volume: 'loud',
+      paused: 'false',
+      muted: 'true',
+      local_asset_ready: 'ready',
+      slide_index: '3',
+    });
+
+    const row = db.prepare(`
+      SELECT "current_time" AS current_time, duration, volume, paused, muted, local_asset_ready, slide_index
+      FROM display_states
+      WHERE target_type = ? AND target_id = ?
+    `).get('display', targetId);
+
+    assert.equal(row.current_time, null);
+    assert.equal(row.duration, null);
+    assert.equal(row.volume, null);
+    assert.equal(row.paused, null);
+    assert.equal(row.muted, null);
+    assert.equal(row.local_asset_ready, null);
+    assert.equal(row.slide_index, 3);
+  } finally {
+    db.prepare('DELETE FROM display_states WHERE target_type = ? AND target_id = ?')
+      .run('display', targetId);
+  }
+});

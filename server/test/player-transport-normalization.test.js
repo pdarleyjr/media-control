@@ -113,6 +113,13 @@ test('managed display audio permission remains authoritative in split mode', () 
   assert.ok(html.includes('video.muted = audioOutputAllowed() ? wasMuted : true'), 'seek completion must not restore forbidden audio');
 });
 
+test('video startup fallback does not override an operator pause', () => {
+  const html = readPlayerFile('index.html');
+  assert.ok(html.includes('let videoHasStarted = false'), 'video startup should track whether playback ever began');
+  assert.ok(html.includes('videoHasStarted = true'), 'the playing event should close the startup fallback window');
+  assert.ok(html.includes('if (!videoHasStarted && video.paused)'), 'fallback replay must not restart an intentionally paused video');
+});
+
 test('HLS child player implements canonical video transport and state reporting', () => {
   const hls = readPlayerFile('hls.html');
   assert.ok(hls.includes('window.MbfdDeviceContract.normalizeCommand'), 'child player should normalize the canonical command envelope');
