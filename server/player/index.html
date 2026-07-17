@@ -2168,7 +2168,7 @@
             typeof activeYtPlayer.getCurrentTime === 'function') {
           try {
             const now = Date.now();
-            const latency = data.sent_at ? Math.min(2, Math.max(0, (now - data.sent_at) / 1000)) : 0;
+            const latency = data.paused ? 0 : (data.sent_at ? Math.min(2, Math.max(0, (now - data.sent_at) / 1000)) : 0);
             const target = data.position_sec + latency;
             const ytTime = activeYtPlayer.getCurrentTime() || 0;
             if (Math.abs(ytTime - target) > 1.5) {
@@ -2176,7 +2176,9 @@
             }
             const state = activeYtPlayer.getPlayerState ? activeYtPlayer.getPlayerState() : -1;
             // YT.PlayerState: -1=unstarted, 0=ended, 1=playing, 2=paused, 3=buffering, 5=cued
-            if (state === -1 || state === 2 || state === 5) {
+            if (data.paused && state === 1) {
+              activeYtPlayer.pauseVideo();
+            } else if (!data.paused && (state === -1 || state === 2 || state === 5)) {
               activeYtPlayer.playVideo();
             }
           } catch (_) { /* tolerated — followers retry every sync tick */ }
@@ -2186,7 +2188,7 @@
         // by now a bit more time has elapsed, so target = position + latency.
         if (currentVideoEl && typeof data.position_sec === 'number') {
           const now = Date.now();
-          const latency = data.sent_at ? Math.min(2, Math.max(0, (now - data.sent_at) / 1000)) : 0;
+          const latency = data.paused ? 0 : (data.sent_at ? Math.min(2, Math.max(0, (now - data.sent_at) / 1000)) : 0);
           const target = data.position_sec + latency;
           const drift = (currentVideoEl.currentTime || 0) - target;
           const absDrift = Math.abs(drift);
@@ -2202,6 +2204,13 @@
           } else if (currentVideoEl.playbackRate !== 1.0) {
             // In-window: ride at normal rate.
             try { currentVideoEl.playbackRate = 1.0; } catch (_) {}
+          }
+          if (data.paused && !currentVideoEl.paused) {
+            currentVideoEl.__mcOperatorPaused = true;
+            currentVideoEl.pause();
+          } else if (!data.paused && currentVideoEl.paused) {
+            currentVideoEl.__mcOperatorPaused = false;
+            currentVideoEl.play().catch(() => {});
           }
         }
       });
@@ -2633,6 +2642,7 @@
           else if (action === 'play_pause') {
             if (video) {
               if (video.paused) {
+                video.__mcOperatorPaused = false;
                 unlockAudio();
                 Promise.resolve(video.play()).then(() => {
                   finishTransportCommand(command, true, null, buildPlayerState());
@@ -2641,6 +2651,7 @@
                 });
                 return;
               }
+              video.__mcOperatorPaused = true;
               video.pause();
               handled = true;
             }
@@ -2648,11 +2659,13 @@
           }
           else if (action === 'restart') { currentIndex = -1; nextItem(); handled = true; _showTransportDebug('restart'); }
           else if (action === 'pause') {
+            if (video) video.__mcOperatorPaused = true;
             if (video && !video.paused) video.pause();
             handled = !!video;
             _showTransportDebug('pause');
           }
           else if (action === 'play') {
+            if (video) video.__mcOperatorPaused = false;
             if (video && video.paused) {
               unlockAudio();
               Promise.resolve(video.play()).then(() => {
@@ -2931,6 +2944,9 @@
         current_index: currentIndex,
         content_id: item.content_id || null,
         position_sec: position,
+        paused: activeYtPlayer
+          ? ytPlayerStateLabel() === 'paused'
+          : !!(currentVideoEl && currentVideoEl.paused),
         sent_at: Date.now(),
         start_in_ms: Math.max(0, currentItemStartedAt - Date.now()),
       });
@@ -3347,11 +3363,11 @@
               // Fire TV) should resume — the leader is the source of truth
               // and a wall:sync may not arrive fast enough to recover the
               // playback state on its own.
-              if (event.data === 2 && isFollowerEmbed) {
+              if (event.data === 2 && isFollowerEmbed && !lastWallSync?.paused) {
                 setTimeout(() => {
                   if (myGeneration === ytGeneration && activeYtPlayer &&
                       typeof activeYtPlayer.getPlayerState === 'function' &&
-                      activeYtPlayer.getPlayerState() === 2) {
+                      activeYtPlayer.getPlayerState() === 2 && !lastWallSync?.paused) {
                     try { activeYtPlayer.playVideo(); } catch (_) {}
                   }
                 }, 500);
@@ -3712,7 +3728,7 @@
           // has begun, a paused element reflects an operator transport command
           // and must not be restarted by this startup timer.
           setTimeout(() => {
-            if (!videoHasStarted && video.paused) {
+            if (!videoHasStarted && !video.__mcOperatorPaused && video.paused) {
               video.muted = true;
               video.play().catch(() => {});
             }

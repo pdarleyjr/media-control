@@ -117,7 +117,17 @@ test('video startup fallback does not override an operator pause', () => {
   const html = readPlayerFile('index.html');
   assert.ok(html.includes('let videoHasStarted = false'), 'video startup should track whether playback ever began');
   assert.ok(html.includes('videoHasStarted = true'), 'the playing event should close the startup fallback window');
-  assert.ok(html.includes('if (!videoHasStarted && video.paused)'), 'fallback replay must not restart an intentionally paused video');
+  assert.ok(html.includes('video.__mcOperatorPaused = true'), 'pause transport should mark explicit operator intent');
+  assert.ok(html.includes('if (!videoHasStarted && !video.__mcOperatorPaused && video.paused)'), 'fallback replay must not restart an intentionally paused video');
+});
+
+test('span wall sync carries and enforces leader playback state', () => {
+  const html = readPlayerFile('index.html');
+  assert.ok(html.includes('paused: activeYtPlayer'), 'leader sync should publish its actual paused state');
+  assert.ok(html.includes('if (data.paused && !currentVideoEl.paused)'), 'followers should pause when the leader is paused');
+  assert.ok(html.includes('else if (!data.paused && currentVideoEl.paused)'), 'followers should resume when the leader is playing');
+  assert.ok(html.includes('const latency = data.paused ? 0'), 'paused clocks must not advance by relay latency');
+  assert.ok(html.includes('isFollowerEmbed && !lastWallSync?.paused'), 'YouTube follower recovery must preserve a leader pause');
 });
 
 test('HLS child player implements canonical video transport and state reporting', () => {
