@@ -150,6 +150,8 @@ test('live video transport smoke covers the complete physical playback contract'
   assert.ok(smoke.includes('position_seconds: 2'), 'live smoke should exercise absolute seek');
   assert.ok(smoke.includes('position_normalized: 0.5'), 'live smoke should exercise normalized seek');
   assert.ok(smoke.includes('duration > 0'), 'live smoke should verify duration');
+  assert.ok(smoke.includes("row.render_state === 'playing'"), 'restart must be visibly playing before the toggle assertion');
+  assert.ok(smoke.includes('row.paused === 0'), 'restart must not pass while the new video is still paused');
   assert.ok(smoke.includes('current_time'), 'live smoke should verify the physical media clock');
   assert.ok(smoke.includes('error_state'), 'live smoke should reject player errors');
   assert.ok(smoke.includes('restoreContentId'), 'live smoke should restore the classroom baseline');
@@ -164,6 +166,16 @@ test('player restores persisted document slide state after reconnect before publ
   assert.ok(html.includes("action: 'go_to_slide'"), 'restore should use canonical go_to_slide transport');
   assert.ok(html.includes('shouldHoldStateReportForRestore(state)'), 'player should suppress temporary page-1 reports while restore is pending');
   assert.ok(html.includes('publishPlayerState({ force: true })'), 'player should publish authoritative state after restore completes');
+});
+
+test('player rebases persisted revisions even when reconnect state has no slide metadata', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'player', 'index.html'), 'utf8');
+  const normalizeStart = html.indexOf('function normalizeDisplayStateRestore(state)');
+  const slideGuard = html.indexOf('if (!Number.isFinite(slide) || slide < 1) return null;', normalizeStart);
+  const revisionRebase = html.indexOf('playerStateRevision = Math.max(playerStateRevision, revision);', normalizeStart);
+
+  assert.ok(normalizeStart >= 0, 'restore normalizer should exist');
+  assert.ok(revisionRebase > normalizeStart && revisionRebase < slideGuard, 'state revision must rebase before non-slide states return');
 });
 
 test('player reports local cache readiness from completed media loading, not URL presence', () => {

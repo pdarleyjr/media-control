@@ -495,6 +495,12 @@
     }
     function normalizeDisplayStateRestore(state) {
       if (!state || typeof state !== 'object') return null;
+      // Rebase every persisted state, including media without slide metadata,
+      // so the first report after reconnect cannot be rejected as stale.
+      const revision = parseInt(state.state_revision, 10);
+      if (Number.isInteger(revision) && revision >= 0) {
+        playerStateRevision = Math.max(playerStateRevision, revision);
+      }
       const rawSlide = state.slide_index ?? state.slideIndex ?? state.page ?? state.page_index ?? state.slide;
       const slide = parseInt(rawSlide, 10);
       if (!Number.isFinite(slide) || slide < 1) return null;
@@ -510,10 +516,8 @@
         restore_source_device_id: state.restore_source_device_id || null,
         updated_at: state.updated_at || null,
       };
-      const revision = parseInt(state.state_revision, 10);
       if (Number.isInteger(revision) && revision >= 0) {
         restore.state_revision = revision;
-        playerStateRevision = Math.max(playerStateRevision, revision);
       }
       return restore;
     }

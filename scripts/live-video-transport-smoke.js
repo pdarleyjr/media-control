@@ -139,7 +139,12 @@ async function main() {
     evidence.push({ command: await sendCommand(socket, deviceIds, 'play'), states: await waitForStates(deviceIds, (row) => row.paused === 0, 'play') });
     const normalized = await sendCommand(socket, deviceIds, 'seek', { position_normalized: 0.5 });
     evidence.push({ command: normalized, states: await waitForStates(deviceIds, (row) => Math.abs(Number(row.current_time) - Number(row.duration) * 0.5) < 1.75, 'normalized seek') });
-    evidence.push({ command: await sendCommand(socket, deviceIds, 'restart'), states: await waitForStates(deviceIds, (row) => Number(row.current_time) < 1.5 && row.ended === 0, 'restart') });
+    evidence.push({ command: await sendCommand(socket, deviceIds, 'restart'), states: await waitForStates(deviceIds, (row) => (
+      Number(row.current_time) < 3
+      && row.ended === 0
+      && row.paused === 0
+      && row.render_state === 'playing'
+    ), 'restart') });
     evidence.push({ command: await sendCommand(socket, deviceIds, 'play_pause'), states: await waitForStates(deviceIds, (row) => row.paused === 1, 'play/pause toggle') });
     console.log(JSON.stringify({ ok: true, evidence }, null, 2));
   } catch (error) {
