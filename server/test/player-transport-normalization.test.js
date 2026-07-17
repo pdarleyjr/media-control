@@ -72,6 +72,22 @@ test('player applies validated seek commands to YouTube and HTML5 video', () => 
   assert.ok(snippet.includes('payload.position_percent'), 'seek should support percentage positions');
 });
 
+test('player teardown prevents stale YouTube transport from hijacking local video', () => {
+  const snippet = readSnippet(
+    path.join(__dirname, '..', 'player', 'index.html'),
+    'function teardownCurrentMedia() {',
+    'function isWallFillContent(item)'
+  );
+
+  assert.ok(snippet.includes('++ytGeneration'), 'teardown should invalidate late YouTube callbacks');
+  assert.ok(snippet.includes('activeYtPlayer.destroy()'), 'teardown should release the previous YouTube player');
+  assert.ok(snippet.includes('activeYtPlayer = null'), 'teardown should return transport authority to the visible media');
+  assert.ok(
+    snippet.indexOf('activeYtPlayer = null') < snippet.indexOf("container.querySelectorAll('video')"),
+    'embedded transport state should be cleared before mounting replacement media'
+  );
+});
+
 test('HLS child player implements canonical video transport and state reporting', () => {
   const hls = readPlayerFile('hls.html');
   assert.ok(hls.includes('window.MbfdDeviceContract.normalizeCommand'), 'child player should normalize the canonical command envelope');

@@ -3338,6 +3338,15 @@
     // zone-mode (multi-region) videos get cleaned up too, not just currentVideoEl.
     function teardownCurrentMedia() {
       if (advanceTimer) { clearTimeout(advanceTimer); advanceTimer = null; }
+      // A detached YouTube player must never remain transport-authoritative.
+      // Without this reset, commands for the next local MP4 are acknowledged
+      // through the stale IFrame API object instead of controlling the visible
+      // HTML5 video.
+      ++ytGeneration;
+      if (activeYtPlayer) {
+        try { activeYtPlayer.destroy(); } catch (_) {}
+        activeYtPlayer = null;
+      }
       const container = document.getElementById('playerContainer');
       if (container) {
         container.querySelectorAll('video').forEach(v => {
