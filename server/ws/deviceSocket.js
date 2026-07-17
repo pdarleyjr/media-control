@@ -207,6 +207,10 @@ function restoreStateForDevice(deviceId, device, wall, layoutGroup) {
   }
   return {
     ...leaderState,
+    // Slide position is group-authoritative, but optimistic state revisions
+    // are per renderer. A follower must rebase from its own persisted counter
+    // after a kiosk reload or every new report can be rejected as stale.
+    state_revision: ownState?.state_revision ?? leaderState.state_revision,
     restore_source: 'layout_group_leader',
     restore_source_device_id: leaderDeviceId,
     wall_id: wall.id,

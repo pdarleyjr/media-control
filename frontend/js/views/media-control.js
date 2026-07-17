@@ -1319,7 +1319,12 @@ function mountTransportRow(hostEl) {
       const ids = activeTargetTransportIds();
       if (!ids.length) return;
       const action = btn.dataset.ccTp; // 'prev' | 'restart' | 'play_pause' | 'next'
-      ids.forEach(id => sendCommand(id, COMMAND_TYPES.TRANSPORT, { action }));
+      const primary = displayState.get(ids[0]);
+      const paused = primary && primary.now_playing ? primary.now_playing.paused : undefined;
+      const resolvedAction = action === 'play_pause' && paused !== undefined
+        ? (paused ? 'play' : 'pause')
+        : action;
+      ids.forEach(id => sendCommand(id, COMMAND_TYPES.TRANSPORT, { action: resolvedAction }));
       refreshAfterSend(ids);
       // Optimistically refresh the Play/Pause label after a toggle.
       setTimeout(() => transportApi && transportApi.repaint && transportApi.repaint(), 400);
@@ -1352,8 +1357,10 @@ function mountTransportRow(hostEl) {
       if (nextTxt) nextTxt.textContent = isPresentation ? t('mc.cc.transport.next_slide') : t('mc.cc.transport.next');
       const pp = hostEl.querySelector('[data-cc-tp="play_pause"] .mc-cc-tp-text');
       if (pp) {
-        const playing = !!(dev && dev.now_playing && dev.now_playing.kind && dev.now_playing.kind !== 'idle');
-        pp.textContent = playing ? t('mc.cc.transport.pause') : t('mc.cc.transport.play');
+        const paused = dev && dev.now_playing ? dev.now_playing.paused : undefined;
+        pp.textContent = paused === true
+          ? t('mc.cc.transport.play')
+          : paused === false ? t('mc.cc.transport.pause') : t('mc.tp.play_pause');
       }
       void isVideo; // video uses the default play_pause + restart; no special-casing needed
     },

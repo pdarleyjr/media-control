@@ -2579,6 +2579,14 @@
           markTransportCommand(command, 'pending');
           publishPlayerState();
 
+          // A play/pause toggle is non-idempotent. In a spanned subgroup only
+          // the leader executes it; followers acknowledge and consume the
+          // leader's explicit paused state on the next wall-sync tick.
+          if (action === 'play_pause' && wallConfig && !wallConfig.is_leader) {
+            finishTransportCommand(command, true, null, buildPlayerState());
+            return;
+          }
+
           // ── YouTube IFrame API fast path ───────────────────────────────────
           if (activeYtPlayer) {
             try {

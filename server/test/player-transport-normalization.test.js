@@ -128,6 +128,7 @@ test('span wall sync carries and enforces leader playback state', () => {
   assert.ok(html.includes('else if (!data.paused && currentVideoEl.paused)'), 'followers should resume when the leader is playing');
   assert.ok(html.includes('const latency = data.paused ? 0'), 'paused clocks must not advance by relay latency');
   assert.ok(html.includes('isFollowerEmbed && !lastWallSync?.paused'), 'YouTube follower recovery must preserve a leader pause');
+  assert.ok(html.includes("if (action === 'play_pause' && wallConfig && !wallConfig.is_leader)"), 'span followers must not independently execute a non-idempotent toggle');
 });
 
 test('HLS child player implements canonical video transport and state reporting', () => {

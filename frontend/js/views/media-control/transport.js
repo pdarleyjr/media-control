@@ -113,8 +113,11 @@ export function renderTransportBar(container, { deviceId, transportDeviceIds, bl
     btn.addEventListener('click', () => {
       const action = btn.dataset.tpAction;
       if (!TRANSPORT_ACTIONS.includes(action)) return;
-      transportIds.forEach(id => sendCommand(id, COMMAND_TYPES.TRANSPORT, { action }));
-      if (typeof onTransportAction === 'function') onTransportAction(transportIds, action);
+      const resolvedAction = action === 'play_pause' && paused !== undefined
+        ? (paused ? 'play' : 'pause')
+        : action;
+      transportIds.forEach(id => sendCommand(id, COMMAND_TYPES.TRANSPORT, { action: resolvedAction }));
+      if (typeof onTransportAction === 'function') onTransportAction(transportIds, resolvedAction);
     });
   });
 

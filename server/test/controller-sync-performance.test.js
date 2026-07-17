@@ -50,6 +50,9 @@ test('span wall transport controls fan out to every wall member', () => {
   assert.match(stage, /data-transport-ids="\$\{esc\(ids\)\}"/);
   assert.match(transport, /transportDeviceIds/);
   assert.match(transport, /transportIds\.forEach\(id => sendCommand\(id, COMMAND_TYPES\.TRANSPORT/);
+  assert.match(transport, /action === 'play_pause' && paused !== undefined/);
+  assert.match(main, /action === 'play_pause' && paused !== undefined/);
+  assert.match(main, /paused \? 'play' : 'pause'/);
 });
 
 test('an independently selected split-wall member remains renderable as a display target', () => {
@@ -69,7 +72,7 @@ test('transport actions refresh state and force previews so dashboard mirrors sl
   assert.match(stage, /onTransportAction/);
   assert.match(stage, /onTransportAction\(transportIds\.length \? transportIds : \[deviceId\], action\)/);
   assert.match(transport, /onTransportAction/);
-  assert.match(transport, /if \(typeof onTransportAction === 'function'\) onTransportAction\(transportIds, action\)/);
+  assert.match(transport, /if \(typeof onTransportAction === 'function'\) onTransportAction\(transportIds, resolvedAction\)/);
 });
 
 test('presentation previews follow the authoritative physical slide state', () => {
@@ -282,6 +285,7 @@ test('playlist reconnect payload carries authoritative display restore state', (
   assert.match(source, /function displayStateForDevice\(deviceId\)/);
   assert.match(source, /function restoreStateForDevice\(deviceId, device, wall, layoutGroup\)/);
   assert.match(source, /restore_source: 'layout_group_leader'/);
+  assert.match(source, /state_revision: ownState\?\.state_revision \?\? leaderState\.state_revision/);
   assert.match(source, /display_state: restoreStateForDevice\(deviceId, device, wall, layoutGroup\)/);
   assert.match(source, /layout_context: layoutGroup \? \{/);
 });
