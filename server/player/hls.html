@@ -29,6 +29,7 @@
   <video id="cam" muted playsinline autoplay></video>
   <div id="state"><span id="statetext">Connecting…</span></div>
   <div id="label" hidden><span class="dot" aria-hidden="true"></span><span id="labeltext"></span></div>
+  <script src="device-contract.js"></script>
   <script src="vendor/hls.light.min.js"></script>
   <script>
     // Generic live-channel wrapper for the Camera Feeds "Live News" folder.
@@ -52,6 +53,111 @@
       var stateText = document.getElementById('statetext');
       var labelEl = document.getElementById('label');
       var labelText = document.getElementById('labeltext');
+      var lastMediaError = null;
+
+      function playbackState() {
+        var duration = Number(video.duration);
+        var currentTime = Number(video.currentTime);
+        var renderState = lastMediaError
+          ? 'error'
+          : (video.ended ? 'ended' : (video.paused ? 'paused' : (video.readyState < 3 ? 'loading' : 'playing')));
+        var state = {
+          content_type: 'video',
+          media_type: 'video',
+          current_time: Number.isFinite(currentTime) ? currentTime : 0,
+          duration: Number.isFinite(duration) ? duration : null,
+          paused: video.paused,
+          muted: video.muted,
+          volume: Number(video.volume),
+          render_state: renderState,
+          playback_status: renderState,
+          error_state: lastMediaError,
+        };
+        window.__mcTransportState = state;
+        return state;
+      }
+
+      function notifyParent(kind, payload) {
+        if (!window.parent || window.parent === window) return;
+        try {
+          var message = {};
+          message[kind] = payload;
+          window.parent.postMessage(message, location.origin);
+        } catch (e) {}
+      }
+
+      function seekPosition(payload) {
+        var secondsRaw = payload.position_seconds ?? payload.position ?? payload.time;
+        if (secondsRaw !== undefined && secondsRaw !== null) {
+          var seconds = Number(secondsRaw);
+          return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
+        }
+        var normalizedRaw = payload.position_normalized ?? payload.normalized_position ?? payload.progress;
+        var percentRaw = payload.position_percent ?? payload.percent;
+        var normalized = normalizedRaw !== undefined && normalizedRaw !== null
+          ? Number(normalizedRaw)
+          : (percentRaw !== undefined && percentRaw !== null ? Number(percentRaw) / 100 : null);
+        var duration = Number(video.duration);
+        if (!Number.isFinite(normalized) || normalized < 0 || normalized > 1) return null;
+        if (!Number.isFinite(duration) || duration <= 0) return null;
+        return normalized * duration;
+      }
+
+      function executeTransport(input, reportToParent) {
+        var normalized = window.MbfdDeviceContract.normalizeCommand(input, {
+          device_id: 'hls-child-player',
+          target_scope: 'display',
+        });
+        if (!normalized.ok) {
+          var invalidAck = { ok: false, error: normalized.error, state: playbackState() };
+          if (reportToParent) notifyParent('__mc_transport_ack', invalidAck);
+          return Promise.resolve(invalidAck);
+        }
+        var command = normalized.value;
+        var action = command.payload.action;
+        var operation;
+        try {
+          if (action === 'play' || (action === 'play_pause' && video.paused)) {
+            operation = Promise.resolve(video.play());
+          } else if (action === 'pause' || (action === 'play_pause' && !video.paused)) {
+            video.pause();
+            operation = Promise.resolve();
+          } else if (action === 'restart') {
+            var start = video.seekable && video.seekable.length ? video.seekable.start(0) : 0;
+            video.currentTime = Number.isFinite(start) ? start : 0;
+            operation = Promise.resolve(video.play());
+          } else if (action === 'seek') {
+            var position = seekPosition(command.payload);
+            if (position === null) throw new Error('Invalid or unsupported seek target');
+            video.currentTime = Math.min(position, Math.max(0, Number(video.duration) - 0.05));
+            operation = Promise.resolve();
+          } else {
+            throw new Error('Unsupported video transport action: ' + action);
+          }
+        } catch (error) {
+          operation = Promise.reject(error);
+        }
+        return operation.then(function () {
+          var ack = { ok: true, error: null, command_id: command.command_id, state: playbackState() };
+          if (reportToParent) notifyParent('__mc_transport_ack', ack);
+          return ack;
+        }).catch(function (error) {
+          var ack = {
+            ok: false,
+            command_id: command.command_id,
+            error: error && error.message ? error.message : String(error),
+            state: playbackState(),
+          };
+          if (reportToParent) notifyParent('__mc_transport_ack', ack);
+          return ack;
+        });
+      }
+
+      window.handleAction = function (input) { return executeTransport(input, false); };
+      window.addEventListener('message', function (event) {
+        if (event.origin !== location.origin || !event.data || !event.data.__mc_transport) return;
+        executeTransport(event.data.__mc_transport, true);
+      });
 
       video.style.objectFit = fit;
       if (!station) { stateText.textContent = 'No channel selected.'; return; }
@@ -94,7 +200,13 @@
       }
       function clearStall() { if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; } }
       function armStall() { clearStall(); stallTimer = setTimeout(onStall, 45000); }
-      function onPlaying() { showState(false); clearStall(); reresolves = 0; }
+      function onPlaying() {
+        lastMediaError = null;
+        showState(false);
+        clearStall();
+        reresolves = 0;
+        notifyParent('__mc_transport_state', playbackState());
+      }
       function onStall() { if (stopped) return; reresolves++; if (reresolves > MAX) { showState(true, 'Reconnecting…'); return; } resolveAndPlay(); }
 
       function resolveAndPlay() {
@@ -122,6 +234,15 @@
       }
 
       video.addEventListener('playing', onPlaying);
+      video.addEventListener('play', function () { notifyParent('__mc_transport_state', playbackState()); });
+      video.addEventListener('pause', function () { notifyParent('__mc_transport_state', playbackState()); });
+      video.addEventListener('ended', function () { notifyParent('__mc_transport_state', playbackState()); });
+      video.addEventListener('error', function () {
+        lastMediaError = video.error
+          ? { code: video.error.code, message: video.error.message || 'Video playback failed' }
+          : { code: 'video_error', message: 'Video playback failed' };
+        notifyParent('__mc_transport_state', playbackState());
+      });
       video.addEventListener('waiting', armStall);
       video.addEventListener('stalled', armStall);
       document.addEventListener('visibilitychange', function () {

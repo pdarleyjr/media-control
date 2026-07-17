@@ -441,6 +441,9 @@
     let wallSyncTimer = null;
     let lastWallSync = null;
     let currentVideoEl = null;
+    let currentMediaEnded = false;
+    let currentMediaError = null;
+    let lastPlaybackProgressAt = 0;
     let currentLocalAssetReady = null;
     let currentCacheStatus = 'direct';
     let currentItemStartedAt = 0;
@@ -1340,8 +1343,8 @@
         muted: null,
         volume: null,
         local_asset_ready: currentLocalAssetReady,
-        render_state: item ? 'playing' : 'idle',
-        error_state: null,
+        render_state: null,
+        error_state: currentMediaError,
         media_title: (item && item.filename) || config.deviceName || 'Web Player',
         media_type: contentKindForItem(item),
         cache_status: currentCacheStatus,
@@ -1414,7 +1417,10 @@
       }
       if (!snapshot.render_state) {
         const ytState = ytPlayerStateLabel();
-        if (ytState) snapshot.render_state = ytState;
+        if (snapshot.error_state) snapshot.render_state = 'error';
+        else if (currentMediaEnded) snapshot.render_state = 'ended';
+        else if (ytState) snapshot.render_state = ytState;
+        else if (currentVideoEl && currentVideoEl.readyState < 3 && !currentVideoEl.paused) snapshot.render_state = 'loading';
         else snapshot.render_state = snapshot.paused ? 'paused' : (item ? 'playing' : 'idle');
       }
       if (snapshot.media_type == null) snapshot.media_type = snapshot.content_type;
@@ -2300,7 +2306,19 @@
         try {
           const childWindow = iframe.contentWindow;
           if (childWindow && typeof childWindow.handleAction === 'function') {
-            const ack = childWindow.handleAction(envelope) || {};
+            const result = childWindow.handleAction(envelope);
+            if (result && typeof result.then === 'function') {
+              result.then((asyncAck) => {
+                const ack = asyncAck || {};
+                const state = (ack && ack.state) || childWindow.__mcTransportState || null;
+                finishTransportCommand(command, ack.ok !== false, ack.error || null, state || buildPlayerState());
+              }).catch((error) => {
+                finishTransportCommand(command, false, error && error.message ? error.message : String(error), buildPlayerState());
+              });
+              _showTransportDebug('child handleAction pending: ' + action);
+              return true;
+            }
+            const ack = result || {};
             const state = (ack && ack.state) || childWindow.__mcTransportState || null;
             finishTransportCommand(command, ack.ok !== false, ack.error || null, state || buildPlayerState());
             _showTransportDebug('child handleAction: ' + action);
@@ -2410,12 +2428,24 @@
       // The child iframe is authoritative when it exists. We try handleAction
       // first, then postMessage, and only fall back to DOM manipulation if no
       // transportable child is available.
-      function readSeekPosition(command) {
+      function readSeekPosition(command, duration) {
         const payload = command && command.payload && typeof command.payload === 'object'
           ? command.payload
           : {};
-        const position = Number(payload.position_seconds ?? payload.position ?? payload.time);
-        return Number.isFinite(position) && position >= 0 ? position : null;
+        const secondsRaw = payload.position_seconds ?? payload.position ?? payload.time;
+        if (secondsRaw !== undefined && secondsRaw !== null) {
+          const seconds = Number(secondsRaw);
+          return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
+        }
+        const normalizedRaw = payload.position_normalized ?? payload.normalized_position ?? payload.progress;
+        const percentRaw = payload.position_percent ?? payload.percent;
+        const normalized = normalizedRaw !== undefined && normalizedRaw !== null
+          ? Number(normalizedRaw)
+          : (percentRaw !== undefined && percentRaw !== null ? Number(percentRaw) / 100 : null);
+        const finiteDuration = Number(duration);
+        if (!Number.isFinite(normalized) || normalized < 0 || normalized > 1) return null;
+        if (!Number.isFinite(finiteDuration) || finiteDuration <= 0) return null;
+        return normalized * finiteDuration;
       }
 
       function applySeekToVideo(video, position) {
@@ -2425,6 +2455,13 @@
           : position;
         video.currentTime = boundedPosition;
         return boundedPosition;
+      }
+
+      function findControllableVideo() {
+        if (currentVideoEl && currentVideoEl.isConnected) return currentVideoEl;
+        const video = document.querySelector('#playerContainer video, .wall-stage video');
+        if (video) currentVideoEl = video;
+        return video;
       }
 
       function doTransport(input) {
@@ -2456,7 +2493,10 @@
                   currentIndex = -1; nextItem();
                 }
               } else if (action === 'seek') {
-                const position = readSeekPosition(command);
+                const duration = typeof activeYtPlayer.getDuration === 'function'
+                  ? activeYtPlayer.getDuration()
+                  : null;
+                const position = readSeekPosition(command, duration);
                 if (position === null || typeof activeYtPlayer.seekTo !== 'function') {
                   throw new Error('Invalid or unsupported seek target');
                 }
@@ -2489,33 +2529,53 @@
 
           // ── No controllable iframe — drive the playlist/video directly ────
           const len = playlist.length || 0;
-          const video = document.querySelector('#playerContainer video, .wall-stage video');
+          const video = findControllableVideo();
           let handled = false;
           if (action === 'next') { nextItem(); handled = true; _showTransportDebug('nextItem'); }
           else if (action === 'prev') { if (len) { currentIndex = (currentIndex - 2 + len) % len; nextItem(); } handled = true; _showTransportDebug('prevItem'); }
           else if (action === 'play_pause') {
             if (video) {
-              if (video.paused) { unlockAudio(); video.play().catch(() => {}); }
-              else { video.pause(); }
+              if (video.paused) {
+                unlockAudio();
+                Promise.resolve(video.play()).then(() => {
+                  finishTransportCommand(command, true, null, buildPlayerState());
+                }).catch((error) => {
+                  finishTransportCommand(command, false, error && error.message ? error.message : 'Video play failed', buildPlayerState());
+                });
+                return;
+              }
+              video.pause();
+              handled = true;
             }
-            handled = true;
             _showTransportDebug('play_pause');
           }
           else if (action === 'restart') { currentIndex = -1; nextItem(); handled = true; _showTransportDebug('restart'); }
           else if (action === 'pause') {
             if (video && !video.paused) video.pause();
-            handled = true;
+            handled = !!video;
             _showTransportDebug('pause');
           }
           else if (action === 'play') {
-            if (video && video.paused) { unlockAudio(); video.play().catch(() => {}); }
-            handled = true;
+            if (video && video.paused) {
+              unlockAudio();
+              Promise.resolve(video.play()).then(() => {
+                finishTransportCommand(command, true, null, buildPlayerState());
+              }).catch((error) => {
+                finishTransportCommand(command, false, error && error.message ? error.message : 'Video play failed', buildPlayerState());
+              });
+              return;
+            }
+            handled = !!video;
             _showTransportDebug('play');
           }
           else if (action === 'seek') {
-            const position = readSeekPosition(command);
-            if (video && position !== null) {
+            if (video) {
               if (video.readyState >= 1) {
+                const position = readSeekPosition(command, video.duration);
+                if (position === null) {
+                  finishTransportCommand(command, false, 'Invalid or unsupported seek target', buildPlayerState());
+                  return;
+                }
                 const applied = applySeekToVideo(video, position);
                 handled = true;
                 _showTransportDebug('seek ' + applied.toFixed(2) + 's');
@@ -2526,6 +2586,8 @@
                   settled = true;
                   clearTimeout(timeout);
                   try {
+                    const position = readSeekPosition(command, video.duration);
+                    if (position === null) throw new Error('Invalid or unsupported seek target');
                     const applied = applySeekToVideo(video, position);
                     _showTransportDebug('seek ' + applied.toFixed(2) + 's');
                     finishTransportCommand(command, true, null, buildPlayerState());
@@ -3235,6 +3297,9 @@
         container.innerHTML = '';
       }
       currentVideoEl = null;
+      currentMediaEnded = false;
+      currentMediaError = null;
+      lastPlaybackProgressAt = 0;
       lastTransportState = null;
     }
 
@@ -3455,7 +3520,11 @@
           // a viewport height (no per-screen desync).
           video.style.cssText = `width:100%;height:100%;object-fit:${cssFit};background:#000`;
           video.loop = (playlist.length === 1);
-          video.onended = () => { if (!video.loop && !isFollower) nextItem(); };
+          video.onended = () => {
+            currentMediaEnded = true;
+            publishPlayerState();
+            if (!video.loop && !isFollower) nextItem();
+          };
           // Emit playback-state so the dashboard transport bar label (Play/Pause)
           // stays in sync with the physical wall's actual play/pause state.
           const emitPlaybackState = (paused) => {
@@ -3471,10 +3540,31 @@
           };
           video.addEventListener('play',  () => emitPlaybackState(false));
           video.addEventListener('pause', () => emitPlaybackState(true));
+          video.addEventListener('timeupdate', () => {
+            const now = Date.now();
+            if (now - lastPlaybackProgressAt < 1000 || !socket?.connected) return;
+            lastPlaybackProgressAt = now;
+            socket.emit('device:playback-state', {
+              device_id: config.deviceId,
+              paused: video.paused,
+              position_sec: video.currentTime || 0,
+              duration_sec: Number.isFinite(video.duration) ? video.duration : null,
+              ended: video.ended,
+              content_id: item.content_id || null,
+            });
+          });
+          video.addEventListener('playing', () => {
+            currentMediaEnded = false;
+            currentMediaError = null;
+          });
           // Local-cache safety: swap to the server origin once if a local asset_url
           // fails, else (origin also failed / non-local) skip to the next item.
           attachOriginFallback(video, item, () => {
             console.error('Video error:', src);
+            currentMediaError = video.error
+              ? { code: video.error.code, message: video.error.message || 'Video playback failed' }
+              : { code: 'video_error', message: 'Video playback failed' };
+            publishPlayerState();
             if (!isFollower) advanceTimer = setTimeout(nextItem, 3000);
           });
           video.onloadeddata = () => {

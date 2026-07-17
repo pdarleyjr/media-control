@@ -6,7 +6,7 @@
   'use strict';
 
   const CONTRACT_VERSION = 1;
-  const PLAYBACK_STATUSES = new Set(['loading', 'ready', 'playing', 'paused', 'stopped', 'error']);
+  const PLAYBACK_STATUSES = new Set(['loading', 'ready', 'playing', 'paused', 'stopped', 'ended', 'buffering', 'error']);
 
   function uuid() {
     if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
@@ -62,8 +62,21 @@
       if (!Number.isInteger(slide) || slide < 1) return error('invalid_slide', 'go_to_slide requires a positive integer slide');
     }
     if (action === 'seek') {
-      const position = Number(envelope.payload.position_seconds ?? envelope.payload.position ?? envelope.payload.time);
-      if (!Number.isFinite(position) || position < 0) return error('invalid_seek', 'seek requires a non-negative position');
+      const secondsValue = envelope.payload.position_seconds ?? envelope.payload.position ?? envelope.payload.time;
+      const normalizedValue = envelope.payload.position_normalized ?? envelope.payload.normalized_position ?? envelope.payload.progress;
+      const percentValue = envelope.payload.position_percent ?? envelope.payload.percent;
+      const secondsValid = secondsValue != null && Number.isFinite(Number(secondsValue)) && Number(secondsValue) >= 0;
+      const normalizedValid = normalizedValue != null
+        && Number.isFinite(Number(normalizedValue))
+        && Number(normalizedValue) >= 0
+        && Number(normalizedValue) <= 1;
+      const percentValid = percentValue != null
+        && Number.isFinite(Number(percentValue))
+        && Number(percentValue) >= 0
+        && Number(percentValue) <= 100;
+      if (!secondsValid && !normalizedValid && !percentValid) {
+        return error('invalid_seek', 'seek requires non-negative seconds, a normalized position from 0 to 1, or a percent from 0 to 100');
+      }
     }
     return { ok: true, value: envelope };
   }

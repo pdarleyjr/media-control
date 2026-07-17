@@ -57,6 +57,25 @@ test('rejects malformed canonical commands and invalid action parameters', () =>
   const validation = contract.validateCommand(badSlide);
   assert.equal(validation.ok, false);
   assert.equal(validation.error.code, 'invalid_slide');
+
+  const badSeek = contract.createCommand({
+    device_id: 'display-1',
+    payload: { action: 'seek', position_normalized: 1.1 },
+  });
+  const seekValidation = contract.validateCommand(badSeek);
+  assert.equal(seekValidation.ok, false);
+  assert.equal(seekValidation.error.code, 'invalid_seek');
+});
+
+test('accepts absolute, normalized, and percentage seek targets', () => {
+  for (const payload of [
+    { action: 'seek', position_seconds: 12.5 },
+    { action: 'seek', position_normalized: 0.5 },
+    { action: 'seek', position_percent: 75 },
+  ]) {
+    const command = contract.createCommand({ device_id: 'display-1', payload });
+    assert.equal(contract.validateCommand(command).ok, true);
+  }
 });
 
 test('creates structured acknowledgements and serialized playback state', () => {

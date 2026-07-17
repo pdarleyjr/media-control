@@ -3,6 +3,10 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
+function readPlayerFile(name) {
+  return fs.readFileSync(path.join(__dirname, '..', 'player', name), 'utf8');
+}
+
 function readSnippet(filePath, startMarker, endMarker) {
   const html = fs.readFileSync(filePath, 'utf8');
   const start = html.indexOf(startMarker);
@@ -40,12 +44,13 @@ test('player direct iframe transport handles go_to_slide targets', () => {
       snippet.indexOf('childWindow.handleAction') < snippet.indexOf('const pageImg = idoc.getElementById'),
     'tryDirectIframeTransport should use child handleAction state before DOM fallback'
   );
+  assert.ok(snippet.includes("typeof result.then === 'function'"), 'parent should await asynchronous child-player acknowledgements');
 });
 
 test('player applies validated seek commands to YouTube and HTML5 video', () => {
   const snippet = readSnippet(
     path.join(__dirname, '..', 'player', 'index.html'),
-    'function readSeekPosition(command) {',
+    'function readSeekPosition(command, duration) {',
     '// Phase 2: dashboard "Identify" action'
   );
 
@@ -54,7 +59,23 @@ test('player applies validated seek commands to YouTube and HTML5 video', () => 
   assert.ok(snippet.includes('payload.time'), 'seek should retain the legacy time alias');
   assert.ok(snippet.includes("action === 'seek'"), 'transport should recognize seek');
   assert.ok(snippet.includes('activeYtPlayer.seekTo(position, true)'), 'YouTube seek should use the IFrame API');
+  assert.ok(snippet.includes('currentVideoEl && currentVideoEl.isConnected'), 'HTML5 transport should prefer the tracked active video');
+  assert.ok(snippet.includes("document.querySelector('#playerContainer video, .wall-stage video')"), 'HTML5 transport should fall back to a DOM lookup');
   assert.ok(snippet.includes('video.currentTime = boundedPosition'), 'HTML5 video seek should update currentTime');
+  assert.ok(snippet.includes("finishTransportCommand(command, false, 'Invalid or unsupported seek target'"), 'invalid seek payloads should fail explicitly');
+  assert.ok(snippet.includes('payload.position_normalized'), 'seek should support normalized positions');
+  assert.ok(snippet.includes('payload.position_percent'), 'seek should support percentage positions');
+});
+
+test('HLS child player implements canonical video transport and state reporting', () => {
+  const hls = readPlayerFile('hls.html');
+  assert.ok(hls.includes('window.MbfdDeviceContract.normalizeCommand'), 'child player should normalize the canonical command envelope');
+  assert.ok(hls.includes('window.handleAction'), 'same-origin parent should have a direct child transport bridge');
+  assert.ok(hls.includes('__mc_transport_ack'), 'cross-frame transport should return an acknowledgement');
+  assert.ok(hls.includes('__mc_transport_state'), 'child playback events should publish authoritative state');
+  assert.ok(hls.includes('position_normalized'), 'child seek should support normalized positions');
+  assert.ok(hls.includes("video.addEventListener('ended'"), 'child should publish ended state');
+  assert.ok(hls.includes("video.addEventListener('error'"), 'child should publish error state');
 });
 
 test('player restores persisted document slide state after reconnect before publishing stale state', () => {
