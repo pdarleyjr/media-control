@@ -99,7 +99,7 @@ test('parent media acknowledgements do not freeze the authoritative playback clo
   assert.ok(html.includes('function acceptChildTransportState(state)'), 'child playback state should have an explicit ownership boundary');
   assert.ok(!finish.includes('lastTransportState = state'), 'parent acknowledgement snapshots must not override the live media clock');
   assert.ok(html.includes('acceptChildTransportState(data.__mc_transport_state)'), 'verified child frame state should remain authoritative');
-  assert.ok(html.includes('acceptChildTransportState(state);\n                finishTransportCommand'), 'direct child acknowledgements should persist child state before publishing');
+  assert.match(html, /acceptChildTransportState\(state\);\r?\n\s+finishTransportCommand/, 'direct child acknowledgements should persist child state before publishing');
 });
 
 test('managed display audio permission remains authoritative in split mode', () => {
@@ -107,7 +107,7 @@ test('managed display audio permission remains authoritative in split mode', () 
 
   assert.ok(html.includes('function audioOutputAllowed()'), 'player should centralize output audio permission');
   assert.ok(html.includes('managedDisplay.audioEnabled === true'), 'managed TVs should require an explicit audio grant');
-  assert.ok(html.includes('if (!audioOutputAllowed()) {\n        document.querySelectorAll'), 'transport audio unlock should hard-mute non-audio displays');
+  assert.match(html, /if \(!audioOutputAllowed\(\)\) \{\r?\n\s+document\.querySelectorAll/, 'transport audio unlock should hard-mute non-audio displays');
   assert.ok(html.includes('video.muted = !audioOutputAllowed() || !userHasInteracted'), 'local videos should mount muted on non-audio displays');
   assert.ok(html.includes('mute: youtubeAudioAllowed && userHasInteracted ? 0 : 1'), 'YouTube should obey the same output policy');
   assert.ok(html.includes('video.muted = audioOutputAllowed() ? wasMuted : true'), 'seek completion must not restore forbidden audio');
