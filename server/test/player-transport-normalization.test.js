@@ -102,6 +102,17 @@ test('parent media acknowledgements do not freeze the authoritative playback clo
   assert.ok(html.includes('acceptChildTransportState(state);\n                finishTransportCommand'), 'direct child acknowledgements should persist child state before publishing');
 });
 
+test('managed display audio permission remains authoritative in split mode', () => {
+  const html = readPlayerFile('index.html');
+
+  assert.ok(html.includes('function audioOutputAllowed()'), 'player should centralize output audio permission');
+  assert.ok(html.includes('managedDisplay.audioEnabled === true'), 'managed TVs should require an explicit audio grant');
+  assert.ok(html.includes('if (!audioOutputAllowed()) {\n        document.querySelectorAll'), 'transport audio unlock should hard-mute non-audio displays');
+  assert.ok(html.includes('video.muted = !audioOutputAllowed() || !userHasInteracted'), 'local videos should mount muted on non-audio displays');
+  assert.ok(html.includes('mute: youtubeAudioAllowed && userHasInteracted ? 0 : 1'), 'YouTube should obey the same output policy');
+  assert.ok(html.includes('video.muted = audioOutputAllowed() ? wasMuted : true'), 'seek completion must not restore forbidden audio');
+});
+
 test('HLS child player implements canonical video transport and state reporting', () => {
   const hls = readPlayerFile('hls.html');
   assert.ok(hls.includes('window.MbfdDeviceContract.normalizeCommand'), 'child player should normalize the canonical command envelope');

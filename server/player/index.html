@@ -463,6 +463,10 @@
     // leader is allowed to make sound. This helper is the single source of
     // truth used by every code path that would otherwise unmute audio.
     function isWallFollower() { return !!(wallConfig && !wallConfig.is_leader); }
+    function audioOutputAllowed() {
+      const managedDisplay = window.__playerConfig?.managedDisplay;
+      return !isWallFollower() && (!managedDisplay || managedDisplay.audioEnabled === true);
+    }
     const DOC_OFFICE_MIMES = [
       'application/msword',
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -781,6 +785,10 @@
     function tryUnmuteLeader() {
       const video = document.querySelector('#playerContainer video');
       if (!video) return false;
+      if (!audioOutputAllowed()) {
+        video.muted = true;
+        return false;
+      }
       if (!video.muted) return true;
       // Capture state, unmute, do a fresh pause+play within the same task.
       // Firefox is more permissive when play() is treated as a brand-new
@@ -810,7 +818,7 @@
     // The user clicking this prompt is itself a fresh gesture, which is the
     // most reliable path past Firefox's autoplay restriction.
     function showEnableAudioPrompt() {
-      if (isWallFollower()) return;
+      if (!audioOutputAllowed()) return;
       if (document.getElementById('enableAudioPrompt')) return;
       const ov = document.createElement('div');
       ov.id = 'enableAudioPrompt';
@@ -940,7 +948,7 @@
         // Followers in a video wall must stay muted forever — even after a
         // user gesture. Otherwise tapping a follower screen would unmute it
         // and cause echo with the leader.
-        if (isWallFollower()) return;
+        if (!audioOutputAllowed()) return;
         if (wasFirst) console.log('[wall/audio] first user gesture detected — attempting unmute');
         tryUnmuteLeader();
         // Unmute YouTube player if active
@@ -1115,8 +1123,15 @@
         src.connect(ctx.destination);
         src.start(0);
       } catch(e) { console.warn('Audio unlock failed:', e); }
-      // Wall followers must stay muted — leader is the only audio source.
-      if (isWallFollower()) return;
+      // Managed displays without audio permission and wall followers stay
+      // muted even when transport controls synthesize an unlock gesture.
+      if (!audioOutputAllowed()) {
+        document.querySelectorAll('video').forEach(v => { v.muted = true; });
+        try {
+          if (activeYtPlayer && typeof activeYtPlayer.mute === 'function') activeYtPlayer.mute();
+        } catch (_) {}
+        return;
+      }
       // Unmute any playing HTML5 video
       document.querySelectorAll('video').forEach(v => { v.muted = false; });
       // Reach INTO our own same-origin player iframes and turn their sound on: a
@@ -2224,14 +2239,14 @@
             break;
           case 'KEYCODE_VOLUME_UP':
             // Wall followers ignore volume changes — they stay silent.
-            if (video && !isWallFollower()) { video.volume = Math.min(1, video.volume + 0.1); video.muted = false; publishPlayerState(); }
+            if (video && audioOutputAllowed()) { video.volume = Math.min(1, video.volume + 0.1); video.muted = false; publishPlayerState(); }
             break;
           case 'KEYCODE_VOLUME_DOWN':
             if (video) { video.volume = Math.max(0, video.volume - 0.1); publishPlayerState(); }
             break;
           case 'KEYCODE_MENU':
             // Toggle mute (followers can't unmute)
-            if (video && !(isWallFollower() && video.muted)) { video.muted = !video.muted; publishPlayerState(); }
+            if (video && audioOutputAllowed()) { video.muted = !video.muted; publishPlayerState(); }
             break;
           case 'KEYCODE_HOME':
             // Go back to first item
@@ -2486,7 +2501,7 @@
           settled = true;
           cleanup();
           if (wasPaused && !video.paused) video.pause();
-          if (!isWallFollower()) video.muted = wasMuted;
+          video.muted = audioOutputAllowed() ? wasMuted : true;
           transportSeekInProgress = false;
           finishTransportCommand(command, ok, error || null, buildPlayerState());
         };
@@ -3217,6 +3232,7 @@
       // adjacent TVs), so the "Click to unmute" overlay would be misleading on a
       // follower and could itself create echo if someone tapped it.
       const isFollowerEmbed = !!(wallConfig && !wallConfig.is_leader);
+      const youtubeAudioAllowed = audioOutputAllowed();
 
       // Create a div for the YT player to replace
       const playerDiv = document.createElement('div');
@@ -3225,7 +3241,7 @@
       container.appendChild(playerDiv);
 
       // Add a click-to-unmute overlay on top of the YouTube iframe — leader/solo only.
-      if (!userHasInteracted && !isFollowerEmbed) {
+      if (!userHasInteracted && youtubeAudioAllowed) {
         const overlay = document.createElement('div');
         overlay.style.cssText = 'position:absolute;inset:0;z-index:10;cursor:pointer;display:flex;align-items:end;justify-content:center;padding-bottom:max(40px,4vh);';
         overlay.innerHTML = '<div style="background:rgba(0,0,0,0.7);color:#fff;padding:max(8px,1vw) max(20px,2vw);border-radius:max(6px,0.5vmin);font:clamp(12px,1.5vw,16px) sans-serif;pointer-events:none">Click to unmute</div>';
@@ -3262,7 +3278,7 @@
             // Wall followers MUST stay muted regardless of userHasInteracted
             // (leader-only audio rule prevents echo). Solo / leader follow the
             // standard autoplay-policy logic: muted until the user interacts.
-            mute: isFollowerEmbed ? 1 : (userHasInteracted ? 0 : 1),
+            mute: youtubeAudioAllowed && userHasInteracted ? 0 : 1,
             controls: 0,
             rel: 0,
             modestbranding: 1,
@@ -3278,7 +3294,7 @@
               const role = isFollowerEmbed ? 'follower' : (wallConfig?.is_leader ? 'leader' : 'solo');
               console.log('YouTube player ready:', item.filename, 'role=' + role);
               event.target.playVideo();
-              if (userHasInteracted && !isFollowerEmbed) {
+              if (userHasInteracted && youtubeAudioAllowed) {
                 event.target.unMute();
                 event.target.setVolume(100);
               }
@@ -3532,7 +3548,7 @@
               // the full wall instead of falling back to the tiny 4+2+4 mosaic.
               const asp = gridTargetAspect(mount);
               webSrc = ownPath + (ownPath.indexOf('?') === -1 ? '?' : '&') + 'aspect=' + asp.toFixed(4);
-            } else if (!isFollower && /\/player\/(oz|hls)\.html(\?|$)/.test(ownPath)) {
+            } else if (audioOutputAllowed() && /\/player\/(oz|hls)\.html(\?|$)/.test(ownPath)) {
               // A single full-screen live stream (news / Ozolio cam) → play WITH
               // sound on leader/solo (followers stay muted to avoid echo across the
               // wall). The player falls back to muted if the browser blocks unmuted
@@ -3562,7 +3578,7 @@
           // fires on a fresh gesture). Followers stay muted (leader-only audio). The
           // grid is same-origin (root-relative) so we can call into it; it arms +
           // retries internally if its audio cell hasn't booted yet.
-          if (isGridUrl(ownPath) && !isFollower) {
+          if (isGridUrl(ownPath) && audioOutputAllowed()) {
             frame.addEventListener('load', () => {
               if (!userHasInteracted) return;
               try { if (frame.contentWindow && frame.contentWindow.__mcEnableAudio) frame.contentWindow.__mcEnableAudio(); } catch (e) { /* not ready / cross-origin */ }
@@ -3581,10 +3597,10 @@
           video.autoplay = wallStartDelayMs <= 0;
           // Followers stay muted unconditionally (leader-only audio); leaders
           // start muted only if the user hasn't gestured yet (autoplay policy).
-          video.muted = isFollower ? true : !userHasInteracted;
+          video.muted = !audioOutputAllowed() || !userHasInteracted;
           // Explicit max volume on the leader so audio is at full level when
           // unmute happens (default is 1.0 but make it visible in logs).
-          if (!isFollower) video.volume = 1.0;
+          if (audioOutputAllowed()) video.volume = 1.0;
           video.playsInline = true;
           video.crossOrigin = 'anonymous';
           // object-fit is driven by cssFit, which defaults to 'fill' on a wall
@@ -3654,7 +3670,7 @@
           // If anything (browser, scripts, the user) tries to unmute a
           // follower, snap it back. This is the safety net for the audio
           // bug — without it, a single stray unmute call causes echo.
-          if (isFollower) {
+          if (!audioOutputAllowed()) {
             video.addEventListener('volumechange', () => {
               if (!video.muted) { video.muted = true; }
             });
@@ -3765,7 +3781,7 @@
           const video = document.createElement('video');
           video.src = src;
           video.autoplay = true;
-          video.muted = (zone.sort_order > 0); // Only first zone has audio
+          video.muted = !audioOutputAllowed() || zone.sort_order > 0; // Only first zone on the designated output has audio
           video.loop = (playlist.length === 1);
           video.playsInline = true;
           video.style.cssText = `width:100%;height:100%;object-fit:${zone.fit_mode || 'cover'}`;
