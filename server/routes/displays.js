@@ -30,6 +30,12 @@ function buildLiveState(row) {
     error_state: row.error_state ?? null,
     idle_screensaver_id: row.idle_screensaver_id ?? null,
     default_screensaver_id: row.default_screensaver_id ?? null,
+    wall_id: row.wall_id ?? row.device_wall_id ?? null,
+    layout_id: row.state_layout_id ?? row.layout_id ?? null,
+    group_id: row.group_id ?? null,
+    member_id: row.member_id ?? null,
+    playback_revision: row.playback_revision ?? null,
+    command_revision: row.command_revision ?? null,
     state_updated_at: row.state_updated_at ?? null,
   };
 }
@@ -89,12 +95,15 @@ router.get('/state', (req, res) => {
   const now = Math.floor(Date.now() / 1000);
   const rows = db.prepare(`
     SELECT d.id, d.name, d.status, d.last_heartbeat, d.screen_width, d.screen_height,
+           d.wall_id AS device_wall_id,
            d.screen_on, d.playlist_id, d.layout_id,
            p.published_snapshot AS snapshot,
            ds.current_content_id, ds.current_asset_id, ds.content_type, ds.layout_mode,
            ds.slide_index, ds.slide_count, ds.current_time, ds.duration, ds.paused, ds.muted, ds.volume,
            ds.local_asset_ready, ds.last_ack_at, ds.last_heartbeat_at, ds.render_state, ds.error_state,
            ds.idle_screensaver_id, ds.default_screensaver_id, ds.updated_at AS state_updated_at,
+           ds.wall_id, ds.layout_id AS state_layout_id, ds.group_id, ds.member_id,
+           ds.playback_revision, ds.command_revision,
            t.battery_level, t.battery_charging, t.storage_free_mb, t.storage_total_mb,
            t.ram_free_mb, t.ram_total_mb, t.cpu_usage, t.wifi_ssid, t.wifi_rssi,
            t.uptime_seconds, t.reported_at AS telemetry_reported_at,

@@ -773,6 +773,12 @@ function migrateDisplayStateRevision() {
   const additions = [
     ['state_revision', 'ALTER TABLE display_states ADD COLUMN state_revision INTEGER NOT NULL DEFAULT 0'],
     ['slide_count', 'ALTER TABLE display_states ADD COLUMN slide_count INTEGER'],
+    ['wall_id', 'ALTER TABLE display_states ADD COLUMN wall_id TEXT'],
+    ['layout_id', 'ALTER TABLE display_states ADD COLUMN layout_id TEXT'],
+    ['group_id', 'ALTER TABLE display_states ADD COLUMN group_id TEXT'],
+    ['member_id', 'ALTER TABLE display_states ADD COLUMN member_id TEXT'],
+    ['playback_revision', 'ALTER TABLE display_states ADD COLUMN playback_revision INTEGER'],
+    ['command_revision', 'ALTER TABLE display_states ADD COLUMN command_revision TEXT'],
   ];
   for (const [name, sql] of additions) {
     if (cols.includes(name)) continue;

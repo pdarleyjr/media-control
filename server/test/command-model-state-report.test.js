@@ -24,12 +24,19 @@ test('mergeDisplayState coerces boolean state values into sqlite-friendly scalar
       error_state: null,
       idle_screensaver_id: null,
       default_screensaver_id: null,
+      wall_id: 'wall-1',
+      layout_id: 'wall-1:layout:2',
+      group_id: 'wall-1:group:left',
+      member_id: targetId,
+      playback_revision: 12,
+      command_revision: 'command-12',
     });
 
     const row = db.prepare(`
       SELECT target_type, target_id, current_content_id, current_asset_id, content_type,
              layout_mode, slide_index, "current_time" AS current_time, duration, paused, muted, volume,
-             local_asset_ready, last_ack_at
+             local_asset_ready, last_ack_at, wall_id, layout_id, group_id, member_id,
+             playback_revision, command_revision
       FROM display_states
       WHERE target_type = ? AND target_id = ?
     `).get('display', targetId);
@@ -46,6 +53,12 @@ test('mergeDisplayState coerces boolean state values into sqlite-friendly scalar
     assert.equal(row.volume, 0.75);
     assert.equal(row.local_asset_ready, 1);
     assert.equal(row.last_ack_at, 1234567890);
+    assert.equal(row.wall_id, 'wall-1');
+    assert.equal(row.layout_id, 'wall-1:layout:2');
+    assert.equal(row.group_id, 'wall-1:group:left');
+    assert.equal(row.member_id, targetId);
+    assert.equal(row.playback_revision, 12);
+    assert.equal(row.command_revision, 'command-12');
   } finally {
     db.prepare('DELETE FROM display_states WHERE target_type = ? AND target_id = ?')
       .run('display', targetId);

@@ -51,9 +51,11 @@ const stmts = {
   insertDisplayState: p(`INSERT INTO display_states
     (target_type, target_id, workspace_id, current_content_id, current_asset_id,
      content_type, layout_mode, slide_index, slide_count, current_time, duration, paused, muted,
-     volume, local_asset_ready, last_ack_at, last_heartbeat_at, render_state,
-     error_state, idle_screensaver_id, default_screensaver_id, state_revision, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+     volume, local_asset_ready, last_ack_at, render_state,
+     error_state, idle_screensaver_id, default_screensaver_id, wall_id, layout_id,
+     group_id, member_id, playback_revision, command_revision, last_heartbeat_at,
+     state_revision, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
   updateDisplayState: p(`UPDATE display_states SET
      workspace_id = COALESCE(?, workspace_id),
      current_content_id = COALESCE(?, current_content_id),
@@ -73,6 +75,12 @@ const stmts = {
      error_state = COALESCE(?, error_state),
      idle_screensaver_id = COALESCE(?, idle_screensaver_id),
      default_screensaver_id = COALESCE(?, default_screensaver_id),
+     wall_id = COALESCE(?, wall_id),
+     layout_id = COALESCE(?, layout_id),
+     group_id = COALESCE(?, group_id),
+     member_id = COALESCE(?, member_id),
+     playback_revision = COALESCE(?, playback_revision),
+     command_revision = COALESCE(?, command_revision),
      state_revision = ?,
      updated_at = ?
      WHERE target_type = ? AND target_id = ?`),
@@ -94,7 +102,8 @@ const STATE_COLS = [
   'workspace_id', 'current_content_id', 'current_asset_id', 'content_type',
   'layout_mode', 'slide_index', 'slide_count', 'current_time', 'duration', 'paused', 'muted',
   'volume', 'local_asset_ready', 'last_ack_at', 'render_state', 'error_state',
-  'idle_screensaver_id', 'default_screensaver_id',
+  'idle_screensaver_id', 'default_screensaver_id', 'wall_id', 'layout_id',
+  'group_id', 'member_id', 'playback_revision', 'command_revision',
 ];
 
 // Compute the next per-target revision (monotonic optimistic-lock counter).
