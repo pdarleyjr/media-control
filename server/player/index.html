@@ -2457,6 +2457,43 @@
         return boundedPosition;
       }
 
+      function finishVideoSeek(video, command, position) {
+        let settled = false;
+        let appliedPosition = null;
+        const tolerance = 0.75;
+        const cleanup = () => {
+          video.removeEventListener('seeked', onSeekProgress);
+          video.removeEventListener('timeupdate', onSeekProgress);
+          clearTimeout(timeout);
+        };
+        const complete = (ok, error) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          finishTransportCommand(command, ok, error || null, buildPlayerState());
+        };
+        const converged = () => appliedPosition !== null
+          && Number.isFinite(Number(video.currentTime))
+          && Math.abs(Number(video.currentTime) - appliedPosition) <= tolerance;
+        function onSeekProgress() {
+          if (converged()) complete(true, null);
+        }
+        const timeout = setTimeout(() => {
+          if (converged()) complete(true, null);
+          else complete(false, 'Video seek did not converge');
+        }, 5000);
+        video.addEventListener('seeked', onSeekProgress);
+        video.addEventListener('timeupdate', onSeekProgress);
+        try {
+          appliedPosition = applySeekToVideo(video, position);
+          _showTransportDebug('seek pending ' + appliedPosition.toFixed(2) + 's');
+          // Some engines update currentTime synchronously and do not emit seeked.
+          setTimeout(onSeekProgress, 0);
+        } catch (error) {
+          complete(false, error && error.message ? error.message : String(error));
+        }
+      }
+
       function findControllableVideo() {
         if (currentVideoEl && currentVideoEl.isConnected) return currentVideoEl;
         const video = document.querySelector('#playerContainer video, .wall-stage video');
@@ -2576,9 +2613,8 @@
                   finishTransportCommand(command, false, 'Invalid or unsupported seek target', buildPlayerState());
                   return;
                 }
-                const applied = applySeekToVideo(video, position);
-                handled = true;
-                _showTransportDebug('seek ' + applied.toFixed(2) + 's');
+                finishVideoSeek(video, command, position);
+                return;
               } else {
                 let settled = false;
                 const onMetadata = () => {
@@ -2588,9 +2624,7 @@
                   try {
                     const position = readSeekPosition(command, video.duration);
                     if (position === null) throw new Error('Invalid or unsupported seek target');
-                    const applied = applySeekToVideo(video, position);
-                    _showTransportDebug('seek ' + applied.toFixed(2) + 's');
-                    finishTransportCommand(command, true, null, buildPlayerState());
+                    finishVideoSeek(video, command, position);
                   } catch (e) {
                     finishTransportCommand(command, false, e.message, buildPlayerState());
                   }
