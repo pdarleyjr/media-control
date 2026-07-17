@@ -124,6 +124,19 @@ test('HLS child player implements canonical video transport and state reporting'
   assert.ok(hls.includes("video.addEventListener('error'"), 'child should publish error state');
 });
 
+test('live video transport smoke covers the complete physical playback contract', () => {
+  const smoke = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'live-video-transport-smoke.js'), 'utf8');
+  for (const action of ['pause', 'seek', 'play', 'restart', 'play_pause']) {
+    assert.ok(smoke.includes(`'${action}'`), `live smoke should exercise ${action}`);
+  }
+  assert.ok(smoke.includes('position_seconds: 2'), 'live smoke should exercise absolute seek');
+  assert.ok(smoke.includes('position_normalized: 0.5'), 'live smoke should exercise normalized seek');
+  assert.ok(smoke.includes('duration > 0'), 'live smoke should verify duration');
+  assert.ok(smoke.includes('current_time'), 'live smoke should verify the physical media clock');
+  assert.ok(smoke.includes('error_state'), 'live smoke should reject player errors');
+  assert.ok(smoke.includes('restoreContentId'), 'live smoke should restore the classroom baseline');
+});
+
 test('player restores persisted document slide state after reconnect before publishing stale state', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'player', 'index.html'), 'utf8');
 
