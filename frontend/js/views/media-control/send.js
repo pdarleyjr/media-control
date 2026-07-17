@@ -18,7 +18,7 @@ import { t, tn } from '../../i18n.js';
 import { showToast } from '../../components/toast.js';
 import { confirmDialog } from '../../components/confirm.js';
 import { performanceMetrics } from '../../services/performance-metrics.js';
-import { isLiveActive } from './action-dock.js';
+import { isLiveActive, isLiveStateKnown } from './action-dock.js';
 
 // YouTube URL detection (same regex as present.js).
 const YT_RE = /^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//i;
@@ -48,7 +48,9 @@ async function shouldOfferLiveStreamInclusion() {
 // dock isn't mounted on this view (the funnel is shared by other callers) we
 // fall back to the cached status fetch so existing behaviour is unchanged.
 async function liveStreamCurrentlyActive() {
-  try { if (isLiveActive()) return true; } catch { /* dock not importable */ }
+  try {
+    if (isLiveStateKnown()) return isLiveActive();
+  } catch { /* dock not importable */ }
   return shouldOfferLiveStreamInclusion();
 }
 

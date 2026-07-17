@@ -23,9 +23,14 @@ import { confirmDialog } from '../../components/confirm.js';
 // refreshed after every start/stop. Read by the broadcast funnel (send.js) and
 // the Command Center chips.
 let liveActive = false;
+let liveStateKnown = false;
 
 export function isLiveActive() {
   return liveActive;
+}
+
+export function isLiveStateKnown() {
+  return liveStateKnown;
 }
 
 /**
@@ -37,6 +42,10 @@ export function isLiveActive() {
  */
 export function mountActionDock(hostEl, opts = {}) {
   if (!hostEl) return { syncLive() { return Promise.resolve(); }, repaintBlank() {}, destroy() {} };
+  // The mounted dock is the owner of live state. Its initial visible state is
+  // inactive while the background refresh runs, so display routing must not
+  // issue a second blocking Director status request on every send.
+  liveStateKnown = true;
   const cb = opts || {};
   hostEl.innerHTML = `
     <div class="mc-action-dock" role="toolbar" aria-label="${esc(t('mc.cc.brand'))}">
@@ -143,6 +152,7 @@ export function mountActionDock(hostEl, opts = {}) {
     } catch {
       liveActive = false;
     } finally {
+      liveStateKnown = true;
       syncingLive = false;
     }
     repaintLive();

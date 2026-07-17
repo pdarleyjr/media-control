@@ -156,6 +156,17 @@ test('camera status reports active sources continuously instead of a static idle
   assert.match(dock, /destroy\(\) \{ clearInterval\(healthTimer\); \}/);
 });
 
+test('known inactive live state never delays a normal content broadcast with a director status fetch', () => {
+  const dock = read('frontend/js/views/media-control/action-dock.js');
+  const send = read('frontend/js/views/media-control/send.js');
+
+  assert.match(dock, /let liveStateKnown = false/);
+  assert.match(dock, /export function isLiveStateKnown\(\)/);
+  assert.match(dock, /liveStateKnown = true/);
+  assert.match(send, /import \{ isLiveActive, isLiveStateKnown \} from '\.\/action-dock\.js'/);
+  assert.match(send, /if \(isLiveStateKnown\(\)\) return isLiveActive\(\)/);
+});
+
 test('camera catalog maps Focus to wall 2 and ANNKE to wall 1', () => {
   const catalog = read('frontend/js/views/media-control/camera-feeds-catalog.js');
   const canvas = read('frontend/js/views/media-control/advanced-canvas.js');
