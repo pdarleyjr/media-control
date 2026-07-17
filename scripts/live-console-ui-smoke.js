@@ -255,6 +255,29 @@ async function main() {
     let dragDrop = null;
     if (dragConfig) {
       const { db } = require('../server/db/database');
+      const inventory = await waitFor(cdp, `(() => {
+        const wallId = ${JSON.stringify(dragConfig.wallId)};
+        const target = document.querySelector('.mc-wall[data-wall-id="' + wallId + '"] .mc-wall-all');
+        const sources = [...document.querySelectorAll('.mc-tile[data-drag-source]')].map((item) => {
+          try {
+            const source = JSON.parse(item.dataset.dragSource || '{}');
+            return { content_id: source.content_id || null, label: item.textContent.trim().slice(0, 120) };
+          } catch { return null; }
+        }).filter(Boolean);
+        if (!target || !sources.length) return false;
+        return { target: true, sources };
+      })()`, 'podium drag inventory', 30000);
+
+      if (dragConfig.contentId.toLowerCase() === 'auto') {
+        const selected = inventory.sources.find((source) => (
+          source.content_id && source.content_id !== dragConfig.restoreContentId
+        ));
+        if (!selected) throw new Error(`no visible drag source differs from restore content: ${JSON.stringify(inventory.sources)}`);
+        dragConfig.contentId = selected.content_id;
+      }
+
+      const configuredSource = inventory.sources.find((source) => source.content_id === dragConfig.contentId);
+      assert(configuredSource, `configured drag source is not visible: ${dragConfig.contentId}; visible=${JSON.stringify(inventory.sources)}`);
       await waitFor(cdp, `(() => {
         const contentId = ${JSON.stringify(dragConfig.contentId)};
         const wallId = ${JSON.stringify(dragConfig.wallId)};
