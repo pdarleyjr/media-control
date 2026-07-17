@@ -444,6 +444,7 @@
     let currentMediaEnded = false;
     let currentMediaError = null;
     let lastPlaybackProgressAt = 0;
+    let transportSeekInProgress = false;
     let currentLocalAssetReady = null;
     let currentCacheStatus = 'direct';
     let currentItemStartedAt = 0;
@@ -2460,6 +2461,8 @@
       function finishVideoSeek(video, command, position) {
         let settled = false;
         let appliedPosition = null;
+        const wasPaused = video.paused;
+        const wasMuted = video.muted;
         const tolerance = 0.75;
         const cleanup = () => {
           video.removeEventListener('seeked', onSeekProgress);
@@ -2470,6 +2473,9 @@
           if (settled) return;
           settled = true;
           cleanup();
+          if (wasPaused && !video.paused) video.pause();
+          if (!isWallFollower()) video.muted = wasMuted;
+          transportSeekInProgress = false;
           finishTransportCommand(command, ok, error || null, buildPlayerState());
         };
         const converged = () => appliedPosition !== null
@@ -2484,13 +2490,27 @@
         }, 5000);
         video.addEventListener('seeked', onSeekProgress);
         video.addEventListener('timeupdate', onSeekProgress);
-        try {
-          appliedPosition = applySeekToVideo(video, position);
-          _showTransportDebug('seek pending ' + appliedPosition.toFixed(2) + 's');
-          // Some engines update currentTime synchronously and do not emit seeked.
-          setTimeout(onSeekProgress, 0);
-        } catch (error) {
-          complete(false, error && error.message ? error.message : String(error));
+        const apply = () => {
+          try {
+            appliedPosition = applySeekToVideo(video, position);
+            _showTransportDebug('seek pending ' + appliedPosition.toFixed(2) + 's');
+            // Some engines update currentTime synchronously and do not emit seeked.
+            setTimeout(onSeekProgress, 0);
+          } catch (error) {
+            complete(false, error && error.message ? error.message : String(error));
+          }
+        };
+        if (wasPaused) {
+          // Chromium can leave a paused MP4 clock pinned even with valid Range
+          // responses. Wake the decoder silently, seek, then restore pause/mute
+          // before publishing the authoritative acknowledgement.
+          transportSeekInProgress = true;
+          video.muted = true;
+          Promise.resolve(video.play()).then(apply).catch((error) => {
+            complete(false, error && error.message ? error.message : 'Video decoder could not resume for seek');
+          });
+        } else {
+          apply();
         }
       }
 
@@ -3562,6 +3582,7 @@
           // Emit playback-state so the dashboard transport bar label (Play/Pause)
           // stays in sync with the physical wall's actual play/pause state.
           const emitPlaybackState = (paused) => {
+            if (transportSeekInProgress) return;
             if (socket?.connected) {
               socket.emit('device:playback-state', {
                 device_id: config.deviceId,
@@ -3576,7 +3597,7 @@
           video.addEventListener('pause', () => emitPlaybackState(true));
           video.addEventListener('timeupdate', () => {
             const now = Date.now();
-            if (now - lastPlaybackProgressAt < 1000 || !socket?.connected) return;
+            if (transportSeekInProgress || now - lastPlaybackProgressAt < 1000 || !socket?.connected) return;
             lastPlaybackProgressAt = now;
             socket.emit('device:playback-state', {
               device_id: config.deviceId,

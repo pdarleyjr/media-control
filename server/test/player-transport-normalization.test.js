@@ -64,6 +64,9 @@ test('player applies validated seek commands to YouTube and HTML5 video', () => 
   assert.ok(snippet.includes('video.currentTime = boundedPosition'), 'HTML5 video seek should update currentTime');
   assert.ok(snippet.includes("video.addEventListener('seeked'"), 'HTML5 seek should wait for media-clock convergence');
   assert.ok(snippet.includes("'Video seek did not converge'"), 'HTML5 seek should fail instead of acknowledging an unapplied clock');
+  assert.ok(snippet.includes('transportSeekInProgress = true'), 'paused video seek should suppress transient playback state');
+  assert.ok(snippet.includes('Promise.resolve(video.play()).then(apply)'), 'paused video seek should wake the decoder before moving its clock');
+  assert.ok(snippet.includes('if (wasPaused && !video.paused) video.pause()'), 'paused video seek should restore pause before acknowledgement');
   assert.ok(snippet.includes("finishTransportCommand(command, false, 'Invalid or unsupported seek target'"), 'invalid seek payloads should fail explicitly');
   assert.ok(snippet.includes('payload.position_normalized'), 'seek should support normalized positions');
   assert.ok(snippet.includes('payload.position_percent'), 'seek should support percentage positions');
