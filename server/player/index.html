@@ -3725,15 +3725,26 @@
           currentVideoEl = video;
           // Try playing as we set muted above. If the browser blocks
           // unmuted autoplay (e.g. no user gesture yet), retry muted.
-          const startVideo = () => video.play().then(() => {
-            console.log('[wall/audio] play() ok muted=' + video.muted + ' volume=' + video.volume);
-          }).catch((err) => {
-            console.warn('[wall/audio] play() rejected, falling back to muted: ' + (err?.name || err?.message || err));
-            video.muted = true;
-            video.play()
-              .then(() => console.log('[wall/audio] muted-fallback play() ok'))
-              .catch((e2) => console.error('[wall/audio] muted-fallback play() also failed: ' + (e2?.name || e2?.message || e2)));
-          });
+          const videoStartIsCurrent = () => (
+            !video.__mcOperatorPaused && video.isConnected && currentVideoEl === video
+          );
+          const startVideo = () => {
+            if (!videoStartIsCurrent()) return;
+            video.play().then(() => {
+              if (!videoStartIsCurrent()) { video.pause(); return; }
+              console.log('[wall/audio] play() ok muted=' + video.muted + ' volume=' + video.volume);
+            }).catch((err) => {
+              if (!videoStartIsCurrent()) return;
+              console.warn('[wall/audio] play() rejected, falling back to muted: ' + (err?.name || err?.message || err));
+              video.muted = true;
+              video.play()
+                .then(() => {
+                  if (!videoStartIsCurrent()) { video.pause(); return; }
+                  console.log('[wall/audio] muted-fallback play() ok');
+                })
+                .catch((e2) => console.error('[wall/audio] muted-fallback play() also failed: ' + (e2?.name || e2?.message || e2)));
+            });
+          };
           if (wallStartDelayMs > 0) setTimeout(startVideo, wallStartDelayMs);
           else startVideo();
           // Fallback only covers an autoplay that never started. Once playback

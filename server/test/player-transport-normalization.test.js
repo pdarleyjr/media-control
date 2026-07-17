@@ -118,6 +118,9 @@ test('video startup fallback does not override an operator pause', () => {
   assert.ok(html.includes('let videoHasStarted = false'), 'video startup should track whether playback ever began');
   assert.ok(html.includes('videoHasStarted = true'), 'the playing event should close the startup fallback window');
   assert.ok(html.includes('video.__mcOperatorPaused = true'), 'pause transport should mark explicit operator intent');
+  assert.ok(html.includes('if (!videoStartIsCurrent()) return;'), 'a delayed synchronized start must not override an immediate operator pause');
+  assert.ok(html.includes('video.isConnected && currentVideoEl === video'), 'a delayed start must not revive detached or superseded media');
+  assert.ok(html.includes('if (!videoStartIsCurrent()) { video.pause(); return; }'), 'a pending play promise must reassert pause if operator intent changes');
   assert.ok(html.includes('if (!videoHasStarted && !video.__mcOperatorPaused && video.paused)'), 'fallback replay must not restart an intentionally paused video');
 });
 
