@@ -289,6 +289,7 @@ async function main() {
 
       let dispatched = false;
       try {
+        const dragStartedAt = Date.now();
         const browserResult = await evaluate(cdp, `(() => {
           const contentId = ${JSON.stringify(dragConfig.contentId)};
           const wallId = ${JSON.stringify(dragConfig.wallId)};
@@ -309,7 +310,11 @@ async function main() {
         assert(browserResult.types.includes('application/x-mc-source'), 'podium drag event omitted the media-control source MIME');
         dispatched = true;
         const probeState = await waitForPhysicalContent(db, dragConfig.deviceIds, dragConfig.contentId);
-        dragDrop = { browser: browserResult, probe_state: probeState };
+        dragDrop = {
+          browser: browserResult,
+          probe_state: probeState,
+          convergence_ms: Date.now() - dragStartedAt,
+        };
       } finally {
         if (dispatched) {
           const restoredState = await restoreDragDropContent(db, dragConfig);
@@ -319,6 +324,7 @@ async function main() {
 
       let touchDispatched = false;
       try {
+        const touchStartedAt = Date.now();
         const touchResult = await evaluate(cdp, `(() => {
           const contentId = ${JSON.stringify(dragConfig.contentId)};
           const wallId = ${JSON.stringify(dragConfig.wallId)};
@@ -350,7 +356,12 @@ async function main() {
         assert(touchResult.ghost_visible, 'podium touch drag did not enter dragging state');
         touchDispatched = true;
         const touchProbeState = await waitForPhysicalContent(db, dragConfig.deviceIds, dragConfig.contentId);
-        dragDrop = { ...(dragDrop || {}), touch_browser: touchResult, touch_probe_state: touchProbeState };
+        dragDrop = {
+          ...(dragDrop || {}),
+          touch_browser: touchResult,
+          touch_probe_state: touchProbeState,
+          touch_convergence_ms: Date.now() - touchStartedAt,
+        };
       } finally {
         if (touchDispatched) {
           const touchRestoredState = await restoreDragDropContent(db, dragConfig);

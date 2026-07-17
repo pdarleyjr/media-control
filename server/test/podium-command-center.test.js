@@ -55,6 +55,8 @@ test('podium library drag and drop preserves the source contract through physica
   assert.match(smoke, /pointerType: 'touch'/);
   assert.match(smoke, /touch_probe_state/);
   assert.match(smoke, /touch_restored_state/);
+  assert.match(smoke, /convergence_ms: Date\.now\(\) - dragStartedAt/);
+  assert.match(smoke, /touch_convergence_ms: Date\.now\(\) - touchStartedAt/);
   assert.match(smoke, /waitForPhysicalContent\(db, dragConfig\.deviceIds, dragConfig\.contentId\)/);
   assert.match(smoke, /restoreDragDropContent\(db, dragConfig\)/);
 });
