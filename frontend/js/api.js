@@ -239,6 +239,7 @@ export const api = {
   createWall: (data) => request('/walls', { method: 'POST', body: JSON.stringify(data) }),
   setWallDevices: (id, devices) => request(`/walls/${id}/devices`, { method: 'PUT', body: JSON.stringify({ devices }) }),
   updateWall: (id, data) => request(`/walls/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  updateWallLayout: (id, data) => request(`/walls/${id}/layout`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteWall: (id) => request(`/walls/${id}`, { method: 'DELETE' }),
 
   // Admin status snapshots

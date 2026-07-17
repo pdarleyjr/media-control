@@ -276,6 +276,25 @@ body.sidebar-collapsed { --sidebar-current-width: var(--sidebar-collapsed-width,
   border-top: 1px solid var(--border);
 }
 
+.app-back-button {
+  width: 100%;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  background: var(--bg-card);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.sidebar.collapsed .app-back-button span { display: none; }
+
 .connection-status {
   display: flex;
   align-items: center;

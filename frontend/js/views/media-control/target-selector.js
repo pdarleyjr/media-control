@@ -36,7 +36,7 @@ function optionTag(value, label) {
  * @returns {{ el: HTMLSelectElement, getActiveTarget: () => (object|null),
  *            setActive: (target:object|null)=>void, setOptions: (walls:boolean|Array, displays?:Array)=>void }|null}
  */
-export function mountTargetSelector(hostEl, { walls = [], displays = [], onTargetChange } = {}) {
+export function mountTargetSelector(hostEl, { walls = [], groups = [], displays = [], onTargetChange } = {}) {
   if (!hostEl) return null;
   hostEl.innerHTML = `
     <div class="mc-target-control">
@@ -48,18 +48,22 @@ export function mountTargetSelector(hostEl, { walls = [], displays = [], onTarge
 
   let active = null;
   let currentWalls = Array.isArray(walls) ? walls : [];
+  let currentGroups = Array.isArray(groups) ? groups : [];
   let currentDisplays = Array.isArray(displays) ? displays : [];
 
   function validValues() {
     const set = new Set();
     for (const w of currentWalls) set.add(`wall:${w.id}`);
+    for (const g of currentGroups) set.add(`group:${g.id}`);
     for (const d of currentDisplays) set.add(`display:${d.id}`);
     return set;
   }
 
   function valueForTarget(target) {
     if (!target || !target.id) return '';
-    return target.type === 'wall' ? `wall:${target.id}` : `display:${target.id}`;
+    if (target.type === 'wall') return `wall:${target.id}`;
+    if (target.type === 'group') return `group:${target.id}`;
+    return `display:${target.id}`;
   }
 
   function targetForValue(value) {
@@ -67,6 +71,10 @@ export function mountTargetSelector(hostEl, { walls = [], displays = [], onTarge
     const type = sep > 0 ? value.slice(0, sep) : '';
     const id = sep > 0 ? value.slice(sep + 1) : '';
     if (type === 'wall') return { type: 'wall', id, wall_id: id, supportsModes: true };
+    if (type === 'group') {
+      const group = currentGroups.find((candidate) => candidate.id === id);
+      return group ? { type: 'group', ...group, id, supportsModes: false } : null;
+    }
     if (type === 'display') return { type: 'display', id, supportsModes: false };
     return null;
   }
@@ -90,7 +98,12 @@ export function mountTargetSelector(hostEl, { walls = [], displays = [], onTarge
   function rebuild() {
     const prev = valueForTarget(active) || sel.value;
     const opts = [optionTag('', t('mc.cc.target.placeholder'))];
+    if (currentGroups.length) {
+      opts.push(`<optgroup label="Layout groups">${currentGroups.map((group) => optionTag(`group:${group.id}`, group.label || group.name || group.id)).join('')}</optgroup>`);
+    }
+    if (currentDisplays.length) opts.push('<optgroup label="Individual displays">');
     for (const d of currentDisplays) opts.push(optionTag(`display:${d.id}`, d.name || d.id));
+    if (currentDisplays.length) opts.push('</optgroup>');
     sel.innerHTML = opts.join('');
     sel.hidden = currentDisplays.length === 0;
     wallTabs.innerHTML = currentWalls.map((wall) => `
@@ -117,8 +130,9 @@ export function mountTargetSelector(hostEl, { walls = [], displays = [], onTarge
       active = tgt || null;
       paintActiveControls();
     },
-    setOptions: (nextWalls, nextDisplays) => {
+    setOptions: (nextWalls, nextGroups, nextDisplays) => {
       currentWalls = Array.isArray(nextWalls) ? nextWalls : [];
+      currentGroups = Array.isArray(nextGroups) ? nextGroups : [];
       currentDisplays = Array.isArray(nextDisplays) ? nextDisplays : [];
       rebuild();
     },

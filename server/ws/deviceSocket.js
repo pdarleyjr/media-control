@@ -27,6 +27,7 @@ const OFFLINE_DEBOUNCE_MS = 5000;
 const { deviceRoom, emitToWorkspace, targetRoomsForDevice, displayRoom } = require('../lib/socket-rooms');
 const commandModel = require('../lib/command-model');
 const nodeRegistry = require('../lib/node-registry');
+const { parseStoredLayout, groupForDevice } = require('../lib/wall-layout');
 
 function emitToDeviceWorkspace(dashboardNs, deviceId, event, payload) {
   emitToWorkspace(dashboardNs, deviceRoom(deviceId), event, payload);
@@ -179,13 +180,16 @@ function displayStateForDevice(deviceId) {
   };
 }
 
-function restoreStateForDevice(deviceId, device, wall) {
+function restoreStateForDevice(deviceId, device, wall, layoutGroup) {
   const ownState = displayStateForDevice(deviceId);
-  if (!device?.wall_id || !wall || wall.layout_mode === 'split' || !wall.leader_device_id || wall.leader_device_id === deviceId) {
+  const leaderDeviceId = layoutGroup?.layout === 'span' && layoutGroup.member_ids.length > 1
+    ? layoutGroup.leader_device_id
+    : null;
+  if (!device?.wall_id || !wall || !leaderDeviceId || leaderDeviceId === deviceId) {
     return ownState;
   }
 
-  const leaderState = displayStateForDevice(wall.leader_device_id);
+  const leaderState = displayStateForDevice(leaderDeviceId);
   if (!leaderState || leaderState.slide_index == null) return ownState;
 
   // In span-wall mode the leader is authoritative for document/deck page
@@ -196,8 +200,12 @@ function restoreStateForDevice(deviceId, device, wall) {
   }
   return {
     ...leaderState,
-    restore_source: 'wall_leader',
-    restore_source_device_id: wall.leader_device_id,
+    restore_source: 'layout_group_leader',
+    restore_source_device_id: leaderDeviceId,
+    wall_id: wall.id,
+    layout_id: `${wall.id}:layout:${Number(wall.layout_revision) || 0}`,
+    group_id: layoutGroup.id,
+    member_id: deviceId,
   };
 }
 
@@ -264,13 +272,21 @@ function buildPlaylistPayload(deviceId) {
   // drives playback; followers track via wall:sync.
   let wall_config = null;
   let wall = null;
+  let wallLayout = null;
+  let layoutGroup = null;
   if (device?.wall_id) {
     wall = db.prepare('SELECT * FROM video_walls WHERE id = ?').get(device.wall_id);
     const pos = db.prepare('SELECT * FROM video_wall_devices WHERE wall_id = ? AND device_id = ?').get(device.wall_id, deviceId);
-    // 'split' template: each member screen plays its OWN playlist full-screen, so
-    // we DON'T emit wall_config (no leader/follower sync, no slice mapping). Only
-    // 'span' (the default) builds the spanning wall_config below.
-    if (wall && pos && wall.layout_mode !== 'split') {
+    const allMembers = wall ? db.prepare(`
+      SELECT vwd.*, d.name AS device_name, d.playlist_id
+      FROM video_wall_devices vwd JOIN devices d ON d.id = vwd.device_id
+      WHERE vwd.wall_id = ? ORDER BY vwd.grid_row, vwd.grid_col
+    `).all(wall.id) : [];
+    wallLayout = wall ? parseStoredLayout(wall, allMembers) : null;
+    layoutGroup = groupForDevice(wallLayout, deviceId);
+    // Solo groups play independently. Spanned groups receive a composite that
+    // is bounded only by their own contiguous members.
+    if (wall && pos && layoutGroup?.layout === 'span' && layoutGroup.member_ids.length > 1) {
       const baseW = 320, baseH = 180;
       const bezelH = wall.bezel_h_mm || 0;
       const bezelV = wall.bezel_v_mm || 0;
@@ -286,12 +302,16 @@ function buildPlaylistPayload(deviceId) {
         h: Math.round(pos.canvas_height ?? baseH),
       };
 
-      // Player rect defaults to the bounding box of all screens on the wall.
+      // Player rect defaults to the bounding box of this subgroup, never the
+      // full parent wall. Explicit wall player geometry applies only to the
+      // legacy/full-wall span.
       let playerRect;
-      if (wall.player_x !== null && wall.player_x !== undefined) {
+      const isFullWallGroup = layoutGroup.member_ids.length === allMembers.length;
+      if (isFullWallGroup && wall.player_x !== null && wall.player_x !== undefined) {
         playerRect = { x: wall.player_x, y: wall.player_y, w: wall.player_width, h: wall.player_height };
       } else {
-        const all = db.prepare('SELECT * FROM video_wall_devices WHERE wall_id = ?').all(wall.id);
+        const groupIds = new Set(layoutGroup.member_ids);
+        const all = allMembers.filter((member) => groupIds.has(member.device_id));
         let x = Infinity, y = Infinity, x2 = -Infinity, y2 = -Infinity;
         for (const p of all) {
           const px = p.canvas_x ?? (p.grid_col * (baseW + bezelH));
@@ -316,13 +336,18 @@ function buildPlaylistPayload(deviceId) {
       wall_config = {
         wall_id: wall.id,
         wall_name: wall.name || null,
+        layout_id: wallLayout.id,
+        layout_revision: wallLayout.revision,
+        group_id: layoutGroup.id,
+        member_id: deviceId,
+        group_member_ids: layoutGroup.member_ids,
         grid_col: pos.grid_col,
         grid_row: pos.grid_row,
-        grid_cols: wall.grid_cols,
-        grid_rows: wall.grid_rows,
+        grid_cols: layoutGroup.geometry.columns,
+        grid_rows: layoutGroup.geometry.rows,
         screen_rect: screenRect,
         player_rect: playerRect,
-        is_leader: wall.leader_device_id === deviceId,
+        is_leader: layoutGroup.leader_device_id === deviceId,
         rotation: pos.rotation || 0,
         refresh_rate_hz: wall.refresh_rate_hz || null,
       };
@@ -334,7 +359,18 @@ function buildPlaylistPayload(deviceId) {
     layout,
     orientation: device?.orientation || 'landscape',
     wall_config,
-    display_state: restoreStateForDevice(deviceId, device, wall),
+    display_state: restoreStateForDevice(deviceId, device, wall, layoutGroup),
+    wall_layout: wallLayout,
+    layout_context: layoutGroup ? {
+      wall_id: wall?.id || null,
+      layout_id: wallLayout?.id || null,
+      layout_revision: wallLayout?.revision || 0,
+      group_id: layoutGroup.id,
+      member_id: deviceId,
+      group_member_ids: layoutGroup.member_ids,
+      group_layout: layoutGroup.layout,
+      leader_device_id: layoutGroup.leader_device_id,
+    } : null,
     // 2026-05-28: surface the device's authoritative geometry so the player
     // can size to the canonical (admin-overridden) resolution rather than the
     // browser-reported screen.width/height (which underreports on Fire TV).
@@ -355,6 +391,8 @@ function buildPlaylistPayload(deviceId) {
     layout: payload.layout,
     orientation: payload.orientation,
     wall_config: payload.wall_config,
+    wall_layout: payload.wall_layout,
+    layout_context: payload.layout_context,
     device_geometry: payload.device_geometry,
     display_profile: payload.display_profile,
   })).digest('hex').slice(0, 24);
@@ -1108,17 +1146,20 @@ socket.on('device:wb-undo', () => {
       try {
       if (!requireDeviceAuth()) return;
       if (!data?.wall_id) return;
-      const isMember = db.prepare(
-        'SELECT 1 FROM video_wall_devices WHERE wall_id = ? AND device_id = ?'
-      ).get(data.wall_id, currentDeviceId);
-      if (!isMember) return;
-      const wallDevices = db.prepare(
-        'SELECT device_id FROM video_wall_devices WHERE wall_id = ? AND device_id != ?'
-      ).all(data.wall_id, currentDeviceId);
+      const wall = db.prepare('SELECT * FROM video_walls WHERE id = ?').get(data.wall_id);
+      const members = wall ? db.prepare(`
+        SELECT vwd.*, d.name AS device_name, d.playlist_id
+        FROM video_wall_devices vwd JOIN devices d ON d.id = vwd.device_id
+        WHERE vwd.wall_id = ? ORDER BY vwd.grid_row, vwd.grid_col
+      `).all(data.wall_id) : [];
+      const layout = wall ? parseStoredLayout(wall, members) : null;
+      const group = groupForDevice(layout, currentDeviceId);
+      if (!group || group.layout !== 'span' || group.leader_device_id !== currentDeviceId) return;
+      const wallDevices = group.member_ids.filter((id) => id !== currentDeviceId);
       // Stamp device_id with the authenticated id so followers can trust it.
-      const payload = { ...data, device_id: currentDeviceId };
-      for (const wd of wallDevices) {
-        deviceNs.to(wd.device_id).emit('wall:sync', payload);
+      const payload = { ...data, group_id: group.id, device_id: currentDeviceId };
+      for (const deviceId of wallDevices) {
+        deviceNs.to(deviceId).emit('wall:sync', payload);
       }
       } catch (e) {
         console.warn(`wall:sync handler error: ${e.message}`);
@@ -1133,14 +1174,18 @@ socket.on('device:wb-undo', () => {
       try {
         if (!requireDeviceAuth()) return;
         if (!data?.wall_id) return;
-        const isMember = db.prepare(
-          'SELECT 1 FROM video_wall_devices WHERE wall_id = ? AND device_id = ?'
-        ).get(data.wall_id, currentDeviceId);
-        if (!isMember) return;
-        const wall = db.prepare('SELECT leader_device_id FROM video_walls WHERE id = ?').get(data.wall_id);
-        if (!wall?.leader_device_id || wall.leader_device_id === currentDeviceId) return;
-        deviceNs.to(wall.leader_device_id).emit('wall:sync-request', {
+        const wall = db.prepare('SELECT * FROM video_walls WHERE id = ?').get(data.wall_id);
+        const members = wall ? db.prepare(`
+          SELECT vwd.*, d.name AS device_name, d.playlist_id
+          FROM video_wall_devices vwd JOIN devices d ON d.id = vwd.device_id
+          WHERE vwd.wall_id = ? ORDER BY vwd.grid_row, vwd.grid_col
+        `).all(data.wall_id) : [];
+        const layout = wall ? parseStoredLayout(wall, members) : null;
+        const group = groupForDevice(layout, currentDeviceId);
+        if (!group || group.layout !== 'span' || group.leader_device_id === currentDeviceId) return;
+        deviceNs.to(group.leader_device_id).emit('wall:sync-request', {
           wall_id: data.wall_id,
+          group_id: group.id,
           requested_by: currentDeviceId,
         });
       } catch (e) {

@@ -80,8 +80,8 @@ test('a split-wall tile selects only that member for transport controls', () => 
 
 test('podium rail surfaces remain inside the persistent command center', () => {
   const view = read('frontend/js/views/media-control.js');
-  const railStart = view.indexOf('function wireCommandRail()');
-  const railEnd = view.indexOf('\nexport async function render()', railStart);
+  const railStart = view.indexOf('function wireCommandRail(');
+  const railEnd = view.indexOf('\nexport async function render(', railStart);
   const rail = view.slice(railStart, railEnd);
 
   assert.match(view, /import \* as downloadsView from '.\/downloads\.js'/);
@@ -91,8 +91,28 @@ test('podium rail surfaces remain inside the persistent command center', () => {
   assert.match(rail, /openViewModal\(\{ title: 'Downloads', module: downloadsView \}\)/);
   assert.match(rail, /openViewModal\(\{ title: 'System Logs', module: auditLogView \}\)/);
   assert.match(rail, /openViewModal\(\{ title: 'Settings', module: settingsView \}\)/);
+  assert.match(rail, /case 'cameras':[\s\S]*?openLibraryTab\('camerafeeds'\)/);
+  assert.match(rail, /case 'multiview':[\s\S]*?actions\.onMultiview/);
+  assert.match(rail, /case 'share':[\s\S]*?actions\.onShare/);
+  assert.match(rail, /case 'schedules':[\s\S]*?schedulesView/);
   assert.doesNotMatch(rail, /window\.location\.hash = '#\/(?:downloads|audit|settings|)'/);
   assert.match(read('frontend/css/media-control.css'), /\.mc-target-choice\s*\{[\s\S]*?min-height:\s*58px/);
+});
+
+test('web and podium navigation expose critical destinations and deterministic back behavior', () => {
+  const index = read('frontend/index.html');
+  const app = read('frontend/js/app.js');
+  const view = read('frontend/js/views/media-control.js');
+
+  for (const label of ['Upload &amp; Media', 'Share My Screen', 'Cameras', 'Multiview', 'Schedules', 'Video Walls']) {
+    assert.match(index, new RegExp(label));
+  }
+  assert.match(app, /window\.mcBack = \(\) =>/);
+  assert.match(app, /id="consoleBackButton"/);
+  assert.match(app, /routeAbortController\?\.abort\(\)/);
+  assert.match(app, /generation !== routeGeneration/);
+  assert.match(view, /LAST_TARGET_KEY/);
+  assert.match(view, /signal\?\.aborted/);
 });
 
 test('USB import lets the podium operator choose the owning account', () => {

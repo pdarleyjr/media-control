@@ -2090,6 +2090,23 @@ body.cc-fullscreen .content {
   overflow: hidden;
 }
 
+/* Web uses the shared application sidebar; the physical console uses the
+   appliance rail. Never render both navigation systems at once. */
+body.cc-fullscreen:not(.console-mode) .content {
+  margin-left: var(--sidebar-current-width) !important;
+}
+body.cc-fullscreen:not(.console-mode) .mc-cc-body {
+  grid-template-columns: minmax(0, 1fr);
+}
+body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
+  display: none;
+}
+@media (max-width: 900px) {
+  body.cc-fullscreen:not(.console-mode) .content {
+    margin-left: 0 !important;
+  }
+}
+
 .mc-cc-shell {
   height: 100vh;
   width: 100%;

@@ -256,6 +256,9 @@ CREATE TABLE IF NOT EXISTS video_walls (
     player_y        REAL,
     player_width    REAL,
     player_height   REAL,
+    -- Versioned composable layout groups. NULL preserves legacy span/split.
+    layout_json     TEXT,
+    layout_revision INTEGER NOT NULL DEFAULT 0,
     created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),
     updated_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );

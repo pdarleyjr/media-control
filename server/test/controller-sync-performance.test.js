@@ -269,9 +269,10 @@ test('players reconcile missed playlist pushes by stable revision within seconds
 test('playlist reconnect payload carries authoritative display restore state', () => {
   const source = read('server/ws/deviceSocket.js');
   assert.match(source, /function displayStateForDevice\(deviceId\)/);
-  assert.match(source, /function restoreStateForDevice\(deviceId, device, wall\)/);
-  assert.match(source, /restore_source: 'wall_leader'/);
-  assert.match(source, /display_state: restoreStateForDevice\(deviceId, device, wall\)/);
+  assert.match(source, /function restoreStateForDevice\(deviceId, device, wall, layoutGroup\)/);
+  assert.match(source, /restore_source: 'layout_group_leader'/);
+  assert.match(source, /display_state: restoreStateForDevice\(deviceId, device, wall, layoutGroup\)/);
+  assert.match(source, /layout_context: layoutGroup \? \{/);
 });
 
 test('delivered group blank commands persist the screen state shown by the dashboard', () => {

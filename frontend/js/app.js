@@ -33,6 +33,7 @@ import { esc, isPlatformAdmin } from './utils.js';
 import { renderWorkspaceSwitcher } from './components/workspace-switcher.js';
 import { showToast } from './components/toast.js';
 import { api } from './api.js';
+import { performanceMetrics } from './services/performance-metrics.js';
 
 const app = document.getElementById('app');
 const sidebar = document.querySelector('.sidebar');
@@ -47,6 +48,40 @@ let consoleSessionReady = false;
 let consoleProfiles = [];
 let consoleClockTimer = null;
 const PODIUM_AGENT_URL = 'http://127.0.0.1:8755';
+let routeGeneration = 0;
+let routeAbortController = null;
+
+function currentNavigationContext() {
+  let view = {};
+  try { view = window.mcGetNavigationContext?.() || {}; } catch { /* best effort */ }
+  return {
+    route: window.location.hash || '#/',
+    scroll_top: app?.scrollTop || 0,
+    ...view,
+  };
+}
+
+function saveCurrentNavigationContext() {
+  try {
+    history.replaceState({ ...(history.state || {}), mc: currentNavigationContext() }, '', window.location.href);
+  } catch { /* history can be unavailable in embedded test shells */ }
+}
+
+function navigateTo(hash, { replace = false } = {}) {
+  if (!hash) return;
+  saveCurrentNavigationContext();
+  const state = { mc: { route: hash, scroll_top: 0 } };
+  if (replace) history.replaceState(state, '', hash);
+  else history.pushState(state, '', hash);
+  route();
+}
+
+window.mcNavigate = navigateTo;
+window.mcBack = () => {
+  saveCurrentNavigationContext();
+  if (history.length > 1) history.back();
+  else navigateTo('#/control', { replace: true });
+};
 
 // ==================== Slice 2C: accept-invite plumbing ====================
 //
@@ -353,6 +388,7 @@ function renderConsoleHeader() {
   `).join('');
 
   header.innerHTML = `
+    <button class="console-back-button" id="consoleBackButton" type="button" aria-label="Go back">Back</button>
     <div class="console-brand" data-console-logo title="Long press for service access">
       <span class="console-logo-mini">MBFD</span>
       <div>
@@ -372,6 +408,11 @@ function renderConsoleHeader() {
     <time id="consoleClock" class="console-clock"></time>
   `;
 
+  const back = document.getElementById('consoleBackButton');
+  if (back) {
+    back.disabled = (window.location.hash || '#/control') === '#/control';
+    back.addEventListener('click', window.mcBack);
+  }
   document.getElementById('consoleUsbButton')?.addEventListener('click', openConsoleUsbPanel);
   const select = document.getElementById('consoleProfileSelect');
   select?.addEventListener('change', async (event) => {
@@ -559,6 +600,12 @@ async function refreshCurrentUser() {
 }
 
 async function route() {
+  const finishRouteMetric = performanceMetrics.start('navigation.route_render');
+  const generation = ++routeGeneration;
+  routeAbortController?.abort();
+  routeAbortController = new AbortController();
+  const { signal } = routeAbortController;
+
   // Cleanup previous view. Call BOTH cleanup() and unmount() because
   // older views use cleanup() while screen-share (and any view that holds
   // background resources like a WebRTC peer connection) uses unmount().
@@ -571,7 +618,7 @@ async function route() {
 
   if (CONSOLE_MODE) {
     const ready = await ensureConsoleSession();
-    if (!ready) return;
+    if (!ready || signal.aborted || generation !== routeGeneration) return;
     if (hash === '#/login' || hash === '#/' || hash === '#') {
       window.location.hash = '#/control';
       return;
@@ -673,13 +720,14 @@ async function route() {
   // the dedicated physical console route, or the Command Center (#/control) which
   // renders its own left icon rail. Either one alongside the legacy .sidebar would
   // create a duplicate left nav. The else branch restores the sidebar elsewhere.
-  const fullScreenChrome = CONSOLE_MODE || hash === '#/control';
+  const isControlRoute = hash.startsWith('#/control');
+  const fullScreenChrome = CONSOLE_MODE;
   if (CONSOLE_MODE) {
     document.body.classList.add('console-mode');
   } else {
     document.body.classList.remove('console-mode');
   }
-  document.body.classList.toggle('cc-fullscreen', hash === '#/control');
+  document.body.classList.toggle('cc-fullscreen', isControlRoute);
   if (fullScreenChrome) {
     sidebar.style.display = 'none';
     app.style.marginLeft = '0';
@@ -693,11 +741,15 @@ async function route() {
 
   // Update user info in sidebar
   updateSidebarUser();
+  const backButton = document.getElementById('appBackButton');
+  if (backButton) backButton.hidden = isControlRoute || hash === '#/' || hash === '#/displays';
 
   const navLinks = document.querySelectorAll('.nav-link');
   navLinks.forEach(link => {
     link.classList.remove('active');
     if (hash === '#/control' && link.dataset.view === 'control') link.classList.add('active');
+    else if (hash.includes('panel=cameras') && link.dataset.view === 'cameras') link.classList.add('active');
+    else if (hash.includes('panel=multiview') && link.dataset.view === 'multiview') link.classList.add('active');
     else if (hash === '#/present' && link.dataset.view === 'present') link.classList.add('active');
     else if (hash === '#/home' && link.dataset.view === 'home') link.classList.add('active');
     else if ((hash === '#/' || hash === '#/displays') && link.dataset.view === 'dashboard') link.classList.add('active');
@@ -727,9 +779,10 @@ async function route() {
   });
 
   // Route to view
-  if (hash === '#/control') {
+  if (isControlRoute) {
     currentView = mediaControl;
-    await mediaControl.render();
+    await mediaControl.render({ signal, routeHash: hash });
+    if (signal.aborted || generation !== routeGeneration) return;
   } else if (hash === '#/home') {
     currentView = home;
     home.render(app);
@@ -809,6 +862,15 @@ async function route() {
     currentView = dashboard;
     dashboard.render(app);
   }
+
+  if (signal.aborted || generation !== routeGeneration) return;
+  const saved = history.state?.mc;
+  if (saved?.route === hash && Number.isFinite(Number(saved.scroll_top))) {
+    requestAnimationFrame(() => {
+      if (!signal.aborted && generation === routeGeneration) app.scrollTop = Number(saved.scroll_top) || 0;
+    });
+  }
+  finishRouteMetric();
 }
 
 function updateSidebarUser() {
@@ -869,6 +931,7 @@ function updateSidebarUser() {
 renderNavLabels();
 translateStaticDom();
 setSidebarCollapsed(sidebarCollapsed());
+document.getElementById('appBackButton')?.addEventListener('click', window.mcBack);
 window.addEventListener('language-changed', () => {
   renderNavLabels();
   translateStaticDom();
@@ -996,6 +1059,12 @@ if (isAuthenticated() && !CONSOLE_MODE) {
     }
   }, 60000);
 }
+document.addEventListener('click', (event) => {
+  const link = event.target.closest('a.nav-link[href^="#/"]');
+  if (!link || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  navigateTo(link.getAttribute('href'));
+});
 window.addEventListener('hashchange', route);
 route();
 

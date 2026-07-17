@@ -8,6 +8,11 @@ const { db } = require('../db/database');
 // anymore; team_members is a vestigial table from the pre-workspace model).
 const { accessContext } = require('../lib/tenancy');
 const { ensureDevicePlaylist } = require('../lib/wall-playlists');
+const {
+  parseStoredLayout,
+  presetGroups,
+  validateLayout,
+} = require('../lib/wall-layout');
 
 // Load a wall + access context. Returns the wall row or null after sending
 // 403/404. requireWrite=true also denies workspace_viewer.
@@ -43,13 +48,16 @@ router.get('/', (req, res) => {
   const walls = db.prepare('SELECT * FROM video_walls WHERE workspace_id = ? ORDER BY created_at DESC').all(req.workspaceId);
 
   const devStmt = db.prepare(`
-    SELECT vwd.*, d.name as device_name, d.status as device_status
+    SELECT vwd.*, d.name as device_name, d.status as device_status, d.playlist_id
     FROM video_wall_devices vwd
     JOIN devices d ON vwd.device_id = d.id
     WHERE vwd.wall_id = ?
     ORDER BY vwd.grid_row, vwd.grid_col
   `);
-  walls.forEach(w => { w.devices = devStmt.all(w.id); });
+  walls.forEach(w => {
+    w.devices = devStmt.all(w.id);
+    w.layout = parseStoredLayout(w, w.devices);
+  });
 
   res.json(walls);
 });
@@ -69,10 +77,11 @@ function loadWallWithDevices(id) {
   const wall = db.prepare('SELECT * FROM video_walls WHERE id = ?').get(id);
   if (!wall) return null;
   wall.devices = db.prepare(`
-    SELECT vwd.*, d.name as device_name, d.status as device_status
+    SELECT vwd.*, d.name as device_name, d.status as device_status, d.playlist_id
     FROM video_wall_devices vwd JOIN devices d ON vwd.device_id = d.id
     WHERE vwd.wall_id = ? ORDER BY vwd.grid_row, vwd.grid_col
   `).all(id);
+  wall.layout = parseStoredLayout(wall, wall.devices);
   return wall;
 }
 
@@ -183,6 +192,18 @@ router.put('/:id', requireWallWrite, (req, res) => {
     db.prepare(`UPDATE video_walls SET ${updates.join(', ')} WHERE id = ?`).run(...values);
   }
 
+  // The legacy Span/Split control intentionally replaces any custom subgroup
+  // layout. This keeps old clients deterministic and makes the migration fully
+  // reversible without deleting playlists or memberships.
+  if (req.body.layout_mode === 'span' || req.body.layout_mode === 'split') {
+    db.prepare(`
+      UPDATE video_walls
+      SET layout_json = NULL, layout_revision = layout_revision + 1,
+          updated_at = strftime('%s','now')
+      WHERE id = ?
+    `).run(req.params.id);
+  }
+
   const nextLayoutMode = req.body.layout_mode !== undefined
     ? String(req.body.layout_mode)
     : String(wall.layout_mode || 'span');
@@ -217,6 +238,80 @@ router.put('/:id', requireWallWrite, (req, res) => {
   pushToWallMembers(req, req.params.id);
   notifyDashboards(req, req.wall.workspace_id);
   res.json(loadWallWithDevices(req.params.id));
+});
+
+// Atomically apply a versioned contiguous-group layout. `expected_revision`
+// prevents two dashboards from silently replacing one another's edit.
+router.put('/:id/layout', requireWallWrite, (req, res) => {
+  const wall = req.wall;
+  const members = db.prepare(`
+    SELECT vwd.*, d.name AS device_name, d.status AS device_status, d.playlist_id
+    FROM video_wall_devices vwd
+    JOIN devices d ON d.id = vwd.device_id
+    WHERE vwd.wall_id = ?
+    ORDER BY vwd.grid_row, vwd.grid_col
+  `).all(wall.id);
+  const currentRevision = Number(wall.layout_revision) || 0;
+  if (req.body.expected_revision != null && Number(req.body.expected_revision) !== currentRevision) {
+    return res.status(409).json({
+      error: 'Wall layout changed in another session',
+      code: 'LAYOUT_REVISION_CONFLICT',
+      current: parseStoredLayout(wall, members),
+    });
+  }
+
+  let groups;
+  try {
+    groups = req.body.preset
+      ? presetGroups(wall, members, String(req.body.preset))
+      : req.body.groups;
+    groups = validateLayout(wall, members, { groups }, { revision: currentRevision + 1 }).groups;
+  } catch (error) {
+    return res.status(400).json({ error: error.message, code: 'INVALID_WALL_LAYOUT' });
+  }
+
+  const memberById = new Map(members.map((member) => [member.device_id, member]));
+  const nextRevision = currentRevision + 1;
+  const tx = db.transaction(() => {
+    const updatePlaylist = db.prepare('UPDATE devices SET playlist_id = ? WHERE id = ?');
+    for (const group of groups) {
+      if (group.layout === 'span' && group.member_ids.length > 1) {
+        const leader = memberById.get(group.leader_device_id) || memberById.get(group.member_ids[0]);
+        const playlistId = group.playlist_id || leader?.playlist_id || wall.playlist_id
+          || ensureDevicePlaylist(group.leader_device_id, req.user.id);
+        group.playlist_id = playlistId;
+        for (const deviceId of group.member_ids) updatePlaylist.run(playlistId, deviceId);
+      } else {
+        const deviceId = group.member_ids[0];
+        group.playlist_id = ensureDevicePlaylist(deviceId, req.user.id);
+      }
+    }
+
+    const allIds = members.map((member) => member.device_id);
+    const allSpan = groups.length === 1 && groups[0].layout === 'span'
+      && groups[0].member_ids.length === allIds.length;
+    const allSolo = groups.length === allIds.length && groups.every((group) => group.layout === 'solo');
+    const mode = allSpan ? 'span' : (allSolo ? 'split' : 'groups');
+    const layout = {
+      version: 1,
+      id: `${wall.id}:layout:${nextRevision}`,
+      wall_id: wall.id,
+      mode: 'groups',
+      revision: nextRevision,
+      groups,
+    };
+    db.prepare(`
+      UPDATE video_walls
+      SET layout_mode = ?, layout_json = ?, layout_revision = ?,
+          leader_device_id = ?, updated_at = strftime('%s','now')
+      WHERE id = ?
+    `).run(mode, JSON.stringify(layout), nextRevision, groups[0]?.leader_device_id || null, wall.id);
+  });
+  tx();
+
+  pushToWallMembers(req, wall.id);
+  notifyDashboards(req, wall.workspace_id);
+  res.json(loadWallWithDevices(wall.id));
 });
 
 // Delete wall — clear playlists + wall_id on every former member (matches

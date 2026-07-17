@@ -1,10 +1,12 @@
 import { t } from './i18n.js';
+import { performanceMetrics } from './services/performance-metrics.js';
 
 let dashboardSocket = null;
 const listeners = new Map();
 const nodeStatusById = new Map();
 const nodeStatusByRoom = new Map();
 let selectedTarget = null;
+const pendingCommandMetrics = new Map();
 
 export function connectSocket() {
   const token = localStorage.getItem('token');
@@ -90,11 +92,21 @@ export function connectSocket() {
   // a device-reported failure) is the non-silent failure path: the Command
   // Center shows a toast and flips the status chip to Stale/Failed.
   dashboardSocket.on('command:ack', (data) => {
+    const commandId = data?.command_id || data?.id || null;
+    const pending = commandId ? pendingCommandMetrics.get(commandId) : null;
+    if (pending) performanceMetrics.record('command.ack', performance.now() - pending.started);
     emit('command-ack', data);
   });
 
   // Display state self-report → also fed to the Command Center chips.
   dashboardSocket.on('dashboard:state-sync', (data) => {
+    const state = data?.state || data || {};
+    const commandId = state.command_revision || state.telemetry?.last_command_id || null;
+    const pending = commandId ? pendingCommandMetrics.get(commandId) : null;
+    if (pending) {
+      performanceMetrics.record('command.ui_convergence', performance.now() - pending.started);
+      pendingCommandMetrics.delete(commandId);
+    }
     emit('state-sync', data);
   });
 
@@ -203,6 +215,10 @@ export function sendCommand(deviceId, type, payload, callback) {
     command_id: envelope?.command_id || null,
     sent_at: Date.now(),
   });
+  if (envelope?.command_id) {
+    pendingCommandMetrics.set(envelope.command_id, { started: performance.now() });
+    setTimeout(() => pendingCommandMetrics.delete(envelope.command_id), 30000);
+  }
   if (!dashboardSocket) return;
   if (typeof callback === 'function') {
     dashboardSocket.timeout(5000).emit('dashboard:device-command', { device_id: deviceId, type, payload, envelope }, (err, ack) => {

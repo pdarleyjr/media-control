@@ -326,6 +326,18 @@ function mirrorTransportToLiveStream(deviceNs, deviceId, command) {
     function wbTargets(data, deviceId) {
       try {
         if (data && data.split_device_id) return [String(data.split_device_id)];
+        if (data && data.wall_id && data.group_id) {
+          const { parseStoredLayout } = require('../lib/wall-layout');
+          const wall = db.prepare('SELECT * FROM video_walls WHERE id = ?').get(data.wall_id);
+          const members = wall ? db.prepare(`
+            SELECT vwd.*, d.name AS device_name, d.playlist_id
+            FROM video_wall_devices vwd JOIN devices d ON d.id = vwd.device_id
+            WHERE vwd.wall_id = ? ORDER BY vwd.grid_row, vwd.grid_col
+          `).all(data.wall_id) : [];
+          const layout = wall ? parseStoredLayout(wall, members) : null;
+          const group = layout?.groups?.find((candidate) => candidate.id === data.group_id);
+          if (group) return group.member_ids;
+        }
         if (data && data.wall_id) {
           const members = db.prepare('SELECT device_id FROM video_wall_devices WHERE wall_id = ?').all(data.wall_id);
           const ids = members.map(r => r.device_id);

@@ -48,7 +48,7 @@ body.console-mode .mc-library-body,
   z-index: 3000;
   min-height: var(--console-header-h);
   display: grid;
-  grid-template-columns: minmax(300px, 1.25fr) minmax(260px, 1fr) minmax(250px, auto) auto 120px;
+  grid-template-columns: auto minmax(280px, 1.15fr) minmax(240px, 1fr) minmax(230px, auto) auto 110px;
   align-items: center;
   gap: 18px;
   padding: 14px 22px;
@@ -56,6 +56,18 @@ body.console-mode .mc-library-body,
   background: linear-gradient(135deg, #07111f 0%, #0f2b4a 58%, #12324a 100%);
   border-bottom: 1px solid rgba(255, 255, 255, 0.12);
   box-shadow: 0 18px 46px rgba(15, 23, 42, 0.22);
+}
+
+.console-back-button {
+  min-width: 88px;
+  min-height: 54px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 16px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+  font: inherit;
+  font-weight: 900;
+  touch-action: manipulation;
 }
 
 .console-brand {

@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const config = require('../config');
 const { PLATFORM_ROLES } = require('../middleware/auth');
 const nodeRegistry = require('../lib/node-registry');
+const performanceMetrics = require('../lib/performance-metrics');
 
 const LAN_HEALTH_OBJECT_BYTES = 64 * 1024 * 1024;
 const LAN_HEALTH_COOLDOWN_MS = 5 * 60 * 1000;
@@ -43,7 +44,7 @@ function formatUptime(seconds) {
   return `${m}m`;
 }
 
-function platformAdminFromRequest(req) {
+function authenticatedUserFromRequest(req) {
   const authorization = String(req.headers.authorization || '');
   const token = authorization.startsWith('Bearer ')
     ? authorization.slice(7)
@@ -52,11 +53,28 @@ function platformAdminFromRequest(req) {
   try {
     const decoded = require('jsonwebtoken').verify(token, config.jwtSecret);
     const user = db.prepare('SELECT id, role FROM users WHERE id = ?').get(decoded.id);
-    return user && PLATFORM_ROLES.includes(user.role) ? user : null;
+    return user || null;
   } catch {
     return null;
   }
 }
+
+function platformAdminFromRequest(req) {
+  const user = authenticatedUserFromRequest(req);
+  return user && PLATFORM_ROLES.includes(user.role) ? user : null;
+}
+
+router.post('/performance', (req, res) => {
+  const user = authenticatedUserFromRequest(req);
+  if (!user) return res.status(401).json({ error: 'Authentication required' });
+  const accepted = performanceMetrics.record(req.body?.entries, { user_id: user.id });
+  res.status(202).json({ accepted });
+});
+
+router.get('/performance', (req, res) => {
+  if (!platformAdminFromRequest(req)) return res.status(403).json({ error: 'Platform admin only' });
+  res.json({ generated_at: new Date().toISOString(), metrics: performanceMetrics.summarize() });
+});
 
 function streamFixedObject(res, bytes = LAN_HEALTH_OBJECT_BYTES) {
   const chunk = Buffer.alloc(64 * 1024, 0x4d);

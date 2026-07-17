@@ -438,6 +438,7 @@
     // their own advance timers and instead align their currentIndex and
     // video position to whatever the leader is playing.
     let wallConfig = null;
+    let wallLayoutContext = null;
     let wallSyncTimer = null;
     let lastWallSync = null;
     let currentVideoEl = null;
@@ -1350,7 +1351,9 @@
         current_content_id: item?.content_id || null,
         current_asset_id: item?.asset_id || item?.content_id || null,
         content_type: contentKindForItem(item),
-        layout_mode: wallConfig ? (wallConfig.is_leader ? 'wall-leader' : 'wall-follower') : 'solo',
+        layout_mode: wallConfig
+          ? (wallConfig.is_leader ? 'wall-leader' : 'wall-follower')
+          : (wallLayoutContext?.group_layout || 'solo'),
         slide_index: item ? currentIndex + 1 : null,
         slide_total: item ? playlist.length : null,
         current_time: null,
@@ -1370,6 +1373,12 @@
             : ((lastTransportCommand && lastTransportCommand.status === 'pending') ? 'syncing' : 'synced'))
           : 'standalone',
         p3_link: null,
+        wall_id: wallConfig?.wall_id || wallLayoutContext?.wall_id || null,
+        layout_id: wallConfig?.layout_id || wallLayoutContext?.layout_id || null,
+        group_id: wallConfig?.group_id || wallLayoutContext?.group_id || null,
+        member_id: wallConfig?.member_id || wallLayoutContext?.member_id || config.deviceId || null,
+        playback_revision: playerStateRevision,
+        command_revision: lastTransportCommand?.command_id || null,
       };
 
       if (child && typeof child === 'object') {
@@ -1499,6 +1508,8 @@
       playerStateRevision += 1;
       state.device_id = config.deviceId;
       state.state_revision = playerStateRevision;
+      state.playback_revision = playerStateRevision;
+      state.command_revision = lastTransportCommand?.command_id || null;
       state.updated_at = new Date().toISOString();
       state.playback_status = state.render_state || (state.paused ? 'paused' : 'playing');
       socket.emit('device:state-report', {
@@ -2128,6 +2139,7 @@
       socket.on('wall:sync', (data) => {
         if (!wallConfig || wallConfig.is_leader) return;
         if (data.wall_id !== wallConfig.wall_id) return;
+        if (wallConfig.group_id && data.group_id !== wallConfig.group_id) return;
         lastWallSync = data;
         // If leader switched item, jump to it. If the leader's content_id does
         // not match the follower's item at the same index, hold position and
@@ -2137,7 +2149,7 @@
           const targetItem = playlist[targetIndex] || {};
           if (data.content_id && targetItem.content_id && data.content_id !== targetItem.content_id) {
             console.warn('[wall] sync content mismatch leader=' + data.content_id + ' local=' + targetItem.content_id + ' index=' + targetIndex);
-            if (socket?.connected) socket.emit('wall:sync-request', { wall_id: wallConfig.wall_id });
+            if (socket?.connected) socket.emit('wall:sync-request', { wall_id: wallConfig.wall_id, group_id: wallConfig.group_id });
           } else {
             const startInMs = Number(data.start_in_ms);
             pendingWallStartAt = Number.isFinite(startInMs) && startInMs > 50
@@ -2200,6 +2212,7 @@
       socket.on('wall:sync-request', (data) => {
         if (!wallConfig?.is_leader) return;
         if (data?.wall_id && data.wall_id !== wallConfig.wall_id) return;
+        if (wallConfig.group_id && data?.group_id && data.group_id !== wallConfig.group_id) return;
         console.log('[wall] sync-request received from ' + data?.requested_by + ', broadcasting current position');
         emitWallSync();
       });
@@ -2890,7 +2903,7 @@
         // next periodic tick (up to ~1s of visible drift on a fresh join).
         if (socket?.connected) {
           console.log('[wall] follower emitting sync-request for wall ' + config.wall_id);
-          socket.emit('wall:sync-request', { wall_id: config.wall_id });
+          socket.emit('wall:sync-request', { wall_id: config.wall_id, group_id: config.group_id });
         }
       }
     }
@@ -2912,6 +2925,8 @@
       }
       socket.emit('wall:sync', {
         wall_id: wallConfig.wall_id,
+        group_id: wallConfig.group_id,
+        layout_id: wallConfig.layout_id,
         device_id: config.deviceId,
         current_index: currentIndex,
         content_id: item.content_id || null,
@@ -2978,6 +2993,7 @@
         ? data.playlist_revision
         : null;
       const serverRestoreState = data.display_state || null;
+      wallLayoutContext = data.layout_context || null;
       applyDisplayProfile(data.display_profile || null);
       // Build fingerprint from the fields that affect rendering. asset_url is
       // included so a server-side routing fix forces stale cached players to
@@ -3003,7 +3019,7 @@
       function wallKey(c) {
         if (!c) return '';
         const s = c.screen_rect || {}, p = c.player_rect || {};
-        return `${c.wall_id}:${c.is_leader}:s${s.x},${s.y},${s.w},${s.h}:p${p.x},${p.y},${p.w},${p.h}`;
+        return `${c.wall_id}:${c.layout_id || ''}:${c.group_id || ''}:${c.is_leader}:s${s.x},${s.y},${s.w},${s.h}:p${p.x},${p.y},${p.w},${p.h}`;
       }
       const wallChanged = wallKey(wallConfig) !== wallKey(data.wall_config);
       if (wallChanged) applyWallMode(data.wall_config || null);
@@ -3011,7 +3027,7 @@
       // is a good signal to ask the leader for its current position even when
       // the wall config itself didn't change. Cheap, debounced server-side.
       if (!wallChanged && wallConfig && !wallConfig.is_leader && socket?.connected) {
-        socket.emit('wall:sync-request', { wall_id: wallConfig.wall_id });
+        socket.emit('wall:sync-request', { wall_id: wallConfig.wall_id, group_id: wallConfig.group_id });
       }
 
       layout = data.layout || null;

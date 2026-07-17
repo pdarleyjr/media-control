@@ -120,6 +120,7 @@ function openContentDrawerFiltered(folderName) {
 // central canvas. null = legacy "show the whole room" stage (preserved when no
 // target is chosen). The target selector drives this; changing it is VIEW-ONLY.
 let activeTarget = null;
+const LAST_TARGET_KEY = 'mc_control_last_target';
 let targetApi = null;       // target-selector module API
 let transportApi = null;    // canvas-level transport row
 let spanSplitApi = null;    // Span | Split toggle
@@ -171,6 +172,30 @@ async function loadWalls() {
       if (d && d.device_id) wallMemberIds.add(d.device_id);
     }
   }
+}
+
+function layoutGroupTargets() {
+  const result = [];
+  for (const wall of (walls || [])) {
+    if (wall.layout_mode !== 'groups') continue;
+    for (const group of (wall.layout?.groups || [])) {
+      result.push({
+        ...group,
+        type: 'group',
+        wall_id: wall.id,
+        label: `${wall.name || wall.id} · ${group.name || group.id}`,
+      });
+    }
+  }
+  return result;
+}
+
+function layoutGroupById(groupId) {
+  return layoutGroupTargets().find((group) => group.id === groupId) || null;
+}
+
+function layoutGroupForDevice(deviceId) {
+  return layoutGroupTargets().find((group) => group.member_ids.includes(deviceId)) || null;
 }
 
 function persistSelection() {
@@ -285,6 +310,18 @@ function paintStage() {
     if (activeTarget.type === 'wall') {
       renderWalls = (walls || []).filter((w) => w.id === activeTarget.id);
       renderSelectedIds = [];
+    } else if (activeTarget.type === 'group') {
+      const group = layoutGroupById(activeTarget.id);
+      const wall = group && (walls || []).find((candidate) => candidate.id === group.wall_id);
+      renderWalls = wall ? [{
+        ...wall,
+        name: `${wall.name || wall.id} · ${group.name || group.id}`,
+        devices: (wall.devices || []).filter((member) => group.member_ids.includes(member.device_id)),
+        leader_device_id: group.leader_device_id,
+        layout_mode: group.layout === 'span' ? 'span' : 'split',
+        layout_group_id: group.id,
+      }] : [];
+      renderSelectedIds = [];
     } else if (activeTarget.type === 'display') {
       renderWalls = [];
       renderSelectedIds = [activeTarget.id];
@@ -309,7 +346,7 @@ function paintStage() {
   // + dock handle all controls below). The inline per-card chrome is hidden so
   // there's only ONE set of transport/screensaver/blank controls visible.
   const isCinemaTarget = !!(activeTarget &&
-    (activeTarget.type === 'wall' || activeTarget.type === 'display'));
+    (activeTarget.type === 'wall' || activeTarget.type === 'group' || activeTarget.type === 'display'));
   el.classList.toggle('mc-cc-cinema', isCinemaTarget);
   // Re-attach drop handlers on the freshly-rendered cards.
   attachStageDrop(el);
@@ -534,6 +571,21 @@ async function setWallMode(wallId, mode) {
   }
 }
 
+async function setWallLayout(wallId, preset, expectedRevision) {
+  if (!wallId || !preset) return;
+  try {
+    await api.updateWallLayout(wallId, { preset, expected_revision: expectedRevision });
+    await loadWalls();
+    if (targetApi) targetApi.setOptions(walls, layoutGroupTargets(), routeableDisplays());
+    paintStage();
+    paintSummary();
+    showToast('Wall layout applied', 'success');
+  } catch (error) {
+    showToast(error?.message || 'Wall layout could not be applied', 'error');
+    throw error;
+  }
+}
+
 // Drop a source onto ONE column of a single-spanning-device split wall (a PC
 // driving N TVs as one Mosaic window). There is only one physical device, so both
 // columns must travel together as ONE composite grid URL: we MERGE the new column
@@ -590,6 +642,10 @@ function requestActivePreview() {
   if (!activeTarget) return;
   if (activeTarget.type === 'display') {
     queuePreviewRequests([activeTarget.id], 0, false);
+    return;
+  }
+  if (activeTarget.type === 'group') {
+    queuePreviewRequests(activeTargetDeviceIds(), 0, false);
     return;
   }
   const wall = (walls || []).find((candidate) => candidate.id === activeTarget.id);
@@ -1127,6 +1183,10 @@ function attachStageDrop(stageContainer) {
 // the active display.
 function activeTargetDeviceIds() {
   if (!activeTarget) return [];
+  if (activeTarget.type === 'group') {
+    const group = layoutGroupById(activeTarget.id);
+    return group ? [...group.member_ids] : [];
+  }
   if (activeTarget.type === 'wall') {
     const w = (walls || []).find((x) => x.id === activeTarget.id);
     return w ? wallDeviceIds(w) : [];
@@ -1144,15 +1204,17 @@ function wallTransportDeviceIds(wall) {
 // the standalone display itself. Split walls are independent, so their member
 // cards own transport and the wall-level transport row stays hidden.
 function activeTargetTransportIds() {
+  if (activeTarget && activeTarget.type === 'group') return activeTargetDeviceIds();
   if (activeTarget && activeTarget.type === 'wall') {
     const w = (walls || []).find((x) => x.id === activeTarget.id);
+    if (w?.layout_mode === 'groups') return [];
     return wallTransportDeviceIds(w);
   }
   return (activeTarget && activeTarget.id) ? [activeTarget.id] : [];
 }
 // The active wall object (or null) — used by the Span/Split toggle.
 function activeWall() {
-  if (!activeTarget || activeTarget.type !== 'wall') return null;
+  if (!activeTarget || (activeTarget.type !== 'wall' && activeTarget.type !== 'group')) return null;
   return (walls || []).find((x) => x.id === (activeTarget.wall_id || activeTarget.id)) || null;
 }
 // Content currently assigned to the wall? (Any member showing a real source.)
@@ -1174,7 +1236,9 @@ function wallForDeviceId(deviceId) {
 
 function isSplitWallMemberId(deviceId) {
   const wall = wallForDeviceId(deviceId);
-  return !!(wall && wall.layout_mode === 'split');
+  if (wall?.layout_mode === 'split') return true;
+  const group = layoutGroupForDevice(deviceId);
+  return !!(group && group.layout === 'solo');
 }
 
 function routeableDisplays() {
@@ -1190,8 +1254,8 @@ function syncSocketTarget(tgt) {
     clearSocketTarget();
     return;
   }
-  const type = tgt.type === 'wall' ? 'wall' : tgt.type === 'display' ? 'display' : null;
-  const id = tgt.id || tgt.wall_id || tgt.device_id;
+  const type = tgt.type === 'wall' || tgt.type === 'group' ? 'wall' : tgt.type === 'display' ? 'display' : null;
+  const id = tgt.type === 'group' ? tgt.wall_id : (tgt.id || tgt.wall_id || tgt.device_id);
   if (!type || !id) clearSocketTarget();
   else selectSocketTarget(type, id);
 }
@@ -1201,6 +1265,10 @@ function syncSocketTarget(tgt) {
 // ack/state stream for the web/Electron controller.
 function handleTargetChange(tgt) {
   activeTarget = tgt || null;
+  try {
+    if (activeTarget) sessionStorage.setItem(LAST_TARGET_KEY, JSON.stringify(activeTarget));
+    else sessionStorage.removeItem(LAST_TARGET_KEY);
+  } catch { /* session storage is best effort */ }
   activePreviewCursor = 0;
   syncSocketTarget(activeTarget);
   paintStage();
@@ -1217,6 +1285,12 @@ function handleTargetChange(tgt) {
 // the mockup): the first video wall, else the first online non-wall display,
 // else the first non-wall display. Returns a target object or null.
 function chooseInitialTarget() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(LAST_TARGET_KEY) || 'null');
+    if (saved?.type === 'wall' && walls.some((wall) => wall.id === saved.id)) return saved;
+    if (saved?.type === 'group' && layoutGroupById(saved.id)) return { ...layoutGroupById(saved.id), ...saved };
+    if (saved?.type === 'display' && displayState.get(saved.id)) return saved;
+  } catch { /* ignore stale target state */ }
   if (Array.isArray(walls) && walls.length) {
     const w = walls.slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))[0];
     if (w && w.id) return { type: 'wall', id: w.id, wall_id: w.id, supportsModes: true };
@@ -1384,6 +1458,7 @@ function targetLabelOf(targetId) {
 }
 function activeTargetIds() {
   if (!activeTarget) return [];
+  if (activeTarget.type === 'group') return activeTargetDeviceIds();
   if (activeTarget.wall_id) {
     const w = walls.find((x) => x.id === activeTarget.wall_id);
     return (w && w.devices ? w.devices.map((d) => d.device_id) : []);
@@ -1393,6 +1468,10 @@ function activeTargetIds() {
 function activePreviewDeviceId() {
   if (!activeTarget) return null;
   if (activeTarget.type === 'display') return activeTarget.id || null;
+  if (activeTarget.type === 'group') {
+    const group = layoutGroupById(activeTarget.id);
+    return group?.leader_device_id || group?.member_ids?.[0] || null;
+  }
   const wall = (walls || []).find((candidate) => candidate.id === activeTarget.id);
   return wall ? wallTransportDeviceId(wall) : null;
 }
@@ -1639,9 +1718,13 @@ function openTargetPickerModal() {
     title: 'Choose a display',
     render: (body) => {
       const displayTargets = routeableDisplays();
+      const groupTargets = layoutGroupTargets();
       body.innerHTML = `<div class="mc-route-list mc-target-choice-list">
         ${(walls || []).map((wall) => `<button type="button" class="mc-route-row mc-target-choice" data-type="wall" data-id="${esc(wall.id)}">
           <strong>${esc(wall.name || wall.id)}</strong><span>${esc(wall.layout_mode === 'split' ? 'Split mode' : 'Span mode')}</span>
+        </button>`).join('')}
+        ${groupTargets.map((group) => `<button type="button" class="mc-route-row mc-target-choice" data-type="group" data-id="${esc(group.id)}">
+          <strong>${esc(group.label || group.name || group.id)}</strong><span>${esc(group.layout === 'span' ? 'Spanned group' : 'Independent display')}</span>
         </button>`).join('')}
         ${displayTargets.map((display) => `<button type="button" class="mc-route-row mc-target-choice" data-type="display" data-id="${esc(display.id)}">
           <strong>${esc(display.name || display.id)}</strong><span>${esc(display.online ? 'Connected' : 'Not connected')}</span>
@@ -1650,11 +1733,15 @@ function openTargetPickerModal() {
       body.querySelectorAll('[data-type][data-id]').forEach((button) => {
         button.addEventListener('click', () => {
           const isWall = button.dataset.type === 'wall';
-          const target = {
-            type: isWall ? 'wall' : 'display',
-            id: button.dataset.id,
-            ...(isWall ? { wall_id: button.dataset.id, supportsModes: true } : { supportsModes: false }),
-          };
+          const isGroup = button.dataset.type === 'group';
+          const group = isGroup ? layoutGroupById(button.dataset.id) : null;
+          const target = isGroup
+            ? { type: 'group', ...group, id: button.dataset.id, supportsModes: false }
+            : {
+              type: isWall ? 'wall' : 'display',
+              id: button.dataset.id,
+              ...(isWall ? { wall_id: button.dataset.id, supportsModes: true } : { supportsModes: false }),
+            };
           if (targetApi) targetApi.setActive(target);
           handleTargetChange(target);
           controller.close();
@@ -1666,7 +1753,14 @@ function openTargetPickerModal() {
 
 // Keep every rail surface inside the fixed Command Center. Hash navigation hid
 // the rail in console mode and stranded touch users on a secondary page.
-function wireCommandRail() {
+function openLibraryTab(tabId) {
+  const drawer = document.getElementById('mc-library-drawer');
+  if (!drawer) return;
+  if (drawer.dataset.open !== 'true') drawer.querySelector('[data-library-toggle]')?.click();
+  setTimeout(() => drawer.querySelector(`.mc-tb-tab[data-tab="${tabId}"]`)?.click(), 0);
+}
+
+function wireCommandRail(actions = {}) {
   const rail = document.querySelector('.mc-cc-rail');
   if (!rail) return;
   rail.querySelectorAll('[data-mc-rail]').forEach((btn) => {
@@ -1689,6 +1783,18 @@ function wireCommandRail() {
           if (toggle) toggle.click();
           break;
         }
+        case 'cameras':
+          openLibraryTab('camerafeeds');
+          break;
+        case 'multiview':
+          actions.onMultiview?.();
+          break;
+        case 'share':
+          actions.onShare?.();
+          break;
+        case 'schedules':
+          openViewModal({ title: t('mc.schedules.title'), module: schedulesView });
+          break;
         case 'downloads':
           openViewModal({ title: 'Downloads', module: downloadsView });
           break;
@@ -1708,7 +1814,7 @@ function wireCommandRail() {
   });
 }
 
-export async function render() {
+export async function render({ signal, routeHash = '#/control' } = {}) {
   const app = document.getElementById('app');
   // Command Center shell: a single appliance-style screen — fixed header,
   // left icon rail + center workspace (canvas > playback > span/split+saver >
@@ -1741,6 +1847,10 @@ export async function render() {
           <button type="button" class="mc-cc-rail-btn" data-mc-rail="displays" title="${esc(t('mc.cc.rail.displays'))}" aria-label="${esc(t('mc.cc.rail.displays'))}">${ICON_DISPLAYS}</button>
           <button type="button" class="mc-cc-rail-btn" data-mc-rail="whiteboard" title="${esc(t('mc.cc.rail.whiteboard'))}" aria-label="${esc(t('mc.cc.rail.whiteboard'))}">${ICON_WHITEBOARD}</button>
           <button type="button" class="mc-cc-rail-btn" data-mc-rail="media" title="${esc(t('mc.cc.rail.media'))}" aria-label="${esc(t('mc.cc.rail.media'))}">${ICON_MEDIA}</button>
+          <button type="button" class="mc-cc-rail-btn" data-mc-rail="cameras" title="Cameras" aria-label="Cameras">${ICON_DISPLAYS}</button>
+          <button type="button" class="mc-cc-rail-btn" data-mc-rail="multiview" title="Multiview" aria-label="Multiview">${ICON_COMMAND}</button>
+          <button type="button" class="mc-cc-rail-btn" data-mc-rail="share" title="Share My Screen" aria-label="Share My Screen">${ICON_DOWNLOADS}</button>
+          <button type="button" class="mc-cc-rail-btn" data-mc-rail="schedules" title="Schedules" aria-label="Schedules">${ICON_LOGS}</button>
           <button type="button" class="mc-cc-rail-btn" data-mc-rail="downloads" title="${esc(t('mc.cc.rail.downloads'))}" aria-label="${esc(t('mc.cc.rail.downloads'))}">${ICON_DOWNLOADS}</button>
           <span class="mc-cc-rail-spacer"></span>
           <button type="button" class="mc-cc-rail-btn" data-mc-rail="admin" title="${esc(t('mc.cc.rail.admin'))}" aria-label="${esc(t('mc.cc.rail.admin'))}">${ICON_ADMIN}</button>
@@ -1810,7 +1920,7 @@ export async function render() {
   // the whole rail looked dead (operator feedback: "none of the sidebar items
   // are clickable"). Each now routes to its surface. The Admin item is already a
   // real <a href="#/walls"> and the active "command" item is the page itself.
-  wireCommandRail();
+  wireCommandRail({ onMultiview: toggleMultiview, onShare: shareScreenActive });
 
   // Re-hydrate the last-controlled selection, learn which devices are wall-owned,
   // and load the live display state — then prune any stale/wall-member ids.
@@ -1819,6 +1929,7 @@ export async function render() {
     loadWalls(),
     displayState.refresh().catch(() => {}),
   ]);
+  if (signal?.aborted) return;
   selectedIds = Array.isArray(selection && selection.device_ids) ? selection.device_ids : [];
   pruneSelection();
   // Shared room: with no saved stage selection yet, default to ALL room displays
@@ -1847,6 +1958,7 @@ pruneSelection();
   // functions and route commands to the active target only.
   targetApi = mountTargetSelector(document.getElementById('mc-target-host'), {
     walls,
+    groups: layoutGroupTargets(),
     displays: routeableDisplays(),
     onTargetChange: handleTargetChange,
   });
@@ -1855,6 +1967,7 @@ pruneSelection();
     getActiveTarget: () => activeTarget,
     getActiveWall: activeWall,
     onSetWallMode: setWallMode,
+    onSetWallLayout: setWallLayout,
     hasContent: wallHasContent,
   });
   screensaverApi = mountScreensaverRow(document.getElementById('mc-screensaver-host'));
@@ -1939,6 +2052,24 @@ pruneSelection();
           if (memberTarget) result.push(memberTarget);
         }
       }
+      if (wall.layout_mode === 'groups') {
+        for (const group of (wall.layout?.groups || [])) {
+          const leaderId = group.leader_device_id || group.member_ids[0];
+          const leader = byId.get(leaderId);
+          result.push({
+            target_type: 'group',
+            target_id: leaderId,
+            wall_id: wall.id,
+            group_id: group.id,
+            member_ids: group.member_ids,
+            preview_device_id: leaderId,
+            label: `${wall.name}: ${group.name}`,
+            screenshot_url: leader && leader.screenshot_url,
+            width: leader && leader.width || 1920,
+            height: leader && leader.height || 1080,
+          });
+        }
+      }
     }
     for (const device of all) {
       if (!device || wallMemberIds.has(device.id) || isLiveStreamTargetId(device.id)) continue;
@@ -1955,6 +2086,9 @@ pruneSelection();
     }
     if (activeTarget && activeTarget.type === 'display') {
       return whiteboardDisplayTarget(byId.get(activeTarget.id), wallForDeviceId(activeTarget.id));
+    }
+    if (activeTarget && activeTarget.type === 'group') {
+      return whiteboardTargets().find((target) => target.group_id === activeTarget.id) || null;
     }
     return whiteboardTargets()[0] || null;
   }
@@ -2132,6 +2266,7 @@ pruneSelection();
     if (targetApi) {
       targetApi.setOptions(
         walls,
+        layoutGroupTargets(),
         routeableDisplays(),
       );
     }
@@ -2154,7 +2289,12 @@ pruneSelection();
     if (dockApi && typeof dockApi.repaintBlank === 'function') dockApi.repaintBlank();
   };
   socketOn('dashboard:playback-state', playbackStateHandler);
+
+  if (routeHash.includes('panel=cameras')) openLibraryTab('camerafeeds');
+  if (routeHash.includes('panel=multiview')) toggleMultiview();
 }
+
+window.mcGetNavigationContext = () => ({ selected_target: activeTarget });
 
 export function unmount() {
   // The view owns NO live broadcast resource (that's the engine singleton),

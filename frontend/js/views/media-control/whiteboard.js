@@ -263,6 +263,8 @@ export function mount(containerEl, options) {
       target_type: t.target_type || 'display',
       target_id: String(t.target_id),
       wall_id: t.wall_id ? String(t.wall_id) : null,
+      group_id: t.group_id ? String(t.group_id) : null,
+      member_ids: Array.isArray(t.member_ids) ? t.member_ids.map(String) : [],
       split_device_id: t.split_device_id ? String(t.split_device_id) : null,
       preview_device_id: String(t.preview_device_id || t.split_device_id || t.target_id),
       label: t.label || t.target_id,
@@ -274,7 +276,7 @@ export function mount(containerEl, options) {
 
   function targetKey(tg) {
     if (!tg) return '';
-    return [tg.target_type, tg.target_id, tg.wall_id || '', tg.split_device_id || ''].join(':');
+    return [tg.target_type, tg.target_id, tg.wall_id || '', tg.group_id || '', tg.split_device_id || ''].join(':');
   }
 
   function targetOptionsHtml() {
@@ -297,6 +299,7 @@ export function mount(containerEl, options) {
     if (!tg) return {};
     const base = { device_id: tg.target_id, mode: whiteboardMode };
     if (tg.split_device_id) return Object.assign(base, { split_device_id: tg.split_device_id });
+    if (tg.group_id) return Object.assign(base, { wall_id: tg.wall_id, group_id: tg.group_id });
     if (tg.wall_id) return Object.assign(base, { wall_id: tg.wall_id });
     return base;
   }

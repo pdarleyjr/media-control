@@ -202,6 +202,10 @@ const migrations = [
   // plays its OWN content full-screen, independently — no wall_config emitted).
   // The dashboard wall card exposes this as a Span/Split template toggle.
   "ALTER TABLE video_walls ADD COLUMN layout_mode TEXT NOT NULL DEFAULT 'span'",
+  // 2026-07-17: composable contiguous subgroups. Existing walls remain on the
+  // legacy span/split projection until an operator explicitly applies a layout.
+  "ALTER TABLE video_walls ADD COLUMN layout_json TEXT",
+  "ALTER TABLE video_walls ADD COLUMN layout_revision INTEGER NOT NULL DEFAULT 0",
   // 2026-06-05: persistent whiteboard state per display. Stop/hide does not
   // clear strokes; explicit clear and media broadcasts do.
   `CREATE TABLE IF NOT EXISTS whiteboard_sessions (
