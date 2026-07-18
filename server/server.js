@@ -167,6 +167,12 @@ app.get('/', (req, res) => res.redirect(302, '/app'));
 
 // Dashboard app
 app.get('/app', (req, res) => {
+  // Stable asset names were previously cached for 30 days and an older
+  // service worker could keep an incompatible module graph alive. Clear only
+  // browser caches when the dashboard shell is requested; keep storage so the
+  // operator's login and preferences survive the recovery.
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Clear-Site-Data', '"cache"');
   res.sendFile(path.join(config.frontendDir, 'index.html'));
 });
 
