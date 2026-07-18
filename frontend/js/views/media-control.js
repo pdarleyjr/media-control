@@ -578,8 +578,24 @@ async function setWallLayout(wallId, preset, expectedRevision) {
     await api.updateWallLayout(wallId, { preset, expected_revision: expectedRevision });
     await loadWalls();
     if (targetApi) targetApi.setOptions(walls, layoutGroupTargets(), routeableDisplays());
-    paintStage();
-    paintSummary();
+    const wall = (walls || []).find((candidate) => candidate.id === wallId);
+    const groups = wall?.layout?.groups || [];
+    const preferred = groups.find((group) => group.layout === 'span' && group.member_ids?.length > 1)
+      || groups[0];
+    if (preferred) {
+      const target = {
+        type: 'group',
+        ...preferred,
+        id: preferred.id,
+        wall_id: wallId,
+        supportsModes: false,
+      };
+      if (targetApi) targetApi.setActive(target);
+      handleTargetChange(target);
+    } else {
+      paintStage();
+      paintSummary();
+    }
     showToast('Wall layout applied', 'success');
   } catch (error) {
     showToast(error?.message || 'Wall layout could not be applied', 'error');
@@ -667,7 +683,13 @@ function startPreviewRefresh() {
     requestActivePreview();
     requestVisiblePreviews();
   }, 350);
-  activePreviewInterval = setInterval(requestActivePreview, ACTIVE_PREVIEW_INTERVAL_MS);
+  // The active target already has a live embedded player. Polling another full
+  // renderer screenshot every second duplicates work and makes the podium
+  // renderer janky; retain the one initial capture as a fallback and refresh
+  // background tiles at the normal low-frequency cadence.
+  if (!LIVE_EMBED_PREVIEWS) {
+    activePreviewInterval = setInterval(requestActivePreview, ACTIVE_PREVIEW_INTERVAL_MS);
+  }
   backgroundPreviewInterval = setInterval(requestVisiblePreviews, BACKGROUND_PREVIEW_INTERVAL_MS);
 }
 function stopPreviewRefresh() {

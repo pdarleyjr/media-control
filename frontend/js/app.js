@@ -33,7 +33,7 @@ import { esc, isPlatformAdmin } from './utils.js';
 import { renderWorkspaceSwitcher } from './components/workspace-switcher.js';
 import { showToast } from './components/toast.js';
 import { api } from './api.js';
-import { performanceMetrics } from './services/performance-metrics.js';
+import { performanceMetrics } from './services/ui-runtime-v1.js';
 
 const app = document.getElementById('app');
 const sidebar = document.querySelector('.sidebar');

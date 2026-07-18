@@ -1,5 +1,5 @@
 import { t } from './i18n.js';
-import { performanceMetrics } from './services/performance-metrics.js';
+import { performanceMetrics } from './services/ui-runtime-v1.js';
 
 let dashboardSocket = null;
 const listeners = new Map();

@@ -111,6 +111,21 @@ test('podium rail surfaces remain inside the persistent command center', () => {
   assert.match(read('frontend/css/media-control.css'), /\.mc-cc-rail\s*\{[\s\S]*?overflow-y:\s*auto/);
 });
 
+test('a hybrid wall preset immediately targets its spanned subgroup', () => {
+  const view = read('frontend/js/views/media-control.js');
+
+  assert.match(view, /const preferred = groups\.find\(\(group\) => group\.layout === 'span'/);
+  assert.match(view, /type: 'group',[\s\S]*?wall_id: wallId/);
+  assert.match(view, /targetApi\.setActive\(target\);[\s\S]*?handleTargetChange\(target\)/);
+});
+
+test('live podium preview does not duplicate work with one-second screenshots', () => {
+  const view = read('frontend/js/views/media-control.js');
+
+  assert.match(view, /if \(!LIVE_EMBED_PREVIEWS\) \{[\s\S]*?setInterval\(requestActivePreview, ACTIVE_PREVIEW_INTERVAL_MS\)/);
+  assert.match(view, /BACKGROUND_PREVIEW_INTERVAL_MS = 60000/);
+});
+
 test('web and podium navigation expose critical destinations and deterministic back behavior', () => {
   const index = read('frontend/index.html');
   const app = read('frontend/js/app.js');

@@ -17,7 +17,7 @@ import { esc } from '../../utils.js';
 import { t, tn } from '../../i18n.js';
 import { showToast } from '../../components/toast.js';
 import { confirmDialog } from '../../components/confirm.js';
-import { performanceMetrics } from '../../services/performance-metrics.js';
+import { performanceMetrics } from '../../services/ui-runtime-v1.js';
 import { isLiveActive, isLiveStateKnown } from './action-dock.js';
 
 // YouTube URL detection (same regex as present.js).
