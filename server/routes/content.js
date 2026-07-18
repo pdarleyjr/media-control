@@ -16,6 +16,7 @@ const { contentRowsWithThumbnailUrls } = require('../lib/content-response');
 const { checkRemoteUrlShape, assertRemoteUrlSafe } = require('../lib/ssrf-policy');
 const { isDocThumbnailMime, kickDocThumbnail } = require('../lib/doc-thumbnail');
 const { isHeicMime, heicToJpeg, kickHevcTranscodeIfNeeded } = require('../lib/media-transcode');
+const { prewarmUploadedContent } = require('../lib/node-registry');
 
 // Multer captures file.originalname directly from the multipart filename header,
 // bypassing sanitizeBody. Apply the same HTML-escape here so a filename like
@@ -196,6 +197,10 @@ router.post('/', checkStorageLimit, upload.single('file'), async (req, res) => {
 
     const content = db.prepare('SELECT * FROM content WHERE id = ?').get(id);
     res.status(201).json(content);
+    prewarmUploadedContent(req.app.get('io'), db, {
+      contentId: id,
+      absolutePath: req.file.path,
+    }).catch((error) => console.warn(`[upload-prewarm] ${id} failed: ${error.message}`));
   } catch (err) {
     console.error('Upload error:', err);
     res.status(500).json({ error: 'Upload failed' });

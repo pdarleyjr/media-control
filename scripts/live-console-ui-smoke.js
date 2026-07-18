@@ -145,6 +145,29 @@ function dragDropConfig() {
   return config;
 }
 
+function webLoginConfig(url) {
+  const identifier = String(process.env.SMOKE_LOGIN_IDENTIFIER || '').trim();
+  if (!identifier) return null;
+  return {
+    identifier,
+    password: required('SMOKE_LOGIN_PASSWORD'),
+    origin: new URL(url).origin,
+  };
+}
+
+async function createWebSession(config) {
+  const response = await fetch(`${config.origin}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ identifier: config.identifier, password: config.password }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || !body.token || !body.user) {
+    throw new Error(`web login failed (${response.status}): ${body.error || 'invalid response'}`);
+  }
+  return body;
+}
+
 async function waitForPhysicalContent(db, deviceIds, contentId, timeoutMs = 20000) {
   const placeholders = deviceIds.map(() => '?').join(',');
   const deadline = Date.now() + timeoutMs;
@@ -191,9 +214,12 @@ async function restoreDragDropContent(db, config) {
 }
 
 async function main() {
-  const deviceToken = required('CONSOLE_DEVICE_TOKEN');
-  const dragConfig = dragDropConfig();
   const url = String(process.env.SMOKE_CONSOLE_URL || 'http://127.0.0.1:3001/console/classroom-1#/control');
+  const loginConfig = webLoginConfig(url);
+  const deviceToken = String(process.env.CONSOLE_DEVICE_TOKEN || '').trim();
+  if (!loginConfig && !deviceToken) throw new Error('CONSOLE_DEVICE_TOKEN or SMOKE_LOGIN_IDENTIFIER is required');
+  const webSession = loginConfig ? await createWebSession(loginConfig) : null;
+  const dragConfig = dragDropConfig();
   const screenshotPath = String(process.env.SMOKE_SCREENSHOT_PATH || '/tmp/console-ui-smoke.png');
   const cameraScreenshotPath = screenshotPath.replace(/(\.png)?$/i, '-camera.png');
   const chromium = String(process.env.CHROMIUM_PATH || '/usr/bin/chromium-browser');
@@ -224,9 +250,20 @@ async function main() {
       cdp.send('Network.enable'),
       cdp.send('Log.enable'),
     ]);
-    await cdp.send('Network.setExtraHTTPHeaders', {
-      headers: { 'X-MBFD-Device-Token': deviceToken },
-    });
+    if (deviceToken) {
+      await cdp.send('Network.setExtraHTTPHeaders', {
+        headers: { 'X-MBFD-Device-Token': deviceToken },
+      });
+    }
+    if (webSession) {
+      await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+        source: `try {
+          localStorage.setItem('token', ${JSON.stringify(webSession.token)});
+          localStorage.setItem('user', ${JSON.stringify(JSON.stringify(webSession.user))});
+          localStorage.setItem('rd_onboarded', '1');
+        } catch (_) {}`,
+      });
+    }
     await cdp.send('Page.navigate', { url });
 
     const ready = await waitFor(cdp, `(() => {
@@ -575,6 +612,8 @@ async function main() {
     const runtimeExceptions = cdp.events.filter((event) => event.method === 'Runtime.exceptionThrown');
     console.log(JSON.stringify({
       ok: true,
+      auth_mode: webSession ? 'web-login' : 'podium-device',
+      signed_in_as: webSession?.user?.email || webSession?.user?.username || null,
       wall_targets: ready.map((item) => item.text),
       viewport,
       multiview,
@@ -588,6 +627,25 @@ async function main() {
       camera_screenshot: cameraScreenshotPath,
     }));
   } catch (error) {
+    if (cdp) {
+      const diagnostics = await evaluate(cdp, `(() => ({
+        href: location.href,
+        hash: location.hash,
+        title: document.title,
+        bodyClass: document.body?.className || '',
+        appHtml: document.querySelector('#app')?.innerHTML?.slice(0, 1200) || '',
+        hasToken: !!localStorage.getItem('token'),
+        scripts: [...document.scripts].map((script) => script.src || '[inline]'),
+      }))()`).catch((diagnosticError) => ({ diagnosticError: diagnosticError.message }));
+      const browserErrors = cdp.events
+        .filter((event) => ['Runtime.exceptionThrown', 'Log.entryAdded'].includes(event.method))
+        .slice(-12);
+      error.message += `; diagnostics=${JSON.stringify({ diagnostics, browserErrors })}`;
+      try {
+        const failedShot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+        fs.writeFileSync(screenshotPath, Buffer.from(failedShot.data, 'base64'));
+      } catch { /* preserve the original smoke failure */ }
+    }
     if (chromiumError) error.message += `; chromium=${chromiumError.replace(/\s+/g, ' ').slice(-800)}`;
     throw error;
   } finally {

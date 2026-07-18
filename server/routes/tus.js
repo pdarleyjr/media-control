@@ -20,6 +20,7 @@ const { Server } = require('@tus/server');
 const { FileStore } = require('@tus/file-store');
 const config = require('../config');
 const { finalizeUpload } = require('../lib/finalize-upload');
+const { prewarmUploadedContent } = require('../lib/node-registry');
 
 // Partial uploads live under the same bind-mounted uploads dir so in-flight
 // resumable uploads survive a container restart.
@@ -51,6 +52,10 @@ const tusServer = new Server({
         userId: req.user && req.user.id,
         workspaceId: req.workspaceId,
       });
+      prewarmUploadedContent(req.app && req.app.get('io'), require('../db/database').db, {
+        contentId: content.id,
+        absolutePath: path.join(config.contentDir, content.filepath),
+      }).catch((error) => console.warn(`[tus-prewarm] ${content.id} failed: ${error.message}`));
       // finalizeUpload moved the data file out; drop the tus .json sidecar too.
       try { fs.unlinkSync(absPath + '.json'); } catch { /* ignore */ }
       return {

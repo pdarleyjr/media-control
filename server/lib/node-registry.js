@@ -14,7 +14,7 @@
 
 const crypto = require('crypto');
 const config = require('../config');
-const { canonicalAssetPath, queueAssetManifest } = require('./asset-manifest');
+const { canonicalAssetPath, queueAssetManifest, writeAssetManifest } = require('./asset-manifest');
 
 function nodeTokenMatches(givenValue, expectedValue) {
   const expected = String(expectedValue || '');
@@ -275,11 +275,35 @@ function requestContentPrewarm(io, db, options = {}) {
   }
 }
 
+// Uploads are authoritative on GMKtec, but classroom playback should not wait
+// for the next periodic manifest sweep. Compute the immutable checksum after
+// the content row is committed, then push that exact asset to the P3 cache.
+// The room agent remains read-through and the periodic manifest remains the
+// recovery path when the P3 is offline during this best-effort signal.
+async function prewarmUploadedContent(io, db, options = {}) {
+  const contentId = String(options.contentId || '');
+  const absolutePath = options.absolutePath;
+  const cc = options.classroomCache || config.classroomCache || {};
+  if (!cc.enabled || !contentId || !absolutePath) {
+    return { requested: false, reason: 'cache_disabled' };
+  }
+  if (!io || typeof io.of !== 'function') {
+    return { requested: false, reason: 'socket_unavailable' };
+  }
+
+  const buildManifest = options.writeManifest || writeAssetManifest;
+  const item = await buildManifest(db, contentId, absolutePath);
+  const nodeId = String(cc.nodeId || 'classroom-1-p3');
+  io.of('/device').to(`node:${nodeId}`).emit('node:prewarm-content', item);
+  return { requested: true, node_id: nodeId, content_id: contentId, item };
+}
+
 module.exports = {
   buildContentManifest,
   nodeAuthOk,
   nodeHttpAuthOk,
   normalizeNodeTelemetry,
+  prewarmUploadedContent,
   recordHeartbeat,
   requestContentPrewarm,
 };

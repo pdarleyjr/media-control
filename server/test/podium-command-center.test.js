@@ -150,3 +150,14 @@ test('podium browser smoke exercises both whiteboard modes and a real pointer st
   assert.match(smoke, /#mc-wb-clear/);
   assert.match(smoke, /#mc-wb-close/);
 });
+
+test('browser smoke can validate the normal signed-in web UI', () => {
+  const smoke = read('scripts/live-console-ui-smoke.js');
+
+  assert.match(smoke, /SMOKE_LOGIN_IDENTIFIER/);
+  assert.match(smoke, /SMOKE_LOGIN_PASSWORD/);
+  assert.match(smoke, /createWebSession/);
+  assert.match(smoke, /Page\.addScriptToEvaluateOnNewDocument/);
+  assert.match(smoke, /localStorage\.setItem\('token'/);
+  assert.match(smoke, /auth_mode: webSession \? 'web-login' : 'podium-device'/);
+});

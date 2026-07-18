@@ -6,6 +6,7 @@ const path = require('node:path');
 const {
   nodeHttpAuthOk,
   normalizeNodeTelemetry,
+  prewarmUploadedContent,
   requestContentPrewarm,
 } = require('../lib/node-registry');
 
@@ -73,6 +74,34 @@ test('classroom content broadcast sends a priority prewarm to the configured P3 
       size_bytes: 123,
       canonical_url: '/api/content/video-id/file',
     },
+  }]);
+});
+
+test('new uploads are checksummed on GMKtec and immediately prewarmed on the P3', async () => {
+  const events = [];
+  const item = {
+    asset_id: 'upload-id',
+    content_id: 'upload-id',
+    sha256: 'b'.repeat(64),
+    size_bytes: 456,
+    canonical_url: '/api/content/upload-id/file',
+  };
+  const result = await prewarmUploadedContent(fakeIo(events), fakeDb(), {
+    contentId: 'upload-id',
+    absolutePath: '/gmktec/uploads/upload-id.png',
+    classroomCache: { enabled: true, nodeId: 'classroom-1-p3' },
+    writeManifest: async (_db, contentId, absolutePath) => {
+      assert.equal(contentId, 'upload-id');
+      assert.equal(absolutePath, '/gmktec/uploads/upload-id.png');
+      return item;
+    },
+  });
+
+  assert.equal(result.requested, true);
+  assert.deepEqual(events, [{
+    room: 'node:classroom-1-p3',
+    event: 'node:prewarm-content',
+    payload: item,
   }]);
 });
 
