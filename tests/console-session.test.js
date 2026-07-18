@@ -16,6 +16,10 @@ test('console session waits for a real DRM output and stops Cage after disconnec
   assert.match(session, /grep -qs '\^connected\$' \/sys\/class\/drm\/card\*-\*\/status/);
   assert.match(session, /until display_connected/);
   assert.match(session, /stop_cage/);
+  assert.match(session, /cage_running\(\)\s*\{/);
+  assert.match(session, /\/proc\/\$\{cage_pid\}\/stat/);
+  assert.match(session, /!= "Z"/);
+  assert.match(session, /while cage_running/);
   assert.match(service, /ExecStart=\/opt\/mbfd\/media-control-console\/mbfd-console-session\.sh/);
 });
 

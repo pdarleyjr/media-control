@@ -13,8 +13,17 @@ display_connected() {
   grep -qs '^connected$' /sys/class/drm/card*-*/status
 }
 
+cage_running() {
+  [[ -n "${cage_pid}" ]] || return 1
+  kill -0 "${cage_pid}" 2>/dev/null || return 1
+  # kill -0 also succeeds for zombies. Without this check, a dead Cage child
+  # leaves the wrapper and systemd looking healthy forever while the screen is
+  # no longer running the console.
+  [[ "$(awk '{print $3}' "/proc/${cage_pid}/stat" 2>/dev/null || true)" != "Z" ]]
+}
+
 stop_cage() {
-  if [[ -n "${cage_pid}" ]] && kill -0 "${cage_pid}" 2>/dev/null; then
+  if cage_running; then
     kill -TERM "${cage_pid}" 2>/dev/null || true
     wait "${cage_pid}" 2>/dev/null || true
   fi
@@ -32,7 +41,7 @@ while true; do
   cage_pid="$!"
   disconnected_at=0
 
-  while kill -0 "${cage_pid}" 2>/dev/null; do
+  while cage_running; do
     if display_connected; then
       disconnected_at=0
     else
