@@ -178,7 +178,11 @@ test('overlapping manifest refreshes stay serial and download each asset once', 
 
     assert.deepEqual(Object.fromEntries(requestCounts), { 'video-a': 1, 'video-b': 1 });
     assert.equal(maxActiveRequests, 1);
-    assert.equal(cache.getStats().sync_status, 'ready');
+    const stats = cache.getStats();
+    assert.equal(stats.sync_status, 'ready');
+    assert.equal(stats.manifest_count, 2);
+    assert.equal(stats.cached_manifest_count, 2);
+    assert.equal(stats.missing_manifest_count, 0);
   } finally {
     if (cache) await close(cache.server);
     await close(origin);
@@ -245,6 +249,10 @@ test('a checksum mismatch fails the fill and never publishes corrupt cache bytes
     assert.equal(cache.getStats().checksum_failures, 1);
     assert.equal(cache.getStats().fill_failures, 1);
     assert.equal(cache.getStats().last_failure_reason, 'sha256_mismatch');
+    assert.equal(cache.getStats().manifest_count, 1);
+    assert.equal(cache.getStats().cached_manifest_count, 0);
+    assert.equal(cache.getStats().missing_manifest_count, 1);
+    assert.equal(cache.getStats().sync_status, 'degraded');
   } finally {
     if (cache) await close(cache.server);
     await close(origin);

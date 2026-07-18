@@ -70,6 +70,7 @@ function createCacheServer(opts = {}) {
   const warn = opts.warn || (() => {});
   const downloads = new Map(); // content_id -> shared fill Promise
   const manifestById = new Map();
+  const desiredManifestIds = new Set();
   const pendingManifest = new Map();
   let manifestSweep = null;
   let failureCount = 0;
@@ -418,10 +419,12 @@ function createCacheServer(opts = {}) {
 
   function prewarmManifest(items) {
     if (!Array.isArray(items)) return Promise.resolve();
+    desiredManifestIds.clear();
     for (const it of items) {
       const id = it && (it.content_id || it.id);
       if (id) {
         const normalizedId = String(id);
+        desiredManifestIds.add(normalizedId);
         manifestById.set(normalizedId, it);
         if (!cacheEntryMatches(normalizedId, it) && !downloads.has(normalizedId)) {
           pendingManifest.set(normalizedId, it);
@@ -435,6 +438,7 @@ function createCacheServer(opts = {}) {
     const id = item && (item.content_id || item.id);
     if (!id) return Promise.resolve(false);
     const normalizedId = String(id);
+    desiredManifestIds.add(normalizedId);
     manifestById.set(normalizedId, item);
     pendingManifest.delete(normalizedId);
     return prewarm(normalizedId, item);
@@ -448,6 +452,14 @@ function createCacheServer(opts = {}) {
         try { const st = fs.statSync(path.join(contentDir, name)); if (st.isFile()) { bytes += st.size; count++; } } catch (_) {}
       }
     } catch (_) {}
+    let cachedManifestCount = 0;
+    for (const id of desiredManifestIds) {
+      if (cacheEntryMatches(id, manifestById.get(id))) cachedManifestCount += 1;
+    }
+    const manifestCount = desiredManifestIds.size;
+    const missingManifestCount = Math.max(0, manifestCount - cachedManifestCount);
+    const syncing = downloads.size > 0 || pendingManifest.size > 0;
+    const recentFailure = !!(lastFailure && (Math.floor(Date.now() / 1000) - lastFailure.at) < 300);
     const now = Date.now();
     const transfers = [...activeTransfers.values()].map((transfer) => {
       const { started_at_ms: startedAt, ...publicTransfer } = transfer;
@@ -460,11 +472,14 @@ function createCacheServer(opts = {}) {
     return {
       cache_size: bytes,
       file_count: count,
+      manifest_count: manifestCount,
+      cached_manifest_count: cachedManifestCount,
+      missing_manifest_count: missingManifestCount,
       content_dir: contentDir,
       downloading: downloads.size,
       queued: pendingManifest.size,
-      sync_status: downloads.size || pendingManifest.size ? 'syncing' : 'ready',
-      failed: lastFailure && (Math.floor(Date.now() / 1000) - lastFailure.at) < 300 ? 1 : 0,
+      sync_status: syncing ? 'syncing' : missingManifestCount > 0 ? 'degraded' : 'ready',
+      failed: recentFailure || missingManifestCount > 0 ? 1 : 0,
       failure_count: failureCount,
       last_failure: lastFailure,
       current_content_id: transfers[0]?.content_id || null,

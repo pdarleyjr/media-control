@@ -114,6 +114,9 @@ function normalizeNodeTelemetry(payload) {
       current_transfer: normalizeTransfer(sourceCache.current_transfer),
       cache_size: boundedNumber(sourceCache.cache_size),
       file_count: boundedNumber(sourceCache.file_count),
+      manifest_count: boundedNumber(sourceCache.manifest_count),
+      cached_manifest_count: boundedNumber(sourceCache.cached_manifest_count),
+      missing_manifest_count: boundedNumber(sourceCache.missing_manifest_count),
       downloading: boundedNumber(sourceCache.downloading),
       queued: boundedNumber(sourceCache.queued),
       sync_status: boundedText(sourceCache.sync_status, 32),
@@ -293,6 +296,7 @@ async function prewarmUploadedContent(io, db, options = {}) {
 
   const buildManifest = options.writeManifest || writeAssetManifest;
   const item = await buildManifest(db, contentId, absolutePath);
+  if (!item) return { requested: false, reason: 'manifest_unavailable' };
   const nodeId = String(cc.nodeId || 'classroom-1-p3');
   io.of('/device').to(`node:${nodeId}`).emit('node:prewarm-content', item);
   return { requested: true, node_id: nodeId, content_id: contentId, item };

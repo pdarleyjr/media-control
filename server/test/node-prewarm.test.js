@@ -105,6 +105,19 @@ test('new uploads are checksummed on GMKtec and immediately prewarmed on the P3'
   }]);
 });
 
+test('an upload never emits an empty prewarm item when checksum creation fails', async () => {
+  const events = [];
+  const result = await prewarmUploadedContent(fakeIo(events), fakeDb(), {
+    contentId: 'upload-id',
+    absolutePath: '/gmktec/uploads/missing.png',
+    classroomCache: { enabled: true, nodeId: 'classroom-1-p3' },
+    writeManifest: async () => null,
+  });
+
+  assert.deepEqual(result, { requested: false, reason: 'manifest_unavailable' });
+  assert.deepEqual(events, []);
+});
+
 test('prewarm signal is skipped for targets outside configured classroom walls', () => {
   const events = [];
   const result = requestContentPrewarm(fakeIo(events), fakeDb({ member: false }), {
@@ -163,6 +176,9 @@ test('node telemetry persists only bounded diagnostics fields and excludes secre
     },
     cache: {
       current_content_id: 'video-id',
+      manifest_count: 31,
+      cached_manifest_count: 30,
+      missing_manifest_count: 1,
       cache_hits: 10,
       cache_misses: 2,
       timeout_count: 1,
@@ -182,6 +198,9 @@ test('node telemetry persists only bounded diagnostics fields and excludes secre
   assert.equal(telemetry.lan_health_test.mbps, 97.61);
   assert.equal(telemetry.lan_health_test.token, undefined);
   assert.equal(telemetry.cache.current_content_id, 'video-id');
+  assert.equal(telemetry.cache.manifest_count, 31);
+  assert.equal(telemetry.cache.cached_manifest_count, 30);
+  assert.equal(telemetry.cache.missing_manifest_count, 1);
   assert.equal(telemetry.cache.timeout_count, 1);
   assert.equal(telemetry.token, undefined);
   assert.equal(telemetry.cache.token, undefined);
