@@ -25,7 +25,8 @@
 
 const { v4: uuidv4 } = require('uuid');
 const { db } = require('../db/database');
-const { ensureDevicePlaylist, wallContextForDevice } = require('../lib/wall-playlists');
+const { ensureDevicePlaylist } = require('../lib/wall-playlists');
+const { parseStoredLayout, groupForDevice } = require('../lib/wall-layout');
 const whiteboardState = require('./whiteboard-state');
 
 // Mirror routes/playlists.js + routes/assignments.js snapshot select so the
@@ -116,6 +117,85 @@ function pushPlaylistUpdate(io, deviceId) {
   }
 }
 
+function playbackScopeForDevice(deviceId) {
+  const wall = db.prepare(`
+    SELECT vw.*
+    FROM video_wall_devices vwd
+    JOIN video_walls vw ON vw.id = vwd.wall_id
+    WHERE vwd.device_id = ?
+    LIMIT 1
+  `).get(deviceId);
+  if (!wall) return null;
+
+  const members = db.prepare(`
+    SELECT vwd.*, d.name AS device_name, d.playlist_id
+    FROM video_wall_devices vwd
+    JOIN devices d ON d.id = vwd.device_id
+    WHERE vwd.wall_id = ?
+    ORDER BY vwd.grid_row, vwd.grid_col
+  `).all(wall.id);
+  const layout = parseStoredLayout(wall, members);
+  return { wall, members, layout, group: groupForDevice(layout, deviceId) };
+}
+
+function persistGroupPlaylist(scope, playlistId) {
+  if (!scope?.group || scope.wall.layout_mode !== 'groups' || !scope.wall.layout_json) return;
+  const groups = scope.layout.groups.map((group) => (
+    group.id === scope.group.id ? { ...group, playlist_id: playlistId } : group
+  ));
+  db.prepare(`
+    UPDATE video_walls
+    SET layout_json = ?, updated_at = strftime('%s','now')
+    WHERE id = ?
+  `).run(JSON.stringify({
+    version: scope.layout.version,
+    id: scope.layout.id,
+    wall_id: scope.layout.wall_id,
+    mode: scope.layout.mode,
+    revision: scope.layout.revision,
+    groups,
+  }), scope.wall.id);
+}
+
+function fanOutPlaylistToPlaybackScope(io, deviceId, playlistId, { singleScreenOnly = false } = {}) {
+  const scope = playbackScopeForDevice(deviceId);
+  if (!scope || singleScreenOnly) return;
+
+  let memberIds = [];
+  if (scope.wall.layout_mode === 'groups') {
+    if (!scope.group) return;
+    persistGroupPlaylist(scope, playlistId);
+    if (scope.group.layout !== 'span' || scope.group.member_ids.length <= 1) return;
+    memberIds = scope.group.member_ids;
+  } else {
+    if (scope.wall.layout_mode === 'split') return;
+    db.prepare("UPDATE video_walls SET playlist_id = ?, updated_at = strftime('%s','now') WHERE id = ?")
+      .run(playlistId, scope.wall.id);
+    memberIds = scope.members.map((member) => member.device_id);
+  }
+
+  const followers = [];
+  for (const followerId of memberIds) {
+    if (!followerId || followerId === deviceId) continue;
+    try {
+      db.prepare('UPDATE devices SET playlist_id = ? WHERE id = ? AND (playlist_id IS NULL OR playlist_id != ?)')
+        .run(playlistId, followerId, playlistId);
+      whiteboardState.clearForMedia(io, followerId);
+      followers.push(followerId);
+    } catch (error) {
+      console.warn(`[scene-engine] playback-scope DB update failed for ${followerId}: ${error.message}`);
+    }
+  }
+  followers.forEach((followerId, index) => {
+    const deliver = () => pushPlaylistUpdate(io, followerId);
+    if (index === 0) deliver();
+    else {
+      const timer = setTimeout(deliver, index * 100);
+      if (timer.unref) timer.unref();
+    }
+  });
+}
+
 // Make a single device show one source. `source` is { content_id?, remote_url?,
 // playlist_id?, fit_mode?, duration_sec? }. Returns true on success.
 //
@@ -138,6 +218,7 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
       db.prepare('UPDATE devices SET playlist_id = ? WHERE id = ?').run(source.playlist_id, deviceId);
       whiteboardState.clearForMedia(io, deviceId);
       pushPlaylistUpdate(io, deviceId);
+      fanOutPlaylistToPlaybackScope(io, deviceId, source.playlist_id);
       return true;
     }
 
@@ -195,35 +276,7 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
       const isSingleScreenWeb = content.mime_type === 'text/html'
         && !isInternalPlayer
         && !isStreamingMedia;
-      const wall = wallContextForDevice(deviceId);
-      if (wall && wall.wall_id && wall.layout_mode !== 'split' && !isSingleScreenWeb) {
-        db.prepare("UPDATE video_walls SET playlist_id = ?, updated_at = strftime('%s','now') WHERE id = ?")
-          .run(playlistId, wall.wall_id);
-        const members = db.prepare(
-          'SELECT device_id FROM video_wall_devices WHERE wall_id = ? AND device_id != ?'
-        ).all(wall.wall_id, deviceId);
-        const followers = [];
-        for (const m of members) {
-          if (!m.device_id) continue;
-          try {
-            db.prepare('UPDATE devices SET playlist_id = ? WHERE id = ? AND (playlist_id IS NULL OR playlist_id != ?)')
-              .run(playlistId, m.device_id, playlistId);
-            whiteboardState.clearForMedia(io, m.device_id);
-            followers.push(m.device_id);
-          } catch (e) {
-            console.warn(`[scene-engine] span fan-out DB update failed for ${m.device_id}: ${e.message}`);
-          }
-        }
-        followers.forEach((followerId, index) => {
-          const deliver = () => pushPlaylistUpdate(io, followerId);
-          if (index === 0) {
-            deliver();
-            return;
-          }
-          const timer = setTimeout(deliver, index * 100);
-          if (timer.unref) timer.unref();
-        });
-      }
+      fanOutPlaylistToPlaybackScope(io, deviceId, playlistId, { singleScreenOnly: isSingleScreenWeb });
     } catch (e) {
       console.warn(`[scene-engine] span fan-out lookup failed: ${e.message}`);
     }

@@ -260,9 +260,10 @@ test('server requests fresh previews after delivered content changes', () => {
   assert.match(sceneEngine, /reason: 'content-changed'/);
 });
 
-test('span-wall broadcasts push revised playlists to every follower', () => {
+test('span broadcasts push revised playlists only to followers in the playback scope', () => {
   const sceneEngine = fs.readFileSync(path.join(__dirname, '..', 'services', 'scene-engine.js'), 'utf8');
-  assert.match(sceneEngine, /followers\.push\(m\.device_id\)/);
+  assert.match(sceneEngine, /memberIds = scope\.group\.member_ids/);
+  assert.match(sceneEngine, /followers\.push\(followerId\)/);
   assert.match(sceneEngine, /const deliver = \(\) => pushPlaylistUpdate\(io, followerId\)/);
   assert.match(sceneEngine, /setTimeout\(deliver, index \* 100\)/);
   assert.doesNotMatch(sceneEngine, /No pushPlaylistUpdate here/);
