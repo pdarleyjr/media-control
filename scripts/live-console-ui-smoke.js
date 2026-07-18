@@ -252,6 +252,24 @@ async function main() {
       })()`, `${label} selection`);
     }
 
+    const uploadDialog = await evaluate(cdp, `(() => {
+      const button = document.querySelector('[data-mc-rail="upload"]');
+      if (!button) return false;
+      button.click();
+      const input = document.querySelector('.mc-view-modal[open] [data-quick-upload-input]');
+      const picker = document.querySelector('.mc-view-modal[open] [data-quick-upload-pick]');
+      return input && picker ? {
+        multiple: input.multiple,
+        accept: input.accept,
+        pickerText: picker.textContent.trim().replace(/\\s+/g, ' '),
+      } : false;
+    })()`);
+    assert(uploadDialog, 'Upload Media rail action did not open its dialog');
+    assert(uploadDialog.multiple, 'Upload Media picker does not support multiple files');
+    assert(/powerpoint/i.test(uploadDialog.accept), 'Upload Media picker does not accept PowerPoint files');
+    await evaluate(cdp, `document.querySelector('.mc-view-modal[open] [data-modal-close]')?.click()`);
+    await waitFor(cdp, `!document.querySelector('.mc-view-modal[open]')`, 'upload dialog close');
+
     let dragDrop = null;
     if (dragConfig) {
       const { db } = require('../server/db/database');
@@ -562,6 +580,7 @@ async function main() {
       multiview,
       route_dialog: routeDialog,
       camera_control: cameraControl,
+      upload_dialog: uploadDialog,
       drag_drop: dragDrop,
       whiteboard,
       runtime_exceptions: runtimeExceptions.length,

@@ -103,8 +103,12 @@ test('podium rail surfaces remain inside the persistent command center', () => {
   assert.match(rail, /case 'multiview':[\s\S]*?actions\.onMultiview/);
   assert.match(rail, /case 'share':[\s\S]*?actions\.onShare/);
   assert.match(rail, /case 'schedules':[\s\S]*?schedulesView/);
+  assert.match(view, /data-mc-rail="upload"/);
+  assert.match(rail, /case 'upload':[\s\S]*?openUploadMediaModal\(\)/);
+  assert.match(view, /data-quick-upload-input/);
   assert.doesNotMatch(rail, /window\.location\.hash = '#\/(?:downloads|audit|settings|)'/);
   assert.match(read('frontend/css/media-control.css'), /\.mc-target-choice\s*\{[\s\S]*?min-height:\s*58px/);
+  assert.match(read('frontend/css/media-control.css'), /\.mc-cc-rail\s*\{[\s\S]*?overflow-y:\s*auto/);
 });
 
 test('web and podium navigation expose critical destinations and deterministic back behavior', () => {
@@ -136,6 +140,8 @@ test('USB import lets the podium operator choose the owning account', () => {
 test('podium browser smoke exercises both whiteboard modes and a real pointer stroke', () => {
   const smoke = read('scripts/live-console-ui-smoke.js');
 
+  assert.match(smoke, /\[data-mc-rail="upload"\]/);
+  assert.match(smoke, /\[data-quick-upload-input\]/);
   assert.match(smoke, /\[data-mc-rail="whiteboard"\]/);
   assert.match(smoke, /\[data-wb-mode="blank"\]/);
   assert.match(smoke, /\[data-wb-mode="overlay"\]/);

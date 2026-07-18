@@ -160,8 +160,16 @@ export const api = {
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) {
           resolve(JSON.parse(xhr.responseText));
+        } else if (xhr.status === 401) {
+          localStorage.removeItem('token');
+          localStorage.removeItem('user');
+          window.location.hash = '#/login';
+          window.location.reload();
+          reject(new Error('Session expired'));
         } else {
-          reject(new Error('Upload failed'));
+          let message = 'Upload failed';
+          try { message = JSON.parse(xhr.responseText).error || message; } catch { /* keep fallback */ }
+          reject(new Error(message));
         }
       };
       xhr.onerror = () => reject(new Error('Upload failed'));

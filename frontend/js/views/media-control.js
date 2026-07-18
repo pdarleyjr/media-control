@@ -52,6 +52,7 @@ const ICON_COMMAND = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
 const ICON_DISPLAYS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>';
 const ICON_WHITEBOARD = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19l7-7 3 3-7 7-3-1z"></path><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"></path><path d="M2 2l7.586 7.586"></path><circle cx="11" cy="11" r="2"></circle></svg>';
 const ICON_MEDIA = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>';
+const ICON_UPLOAD = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>';
 const ICON_DOWNLOADS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>';
 const ICON_ADMIN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>';
 const ICON_LOGS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="8" y1="13" x2="16" y2="13"></line><line x1="8" y1="17" x2="16" y2="17"></line></svg>';
@@ -1767,6 +1768,83 @@ function openLibraryTab(tabId) {
   setTimeout(() => drawer.querySelector(`.mc-tb-tab[data-tab="${tabId}"]`)?.click(), 0);
 }
 
+function openUploadMediaModal() {
+  let controller;
+  controller = openViewModal({
+    title: 'Upload Media',
+    render: (body) => {
+      body.innerHTML = `
+        <section class="mc-quick-upload" aria-labelledby="mc-quick-upload-title">
+          <h3 id="mc-quick-upload-title">Add content to Media Control</h3>
+          <p>Choose files or drop them below. Uploads use the HTTP media service and remain available even while live display controls reconnect.</p>
+          <button type="button" class="mc-quick-upload-drop" data-quick-upload-pick>
+            ${ICON_UPLOAD}
+            <strong>Choose files</strong>
+            <span>Images, videos, PDF, PowerPoint, Word, and Excel</span>
+          </button>
+          <input type="file" data-quick-upload-input hidden multiple
+            accept="video/*,image/*,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/msword,application/vnd.ms-excel,application/vnd.ms-powerpoint,application/vnd.oasis.opendocument.text,application/vnd.oasis.opendocument.spreadsheet,application/vnd.oasis.opendocument.presentation">
+          <div class="mc-quick-upload-progress" data-quick-upload-progress hidden>
+            <div><span data-quick-upload-bar></span></div>
+            <p data-quick-upload-status aria-live="polite">Preparing upload...</p>
+          </div>
+          <div class="mc-quick-upload-actions">
+            <button type="button" class="mc-btn mc-btn-ghost" data-quick-upload-library>Open Media Library</button>
+          </div>
+        </section>`;
+
+      const picker = body.querySelector('[data-quick-upload-pick]');
+      const input = body.querySelector('[data-quick-upload-input]');
+      const progress = body.querySelector('[data-quick-upload-progress]');
+      const bar = body.querySelector('[data-quick-upload-bar]');
+      const status = body.querySelector('[data-quick-upload-status]');
+
+      const uploadFiles = async (files) => {
+        const pending = [...(files || [])];
+        if (!pending.length || picker.disabled) return;
+        picker.disabled = true;
+        progress.hidden = false;
+        let completed = 0;
+        try {
+          for (const file of pending) {
+            status.textContent = `Uploading ${file.name} (${completed + 1} of ${pending.length})`;
+            const useResumable = !!(window.tus && window.tus.Upload) && file.size > 90 * 1024 * 1024;
+            const uploader = useResumable ? api.uploadContentResumable : api.uploadContent;
+            await uploader(file, (pct) => {
+              bar.style.width = `${pct}%`;
+              status.textContent = `Uploading ${file.name}: ${pct}%`;
+            });
+            completed += 1;
+          }
+          bar.style.width = '100%';
+          status.textContent = `${completed} file${completed === 1 ? '' : 's'} uploaded successfully.`;
+          showToast(status.textContent, 'success');
+        } catch (error) {
+          status.textContent = error?.message || 'Upload failed';
+          showToast(status.textContent, 'error');
+        } finally {
+          picker.disabled = false;
+          input.value = '';
+        }
+      };
+
+      picker.addEventListener('click', () => input.click());
+      picker.addEventListener('dragover', (event) => { event.preventDefault(); picker.classList.add('is-dragover'); });
+      picker.addEventListener('dragleave', () => picker.classList.remove('is-dragover'));
+      picker.addEventListener('drop', (event) => {
+        event.preventDefault();
+        picker.classList.remove('is-dragover');
+        uploadFiles(event.dataTransfer?.files);
+      });
+      input.addEventListener('change', () => uploadFiles(input.files));
+      body.querySelector('[data-quick-upload-library]').addEventListener('click', () => {
+        controller.close();
+        openLibraryTab('media');
+      });
+    },
+  });
+}
+
 function wireCommandRail(actions = {}) {
   const rail = document.querySelector('.mc-cc-rail');
   if (!rail) return;
@@ -1790,6 +1868,9 @@ function wireCommandRail(actions = {}) {
           if (toggle) toggle.click();
           break;
         }
+        case 'upload':
+          openUploadMediaModal();
+          break;
         case 'cameras':
           openLibraryTab('camerafeeds');
           break;
@@ -1854,6 +1935,7 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
           <button type="button" class="mc-cc-rail-btn" data-mc-rail="displays" title="${esc(t('mc.cc.rail.displays'))}" aria-label="${esc(t('mc.cc.rail.displays'))}">${ICON_DISPLAYS}</button>
           <button type="button" class="mc-cc-rail-btn" data-mc-rail="whiteboard" title="${esc(t('mc.cc.rail.whiteboard'))}" aria-label="${esc(t('mc.cc.rail.whiteboard'))}">${ICON_WHITEBOARD}</button>
           <button type="button" class="mc-cc-rail-btn" data-mc-rail="media" title="${esc(t('mc.cc.rail.media'))}" aria-label="${esc(t('mc.cc.rail.media'))}">${ICON_MEDIA}</button>
+          <button type="button" class="mc-cc-rail-btn mc-cc-upload-btn" data-mc-rail="upload" title="Upload Media" aria-label="Upload Media">${ICON_UPLOAD}<span>Upload</span></button>
           <button type="button" class="mc-cc-rail-btn" data-mc-rail="cameras" title="Cameras" aria-label="Cameras">${ICON_DISPLAYS}</button>
           <button type="button" class="mc-cc-rail-btn" data-mc-rail="multiview" title="Multiview" aria-label="Multiview">${ICON_COMMAND}</button>
           <button type="button" class="mc-cc-rail-btn" data-mc-rail="share" title="Share My Screen" aria-label="Share My Screen">${ICON_DOWNLOADS}</button>

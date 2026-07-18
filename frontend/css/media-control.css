@@ -2138,7 +2138,10 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
   padding: 12px 0;
   background: var(--mc-surface, #fff);
   border-right: 1px solid var(--mc-border-light, #E8E5E0);
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 .mc-cc-rail .mc-cc-rail-spacer { flex: 1; }
 .mc-cc-rail-btn {
@@ -2157,6 +2160,40 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
   border-radius: 50%;
   box-shadow: 0 4px 12px rgba(37, 99, 235, 0.32);
 }
+.mc-cc-upload-btn {
+  height: 58px;
+  min-height: 58px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--accent, #2563EB);
+  background: color-mix(in srgb, var(--accent, #2563EB) 10%, white);
+}
+.mc-cc-upload-btn span { font-size: 10px; line-height: 1; font-weight: 800; }
+
+.mc-quick-upload { display: grid; gap: 18px; max-width: 680px; margin: 0 auto; }
+.mc-quick-upload h3 { margin: 0; font-size: 24px; }
+.mc-quick-upload > p { margin: 0; color: var(--mc-text-secondary, #57534E); line-height: 1.5; }
+.mc-quick-upload-drop {
+  min-height: 220px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  border: 2px dashed var(--accent, #2563EB); border-radius: 18px;
+  background: color-mix(in srgb, var(--accent, #2563EB) 7%, white);
+  color: var(--mc-text-primary, #292524); cursor: pointer; touch-action: manipulation;
+}
+.mc-quick-upload-drop:hover,
+.mc-quick-upload-drop.is-dragover { background: color-mix(in srgb, var(--accent, #2563EB) 15%, white); }
+.mc-quick-upload-drop:focus-visible { outline: 4px solid color-mix(in srgb, var(--accent, #2563EB) 35%, transparent); outline-offset: 3px; }
+.mc-quick-upload-drop:disabled { opacity: .65; cursor: wait; }
+.mc-quick-upload-drop svg { width: 48px; height: 48px; color: var(--accent, #2563EB); }
+.mc-quick-upload-drop strong { font-size: 22px; }
+.mc-quick-upload-drop span { color: var(--mc-text-secondary, #57534E); }
+.mc-quick-upload-progress { display: grid; gap: 8px; }
+.mc-quick-upload-progress[hidden] { display: none; }
+.mc-quick-upload-progress > div { height: 12px; overflow: hidden; border-radius: 999px; background: var(--mc-bg-secondary, #E7E5E4); }
+.mc-quick-upload-progress > div > span { display: block; width: 0; height: 100%; background: var(--accent, #2563EB); transition: width .15s linear; }
+.mc-quick-upload-progress p { margin: 0; font-weight: 700; }
+.mc-quick-upload-actions { display: flex; justify-content: flex-end; }
 
 /* Center workspace: canvas on top, then playback, then span/split+saver,
    then the bottom action dock. No internal scrolling on normal viewports. */

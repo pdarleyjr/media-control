@@ -31,6 +31,11 @@ export function connectSocket() {
 
   dashboardSocket.on('connect_error', (err) => {
     console.error('Dashboard socket connect error:', err.message);
+    updateConnectionStatus(false);
+    emit('disconnected', { reason: 'connect_error', message: err?.message || '' });
+    if (window.location.pathname.startsWith('/console/') && /auth|token|unauthor|forbidden/i.test(err?.message || '')) {
+      window.location.reload();
+    }
   });
 
   dashboardSocket.on('disconnect', (reason) => {
