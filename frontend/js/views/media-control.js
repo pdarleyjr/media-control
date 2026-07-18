@@ -1316,6 +1316,20 @@ function chooseInitialTarget() {
   } catch { /* ignore stale target state */ }
   if (Array.isArray(walls) && walls.length) {
     const w = walls.slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))[0];
+    if (w?.layout_mode === 'groups') {
+      const groups = w.layout?.groups || [];
+      const preferred = groups.find((group) => group.layout === 'span' && group.member_ids?.length > 1)
+        || groups[0];
+      if (preferred) {
+        return {
+          type: 'group',
+          ...preferred,
+          id: preferred.id,
+          wall_id: w.id,
+          supportsModes: false,
+        };
+      }
+    }
     if (w && w.id) return { type: 'wall', id: w.id, wall_id: w.id, supportsModes: true };
   }
   const all = displayState.getAll().filter((d) => !wallMemberIds.has(d.id) && !isLiveStreamTargetId(d.id));

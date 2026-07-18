@@ -117,6 +117,7 @@ test('a hybrid wall preset immediately targets its spanned subgroup', () => {
   assert.match(view, /const preferred = groups\.find\(\(group\) => group\.layout === 'span'/);
   assert.match(view, /type: 'group',[\s\S]*?wall_id: wallId/);
   assert.match(view, /targetApi\.setActive\(target\);[\s\S]*?handleTargetChange\(target\)/);
+  assert.match(view, /function chooseInitialTarget\(\)[\s\S]*?w\?\.layout_mode === 'groups'[\s\S]*?type: 'group',[\s\S]*?wall_id: w\.id/);
 });
 
 test('live podium preview does not duplicate work with one-second screenshots', () => {
