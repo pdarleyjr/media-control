@@ -120,6 +120,15 @@ test('a hybrid wall preset immediately targets its spanned subgroup', () => {
   assert.match(view, /function chooseInitialTarget\(\)[\s\S]*?w\?\.layout_mode === 'groups'[\s\S]*?type: 'group',[\s\S]*?wall_id: w\.id/);
 });
 
+test('hybrid wall previews use subgroup dimensions and local grid coordinates', () => {
+  const view = read('frontend/js/views/media-control.js');
+
+  assert.match(view, /function wallViewForLayoutGroup\(wall, group\)/);
+  assert.match(view, /grid_col: \(Number\(member\.grid_col\) \|\| 0\) - colOffset/);
+  assert.match(view, /grid_cols: Number\(group\.geometry\?\.columns\)/);
+  assert.match(view, /const groupWall = wallViewForLayoutGroup\(wall, group\)/);
+});
+
 test('live podium preview does not duplicate work with one-second screenshots', () => {
   const view = read('frontend/js/views/media-control.js');
 

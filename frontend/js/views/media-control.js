@@ -199,6 +199,30 @@ function layoutGroupForDevice(deviceId) {
   return layoutGroupTargets().find((group) => group.member_ids.includes(deviceId)) || null;
 }
 
+function wallViewForLayoutGroup(wall, group) {
+  if (!wall || !group) return null;
+  const members = (wall.devices || []).filter((member) => group.member_ids.includes(member.device_id));
+  const minCol = members.reduce((value, member) => Math.min(value, Number(member.grid_col) || 0), Infinity);
+  const minRow = members.reduce((value, member) => Math.min(value, Number(member.grid_row) || 0), Infinity);
+  const colOffset = Number.isFinite(minCol) ? minCol : 0;
+  const rowOffset = Number.isFinite(minRow) ? minRow : 0;
+  const devices = members.map((member) => ({
+    ...member,
+    grid_col: (Number(member.grid_col) || 0) - colOffset,
+    grid_row: (Number(member.grid_row) || 0) - rowOffset,
+  }));
+  return {
+    ...wall,
+    name: `${wall.name || wall.id} · ${group.name || group.id}`,
+    devices,
+    grid_cols: Number(group.geometry?.columns) || Math.max(1, devices.length),
+    grid_rows: Number(group.geometry?.rows) || 1,
+    leader_device_id: group.leader_device_id,
+    layout_mode: group.layout === 'span' ? 'span' : 'split',
+    layout_group_id: group.id,
+  };
+}
+
 function persistSelection() {
   api.putDisplaysSelection(selectedIds).catch(() => {});
 }
@@ -314,14 +338,8 @@ function paintStage() {
     } else if (activeTarget.type === 'group') {
       const group = layoutGroupById(activeTarget.id);
       const wall = group && (walls || []).find((candidate) => candidate.id === group.wall_id);
-      renderWalls = wall ? [{
-        ...wall,
-        name: `${wall.name || wall.id} · ${group.name || group.id}`,
-        devices: (wall.devices || []).filter((member) => group.member_ids.includes(member.device_id)),
-        leader_device_id: group.leader_device_id,
-        layout_mode: group.layout === 'span' ? 'span' : 'split',
-        layout_group_id: group.id,
-      }] : [];
+      const groupWall = wallViewForLayoutGroup(wall, group);
+      renderWalls = groupWall ? [groupWall] : [];
       renderSelectedIds = [];
     } else if (activeTarget.type === 'display') {
       renderWalls = [];
