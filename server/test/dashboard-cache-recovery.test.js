@@ -22,3 +22,13 @@ test('dashboard service worker activates without a fragile precache batch', () =
   assert.match(worker, /e\.request\.method !== 'GET'/);
   assert.doesNotMatch(worker, /addAll\(/);
 });
+
+test('dashboard starts through a new cache-busting bootstrap with a visible failure state', () => {
+  const html = fs.readFileSync(path.join(root, 'frontend', 'index.html'), 'utf8');
+  const bootstrap = fs.readFileSync(path.join(root, 'frontend', 'js', 'dashboard-bootstrap-v1.js'), 'utf8');
+
+  assert.match(html, /src="\/js\/dashboard-bootstrap-v1\.js"/);
+  assert.doesNotMatch(html, /type="module" src="\/js\/app\.js"/);
+  assert.match(bootstrap, /import\('\/js\/app\.js\?v=dashboard-bootstrap-v1'\)/);
+  assert.match(bootstrap, /Media Control could not start/);
+});
