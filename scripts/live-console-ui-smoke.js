@@ -163,11 +163,19 @@ async function clickLayoutControl(cdp, selector) {
     return true;
   })()`);
   assert(clicked, `layout control is missing: ${selector}`);
-  await sleep(100);
-  const confirmationOpen = await evaluate(cdp, `!!document.querySelector('dialog.mc-dialog[open] [data-mc-confirm]')`);
-  if (confirmationOpen) {
-    await evaluate(cdp, `document.querySelector('dialog.mc-dialog[open] [data-mc-confirm]').click()`);
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const state = await evaluate(cdp, `(() => ({
+      active: document.querySelector(${JSON.stringify(selector)})?.getAttribute('aria-pressed') === 'true',
+      confirmationOpen: !!document.querySelector('dialog.mc-dialog[open] [data-mc-confirm]'),
+    }))()`);
+    if (state.active) return;
+    if (state.confirmationOpen) {
+      await evaluate(cdp, `document.querySelector('dialog.mc-dialog[open] [data-mc-confirm]').click()`);
+      return;
+    }
+    await sleep(50);
   }
+  throw new Error(`layout control did not open confirmation or become active: ${selector}`);
 }
 
 async function waitForHybridPreset(cdp, preset) {
