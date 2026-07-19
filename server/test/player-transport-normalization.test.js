@@ -102,6 +102,30 @@ test('parent media acknowledgements do not freeze the authoritative playback clo
   assert.match(html, /acceptChildTransportState\(state\);\r?\n\s+finishTransportCommand/, 'direct child acknowledgements should persist child state before publishing');
 });
 
+test('player screenshot reporting tolerates socket startup and disconnect races', () => {
+  const childMessages = readSnippet(
+    path.join(__dirname, '..', 'player', 'index.html'),
+    'function handleTransportMessage(event) {',
+    'window.addEventListener(\'message\', handleTransportMessage);'
+  );
+  const canvasCapture = readSnippet(
+    path.join(__dirname, '..', 'player', 'index.html'),
+    'function captureAndSend() {',
+    'function startStreaming()'
+  );
+
+  assert.match(
+    childMessages,
+    /if \(socket\?\.connected\) \{[\s\S]*?socket\.emit\('device:screenshot'/,
+    'child-frame screenshots must not emit before the device socket is connected'
+  );
+  assert.match(
+    canvasCapture,
+    /if \(base64 && base64\.length > 100 && socket\?\.connected\) \{[\s\S]*?socket\.emit\('device:screenshot'/,
+    'canvas screenshots must not emit after a device socket disconnect'
+  );
+});
+
 test('managed display audio permission remains authoritative in split mode', () => {
   const html = readPlayerFile('index.html');
 
