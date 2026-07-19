@@ -36,16 +36,16 @@ export function mountSpanSplit(hostEl, { getActiveTarget, getActiveWall, onSetWa
     const wall = getActiveWall && getActiveWall();
     if (!wall) { wrap.hidden = true; return; }
     wrap.hidden = false;
-    const mode = wall.layout_mode === 'split' ? 'split' : 'span';
+    const mode = ['span', 'split', 'groups'].includes(wall.layout_mode)
+      ? wall.layout_mode
+      : 'span';
     spanBtn.classList.toggle('is-active', mode === 'span');
     spanBtn.setAttribute('aria-pressed', mode === 'span' ? 'true' : 'false');
     splitBtn.classList.toggle('is-active', mode === 'split');
     splitBtn.setAttribute('aria-pressed', mode === 'split' ? 'true' : 'false');
     wrap.querySelectorAll('[data-layout-preset]').forEach((button) => {
       button.hidden = (wall.devices || []).length !== 3;
-      const groups = wall.layout && wall.layout.groups || [];
-      const signature = groups.map((group) => group.member_ids.length).join('+');
-      const activePreset = button.dataset.layoutPreset === 'span-left' ? signature === '2+1' : signature === '1+2';
+      const activePreset = wall.layout?.preset === button.dataset.layoutPreset;
       button.classList.toggle('is-active', activePreset && wall.layout_mode === 'groups');
       button.setAttribute('aria-pressed', activePreset && wall.layout_mode === 'groups' ? 'true' : 'false');
     });

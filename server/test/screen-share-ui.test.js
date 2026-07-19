@@ -35,3 +35,21 @@ test('screen share falls back to an authenticated bounded frame relay', () => {
   assert.match(receiver, /sock\.on\('device:screen-share-frame'/);
   assert.match(receiver, /clearSetupWatchdog\(\);[\s\S]*mountFrameOverlay\(imageB64\)/);
 });
+
+test('screen share uses stable 1080p profiles and starts relay only after confirmed failure', () => {
+  const engine = fs.readFileSync(
+    path.resolve(__dirname, '../../frontend/js/services/screen-share-engine.js'),
+    'utf8'
+  );
+
+  assert.match(engine, /CAPTURE_PROFILES/);
+  assert.match(engine, /width:\s*\{\s*ideal:\s*1920,\s*max:\s*1920\s*\}/);
+  assert.match(engine, /height:\s*\{\s*ideal:\s*1080,\s*max:\s*1080\s*\}/);
+  assert.match(engine, /detail:[\s\S]*?frameRate:\s*\{\s*ideal:\s*24,\s*max:\s*30\s*\}/);
+  assert.match(engine, /motion:[\s\S]*?frameRate:\s*\{\s*ideal:\s*30,\s*max:\s*30\s*\}/);
+  assert.doesNotMatch(engine, /peerConnections\.set\(deviceId, pc\);\s*relayFallbackTargets\.add\(deviceId\)/);
+  assert.match(engine, /function enableRelayFallback\(deviceId, reason\)/);
+  assert.match(engine, /requestVideoFrameCallback/);
+  assert.match(engine, /typeof pc\.setRemoteDescription !== 'function'/);
+  assert.match(engine, /typeof pc\.addIceCandidate !== 'function'/);
+});

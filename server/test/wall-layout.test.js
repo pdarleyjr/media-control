@@ -19,12 +19,14 @@ const members = [
 
 test('legacy span and split layouts preserve existing behavior', () => {
   const span = legacyLayout(wall, members);
+  assert.equal(span.preset, 'span-all');
   assert.deepEqual(span.groups[0].member_ids, ['tv1', 'tv2', 'tv3']);
   assert.equal(span.groups[0].layout, 'span');
   assert.equal(span.groups[0].leader_device_id, 'tv1');
   assert.equal(span.groups[0].playlist_id, 'wall-playlist');
 
   const split = legacyLayout({ ...wall, layout_mode: 'split' }, members);
+  assert.equal(split.preset, 'split-all');
   assert.deepEqual(split.groups.map((group) => group.member_ids), [['tv1'], ['tv2'], ['tv3']]);
   assert.deepEqual(split.groups.map((group) => group.playlist_id), ['p1', 'p2', 'p3']);
 });
@@ -45,12 +47,26 @@ test('layout validation rejects cross-wall, duplicate, missing and noncontiguous
 
 test('stored layout parsing is versioned and resolves subgroup authority', () => {
   const groups = presetGroups(wall, members, 'span-left');
-  const storedWall = { ...wall, layout_revision: 9, layout_json: JSON.stringify({ version: 1, groups }) };
+  const storedWall = { ...wall, layout_revision: 9, layout_json: JSON.stringify({ version: 1, preset: 'span-left', groups }) };
   const layout = parseStoredLayout(storedWall, members);
   assert.equal(layout.version, 1);
   assert.equal(layout.revision, 9);
+  assert.equal(layout.preset, 'span-left');
   assert.equal(groupForDevice(layout, 'tv2').leader_device_id, 'tv1');
   assert.equal(groupForDevice(layout, 'tv3').layout, 'solo');
+});
+
+test('preset identity is derived from ordered member ids, not group lengths', () => {
+  const left = validateLayout(wall, members, { groups: presetGroups(wall, members, 'span-left') });
+  const right = validateLayout(wall, members, { groups: presetGroups(wall, members, 'span-right') });
+  assert.equal(left.preset, 'span-left');
+  assert.equal(right.preset, 'span-right');
+
+  const mislabeled = validateLayout(wall, members, {
+    preset: 'span-left',
+    groups: presetGroups(wall, members, 'span-right'),
+  });
+  assert.equal(mislabeled.preset, 'span-right');
 });
 
 test('layout endpoint uses optimistic revision checks and one atomic transaction', () => {

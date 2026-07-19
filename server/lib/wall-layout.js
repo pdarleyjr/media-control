@@ -48,6 +48,7 @@ function legacyLayout(wall, members) {
     wall_id: wall.id,
     mode: 'groups',
     revision: Number(wall.layout_revision) || 0,
+    preset: split ? 'split-all' : 'span-all',
     source: 'legacy',
     groups,
   };
@@ -75,6 +76,28 @@ function presetGroups(wall, members, preset) {
     return [buildGroup(wall.id, ordered.slice(0, 1), 'solo'), buildGroup(wall.id, ordered.slice(1), 'span')];
   }
   throw new Error('Unsupported wall layout preset');
+}
+
+function presetForGroups(members, groups) {
+  const orderedIds = orderedMembers(members).map((member) => member.device_id);
+  const signature = (groups || []).map((group) => ({
+    layout: group.layout,
+    member_ids: [...(group.member_ids || [])],
+  }));
+  for (const preset of ['span-all', 'split-all', 'span-left', 'span-right']) {
+    let expected;
+    try {
+      expected = presetGroups({ id: 'preset-check' }, members, preset).map((group) => ({
+        layout: group.layout,
+        member_ids: group.member_ids,
+      }));
+    } catch {
+      continue;
+    }
+    if (JSON.stringify(signature) === JSON.stringify(expected)) return preset;
+  }
+  if (orderedIds.length === 0 && signature.length === 0) return 'split-all';
+  return 'custom';
 }
 
 function validateLayout(wall, members, input, options = {}) {
@@ -109,6 +132,7 @@ function validateLayout(wall, members, input, options = {}) {
     wall_id: wall.id,
     mode: 'groups',
     revision,
+    preset: presetForGroups(ordered, groups),
     source: options.source || 'request',
     groups,
   };
@@ -124,6 +148,7 @@ module.exports = {
   legacyLayout,
   parseStoredLayout,
   presetGroups,
+  presetForGroups,
   validateLayout,
   groupForDevice,
 };

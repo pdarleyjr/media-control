@@ -265,7 +265,8 @@ router.put('/:id/layout', requireWallWrite, (req, res) => {
     groups = req.body.preset
       ? presetGroups(wall, members, String(req.body.preset))
       : req.body.groups;
-    groups = validateLayout(wall, members, { groups }, { revision: currentRevision + 1 }).groups;
+    const validated = validateLayout(wall, members, { groups }, { revision: currentRevision + 1 });
+    groups = validated.groups;
   } catch (error) {
     return res.status(400).json({ error: error.message, code: 'INVALID_WALL_LAYOUT' });
   }
@@ -298,6 +299,7 @@ router.put('/:id/layout', requireWallWrite, (req, res) => {
       wall_id: wall.id,
       mode: 'groups',
       revision: nextRevision,
+      preset: validateLayout(wall, members, { groups }, { revision: nextRevision }).preset,
       groups,
     };
     db.prepare(`

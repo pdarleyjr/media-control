@@ -38,7 +38,6 @@ const DEFAULT_COLOR = '#111827';
 const DEFAULT_SIZE = 6;
 const STROKE_FLUSH_MS = 50;
 const WHITE_BG = '#ffffff';
-const SCREENSHOT_REFRESH_MS = 2000;
 
 const PLAN_DEFAULTS = {
   pdf: false,
@@ -70,7 +69,7 @@ export function mount(containerEl, options) {
   let currentSize = DEFAULT_SIZE;
 
   // Drawing state.
-  let canvas = null, ctx = null, wrap = null, backgroundImage = null;
+  let canvas = null, ctx = null, wrap = null, backgroundGrid = null;
   let drawing = false;
   let activePointerId = null;
   let activeStrokeId = null;
@@ -78,7 +77,6 @@ export function mount(containerEl, options) {
   let pendingPoints = [];
   let pendingPhase = 'append';
   let flushTimer = null;
-  let screenshotTimer = null;
   let closed = false;
   // Session hydration is asynchronous. Track both request ordering and local
   // edits so a delayed response cannot erase ink drawn after the request.
@@ -200,7 +198,7 @@ export function mount(containerEl, options) {
           <span class="mc-wb-live-truth">${esc(t('mc.wb.live_truth'))}</span>
         </div>
         <div class="mc-wb-canvas-wrap" id="mc-wb-canvas-wrap">
-          <img class="mc-wb-background" alt="" draggable="false">
+          <div class="mc-wb-background-grid" aria-hidden="true"></div>
           <canvas id="mc-wb-canvas" tabindex="0"></canvas>
         </div>
       </div>`;
@@ -208,7 +206,7 @@ export function mount(containerEl, options) {
     host.appendChild(wrap);
 
     canvas = wrap.querySelector('#mc-wb-canvas');
-    backgroundImage = wrap.querySelector('.mc-wb-background');
+    backgroundGrid = wrap.querySelector('.mc-wb-background-grid');
     ctx = canvas ? canvas.getContext('2d') : null;
     if (!canvas || !ctx) { status(keyFor('status_error')); return; }
     canvas.style.touchAction = 'none';
@@ -265,6 +263,14 @@ export function mount(containerEl, options) {
       wall_id: t.wall_id ? String(t.wall_id) : null,
       group_id: t.group_id ? String(t.group_id) : null,
       member_ids: Array.isArray(t.member_ids) ? t.member_ids.map(String) : [],
+      members: Array.isArray(t.members) ? t.members.map((member) => ({
+        id: String(member.id),
+        screenshot_url: member.screenshot_url || null,
+        x: Number(member.x) || 0,
+        y: Number(member.y) || 0,
+        width: Number(member.width) || 1,
+        height: Number(member.height) || 1,
+      })) : [],
       split_device_id: t.split_device_id ? String(t.split_device_id) : null,
       preview_device_id: String(t.preview_device_id || t.split_device_id || t.target_id),
       label: t.label || t.target_id,
@@ -297,7 +303,17 @@ export function mount(containerEl, options) {
 
   function envelopeFor(tg) {
     if (!tg) return {};
-    const base = { device_id: tg.target_id, mode: whiteboardMode };
+    const base = {
+      device_id: tg.target_id,
+      mode: whiteboardMode,
+      members: tg.members.map((member) => ({
+        id: member.id,
+        x: member.x,
+        y: member.y,
+        width: member.width,
+        height: member.height,
+      })),
+    };
     if (tg.split_device_id) return Object.assign(base, { split_device_id: tg.split_device_id });
     if (tg.group_id) return Object.assign(base, { wall_id: tg.wall_id, group_id: tg.group_id });
     if (tg.wall_id) return Object.assign(base, { wall_id: tg.wall_id });
@@ -376,21 +392,30 @@ export function mount(containerEl, options) {
     requestAnimationFrame(() => sizeCanvas());
   }
 
-  function updateBackground(src) {
-    if (!backgroundImage || !src) return;
-    if (backgroundImage.getAttribute('src') !== src) backgroundImage.setAttribute('src', src);
+  function renderCompositeBackground() {
+    if (!backgroundGrid || !target) return;
+    const members = target.members.length
+      ? target.members
+      : [{ id: previewDeviceId(), screenshot_url: target.screenshot_url, x: 0, y: 0, width: 1, height: 1 }];
+    backgroundGrid.innerHTML = members.map((member) => {
+      const src = member.screenshot_url
+        ? member.screenshot_url + (member.screenshot_url.includes('?') ? '&' : '?') + 'wb=' + Date.now()
+        : `/api/devices/${encodeURIComponent(member.id)}/screenshot?wb=${Date.now()}`;
+      return `<img class="mc-wb-background" data-preview-device-id="${esc(member.id)}"
+        src="${esc(src)}" alt="" draggable="false"
+        style="left:${member.x * 100}%;top:${member.y * 100}%;width:${member.width * 100}%;height:${member.height * 100}%">`;
+    }).join('');
   }
 
   function updateBackgroundFromTarget() {
     if (!target || whiteboardMode !== 'overlay') return;
-    const fallback = target.screenshot_url;
-    if (fallback) updateBackground(fallback + (fallback.includes('?') ? '&' : '?') + 'wb=' + Date.now());
+    renderCompositeBackground();
   }
 
   function applyMode() {
     const surface = wrap && wrap.querySelector('.mc-wb-canvas-wrap');
     if (surface) surface.classList.toggle('is-blank', whiteboardMode === 'blank');
-    if (backgroundImage) backgroundImage.hidden = whiteboardMode !== 'overlay';
+    if (backgroundGrid) backgroundGrid.hidden = whiteboardMode !== 'overlay';
     wrap?.querySelectorAll('[data-wb-mode]').forEach((btn) => {
       const active = btn.dataset.wbMode === whiteboardMode;
       btn.classList.toggle('active', active);
@@ -398,31 +423,32 @@ export function mount(containerEl, options) {
     });
   }
 
-  function requestPhysicalScreenshot() {
-    const id = previewDeviceId();
-    if (id && whiteboardMode === 'overlay') requestScreenshot(id);
+  function requestTargetScreenshots() {
+    if (!target || whiteboardMode !== 'overlay') return;
+    const ids = target.members.length ? target.members.map((member) => member.id) : [previewDeviceId()];
+    [...new Set(ids.filter(Boolean))].forEach((id) => requestScreenshot(id));
   }
 
   function startScreenshotRefresh() {
     stopScreenshotRefresh();
-    if (!previewDeviceId() || whiteboardMode !== 'overlay') return;
-    requestPhysicalScreenshot();
-    screenshotTimer = setInterval(requestPhysicalScreenshot, SCREENSHOT_REFRESH_MS);
+    requestTargetScreenshots();
   }
 
-  function stopScreenshotRefresh() {
-    if (screenshotTimer) clearInterval(screenshotTimer);
-    screenshotTimer = null;
-  }
+  function stopScreenshotRefresh() {}
 
   function onScreenshotReady(data) {
-    if (!data || String(data.device_id || data.id || '') !== String(previewDeviceId() || '')) return;
+    if (!data || !target) return;
+    const deviceId = String(data.device_id || data.id || '');
+    const expected = target.members.length ? target.members.map((member) => member.id) : [previewDeviceId()];
+    if (!expected.includes(deviceId)) return;
     if (whiteboardMode !== 'overlay') return;
+    const image = backgroundGrid?.querySelector(`[data-preview-device-id="${CSS.escape(deviceId)}"]`);
+    if (!image) return;
     if (typeof data.image_data === 'string' && data.image_data.startsWith('data:image/')) {
-      updateBackground(data.image_data);
+      image.src = data.image_data;
       return;
     }
-    updateBackground(`/api/devices/${encodeURIComponent(previewDeviceId())}/screenshot?t=${Date.now()}`);
+    image.src = `/api/devices/${encodeURIComponent(deviceId)}/screenshot?t=${Date.now()}`;
   }
 
   // ------------------------------------------------------------------
@@ -753,7 +779,64 @@ export function mount(containerEl, options) {
   }
 
   function envelopeStroke(stroke) {
-    return { stroke };
+    const memberStrokes = {};
+    for (const member of target?.members || []) {
+      const local = strokeForMember(stroke, member);
+      if (local) memberStrokes[member.id] = local;
+    }
+    return { stroke, member_strokes: memberStrokes };
+  }
+
+  function strokeForMember(stroke, member) {
+    if (!stroke || !Array.isArray(stroke.points) || !member?.width || !member?.height) return null;
+    const x0 = member.x, y0 = member.y;
+    const x1 = x0 + member.width, y1 = y0 + member.height;
+    const clipped = [];
+    if (stroke.points.length === 1) {
+      const point = stroke.points[0];
+      if (point.x >= x0 && point.x <= x1 && point.y >= y0 && point.y <= y1) clipped.push(point);
+    } else {
+      for (let index = 1; index < stroke.points.length; index += 1) {
+        const segment = clipSegment(stroke.points[index - 1], stroke.points[index], x0, y0, x1, y1);
+        if (!segment) continue;
+        for (const point of segment) {
+          const previous = clipped[clipped.length - 1];
+          if (!previous || previous.x !== point.x || previous.y !== point.y) clipped.push(point);
+        }
+      }
+    }
+    const points = clipped.map((point) => ({
+      x: clamp01((point.x - x0) / member.width),
+      y: clamp01((point.y - y0) / member.height),
+    }));
+    if (!points.length) return null;
+    return { ...stroke, points };
+  }
+
+  // Liang-Barsky clipping preserves ink that crosses a display even when both
+  // sampled endpoints are outside that display's normalized wall rectangle.
+  function clipSegment(start, end, x0, y0, x1, y1) {
+    if (!start || !end) return null;
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const p = [-dx, dx, -dy, dy];
+    const q = [start.x - x0, x1 - start.x, start.y - y0, y1 - start.y];
+    let enter = 0;
+    let leave = 1;
+    for (let index = 0; index < 4; index += 1) {
+      if (p[index] === 0) {
+        if (q[index] < 0) return null;
+        continue;
+      }
+      const ratio = q[index] / p[index];
+      if (p[index] < 0) enter = Math.max(enter, ratio);
+      else leave = Math.min(leave, ratio);
+      if (enter > leave) return null;
+    }
+    return [
+      { x: start.x + enter * dx, y: start.y + enter * dy },
+      { x: start.x + leave * dx, y: start.y + leave * dy },
+    ];
   }
 
   // ------------------------------------------------------------------
@@ -799,8 +882,16 @@ export function mount(containerEl, options) {
       const off = document.createElement('canvas');
       off.width = W; off.height = H;
       const octx = off.getContext('2d');
-      if (whiteboardMode === 'overlay' && backgroundImage && backgroundImage.complete && backgroundImage.naturalWidth > 0) {
-        octx.drawImage(backgroundImage, 0, 0, W, H);
+      const backgrounds = [...(backgroundGrid?.querySelectorAll('.mc-wb-background') || [])];
+      if (whiteboardMode === 'overlay' && backgrounds.some((image) => image.complete && image.naturalWidth > 0)) {
+        for (const image of backgrounds) {
+          if (!image.complete || image.naturalWidth <= 0) continue;
+          const left = parseFloat(image.style.left) / 100 * W;
+          const top = parseFloat(image.style.top) / 100 * H;
+          const width = parseFloat(image.style.width) / 100 * W;
+          const height = parseFloat(image.style.height) / 100 * H;
+          octx.drawImage(image, left, top, width, height);
+        }
       } else {
         octx.fillStyle = WHITE_BG;
         octx.fillRect(0, 0, W, H);

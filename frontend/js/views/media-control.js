@@ -121,6 +121,7 @@ function openContentDrawerFiltered(folderName) {
 // central canvas. null = legacy "show the whole room" stage (preserved when no
 // target is chosen). The target selector drives this; changing it is VIEW-ONLY.
 let activeTarget = null;
+let activeControlTarget = null;
 const LAST_TARGET_KEY = 'mc_control_last_target';
 let targetApi = null;       // target-selector module API
 let transportApi = null;    // canvas-level transport row
@@ -352,7 +353,9 @@ function paintStage() {
     byId,
     selectedIds: renderSelectedIds,
     livePreviewDeviceId: LIVE_EMBED_PREVIEWS ? activePreviewDeviceId() : null,
+    activeControlTargetId: activeControlTarget?.id || null,
     onSelect: selectStageDisplayTarget,
+    onSelectGroup: selectLayoutGroupTarget,
     onCalibrateWall: showWallCalibration,
     onAddDisplay: openAddPicker,
     onScreenOnChange: handleScreenOnChange,
@@ -378,6 +381,18 @@ function paintStage() {
     refreshPreviewsInPlace();
     enableLivePreviewAudio(el);
   }, 0);
+}
+
+function selectLayoutGroupTarget(groupId) {
+  const group = layoutGroupById(groupId);
+  if (!group) return;
+  activeControlTarget = { ...group, type: 'group', id: group.id, wall_id: group.wall_id };
+  syncSocketTarget(activeControlTarget);
+  paintStage();
+  paintSummary();
+  paintChips();
+  transportApi?.repaint?.();
+  screensaverApi?.repaint?.();
 }
 
 function selectStageDisplayTarget(deviceId) {
@@ -582,6 +597,7 @@ async function setWallMode(wallId, mode) {
   try {
     await api.updateWall(wallId, { layout_mode: mode });
     await loadWalls();
+    if (activeControlTarget?.wall_id === wallId) activeControlTarget = null;
     paintStage();
     paintSummary();
     showToast(t(mode === 'split' ? 'mc.wall.tpl_split_on' : 'mc.wall.tpl_span_on'), 'success');
@@ -600,20 +616,12 @@ async function setWallLayout(wallId, preset, expectedRevision) {
     const groups = wall?.layout?.groups || [];
     const preferred = groups.find((group) => group.layout === 'span' && group.member_ids?.length > 1)
       || groups[0];
-    if (preferred) {
-      const target = {
-        type: 'group',
-        ...preferred,
-        id: preferred.id,
-        wall_id: wallId,
-        supportsModes: false,
-      };
-      if (targetApi) targetApi.setActive(target);
-      handleTargetChange(target);
-    } else {
-      paintStage();
-      paintSummary();
-    }
+    activeControlTarget = preferred
+      ? { type: 'group', ...preferred, id: preferred.id, wall_id: wallId, supportsModes: false }
+      : null;
+    const wallTarget = { type: 'wall', id: wallId, wall_id: wallId, supportsModes: true };
+    if (targetApi) targetApi.setActive(wallTarget);
+    handleTargetChange(wallTarget);
     showToast('Wall layout applied', 'success');
   } catch (error) {
     showToast(error?.message || 'Wall layout could not be applied', 'error');
@@ -1223,16 +1231,17 @@ function attachStageDrop(stageContainer) {
 // Device ids the active target commands: every member of the active wall, or just
 // the active display.
 function activeTargetDeviceIds() {
-  if (!activeTarget) return [];
-  if (activeTarget.type === 'group') {
-    const group = layoutGroupById(activeTarget.id);
+  const commandTarget = activeControlTarget || activeTarget;
+  if (!commandTarget) return [];
+  if (commandTarget.type === 'group') {
+    const group = layoutGroupById(commandTarget.id);
     return group ? [...group.member_ids] : [];
   }
-  if (activeTarget.type === 'wall') {
-    const w = (walls || []).find((x) => x.id === activeTarget.id);
+  if (commandTarget.type === 'wall') {
+    const w = (walls || []).find((x) => x.id === commandTarget.id);
     return w ? wallDeviceIds(w) : [];
   }
-  return activeTarget.id ? [activeTarget.id] : [];
+  return commandTarget.id ? [commandTarget.id] : [];
 }
 function wallTransportDeviceIds(wall) {
   if (!wall || wall.layout_mode === 'split') return [];
@@ -1245,6 +1254,7 @@ function wallTransportDeviceIds(wall) {
 // the standalone display itself. Split walls are independent, so their member
 // cards own transport and the wall-level transport row stays hidden.
 function activeTargetTransportIds() {
+  if (activeControlTarget?.type === 'group') return activeTargetDeviceIds();
   if (activeTarget && activeTarget.type === 'group') return activeTargetDeviceIds();
   if (activeTarget && activeTarget.type === 'wall') {
     const w = (walls || []).find((x) => x.id === activeTarget.id);
@@ -1305,7 +1315,25 @@ function syncSocketTarget(tgt) {
 // controls. This is view-only; the socket target join only selects the live
 // ack/state stream for the web/Electron controller.
 function handleTargetChange(tgt) {
-  activeTarget = tgt || null;
+  if (tgt?.type === 'group') {
+    activeControlTarget = tgt;
+    activeTarget = { type: 'wall', id: tgt.wall_id, wall_id: tgt.wall_id, supportsModes: true };
+    targetApi?.setActive?.(activeTarget);
+  } else {
+    activeTarget = tgt || null;
+    if (activeTarget?.type === 'wall') {
+      const wall = (walls || []).find((candidate) => candidate.id === activeTarget.id);
+      const retained = activeControlTarget?.wall_id === wall?.id
+        ? layoutGroupById(activeControlTarget.id)
+        : null;
+      const firstGroup = wall?.layout_mode === 'groups' ? wall.layout?.groups?.[0] : null;
+      activeControlTarget = retained || (firstGroup
+        ? { ...firstGroup, type: 'group', id: firstGroup.id, wall_id: wall.id }
+        : null);
+    } else {
+      activeControlTarget = null;
+    }
+  }
   try {
     if (activeTarget) sessionStorage.setItem(LAST_TARGET_KEY, JSON.stringify(activeTarget));
     else sessionStorage.removeItem(LAST_TARGET_KEY);
@@ -1329,25 +1357,13 @@ function chooseInitialTarget() {
   try {
     const saved = JSON.parse(sessionStorage.getItem(LAST_TARGET_KEY) || 'null');
     if (saved?.type === 'wall' && walls.some((wall) => wall.id === saved.id)) return saved;
-    if (saved?.type === 'group' && layoutGroupById(saved.id)) return { ...layoutGroupById(saved.id), ...saved };
+    if (saved?.type === 'group' && layoutGroupById(saved.id)) {
+      return { type: 'wall', id: saved.wall_id, wall_id: saved.wall_id, supportsModes: true };
+    }
     if (saved?.type === 'display' && displayState.get(saved.id)) return saved;
   } catch { /* ignore stale target state */ }
   if (Array.isArray(walls) && walls.length) {
     const w = walls.slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))[0];
-    if (w?.layout_mode === 'groups') {
-      const groups = w.layout?.groups || [];
-      const preferred = groups.find((group) => group.layout === 'span' && group.member_ids?.length > 1)
-        || groups[0];
-      if (preferred) {
-        return {
-          type: 'group',
-          ...preferred,
-          id: preferred.id,
-          wall_id: w.id,
-          supportsModes: false,
-        };
-      }
-    }
     if (w && w.id) return { type: 'wall', id: w.id, wall_id: w.id, supportsModes: true };
   }
   const all = displayState.getAll().filter((d) => !wallMemberIds.has(d.id) && !isLiveStreamTargetId(d.id));
@@ -1519,22 +1535,24 @@ function targetLabelOf(targetId) {
   return String(targetId).slice(0, 8);
 }
 function activeTargetIds() {
-  if (!activeTarget) return [];
-  if (activeTarget.type === 'group') return activeTargetDeviceIds();
-  if (activeTarget.wall_id) {
-    const w = walls.find((x) => x.id === activeTarget.wall_id);
+  const commandTarget = activeControlTarget || activeTarget;
+  if (!commandTarget) return [];
+  if (commandTarget.type === 'group') return activeTargetDeviceIds();
+  if (commandTarget.wall_id) {
+    const w = walls.find((x) => x.id === commandTarget.wall_id);
     return (w && w.devices ? w.devices.map((d) => d.device_id) : []);
   }
-  return activeTarget.id ? [activeTarget.id] : [];
+  return commandTarget.id ? [commandTarget.id] : [];
 }
 function activePreviewDeviceId() {
-  if (!activeTarget) return null;
-  if (activeTarget.type === 'display') return activeTarget.id || null;
-  if (activeTarget.type === 'group') {
-    const group = layoutGroupById(activeTarget.id);
+  const previewTarget = activeControlTarget || activeTarget;
+  if (!previewTarget) return null;
+  if (previewTarget.type === 'display') return previewTarget.id || null;
+  if (previewTarget.type === 'group') {
+    const group = layoutGroupById(previewTarget.id);
     return group?.leader_device_id || group?.member_ids?.[0] || null;
   }
-  const wall = (walls || []).find((candidate) => candidate.id === activeTarget.id);
+  const wall = (walls || []).find((candidate) => candidate.id === previewTarget.id);
   return wall ? wallTransportDeviceId(wall) : null;
 }
 function handleCommandAck(data) {
@@ -2171,6 +2189,19 @@ pruneSelection();
     const leaderId = wallTransportDeviceId(wall) || wallDeviceIds(wall)[0];
     const leader = leaderId ? byId.get(leaderId) : null;
     if (!leaderId) return null;
+    const cols = Math.max(1, Number(wall.grid_cols) || 1);
+    const rows = Math.max(1, Number(wall.grid_rows) || 1);
+    const members = (wall.devices || []).map((member) => {
+      const live = byId.get(member.device_id) || {};
+      return {
+        id: member.device_id,
+        screenshot_url: live.screenshot_url || null,
+        x: (Number(member.grid_col) || 0) / cols,
+        y: (Number(member.grid_row) || 0) / rows,
+        width: 1 / cols,
+        height: 1 / rows,
+      };
+    });
     return {
       target_type: 'wall',
       target_id: leaderId,
@@ -2178,8 +2209,9 @@ pruneSelection();
       preview_device_id: leaderId,
       label: wall.name || wall.id,
       screenshot_url: leader && leader.screenshot_url,
-      width: leader && leader.width || 1920,
-      height: leader && leader.height || 1080,
+      members,
+      width: (leader && leader.width || 1920) * cols,
+      height: (leader && leader.height || 1080) * rows,
     };
   }
   function whiteboardTargets() {
@@ -2199,6 +2231,11 @@ pruneSelection();
         for (const group of (wall.layout?.groups || [])) {
           const leaderId = group.leader_device_id || group.member_ids[0];
           const leader = byId.get(leaderId);
+          const groupMembers = (wall.devices || []).filter((member) => group.member_ids.includes(member.device_id));
+          const minCol = Math.min(...groupMembers.map((member) => Number(member.grid_col) || 0));
+          const minRow = Math.min(...groupMembers.map((member) => Number(member.grid_row) || 0));
+          const cols = Math.max(1, Number(group.geometry?.columns) || groupMembers.length);
+          const rows = Math.max(1, Number(group.geometry?.rows) || 1);
           result.push({
             target_type: 'group',
             target_id: leaderId,
@@ -2208,8 +2245,16 @@ pruneSelection();
             preview_device_id: leaderId,
             label: `${wall.name}: ${group.name}`,
             screenshot_url: leader && leader.screenshot_url,
-            width: leader && leader.width || 1920,
-            height: leader && leader.height || 1080,
+            members: groupMembers.map((member) => ({
+              id: member.device_id,
+              screenshot_url: byId.get(member.device_id)?.screenshot_url || null,
+              x: ((Number(member.grid_col) || 0) - minCol) / cols,
+              y: ((Number(member.grid_row) || 0) - minRow) / rows,
+              width: 1 / cols,
+              height: 1 / rows,
+            })),
+            width: (leader && leader.width || 1920) * cols,
+            height: (leader && leader.height || 1080) * rows,
           });
         }
       }

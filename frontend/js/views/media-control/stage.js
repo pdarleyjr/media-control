@@ -388,6 +388,47 @@ function wallCard(wall, byId, livePreviewDeviceId = null) {
     </section>`;
 }
 
+function wallGroupsCard(wall, byId, livePreviewDeviceId, activeControlTargetId) {
+  const groups = wall.layout?.groups || [];
+  const orderedMembers = [...(wall.devices || [])].sort((a, b) =>
+    (Number(a.grid_row) - Number(b.grid_row)) || (Number(a.grid_col) - Number(b.grid_col))
+  );
+  const regions = groups.map((group) => {
+    const memberIds = new Set(group.member_ids || []);
+    const members = orderedMembers.filter((member) => memberIds.has(member.device_id));
+    const minCol = Math.min(...members.map((member) => Number(member.grid_col) || 0));
+    const minRow = Math.min(...members.map((member) => Number(member.grid_row) || 0));
+    const regionWall = {
+      ...wall,
+      id: `${wall.id}:${group.id}`,
+      name: group.name || group.id,
+      devices: members.map((member) => ({
+        ...member,
+        grid_col: (Number(member.grid_col) || 0) - minCol,
+        grid_row: (Number(member.grid_row) || 0) - minRow,
+      })),
+      grid_cols: Number(group.geometry?.columns) || Math.max(1, members.length),
+      grid_rows: Number(group.geometry?.rows) || 1,
+      leader_device_id: group.leader_device_id || group.member_ids?.[0],
+      layout_mode: 'span',
+      is_locked: false,
+    };
+    return `<div class="mc-wall-region${group.id === activeControlTargetId ? ' is-active' : ''}"
+      data-layout-group-id="${esc(group.id)}" role="button" tabindex="0"
+      style="--mc-region-cols:${regionWall.grid_cols}"
+      aria-label="${esc(`Control ${regionWall.name}`)}">
+      ${wallCard(regionWall, byId, livePreviewDeviceId)}
+    </div>`;
+  }).join('');
+  return `<section class="mc-wall-groups-overview" data-wall-id="${esc(wall.id)}">
+    <header class="mc-wall-groups-head">
+      <strong>${esc(wall.name)}</strong>
+      <span>Select a region to control or drop content directly onto it.</span>
+    </header>
+    <div class="mc-wall-groups-regions">${regions}</div>
+  </section>`;
+}
+
 // SPLIT template (2026-06-09): a video wall in 'split' mode is NOT one composite
 // surface — each physical screen plays independently. So instead of the single
 // composite wallCard, we render each member screen as its OWN standalone display
@@ -529,7 +570,7 @@ function emptyState() {
  * @param {(ids:string[], source:object, label:string)=>void} [opts.onScreensaver]
  *   A screensaver option was chosen on a card; broadcast `source` to `ids`.
  */
-export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], livePreviewDeviceId = null, onSelect, onCalibrateWall, onAddDisplay, onScreenOnChange, onTransportAction, onSetWallMode, onScreensaver } = {}) {
+export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], livePreviewDeviceId = null, activeControlTargetId = null, onSelect, onSelectGroup, onCalibrateWall, onAddDisplay, onScreenOnChange, onTransportAction, onSetWallMode, onScreensaver } = {}) {
   if (!container) return;
   const selected = new Set(selectedIds);
 
@@ -562,9 +603,11 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
     .join('');
   // Span walls render as one composite card; SPLIT walls render each member as
   // its own independent display card (see wallSplitGroup).
-  const wallCards = wallList.map(w => (w.layout_mode === 'split'
-    ? wallSplitGroup(w, byId, livePreviewDeviceId)
-    : wallCard(w, byId, livePreviewDeviceId))).join('');
+  const wallCards = wallList.map(w => (w.layout_mode === 'groups'
+    ? wallGroupsCard(w, byId, livePreviewDeviceId, activeControlTargetId)
+    : (w.layout_mode === 'split'
+      ? wallSplitGroup(w, byId, livePreviewDeviceId)
+      : wallCard(w, byId, livePreviewDeviceId)))).join('');
 
   const isEmpty = !cards && !wallCards;
   container.classList.toggle('mc-stage-is-empty', isEmpty);
@@ -583,6 +626,19 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
     el.addEventListener('click', () => { if (typeof onSelect === 'function') onSelect(el.dataset.deviceId); });
     el.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (typeof onSelect === 'function') onSelect(el.dataset.deviceId); }
+    });
+  });
+  container.querySelectorAll('[data-layout-group-id]').forEach((region) => {
+    const select = (event) => {
+      if (event.target.closest('button, select, a, [data-tp-host]')) return;
+      if (typeof onSelectGroup === 'function') onSelectGroup(region.dataset.layoutGroupId);
+    };
+    region.addEventListener('click', select);
+    region.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        select(event);
+      }
     });
   });
 

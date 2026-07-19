@@ -79,6 +79,7 @@ let relayVideo = null;
 let relayCanvas = null;
 let relayTimer = null;
 let relayEncoding = false;
+let relayLastFrameAt = 0;
 
 const RELAY_FRAME_INTERVAL_MS = 200;
 const RELAY_FRAME_MAX_WIDTH = 1280;
@@ -100,7 +101,7 @@ const captureEndedSubs = new Set();
 //      SCREEN_SHARE_DEBUG idiom above) for per-display field tuning,
 //   3) DEFAULT_MAX_BITRATE_KBPS.
 // (process.env is intentionally NOT used — this module runs in the browser.)
-const DEFAULT_MAX_BITRATE_KBPS = 50000; // 50 Mbps ceiling (replaces the old fixed 2500 cap).
+const DEFAULT_MAX_BITRATE_KBPS = 8000;
 function bitrateCeilingKbps() {
   const fromServer = iceConfig && Number(iceConfig.maxBitrateKbps);
   if (fromServer && fromServer > 0) return fromServer;
@@ -120,8 +121,25 @@ function computeAdaptiveBitrate(width, height, fps) {
   const targetKbps = Math.round((pixels * f * 0.08) / 1000);
   return Math.max(1500, Math.min(targetKbps, bitrateCeilingKbps()));
 }
-const CONNECT_TIMEOUT_MS = 30_000;    // Mark a session failed if it doesn't reach 'connected'.
+const CONNECT_TIMEOUT_MS = 8_000;
 const ACK_TIMEOUT_MS = 5_000;         // Socket ack budget for screen-share:start/offer/stop.
+const CAPTURE_PROFILES = {
+  detail: {
+    width: { ideal: 1920, max: 1920 },
+    height: { ideal: 1080, max: 1080 },
+    frameRate: { ideal: 24, max: 30 },
+  },
+  motion: {
+    width: { ideal: 1920, max: 1920 },
+    height: { ideal: 1080, max: 1080 },
+    frameRate: { ideal: 30, max: 30 },
+  },
+  motion60: {
+    width: { ideal: 1920, max: 1920 },
+    height: { ideal: 1080, max: 1080 },
+    frameRate: { ideal: 60, max: 60 },
+  },
+};
 
 // Cached feature detection for getDisplayMedia hints that Firefox rejects.
 let SUPPORTED_CONSTRAINTS = null;
@@ -229,14 +247,33 @@ function startRelayPump() {
     relayVideo.play().catch(() => {});
   }
   if (relayTimer) return;
-  relayTimer = setInterval(() => { emitRelayFrame().catch(() => {}); }, RELAY_FRAME_INTERVAL_MS);
-  emitRelayFrame().catch(() => {});
+  const schedule = (now = performance.now()) => {
+    if (!relayVideo || relayFallbackTargets.size === 0) {
+      relayTimer = null;
+      return;
+    }
+    if (now - relayLastFrameAt >= RELAY_FRAME_INTERVAL_MS) {
+      relayLastFrameAt = now;
+      emitRelayFrame().catch(() => {});
+    }
+    if (typeof relayVideo.requestVideoFrameCallback === 'function') {
+      relayTimer = { kind: 'video', id: relayVideo.requestVideoFrameCallback(schedule) };
+    } else {
+      relayTimer = { kind: 'timeout', id: setTimeout(() => schedule(performance.now()), RELAY_FRAME_INTERVAL_MS) };
+    }
+  };
+  schedule();
 }
 
 function stopRelayPump() {
-  if (relayTimer) clearInterval(relayTimer);
+  if (relayTimer?.kind === 'video' && relayVideo?.cancelVideoFrameCallback) {
+    relayVideo.cancelVideoFrameCallback(relayTimer.id);
+  } else if (relayTimer?.kind === 'timeout') {
+    clearTimeout(relayTimer.id);
+  }
   relayTimer = null;
   relayEncoding = false;
+  relayLastFrameAt = 0;
   if (relayVideo) {
     relayVideo.pause();
     relayVideo.srcObject = null;
@@ -244,6 +281,14 @@ function stopRelayPump() {
   }
   relayVideo = null;
   relayCanvas = null;
+}
+
+function enableRelayFallback(deviceId, reason) {
+  if (!peerConnections.has(deviceId)) return;
+  relayFallbackTargets.add(deviceId);
+  startRelayPump();
+  warnLog(`pc(${deviceId}) using relay fallback: ${reason}`);
+  notifyChange();
 }
 
 function relayOnlyPeer() {
@@ -326,17 +371,10 @@ export async function startCapture(contentHint) {
       : {};
   }
 
+  const profile = CAPTURE_PROFILES[currentContentHint] || CAPTURE_PROFILES.detail;
   const baseConstraints = {
     video: {
-      frameRate: { ideal: currentContentHint === 'motion' ? 60 : 30, max: 60 },
-      // Adaptive resolution: 'ideal' targets at 4K scale with NO hard max, so the
-      // browser captures the source's absolute native resolution (4K, ultra-wide,
-      // even the full 12372x2160 wall canvas where the source supports it). The
-      // browser gracefully falls back to whatever the source can actually provide;
-      // adaptive bitrate (computeAdaptiveBitrate) sizes the encoder to the real
-      // captured geometry, and the receiver scales via object-fit.
-      width: { ideal: 3840 },
-      height: { ideal: 2160 },
+      ...profile,
     },
     audio: {
       echoCancellation: false,
@@ -395,7 +433,7 @@ export function applyContentHint(hint) {
   if (!stream) return;
   const track = stream.getVideoTracks()[0];
   if (track && 'contentHint' in track) {
-    track.contentHint = hint; // 'detail' or 'motion'
+    track.contentHint = hint === 'detail' ? 'detail' : 'motion';
   }
 }
 
@@ -464,9 +502,7 @@ export async function startBroadcastTo(deviceId, opts = {}) {
       bundlePolicy: 'max-bundle',
     });
     peerConnections.set(deviceId, pc);
-    relayFallbackTargets.add(deviceId);
     pendingDeviceCandidates.set(deviceId, []);
-    startRelayPump();
     notifyChange();
 
     // Compute the adaptive per-receiver bitrate from the ACTUAL captured geometry
@@ -532,14 +568,14 @@ export async function startBroadcastTo(deviceId, opts = {}) {
       const state = pc.connectionState;
       if (state === 'connected') {
         relayFallbackTargets.delete(deviceId);
+        if (relayFallbackTargets.size === 0) stopRelayPump();
         clearConnectTimeout(deviceId);
         applyBitrateCap();
       } else if (state === 'failed') {
         // Corporate and guest networks frequently block peer-to-peer ICE. Keep
         // the authenticated socket-frame relay alive instead of blanking the TV.
-        relayFallbackTargets.add(deviceId);
         clearConnectTimeout(deviceId);
-        warnLog(`pc(${deviceId}) connection failed; continuing through relay fallback`);
+        enableRelayFallback(deviceId, 'webrtc_failed');
       } else if (state === 'closed') {
         peerConnections.delete(deviceId);
         relayFallbackTargets.delete(deviceId);
@@ -554,10 +590,8 @@ export async function startBroadcastTo(deviceId, opts = {}) {
     // the user feedback faster.
     const timeoutHandle = setTimeout(() => {
       if (pc.connectionState !== 'connected' && pc.connectionState !== 'closed') {
-        relayFallbackTargets.add(deviceId);
         clearConnectTimeout(deviceId);
-        warnLog(`pc(${deviceId}) connect timeout after ${CONNECT_TIMEOUT_MS}ms; continuing through relay fallback`);
-        notifyChange();
+        enableRelayFallback(deviceId, `connect_timeout_${CONNECT_TIMEOUT_MS}ms`);
       }
     }, CONNECT_TIMEOUT_MS);
     connectionTimeouts.set(deviceId, timeoutHandle);
@@ -578,12 +612,9 @@ export async function startBroadcastTo(deviceId, opts = {}) {
     // Session setup succeeded, so negotiation failure is not fatal: preserve
     // the target and let the authenticated JPEG relay carry the live screen.
     if (!peerConnections.has(deviceId)) peerConnections.set(deviceId, relayOnlyPeer());
-    relayFallbackTargets.add(deviceId);
     pendingDeviceCandidates.delete(deviceId);
     clearConnectTimeout(deviceId);
-    startRelayPump();
-    warnLog(`WebRTC negotiation failed for ${deviceId}; using relay fallback:`, err);
-    notifyChange();
+    enableRelayFallback(deviceId, `negotiation_failed:${err?.message || 'unknown'}`);
     return;
   }
 }
@@ -677,12 +708,13 @@ function wireSocketListeners() {
   // buffered ICE candidates that arrived while we were waiting.
   sock.on('screen-share:answer', async ({ device_id, sdp }) => {
     const pc = peerConnections.get(device_id);
-    if (!pc) return;
+    if (!pc || typeof pc.setRemoteDescription !== 'function') return;
     try {
       await pc.setRemoteDescription(sdp);
       const buffered = pendingDeviceCandidates.get(device_id) || [];
       pendingDeviceCandidates.set(device_id, []);
       for (const c of buffered) {
+        if (typeof pc.addIceCandidate !== 'function') break;
         try { await pc.addIceCandidate(c); } catch (e) { warnLog('drained addIceCandidate failed:', e); }
       }
     } catch (e) {
@@ -695,7 +727,7 @@ function wireSocketListeners() {
   // (race: candidate can arrive before answer event on lossy networks).
   sock.on('screen-share:device-ice-candidate', async ({ device_id, candidate }) => {
     const pc = peerConnections.get(device_id);
-    if (!pc) return;
+    if (!pc || typeof pc.addIceCandidate !== 'function') return;
     if (!pc.remoteDescription) {
       const buf = pendingDeviceCandidates.get(device_id) || [];
       buf.push(candidate);

@@ -111,22 +111,24 @@ test('podium rail surfaces remain inside the persistent command center', () => {
   assert.match(read('frontend/css/media-control.css'), /\.mc-cc-rail\s*\{[\s\S]*?overflow-y:\s*auto/);
 });
 
-test('a hybrid wall preset immediately targets its spanned subgroup', () => {
+test('a hybrid wall preset keeps the complete wall visible and selects a control region', () => {
   const view = read('frontend/js/views/media-control.js');
 
   assert.match(view, /const preferred = groups\.find\(\(group\) => group\.layout === 'span'/);
-  assert.match(view, /type: 'group',[\s\S]*?wall_id: wallId/);
-  assert.match(view, /targetApi\.setActive\(target\);[\s\S]*?handleTargetChange\(target\)/);
-  assert.match(view, /function chooseInitialTarget\(\)[\s\S]*?w\?\.layout_mode === 'groups'[\s\S]*?type: 'group',[\s\S]*?wall_id: w\.id/);
+  assert.match(view, /activeControlTarget = preferred/);
+  assert.match(view, /const wallTarget = \{ type: 'wall', id: wallId/);
+  assert.match(view, /targetApi\.setActive\(wallTarget\)/);
+  assert.doesNotMatch(view, /function chooseInitialTarget\(\)[\s\S]*?w\?\.layout_mode === 'groups'[\s\S]*?return \{[\s\S]*?type: 'group'/);
 });
 
-test('hybrid wall previews use subgroup dimensions and local grid coordinates', () => {
-  const view = read('frontend/js/views/media-control.js');
+test('hybrid wall previews render both subgroup regions with independent controls', () => {
+  const stage = read('frontend/js/views/media-control/stage.js');
 
-  assert.match(view, /function wallViewForLayoutGroup\(wall, group\)/);
-  assert.match(view, /grid_col: \(Number\(member\.grid_col\) \|\| 0\) - colOffset/);
-  assert.match(view, /grid_cols: Number\(group\.geometry\?\.columns\)/);
-  assert.match(view, /const groupWall = wallViewForLayoutGroup\(wall, group\)/);
+  assert.match(stage, /function wallGroupsCard\(wall, byId/);
+  assert.match(stage, /data-layout-group-id=/);
+  assert.match(stage, /data-wall-ids=/);
+  assert.match(stage, /onSelectGroup/);
+  assert.match(stage, /w\.layout_mode === 'groups'/);
 });
 
 test('live podium preview does not duplicate work with one-second screenshots', () => {

@@ -359,7 +359,15 @@ function mirrorTransportToLiveStream(deviceNs, deviceId, command) {
         if (!canActOnDevice(socket, device_id, 'write')) return;
         const safeStroke = whiteboardState.appendStroke(null, device_id, stroke);
         if (!safeStroke) return;
-        relayToTargets('device:wb-stroke', { stroke: safeStroke }, wbTargets(data, device_id));
+        const memberStrokes = data && typeof data.member_strokes === 'object' ? data.member_strokes : {};
+        for (const id of wbTargets(data, device_id)) {
+          const hasMemberStrokes = Object.keys(memberStrokes).length > 0;
+          const localStroke = hasMemberStrokes
+            ? whiteboardState.normalizeStroke(memberStrokes[id])
+            : safeStroke;
+          if (!localStroke) continue;
+          relayToTargets('device:wb-stroke', { stroke: localStroke }, [id]);
+        }
       } catch (e) {
         console.warn(`dashboard:wb-stroke relay error: ${e.message}`);
       }

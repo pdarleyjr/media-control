@@ -24,10 +24,10 @@ test('overlay mode paints over the physical display screenshot and refreshes it 
   const board = read('frontend/js/views/media-control/whiteboard.js');
   const css = read('frontend/css/media-control.css');
 
-  assert.match(board, /class="mc-wb-background"/);
+  assert.match(board, /class="mc-wb-background-grid"/);
   assert.match(board, /socketOn\('screenshot-ready'/);
-  assert.match(board, /const id = previewDeviceId\(\);[\s\S]*requestScreenshot\(id\)/);
-  assert.match(board, /const SCREENSHOT_REFRESH_MS = 2000/);
+  assert.match(board, /function requestTargetScreenshots\(\)[\s\S]*requestScreenshot\(id\)/);
+  assert.doesNotMatch(board, /SCREENSHOT_REFRESH_MS/);
   assert.match(board, /ctx\.clearRect\(0, 0, canvas\.width, canvas\.height\)/);
   assert.match(board, /globalCompositeOperation = 'destination-out'/);
   assert.match(css, /\.mc-wb-background/);
@@ -55,4 +55,24 @@ test('whiteboard ignores stale session hydration after a local edit or target mo
   assert.match(board, /requestRevision !== sessionRequestRevision/);
   assert.match(board, /editRevision !== localEditRevision/);
   assert.match(board, /localEditRevision \+= 1/);
+});
+
+test('whiteboard composes every target member and avoids a permanent fixed poll', () => {
+  const board = read('frontend/js/views/media-control/whiteboard.js');
+
+  assert.match(board, /members:\s*Array\.isArray\(t\.members\)/);
+  assert.match(board, /class="mc-wb-background-grid"/);
+  assert.match(board, /function renderCompositeBackground\(/);
+  assert.match(board, /requestTargetScreenshots\(/);
+  assert.doesNotMatch(board, /setInterval\(requestPhysicalScreenshot/);
+});
+
+test('whiteboard clips composite strokes and normalizes transformed member payloads', () => {
+  const board = read('frontend/js/views/media-control/whiteboard.js');
+  const socket = read('server/ws/dashboardSocket.js');
+
+  assert.match(board, /function clipSegment\(/);
+  assert.match(board, /clipSegment\(stroke\.points\[index - 1\], stroke\.points\[index\]/);
+  assert.match(socket, /whiteboardState\.normalizeStroke\(memberStrokes\[id\]\)/);
+  assert.match(socket, /relayToTargets\('device:wb-stroke', \{ stroke: localStroke \}/);
 });
