@@ -178,6 +178,17 @@ test('podium browser smoke exercises both whiteboard modes and a real pointer st
   assert.match(smoke, /#mc-wb-close/);
 });
 
+test('podium browser smoke clicks both hybrid presets and restores the original wall mode', () => {
+  const smoke = read('scripts/live-console-ui-smoke.js');
+
+  assert.match(smoke, /SMOKE_HYBRID_LAYOUTS/);
+  assert.match(smoke, /for \(const preset of \['span-left', 'span-right'\]\)/);
+  assert.match(smoke, /waitForHybridPreset\(cdp, preset\)/);
+  assert.match(smoke, /data-layout-group-id/);
+  assert.match(smoke, /finally \{[\s\S]*data-ss-mode=/);
+  assert.match(smoke, /hybrid_layouts: hybridLayouts/);
+});
+
 test('browser smoke can validate the normal signed-in web UI', () => {
   const smoke = read('scripts/live-console-ui-smoke.js');
 

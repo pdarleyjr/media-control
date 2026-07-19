@@ -155,6 +155,95 @@ function webLoginConfig(url) {
   };
 }
 
+async function clickLayoutControl(cdp, selector) {
+  const clicked = await evaluate(cdp, `(() => {
+    const button = document.querySelector(${JSON.stringify(selector)});
+    if (!button || button.hidden) return false;
+    button.click();
+    return true;
+  })()`);
+  assert(clicked, `layout control is missing: ${selector}`);
+  await sleep(100);
+  const confirmationOpen = await evaluate(cdp, `!!document.querySelector('dialog.mc-dialog[open] [data-mc-confirm]')`);
+  if (confirmationOpen) {
+    await evaluate(cdp, `document.querySelector('dialog.mc-dialog[open] [data-mc-confirm]').click()`);
+  }
+}
+
+async function waitForHybridPreset(cdp, preset) {
+  return waitFor(cdp, `(async () => {
+    const active = document.querySelector('[data-layout-preset="${preset}"]');
+    const overview = document.querySelector('.mc-wall-groups-overview');
+    const regions = [...(overview?.querySelectorAll('[data-layout-group-id]') || [])];
+    const response = await fetch('/api/walls', {
+      headers: { Authorization: 'Bearer ' + localStorage.getItem('token') },
+    });
+    if (!response.ok) return false;
+    const body = await response.json();
+    const wall = (body.walls || body || []).find((item) => /Classroom 1 Primary Wall/i.test(item.name || ''));
+    if (!active?.classList.contains('is-active') || active.getAttribute('aria-pressed') !== 'true') return false;
+    if (!wall || wall.layout_mode !== 'groups' || wall.layout?.preset !== ${JSON.stringify(preset)}) return false;
+    if (regions.length !== 2 || regions.some((region) => !region.querySelector('.mc-wall-all[data-wall-ids]'))) return false;
+    return {
+      preset: wall.layout.preset,
+      revision: wall.layout.revision,
+      group_ids: wall.layout.groups.map((group) => group.id),
+      member_ids: wall.layout.groups.map((group) => group.member_ids),
+      region_widths: regions.map((region) => region.getBoundingClientRect().width),
+    };
+  })()`, `hybrid preset ${preset}`, 30000);
+}
+
+async function exerciseHybridLayouts(cdp) {
+  const initial = await evaluate(cdp, `(async () => {
+    const response = await fetch('/api/walls', {
+      headers: { Authorization: 'Bearer ' + localStorage.getItem('token') },
+    });
+    if (!response.ok) throw new Error('wall inventory failed: HTTP ' + response.status);
+    const body = await response.json();
+    const wall = (body.walls || body || []).find((item) => /Classroom 1 Primary Wall/i.test(item.name || ''));
+    return wall ? { id: wall.id, layout_mode: wall.layout_mode } : null;
+  })()`);
+  assert(initial, 'Classroom 1 Primary Wall inventory is missing');
+  assert(['span', 'split'].includes(initial.layout_mode), `hybrid smoke cannot safely restore ${initial.layout_mode}`);
+
+  const results = [];
+  try {
+    for (const preset of ['span-left', 'span-right']) {
+      await clickLayoutControl(cdp, `[data-layout-preset="${preset}"]`);
+      const snapshot = await waitForHybridPreset(cdp, preset);
+      for (const groupId of snapshot.group_ids) {
+        const clicked = await evaluate(cdp, `(() => {
+          const region = document.querySelector('[data-layout-group-id="${groupId}"]');
+          if (!region) return false;
+          region.click();
+          return true;
+        })()`);
+        assert(clicked, `hybrid control region is missing: ${groupId}`);
+        await waitFor(
+          cdp,
+          `document.querySelector('[data-layout-group-id="${groupId}"]')?.classList.contains('is-active')`,
+          `hybrid control region ${groupId}`
+        );
+      }
+      results.push(snapshot);
+    }
+  } finally {
+    await clickLayoutControl(cdp, `[data-ss-mode="${initial.layout_mode}"]`);
+    await waitFor(cdp, `(async () => {
+      const response = await fetch('/api/walls', {
+        headers: { Authorization: 'Bearer ' + localStorage.getItem('token') },
+      });
+      if (!response.ok) return false;
+      const body = await response.json();
+      const wall = (body.walls || body || []).find((item) => item.id === ${JSON.stringify(initial.id)});
+      return wall?.layout_mode === ${JSON.stringify(initial.layout_mode)}
+        && !document.querySelector('.mc-wall-groups-overview');
+    })()`, `restore wall mode ${initial.layout_mode}`, 30000);
+  }
+  return { initial_mode: initial.layout_mode, restored_mode: initial.layout_mode, presets: results };
+}
+
 async function createWebSession(config) {
   const response = await fetch(`${config.origin}/api/auth/login`, {
     method: 'POST',
@@ -288,6 +377,10 @@ async function main() {
         return !!button && button.getAttribute('aria-pressed') === 'true' && button.classList.contains('is-active');
       })()`, `${label} selection`);
     }
+
+    const hybridLayouts = process.env.SMOKE_HYBRID_LAYOUTS === '1'
+      ? await exerciseHybridLayouts(cdp)
+      : null;
 
     const uploadDialog = await evaluate(cdp, `(() => {
       const button = document.querySelector('[data-mc-rail="upload"]');
@@ -621,6 +714,7 @@ async function main() {
       camera_control: cameraControl,
       upload_dialog: uploadDialog,
       drag_drop: dragDrop,
+      hybrid_layouts: hybridLayouts,
       whiteboard,
       runtime_exceptions: runtimeExceptions.length,
       screenshot: screenshotPath,
