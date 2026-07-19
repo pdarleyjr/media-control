@@ -126,6 +126,32 @@ test('player screenshot reporting tolerates socket startup and disconnect races'
   );
 });
 
+test('player version handshake reloads stale renderers after a socket reconnect', () => {
+  const versionCheck = readSnippet(
+    path.join(__dirname, '..', 'player', 'index.html'),
+    'function acceptServerVersion(data) {',
+    '// ==================== Video Wall ===================='
+  );
+
+  assert.ok(
+    versionCheck.includes('if (!knownServerHash)'),
+    'the first version response should establish the player bundle baseline'
+  );
+  assert.ok(
+    versionCheck.includes('nextHash !== knownServerHash'),
+    'later version responses should compare against the existing bundle baseline'
+  );
+  assert.ok(
+    versionCheck.includes('location.reload()'),
+    'a reconnect to a different server bundle must reload the stale renderer'
+  );
+  assert.match(
+    versionCheck,
+    /if \(!knownServerHash\) \{[\s\S]*?knownServerHash = nextHash;[\s\S]*?return;[\s\S]*?if \(nextHash !== knownServerHash\)/,
+    'only the first response may establish a baseline; reconnect responses must compare before replacing it'
+  );
+});
+
 test('managed display audio permission remains authoritative in split mode', () => {
   const html = readPlayerFile('index.html');
 

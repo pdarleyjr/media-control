@@ -2864,21 +2864,28 @@
     // ==================== Auto-reload on code update ====================
     let knownServerHash = null;
     let versionCheckTimer = null;
+    function acceptServerVersion(data) {
+      const nextHash = String(data?.hash || '').trim();
+      if (!nextHash) return;
+      if (!knownServerHash) {
+        knownServerHash = nextHash;
+        console.log('Server version:', data.version, 'hash:', nextHash);
+        return;
+      }
+      if (nextHash !== knownServerHash) {
+        console.log('Server code updated, reloading...', knownServerHash, '->', nextHash);
+        location.reload();
+      }
+    }
+
     function startVersionCheck() {
       if (versionCheckTimer) clearInterval(versionCheckTimer);
-      // Initial fetch to learn current hash
-      fetch(config.serverUrl + '/api/version').then(r => r.json()).then(data => {
-        knownServerHash = data.hash;
-        console.log('Server version:', data.version, 'hash:', data.hash);
-      }).catch(() => {});
+      // Learn the initial hash once. On a socket reconnect, preserve the
+      // renderer's original hash so a newly deployed server forces a reload.
+      fetch(config.serverUrl + '/api/version').then(r => r.json()).then(acceptServerVersion).catch(() => {});
       // Poll every 30s
       versionCheckTimer = setInterval(() => {
-        fetch(config.serverUrl + '/api/version').then(r => r.json()).then(data => {
-          if (knownServerHash && data.hash !== knownServerHash) {
-            console.log('Server code updated, reloading...', knownServerHash, '->', data.hash);
-            location.reload();
-          }
-        }).catch(() => {});
+        fetch(config.serverUrl + '/api/version').then(r => r.json()).then(acceptServerVersion).catch(() => {});
       }, 30000);
     }
 
