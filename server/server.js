@@ -106,6 +106,37 @@ const dashboardCsp = helmet.contentSecurityPolicy({
   },
 });
 
+// Podium console (kiosk) CSP.
+// Identical to dashboardCsp EXCEPT it additionally allows the podium USB agent
+// origin (http://127.0.0.1:8755) in connect-src. The agent is a podium-only
+// loopback capability; this exception is scoped to /console/* routes only and is
+// NOT applied to /app, /player, widget/kiosk renders, or any other page, so
+// operator laptops and public surfaces cannot reach a loopback service.
+const consoleCsp = helmet.contentSecurityPolicy({
+  useDefaults: true,
+  directives: {
+    defaultSrc: ["'self'"],
+    scriptSrc: [
+      "'self'",
+      "https://static.cloudflareinsights.com",
+      "'sha256-ZswfTY7H35rbv8WC7NXBoiC7WNu86vSzCDChNWwZZDM='",
+    ],
+    scriptSrcAttr: ["'unsafe-inline'"],
+    styleSrc: ["'self'", "'unsafe-inline'"],
+    styleSrcAttr: ["'unsafe-inline'"],
+    imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
+    mediaSrc: ["'self'", 'blob:', 'https:'],
+    connectSrc: ["'self'", 'wss:', 'ws:', 'https:', 'http://127.0.0.1:8755'],
+    fontSrc: ["'self'", 'data:'],
+    frameSrc: ["'self'", 'https://www.youtube.com', 'https://youtube.com', 'https://*.mbfdhub.com', 'https://www.youtube-nocookie.com'],
+    objectSrc: ["'none'"],
+    baseUri: ["'self'"],
+    formAction: ["'self'"],
+    frameAncestors: ["'self'", "https://cloud.mbfdhub.com"],
+    upgradeInsecureRequests: null,
+  },
+});
+
 app.use(helmet({
   contentSecurityPolicy: false,        // we apply our own below, scoped to non-render paths
   crossOriginEmbedderPolicy: false,    // allow loading external widget content
@@ -119,6 +150,8 @@ app.use(helmet({
 // - /         (redirects to /app)
 // The dashboard at /app uses ES modules only and gets the strict policy.
 app.use((req, res, next) => {
+  // Podium console kiosk pages get the agent-allowing CSP (see consoleCsp above).
+  if (req.path.startsWith('/console/')) return consoleCsp(req, res, next);
   if (req.path === '/') return next();
   if (req.path.startsWith('/player')) return next();
   if (req.path.startsWith('/api/widgets/') && req.path.endsWith('/render')) return next();
