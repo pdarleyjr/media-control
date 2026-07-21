@@ -35,3 +35,15 @@ test('canvas blanking preserves layers and clear requires confirmation', () => {
   assert.match(route, /router\.post\('\/:id\/active'/);
   assert.match(route, /advanced_canvas\.clear/);
 });
+
+test('new canvas media enables TV 1 audio and exposes an explicit layer toggle', () => {
+  const canvas = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'frontend', 'js', 'views', 'media-control', 'advanced-canvas.js'),
+    'utf8'
+  );
+
+  assert.match(canvas, /muted: false/);
+  assert.match(canvas, /data-canvas-audio/);
+  assert.match(canvas, /Audio on TV 1/);
+  assert.match(canvas, /layer\.muted = layer\.muted === false/);
+});

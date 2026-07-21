@@ -20,6 +20,10 @@ function ensureDefaultOrgForUser(user) {
   return ensurePrimaryWorkspaceMembership(db, user);
 }
 
+function loginIdentifier(body) {
+  return String(body?.identifier || body?.username || body?.email || '').trim().toLowerCase();
+}
+
 function logFailedLogin(email, ip, reason) {
   try {
     db.prepare('INSERT INTO activity_log (user_id, action, details, ip_address) VALUES (NULL, ?, ?, ?)')
@@ -80,7 +84,7 @@ router.post('/register', (req, res) => {
     VALUES (?, ?, ?, ?, 'local', ?, ?)
   `).run(id, email.toLowerCase(), name || email.split('@')[0], passwordHash, role, plan);
 
-  const user = db.prepare('SELECT id, email, name, role, auth_provider, avatar_url, plan_id FROM users WHERE id = ?').get(id);
+  const user = db.prepare('SELECT id, email, username, name, role, auth_provider, avatar_url, plan_id FROM users WHERE id = ?').get(id);
   const workspaceId = ensureDefaultOrgForUser(user);
   const token = generateToken(user, workspaceId);
 
@@ -89,21 +93,27 @@ router.post('/register', (req, res) => {
 
 // Login
 router.post('/login', (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+  const identifier = loginIdentifier(req.body);
+  const { password } = req.body || {};
+  if (!identifier || !password) return res.status(400).json({ error: 'Email/username and password required' });
 
-  const user = db.prepare('SELECT * FROM users WHERE email = ? AND auth_provider = ?').get(email.toLowerCase(), 'local');
+  const user = db.prepare(`
+    SELECT * FROM users
+    WHERE auth_provider = ?
+      AND (lower(email) = ? OR lower(username) = ?)
+    LIMIT 1
+  `).get('local', identifier, identifier);
   if (!user) {
-    logFailedLogin(email, getClientIp(req), 'User not found');
-    return res.status(401).json({ error: 'Invalid email or password' });
+    logFailedLogin(identifier, getClientIp(req), 'User not found');
+    return res.status(401).json({ error: 'Invalid email/username or password' });
   }
 
   if (!bcrypt.compareSync(password, user.password_hash)) {
-    logFailedLogin(email, getClientIp(req), 'Wrong password');
-    return res.status(401).json({ error: 'Invalid email or password' });
+    logFailedLogin(identifier, getClientIp(req), 'Wrong password');
+    return res.status(401).json({ error: 'Invalid email/username or password' });
   }
 
-  logSuccessfulLogin(user.id, email, getClientIp(req));
+  logSuccessfulLogin(user.id, identifier, getClientIp(req));
   const workspaceId = ensureDefaultOrgForUser(user);
   const token = generateToken(user, workspaceId);
   const { password_hash, ...safeUser } = user;
@@ -386,19 +396,19 @@ router.put('/me', requireAuth, (req, res) => {
     db.prepare('UPDATE users SET password_hash = ?, updated_at = strftime(\'%s\',\'now\') WHERE id = ?')
       .run(hash, req.user.id);
   }
-  const user = db.prepare('SELECT id, email, name, role, auth_provider, avatar_url, plan_id, email_alerts FROM users WHERE id = ?').get(req.user.id);
+  const user = db.prepare('SELECT id, email, username, name, role, auth_provider, avatar_url, plan_id, email_alerts FROM users WHERE id = ?').get(req.user.id);
   res.json(user);
 });
 
 // List users - platform admins see all, admins see team members only
 router.get('/users', requireAuth, requireAdmin, (req, res) => {
   if (PLATFORM_ROLES.includes(req.user.role)) {
-    const users = db.prepare('SELECT id, email, name, role, auth_provider, avatar_url, plan_id, created_at, last_login FROM users ORDER BY created_at ASC').all();
+    const users = db.prepare('SELECT id, email, username, name, role, auth_provider, avatar_url, plan_id, created_at, last_login FROM users ORDER BY created_at ASC').all();
     res.json(users);
   } else {
     // Admin sees themselves + users in their teams
     const users = db.prepare(`
-      SELECT DISTINCT u.id, u.email, u.name, u.role, u.auth_provider, u.avatar_url, u.plan_id, u.created_at
+      SELECT DISTINCT u.id, u.email, u.username, u.name, u.role, u.auth_provider, u.avatar_url, u.plan_id, u.created_at
       FROM users u
       LEFT JOIN team_members tm ON u.id = tm.user_id
       WHERE u.id = ? OR tm.team_id IN (SELECT team_id FROM team_members WHERE user_id = ?)

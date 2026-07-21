@@ -74,6 +74,16 @@ let pendingDeviceCandidates = new Map(); // device_id -> RTCIceCandidateInit[]
 let connectionTimeouts = new Map();      // device_id -> setTimeout handle
 let iceConfig = null;                    // cached from /api/screen-share/turn-credentials
 let currentContentHint = 'detail';       // 'detail' | 'motion'
+let relayFallbackTargets = new Set();     // targets receiving authenticated JPEG relay frames
+let relayVideo = null;
+let relayCanvas = null;
+let relayTimer = null;
+let relayEncoding = false;
+
+const RELAY_FRAME_INTERVAL_MS = 200;
+const RELAY_FRAME_MAX_WIDTH = 1280;
+const RELAY_FRAME_MAX_HEIGHT = 720;
+const RELAY_FRAME_QUALITY = 0.62;
 
 // onChange subscribers — notified { active, targets } on every state change.
 const changeSubs = new Set();
@@ -152,12 +162,97 @@ export function isActive() { return peerConnections.size > 0; }
 export function getTargetStates() {
   const out = new Map();
   for (const [deviceId, pc] of peerConnections) {
-    out.set(deviceId, pc.connectionState || 'new');
+    out.set(deviceId, relayFallbackTargets.has(deviceId) ? 'relay' : (pc.connectionState || 'new'));
   }
   return out;
 }
 export function getStream() { return stream; }
 export function getIceConfig() { return iceConfig; }
+
+function blobToBase64(blob) {
+  return blob.arrayBuffer().then((buffer) => {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+    }
+    return btoa(binary);
+  });
+}
+
+function canvasToJpeg(canvas) {
+  return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', RELAY_FRAME_QUALITY));
+}
+
+async function emitRelayFrame() {
+  if (relayEncoding || !stream || !relayVideo || relayVideo.readyState < 2) return;
+  const deviceIds = [...relayFallbackTargets].filter((id) => peerConnections.has(id));
+  if (deviceIds.length === 0) return;
+  const sock = getSocket();
+  if (!sock || !sock.connected) return;
+
+  relayEncoding = true;
+  try {
+    const sourceWidth = relayVideo.videoWidth || 1280;
+    const sourceHeight = relayVideo.videoHeight || 720;
+    const scale = Math.min(1, RELAY_FRAME_MAX_WIDTH / sourceWidth, RELAY_FRAME_MAX_HEIGHT / sourceHeight);
+    const width = Math.max(2, Math.round(sourceWidth * scale));
+    const height = Math.max(2, Math.round(sourceHeight * scale));
+    if (!relayCanvas) relayCanvas = document.createElement('canvas');
+    if (relayCanvas.width !== width) relayCanvas.width = width;
+    if (relayCanvas.height !== height) relayCanvas.height = height;
+    const context = relayCanvas.getContext('2d', { alpha: false });
+    context.drawImage(relayVideo, 0, 0, width, height);
+    const blob = await canvasToJpeg(relayCanvas);
+    if (!blob) return;
+    const imageB64 = await blobToBase64(blob);
+    sock.emit(SS.FRAME, {
+      device_ids: deviceIds,
+      image_b64: imageB64,
+      captured_at: Date.now(),
+    });
+  } catch (error) {
+    warnLog('relay frame encode failed:', error);
+  } finally {
+    relayEncoding = false;
+  }
+}
+
+function startRelayPump() {
+  if (!stream) return;
+  if (!relayVideo) {
+    relayVideo = document.createElement('video');
+    relayVideo.muted = true;
+    relayVideo.playsInline = true;
+    relayVideo.srcObject = stream;
+    relayVideo.play().catch(() => {});
+  }
+  if (relayTimer) return;
+  relayTimer = setInterval(() => { emitRelayFrame().catch(() => {}); }, RELAY_FRAME_INTERVAL_MS);
+  emitRelayFrame().catch(() => {});
+}
+
+function stopRelayPump() {
+  if (relayTimer) clearInterval(relayTimer);
+  relayTimer = null;
+  relayEncoding = false;
+  if (relayVideo) {
+    relayVideo.pause();
+    relayVideo.srcObject = null;
+    relayVideo.remove();
+  }
+  relayVideo = null;
+  relayCanvas = null;
+}
+
+function relayOnlyPeer() {
+  return {
+    connectionState: 'relay',
+    close() { this.connectionState = 'closed'; },
+    getSenders() { return []; },
+  };
+}
 
 // ----------------------------------------------------------------------
 // init — idempotent. Primes ICE servers + wires signaling listeners once.
@@ -369,7 +464,9 @@ export async function startBroadcastTo(deviceId, opts = {}) {
       bundlePolicy: 'max-bundle',
     });
     peerConnections.set(deviceId, pc);
+    relayFallbackTargets.add(deviceId);
     pendingDeviceCandidates.set(deviceId, []);
+    startRelayPump();
     notifyChange();
 
     // Compute the adaptive per-receiver bitrate from the ACTUAL captured geometry
@@ -432,22 +529,24 @@ export async function startBroadcastTo(deviceId, opts = {}) {
 
     pc.onconnectionstatechange = () => {
       dbg(`pc(${deviceId}) state:`, pc.connectionState);
-      notifyChange();
       const state = pc.connectionState;
       if (state === 'connected') {
+        relayFallbackTargets.delete(deviceId);
         clearConnectTimeout(deviceId);
         applyBitrateCap();
       } else if (state === 'failed') {
-        // CRITICAL: notify server so activeSessions is cleared and the user
-        // can restart immediately. Without this, the next start attempt fails.
-        warnLog(`pc(${deviceId}) connection failed; notifying server`);
-        stopBroadcastTo(deviceId).catch(() => {});
+        // Corporate and guest networks frequently block peer-to-peer ICE. Keep
+        // the authenticated socket-frame relay alive instead of blanking the TV.
+        relayFallbackTargets.add(deviceId);
+        clearConnectTimeout(deviceId);
+        warnLog(`pc(${deviceId}) connection failed; continuing through relay fallback`);
       } else if (state === 'closed') {
         peerConnections.delete(deviceId);
+        relayFallbackTargets.delete(deviceId);
         pendingDeviceCandidates.delete(deviceId);
         clearConnectTimeout(deviceId);
-        notifyChange();
       }
+      notifyChange();
     };
 
     // 30-second connect timeout: if we don't reach 'connected' in time, treat
@@ -455,8 +554,10 @@ export async function startBroadcastTo(deviceId, opts = {}) {
     // the user feedback faster.
     const timeoutHandle = setTimeout(() => {
       if (pc.connectionState !== 'connected' && pc.connectionState !== 'closed') {
-        warnLog(`pc(${deviceId}) connect timeout after ${CONNECT_TIMEOUT_MS}ms; tearing down`);
-        stopBroadcastTo(deviceId).catch(() => {});
+        relayFallbackTargets.add(deviceId);
+        clearConnectTimeout(deviceId);
+        warnLog(`pc(${deviceId}) connect timeout after ${CONNECT_TIMEOUT_MS}ms; continuing through relay fallback`);
+        notifyChange();
       }
     }, CONNECT_TIMEOUT_MS);
     connectionTimeouts.set(deviceId, timeoutHandle);
@@ -474,16 +575,16 @@ export async function startBroadcastTo(deviceId, opts = {}) {
       throw new Error(offerAck && offerAck.error ? offerAck.error : 'server refused screen-share:offer');
     }
   } catch (err) {
-    try { if (pc) pc.close(); } catch (_) { /* */ }
-    peerConnections.delete(deviceId);
+    // Session setup succeeded, so negotiation failure is not fatal: preserve
+    // the target and let the authenticated JPEG relay carry the live screen.
+    if (!peerConnections.has(deviceId)) peerConnections.set(deviceId, relayOnlyPeer());
+    relayFallbackTargets.add(deviceId);
     pendingDeviceCandidates.delete(deviceId);
     clearConnectTimeout(deviceId);
-    if (sock && sock.connected) {
-      await emitWithAck(sock, SS.STOP, { device_id: deviceId }).catch(() => {});
-    }
+    startRelayPump();
+    warnLog(`WebRTC negotiation failed for ${deviceId}; using relay fallback:`, err);
     notifyChange();
-    if (peerConnections.size === 0) stopCaptureOnly();
-    throw err;
+    return;
   }
 }
 
@@ -493,6 +594,7 @@ export async function stopBroadcastTo(deviceId) {
     try { pc.close(); } catch (_) { /* */ }
     peerConnections.delete(deviceId);
   }
+  relayFallbackTargets.delete(deviceId);
   pendingDeviceCandidates.delete(deviceId);
   clearConnectTimeout(deviceId);
   const sock = getSocket();
@@ -521,15 +623,18 @@ export async function stopAll() {
   for (const [, h] of connectionTimeouts) clearTimeout(h);
   connectionTimeouts.clear();
   pendingDeviceCandidates.clear();
+  relayFallbackTargets.clear();
   notifyChange();
 }
 
 // Stop ONLY the captured tracks (does not touch peers). Idempotent.
 function stopCaptureOnly() {
+  stopRelayPump();
   if (stream) {
     try { stream.getTracks().forEach((t) => { try { t.stop(); } catch (_) { /* */ } }); } catch (_) { /* */ }
-    stream = null;
   }
+  stream = null;
+  relayFallbackTargets.clear();
 }
 
 function clearConnectTimeout(deviceId) {
@@ -612,6 +717,7 @@ function wireSocketListeners() {
       try { pc.close(); } catch (_) { /* */ }
       peerConnections.delete(device_id);
     }
+    relayFallbackTargets.delete(device_id);
     pendingDeviceCandidates.delete(device_id);
     clearConnectTimeout(device_id);
     notifyChange();
@@ -626,10 +732,21 @@ function wireSocketListeners() {
       try { pc.close(); } catch (_) { /* */ }
       peerConnections.delete(device_id);
     }
+    relayFallbackTargets.delete(device_id);
     pendingDeviceCandidates.delete(device_id);
     clearConnectTimeout(device_id);
     notifyChange();
     if (peerConnections.size === 0) stopCaptureOnly();
+  });
+
+  sock.on('screen-share:receiver-status', ({ device_id, status, reason }) => {
+    if (!peerConnections.has(device_id)) return;
+    if (status === 'webrtc_connected') relayFallbackTargets.delete(device_id);
+    if (status === 'relay_active' || status === 'webrtc_failed' || status === 'setup_timeout') {
+      relayFallbackTargets.add(device_id);
+    }
+    if (reason) warnLog(`receiver ${device_id} ${status}: ${reason}`);
+    notifyChange();
   });
 
   // Re-wire on socket reconnect: the sentinel lives on the socket instance,

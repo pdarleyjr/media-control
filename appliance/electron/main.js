@@ -18,9 +18,12 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const { Readable } = require('stream');
+const { resolveServerUrl, collectAllowedHosts } = require('../common/server-url');
 
-const COMMAND_CENTER_URL =
-  process.env.MC_COMMAND_CENTER_URL || 'https://media-control.mbfdhub.com/app';
+const COMMAND_CENTER_URL = resolveServerUrl(process.env, {
+  urlKeys: ['MC_COMMAND_CENTER_LAN_URL', 'MC_COMMAND_CENTER_URL'],
+  defaultUrl: 'https://media-control.mbfdhub.com/app',
+});
 const CACHE_ASSETS_DIR =
   process.env.MC_ROOM_AGENT_ASSETS_DIR || '/opt/mbfd/room-agent/cache/assets';
 const PROBE_PORT = parseInt(process.env.MC_AGENT_PORT, 10) || 8097;
@@ -40,12 +43,13 @@ function offlineBundleArg() {
 // Allowlisted origins the kiosk may navigate to. Configured CC host + the
 // GMKtec Tailnet origin + loopback (for the agent probe / local fallback).
 function allowHosts() {
-  const hosts = new Set();
-  try { hosts.add(new URL(COMMAND_CENTER_URL).host); } catch { /* ignore */ }
-  hosts.add('media-control.mbfdhub.com');
-  hosts.add('127.0.0.1');
-  hosts.add('localhost');
-  hosts.add('100.81.154.123'); // documented GMKtec Tailnet default
+  const hosts = new Set(collectAllowedHosts(
+    COMMAND_CENTER_URL,
+    'https://media-control.mbfdhub.com/app',
+    'http://127.0.0.1:8097',
+    'http://localhost',
+    'http://100.81.154.123:8096'
+  ));
   return hosts;
 }
 
@@ -53,7 +57,11 @@ function allowHosts() {
 // standard-scheme-like protocol (secure, supports fetch/streams, CORS-safe).
 protocol.registerSchemesAsPrivileged([
   { scheme: 'mcmedia', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, bypassCSP: false } },
+  { scheme: 'mcapp', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, bypassCSP: false } },
 ]);
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock({ application: 'mbfd-media-control-electron' });
+if (!hasSingleInstanceLock) app.quit();
 
 // Verify a cached asset's filename is a 64-hex sha AND the file's actual SHA256
 // matches it. Refuses (returns null) on any mismatch — never serves unchecked
@@ -121,6 +129,22 @@ async function registerMcMedia() {
       });
     } catch (e2) { console.error('[electron] mcmedia protocol registration failed:', e2 && e2.message); }
   }
+  protocol.handle('mcapp', async (request) => {
+    try {
+      const url = new URL(request.url);
+      if (url.host !== 'offline' || url.pathname !== '/index.html') return new Response('not found', { status: 404 });
+      const bundle = offlineBundleArg();
+      const indexPath = bundle && fs.existsSync(path.join(bundle, 'index.html'))
+        ? path.join(bundle, 'index.html')
+        : OFFLINE_FALLBACK;
+      return new Response(fs.readFileSync(indexPath), {
+        status: 200,
+        headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+      });
+    } catch {
+      return new Response('offline shell unavailable', { status: 500 });
+    }
+  });
 }
 
 async function isAssetAvailable(sha) {
@@ -139,7 +163,7 @@ async function isAssetAvailable(sha) {
 function loadTarget(win) {
   const bundle = offlineBundleArg();
   return bundle && fs.existsSync(path.join(bundle, 'index.html'))
-    ? `file://${path.join(bundle, 'index.html').replace(/\\/g, '/')}`
+    ? 'mcapp://offline/index.html'
     : COMMAND_CENTER_URL;
 }
 
@@ -155,11 +179,13 @@ function createWindow() {
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
+      webSecurity: true,
       preload: path.join(__dirname, 'preload.js'),
     },
   });
 
   const target = loadTarget(mainWindow);
+  console.log('[electron] loadURL start', redactUrl(target));
   mainWindow.loadURL(target);
 
   const allowed = allowHosts();
@@ -169,6 +195,13 @@ function createWindow() {
       if (!allowed.has(h)) e.preventDefault();
     } catch { e.preventDefault(); }
   });
+  mainWindow.webContents.on('did-start-loading', () => console.log('[electron] did-start-loading'));
+  mainWindow.webContents.on('did-finish-load', () => console.log('[electron] did-finish-load', redactUrl(mainWindow.webContents.getURL())));
+  mainWindow.webContents.on('did-frame-finish-load', (_event, isMainFrame, processId, routingId) => {
+    console.log('[electron] did-frame-finish-load', { isMainFrame, processId, routingId });
+  });
+  mainWindow.webContents.on('render-process-gone', (_event, details) => console.error('[electron] render-process-gone', details));
+  mainWindow.on('unresponsive', () => console.error('[electron] window unresponsive'));
   // New windows/tabs only allowed to the same allowlisted hosts.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     try {
@@ -185,10 +218,24 @@ function createWindow() {
 
   // If the remote CC fails to load, fall back to the offline reconnect screen.
   mainWindow.webContents.on('did-fail-load', (_e, errorCode, errorDesc, validatedURL) => {
-    if (String(validatedURL).startsWith('file://')) return; // already the fallback
+    if (String(validatedURL).startsWith('mcapp://')) return;
     console.warn('[electron] did-fail-load', errorCode, errorDesc, '-> offline fallback');
-    mainWindow.loadURL(`file://${OFFLINE_FALLBACK.replace(/\\/g, '/')}`);
+    mainWindow.loadURL('mcapp://offline/index.html');
   });
+}
+
+function redactUrl(value) {
+  try {
+    const url = new URL(value);
+    for (const key of ['token', 'device_token', 'deviceToken']) {
+      if (url.searchParams.has(key)) url.searchParams.set(key, '[redacted]');
+    }
+    return url.toString();
+  } catch { return '[invalid-url]'; }
+}
+
+function trustedRenderer(event) {
+  return !!(mainWindow && !mainWindow.isDestroyed() && event.sender.id === mainWindow.webContents.id);
 }
 
 // ----------------------------------------------------------------------------
@@ -196,7 +243,8 @@ function createWindow() {
 // only sees these names; no Node surface.
 // ----------------------------------------------------------------------------
 const { ipcMain } = require('electron');
-ipcMain.handle('mc:reconnect-state', async () => {
+ipcMain.handle('mc:reconnect-state', async (event) => {
+  if (!trustedRenderer(event)) throw new Error('untrusted IPC sender');
   try {
     const r = await fetch(COMMAND_CENTER_URL, { method: 'HEAD', signal: AbortSignal.timeout(2000) });
     return { online: r.ok, target: COMMAND_CENTER_URL };
@@ -204,17 +252,26 @@ ipcMain.handle('mc:reconnect-state', async () => {
     return { online: false, target: COMMAND_CENTER_URL };
   }
 });
-ipcMain.handle('mc:asset-available', async (_e, sha) => ({ present: await isAssetAvailable(String(sha || '')) }));
-ipcMain.handle('mc:launch-whiteboard', async () => {
+ipcMain.handle('mc:asset-available', async (event, sha) => {
+  if (!trustedRenderer(event)) return { present: false };
+  return { present: await isAssetAvailable(String(sha || '')) };
+});
+ipcMain.handle('mc:launch-whiteboard', async (event) => {
+  if (!trustedRenderer(event)) return { ok: false, error: 'untrusted IPC sender' };
   // Whiteboard is a route inside the CC route; in kiosk mode just route there.
   try { mainWindow && mainWindow.loadURL(`${COMMAND_CENTER_URL.split('#')[0]}#/control/whiteboard`); return { ok: true }; }
   catch (e) { return { ok: false, error: String(e && e.message) }; }
 });
 
-app.whenReady().then(async () => {
+if (hasSingleInstanceLock) app.whenReady().then(async () => {
   await registerMcMedia();
   createWindow();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+});
+
+app.on('second-instance', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try { mainWindow.show(); mainWindow.focus(); } catch {}
 });
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

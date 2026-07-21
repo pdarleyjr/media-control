@@ -28,7 +28,8 @@ This stages `agent.js`/`sync-worker.js`/`package.json` into
 ## Env (read by `agent.js`, via config.env)
 | Env | Default | Notes |
 |-----|---------|-------|
-| `MC_SERVER_URL` | `http://100.81.154.123:8096` | GMKtec Tailnet origin |
+| `MC_SERVER_LAN_URL` | `http://gmktec.local:8096` | Preferred wired LAN origin when the box is on the same switch |
+| `MC_SERVER_URL` | `http://100.81.154.123:8096` | Tailnet fallback origin |
 | `MC_NODE_TOKEN` | — | per-node secret (REQUIRED, gitignored) |
 | `MC_NODE_ID` | — | node id (REQUIRED) |
 | `MC_NODE_TYPE` | `podium` | surfaced in heartbeat (no `audio_endpoint`) |
@@ -43,6 +44,9 @@ This stages `agent.js`/`sync-worker.js`/`package.json` into
   --omit=dev` (the agent degrades to stateless mode without `better-sqlite3`).
 - **Loopback probe blocked**: confirm nothing else is bound on `127.0.0.1:8097`;
   override with `MC_AGENT_PORT`.
+- **LAN access**: if the podium is on the same switch as GMKtec, prefer
+  `MC_SERVER_LAN_URL` and keep the wired uplink active so player traffic never
+  falls back to Wi-Fi.
 
 ## Secrets handling
 Real values live ONLY in `/etc/mbfd/media-control-console/config.env` (mode 0600,

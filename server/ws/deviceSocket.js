@@ -1,5 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
 const crypto = require('crypto');
+const deviceContract = require('../player/device-contract');
 const path = require('path');
 const fs = require('fs');
 const { db, pruneTelemetry, pruneScreenshots } = require('../db/database');
@@ -26,9 +27,22 @@ const OFFLINE_DEBOUNCE_MS = 5000;
 const { deviceRoom, emitToWorkspace, targetRoomsForDevice, displayRoom } = require('../lib/socket-rooms');
 const commandModel = require('../lib/command-model');
 const nodeRegistry = require('../lib/node-registry');
+const { parseStoredLayout, groupForDevice } = require('../lib/wall-layout');
 
 function emitToDeviceWorkspace(dashboardNs, deviceId, event, payload) {
   emitToWorkspace(dashboardNs, deviceRoom(deviceId), event, payload);
+}
+
+function emitToDeviceTargetAndWorkspace(dashboardNs, deviceId, event, payload) {
+  const rooms = Array.from(new Set([displayRoom(deviceId), deviceRoom(deviceId)].filter(Boolean)));
+  if (!rooms.length) return;
+  try {
+    let op = dashboardNs;
+    for (const room of rooms) op = op.to(room);
+    op.emit(event, payload);
+  } catch (_) {
+    // Dashboard fanout is best-effort; device handling must keep running.
+  }
 }
 
 // Phase 2: have a device socket join its per-target rooms (display:<id>,
@@ -48,8 +62,36 @@ function joinDeviceTargetRooms(socket, deviceId) {
   }
 }
 
-// In-memory store for latest screenshot per device (avoids disk writes during streaming)
+// In-memory store for the latest screenshot per device, used for offline snapshots.
 let lastScreenshots = {};
+
+function screenshotFilename(deviceId) {
+  const safeId = String(deviceId || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+  return `${safeId}_latest.jpg`;
+}
+
+function persistScreenshot(deviceId, imageB64, capturedAt) {
+  const buffer = Buffer.from(imageB64, 'base64');
+  const filename = screenshotFilename(deviceId);
+  const receivedAt = Math.floor(Date.now() / 1000);
+  const requestedAt = Number(capturedAt);
+  const capturedAtSeconds = Number.isFinite(requestedAt)
+    ? Math.min(receivedAt, Math.floor(requestedAt > 1e12 ? requestedAt / 1000 : requestedAt))
+    : receivedAt;
+  const existing = db.prepare('SELECT id, captured_at FROM screenshots WHERE device_id = ? ORDER BY captured_at DESC LIMIT 1').get(deviceId);
+  if (existing && Number(existing.captured_at) > capturedAtSeconds) {
+    return { applied: false, reason: 'stale_screenshot', captured_at: Number(existing.captured_at) };
+  }
+  fs.mkdirSync(config.screenshotsDir, { recursive: true });
+  fs.writeFileSync(path.join(config.screenshotsDir, filename), buffer);
+  if (existing) {
+    db.prepare('UPDATE screenshots SET filepath = ?, captured_at = ? WHERE id = ?').run(filename, capturedAtSeconds, existing.id);
+  } else {
+    db.prepare('INSERT INTO screenshots (device_id, filepath, captured_at) VALUES (?, ?, ?)').run(deviceId, filename, capturedAtSeconds);
+  }
+  pruneScreenshots(deviceId);
+  return { applied: true, captured_at: capturedAtSeconds };
+}
 
 // Generate a random device token
 function generateDeviceToken() {
@@ -103,6 +145,79 @@ function isClassroomCacheDevice(deviceId) {
   } catch (e) {
     return false;
   }
+}
+
+function displayStateForDevice(deviceId) {
+  if (!deviceId) return null;
+  const row = db.prepare(`
+    SELECT current_content_id, current_asset_id, content_type, layout_mode,
+           slide_index, slide_count, current_time, duration, paused, muted, volume,
+           local_asset_ready, render_state, error_state, state_revision, updated_at
+           , wall_id, layout_id, group_id, member_id, playback_revision, command_revision
+    FROM display_states
+    WHERE target_type = 'display' AND target_id = ?
+  `).get(deviceId);
+  if (!row) return null;
+  return {
+    current_content_id: row.current_content_id || null,
+    current_asset_id: row.current_asset_id || null,
+    content_type: row.content_type || null,
+    layout_mode: row.layout_mode || null,
+    slide_index: row.slide_index ?? null,
+    slide_count: row.slide_count ?? null,
+    slide_total: row.slide_count ?? null,
+    current_time: row.current_time ?? null,
+    duration: row.duration ?? null,
+    paused: row.paused == null ? null : !!row.paused,
+    muted: row.muted == null ? null : !!row.muted,
+    volume: row.volume ?? null,
+    local_asset_ready: row.local_asset_ready ?? null,
+    render_state: row.render_state || null,
+    error_state: row.error_state || null,
+    wall_id: row.wall_id || null,
+    layout_id: row.layout_id || null,
+    group_id: row.group_id || null,
+    member_id: row.member_id || deviceId,
+    playback_revision: Number(row.playback_revision) || 0,
+    command_revision: row.command_revision || null,
+    state_revision: Number(row.state_revision) || 0,
+    updated_at: row.updated_at ?? null,
+    restore_source: 'display',
+    restore_source_device_id: deviceId,
+  };
+}
+
+function restoreStateForDevice(deviceId, device, wall, layoutGroup) {
+  const ownState = displayStateForDevice(deviceId);
+  const leaderDeviceId = layoutGroup?.layout === 'span' && layoutGroup.member_ids.length > 1
+    ? layoutGroup.leader_device_id
+    : null;
+  if (!device?.wall_id || !wall || !leaderDeviceId || leaderDeviceId === deviceId) {
+    return ownState;
+  }
+
+  const leaderState = displayStateForDevice(leaderDeviceId);
+  if (!leaderState || leaderState.slide_index == null) return ownState;
+
+  // In span-wall mode the leader is authoritative for document/deck page
+  // position. Only borrow it when it is clearly the same content; otherwise a
+  // stale leader row could jump a reconnecting member to the wrong deck.
+  if (ownState?.current_content_id && leaderState.current_content_id && ownState.current_content_id !== leaderState.current_content_id) {
+    return ownState;
+  }
+  return {
+    ...leaderState,
+    // Slide position is group-authoritative, but optimistic state revisions
+    // are per renderer. A follower must rebase from its own persisted counter
+    // after a kiosk reload or every new report can be rejected as stale.
+    state_revision: ownState?.state_revision ?? leaderState.state_revision,
+    restore_source: 'layout_group_leader',
+    restore_source_device_id: leaderDeviceId,
+    wall_id: wall.id,
+    layout_id: `${wall.id}:layout:${Number(wall.layout_revision) || 0}`,
+    group_id: layoutGroup.id,
+    member_id: deviceId,
+  };
 }
 
 // Build playlist payload with layout and zones
@@ -167,13 +282,22 @@ function buildPlaylistPayload(deviceId) {
   // player rect. The intersection is what this screen displays. The leader
   // drives playback; followers track via wall:sync.
   let wall_config = null;
+  let wall = null;
+  let wallLayout = null;
+  let layoutGroup = null;
   if (device?.wall_id) {
-    const wall = db.prepare('SELECT * FROM video_walls WHERE id = ?').get(device.wall_id);
+    wall = db.prepare('SELECT * FROM video_walls WHERE id = ?').get(device.wall_id);
     const pos = db.prepare('SELECT * FROM video_wall_devices WHERE wall_id = ? AND device_id = ?').get(device.wall_id, deviceId);
-    // 'split' template: each member screen plays its OWN playlist full-screen, so
-    // we DON'T emit wall_config (no leader/follower sync, no slice mapping). Only
-    // 'span' (the default) builds the spanning wall_config below.
-    if (wall && pos && wall.layout_mode !== 'split') {
+    const allMembers = wall ? db.prepare(`
+      SELECT vwd.*, d.name AS device_name, d.playlist_id
+      FROM video_wall_devices vwd JOIN devices d ON d.id = vwd.device_id
+      WHERE vwd.wall_id = ? ORDER BY vwd.grid_row, vwd.grid_col
+    `).all(wall.id) : [];
+    wallLayout = wall ? parseStoredLayout(wall, allMembers) : null;
+    layoutGroup = groupForDevice(wallLayout, deviceId);
+    // Solo groups play independently. Spanned groups receive a composite that
+    // is bounded only by their own contiguous members.
+    if (wall && pos && layoutGroup?.layout === 'span' && layoutGroup.member_ids.length > 1) {
       const baseW = 320, baseH = 180;
       const bezelH = wall.bezel_h_mm || 0;
       const bezelV = wall.bezel_v_mm || 0;
@@ -189,12 +313,16 @@ function buildPlaylistPayload(deviceId) {
         h: Math.round(pos.canvas_height ?? baseH),
       };
 
-      // Player rect defaults to the bounding box of all screens on the wall.
+      // Player rect defaults to the bounding box of this subgroup, never the
+      // full parent wall. Explicit wall player geometry applies only to the
+      // legacy/full-wall span.
       let playerRect;
-      if (wall.player_x !== null && wall.player_x !== undefined) {
+      const isFullWallGroup = layoutGroup.member_ids.length === allMembers.length;
+      if (isFullWallGroup && wall.player_x !== null && wall.player_x !== undefined) {
         playerRect = { x: wall.player_x, y: wall.player_y, w: wall.player_width, h: wall.player_height };
       } else {
-        const all = db.prepare('SELECT * FROM video_wall_devices WHERE wall_id = ?').all(wall.id);
+        const groupIds = new Set(layoutGroup.member_ids);
+        const all = allMembers.filter((member) => groupIds.has(member.device_id));
         let x = Infinity, y = Infinity, x2 = -Infinity, y2 = -Infinity;
         for (const p of all) {
           const px = p.canvas_x ?? (p.grid_col * (baseW + bezelH));
@@ -219,24 +347,41 @@ function buildPlaylistPayload(deviceId) {
       wall_config = {
         wall_id: wall.id,
         wall_name: wall.name || null,
+        layout_id: wallLayout.id,
+        layout_revision: wallLayout.revision,
+        group_id: layoutGroup.id,
+        member_id: deviceId,
+        group_member_ids: layoutGroup.member_ids,
         grid_col: pos.grid_col,
         grid_row: pos.grid_row,
-        grid_cols: wall.grid_cols,
-        grid_rows: wall.grid_rows,
+        grid_cols: layoutGroup.geometry.columns,
+        grid_rows: layoutGroup.geometry.rows,
         screen_rect: screenRect,
         player_rect: playerRect,
-        is_leader: wall.leader_device_id === deviceId,
+        is_leader: layoutGroup.leader_device_id === deviceId,
         rotation: pos.rotation || 0,
         refresh_rate_hz: wall.refresh_rate_hz || null,
       };
     }
   }
 
-  return {
+  const payload = {
     assignments,
     layout,
     orientation: device?.orientation || 'landscape',
     wall_config,
+    display_state: restoreStateForDevice(deviceId, device, wall, layoutGroup),
+    wall_layout: wallLayout,
+    layout_context: layoutGroup ? {
+      wall_id: wall?.id || null,
+      layout_id: wallLayout?.id || null,
+      layout_revision: wallLayout?.revision || 0,
+      group_id: layoutGroup.id,
+      member_id: deviceId,
+      group_member_ids: layoutGroup.member_ids,
+      group_layout: layoutGroup.layout,
+      leader_device_id: layoutGroup.leader_device_id,
+    } : null,
     // 2026-05-28: surface the device's authoritative geometry so the player
     // can size to the canonical (admin-overridden) resolution rather than the
     // browser-reported screen.width/height (which underreports on Fire TV).
@@ -248,6 +393,21 @@ function buildPlaylistPayload(deviceId) {
     },
     display_profile: profileForDevice(device),
   };
+
+  // Stable revision for missed-push reconciliation. Playback state is excluded:
+  // slide/time updates must not make the player rebuild otherwise unchanged
+  // media. The player sends this value in a lightweight periodic sync check.
+  payload.playlist_revision = crypto.createHash('sha256').update(JSON.stringify({
+    assignments: payload.assignments,
+    layout: payload.layout,
+    orientation: payload.orientation,
+    wall_config: payload.wall_config,
+    wall_layout: payload.wall_layout,
+    layout_context: payload.layout_context,
+    device_geometry: payload.device_geometry,
+    display_profile: payload.display_profile,
+  })).digest('hex').slice(0, 24);
+  return payload;
 }
 
 // Device access gating (billing/trial/device-limit) has been removed.
@@ -283,6 +443,7 @@ module.exports = function setupDeviceSocket(io) {
     console.log(`Device socket connected: ${socket.id}`);
     let currentDeviceId = null;
     let authenticated = false; // Track whether this socket has been authenticated
+    let lastPlaylistSyncAt = 0;
 
     // ── Classroom room-agent ("node") branch ────────────────────────────────
     // A room-agent connects with handshake auth { role:'node', node_id, token }.
@@ -304,6 +465,15 @@ module.exports = function setupDeviceSocket(io) {
       try { socket.emit('node:sync-manifest', nodeRegistry.buildContentManifest(db)); } catch (_) {}
       socket.on('node:heartbeat', (payload) => {
         try { nodeRegistry.recordHeartbeat(db, nodeId, payload); } catch (_) {}
+        try {
+          dashboardNs.emit('dashboard:node-status', {
+            node_id: nodeId,
+            node_type: payload && payload.node_type ? payload.node_type : hsAuth.node_type || 'node',
+            room_id: payload && payload.room_id ? payload.room_id : config.classroomCache && config.classroomCache.roomId || null,
+            status: 'online',
+            ...payload,
+          });
+        } catch (_) {}
       });
       socket.on('node:request-manifest', () => {
         try { socket.emit('node:sync-manifest', nodeRegistry.buildContentManifest(db)); } catch (_) {}
@@ -636,10 +806,37 @@ module.exports = function setupDeviceSocket(io) {
       }
     });
 
+    // Repair a missed live playlist push without re-registering or reloading the
+    // whole kiosk page. The client sends only its applied revision; a full
+    // payload is returned only when DB/wall geometry actually differs.
+    socket.on('device:playlist-sync', (data, acknowledge) => {
+      try {
+        if (!requireDeviceAuth()) return;
+        const now = Date.now();
+        if (now - lastPlaylistSyncAt < 1000) {
+          if (typeof acknowledge === 'function') acknowledge({ ok: false, rate_limited: true });
+          return;
+        }
+        lastPlaylistSyncAt = now;
+        const payload = buildPlaylistPayload(currentDeviceId);
+        const appliedRevision = data && typeof data.playlist_revision === 'string'
+          ? data.playlist_revision
+          : null;
+        const changed = !appliedRevision || appliedRevision !== payload.playlist_revision;
+        if (changed) socket.emit('device:playlist-update', payload);
+        if (typeof acknowledge === 'function') {
+          acknowledge({ ok: true, changed, playlist_revision: payload.playlist_revision });
+        }
+      } catch (e) {
+        console.warn(`device:playlist-sync failed for ${currentDeviceId}: ${e.message}`);
+        if (typeof acknowledge === 'function') acknowledge({ ok: false, error: 'sync_failed' });
+      }
+    });
+
     // Screenshot received from device - relay via WebSocket, keep latest in memory
     socket.on('device:screenshot', (data) => {
       if (!requireDeviceAuth()) return;
-      const { device_id, image_b64 } = data;
+      const { device_id, image_b64, captured_at, timestamp } = data;
       if (!device_id || device_id !== currentDeviceId || !image_b64) return;
       // Validate screenshot size (max 2MB base64 ≈ 1.5MB image)
       if (image_b64.length > 2 * 1024 * 1024) return;
@@ -648,12 +845,21 @@ module.exports = function setupDeviceSocket(io) {
       if (!lastScreenshots) lastScreenshots = {};
       lastScreenshots[device_id] = image_b64;
 
-      // Relay directly to dashboard - no disk write
+      // Keep the hydrated dashboard preview timestamp in sync with live captures.
+      try {
+        const result = persistScreenshot(device_id, image_b64, captured_at ?? timestamp);
+        if (result && result.applied === false) return;
+      } catch (err) {
+        console.error('Screenshot persist error:', err);
+      }
+
+      // Relay directly to open dashboards for immediate refresh.
       try {
         emitToDeviceWorkspace(dashboardNs, device_id, 'dashboard:screenshot-ready', {
           device_id,
           image_data: `data:image/jpeg;base64,${image_b64}`,
-          timestamp: Date.now()
+          timestamp: Date.now(),
+          captured_at: Math.floor(Date.now() / 1000),
         });
       } catch (err) {
         console.error('Screenshot save error:', err);
@@ -672,49 +878,63 @@ module.exports = function setupDeviceSocket(io) {
     // ── Phase 2: reliable command/state model ─────────────────────────────
     // Device acks a command_id it received via device:command. Server updates
     // command_logs (bubbling child → parent for wall/group commands), upserts
-    // display_states if a state snapshot is attached, and relays a
-    // command:ack broadcast to the target's per-target room so dashboards
-    // tracking it flip the status chip.
+    // display_states if a state snapshot is attached, and relays command:ack to
+    // both the selected target room and the workspace stream. The workspace
+    // stream keeps web/Electron controllers in sync even before they select a
+    // specific target room.
     socket.on('device:ack', (data) => {
       try {
         if (!requireDeviceAuth()) return;
-        const { command_id, ok, error, state } = data || {};
+        const ack = deviceContract.createAck({ ...(data || {}), device_id: currentDeviceId });
+        const { command_id, ok, error, state } = ack;
         if (!command_id) return;
         commandModel.recordAck({
           command_id,
           ok: ok !== false,
-          error: error || null,
+          error: error ? `${error.code}: ${error.message}` : null,
           state: state || null,
           target_type: 'display',
           target_id: currentDeviceId,
         });
-        const room = displayRoom(currentDeviceId);
-        if (room) {
-          try { dashboardNs.to(room).emit('command:ack', {
-            command_id, device_id: currentDeviceId,
-            ok: ok !== false, error: error || null,
-          }); } catch (_) {}
-        }
+        emitToDeviceTargetAndWorkspace(dashboardNs, currentDeviceId, 'command:ack', {
+          ...ack, target_type: 'display', target_id: currentDeviceId,
+          status: ok === false ? 'failed' : 'acked',
+        });
       } catch (e) {
-        console.warn(`device:ack handler error: ${e.message}`);
+        console.warn(`device:ack handler error for ${currentDeviceId}: ${e.message}`);
+        const commandId = data && data.command_id;
+        if (commandId) {
+          emitToDeviceTargetAndWorkspace(dashboardNs, currentDeviceId, 'command:ack', deviceContract.createAck({
+            command_id: commandId,
+            device_id: currentDeviceId,
+            ok: false,
+            error: { code: 'state_persistence_failed', message: e.message },
+          }));
+        }
       }
     });
 
     // Periodic / on-demand display state self-report. Server upserts
-    // display_states and emits dashboard:state-sync to the target's room so the
-    // Command Center status chips stay fresh without polling.
+    // display_states and emits dashboard:state-sync to the target room and the
+    // workspace stream so every open controller hydrates from device truth
+    // without waiting for polling/screenshot refresh.
     socket.on('device:state-report', (data) => {
       try {
         if (!requireDeviceAuth()) return;
-        const state = data && data.state ? data.state : data;
-        commandModel.mergeDisplayState('display', currentDeviceId, state || {});
-        commandModel.recordHeartbeat({ target_type: 'display', target_id: currentDeviceId, ts: Date.now() });
-        const room = displayRoom(currentDeviceId);
-        if (room) {
-          try { dashboardNs.to(room).emit('dashboard:state-sync', {
-            target_type: 'display', target_id: currentDeviceId, state: state || {},
-          }); } catch (_) {}
+        const rawState = data && data.state ? data.state : data;
+        const state = rawState && typeof rawState === 'object'
+          ? { ...rawState, slide_count: rawState.slide_count ?? rawState.slide_total ?? null }
+          : {};
+        const result = commandModel.mergeDisplayState('display', currentDeviceId, state);
+        if (result && result.applied === false) {
+          console.warn(`[state-report] rejected ${currentDeviceId} revision ${state && state.state_revision}: ${result.reason}`);
+          return;
         }
+        commandModel.recordHeartbeat({ target_type: 'display', target_id: currentDeviceId, ts: Date.now() });
+        emitToDeviceTargetAndWorkspace(dashboardNs, currentDeviceId, 'dashboard:state-sync', {
+          version: 1, type: 'device:state-report', target_type: 'display', target_id: currentDeviceId,
+          state: { ...(state || {}), state_revision: result.state_revision },
+        });
       } catch (e) {
         console.warn(`device:state-report handler error: ${e.message}`);
       }
@@ -937,17 +1157,20 @@ socket.on('device:wb-undo', () => {
       try {
       if (!requireDeviceAuth()) return;
       if (!data?.wall_id) return;
-      const isMember = db.prepare(
-        'SELECT 1 FROM video_wall_devices WHERE wall_id = ? AND device_id = ?'
-      ).get(data.wall_id, currentDeviceId);
-      if (!isMember) return;
-      const wallDevices = db.prepare(
-        'SELECT device_id FROM video_wall_devices WHERE wall_id = ? AND device_id != ?'
-      ).all(data.wall_id, currentDeviceId);
+      const wall = db.prepare('SELECT * FROM video_walls WHERE id = ?').get(data.wall_id);
+      const members = wall ? db.prepare(`
+        SELECT vwd.*, d.name AS device_name, d.playlist_id
+        FROM video_wall_devices vwd JOIN devices d ON d.id = vwd.device_id
+        WHERE vwd.wall_id = ? ORDER BY vwd.grid_row, vwd.grid_col
+      `).all(data.wall_id) : [];
+      const layout = wall ? parseStoredLayout(wall, members) : null;
+      const group = groupForDevice(layout, currentDeviceId);
+      if (!group || group.layout !== 'span' || group.leader_device_id !== currentDeviceId) return;
+      const wallDevices = group.member_ids.filter((id) => id !== currentDeviceId);
       // Stamp device_id with the authenticated id so followers can trust it.
-      const payload = { ...data, device_id: currentDeviceId };
-      for (const wd of wallDevices) {
-        deviceNs.to(wd.device_id).emit('wall:sync', payload);
+      const payload = { ...data, group_id: group.id, device_id: currentDeviceId };
+      for (const deviceId of wallDevices) {
+        deviceNs.to(deviceId).emit('wall:sync', payload);
       }
       } catch (e) {
         console.warn(`wall:sync handler error: ${e.message}`);
@@ -962,14 +1185,18 @@ socket.on('device:wb-undo', () => {
       try {
         if (!requireDeviceAuth()) return;
         if (!data?.wall_id) return;
-        const isMember = db.prepare(
-          'SELECT 1 FROM video_wall_devices WHERE wall_id = ? AND device_id = ?'
-        ).get(data.wall_id, currentDeviceId);
-        if (!isMember) return;
-        const wall = db.prepare('SELECT leader_device_id FROM video_walls WHERE id = ?').get(data.wall_id);
-        if (!wall?.leader_device_id || wall.leader_device_id === currentDeviceId) return;
-        deviceNs.to(wall.leader_device_id).emit('wall:sync-request', {
+        const wall = db.prepare('SELECT * FROM video_walls WHERE id = ?').get(data.wall_id);
+        const members = wall ? db.prepare(`
+          SELECT vwd.*, d.name AS device_name, d.playlist_id
+          FROM video_wall_devices vwd JOIN devices d ON d.id = vwd.device_id
+          WHERE vwd.wall_id = ? ORDER BY vwd.grid_row, vwd.grid_col
+        `).all(data.wall_id) : [];
+        const layout = wall ? parseStoredLayout(wall, members) : null;
+        const group = groupForDevice(layout, currentDeviceId);
+        if (!group || group.layout !== 'span' || group.leader_device_id === currentDeviceId) return;
+        deviceNs.to(group.leader_device_id).emit('wall:sync-request', {
           wall_id: data.wall_id,
+          group_id: group.id,
           requested_by: currentDeviceId,
         });
       } catch (e) {

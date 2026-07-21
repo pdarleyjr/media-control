@@ -14,7 +14,8 @@ screen. See `planning/command-center/KAMRUI_ROOM_AGENT.md`.
   verifying its real SHA256 on demand + matching the filename; refuses to serve
   on any mismatch.
 - Blocks `will-navigate` / window-open to any host outside the allowlist
-  (the CC host, GMKtec Tailnet default `100.81.154.123`, loopback).
+  (the CC host, the wired LAN host when configured, GMKtec Tailnet fallback
+  `100.81.154.123`, loopback).
 - Hardened: `fullscreen:true`, `autoHideMenuBar`, `webPreferences.devtools:false`,
   no `nodeIntegration`, `contextIsolation:true`, `sandbox:true`.
 - The renderer sees ONLY the `window.mcBridge` surface exposed by `preload.js`
@@ -31,7 +32,8 @@ node main.js --offline-bundle=./offline-fallback   # explicit bundle path
 ## Env
 | Env | Default | Notes |
 |-----|---------|-------|
-| `MC_COMMAND_CENTER_URL` | `https://media-control.mbfdhub.com/app` | remote CC URL |
+| `MC_COMMAND_CENTER_LAN_URL` | `http://gmktec.local:8096/app` | preferred wired CC URL when the mini-server is on the same switch |
+| `MC_COMMAND_CENTER_URL` | `https://media-control.mbfdhub.com/app` | remote CC URL fallback |
 | `MC_ROOM_AGENT_ASSETS_DIR` | `/opt/mbfd/room-agent/cache/assets` | cache to resolve `mcmedia://` |
 | `MC_AGENT_PORT` | `8097` | loopback probe port for `localAssetAvailable` |
 | `MC_OFFLINE_BUNDLE` | — | baked bundle dir (also `--offline-bundle=`) |

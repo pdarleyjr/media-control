@@ -9,7 +9,7 @@ const { db } = require('../db/database');
 // user's first accessible workspace.
 function generateToken(user, currentWorkspaceId) {
   return jwt.sign(
-    { id: user.id, email: user.email, role: user.role, current_workspace_id: currentWorkspaceId || null },
+    { id: user.id, email: user.email, username: user.username || null, role: user.role, current_workspace_id: currentWorkspaceId || null },
     config.jwtSecret,
     { algorithm: 'HS256', expiresIn: config.jwtExpiry }
   );
@@ -25,6 +25,7 @@ function recoveryUser(decoded) {
   return {
     id: decoded.id,
     email: decoded.email || 'admin@localhost',
+    username: decoded.username || null,
     name: 'Recovery Admin',
     role: decoded.role || 'admin',
     auth_provider: 'recovery',
@@ -48,7 +49,7 @@ function requireAuth(req, res, next) {
       req.jwtWorkspaceId = null;
       return next();
     }
-    const user = db.prepare('SELECT id, email, name, role, auth_provider, avatar_url, plan_id, email_alerts FROM users WHERE id = ?').get(decoded.id);
+    const user = db.prepare('SELECT id, email, username, name, role, auth_provider, avatar_url, plan_id, email_alerts FROM users WHERE id = ?').get(decoded.id);
     if (!user) return res.status(401).json({ error: 'User not found' });
     req.user = user;
     // Tenancy middleware reads this on the resolver step.
@@ -68,7 +69,7 @@ function optionalAuth(req, res, next) {
       const decoded = verifyToken(token);
       req.user = decoded.recovery
         ? recoveryUser(decoded)
-        : db.prepare('SELECT id, email, name, role, auth_provider, avatar_url, plan_id FROM users WHERE id = ?').get(decoded.id);
+        : db.prepare('SELECT id, email, username, name, role, auth_provider, avatar_url, plan_id FROM users WHERE id = ?').get(decoded.id);
       req.jwtWorkspaceId = decoded.current_workspace_id || null;
     } catch (err) {
       // Token invalid, continue without user

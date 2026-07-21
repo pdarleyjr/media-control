@@ -6,6 +6,7 @@ const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
 // Phase 2.2i: workspace-aware access. Same pattern as devices/content/widgets.
 const { accessContext } = require('../lib/tenancy');
 const commandModel = require('../lib/command-model');
+const { ensureDevicePlaylist: ensureWallAwareDevicePlaylist } = require('../lib/wall-playlists');
 
 const VALID_COLOR = /^#[0-9A-Fa-f]{6}$/;
 const ALLOWED_COMMANDS = ['screen_on', 'screen_off', 'launch', 'update', 'reboot', 'shutdown'];
@@ -198,13 +199,7 @@ router.delete('/:id/devices/:deviceId', requireGroupWrite, (req, res) => {
 // The auto-created playlist lives in the same workspace as the device, so
 // once playlists.js scopes by workspace_id this helper's rows remain visible.
 function ensureDevicePlaylist(deviceId, userId) {
-  const device = db.prepare('SELECT playlist_id, workspace_id, name FROM devices WHERE id = ?').get(deviceId);
-  if (device?.playlist_id) return device.playlist_id;
-  const playlistId = uuidv4();
-  db.prepare('INSERT INTO playlists (id, user_id, workspace_id, name, is_auto_generated) VALUES (?, ?, ?, ?, 1)')
-    .run(playlistId, userId, device?.workspace_id || null, `${device?.name || 'Display'} playlist`);
-  db.prepare('UPDATE devices SET playlist_id = ? WHERE id = ?').run(playlistId, deviceId);
-  return playlistId;
+  return ensureWallAwareDevicePlaylist(deviceId, userId);
 }
 
 // Mark playlist as draft (called after any item mutation)
@@ -302,6 +297,10 @@ router.post('/:id/command', requireGroupWrite, (req, res) => {
 
   const deviceNs = req.app.get('io').of('/device');
   const results = [];
+  const screenState = type === 'screen_on' ? 1 : type === 'screen_off' ? 0 : null;
+  const updateScreenState = screenState == null
+    ? null
+    : db.prepare("UPDATE devices SET screen_on = ?, updated_at = strftime('%s','now') WHERE id = ?");
 
   for (const device of devices) {
     const room = deviceNs.adapter.rooms.get(device.id);
@@ -312,6 +311,7 @@ router.post('/:id/command', requireGroupWrite, (req, res) => {
         payload: payload || {}, issued_by: req.user && req.user.id, requires_ack: commandModel.ackRequiredForType(type),
       }); } catch (e) { /* command-model ingest is best-effort */ }
       deviceNs.to(device.id).emit('device:command', { type, payload: payload || {}, command_id: cmd ? cmd.command_id : null });
+      if (updateScreenState) updateScreenState.run(screenState, device.id);
       results.push({ device_id: device.id, name: device.name, status: 'sent', command_id: cmd ? cmd.command_id : null });
     } else {
       try { commandModel.ingestCommand({

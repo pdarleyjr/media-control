@@ -16,9 +16,16 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const https = require('https');
+const crypto = require('crypto');
 const { URL } = require('url');
 
 const ID_RE = /^[A-Za-z0-9._-]{1,128}$/; // content ids are uuids; never allow path separators
+const SHA256_RE = /^[0-9a-f]{64}$/i;
+
+function checksumMatches(bytes, expected) {
+  if (!SHA256_RE.test(String(expected || ''))) return false;
+  return crypto.createHash('sha256').update(bytes).digest('hex') === String(expected).toLowerCase();
+}
 
 function pickLib(u) { return u.protocol === 'https:' ? https : http; }
 
@@ -31,6 +38,7 @@ function createCacheServer(opts = {}) {
   const log = opts.log || (() => {});
   const warn = opts.warn || (() => {});
   const downloading = new Set(); // content_ids with a tee-write in flight
+  const manifestById = new Map();
 
   try { fs.mkdirSync(contentDir, { recursive: true }); } catch (_) { /* ignore */ }
 
@@ -131,10 +139,22 @@ function createCacheServer(opts = {}) {
 
   // Pre-warm one content id by issuing an internal cache fill (no client). Used
   // by the manifest handler so existing library content is staged ahead of use.
-  function prewarm(id) {
+  function prewarm(id, manifestItem) {
     return new Promise((resolve) => {
       if (!ID_RE.test(String(id || ''))) return resolve(false);
-      if (fs.existsSync(fileFor(id)) || downloading.has(id)) return resolve(true);
+      const expected = manifestItem || manifestById.get(String(id)) || null;
+      const expectedSha = String(expected && expected.sha256 || '').toLowerCase();
+      const expectedSize = Number(expected && (expected.size || expected.size_bytes)) || null;
+      if (fs.existsSync(fileFor(id))) {
+        const meta = readMeta(id) || {};
+        if (meta.checksum_verified === true && meta.sha256 === expectedSha && (!expectedSize || meta.size === expectedSize)) {
+          return resolve(true);
+        }
+        try { fs.unlinkSync(fileFor(id)); } catch (_) {}
+        try { fs.unlinkSync(metaFor(id)); } catch (_) {}
+      }
+      if (downloading.has(id)) return resolve(true);
+      if (!SHA256_RE.test(expectedSha)) return resolve(false);
       downloading.add(id);
       const originUrl = `${originBaseUrl}/api/content/${encodeURIComponent(id)}/file`;
       let u; try { u = new URL(originUrl); } catch { downloading.delete(id); return resolve(false); }
@@ -143,13 +163,21 @@ function createCacheServer(opts = {}) {
       const r = lib.get(u, { timeout: 300000 }, (ores) => {
         if ((ores.statusCode || 0) !== 200) { ores.resume(); downloading.delete(id); return resolve(false); }
         let out; try { out = fs.createWriteStream(partPath, { flags: 'w' }); } catch { downloading.delete(id); return resolve(false); }
+        const hash = crypto.createHash('sha256');
+        ores.on('data', (chunk) => hash.update(chunk));
         ores.pipe(out);
         out.on('finish', () => {
           try {
+            const actualSha = hash.digest('hex');
+            const actualSize = fs.statSync(partPath).size;
+            if (actualSha !== expectedSha) throw new Error('sha256_mismatch');
+            if (expectedSize && actualSize !== expectedSize) throw new Error('size_mismatch');
             fs.renameSync(partPath, fileFor(id));
             fs.writeFileSync(metaFor(id), JSON.stringify({
               content_type: ores.headers['content-type'] || 'application/octet-stream',
-              size: Number(ores.headers['content-length']) || null,
+              size: actualSize,
+              sha256: actualSha,
+              checksum_verified: true,
               cached_at: Math.floor(Date.now() / 1000),
             }));
             log(`[cache] prewarmed ${id}`);
@@ -168,7 +196,10 @@ function createCacheServer(opts = {}) {
     if (!Array.isArray(items)) return;
     for (const it of items) {
       const id = it && (it.content_id || it.id);
-      if (id) { try { await prewarm(String(id)); } catch (_) { /* keep going */ } }
+      if (id) {
+        manifestById.set(String(id), it);
+        try { await prewarm(String(id), it); } catch (_) { /* keep going */ }
+      }
     }
   }
 
@@ -217,4 +248,4 @@ function createCacheServer(opts = {}) {
   return { listen, close, prewarm, prewarmManifest, getStats, server };
 }
 
-module.exports = { createCacheServer };
+module.exports = { checksumMatches, createCacheServer };

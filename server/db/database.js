@@ -6,10 +6,12 @@ const config = require('../config');
 const dbDir = path.dirname(config.dbPath);
 if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
 
-const db = new Database(config.dbPath);
+const db = new Database(config.dbPath, { timeout: 10000 });
 
 // Enable WAL mode and foreign keys
+db.pragma('busy_timeout = 10000');
 db.pragma('journal_mode = WAL');
+db.pragma('synchronous = NORMAL');
 db.pragma('foreign_keys = ON');
 
 // Run schema
@@ -62,6 +64,10 @@ function ensureMultitenancyMigration() {
 
 // Migrations for existing databases
 const migrations = [
+  // Optional username login. Email remains required in storage for backwards
+  // compatibility, while the partial index permits legacy users with no username.
+  'ALTER TABLE users ADD COLUMN username TEXT',
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_nocase ON users(username COLLATE NOCASE) WHERE username IS NOT NULL AND trim(username) <> ''",
   'ALTER TABLE content ADD COLUMN remote_url TEXT',
   'ALTER TABLE devices ADD COLUMN user_id TEXT REFERENCES users(id)',
   'ALTER TABLE content ADD COLUMN user_id TEXT REFERENCES users(id)',
@@ -196,6 +202,10 @@ const migrations = [
   // plays its OWN content full-screen, independently — no wall_config emitted).
   // The dashboard wall card exposes this as a Span/Split template toggle.
   "ALTER TABLE video_walls ADD COLUMN layout_mode TEXT NOT NULL DEFAULT 'span'",
+  // 2026-07-17: composable contiguous subgroups. Existing walls remain on the
+  // legacy span/split projection until an operator explicitly applies a layout.
+  "ALTER TABLE video_walls ADD COLUMN layout_json TEXT",
+  "ALTER TABLE video_walls ADD COLUMN layout_revision INTEGER NOT NULL DEFAULT 0",
   // 2026-06-05: persistent whiteboard state per display. Stop/hide does not
   // clear strokes; explicit clear and media broadcasts do.
   `CREATE TABLE IF NOT EXISTS whiteboard_sessions (
@@ -710,6 +720,101 @@ function migrateDisplayViewportColumns() {
 
 migrateDisplayViewportColumns();
 
+// Phase 2: node transport state. Keep node heartbeat transport metadata in
+// sync with the schema even on older databases that predate the column.
+const NODE_TRANSPORT_STATE_ID = 'node_transport_state';
+function migrateNodeTransportStateColumns() {
+  let managedCols = [];
+  let heartbeatCols = [];
+  try {
+    managedCols = db.prepare('PRAGMA table_info(managed_nodes)').all().map((c) => c.name);
+  } catch (e) {
+    console.warn('[node_transport_state] table_info(managed_nodes) failed:', e.message);
+    return;
+  }
+  try {
+    heartbeatCols = db.prepare('PRAGMA table_info(node_heartbeats)').all().map((c) => c.name);
+  } catch (e) {
+    console.warn('[node_transport_state] table_info(node_heartbeats) failed:', e.message);
+    return;
+  }
+
+  const adds = [
+    ['managed_nodes', 'network_state_json', 'ALTER TABLE managed_nodes ADD COLUMN network_state_json TEXT', managedCols],
+    ['node_heartbeats', 'network_state_json', 'ALTER TABLE node_heartbeats ADD COLUMN network_state_json TEXT', heartbeatCols],
+    ['managed_nodes', 'telemetry_json', 'ALTER TABLE managed_nodes ADD COLUMN telemetry_json TEXT', managedCols],
+    ['node_heartbeats', 'telemetry_json', 'ALTER TABLE node_heartbeats ADD COLUMN telemetry_json TEXT', heartbeatCols],
+  ];
+
+  for (const [table, column, sql, cols] of adds) {
+    if (cols.includes(column)) continue;
+    try {
+      db.exec(sql);
+      console.log(`[node_transport_state] added column ${table}.${column}`);
+    } catch (e) {
+      console.error(`[node_transport_state] ADD COLUMN ${table}.${column} failed:`, e.message);
+    }
+  }
+
+  try {
+    db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(NODE_TRANSPORT_STATE_ID);
+  } catch (e) {
+    console.warn('[node_transport_state] stamp failed:', e.message);
+  }
+}
+
+migrateNodeTransportStateColumns();
+
+const DISPLAY_STATE_REVISION_ID = 'display_state_revision';
+function migrateDisplayStateRevision() {
+  let cols = [];
+  try { cols = db.prepare('PRAGMA table_info(display_states)').all().map((column) => column.name); }
+  catch (e) { console.warn('[display_state_revision] table_info failed:', e.message); return; }
+  const additions = [
+    ['state_revision', 'ALTER TABLE display_states ADD COLUMN state_revision INTEGER NOT NULL DEFAULT 0'],
+    ['slide_count', 'ALTER TABLE display_states ADD COLUMN slide_count INTEGER'],
+    ['wall_id', 'ALTER TABLE display_states ADD COLUMN wall_id TEXT'],
+    ['layout_id', 'ALTER TABLE display_states ADD COLUMN layout_id TEXT'],
+    ['group_id', 'ALTER TABLE display_states ADD COLUMN group_id TEXT'],
+    ['member_id', 'ALTER TABLE display_states ADD COLUMN member_id TEXT'],
+    ['playback_revision', 'ALTER TABLE display_states ADD COLUMN playback_revision INTEGER'],
+    ['command_revision', 'ALTER TABLE display_states ADD COLUMN command_revision TEXT'],
+  ];
+  for (const [name, sql] of additions) {
+    if (cols.includes(name)) continue;
+    try { db.exec(sql); }
+    catch (e) { console.error(`[display_state_revision] ${name} failed:`, e.message); return; }
+  }
+  try { db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(DISPLAY_STATE_REVISION_ID); }
+  catch (e) { console.warn('[display_state_revision] stamp failed:', e.message); }
+}
+
+migrateDisplayStateRevision();
+
+const CONTENT_LIFECYCLE_ID = 'content_asset_lifecycle';
+function migrateContentLifecycle() {
+  let cols = [];
+  try { cols = db.prepare('PRAGMA table_info(content)').all().map((column) => column.name); }
+  catch (e) { console.warn('[content_asset_lifecycle] table_info failed:', e.message); return; }
+  const additions = [
+    ['original_filepath', 'ALTER TABLE content ADD COLUMN original_filepath TEXT'],
+    ['original_sha256', 'ALTER TABLE content ADD COLUMN original_sha256 TEXT'],
+    ['processing_status', "ALTER TABLE content ADD COLUMN processing_status TEXT NOT NULL DEFAULT 'uploaded'"],
+    ['processing_error', 'ALTER TABLE content ADD COLUMN processing_error TEXT'],
+    ['media_probe_json', 'ALTER TABLE content ADD COLUMN media_probe_json TEXT'],
+    ['updated_at', 'ALTER TABLE content ADD COLUMN updated_at INTEGER'],
+  ];
+  for (const [name, sql] of additions) {
+    if (cols.includes(name)) continue;
+    try { db.exec(sql); }
+    catch (e) { console.error(`[content_asset_lifecycle] ${name} failed:`, e.message); }
+  }
+  try { db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(CONTENT_LIFECYCLE_ID); }
+  catch (e) { console.warn('[content_asset_lifecycle] stamp failed:', e.message); }
+}
+
+migrateContentLifecycle();
+
 // Phase 3: Operational Activities ("Scenes") + asset placements.
 // A scene is a named snapshot of which content/playlist shows on which display;
 // one tap triggers it and pushes each placement to its device via the existing
@@ -924,6 +1029,30 @@ function applyCanvasLayersDefaultFill() {
   db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(CANVAS_LAYERS_DEFAULT_FILL_ID);
 }
 applyCanvasLayersDefaultFill();
+
+// The MBFD Map is authored as one full-wall composite. Older imports saved it
+// with a per-item "contain" override, which overruled the wall player's fill
+// default and letterboxed the map. Heal that known content row without changing
+// the fit policy of unrelated images.
+const MBFD_MAP_WALL_FILL_ID = 'mbfd_map_wall_fill_v2';
+function healMbfdMapWallFit() {
+  const already = db.prepare('SELECT 1 FROM schema_migrations WHERE id = ?').get(MBFD_MAP_WALL_FILL_ID);
+  if (already) return;
+  try {
+    const updated = db.prepare(`
+      UPDATE content
+      SET default_fit_mode = 'fill'
+      WHERE lower(trim(filename)) = 'mbfd_map.png'
+        AND (default_fit_mode IS NULL OR lower(trim(default_fit_mode)) <> 'fill')
+    `).run();
+    console.log(`[mbfd_map_wall_fill_v2] updated ${updated.changes} content row(s)`);
+  } catch (e) {
+    console.warn(`[mbfd_map_wall_fill_v2] skipped: ${e.message}`);
+  }
+  try { db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(MBFD_MAP_WALL_FILL_ID); }
+  catch { /* best-effort stamp */ }
+}
+healMbfdMapWallFit();
 
 // ── YouTube MIME self-heal ─────────────────────────────────────────────────────
 // Content rows created before the MIME resolver fix were stored with mime_type

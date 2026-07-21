@@ -32,10 +32,14 @@
   var overlayEl = null;
   var connectingChipEl = null;
   var videoEl = null;
+  var imageEl = null;
   var iceConfig = null;
   var pendingRemoteCandidates = [];
   var teardownTimer = null;
   var setupTimer = null;
+  var relayExpiryTimer = null;
+  var lastRelayFrameAt = 0;
+  var lastReportedStatus = '';
 
   function log() {
     var args = Array.prototype.slice.call(arguments);
@@ -46,6 +50,24 @@
     var args = Array.prototype.slice.call(arguments);
     args.unshift('[screen-share-receiver]');
     try { console.warn.apply(console, args); } catch (_) {}
+  }
+
+  function reportStatus(status, reason) {
+    var key = String(status || '') + '|' + String(reason || '');
+    if (key === lastReportedStatus) return;
+    lastReportedStatus = key;
+    if (sock && sock.connected) {
+      try {
+        sock.emit('device:screen-share-status', {
+          status: String(status || 'unknown'),
+          reason: reason ? String(reason).slice(0, 160) : null
+        });
+      } catch (_) {}
+    }
+  }
+
+  function relayIsFresh() {
+    return lastRelayFrameAt > 0 && Date.now() - lastRelayFrameAt < 5000;
   }
 
   function ensureSocket() {
@@ -61,6 +83,9 @@
     sock.__screenShareWired = true;
 
     sock.on('device:screen-share-start', function (data) {
+      // A second authorized operator can take over a display. Remove every
+      // overlay and peer from the prior owner before preparing the new session.
+      teardown();
       // wall_tile is optional: { screen_rect, player_rect } describing this
       // device's slice of the broadcast canvas. When present the overlay
       // becomes a tile of the wall (positioned via vw/vh with overflow:hidden
@@ -69,6 +94,7 @@
       window.__screentinkerScreenShare.wallTile = wallTile;
       log('session start', wallTile ? 'wall-tile' : 'fullscreen');
       window.__screentinkerScreenShare.active = true;
+      reportStatus('started');
       armSetupWatchdog();
       ensureIceConfig().then(function () {
         createPeerConnection();
@@ -80,10 +106,24 @@
 
     sock.on('device:screen-share-offer', function (data) {
       log('offer received');
+      reportStatus('offer_received');
       handleOffer(data && data.sdp).catch(function (e) {
         warn('handleOffer failed:', e);
-        emitEnded();
+        reportStatus('offer_failed', e && e.message);
+        if (!relayIsFresh()) emitEnded();
       });
+    });
+
+    sock.on('device:screen-share-frame', function (data) {
+      var imageB64 = data && data.image_b64;
+      if (typeof imageB64 !== 'string' || imageB64.length < 100 || imageB64.length > 1200000) return;
+      if (pc && pc.connectionState === 'connected') return;
+      clearSetupWatchdog();
+      lastRelayFrameAt = Date.now();
+      window.__screentinkerScreenShare.active = true;
+      mountFrameOverlay(imageB64);
+      armRelayExpiry();
+      reportStatus('relay_active');
     });
 
     sock.on('device:screen-share-ice-candidate', function (data) {
@@ -101,6 +141,7 @@
     sock.on('device:screen-share-end', function (data) {
       log('session end', data || {});
       teardown();
+      reportStatus('ended');
     });
   }
 
@@ -176,18 +217,33 @@
         if (teardownTimer) { clearTimeout(teardownTimer); teardownTimer = null; }
         mountOverlay();
         playVideo();
+        reportStatus('webrtc_connected');
       } else if (state === 'failed') {
-        warn('connection failed; tearing down');
-        teardown();
-        emitEnded();
+        reportStatus('webrtc_failed');
+        if (relayIsFresh()) {
+          warn('connection failed; keeping socket relay active');
+          try { pc.close(); } catch (_) {}
+          pc = null;
+        } else {
+          warn('connection failed; tearing down');
+          teardown();
+          emitEnded();
+        }
       } else if (state === 'disconnected') {
         // Give it a few seconds for ICE restart / network recovery.
         if (teardownTimer) clearTimeout(teardownTimer);
         teardownTimer = setTimeout(function () {
           if (pc && pc.connectionState !== 'connected') {
-            warn('disconnected too long; tearing down');
-            teardown();
-            emitEnded();
+            if (relayIsFresh()) {
+              warn('WebRTC disconnected; keeping socket relay active');
+              try { pc.close(); } catch (_) {}
+              pc = null;
+              reportStatus('relay_active');
+            } else {
+              warn('disconnected too long; tearing down');
+              teardown();
+              emitEnded();
+            }
           }
         }, 5000);
       }
@@ -250,9 +306,24 @@
     clearSetupWatchdog();
     setupTimer = setTimeout(function () {
       warn('screen-share setup timed out before offer/connection');
+      reportStatus('setup_timeout', 'No offer or relay frame arrived within 15 seconds');
       teardown();
       emitEnded();
     }, 15000);
+  }
+
+  function armRelayExpiry() {
+    if (relayExpiryTimer) clearTimeout(relayExpiryTimer);
+    relayExpiryTimer = setTimeout(function () {
+      if (relayIsFresh()) {
+        armRelayExpiry();
+        return;
+      }
+      warn('socket relay frame stream expired');
+      reportStatus('relay_expired', 'No relay frame arrived within 5 seconds');
+      teardown();
+      emitEnded();
+    }, 5000);
   }
 
   // Pre-create the hidden video element so ontrack has somewhere to bind.
@@ -266,22 +337,17 @@
     videoEl.style.cssText = 'width:100%;height:100%;object-fit:contain;background:#000;';
   }
 
-  function mountOverlay() {
+  function mountMediaOverlay(mediaEl) {
     hideConnectingChip();
-    if (overlayEl) return;
-    if (!videoEl) ensureBackgroundStream();
-    overlayEl = document.createElement('div');
-    overlayEl.id = 'screen-share-overlay';
+    if (!overlayEl) {
+      overlayEl = document.createElement('div');
+      overlayEl.id = 'screen-share-overlay';
+    }
 
     var wallTile = window.__screentinkerScreenShare.wallTile;
     if (wallTile && wallTile.screen_rect && wallTile.player_rect) {
-      // Wall-tile mode. Mirrors the playlist's wall-stage CSS:
-      //   stage left = (player.x - screen.x) / screen.w * 100 vw
-      //   stage top  = (player.y - screen.y) / screen.h * 100 vh
-      //   stage size = (player.w / screen.w) * 100 vw, (player.h / screen.h) * 100 vh
-      // The stage commonly extends beyond the device's 100vw/100vh viewport
-      // (e.g. 300vw wide for a 3-tile-wide row); body overflow:hidden clips it
-      // so each TV shows only its slice of the broadcast.
+      // Each receiver gets the same full frame. This oversized stage is shifted
+      // so the browser viewport clips out exactly that TV's wall slice.
       var s = wallTile.screen_rect, p = wallTile.player_rect;
       if (s.w > 0 && s.h > 0) {
         var left = ((p.x - s.x) / s.w) * 100;
@@ -292,25 +358,41 @@
           'position:fixed;background:#000;z-index:99999;overflow:hidden;' +
           'left:' + left + 'vw;top:' + top + 'vh;' +
           'width:' + width + 'vw;height:' + height + 'vh;';
-        // Video fills the stage and is stretched (object-fit:fill) to match
-        // the wall aspect. Each device sees only the visible-viewport slice.
-        videoEl.style.cssText =
+        mediaEl.style.cssText =
           'width:100%;height:100%;object-fit:fill;background:#000;display:block;';
-        // Keep the page itself from showing scrollbars when the stage extends
-        // outside the viewport (playerContainer already has overflow:hidden in
-        // wall-mode, but the overlay sits at body level on top).
         document.documentElement.style.overflow = 'hidden';
         document.body.style.overflow = 'hidden';
       }
     } else {
-      // Fullscreen mode (existing single-display behavior).
       overlayEl.style.cssText =
         'position:fixed;inset:0;background:#000;z-index:99999;' +
         'display:flex;align-items:center;justify-content:center;';
+      mediaEl.style.cssText =
+        'width:100%;height:100%;object-fit:contain;background:#000;display:block;';
     }
-    overlayEl.appendChild(videoEl);
-    document.body.appendChild(overlayEl);
-    log('overlay mounted');
+
+    if (mediaEl.parentNode !== overlayEl) {
+      while (overlayEl.firstChild) overlayEl.removeChild(overlayEl.firstChild);
+      overlayEl.appendChild(mediaEl);
+    }
+    if (!overlayEl.parentNode) document.body.appendChild(overlayEl);
+  }
+
+  function mountOverlay() {
+    if (!videoEl) ensureBackgroundStream();
+    mountMediaOverlay(videoEl);
+    imageEl = null;
+    log('WebRTC overlay mounted');
+  }
+
+  function mountFrameOverlay(imageB64) {
+    if (!imageEl) {
+      imageEl = document.createElement('img');
+      imageEl.alt = '';
+      imageEl.draggable = false;
+    }
+    imageEl.src = 'data:image/jpeg;base64,' + imageB64;
+    mountMediaOverlay(imageEl);
   }
 
   // Autoplay-policy fallback. If unmuted play() rejects (kiosk hasn't had a
@@ -341,35 +423,31 @@
       document.documentElement.style.overflow = '';
       document.body.style.overflow = '';
     } catch (_) { /* */ }
-    if (!overlayEl) {
-      if (videoEl && videoEl.srcObject) {
-        try { videoEl.srcObject.getTracks().forEach(function (t) { t.stop(); }); } catch (_) {}
-        videoEl.srcObject = null;
-      }
-      videoEl = null;
-      return;
-    }
     try {
       if (videoEl && videoEl.srcObject) {
         videoEl.srcObject.getTracks().forEach(function (t) { t.stop(); });
         videoEl.srcObject = null;
       }
-      overlayEl.remove();
+      if (imageEl) imageEl.src = '';
+      if (overlayEl) overlayEl.remove();
     } catch (e) { warn('unmount error:', e); }
     overlayEl = null;
     videoEl = null;
+    imageEl = null;
     window.__screentinkerScreenShare.wallTile = null;
     log('overlay removed');
   }
 
   function teardown() {
     if (teardownTimer) { clearTimeout(teardownTimer); teardownTimer = null; }
+    if (relayExpiryTimer) { clearTimeout(relayExpiryTimer); relayExpiryTimer = null; }
     clearSetupWatchdog();
     if (pc) {
       try { pc.close(); } catch (_) { /* */ }
       pc = null;
     }
     pendingRemoteCandidates = [];
+    lastRelayFrameAt = 0;
     unmountOverlay();
     window.__screentinkerScreenShare.active = false;
   }

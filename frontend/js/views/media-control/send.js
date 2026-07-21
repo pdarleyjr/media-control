@@ -17,7 +17,8 @@ import { esc } from '../../utils.js';
 import { t, tn } from '../../i18n.js';
 import { showToast } from '../../components/toast.js';
 import { confirmDialog } from '../../components/confirm.js';
-import { isLiveActive } from './action-dock.js';
+import { performanceMetrics } from '../../services/performance-metrics.js';
+import { isLiveActive, isLiveStateKnown } from './action-dock.js';
 
 // YouTube URL detection (same regex as present.js).
 const YT_RE = /^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//i;
@@ -47,7 +48,9 @@ async function shouldOfferLiveStreamInclusion() {
 // dock isn't mounted on this view (the funnel is shared by other callers) we
 // fall back to the cached status fetch so existing behaviour is unchanged.
 async function liveStreamCurrentlyActive() {
-  try { if (isLiveActive()) return true; } catch { /* dock not importable */ }
+  try {
+    if (isLiveStateKnown()) return isLiveActive();
+  } catch { /* dock not importable */ }
   return shouldOfferLiveStreamInclusion();
 }
 
@@ -170,6 +173,7 @@ async function materializeYouTube(url) {
  * @returns {Promise<boolean>}  true = sent successfully, false = cancelled/error
  */
 export async function sendToDisplays(source, targetIds, label = t('mc.tile.content_fallback')) {
+  const finishDispatchMetric = performanceMetrics.start('content.broadcast_accept');
   if (!Array.isArray(targetIds) || targetIds.length === 0) {
     showToast(t('mc.send.no_displays'), 'error');
     return false;
@@ -191,6 +195,7 @@ const liveChoice = await resolveLiveStreamChoice(label);
   try {
     result = await api.broadcast({ ...resolvedSource, device_ids: targetIds, include_live_stream: includeLiveStream });
   } catch (e) {
+    finishDispatchMetric();
     showToast(e?.message || t('mc.send.failed'), 'error');
     return false;
   }
@@ -211,6 +216,8 @@ const liveChoice = await resolveLiveStreamChoice(label);
       return false;
     }
   }
+
+  finishDispatchMetric();
 
   if (result && result.success) {
     sentToast(label, result.sent, result.total);

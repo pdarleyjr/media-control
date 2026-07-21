@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="../../../frontend/css/variables.css">
+  <link rel="stylesheet" href="../../../frontend/css/reset.css">
+  <link rel="stylesheet" href="../../../frontend/css/main.css">
+  <link rel="stylesheet" href="../../../frontend/css/media-control.css">
+  <style>
+    body { min-height: 100vh; background: #0f172a; }
+  </style>
+</head>
+<body>
+  <dialog class="mc-dialog mc-route-dialog mc-route-wall-dialog" aria-labelledby="title">
+    <div class="mc-dialog-card mc-route-card">
+      <h3 id="title" class="mc-dialog-title">Video wall routing</h3>
+      <p class="mc-dialog-msg">Choose how each selected video wall should receive this source.</p>
+      <div class="mc-route-list">
+        <fieldset class="mc-route-wall-choice">
+          <legend>Classroom 1 Primary Wall</legend>
+          <label class="mc-route-mode"><input type="radio" checked><span><strong>Entire video wall</strong><small>One unified source spans all wall screens.</small></span></label>
+          <label class="mc-route-mode"><input type="radio"><span><strong>Specific sections</strong><small>Route to only the selected wall sections.</small></span></label>
+          <div class="mc-route-sections">
+            <label class="mc-route-section"><input type="checkbox"><span>Left</span><small>1 screen</small></label>
+            <label class="mc-route-section"><input type="checkbox"><span>Center</span><small>1 screen</small></label>
+            <label class="mc-route-section"><input type="checkbox"><span>Right</span><small>1 screen</small></label>
+          </div>
+        </fieldset>
+      </div>
+      <div class="mc-dialog-actions">
+        <button class="mc-btn mc-btn-ghost">Cancel</button>
+        <button class="mc-btn mc-btn-primary">Send</button>
+      </div>
+    </div>
+  </dialog>
+  <script>document.querySelector('dialog').showModal();</script>
+</body>
+</html>

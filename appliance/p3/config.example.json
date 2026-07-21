@@ -1,6 +1,7 @@
 {
   "_comment": "Example config for the P3 appliance launcher + agent. Copy to config.local.json and populate on-box ONLY. config.local.json is gitignored and NEVER committed. All token/id fields below are PLACEHOLDERS.",
   "MC_SERVER_URL": "http://100.81.154.123:8096",
+  "MC_SERVER_LAN_URL": "http://gmktec.local:8096",
   "MC_NODE_ID": "PLACEHOLDER_P3_NODE_ID",
   "MC_NODE_TOKEN": " SECRET — populate on-box only; never commit ",
   "MC_SOFTWARE_VERSION": "p3-agent-1.0.0",

@@ -4,8 +4,13 @@ const CAMERA_HOST = 'http://host.docker.internal:8766/camera-hls';
 
 function normalizeCamera(camera) {
   const value = String(camera || '');
-  if (value !== '1' && value !== '2') throw new Error('Unknown classroom camera');
+  if (value !== '1' && value !== '2' && value !== '3') throw new Error('Unknown classroom camera');
   return value;
+}
+
+function cameraPath(camera) {
+  const id = normalizeCamera(camera);
+  return id === '3' ? 'annke-camera-3' : `kamrui-camera-${id}`;
 }
 
 function normalizeAsset(asset) {
@@ -23,11 +28,12 @@ function cameraUpstreamUrl(camera, asset) {
 
 function proxyCameraUri(uri, camera) {
   const id = normalizeCamera(camera);
+  const path = cameraPath(id);
   let value = String(uri || '').trim();
   if (!value) return value;
   try {
-    const parsed = new URL(value, `${CAMERA_HOST}/kamrui-camera-${id}/`);
-    const marker = `/kamrui-camera-${id}/`;
+    const parsed = new URL(value, `${CAMERA_HOST}/${path}/`);
+    const marker = `/${path}/`;
     const markerIndex = parsed.pathname.indexOf(marker);
     const asset = markerIndex >= 0
       ? parsed.pathname.slice(markerIndex + marker.length)

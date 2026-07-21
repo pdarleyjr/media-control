@@ -4,8 +4,16 @@ const { db } = require('../db/database');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const config = require('../config');
 const { PLATFORM_ROLES } = require('../middleware/auth');
+const nodeRegistry = require('../lib/node-registry');
+const performanceMetrics = require('../lib/performance-metrics');
+
+const LAN_HEALTH_OBJECT_BYTES = 64 * 1024 * 1024;
+const LAN_HEALTH_COOLDOWN_MS = 5 * 60 * 1000;
+const activeLanHealthTests = new Map();
+const lastLanHealthRequestAt = new Map();
 
 // Public status page
 router.get('/', (req, res) => {
@@ -36,6 +44,73 @@ function formatUptime(seconds) {
   return `${m}m`;
 }
 
+function authenticatedUserFromRequest(req) {
+  const authorization = String(req.headers.authorization || '');
+  const token = authorization.startsWith('Bearer ')
+    ? authorization.slice(7)
+    : String(req.query.token || '');
+  if (!token) return null;
+  try {
+    const decoded = require('jsonwebtoken').verify(token, config.jwtSecret);
+    const user = db.prepare('SELECT id, role FROM users WHERE id = ?').get(decoded.id);
+    return user || null;
+  } catch {
+    return null;
+  }
+}
+
+function platformAdminFromRequest(req) {
+  const user = authenticatedUserFromRequest(req);
+  return user && PLATFORM_ROLES.includes(user.role) ? user : null;
+}
+
+router.post('/performance', (req, res) => {
+  const user = authenticatedUserFromRequest(req);
+  if (!user) return res.status(401).json({ error: 'Authentication required' });
+  const accepted = performanceMetrics.record(req.body?.entries, { user_id: user.id });
+  res.status(202).json({ accepted });
+});
+
+router.get('/performance', (req, res) => {
+  if (!platformAdminFromRequest(req)) return res.status(403).json({ error: 'Platform admin only' });
+  res.json({ generated_at: new Date().toISOString(), metrics: performanceMetrics.summarize() });
+});
+
+function streamFixedObject(res, bytes = LAN_HEALTH_OBJECT_BYTES) {
+  const chunk = Buffer.alloc(64 * 1024, 0x4d);
+  let remaining = bytes;
+  const write = () => {
+    while (remaining > 0) {
+      const size = Math.min(chunk.length, remaining);
+      remaining -= size;
+      if (!res.write(size === chunk.length ? chunk : chunk.subarray(0, size))) {
+        res.once('drain', write);
+        return;
+      }
+    }
+    res.end();
+  };
+  write();
+}
+
+// Fixed, one-shot LAN object. A valid node token and a short-lived admin-created
+// test ID are both required, so this cannot become a public benchmark endpoint.
+router.get('/lan-health-test-object', (req, res) => {
+  if (!nodeRegistry.nodeHttpAuthOk(req)) return res.status(401).json({ error: 'Node authentication required' });
+  const testId = String(req.query.id || '');
+  const pending = activeLanHealthTests.get(testId);
+  if (!pending || pending.expires_at < Date.now()) {
+    activeLanHealthTests.delete(testId);
+    return res.status(404).json({ error: 'Test not active' });
+  }
+  activeLanHealthTests.delete(testId);
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Length', LAN_HEALTH_OBJECT_BYTES);
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  streamFixedObject(res);
+});
+
 // Full database backup (superadmin only)
 router.get('/backup', (req, res) => {
   const token = req.query.token;
@@ -53,6 +128,78 @@ router.get('/backup', (req, res) => {
 
   const dbPath = require('../config').dbPath;
   res.download(dbPath, `remotedisplay-backup-${new Date().toISOString().split('T')[0]}.db`);
+});
+
+// Managed node snapshot (superadmin only)
+router.get('/nodes', (req, res) => {
+  const token = req.query.token;
+  if (!token) return res.status(401).json({ error: 'Token required' });
+
+  try {
+    const jwt = require('jsonwebtoken');
+    const config = require('../config');
+    const decoded = jwt.verify(token, config.jwtSecret);
+    const user = db.prepare('SELECT role FROM users WHERE id = ?').get(decoded.id);
+    if (!user || !PLATFORM_ROLES.includes(user.role)) return res.status(403).json({ error: 'Platform admin only' });
+  } catch {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+
+  const nodes = db.prepare(`
+    SELECT node_id, node_name, node_type, room_id, workspace_id, last_heartbeat,
+           software_version, free_disk, cache_size, sync_status, audio_endpoint,
+           network_state_json, telemetry_json, created_at, updated_at
+    FROM managed_nodes
+    ORDER BY last_heartbeat DESC, node_id ASC
+  `).all().map((node) => {
+    let network_state = null;
+    if (node.network_state_json) {
+      try { network_state = JSON.parse(node.network_state_json); } catch { network_state = null; }
+    }
+    let telemetry = null;
+    if (node.telemetry_json) {
+      try { telemetry = JSON.parse(node.telemetry_json); } catch { telemetry = null; }
+    }
+    return { ...node, network_state, telemetry };
+  });
+
+  res.json({ nodes, count: nodes.length });
+});
+
+// Platform-admin-only and explicitly triggered. The node independently refuses
+// the test unless it is idle and connected to an RFC1918 LAN origin.
+router.post('/nodes/:nodeId/lan-health-test', (req, res) => {
+  if (!platformAdminFromRequest(req)) return res.status(403).json({ error: 'Platform admin only' });
+  const nodeId = String(req.params.nodeId || '');
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(nodeId)) return res.status(400).json({ error: 'Invalid node ID' });
+  const node = db.prepare('SELECT node_id, last_heartbeat FROM managed_nodes WHERE node_id = ?').get(nodeId);
+  if (!node || Math.floor(Date.now() / 1000) - Number(node.last_heartbeat || 0) > 60) {
+    return res.status(409).json({ error: 'Node is not online' });
+  }
+  const lastRequest = lastLanHealthRequestAt.get(nodeId) || 0;
+  if (Date.now() - lastRequest < LAN_HEALTH_COOLDOWN_MS) {
+    return res.status(429).json({ error: 'LAN health test cooldown is active' });
+  }
+  const io = req.app.get('io');
+  if (!io) return res.status(503).json({ error: 'Node transport unavailable' });
+
+  const testId = crypto.randomUUID();
+  activeLanHealthTests.set(testId, { node_id: nodeId, expires_at: Date.now() + 45_000 });
+  lastLanHealthRequestAt.set(nodeId, Date.now());
+  io.of('/device').to(`node:${nodeId}`).timeout(40_000).emit(
+    'node:run-lan-health-test',
+    { test_id: testId },
+    (error, responses) => {
+      activeLanHealthTests.delete(testId);
+      if (res.headersSent) return;
+      if (error) return res.status(504).json({ error: 'Node did not complete the LAN health test' });
+      const result = Array.isArray(responses) ? responses[0] : responses;
+      if (!result || result.ok !== true) {
+        return res.status(409).json({ error: result && result.error || 'LAN health test refused', result: result || null });
+      }
+      return res.json({ ok: true, node_id: nodeId, result });
+    },
+  );
 });
 
 // User data export (own data only)

@@ -6,6 +6,10 @@ const { db } = require('../db/database');
 const LIVE_STREAM_DEVICE_PREFIX = 'live-stream-program-';
 const DEFAULT_LIVE_STREAM_DISPLAY_NAME = 'Content for live stream';
 const DEFAULT_LIVE_STREAM_NOTES = 'Managed by Media Control for OBS/PeerTube live-stream program output.';
+const LIVE_CONTENT_MAX_AGE_SECONDS = Math.max(
+  60,
+  Number(process.env.LIVE_STREAM_CONTENT_MAX_AGE_SECONDS) || 24 * 60 * 60,
+);
 
 const liveContentChangeAt = new Map();
 
@@ -90,7 +94,8 @@ function liveStreamProgramState(workspaceId) {
   const id = liveStreamDeviceId(workspaceId);
   const row = db.prepare(`
     SELECT d.id, d.name, d.workspace_id, d.playlist_id,
-           p.id AS playlist_id, p.status AS playlist_status, p.published_snapshot
+           p.id AS playlist_id, p.status AS playlist_status, p.published_snapshot,
+           p.updated_at AS playlist_updated_at
     FROM devices d
     LEFT JOIN playlists p ON p.id = d.playlist_id
     WHERE d.id = ?
@@ -98,18 +103,29 @@ function liveStreamProgramState(workspaceId) {
   if (!row) return { configured: false, content_active: false, display_id: id };
   let items = [];
   try { items = row.published_snapshot ? JSON.parse(row.published_snapshot) : []; } catch { items = []; }
-  const contentActive = row.playlist_status === 'published'
+  const contentAvailable = row.playlist_status === 'published'
     && Array.isArray(items)
     && items.some(item => item && (item.content_id || item.widget_id || item.remote_url || item.filepath));
+  const changedAt = liveContentChangeAt.get(String(row.id))
+    || (Number(row.playlist_updated_at) > 0 ? Number(row.playlist_updated_at) : null);
+  const contentAgeSeconds = changedAt ? Math.max(0, Date.now() / 1000 - changedAt) : null;
+  // A forgotten program playlist must not unexpectedly reappear in a later
+  // broadcast. Content becomes active again as soon as the operator routes a
+  // fresh source and markLiveContentChanged() advances the timestamp.
+  const contentStale = contentAvailable
+    && (contentAgeSeconds == null || contentAgeSeconds > LIVE_CONTENT_MAX_AGE_SECONDS);
   return {
     configured: true,
-    content_active: contentActive,
+    content_active: contentAvailable && !contentStale,
+    content_available: contentAvailable,
+    content_stale: contentStale,
+    content_age_seconds: contentAgeSeconds,
     display_id: row.id,
     display_name: row.name,
     playlist_id: row.playlist_id || null,
     playlist_status: row.playlist_status || null,
     item_count: Array.isArray(items) ? items.length : 0,
-    last_content_change_at: liveContentChangeAt.get(String(row.id)) || null,
+    last_content_change_at: changedAt,
   };
 }
 
@@ -127,6 +143,7 @@ function liveStreamProgramStateAnyWorkspace() {
 
 module.exports = {
   DEFAULT_LIVE_STREAM_DISPLAY_NAME,
+  LIVE_CONTENT_MAX_AGE_SECONDS,
   LIVE_STREAM_DEVICE_PREFIX,
   buildLiveStreamPlayerUrl,
   ensureLiveStreamDisplay,

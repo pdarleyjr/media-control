@@ -17,13 +17,13 @@
 // ============================================================
 'use strict';
 
-const os = require('os');
-const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const { URL } = require('url');
 
 const syncWorker = require('./sync-worker');
+const { resolveServerUrl } = require('../../common/server-url');
+const { detectNetworkState } = require('../../common/network-state');
 
 const DEFAULT_SERVER_URL = 'http://100.81.154.123:8096'; // GMKtec Tailnet (documented default)
 const HEARTBEAT_INTERVAL_MS = 15 * 1000;
@@ -31,7 +31,10 @@ const BACKOFF_MIN_MS = 2 * 1000;
 const BACKOFF_MAX_MS = 5 * 60 * 1000;
 
 // ── Config (env only) ───────────────────────────────────────
-const MC_SERVER_URL = process.env.MC_SERVER_URL || DEFAULT_SERVER_URL;
+const MC_SERVER_URL = resolveServerUrl(process.env, {
+  urlKeys: ['MC_SERVER_LAN_URL', 'MC_SERVER_URL'],
+  defaultUrl: DEFAULT_SERVER_URL,
+});
 const MC_NODE_TOKEN = process.env.MC_NODE_TOKEN || '';
 const MC_NODE_ID = process.env.MC_NODE_ID || '';
 const NODE_TYPE = process.env.MC_NODE_TYPE || 'podium';
@@ -80,6 +83,7 @@ function buildHeartbeat() {
     cache_size: status.cache_size,
     sync_status: status.sync_status,
     active_displays: ACTIVE_DISPLAYS,
+    network: detectNetworkState(),
   };
 }
 

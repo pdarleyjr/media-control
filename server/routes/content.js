@@ -524,13 +524,19 @@ router.put('/:id/replace', upload.single('file'), async (req, res) => {
     console.warn('Thumbnail generation failed:', e.message);
   }
 
-  db.prepare(`UPDATE content SET filepath = ?, mime_type = ?, file_size = ?, thumbnail_path = ?, width = ?, height = ? WHERE id = ?`)
-    .run(filepath, req.file.mimetype, req.file.size, thumbnailPath, width, height, req.params.id);
+  db.prepare(`UPDATE content SET filepath = ?, original_filepath = ?, original_sha256 = NULL,
+      mime_type = ?, file_size = ?, thumbnail_path = ?, width = ?, height = ?,
+      processing_status = 'uploaded', processing_error = NULL, updated_at = strftime('%s','now')
+      WHERE id = ?`)
+    .run(filepath, filepath, req.file.mimetype, req.file.size, thumbnailPath, width, height, req.params.id);
 
   // Regenerate a document thumbnail in the background when a file is replaced
   // with a PDF/Office/ODF document (the inline branch above only covers images).
   if (isDocThumbnailMime(req.file.mimetype)) {
     kickDocThumbnail(req.params.id, req.file.path, req.file.mimetype);
+  }
+  if (req.file.mimetype.startsWith('video/')) {
+    kickHevcTranscodeIfNeeded(req.params.id, req.file.path);
   }
 
   res.json(db.prepare('SELECT * FROM content WHERE id = ?').get(req.params.id));
@@ -566,6 +572,11 @@ router.delete('/:id', (req, res) => {
   if (content.filepath) {
     const filePath = path.join(config.contentDir, content.filepath);
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  }
+
+  if (content.original_filepath && content.original_filepath !== content.filepath) {
+    const originalPath = path.join(config.contentDir, path.basename(content.original_filepath));
+    if (fs.existsSync(originalPath)) fs.unlinkSync(originalPath);
   }
 
   // Delete thumbnail

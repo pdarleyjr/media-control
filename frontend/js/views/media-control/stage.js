@@ -15,6 +15,11 @@ import { esc } from '../../utils.js';
 import { t, tn } from '../../i18n.js';
 import { renderTransportBar } from './transport.js';
 import { liveEmbedHtml } from './live-preview.js';
+import {
+  MIXED_SCREENSAVER_VALUE,
+  SCREENSAVER_OPTIONS,
+  screensaverValueForDisplays,
+} from './screensaver-state.js';
 
 // ── Screensaver dropdown (per card) ───────────────────────────────────────
 // A small in-card <select> on every display + wall card that broadcasts a
@@ -22,31 +27,18 @@ import { liveEmbedHtml } from './live-preview.js';
 //   • Dashboard    → the live wall.mbfdhub.com ops dashboard (framable; the
 //                    player iframes *.mbfdhub.com live, not a screenshot)
 //   • B&W Wallpaper / L1 Wallpaper → uploaded image content items.
-// Content ids are workspace-stable assets in the Wallpaper folder; if an asset
-// is ever re-uploaded, update the id here.
-const SCREENSAVER_OPTIONS = [
-  { value: 'url:https://wall.mbfdhub.com', labelKey: 'mc.saver.dashboard' },
-  { value: 'content:4798f022-e9d9-4cba-a0b0-56aeb75a6bff', labelKey: 'mc.saver.bw' },
-  { value: 'content:1d01b7a0-1a0c-4d3d-b0fd-6d854ce09ae3', labelKey: 'mc.saver.l1' },
-  { value: 'content:7c596f36-27f6-4d7b-9bb0-2c682791d25a', labelKey: 'mc.saver.mbfd_map' },
-  // Phase 6: open the media drawer filtered to the seeded "Screensavers" folder
-  // (no broadcast — handled by the caller's folder: prefix path), and a pure
-  // blank-black screensaver (broadcast a 1x1 black still). Kept additive to the
-  // existing fixed classroom defaults above.
-  { value: 'folder:Screensavers', labelKey: 'mc.saver.choose_from_folder' },
-  { value: 'blank:black', labelKey: 'mc.saver.blank_black' },
-];
-
 // Render the screensaver <select>. `dataAttrs` carries the target wiring:
 // `data-device-id="X"` (single display / split member) or `data-wall-ids="a,b"`
-// (whole wall). The first option is a non-committal placeholder.
-function screensaverSelect(dataAttrs) {
+// (whole wall). Its selected value is derived from current player state.
+function screensaverSelect(dataAttrs, selectedValue = '') {
   const opts = SCREENSAVER_OPTIONS
-    .map(o => `<option value="${esc(o.value)}">${esc(t(o.labelKey))}</option>`)
+    .map(o => `<option value="${esc(o.value)}"${o.value === selectedValue ? ' selected' : ''}>${esc(t(o.labelKey))}</option>`)
     .join('');
   return `<select class="mc-screensaver" ${dataAttrs}
+            data-current-value="${esc(selectedValue)}"
             aria-label="${esc(t('mc.saver.aria'))}" title="${esc(t('mc.saver.title'))}">
-            <option value="">${esc(t('mc.saver.placeholder'))}</option>
+            <option value=""${selectedValue === '' ? ' selected' : ''}>${esc(t('mc.saver.placeholder'))}</option>
+            <option value="${MIXED_SCREENSAVER_VALUE}" disabled${selectedValue === MIXED_SCREENSAVER_VALUE ? ' selected' : ''}>${esc(t('mc.cc.saver.mixed'))}</option>
             ${opts}
           </select>`;
 }
@@ -132,21 +124,38 @@ function applyTileSize(container, maxCols) {
   container.style.setProperty('--mc-tile', tile + 'px');
 }
 
-// Pick the preview image for a display / wall screen. Content whose live canvas
-// screenshot is black anyway — hardware-decoded video and cross-origin deck /
-// web / YouTube iframes — carries a server-supplied now_playing.poster_url (the
-// content's generated thumbnail). Prefer it so the cell shows a REAL preview of
-// what is playing instead of a black capture. Posters are intentional, not a
-// degraded live frame, so they are never dimmed as "stale". Falls back to the
-// live screenshot, then to nothing.
-function previewSource(obj) {
+// Pick the preview image for a display / wall screen. Video/web/YouTube captures
+// are often black or unhelpful, so they prefer generated posters. Documents and
+// PDFs need to mirror slide navigation, so a live screenshot beats the static
+// first-page poster whenever one is available.
+function shouldPreferPoster(obj) {
+  const kind = String(obj?.now_playing?.kind || obj?.content_type || '').toLowerCase();
+  if (kind === 'document' || kind === 'pdf') return false;
+  if (kind === 'image') {
+    const capturedAt = Number(obj?.screenshot_at);
+    const age = Number.isFinite(capturedAt)
+      ? Math.max(0, Math.floor(Date.now() / 1000) - capturedAt)
+      : Infinity;
+    return age > STALE_AFTER_S;
+  }
+  return !!(obj && obj.now_playing && obj.now_playing.poster_url);
+}
+
+export function previewSource(obj) {
   const poster = obj && obj.now_playing && obj.now_playing.poster_url;
+  const screenshot = obj && obj.screenshot_url;
+  // A screenshot is the physical device's frame. Do not compare it with
+  // display_states.updated_at: periodic state reports advance that timestamp even
+  // when the rendered pixels have not changed, which incorrectly hid valid slides.
+  // Still images are the exception: once their device frame is stale, the current
+  // content-bound poster is safer than pixels left over from the previous item.
+  if (screenshot && !shouldPreferPoster(obj)) return { src: screenshot, poster: false };
   if (poster) return { src: poster, poster: true };
-  if (obj && obj.screenshot_url) return { src: obj.screenshot_url, poster: false };
+  if (screenshot) return { src: screenshot, poster: false };
   return null;
 }
 
-function displayCard(display) {
+function displayCard(display, { livePreview = false } = {}) {
   const s = statusOf(display);
   const f = freshness(display.screenshot_at);
   const nowPlaying = display.now_playing && display.now_playing.label
@@ -160,7 +169,9 @@ function displayCard(display) {
   const pv = previewSource(display);
   const showingPoster = !!(pv && pv.poster);
   const staleCls = (pv && !pv.poster && (f.stale || offline)) ? ' mc-shot-stale' : '';
-  const live = liveEmbedHtml(display.now_playing, 'mc-card-shot', { fallbackSrc: pv && pv.src });
+  const live = livePreview
+    ? liveEmbedHtml(display.now_playing, 'mc-card-shot', { fallbackSrc: pv && pv.src, audioPreview: livePreview })
+    : null;
   const preview = live
     ? live
     : (pv
@@ -183,7 +194,7 @@ function displayCard(display) {
       </div>
       <div class="mc-card-foot">
         <span class="mc-card-title">${esc(display.name)}</span>
-        ${screensaverSelect(`data-device-id="${esc(display.id)}"`)}
+        ${screensaverSelect(`data-device-id="${esc(display.id)}"`, screensaverValueForDisplays([display]))}
       </div>
       <div class="mc-card-nowplaying" title="${nowPlaying}">${nowPlaying}</div>
       <div class="mc-card-transport" data-tp-host data-device-id="${esc(display.id)}"></div>
@@ -215,6 +226,8 @@ function wallMemberView(m, byId) {
     online: live.online != null ? live.online : (m.device_status === 'online'),
     screen_on: live.screen_on,
     now_playing: live.now_playing,
+    content_type: live.content_type,
+    state_updated_at: live.state_updated_at ?? live.live_state?.state_updated_at,
     screenshot_url: live.screenshot_url,
     screenshot_at: live.screenshot_at,
     grid_col: m.grid_col,
@@ -222,13 +235,24 @@ function wallMemberView(m, byId) {
   };
 }
 
-function wallCell(member, screenNo, { showPreview = true } = {}) {
+function wallTransportDeviceId(wall, members) {
+  if (!wall || !Array.isArray(members) || members.length === 0) return null;
+  const onlineLeader = members.find(m => m.id === wall.leader_device_id && m.online);
+  if (onlineLeader) return onlineLeader.id;
+  const onlineMember = members.find(m => m.online);
+  if (onlineMember) return onlineMember.id;
+  return wall.leader_device_id || members[0]?.id || null;
+}
+
+function wallCell(member, screenNo, { showPreview = true, livePreview = false } = {}) {
   const s = statusOf(member);
   const offline = !member.online;
   const f = freshness(member.screenshot_at);
   const pv = previewSource(member);
   const staleCls = (pv && !pv.poster && (f.stale || offline)) ? ' mc-shot-stale' : '';
-  const live = showPreview ? liveEmbedHtml(member.now_playing, 'mc-wall-cell-shot', { allowVideo: showPreview, fallbackSrc: pv && pv.src }) : null;
+  const live = showPreview && livePreview
+    ? liveEmbedHtml(member.now_playing, 'mc-wall-cell-shot', { allowVideo: true, fallbackSrc: pv && pv.src, audioPreview: livePreview })
+    : null;
   const preview = !showPreview
     ? ''
     : (live
@@ -251,12 +275,14 @@ function wallCell(member, screenNo, { showPreview = true } = {}) {
     </div>`;
 }
 
-function wallSpanPreview(leader) {
+function wallSpanPreview(leader, livePreview = false) {
   const pv = previewSource(leader);
   // Always allow video in the span preview — the dashboard must mirror what the
   // physical wall is showing. Previously allowVideo=false caused a screenshot
   // fallback which is a black tile for video (canvas capture is tainted).
-  const live = leader ? liveEmbedHtml(leader.now_playing, 'mc-wall-span-shot', { allowVideo: true, fallbackSrc: pv && pv.src }) : null;
+  const live = leader && livePreview
+    ? liveEmbedHtml(leader.now_playing, 'mc-wall-span-shot', { allowVideo: true, fallbackSrc: pv && pv.src, audioPreview: livePreview })
+    : null;
   if (live) {
     return `<div class="mc-wall-span-layer" data-device-id="${esc(leader.id)}">${live}</div>`;
   }
@@ -293,7 +319,7 @@ function wallEmptySlot(screenNo) {
 // mirror the wall's leader (single-player walls drive every screen from one
 // player), so all N screens reflect the wall's content. Each screen is its own
 // drop/inspect target; the footer strip fills every screen at once.
-function wallCard(wall, byId) {
+function wallCard(wall, byId, livePreviewDeviceId = null) {
   const members = (wall.devices || []).map(m => wallMemberView(m, byId));
   const cols = Math.max(1, wall.grid_cols || members.reduce((mx, m) => Math.max(mx, (m.grid_col || 0) + 1), 1));
   const rows = Math.max(1, wall.grid_rows || members.reduce((mx, m) => Math.max(mx, (m.grid_row || 0) + 1), 1));
@@ -321,6 +347,7 @@ function wallCard(wall, byId) {
   const mode = wall.layout_mode === 'split' ? 'split' : 'span';
   const fillLabel = mode === 'split' ? t('mc.wall.fill_all') : t('mc.wall.fill_span');
   const modeHint = mode === 'split' ? t('mc.wall.split_hint') : t('mc.wall.span_hint');
+  const transportId = wallTransportDeviceId(wall, members);
   // Row-major over every physical screen slot; CSS grid auto-places them in order.
   const cells = [];
   let n = 0;
@@ -328,10 +355,10 @@ function wallCard(wall, byId) {
     for (let c = 0; c < cols; c++) {
       n++;
       const m = byPos.get(c + ',' + r) || leader;
-      cells.push(m ? wallCell(m, n, { showPreview: mode === 'split' }) : wallEmptySlot(n));
+      cells.push(m ? wallCell(m, n, { showPreview: mode === 'split', livePreview: m.id === livePreviewDeviceId }) : wallEmptySlot(n));
     }
   }
-  const spanLayer = mode === 'span' ? wallSpanPreview(leader) : '';
+  const spanLayer = mode === 'span' ? wallSpanPreview(leader, !!leader && leader.id === livePreviewDeviceId) : '';
   return `
     <section class="mc-card mc-wall mc-wall-mode-${mode}" data-wall-id="${esc(wall.id)}" data-layout-mode="${mode}" style="--mc-cols:${cols}; --mc-cell-ar:${cellAr}" aria-label="${esc(t('mc.wall.aria', { name: wall.name }))}">
       <div class="mc-wall-head">
@@ -345,7 +372,7 @@ function wallCard(wall, byId) {
         <button type="button" class="mc-wall-calibrate" data-wall-calibrate
                 data-wall-ids="${esc(ids)}" data-wall-name="${esc(wall.name)}"
                 title="${esc(t('mc.wall.calibrate_title'))}">${esc(t('mc.wall.calibrate'))}</button>
-        ${screensaverSelect(`data-wall-ids="${esc(ids)}"`)}
+        ${screensaverSelect(`data-wall-ids="${esc(ids)}"`, screensaverValueForDisplays(members))}
         <a class="mc-wall-edit" href="#/walls">${esc(t('mc.wall.edit'))}</a>
       </div>
       <div class="mc-wall-hint">${esc(modeHint)}</div>
@@ -353,7 +380,7 @@ function wallCard(wall, byId) {
         ${spanLayer}
         ${cells.join('')}
       </div>
-      ${leader ? `<div class="mc-wall-transport" data-tp-host data-device-id="${esc(leader.id)}" data-blank-ids="${esc(ids)}"></div>` : ''}
+      ${transportId ? `<div class="mc-wall-transport" data-tp-host data-device-id="${esc(transportId)}" data-transport-ids="${esc(ids)}" data-blank-ids="${esc(ids)}"></div>` : ''}
       <div class="mc-wall-all" data-wall-ids="${esc(ids)}">
         <span class="mc-wall-all-ico" aria-hidden="true">${ICON_WALL_ALL}</span>
         <span>${esc(fillLabel)}</span>
@@ -393,7 +420,7 @@ function wallSplitHalfCell(leader, half, cols) {
     </div>`;
 }
 
-function wallSplitGroup(wall, byId) {
+function wallSplitGroup(wall, byId, livePreviewDeviceId = null) {
   const members = (wall.devices || []).map(m => wallMemberView(m, byId));
   const ids = [...new Set(members.map(m => m.id))].join(',');
   const cols = Math.max(1, wall.grid_cols || members.length || 1);
@@ -405,6 +432,7 @@ function wallSplitGroup(wall, byId) {
   // into one column of a grid pushed to the single window (see dropOnWallHalf).
   if (members.length === 1 && cols > 1) {
     const leader = members[0];
+    const transportId = wallTransportDeviceId(wall, members) || leader.id;
     const halves = [];
     for (let i = 0; i < cols; i++) halves.push(wallSplitHalfCell(leader, i, cols));
     return `
@@ -420,20 +448,20 @@ function wallSplitGroup(wall, byId) {
         <button type="button" class="mc-wall-calibrate" data-wall-calibrate
                 data-wall-ids="${esc(ids)}" data-wall-name="${esc(wall.name)}"
                 title="${esc(t('mc.wall.calibrate_title'))}">${esc(t('mc.wall.calibrate'))}</button>
-        ${screensaverSelect(`data-wall-ids="${esc(ids)}"`)}
+        ${screensaverSelect(`data-wall-ids="${esc(ids)}"`, screensaverValueForDisplays(members))}
         <a class="mc-wall-edit" href="#/walls">${esc(t('mc.wall.edit'))}</a>
       </div>
       <div class="mc-wall-hint">${esc(t('mc.wall.split_one_hint'))}</div>
       <div class="mc-wall-grid" style="grid-template-columns:repeat(${cols}, 1fr)">
         ${halves.join('')}
       </div>
-      ${leader ? `<div class="mc-wall-transport" data-tp-host data-device-id="${esc(leader.id)}" data-blank-ids="${esc(ids)}"></div>` : ''}
+      ${transportId ? `<div class="mc-wall-transport" data-tp-host data-device-id="${esc(transportId)}" data-transport-ids="${esc(ids)}" data-blank-ids="${esc(ids)}"></div>` : ''}
     </section>`;
   }
 
   // Multi-device split: each physical screen is its OWN device → its own card.
   const memberCards = members
-    .map(m => { const live = byId.get(m.id); return live ? displayCard(live) : ''; })
+    .map(m => { const live = byId.get(m.id); return live ? displayCard(live, { livePreview: live.id === livePreviewDeviceId }) : ''; })
     .join('');
   return `
     <section class="mc-card mc-wall mc-wall-split" data-wall-id="${esc(wall.id)}" data-layout-mode="split" style="--mc-cols:${cols}" aria-label="${esc(t('mc.wall.aria', { name: wall.name }))}">
@@ -496,10 +524,12 @@ function emptyState() {
  * @param {(id:string, screenOn:boolean)=>void} [opts.onScreenOnChange]
  *   Called when a blank/unblank ack changes a display's screen_on value so the
  *   caller can patch display-state and trigger a re-paint.
+ * @param {(ids:string[], action:string)=>void} [opts.onTransportAction]
+ *   Called after transport sends so the caller can refresh state/previews.
  * @param {(ids:string[], source:object, label:string)=>void} [opts.onScreensaver]
  *   A screensaver option was chosen on a card; broadcast `source` to `ids`.
  */
-export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], onSelect, onCalibrateWall, onAddDisplay, onScreenOnChange, onSetWallMode, onScreensaver } = {}) {
+export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], livePreviewDeviceId = null, onSelect, onCalibrateWall, onAddDisplay, onScreenOnChange, onTransportAction, onSetWallMode, onScreensaver } = {}) {
   if (!container) return;
   const selected = new Set(selectedIds);
 
@@ -528,11 +558,13 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
   const cards = displays
     .filter(d => selected.has(d.id))
     .sort((a, b) => (isSmartboard(a) ? 1 : 0) - (isSmartboard(b) ? 1 : 0))
-    .map(displayCard)
+    .map((display) => displayCard(display, { livePreview: display.id === livePreviewDeviceId }))
     .join('');
   // Span walls render as one composite card; SPLIT walls render each member as
   // its own independent display card (see wallSplitGroup).
-  const wallCards = wallList.map(w => (w.layout_mode === 'split' ? wallSplitGroup(w, byId) : wallCard(w, byId))).join('');
+  const wallCards = wallList.map(w => (w.layout_mode === 'split'
+    ? wallSplitGroup(w, byId, livePreviewDeviceId)
+    : wallCard(w, byId, livePreviewDeviceId))).join('');
 
   const isEmpty = !cards && !wallCards;
   container.classList.toggle('mc-stage-is-empty', isEmpty);
@@ -577,17 +609,17 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
   });
 
   // Mount transport bars into each card's [data-tp-host] container. Standalone
-  // display cards resolve from displayMap; the wall card's transport host targets
-  // the wall LEADER (a wall member, so it lives in byId, not displays) — falling
-  // back to byId lets the wall be paused/skipped/blanked like any other display.
+  // display cards resolve from displayMap; wall card state uses the leader, then
+  // fans transport to every member listed in data-transport-ids.
   container.querySelectorAll('[data-tp-host]').forEach(host => {
     const deviceId = host.dataset.deviceId;
     const display  = displayMap.get(deviceId) || byId.get(deviceId);
     if (!deviceId || !display) return;
-    // A wall transport host carries data-blank-ids="id1,id2,…" so the Blank
-    // toggle darkens EVERY wall screen, not just the leader (screen on/off is a
-    // per-physical-device command). Transport (play/pause/skip) stays on the
-    // leader, which drives wall sync.
+    // A wall transport host carries data-transport-ids/data-blank-ids="id1,id2,…".
+    // Transport fans out to every span-wall member so doc/deck slides stay in
+    // lockstep across independent player windows. Blank also darkens every wall
+    // screen because screen on/off is a per-physical-device command.
+    const transportIds = String(host.dataset.transportIds || '').split(',').filter(Boolean);
     const blankIds = String(host.dataset.blankIds || '').split(',').filter(Boolean);
     // Pass the current paused state (from now_playing.paused, kept live by
     // dashboard:playback-state events) so the Play/Pause button shows the
@@ -595,26 +627,28 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
     const paused = display.now_playing ? display.now_playing.paused : undefined;
     renderTransportBar(host, {
       deviceId,
+      transportDeviceIds: transportIds.length ? transportIds : undefined,
       blankDeviceIds: blankIds.length ? blankIds : undefined,
       screenOn: display.screen_on !== false,
       paused,
       onScreenOnChange: (newValue) => {
         if (typeof onScreenOnChange === 'function') onScreenOnChange(deviceId, newValue);
       },
+      onTransportAction: (ids, action) => {
+        if (typeof onTransportAction === 'function') onTransportAction(transportIds.length ? transportIds : [deviceId], action);
+      },
     });
   });
 
   // Per-card Screensaver dropdown. stopPropagation so opening/changing it never
-  // bubbles to the card's inspector-open click. Reset to the placeholder after a
-  // pick so choosing the same option again re-fires. Target = this card's device
-  // (data-device-id) or the whole wall (data-wall-ids).
+  // bubbles to the card's inspector-open click. Keep the chosen option visible;
+  // the next authoritative display-state paint confirms or corrects it.
   container.querySelectorAll('select.mc-screensaver').forEach(sel => {
     ['pointerdown', 'mousedown', 'click'].forEach(ev => sel.addEventListener(ev, e => e.stopPropagation()));
     sel.addEventListener('change', (e) => {
       e.stopPropagation();
       const val = sel.value;
-      sel.value = '';
-      if (!val || typeof onScreensaver !== 'function') return;
+      if (!val || val === MIXED_SCREENSAVER_VALUE || typeof onScreensaver !== 'function') return;
       const ids = sel.dataset.deviceId
         ? [sel.dataset.deviceId]
         : String(sel.dataset.wallIds || '').split(',').filter(Boolean);
@@ -626,7 +660,11 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
       else if (val.startsWith('blank:')) source = { _screensaver: 'blank', variant: val.slice(6) };
       if (!source) return;
       const opt = SCREENSAVER_OPTIONS.find(o => o.value === val);
-      onScreensaver(ids, source, opt ? t(opt.labelKey) : t('mc.saver.title'));
+      if (source._screensaver === 'folder') sel.value = sel.dataset.currentValue || '';
+      const result = onScreensaver(ids, source, opt ? t(opt.labelKey) : t('mc.saver.title'));
+      Promise.resolve(result).then((ok) => {
+        if (ok === false) sel.value = sel.dataset.currentValue || '';
+      }).catch(() => { sel.value = sel.dataset.currentValue || ''; });
     });
   });
 

@@ -100,7 +100,10 @@ function flushQueue(deviceNs, deviceId, buildPayload) {
   if (cmds) {
     pendingCommands.delete(deviceId);
     for (const [type, entry] of cmds) {
-      deviceNs.to(deviceId).emit('device:command', { type, payload: entry.payload });
+      const command = type === 'device:command' && entry.payload && entry.payload.type === 'device:command'
+        ? entry.payload
+        : { type, payload: entry.payload };
+      deviceNs.to(deviceId).emit('device:command', command);
       commands++;
     }
   }

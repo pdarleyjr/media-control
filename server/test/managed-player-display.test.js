@@ -5,6 +5,7 @@ const {
   buildManagedPlayerUrl,
   loadManagedDisplay,
 } = require('../lib/managed-player-display');
+const { normalizePlayerAccessQuery } = require('../lib/player-access');
 
 function cleanup(prefix) {
   db.prepare('DELETE FROM devices WHERE id LIKE ? OR workspace_id LIKE ?').run(`${prefix}%`, `${prefix}%`);
@@ -71,4 +72,15 @@ test('buildManagedPlayerUrl points at the tokenized managed player route', () =>
   const display = { id: 'classroom-display-test', device_token: 'secret-token' };
   const url = buildManagedPlayerUrl({ baseUrl: 'https://media-control.example.test/', display });
   assert.equal(url, 'https://media-control.example.test/player/managed?device_id=classroom-display-test&token=secret-token');
+});
+
+test('normalizePlayerAccessQuery accepts canonical and legacy parameter names', () => {
+  assert.deepEqual(
+    normalizePlayerAccessQuery({ device_id: 'display-a', token: 'tok-a', audio_enabled: '1' }),
+    { deviceId: 'display-a', token: 'tok-a', audioEnabled: true }
+  );
+  assert.deepEqual(
+    normalizePlayerAccessQuery({ deviceId: 'display-b', deviceToken: 'tok-b', audioEnabled: 1 }),
+    { deviceId: 'display-b', token: 'tok-b', audioEnabled: true }
+  );
 });

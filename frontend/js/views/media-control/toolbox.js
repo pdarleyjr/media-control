@@ -371,11 +371,118 @@ async function renderScenesTab(container, { onAfterSend }) {
 // Attach click + dragstart on toolbox tiles that call sendToDisplays.
 // Exported so the Camera Feeds tab (camera-feeds.js) reuses the identical
 // tap-to-route + drag-to-card wiring instead of duplicating it.
+const TOUCH_DROP_SELECTOR = [
+  '.mc-display-card[data-device-id]',
+  '.mc-wall-cell[data-device-id]',
+  '.mc-wall-split-half[data-device-id][data-split-half]',
+  '.mc-wall-all[data-wall-ids]',
+  '#mc-stage',
+].join(',');
+
+function touchDropTargetAt(x, y) {
+  const hit = document.elementFromPoint(x, y);
+  if (!hit) return null;
+  const target = hit.closest(TOUCH_DROP_SELECTOR);
+  if (!target) return null;
+  if (target.classList.contains('mc-wall-cell') &&
+      target.closest('.mc-wall')?.dataset.layoutMode !== 'split') {
+    return target.closest('.mc-wall')?.querySelector('.mc-wall-all[data-wall-ids]') ||
+      target.closest('#mc-stage');
+  }
+  return target;
+}
+
+function setTouchDropHighlight(target, enabled) {
+  if (!target) return;
+  const highlightClass = target.classList.contains('mc-wall-all')
+    ? 'mc-wall-all-dragover'
+    : target.id === 'mc-stage' ? 'mc-stage-dragover' : 'mc-card-dragover';
+  target.classList.toggle(highlightClass, enabled);
+}
+
+function attachTouchDrag(tile, suppressClick) {
+  tile.addEventListener('pointerdown', (event) => {
+    if (!(event.pointerType === 'touch' || event.pointerType === 'pen')) return;
+    try { tile.setPointerCapture(event.pointerId); } catch { /* unsupported renderer */ }
+    const startX = event.clientX;
+    const startY = event.clientY;
+    let dragging = false;
+    let ghost = null;
+    let target = null;
+
+    const move = (moveEvent) => {
+      if (moveEvent.pointerId !== event.pointerId) return;
+      if (!dragging && Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) < 8) return;
+      if (!dragging) {
+        dragging = true;
+        suppressClick();
+        ghost = tile.cloneNode(true);
+        ghost.className = 'mc-touch-drag-ghost';
+        ghost.removeAttribute('id');
+        ghost.removeAttribute('draggable');
+        document.body.appendChild(ghost);
+      }
+      moveEvent.preventDefault();
+      ghost.style.left = `${moveEvent.clientX}px`;
+      ghost.style.top = `${moveEvent.clientY}px`;
+      const nextTarget = touchDropTargetAt(moveEvent.clientX, moveEvent.clientY);
+      if (nextTarget !== target) {
+        setTouchDropHighlight(target, false);
+        target = nextTarget;
+        setTouchDropHighlight(target, true);
+      }
+    };
+
+    const finish = (finishEvent) => {
+      if (finishEvent.pointerId !== event.pointerId) return;
+      tile.removeEventListener('pointermove', move);
+      tile.removeEventListener('pointerup', finish);
+      tile.removeEventListener('pointercancel', cancel);
+      try { tile.releasePointerCapture(event.pointerId); } catch { /* already released */ }
+      if (dragging) {
+        finishEvent.preventDefault();
+        const source = (() => { try { return JSON.parse(tile.dataset.dragSource); } catch { return null; } })();
+        if (target && source) {
+          const thumbImg = tile.querySelector('img');
+          target.dispatchEvent(new CustomEvent('mc:source-drop', {
+            bubbles: true,
+            detail: {
+              source,
+              label: tile.dataset.label || t('mc.tile.content_fallback'),
+              thumb: thumbImg && (thumbImg.currentSrc || thumbImg.src) || '',
+            },
+          }));
+        }
+      }
+      setTouchDropHighlight(target, false);
+      ghost?.remove();
+    };
+    const cancel = (cancelEvent) => {
+      if (cancelEvent.pointerId !== event.pointerId) return;
+      const highlightedTarget = target;
+      target = null;
+      finish(cancelEvent);
+      setTouchDropHighlight(highlightedTarget, false);
+    };
+
+    tile.addEventListener('pointermove', move);
+    tile.addEventListener('pointerup', finish);
+    tile.addEventListener('pointercancel', cancel);
+  });
+}
+
 export function attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource) {
   container.querySelectorAll('.mc-tile[data-drag-source]').forEach(tile => {
+    let suppressNextClick = false;
+    let suppressClickTimer = null;
     // Click = explicit target picker in Command Center; fallback preserves the
     // legacy immediate send contract for other callers/tests.
-    tile.addEventListener('click', async () => {
+    tile.addEventListener('click', async (event) => {
+      if (suppressNextClick) {
+        suppressNextClick = false;
+        event.preventDefault();
+        return;
+      }
       let source;
       try { source = JSON.parse(tile.dataset.dragSource); } catch { return; }
       const label = tile.dataset.label || t('mc.tile.content_fallback');
@@ -399,6 +506,11 @@ export function attachTileHandlers(container, selectedIds, onAfterSend, onRouteS
       const thumbImg = tile.querySelector('img');
       const thumbSrc = thumbImg && (thumbImg.currentSrc || thumbImg.src);
       if (thumbSrc) e.dataTransfer.setData('application/x-mc-thumb', thumbSrc);
+    });
+    attachTouchDrag(tile, () => {
+      suppressNextClick = true;
+      if (suppressClickTimer) clearTimeout(suppressClickTimer);
+      suppressClickTimer = setTimeout(() => { suppressNextClick = false; }, 700);
     });
   });
 }

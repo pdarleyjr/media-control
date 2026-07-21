@@ -2,13 +2,13 @@ import { api } from '../api.js';
 import { esc } from '../utils.js';
 import { t, tn } from '../i18n.js';
 import { showToast } from '../components/toast.js';
-import { identifyDevice, requestScreenshot, sendCommand, getSocket, on as socketOn, off as socketOff } from '../socket.js';
+import { clearTarget as clearSocketTarget, identifyDevice, requestScreenshot, selectTarget as selectSocketTarget, sendCommand, getSocket, on as socketOn, off as socketOff } from '../socket.js';
 import { COMMAND_TYPES } from '../player-protocol.js';
 import { mountTargetSelector } from './media-control/target-selector.js';
 import { mountSpanSplit } from './media-control/span-split.js';
 import { mountActionDock } from './media-control/action-dock.js';
 import * as displayState from '../services/display-state.js';
-import { renderStage } from './media-control/stage.js';
+import { previewSource, renderStage } from './media-control/stage.js';
 import { renderToolbox } from './media-control/toolbox.js';
 import { sendToDisplays, sentToast } from './media-control/send.js';
 import { renderInspector, closeInspector } from './media-control/inspector.js';
@@ -19,9 +19,21 @@ import { renderCommandBar } from './media-control/command-bar.js';
 import { renderRoomPresets } from './media-control/room-presets.js';
 import { renderRecentPanel } from './media-control/recent-panel.js';
 import { openViewModal, closeViewModal } from './media-control/view-modal.js';
+import { hasAdvancedCanvasEndpoint, routeSourceToAdvancedCanvas } from './media-control/advanced-canvas.js';
+import { enableLivePreviewAudio } from './media-control/live-preview.js';
+import {
+  BLACK_SCREENSAVER_URL,
+  MIXED_SCREENSAVER_VALUE,
+  SCREENSAVER_OPTIONS,
+  screensaverValueForDisplays,
+} from './media-control/screensaver-state.js';
 import { confirmDialog } from '../components/confirm.js';
 import * as screenShareEngine from '../services/screen-share-engine.js';
 import * as schedulesView from './schedules.js';
+import * as downloadsView from './downloads.js';
+import * as auditLogView from './audit-log.js';
+import * as settingsView from './settings.js';
+import * as videoWallView from './video-wall.js';
 import { mount as mountWhiteboardSurface } from './media-control/whiteboard.js';
 // transport.js is used by stage.js internally — no direct import needed here.
 
@@ -44,27 +56,6 @@ const ICON_DOWNLOADS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColo
 const ICON_ADMIN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>';
 const ICON_LOGS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="8" y1="13" x2="16" y2="13"></line><line x1="8" y1="17" x2="16" y2="17"></line></svg>';
 const ICON_SETTINGS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>';
-// ── Phase 1 Command Center: screensaver options for the canvas-level control.
-// Mirrors stage.js SCREENSAVER_OPTIONS (kept inline so this view does not depend
-// on stage.js exporting its private list). If an asset is re-uploaded, update the
-// id here AND in stage.js in lockstep.
-const SCREENSAVER_OPTIONS_CC = [
-  { value: 'url:https://wall.mbfdhub.com', labelKey: 'mc.saver.dashboard' },
-  { value: 'content:4798f022-e9d9-4cba-a0b0-56aeb75a6bff', labelKey: 'mc.saver.bw' },
-  { value: 'content:1d01b7a0-1a0c-4d3d-b0fd-6d854ce09ae3', labelKey: 'mc.saver.l1' },
-  { value: 'content:7c596f36-27f6-4d7b-9bb0-2c682791d25a', labelKey: 'mc.saver.mbfd_map' },
-  // Phase 6 (kept in lockstep with stage.js SCREENSAVER_OPTIONS): the seeded
-  // "Screensavers" folder opens the media drawer filtered to it (no broadcast),
-  // and "blank:black" broadcasts a pure black still screensaver.
-  { value: 'folder:Screensavers', labelKey: 'mc.saver.choose_from_folder' },
-  { value: 'blank:black', labelKey: 'mc.saver.blank_black' },
-];
-
-// A 1x1 black still the player renders as a "blank black" screensaver. The
-// player treats a bare remote_url as a still image; an inline SVG data URL keeps
-// this dependency-free and CSP-friendly (no external fetch).
-const BLACK_SCREENSAVER_URL = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16'%3E%3Crect width='16' height='16' fill='%23000'/%3E%3C/svg%3E";
-
 // ── Header avatar (real signed-in user, not a hardcoded "U") ───────────────
 // app.js owns the canonical signed-in user in localStorage('user'); we read it
 // here to render the operator's real initials (or avatar image) in the Command
@@ -129,6 +120,7 @@ function openContentDrawerFiltered(folderName) {
 // central canvas. null = legacy "show the whole room" stage (preserved when no
 // target is chosen). The target selector drives this; changing it is VIEW-ONLY.
 let activeTarget = null;
+const LAST_TARGET_KEY = 'mc_control_last_target';
 let targetApi = null;       // target-selector module API
 let transportApi = null;    // canvas-level transport row
 let spanSplitApi = null;    // Span | Split toggle
@@ -139,12 +131,28 @@ let unsub = null;
 let unsubChip = null;   // broadcast-chip unsubscribe (Task 4.5)
 let cmdAckHandler = null;   // Phase-2 command:ack (toast on timeout/failure)
 let stateSyncHandler = null;
+let playbackStateHandler = null;  // dashboard:playback-state listener
+let previewAudioGestureHandler = null;
+let multiviewEscapeHandler = null;
 let selectedIds = [];   // ids on the stage; re-hydrated from the server, persisted on change
 let wallMemberIds = new Set();   // device ids owned by a video wall (never their own card)
 let walls = [];
-let previewKickoff = null;   // one-shot "poke players to capture" timer after socket connect
-let previewInterval = null;  // periodic preview refresh for the displays on the stage
+let previewKickoff = null;
+let activePreviewInterval = null;
+let backgroundPreviewInterval = null;
+let activePreviewCursor = 0;
 let lastStageSig = null;     // structural signature of the last full stage paint (see paintStage)
+let refreshAfterSendTimer = null;
+let previewRequestTimer = null;
+const postActionPreviewTimers = new Set();
+const pendingPreviewRequestIds = new Set();
+const lastPreviewRequestAt = new Map();
+// Keep one embedded player for the active target so the operator sees real
+// playback. `live_preview=0` is an explicit diagnostics/fallback mode only.
+const LIVE_EMBED_PREVIEWS = new URLSearchParams(window.location.search).get('live_preview') !== '0';
+const PREVIEW_REQUEST_MIN_MS = 750;
+const ACTIVE_PREVIEW_INTERVAL_MS = 1000;
+const BACKGROUND_PREVIEW_INTERVAL_MS = 60000;
 // Per-wall split-column sources for a SINGLE spanning device (Mosaic): wallId ->
 // array indexed by column (0=left). Survives repaint (kept here, NOT in the DOM)
 // so dropping on the right column never blanks the left — both columns are re-sent
@@ -164,6 +172,30 @@ async function loadWalls() {
       if (d && d.device_id) wallMemberIds.add(d.device_id);
     }
   }
+}
+
+function layoutGroupTargets() {
+  const result = [];
+  for (const wall of (walls || [])) {
+    if (wall.layout_mode !== 'groups') continue;
+    for (const group of (wall.layout?.groups || [])) {
+      result.push({
+        ...group,
+        type: 'group',
+        wall_id: wall.id,
+        label: `${wall.name || wall.id} · ${group.name || group.id}`,
+      });
+    }
+  }
+  return result;
+}
+
+function layoutGroupById(groupId) {
+  return layoutGroupTargets().find((group) => group.id === groupId) || null;
+}
+
+function layoutGroupForDevice(deviceId) {
+  return layoutGroupTargets().find((group) => group.member_ids.includes(deviceId)) || null;
 }
 
 function persistSelection() {
@@ -265,7 +297,8 @@ function paintStage() {
   // Live state of EVERY display, incl. wall members, so wall composites can show
   // what each member screen is showing right now.
   const byId = new Map(all.map(d => [d.id, d]));
-  const displays = all.filter(d => !wallMemberIds.has(d.id));
+  const displays = all.filter((d) => !wallMemberIds.has(d.id)
+    || (activeTarget && activeTarget.type === 'display' && activeTarget.id === d.id));
   // Phase 1 Command Center: when a target is selected, render ONLY that target
   // large on the canvas (its wall card / its single display card). null keeps the
   // legacy "whole room" stage. The persisted selectedIds (drives content sends)
@@ -277,6 +310,18 @@ function paintStage() {
     if (activeTarget.type === 'wall') {
       renderWalls = (walls || []).filter((w) => w.id === activeTarget.id);
       renderSelectedIds = [];
+    } else if (activeTarget.type === 'group') {
+      const group = layoutGroupById(activeTarget.id);
+      const wall = group && (walls || []).find((candidate) => candidate.id === group.wall_id);
+      renderWalls = wall ? [{
+        ...wall,
+        name: `${wall.name || wall.id} · ${group.name || group.id}`,
+        devices: (wall.devices || []).filter((member) => group.member_ids.includes(member.device_id)),
+        leader_device_id: group.leader_device_id,
+        layout_mode: group.layout === 'span' ? 'span' : 'split',
+        layout_group_id: group.id,
+      }] : [];
+      renderSelectedIds = [];
     } else if (activeTarget.type === 'display') {
       renderWalls = [];
       renderSelectedIds = [activeTarget.id];
@@ -287,10 +332,12 @@ function paintStage() {
     walls: renderWalls,
     byId,
     selectedIds: renderSelectedIds,
-    onSelect: openInspector,
+    livePreviewDeviceId: LIVE_EMBED_PREVIEWS ? activePreviewDeviceId() : null,
+    onSelect: selectStageDisplayTarget,
     onCalibrateWall: showWallCalibration,
     onAddDisplay: openAddPicker,
     onScreenOnChange: handleScreenOnChange,
+    onTransportAction: (ids) => refreshAfterSend(ids),
     onSetWallMode: setWallMode,
     onScreensaver: applyScreensaver,
   });
@@ -299,13 +346,30 @@ function paintStage() {
   // + dock handle all controls below). The inline per-card chrome is hidden so
   // there's only ONE set of transport/screensaver/blank controls visible.
   const isCinemaTarget = !!(activeTarget &&
-    (activeTarget.type === 'wall' || activeTarget.type === 'display'));
+    (activeTarget.type === 'wall' || activeTarget.type === 'group' || activeTarget.type === 'display'));
   el.classList.toggle('mc-cc-cinema', isCinemaTarget);
   // Re-attach drop handlers on the freshly-rendered cards.
   attachStageDrop(el);
   // Record what we just rendered so screenshot-only updates can patch in place
   // (see stageSignature / refreshPreviewsInPlace) instead of rebuilding + flashing.
   lastStageSig = stageSignature();
+  // Electron can autoplay immediately; normal browsers retry on the operator's
+  // next gesture through the view-level handler installed by render().
+  setTimeout(() => {
+    refreshPreviewsInPlace();
+    enableLivePreviewAudio(el);
+  }, 0);
+}
+
+function selectStageDisplayTarget(deviceId) {
+  const wall = wallForDeviceId(deviceId);
+  if (wall && wall.layout_mode === 'split') {
+    const target = { type: 'display', id: deviceId, supportsModes: false };
+    if (targetApi) targetApi.setActive(target);
+    handleTargetChange(target);
+    return;
+  }
+  openInspector(deviceId);
 }
 
 // A compact signature of the STRUCTURE the stage renders: which cards/wall cells
@@ -325,21 +389,23 @@ function stageSignature() {
     // dashboard:playback-progress event (which fires whenever playback advances), which
     // produced a rapid DOM-rebuild loop and made the wall UI feel laggy. The label is
     // patched by refreshPreviewsInPlace() without a full repaint.
-    return [np.kind || '', np.contentId || '', np.poster_url || ''].join('~');
+    const preview = previewSource(d);
+    const previewKind = preview ? (preview.poster ? 'poster' : 'screenshot') : 'none';
+    return [np.kind || '', np.contentId || '', np.poster_url || '', previewKind].join('~');
   };
   for (const id of selectedIds) {
     if (wallMemberIds.has(id)) continue;
     const d = byId.get(id);
     if (!d) continue;
     parts.push('c:' + id + ':' + (d.online ? 1 : 0) + ':' + (d.screen_on === false ? 0 : 1) +
-      ':' + playingSig(d) + ':' + (d.screenshot_url ? 1 : 0) + ':' + ((d.now_playing && d.now_playing.poster_url) ? 'p' : ''));
+      ':' + playingSig(d) + ':' + (d.screenshot_url ? 1 : 0));
   }
   for (const w of (walls || [])) {
     parts.push('w:' + w.id + ':' + (w.grid_cols || 0) + 'x' + (w.grid_rows || 0) + ':' + (w.leader_device_id || '') + ':' + (w.layout_mode || 'span'));
     for (const m of (w.devices || [])) {
       const d = byId.get(m.device_id) || {};
       parts.push('m:' + m.device_id + ':' + (d.online ? 1 : 0) + ':' + (d.screen_on === false ? 0 : 1) +
-        ':' + playingSig(d) + ':' + (d.screenshot_url ? 1 : 0) + ':' + ((d.now_playing && d.now_playing.poster_url) ? 'p' : ''));
+        ':' + playingSig(d) + ':' + (d.screenshot_url ? 1 : 0));
     }
   }
   return parts.join('|');
@@ -356,12 +422,57 @@ function refreshPreviewsInPlace() {
     const host = img.closest('[data-device-id]');
     const id = host && host.dataset.deviceId;
     const d = id && byId.get(id);
-    if (!d || !d.screenshot_url) return;
-    // A cell intentionally showing the content's poster (un-capturable video /
-    // deck / web, see stage.previewSource) must NOT be clobbered with the black
-    // live screenshot on the next capture tick — leave the poster in place.
-    if (d.now_playing && d.now_playing.poster_url) return;
-    if (img.getAttribute('src') !== d.screenshot_url) img.setAttribute('src', d.screenshot_url);
+    const preview = d && previewSource(d);
+    if (!preview || preview.poster) return;
+    img.classList.remove('mc-shot-poster');
+    if (img.getAttribute('src') !== preview.src) img.setAttribute('src', preview.src);
+  });
+  el.querySelectorAll('iframe.mc-live-embed[data-mc-presentation="1"]').forEach((frame) => {
+    const host = frame.closest('[data-device-id]');
+    const id = host && host.dataset.deviceId;
+    const display = id && byId.get(id);
+    const slide = parseInt(display?.now_playing?.slideIndex ?? display?.slide_index, 10);
+    if (!Number.isFinite(slide) || slide < 1 || String(slide) === frame.dataset.mcSlideIndex) return;
+    try {
+      frame.contentWindow?.postMessage({
+        __mc_transport: {
+          action: 'go_to_slide',
+          payload: { action: 'go_to_slide', slide },
+        },
+      }, location.origin);
+      frame.dataset.mcSlideIndex = String(slide);
+    } catch { /* The next state refresh retries if the preview frame is reloading. */ }
+  });
+  el.querySelectorAll('video.mc-live-embed[data-mc-video="1"]').forEach((video) => {
+    const host = video.closest('[data-device-id]');
+    const id = host && host.dataset.deviceId;
+    const display = id && byId.get(id);
+    if (!display) return;
+    const nowPlaying = display.now_playing || {};
+    const reported = Number(nowPlaying.currentTime ?? display.current_time ?? 0);
+    if (!Number.isFinite(reported) || reported < 0) return;
+    const paused = (nowPlaying.paused ?? display.paused) === true;
+    let target = reported;
+    const rawUpdatedAt = Number(display.state_updated_at ?? nowPlaying.updated_at ?? 0);
+    const updatedAt = rawUpdatedAt > 0 && rawUpdatedAt < 10_000_000_000
+      ? rawUpdatedAt * 1000
+      : rawUpdatedAt;
+    if (!paused && updatedAt > 0) {
+      target += Math.max(0, Math.min(5, (Date.now() - updatedAt) / 1000));
+    }
+    const duration = Number(nowPlaying.duration ?? display.duration);
+    if (Number.isFinite(duration) && duration > 0) target = Math.min(target, duration);
+    const seek = () => {
+      if (Number.isFinite(video.duration) && Math.abs(video.currentTime - target) > 1.25) {
+        try { video.currentTime = target; } catch {}
+      }
+      video.dataset.mcCurrentTime = String(reported);
+      video.dataset.mcPaused = paused ? '1' : '0';
+      if (paused) video.pause();
+      else video.play().catch(() => {});
+    };
+    if (video.readyState >= 1) seek();
+    else video.addEventListener('loadedmetadata', seek, { once: true });
   });
 }
 
@@ -372,10 +483,47 @@ function refreshPreviewsInPlace() {
 // so the new content has loaded) — that is what makes the preview show what is
 // NOW playing right after a drag-drop / send. `targetIds` is optional; without it
 // we refresh every visible display.
+function scheduleDisplayStateRefresh(delay = 250) {
+  if (refreshAfterSendTimer) clearTimeout(refreshAfterSendTimer);
+  refreshAfterSendTimer = setTimeout(() => {
+    refreshAfterSendTimer = null;
+    displayState.refresh().catch(() => {});
+  }, delay);
+}
+
+function requestScreenshotThrottled(id, force = false) {
+  if (!id) return;
+  const now = Date.now();
+  const last = lastPreviewRequestAt.get(id) || 0;
+  if (!force && now - last < PREVIEW_REQUEST_MIN_MS) return;
+  lastPreviewRequestAt.set(id, now);
+  requestScreenshot(id);
+}
+
+function queuePreviewRequests(ids, delay = 1200, force = false) {
+  for (const id of (Array.isArray(ids) ? ids : [])) {
+    if (id) pendingPreviewRequestIds.add(id);
+  }
+  if (previewRequestTimer) clearTimeout(previewRequestTimer);
+  previewRequestTimer = setTimeout(() => {
+    previewRequestTimer = null;
+    const batch = [...pendingPreviewRequestIds];
+    pendingPreviewRequestIds.clear();
+    for (const id of batch) requestScreenshotThrottled(id, force);
+  }, delay);
+}
+
 function refreshAfterSend(targetIds) {
-  displayState.refresh().catch(() => {});
+  scheduleDisplayStateRefresh(100);
   const ids = (Array.isArray(targetIds) && targetIds.length) ? targetIds : visibleDeviceIds();
-  setTimeout(() => { for (const id of ids) requestScreenshot(id); }, 1800);
+  for (const delay of [350, 1400]) {
+    const timer = setTimeout(() => {
+      postActionPreviewTimers.delete(timer);
+      for (const id of ids) requestScreenshotThrottled(id, true);
+      displayState.refresh().catch(() => {});
+    }, delay);
+    postActionPreviewTimers.add(timer);
+  }
 }
 
 // A screensaver option was chosen on a card's dropdown: broadcast the chosen
@@ -386,16 +534,15 @@ function applyScreensaver(ids, source, label) {
     // Open the media drawer filtered to that folder; no broadcast. Lets the
     // operator pick a screensaver asset from the seeded "Screensavers" folder.
     openContentDrawerFiltered(source.folder);
-    return;
+    return Promise.resolve(true);
   }
   if (source && source._screensaver === 'blank' && source.variant === 'black') {
-    if (!Array.isArray(ids) || ids.length === 0) return;
-    sendToDisplays({ remote_url: BLACK_SCREENSAVER_URL }, ids, label || t('mc.saver.blank_black'))
-      .then((ok) => { if (ok) refreshAfterSend(ids); });
-    return;
+    if (!Array.isArray(ids) || ids.length === 0) return Promise.resolve(false);
+    return sendToDisplays({ remote_url: BLACK_SCREENSAVER_URL }, ids, label || t('mc.saver.blank_black'))
+      .then((ok) => { if (ok) refreshAfterSend(ids); return ok; });
   }
-  if (!Array.isArray(ids) || ids.length === 0 || !source) return;
-  sendToDisplays(source, ids, label).then((ok) => { if (ok) refreshAfterSend(ids); });
+  if (!Array.isArray(ids) || ids.length === 0 || !source) return Promise.resolve(false);
+  return sendToDisplays(source, ids, label).then((ok) => { if (ok) refreshAfterSend(ids); return ok; });
 }
 
 function showWallCalibration(deviceIds, wallName) {
@@ -421,6 +568,21 @@ async function setWallMode(wallId, mode) {
     showToast(t(mode === 'split' ? 'mc.wall.tpl_split_on' : 'mc.wall.tpl_span_on'), 'success');
   } catch (e) {
     showToast(e?.message || t('mc.wall.tpl_error'), 'error');
+  }
+}
+
+async function setWallLayout(wallId, preset, expectedRevision) {
+  if (!wallId || !preset) return;
+  try {
+    await api.updateWallLayout(wallId, { preset, expected_revision: expectedRevision });
+    await loadWalls();
+    if (targetApi) targetApi.setOptions(walls, layoutGroupTargets(), routeableDisplays());
+    paintStage();
+    paintSummary();
+    showToast('Wall layout applied', 'success');
+  } catch (error) {
+    showToast(error?.message || 'Wall layout could not be applied', 'error');
+    throw error;
   }
 }
 
@@ -474,17 +636,47 @@ function visibleDeviceIds() {
   return [...ids];
 }
 function requestVisiblePreviews() {
-  for (const id of visibleDeviceIds()) requestScreenshot(id);
+  queuePreviewRequests(visibleDeviceIds(), 0, false);
+}
+function requestActivePreview() {
+  if (!activeTarget) return;
+  if (activeTarget.type === 'display') {
+    queuePreviewRequests([activeTarget.id], 0, false);
+    return;
+  }
+  if (activeTarget.type === 'group') {
+    queuePreviewRequests(activeTargetDeviceIds(), 0, false);
+    return;
+  }
+  const wall = (walls || []).find((candidate) => candidate.id === activeTarget.id);
+  if (!wall) return;
+  if (wall.layout_mode !== 'split') {
+    queuePreviewRequests([wallTransportDeviceId(wall)], 0, false);
+    return;
+  }
+  const ids = wallDeviceIds(wall);
+  if (!ids.length) return;
+  const id = ids[activePreviewCursor % ids.length];
+  activePreviewCursor = (activePreviewCursor + 1) % ids.length;
+  queuePreviewRequests([id], 0, false);
 }
 function startPreviewRefresh() {
   stopPreviewRefresh();
-  // Let the dashboard socket finish connecting, poke once, then keep them fresh.
-  previewKickoff = setTimeout(requestVisiblePreviews, 1500);
-  previewInterval = setInterval(requestVisiblePreviews, 20000);
+  previewKickoff = setTimeout(() => {
+    requestActivePreview();
+    requestVisiblePreviews();
+  }, 350);
+  activePreviewInterval = setInterval(requestActivePreview, ACTIVE_PREVIEW_INTERVAL_MS);
+  backgroundPreviewInterval = setInterval(requestVisiblePreviews, BACKGROUND_PREVIEW_INTERVAL_MS);
 }
 function stopPreviewRefresh() {
   if (previewKickoff) { clearTimeout(previewKickoff); previewKickoff = null; }
-  if (previewInterval) { clearInterval(previewInterval); previewInterval = null; }
+  if (activePreviewInterval) { clearInterval(activePreviewInterval); activePreviewInterval = null; }
+  if (backgroundPreviewInterval) { clearInterval(backgroundPreviewInterval); backgroundPreviewInterval = null; }
+  if (previewRequestTimer) { clearTimeout(previewRequestTimer); previewRequestTimer = null; }
+  for (const timer of postActionPreviewTimers) clearTimeout(timer);
+  postActionPreviewTimers.clear();
+  pendingPreviewRequestIds.clear();
 }
 
 // Content-send target scope: the displays on the stage (the current selection).
@@ -520,6 +712,14 @@ function wallDeviceIds(wall) {
   return [...new Set(((wall && wall.devices) || []).map(m => m.device_id).filter(Boolean))];
 }
 
+function wallTransportDeviceId(wall) {
+  if (!wall || !Array.isArray(wall.devices) || wall.devices.length === 0) return null;
+  // Span-wall transport must always target the designated leader. Picking a
+  // different online member looks "healthy" in the UI but sends navigation to
+  // the wrong physical screen, which is worse than a stale/offline failure.
+  return wall.leader_device_id || wall.devices[0]?.device_id || null;
+}
+
 async function applyWallRoutingModes(wallSelections) {
   const changes = [];
   for (const selection of (wallSelections || [])) {
@@ -537,7 +737,7 @@ async function applyWallRoutingModes(wallSelections) {
 }
 
 async function chooseRouteTargets(label) {
-  const allDisplays = displayState.getAll().filter(d => !wallMemberIds.has(d.id));
+  const allDisplays = routeableDisplays();
   const result = await pickRoutingTargets({ displays: allDisplays, walls, label });
   if (!result) return null;
   const targetIds = [...new Set([
@@ -552,6 +752,9 @@ async function chooseRouteTargets(label) {
 }
 
 async function routeSourceWithPicker(source, label = t('mc.tile.content_fallback')) {
+  if (hasAdvancedCanvasEndpoint()) {
+    return routeSourceToAdvancedCanvas(source, label);
+  }
   const route = await chooseRouteTargets(label);
   if (!route) return false;
   try {
@@ -566,6 +769,18 @@ async function routeSourceWithPicker(source, label = t('mc.tile.content_fallback
 }
 
 async function routeNextcloudWithPicker(path, label = t('mc.tile.content_fallback')) {
+  if (hasAdvancedCanvasEndpoint()) {
+    try {
+      const imported = await api.files.importForCanvas(path);
+      if (imported && imported.content_id) {
+        return routeSourceToAdvancedCanvas({ content_id: imported.content_id }, label);
+      }
+      throw new Error(t('mc.send.failed'));
+    } catch (e) {
+      showToast(e?.message || t('mc.send.failed'), 'error');
+      return false;
+    }
+  }
   const route = await chooseRouteTargets(label);
   if (!route) return false;
   try {
@@ -634,6 +849,7 @@ function openInspector(deviceId) {
   renderInspector(el, {
     display,
     isWallMember: wallMemberIds.has(deviceId),
+    wall: wallForDeviceId(deviceId),
     onClose: () => { setLibraryInert(false); },
     onDeviceChanged: async () => {
       await displayState.refresh().catch(() => {});
@@ -800,6 +1016,13 @@ function dragHasSource(e) {
     e.dataTransfer.types.includes('text/plain'));
 }
 function parseDragSource(e) {
+  if (e.detail && e.detail.source) {
+    return {
+      source: e.detail.source,
+      label: e.detail.label || t('mc.tile.content_fallback'),
+    };
+  }
+  if (!e.dataTransfer) return null;
   const raw = e.dataTransfer.getData('application/x-mc-source') ||
               e.dataTransfer.getData('text/plain');
   if (!raw) return null;
@@ -836,16 +1059,18 @@ function attachStageDrop(stageContainer) {
       card.classList.add('mc-card-dragover');
     });
     card.addEventListener('dragleave', () => card.classList.remove('mc-card-dragover'));
-    card.addEventListener('drop', async (e) => {
+    const handleDrop = async (e) => {
       e.preventDefault();
       e.stopPropagation();
       card.classList.remove('mc-card-dragover');
       const parsed = parseDragSource(e);
       const deviceId = card.dataset.deviceId;
       if (!parsed || !deviceId) return;
-      await sendToDisplays(parsed.source, [deviceId], parsed.label);
-      refreshAfterSend([deviceId]); // re-fetch state + refresh THIS card's preview
-    });
+      const ok = await sendToDisplays(parsed.source, [deviceId], parsed.label);
+      if (ok) refreshAfterSend([deviceId]); // re-fetch state + refresh THIS card's preview
+    };
+    card.addEventListener('drop', handleDrop);
+    card.addEventListener('mc:source-drop', handleDrop);
   });
 
   // Single-spanning-device split halves: drop a source onto ONE column of a wall
@@ -859,7 +1084,7 @@ function attachStageDrop(stageContainer) {
       half.classList.add('mc-card-dragover');
     });
     half.addEventListener('dragleave', () => half.classList.remove('mc-card-dragover'));
-    half.addEventListener('drop', async (e) => {
+    const handleDrop = async (e) => {
       e.preventDefault();
       e.stopPropagation();
       half.classList.remove('mc-card-dragover');
@@ -868,7 +1093,9 @@ function attachStageDrop(stageContainer) {
       const idx = parseInt(half.dataset.splitHalf, 10);
       if (!parsed || !wallId || !Number.isInteger(idx)) return;
       await dropOnWallHalf(wallId, idx, parsed.source, parsed.label);
-    });
+    };
+    half.addEventListener('drop', handleDrop);
+    half.addEventListener('mc:source-drop', handleDrop);
   });
 
   // Whole-wall drop strips: drop a source here to fill EVERY screen of that wall
@@ -882,7 +1109,7 @@ function attachStageDrop(stageContainer) {
       zone.classList.add('mc-wall-all-dragover');
     });
     zone.addEventListener('dragleave', () => zone.classList.remove('mc-wall-all-dragover'));
-    zone.addEventListener('drop', async (e) => {
+    const handleDrop = async (e) => {
       e.preventDefault();
       e.stopPropagation();
       zone.classList.remove('mc-wall-all-dragover');
@@ -891,18 +1118,20 @@ function attachStageDrop(stageContainer) {
       const ids = (zone.dataset.wallIds || '').split(',').filter(Boolean);
       if (!ids.length) { showToast(t('mc.send.no_displays'), 'error'); return; }
       if (forcesSingleScreen(parsed.source)) {
-        // Website → one screen only. Prefer the wall leader, else the first member.
+        // Website → one screen only. Prefer a live wall member, else the first member.
         const wallId = zone.closest('.mc-wall[data-wall-id]')?.dataset.wallId;
         const wall = (walls || []).find((w) => w.id === wallId);
-        const single = (wall && wall.leader_device_id) || ids[0];
+        const single = wallTransportDeviceId(wall) || ids[0];
         showToast(t('mc.route.single_screen_only'), 'info');
-        await sendToDisplays(parsed.source, [single], parsed.label);
-        refreshAfterSend([single]);
+        const ok = await sendToDisplays(parsed.source, [single], parsed.label);
+        if (ok) refreshAfterSend([single]);
         return;
       }
-      await sendToDisplays(parsed.source, ids, parsed.label);
-      refreshAfterSend(ids);
-    });
+      const ok = await sendToDisplays(parsed.source, ids, parsed.label);
+      if (ok) refreshAfterSend(ids);
+    };
+    zone.addEventListener('drop', handleDrop);
+    zone.addEventListener('mc:source-drop', handleDrop);
   });
 
   // Stage-BACKGROUND drop → every display on the stage (the current selection).
@@ -927,8 +1156,18 @@ function attachStageDrop(stageContainer) {
     if (!parsed) return;
     const targets = effectiveTargets();
     if (!targets.length) { showToast(t('mc.send.no_displays'), 'error'); return; }
-    await sendToDisplays(parsed.source, targets, parsed.label);
-    refreshAfterSend(targets);
+    const ok = await sendToDisplays(parsed.source, targets, parsed.label);
+    if (ok) refreshAfterSend(targets);
+  });
+  stageContainer.addEventListener('mc:source-drop', async (e) => {
+    e.preventDefault();
+    stageContainer.classList.remove('mc-stage-dragover');
+    const parsed = parseDragSource(e);
+    if (!parsed) return;
+    const targets = effectiveTargets();
+    if (!targets.length) { showToast(t('mc.send.no_displays'), 'error'); return; }
+    const ok = await sendToDisplays(parsed.source, targets, parsed.label);
+    if (ok) refreshAfterSend(targets);
   });
 }
 
@@ -944,25 +1183,38 @@ function attachStageDrop(stageContainer) {
 // the active display.
 function activeTargetDeviceIds() {
   if (!activeTarget) return [];
+  if (activeTarget.type === 'group') {
+    const group = layoutGroupById(activeTarget.id);
+    return group ? [...group.member_ids] : [];
+  }
   if (activeTarget.type === 'wall') {
     const w = (walls || []).find((x) => x.id === activeTarget.id);
     return w ? wallDeviceIds(w) : [];
   }
   return activeTarget.id ? [activeTarget.id] : [];
 }
-// Transport (play/pause/prev/next/restart) targets the wall LEADER (which drives
-// wall sync) for a wall, or the display itself.
-function activeTargetTransportId() {
+function wallTransportDeviceIds(wall) {
+  if (!wall || wall.layout_mode === 'split') return [];
+  const ids = wallDeviceIds(wall);
+  const leaderId = wallTransportDeviceId(wall);
+  return [...new Set([leaderId, ...ids].filter(Boolean))];
+}
+
+// Transport (play/pause/prev/next/restart) targets every span-wall member or
+// the standalone display itself. Split walls are independent, so their member
+// cards own transport and the wall-level transport row stays hidden.
+function activeTargetTransportIds() {
+  if (activeTarget && activeTarget.type === 'group') return activeTargetDeviceIds();
   if (activeTarget && activeTarget.type === 'wall') {
     const w = (walls || []).find((x) => x.id === activeTarget.id);
-    if (!w) return null;
-    return w.leader_device_id || (w.devices && w.devices[0] && w.devices[0].device_id) || null;
+    if (w?.layout_mode === 'groups') return [];
+    return wallTransportDeviceIds(w);
   }
-  return (activeTarget && activeTarget.id) || null;
+  return (activeTarget && activeTarget.id) ? [activeTarget.id] : [];
 }
 // The active wall object (or null) — used by the Span/Split toggle.
 function activeWall() {
-  if (!activeTarget || activeTarget.type !== 'wall') return null;
+  if (!activeTarget || (activeTarget.type !== 'wall' && activeTarget.type !== 'group')) return null;
   return (walls || []).find((x) => x.id === (activeTarget.wall_id || activeTarget.id)) || null;
 }
 // Content currently assigned to the wall? (Any member showing a real source.)
@@ -977,26 +1229,68 @@ function wallHasContent(wall) {
   return false;
 }
 
+function wallForDeviceId(deviceId) {
+  if (!deviceId || !Array.isArray(walls)) return null;
+  return walls.find((w) => Array.isArray(w.devices) && w.devices.some((m) => m && m.device_id === deviceId)) || null;
+}
+
+function isSplitWallMemberId(deviceId) {
+  const wall = wallForDeviceId(deviceId);
+  if (wall?.layout_mode === 'split') return true;
+  const group = layoutGroupForDevice(deviceId);
+  return !!(group && group.layout === 'solo');
+}
+
+function routeableDisplays() {
+  return displayState.getAll().filter((d) => {
+    if (!d || isLiveStreamTargetId(d.id)) return false;
+    if (!wallMemberIds.has(d.id)) return true;
+    return isSplitWallMemberId(d.id);
+  });
+}
+
+function syncSocketTarget(tgt) {
+  if (!tgt) {
+    clearSocketTarget();
+    return;
+  }
+  const type = tgt.type === 'wall' || tgt.type === 'group' ? 'wall' : tgt.type === 'display' ? 'display' : null;
+  const id = tgt.type === 'group' ? tgt.wall_id : (tgt.id || tgt.wall_id || tgt.device_id);
+  if (!type || !id) clearSocketTarget();
+  else selectSocketTarget(type, id);
+}
+
 // The active target changed — re-point the canvas + refresh the canvas-level
-// controls. Emits NO command: this is a view-only switch.
-// TODO(Phase-2 target rooms): join a per-target socket room. socket.js does not
-// expose a 'select-target' emit / window.mcSocket today, so we deliberately do
-// NOT emit anything here. Wire `dashboard:select-target` once socket.js grows a
-// helper (getSocket() would be the entry point then).
+// controls. This is view-only; the socket target join only selects the live
+// ack/state stream for the web/Electron controller.
 function handleTargetChange(tgt) {
   activeTarget = tgt || null;
+  try {
+    if (activeTarget) sessionStorage.setItem(LAST_TARGET_KEY, JSON.stringify(activeTarget));
+    else sessionStorage.removeItem(LAST_TARGET_KEY);
+  } catch { /* session storage is best effort */ }
+  activePreviewCursor = 0;
+  syncSocketTarget(activeTarget);
   paintStage();
   paintSummary();
   paintChips();
   if (transportApi && transportApi.repaint) transportApi.repaint();
   if (spanSplitApi && spanSplitApi.repaint) spanSplitApi.repaint();
   if (screensaverApi && screensaverApi.repaint) screensaverApi.repaint();
+  const previewId = activePreviewDeviceId();
+  if (previewId) queuePreviewRequests([previewId], 50, true);
 }
 
 // Pick the initial canvas target so the canvas opens on ONE large preview (per
 // the mockup): the first video wall, else the first online non-wall display,
 // else the first non-wall display. Returns a target object or null.
 function chooseInitialTarget() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(LAST_TARGET_KEY) || 'null');
+    if (saved?.type === 'wall' && walls.some((wall) => wall.id === saved.id)) return saved;
+    if (saved?.type === 'group' && layoutGroupById(saved.id)) return { ...layoutGroupById(saved.id), ...saved };
+    if (saved?.type === 'display' && displayState.get(saved.id)) return saved;
+  } catch { /* ignore stale target state */ }
   if (Array.isArray(walls) && walls.length) {
     const w = walls.slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))[0];
     if (w && w.id) return { type: 'wall', id: w.id, wall_id: w.id, supportsModes: true };
@@ -1022,17 +1316,24 @@ function mountTransportRow(hostEl) {
   const row = hostEl.querySelector('.mc-cc-tp-row');
   hostEl.querySelectorAll('[data-cc-tp]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      const id = activeTargetTransportId();
-      if (!id) return;
+      const ids = activeTargetTransportIds();
+      if (!ids.length) return;
       const action = btn.dataset.ccTp; // 'prev' | 'restart' | 'play_pause' | 'next'
-      sendCommand(id, COMMAND_TYPES.TRANSPORT, { action });
+      const primary = displayState.get(ids[0]);
+      const paused = primary && primary.now_playing ? primary.now_playing.paused : undefined;
+      const resolvedAction = action === 'play_pause' && paused !== undefined
+        ? (paused ? 'play' : 'pause')
+        : action;
+      ids.forEach(id => sendCommand(id, COMMAND_TYPES.TRANSPORT, { action: resolvedAction }));
+      refreshAfterSend(ids);
       // Optimistically refresh the Play/Pause label after a toggle.
       setTimeout(() => transportApi && transportApi.repaint && transportApi.repaint(), 400);
     });
   });
   return {
     repaint() {
-      const id = activeTargetTransportId();
+      const ids = activeTargetTransportIds();
+      const id = ids[0] || null;
       if (row) row.hidden = !id;
       if (!id) return;
       const dev = displayState.get(id);
@@ -1056,8 +1357,10 @@ function mountTransportRow(hostEl) {
       if (nextTxt) nextTxt.textContent = isPresentation ? t('mc.cc.transport.next_slide') : t('mc.cc.transport.next');
       const pp = hostEl.querySelector('[data-cc-tp="play_pause"] .mc-cc-tp-text');
       if (pp) {
-        const playing = !!(dev && dev.now_playing && dev.now_playing.kind && dev.now_playing.kind !== 'idle');
-        pp.textContent = playing ? t('mc.cc.transport.pause') : t('mc.cc.transport.play');
+        const paused = dev && dev.now_playing ? dev.now_playing.paused : undefined;
+        pp.textContent = paused === true
+          ? t('mc.cc.transport.play')
+          : paused === false ? t('mc.cc.transport.pause') : t('mc.tp.play_pause');
       }
       void isVideo; // video uses the default play_pause + restart; no special-casing needed
     },
@@ -1070,7 +1373,7 @@ function mountTransportRow(hostEl) {
 // "MBFD Default" placeholder per the mockup.
 function mountScreensaverRow(hostEl) {
   if (!hostEl) return null;
-  const opts = SCREENSAVER_OPTIONS_CC
+  const opts = SCREENSAVER_OPTIONS
     .map((o) => `<option value="${esc(o.value)}">${esc(t(o.labelKey))}</option>`)
     .join('');
   hostEl.innerHTML = `
@@ -1078,15 +1381,44 @@ function mountScreensaverRow(hostEl) {
       <span class="mc-screensaver-label">${esc(t('mc.cc.saver.label'))}:</span>
       <select class="mc-cc-saver-select" aria-label="${esc(t('mc.cc.saver.label'))}">
         <option value="">${esc(t('mc.cc.saver.default'))}</option>
+        <option value="${MIXED_SCREENSAVER_VALUE}" disabled>${esc(t('mc.cc.saver.mixed'))}</option>
         ${opts}
       </select>
     </div>`;
   const row = hostEl.querySelector('.mc-screensaver-row');
   const sel = hostEl.querySelector('.mc-cc-saver-select');
+  let pending = null;
+
+  const targetKey = (ids) => ids.slice().sort().join(',');
+  const authoritativeValue = (ids) => {
+    const byId = new Map(displayState.getAll().map((display) => [display.id, display]));
+    return screensaverValueForDisplays(ids.map((id) => byId.get(id) || null));
+  };
+  const repaint = () => {
+    const ids = activeTargetDeviceIds();
+    if (row) row.hidden = ids.length === 0;
+    if (!ids.length) {
+      pending = null;
+      sel.value = '';
+      return;
+    }
+    const confirmed = authoritativeValue(ids);
+    const key = targetKey(ids);
+    if (pending && pending.targetKey === key && Date.now() < pending.expiresAt) {
+      if (confirmed === pending.value) pending = null;
+      else {
+        sel.value = pending.value;
+        return;
+      }
+    } else {
+      pending = null;
+    }
+    sel.value = confirmed;
+  };
+
   sel.addEventListener('change', () => {
     const val = sel.value;
-    sel.value = '';
-    if (!val) return;
+    if (!val || val === MIXED_SCREENSAVER_VALUE) return;
     const ids = activeTargetDeviceIds();
     if (!ids.length) return;
     let source = null;
@@ -1095,11 +1427,27 @@ function mountScreensaverRow(hostEl) {
     else if (val.startsWith('folder:')) source = { _screensaver: 'folder', folder: val.slice(7) };
     else if (val.startsWith('blank:')) source = { _screensaver: 'blank', variant: val.slice(6) };
     if (!source) return;
-    const opt = SCREENSAVER_OPTIONS_CC.find((o) => o.value === val);
-    applyScreensaver(ids, source, opt ? t(opt.labelKey) : t('mc.cc.saver.label'));
+    if (source._screensaver === 'folder') {
+      applyScreensaver(ids, source, t('mc.saver.choose_from_folder'));
+      repaint();
+      return;
+    }
+    pending = { targetKey: targetKey(ids), value: val, expiresAt: Date.now() + 15000 };
+    const opt = SCREENSAVER_OPTIONS.find((o) => o.value === val);
+    sel.setAttribute('aria-busy', 'true');
+    applyScreensaver(ids, source, opt ? t(opt.labelKey) : t('mc.cc.saver.label'))
+      .then((ok) => {
+        if (!ok) pending = null;
+        return displayState.refresh().catch(() => {});
+      })
+      .catch(() => { pending = null; })
+      .finally(() => {
+        sel.removeAttribute('aria-busy');
+        repaint();
+      });
   });
   return {
-    repaint() { if (row) row.hidden = !activeTargetDeviceIds().length; },
+    repaint,
   };
 }
 
@@ -1117,21 +1465,34 @@ function targetLabelOf(targetId) {
 }
 function activeTargetIds() {
   if (!activeTarget) return [];
+  if (activeTarget.type === 'group') return activeTargetDeviceIds();
   if (activeTarget.wall_id) {
     const w = walls.find((x) => x.id === activeTarget.wall_id);
     return (w && w.devices ? w.devices.map((d) => d.device_id) : []);
   }
-  return activeTarget.device_id ? [activeTarget.device_id] : [];
+  return activeTarget.id ? [activeTarget.id] : [];
+}
+function activePreviewDeviceId() {
+  if (!activeTarget) return null;
+  if (activeTarget.type === 'display') return activeTarget.id || null;
+  if (activeTarget.type === 'group') {
+    const group = layoutGroupById(activeTarget.id);
+    return group?.leader_device_id || group?.member_ids?.[0] || null;
+  }
+  const wall = (walls || []).find((candidate) => candidate.id === activeTarget.id);
+  return wall ? wallTransportDeviceId(wall) : null;
 }
 function handleCommandAck(data) {
   if (!data) return;
   const related = activeTargetIds().includes(data.target_id || data.device_id)
-    || (activeTarget && (activeTarget.wall_id === data.target_id || activeTarget.device_id === data.target_id));
+    || (activeTarget && (activeTarget.id === data.target_id || activeTarget.wall_id === data.target_id || activeTarget.device_id === data.target_id));
   if (data.ok === false && related) {
     const label = targetLabelOf(data.target_id || data.device_id);
     const msg = data.status === 'timeout'
       ? t('mc.cc.cmd_not_ack', { target: label })
-      : (data.error ? (label + ': ' + data.error) : t('mc.cc.cmd_failed', { target: label }));
+      : (data.error
+        ? (label + ': ' + (data.error.message || data.error.code || String(data.error)))
+        : t('mc.cc.cmd_failed', { target: label }));
     showToast(msg, 'error');
     // Force a chip repaint so Stale/Failed reflects immediately.
     try { paintChips(); } catch (_) {}
@@ -1358,20 +1719,65 @@ async function stopLive() {
   catch (e) { showToast(e && e.message ? e.message : t('mc.cmd.live_stop_failed'), 'error'); }
 }
 
-// Wire the Command Center left icon rail (called from render() after the shell
-// markup is injected). Buttons navigate to their surface or toggle the in-page
-// Content Library drawer; the Admin item is a plain <a> handled by the router.
-function wireCommandRail() {
+function openTargetPickerModal() {
+  let controller;
+  controller = openViewModal({
+    title: 'Choose a display',
+    render: (body) => {
+      const displayTargets = routeableDisplays();
+      const groupTargets = layoutGroupTargets();
+      body.innerHTML = `<div class="mc-route-list mc-target-choice-list">
+        ${(walls || []).map((wall) => `<button type="button" class="mc-route-row mc-target-choice" data-type="wall" data-id="${esc(wall.id)}">
+          <strong>${esc(wall.name || wall.id)}</strong><span>${esc(wall.layout_mode === 'split' ? 'Split mode' : 'Span mode')}</span>
+        </button>`).join('')}
+        ${groupTargets.map((group) => `<button type="button" class="mc-route-row mc-target-choice" data-type="group" data-id="${esc(group.id)}">
+          <strong>${esc(group.label || group.name || group.id)}</strong><span>${esc(group.layout === 'span' ? 'Spanned group' : 'Independent display')}</span>
+        </button>`).join('')}
+        ${displayTargets.map((display) => `<button type="button" class="mc-route-row mc-target-choice" data-type="display" data-id="${esc(display.id)}">
+          <strong>${esc(display.name || display.id)}</strong><span>${esc(display.online ? 'Connected' : 'Not connected')}</span>
+        </button>`).join('')}
+      </div>`;
+      body.querySelectorAll('[data-type][data-id]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const isWall = button.dataset.type === 'wall';
+          const isGroup = button.dataset.type === 'group';
+          const group = isGroup ? layoutGroupById(button.dataset.id) : null;
+          const target = isGroup
+            ? { type: 'group', ...group, id: button.dataset.id, supportsModes: false }
+            : {
+              type: isWall ? 'wall' : 'display',
+              id: button.dataset.id,
+              ...(isWall ? { wall_id: button.dataset.id, supportsModes: true } : { supportsModes: false }),
+            };
+          if (targetApi) targetApi.setActive(target);
+          handleTargetChange(target);
+          controller.close();
+        });
+      });
+    },
+  });
+}
+
+// Keep every rail surface inside the fixed Command Center. Hash navigation hid
+// the rail in console mode and stranded touch users on a secondary page.
+function openLibraryTab(tabId) {
+  const drawer = document.getElementById('mc-library-drawer');
+  if (!drawer) return;
+  if (drawer.dataset.open !== 'true') drawer.querySelector('[data-library-toggle]')?.click();
+  setTimeout(() => drawer.querySelector(`.mc-tb-tab[data-tab="${tabId}"]`)?.click(), 0);
+}
+
+function wireCommandRail(actions = {}) {
   const rail = document.querySelector('.mc-cc-rail');
   if (!rail) return;
   rail.querySelectorAll('[data-mc-rail]').forEach((btn) => {
     btn.addEventListener('click', () => {
       switch (btn.dataset.mcRail) {
         case 'command':
-          window.location.hash = '#/control';
+          closeViewModal();
           break;
         case 'displays':
-          window.location.hash = '#/';
+          openTargetPickerModal();
           break;
         case 'whiteboard':
           if (typeof window.mcOpenWhiteboard === 'function') window.mcOpenWhiteboard();
@@ -1384,14 +1790,29 @@ function wireCommandRail() {
           if (toggle) toggle.click();
           break;
         }
+        case 'cameras':
+          openLibraryTab('camerafeeds');
+          break;
+        case 'multiview':
+          actions.onMultiview?.();
+          break;
+        case 'share':
+          actions.onShare?.();
+          break;
+        case 'schedules':
+          openViewModal({ title: t('mc.schedules.title'), module: schedulesView });
+          break;
         case 'downloads':
-          window.location.hash = '#/downloads';
+          openViewModal({ title: 'Downloads', module: downloadsView });
+          break;
+        case 'admin':
+          openViewModal({ title: 'Video Walls', module: videoWallView });
           break;
         case 'logs':
-          window.location.hash = '#/audit';
+          openViewModal({ title: 'System Logs', module: auditLogView });
           break;
         case 'settings':
-          window.location.hash = '#/settings';
+          openViewModal({ title: 'Settings', module: settingsView });
           break;
         default:
           break;
@@ -1400,7 +1821,7 @@ function wireCommandRail() {
   });
 }
 
-export async function render() {
+export async function render({ signal, routeHash = '#/control' } = {}) {
   const app = document.getElementById('app');
   // Command Center shell: a single appliance-style screen — fixed header,
   // left icon rail + center workspace (canvas > playback > span/split+saver >
@@ -1433,9 +1854,13 @@ export async function render() {
           <button type="button" class="mc-cc-rail-btn" data-mc-rail="displays" title="${esc(t('mc.cc.rail.displays'))}" aria-label="${esc(t('mc.cc.rail.displays'))}">${ICON_DISPLAYS}</button>
           <button type="button" class="mc-cc-rail-btn" data-mc-rail="whiteboard" title="${esc(t('mc.cc.rail.whiteboard'))}" aria-label="${esc(t('mc.cc.rail.whiteboard'))}">${ICON_WHITEBOARD}</button>
           <button type="button" class="mc-cc-rail-btn" data-mc-rail="media" title="${esc(t('mc.cc.rail.media'))}" aria-label="${esc(t('mc.cc.rail.media'))}">${ICON_MEDIA}</button>
+          <button type="button" class="mc-cc-rail-btn" data-mc-rail="cameras" title="Cameras" aria-label="Cameras">${ICON_DISPLAYS}</button>
+          <button type="button" class="mc-cc-rail-btn" data-mc-rail="multiview" title="Multiview" aria-label="Multiview">${ICON_COMMAND}</button>
+          <button type="button" class="mc-cc-rail-btn" data-mc-rail="share" title="Share My Screen" aria-label="Share My Screen">${ICON_DOWNLOADS}</button>
+          <button type="button" class="mc-cc-rail-btn" data-mc-rail="schedules" title="Schedules" aria-label="Schedules">${ICON_LOGS}</button>
           <button type="button" class="mc-cc-rail-btn" data-mc-rail="downloads" title="${esc(t('mc.cc.rail.downloads'))}" aria-label="${esc(t('mc.cc.rail.downloads'))}">${ICON_DOWNLOADS}</button>
           <span class="mc-cc-rail-spacer"></span>
-          <a class="mc-cc-rail-btn" href="#/walls" title="${esc(t('mc.cc.rail.admin'))}" aria-label="${esc(t('mc.cc.rail.admin'))}">${ICON_ADMIN}</a>
+          <button type="button" class="mc-cc-rail-btn" data-mc-rail="admin" title="${esc(t('mc.cc.rail.admin'))}" aria-label="${esc(t('mc.cc.rail.admin'))}">${ICON_ADMIN}</button>
           <button type="button" class="mc-cc-rail-btn" data-mc-rail="logs" title="${esc(t('mc.cc.rail.logs'))}" aria-label="${esc(t('mc.cc.rail.logs'))}">${ICON_LOGS}</button>
           <button type="button" class="mc-cc-rail-btn" data-mc-rail="settings" title="${esc(t('mc.cc.rail.settings'))}" aria-label="${esc(t('mc.cc.rail.settings'))}">${ICON_SETTINGS}</button>
         </nav>
@@ -1443,7 +1868,8 @@ export async function render() {
         <main class="mc-cc-main">
           <section class="mc-cc-canvas-area">
             <div id="mc-cc-chips" class="mc-cc-chips" aria-live="polite"></div>
-            <div id="mc-multiview" class="mc-multiview-host" hidden></div>
+            <div id="mc-multiview" class="mc-multiview-host" role="dialog"
+                 aria-modal="true" aria-label="${esc(t('mc.cmd.multiview'))}" tabindex="-1" hidden></div>
             <section id="mc-stage" class="mc-stage mc-cc-canvas" aria-label="${esc(t('mc.section.displays'))}"></section>
           </section>
 
@@ -1483,6 +1909,12 @@ export async function render() {
       </div>
     </div>`;
 
+  if (!previewAudioGestureHandler) {
+    previewAudioGestureHandler = () => enableLivePreviewAudio(app);
+    document.addEventListener('pointerdown', previewAudioGestureHandler, true);
+    document.addEventListener('keydown', previewAudioGestureHandler, true);
+  }
+
   // The right Content Library tab is now the only fixed right-edge element — the
   // collapsed tab (data-open="false") re-shows itself when the drawer toggles.
   const libDrawer = document.getElementById('mc-library-drawer');
@@ -1495,7 +1927,7 @@ export async function render() {
   // the whole rail looked dead (operator feedback: "none of the sidebar items
   // are clickable"). Each now routes to its surface. The Admin item is already a
   // real <a href="#/walls"> and the active "command" item is the page itself.
-  wireCommandRail();
+  wireCommandRail({ onMultiview: toggleMultiview, onShare: shareScreenActive });
 
   // Re-hydrate the last-controlled selection, learn which devices are wall-owned,
   // and load the live display state — then prune any stale/wall-member ids.
@@ -1504,6 +1936,7 @@ export async function render() {
     loadWalls(),
     displayState.refresh().catch(() => {}),
   ]);
+  if (signal?.aborted) return;
   selectedIds = Array.isArray(selection && selection.device_ids) ? selection.device_ids : [];
   pruneSelection();
   // Shared room: with no saved stage selection yet, default to ALL room displays
@@ -1532,7 +1965,8 @@ pruneSelection();
   // functions and route commands to the active target only.
   targetApi = mountTargetSelector(document.getElementById('mc-target-host'), {
     walls,
-    displays: displayState.getAll().filter((d) => !wallMemberIds.has(d.id) && !isLiveStreamTargetId(d.id)),
+    groups: layoutGroupTargets(),
+    displays: routeableDisplays(),
     onTargetChange: handleTargetChange,
   });
   transportApi = mountTransportRow(document.getElementById('mc-transport-host'));
@@ -1540,6 +1974,7 @@ pruneSelection();
     getActiveTarget: () => activeTarget,
     getActiveWall: activeWall,
     onSetWallMode: setWallMode,
+    onSetWallLayout: setWallLayout,
     hasContent: wallHasContent,
   });
   screensaverApi = mountScreensaverRow(document.getElementById('mc-screensaver-host'));
@@ -1576,37 +2011,114 @@ pruneSelection();
   if (!cmdAckHandler) { cmdAckHandler = (d) => handleCommandAck(d); socketOn('command-ack', cmdAckHandler); }
   if (!stateSyncHandler) { stateSyncHandler = (d) => handleStateSync(d); socketOn('state-sync', stateSyncHandler); }
 
-  // Whiteboard dock stub (Phase 2). Mounts the self-contained whiteboard surface
-  // as a full-stage overlay over the Command Center canvas. Minimal entrypoint:
-  // window.mcOpenWhiteboard() opens it (optionally with an explicit target); the
-  // small dock button in the header is a discoverable launcher for the same call.
-  // Wiring target selection to the stage's current selection is intentionally
-  // light here — the full Command Center target-model integration is a separate
-  // concern and out of scope for this pass.
+  // Whiteboard defaults to the active canvas target and exposes every wall and
+  // independently-routable display in its own target selector.
   let wbApi = null;
   let wbHost = null;
-  function whiteboardTarget() {
-    const dev = displayState.getAll().find(d => d.online && selectedIds.includes(d.id) && !wallMemberIds.has(d.id));
-    if (dev) return { target_type: 'display', target_id: dev.id, label: dev.name || dev.id };
-    const w = Array.isArray(walls) && walls[0];
-    if (w && w.id) {
-      return { target_type: 'wall', target_id: (w.leader_device_id || (w.devices && w.devices[0] && w.devices[0].device_id)) || w.id, wall_id: w.id, label: w.name || w.id };
-    }
-    return null;
+  function whiteboardDisplayTarget(device, wall = null) {
+    if (!device || !device.id) return null;
+    const split = wall && wall.layout_mode === 'split';
+    return {
+      target_type: split ? 'split' : 'display',
+      target_id: device.id,
+      split_device_id: split ? device.id : null,
+      wall_id: split ? wall.id : null,
+      preview_device_id: device.id,
+      label: wall ? `${wall.name}: ${device.name || device.id}` : (device.name || device.id),
+      screenshot_url: device.screenshot_url || null,
+      width: device.width || 1920,
+      height: device.height || 1080,
+    };
   }
-  function closeWhiteboard() {
-    if (wbApi) { try { wbApi.unmount(); } catch { /* best-effort */ } wbApi = null; }
+  function whiteboardWallTarget(wall, byId) {
+    if (!wall || !wall.id) return null;
+    const leaderId = wallTransportDeviceId(wall) || wallDeviceIds(wall)[0];
+    const leader = leaderId ? byId.get(leaderId) : null;
+    if (!leaderId) return null;
+    return {
+      target_type: 'wall',
+      target_id: leaderId,
+      wall_id: wall.id,
+      preview_device_id: leaderId,
+      label: wall.name || wall.id,
+      screenshot_url: leader && leader.screenshot_url,
+      width: leader && leader.width || 1920,
+      height: leader && leader.height || 1080,
+    };
+  }
+  function whiteboardTargets() {
+    const all = displayState.getAll();
+    const byId = new Map(all.map((d) => [d.id, d]));
+    const result = [];
+    for (const wall of (Array.isArray(walls) ? walls : [])) {
+      const wallTarget = whiteboardWallTarget(wall, byId);
+      if (wallTarget) result.push(wallTarget);
+      if (wall.layout_mode === 'split') {
+        for (const id of wallDeviceIds(wall)) {
+          const memberTarget = whiteboardDisplayTarget(byId.get(id), wall);
+          if (memberTarget) result.push(memberTarget);
+        }
+      }
+      if (wall.layout_mode === 'groups') {
+        for (const group of (wall.layout?.groups || [])) {
+          const leaderId = group.leader_device_id || group.member_ids[0];
+          const leader = byId.get(leaderId);
+          result.push({
+            target_type: 'group',
+            target_id: leaderId,
+            wall_id: wall.id,
+            group_id: group.id,
+            member_ids: group.member_ids,
+            preview_device_id: leaderId,
+            label: `${wall.name}: ${group.name}`,
+            screenshot_url: leader && leader.screenshot_url,
+            width: leader && leader.width || 1920,
+            height: leader && leader.height || 1080,
+          });
+        }
+      }
+    }
+    for (const device of all) {
+      if (!device || wallMemberIds.has(device.id) || isLiveStreamTargetId(device.id)) continue;
+      const displayTarget = whiteboardDisplayTarget(device);
+      if (displayTarget) result.push(displayTarget);
+    }
+    return result;
+  }
+  function whiteboardTargetFromActive() {
+    const all = displayState.getAll();
+    const byId = new Map(all.map((d) => [d.id, d]));
+    if (activeTarget && activeTarget.type === 'wall') {
+      return whiteboardWallTarget((walls || []).find((w) => w.id === activeTarget.id), byId);
+    }
+    if (activeTarget && activeTarget.type === 'display') {
+      return whiteboardDisplayTarget(byId.get(activeTarget.id), wallForDeviceId(activeTarget.id));
+    }
+    if (activeTarget && activeTarget.type === 'group') {
+      return whiteboardTargets().find((target) => target.group_id === activeTarget.id) || null;
+    }
+    return whiteboardTargets()[0] || null;
+  }
+  function removeWhiteboardHost() {
     if (wbHost && wbHost.parentNode) wbHost.parentNode.removeChild(wbHost);
     wbHost = null;
   }
+  function closeWhiteboard() {
+    if (wbApi) { try { wbApi.unmount(); } catch { /* best-effort */ } wbApi = null; }
+    removeWhiteboardHost();
+  }
   window.mcOpenWhiteboard = function (targetArg) {
     closeWhiteboard();
-    const tgt = targetArg || whiteboardTarget();
+    const tgt = targetArg || whiteboardTargetFromActive();
     wbHost = document.createElement('div');
     wbHost.className = 'mc-wb-host';
     document.body.appendChild(wbHost);
-    wbApi = mountWhiteboardSurface(wbHost, { onStatus: (m) => showToast(m) });
-    if (tgt) wbApi.setTarget(tgt);
+    wbApi = mountWhiteboardSurface(wbHost, {
+      initialTarget: tgt,
+      targets: whiteboardTargets(),
+      onStatus: (m) => { if (m) showToast(m); },
+      onClose: () => { wbApi = null; removeWhiteboardHost(); },
+    });
   };
   window.mcCloseWhiteboard = closeWhiteboard;
   const dockHost = document.querySelector('.mc-control-controls');
@@ -1632,11 +2144,28 @@ pruneSelection();
     const show = mvHost.hidden;
     mvHost.hidden = !show;
     if (show) {
+      document.body.classList.add('mc-multiview-open');
+      multiviewEscapeHandler = (event) => {
+        if (event.key === 'Escape' && !mvHost.hidden && !document.querySelector('dialog[open]')) {
+          event.preventDefault();
+          toggleMultiview();
+        }
+      };
+      document.addEventListener('keydown', multiviewEscapeHandler);
       if (!mvMounted) {
         mvMounted = true;
         await renderMultiview(mvHost, { routeSource: routeSourceWithPicker, onClose: toggleMultiview });
       }
-      try { mvHost.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch { /* */ }
+      mvHost.scrollTop = 0;
+      const closeButton = mvHost.querySelector('.mc-mv-close');
+      try { (closeButton || mvHost).focus({ preventScroll: true }); } catch { /* */ }
+    } else {
+      document.body.classList.remove('mc-multiview-open');
+      if (multiviewEscapeHandler) {
+        document.removeEventListener('keydown', multiviewEscapeHandler);
+        multiviewEscapeHandler = null;
+      }
+      try { document.querySelector('[data-dock="multiview"]')?.focus({ preventScroll: true }); } catch { /* */ }
     }
   }
 
@@ -1744,7 +2273,8 @@ pruneSelection();
     if (targetApi) {
       targetApi.setOptions(
         walls,
-        displayState.getAll().filter((d) => !wallMemberIds.has(d.id) && !isLiveStreamTargetId(d.id)),
+        layoutGroupTargets(),
+        routeableDisplays(),
       );
     }
   });
@@ -1756,7 +2286,7 @@ pruneSelection();
   // Listen for real-time play/pause events from wall players so the transport
   // bar Play/Pause label stays accurate (the player emits device:playback-state
   // which the server relays as dashboard:playback-state to this dashboard).
-  const playbackStateHandler = (data) => {
+  playbackStateHandler = (data) => {
     if (!data || !data.device_id) return;
     // Immediately repaint the transport controls — the transport API reads
     // now_playing.kind which doesn't change here, but the label flip from
@@ -1766,7 +2296,12 @@ pruneSelection();
     if (dockApi && typeof dockApi.repaintBlank === 'function') dockApi.repaintBlank();
   };
   socketOn('dashboard:playback-state', playbackStateHandler);
+
+  if (routeHash.includes('panel=cameras')) openLibraryTab('camerafeeds');
+  if (routeHash.includes('panel=multiview')) toggleMultiview();
 }
+
+window.mcGetNavigationContext = () => ({ selected_target: activeTarget });
 
 export function unmount() {
   // The view owns NO live broadcast resource (that's the engine singleton),
@@ -1777,13 +2312,26 @@ export function unmount() {
   const dockBtn = document.getElementById('mc-wb-dock-btn');
   if (dockBtn) dockBtn.remove();
   if (unsub) { unsub(); unsub = null; }
+  if (previewAudioGestureHandler) {
+    document.removeEventListener('pointerdown', previewAudioGestureHandler, true);
+    document.removeEventListener('keydown', previewAudioGestureHandler, true);
+    previewAudioGestureHandler = null;
+  }
+  if (multiviewEscapeHandler) {
+    document.removeEventListener('keydown', multiviewEscapeHandler);
+    multiviewEscapeHandler = null;
+  }
+  document.body.classList.remove('mc-multiview-open');
   if (unsubChip) { unsubChip(); unsubChip = null; }
+  if (dockApi && typeof dockApi.destroy === 'function') dockApi.destroy();
   if (cmdAckHandler) { try { socketOff('command-ack', cmdAckHandler); } catch (_) {} cmdAckHandler = null; }
   if (stateSyncHandler) { try { socketOff('state-sync', stateSyncHandler); } catch (_) {} stateSyncHandler = null; }
-  try { socketOff('dashboard:playback-state', playbackStateHandler); } catch (_) {}
+  try { if (playbackStateHandler) socketOff('dashboard:playback-state', playbackStateHandler); } catch (_) {}
   teardownMultiview();    // stop any local audio monitor so it can't keep playing
   closeViewModal();       // dismiss any open room-setup overlay (e.g. Schedules)
   stopPreviewRefresh();   // stop poking players once we leave the control surface
+  if (refreshAfterSendTimer) { clearTimeout(refreshAfterSendTimer); refreshAfterSendTimer = null; }
+  clearSocketTarget();
   // Close the inspector so a stale panel can't linger across navigations.
   closeInspector(inspectorEl());
   // Dismiss the add-display picker if it was left open during navigation.
@@ -1796,4 +2344,5 @@ export function unmount() {
   spanSplitApi = null;
   screensaverApi = null;
   dockApi = null;
+  playbackStateHandler = null;
 }

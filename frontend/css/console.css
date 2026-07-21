@@ -18,13 +18,37 @@ body.console-mode .content {
     linear-gradient(180deg, #f8fafc 0%, #eef4fb 100%);
 }
 
+/* Command Center owns a fixed viewport while the appliance header remains
+   visible. Pin it below that header so its bottom controls are never clipped. */
+body.console-mode.cc-fullscreen .content {
+  position: fixed;
+  inset: var(--console-header-h) 0 0;
+  height: auto;
+  min-height: 0;
+  padding: 0 !important;
+  overflow: hidden;
+}
+
+body.console-mode.cc-fullscreen .mc-cc-shell {
+  height: 100%;
+}
+
+body.console-mode .mc-modal-body,
+body.console-mode .mc-route-scroll,
+body.console-mode .mc-library-body,
+.console-usb-body {
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  scrollbar-gutter: stable;
+}
+
 .console-header {
   position: fixed;
   inset: 0 0 auto 0;
   z-index: 3000;
   min-height: var(--console-header-h);
   display: grid;
-  grid-template-columns: minmax(300px, 1.25fr) minmax(260px, 1fr) minmax(250px, auto) auto 120px;
+  grid-template-columns: auto minmax(280px, 1.15fr) minmax(240px, 1fr) minmax(230px, auto) auto 110px;
   align-items: center;
   gap: 18px;
   padding: 14px 22px;
@@ -32,6 +56,18 @@ body.console-mode .content {
   background: linear-gradient(135deg, #07111f 0%, #0f2b4a 58%, #12324a 100%);
   border-bottom: 1px solid rgba(255, 255, 255, 0.12);
   box-shadow: 0 18px 46px rgba(15, 23, 42, 0.22);
+}
+
+.console-back-button {
+  min-width: 88px;
+  min-height: 54px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 16px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+  font: inherit;
+  font-weight: 900;
+  touch-action: manipulation;
 }
 
 .console-brand {
@@ -223,6 +259,24 @@ body.console-mode .content {
   gap: 12px;
 }
 
+.console-usb-account {
+  display: grid;
+  grid-template-columns: minmax(140px, .55fr) minmax(220px, 1fr);
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid #dbe5f0;
+  border-radius: 14px;
+  background: white;
+  font-weight: 700;
+}
+
+.console-usb-account select {
+  width: 100%;
+  min-height: 52px;
+  font-size: 18px;
+}
+
 .console-usb-row {
   display: grid;
   grid-template-columns: 34px 1fr;
@@ -347,4 +401,46 @@ body.console-mode .content {
   .console-profile-picker,
   .console-clock { justify-self: stretch; }
   .console-profile-picker select { width: 100%; }
+}
+
+/* The podium is a dedicated touch appliance. Native Chromium select popups use
+   the control font size, so the prior 13px/40px controls were hard to hit even
+   though the touchscreen itself was mapped correctly to the only display. */
+body.console-mode select {
+  min-height: 52px;
+  font-size: 17px;
+  line-height: 1.35;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body.console-mode .console-profile-picker select {
+  min-height: 56px;
+  font-size: 18px;
+}
+
+body.console-mode select option {
+  min-height: 48px;
+  padding: 10px 12px;
+  font-size: 18px;
+  line-height: 1.5;
+}
+
+body.console-mode .mc-target-wall-btn,
+body.console-mode .mc-ss-btn,
+body.console-mode .mc-cc-rail-btn,
+body.console-mode .mc-modal-close,
+body.console-mode .mc-library-collapse {
+  min-width: 52px;
+  min-height: 52px;
+  font-size: 16px;
+  touch-action: manipulation;
+}
+
+body.console-mode .mc-target-select,
+body.console-mode .mc-cc-saver-select {
+  min-height: 52px;
+  font-size: 17px;
+  padding-left: 16px;
+  padding-right: 42px;
 }
