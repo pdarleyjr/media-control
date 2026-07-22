@@ -220,6 +220,10 @@ const STRINGS = {
   'mc.e.err.revision_mismatch.what': 'The room state changed since you loaded this layout.',
   'mc.e.err.revision_mismatch.active': 'Your change was rejected to avoid overwriting another operator.',
   'mc.e.err.revision_mismatch.action': 'Refresh the room and reapply your change.',
+  'mc.e.err.unknown.title': 'Unexpected error',
+  'mc.e.err.unknown.what': 'An unexpected operational error occurred.',
+  'mc.e.err.unknown.active': 'The room state is preserved.',
+  'mc.e.err.unknown.action': 'Retry the action, or refresh if the problem persists.',
 };
 
 // Create an i18n resolver that checks the enterprise overlay first, then falls
