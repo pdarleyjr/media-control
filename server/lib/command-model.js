@@ -472,6 +472,93 @@ function ackRequiredForType(type) {
   return ACK_ELIGIBLE_TYPES.has(String(type || '').toLowerCase()) ? 1 : 0;
 }
 
+// Classroom single-audio-authority model.
+// Only Front Center feeds the eARC/Ultimea path. Follower TVs must stay muted.
+const AUDIO_AUTHORITY_ROLE_NAMES = {
+  authority: [
+    'front center',
+    'classroom 1 - front center',
+    'classroom1 - front center',
+    'fc',
+  ],
+  followers: [
+    'front left',
+    'front right',
+    'side left',
+    'side right',
+  ],
+};
+
+function _normName(name) {
+  return String(name || '').trim().toLowerCase();
+}
+
+function resolveClassroomAudioAuthority(devices) {
+  const list = Array.isArray(devices) ? devices : [];
+  const authority = list.find((d) => {
+    const n = _normName(d && d.name);
+    return AUDIO_AUTHORITY_ROLE_NAMES.authority.some((alias) => n === alias || n.endsWith(alias));
+  }) || null;
+  const followers = list.filter((d) => {
+    if (!d || (authority && d.id === authority.id)) return false;
+    const n = _normName(d.name);
+    return AUDIO_AUTHORITY_ROLE_NAMES.followers.some((alias) => n.includes(alias));
+  });
+  return {
+    configured_authority_name: 'Front Center',
+    authority_device_id: authority ? authority.id : null,
+    authority_device_name: authority ? authority.name : null,
+    followers: followers.map((d) => ({ id: d.id, name: d.name })),
+    valid: Boolean(authority),
+    error: authority ? null : 'audio_authority_offline_or_unconfigured',
+  };
+}
+
+/**
+ * Desired mute map after authority reconciliation.
+ * Authority unmuted; every follower muted. Invalid/offline authority → all muted.
+ */
+function classroomAudioMutePlan(devices, options = {}) {
+  const resolved = resolveClassroomAudioAuthority(devices);
+  const onlineIds = new Set(
+    (Array.isArray(options.onlineDeviceIds) ? options.onlineDeviceIds : [])
+      .map(String),
+  );
+  const hasOnlineFilter = Array.isArray(options.onlineDeviceIds);
+  const authorityOnline = resolved.authority_device_id
+    && (!hasOnlineFilter || onlineIds.has(String(resolved.authority_device_id)));
+  const plan = [];
+  for (const d of (Array.isArray(devices) ? devices : [])) {
+    if (!d || !d.id) continue;
+    const isAuth = resolved.authority_device_id && d.id === resolved.authority_device_id;
+    const isFollower = resolved.followers.some((f) => f.id === d.id);
+    if (!isAuth && !isFollower) continue;
+    let muted = true;
+    let reason = 'follower_must_mute';
+    if (isAuth) {
+      if (!resolved.valid || !authorityOnline) {
+        muted = true;
+        reason = authorityOnline ? 'authority_invalid' : 'authority_offline';
+      } else {
+        muted = false;
+        reason = 'single_audio_authority';
+      }
+    }
+    plan.push({
+      device_id: d.id,
+      name: d.name,
+      role: isAuth ? 'authority' : 'follower',
+      muted,
+      reason,
+    });
+  }
+  return {
+    ...resolved,
+    authority_online: Boolean(authorityOnline),
+    plan,
+  };
+}
+
 module.exports = {
   ingestCommand,
   recordAck,
@@ -486,4 +573,7 @@ module.exports = {
   ackRequiredForType,
   workspaceRoomForTarget,
   ACK_ELIGIBLE_TYPES,
+  resolveClassroomAudioAuthority,
+  classroomAudioMutePlan,
+  AUDIO_AUTHORITY_ROLE_NAMES,
 };
