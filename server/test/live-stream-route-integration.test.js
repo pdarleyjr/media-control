@@ -3,6 +3,9 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const express = require('express');
+const { installIsolatedTestDatabase } = require('./live-stream-test-db');
+// Open a private SQLite file before any Media Control module loads database.js.
+installIsolatedTestDatabase('live-stream-route-integration');
 
 function listen(app) {
   return new Promise((resolve, reject) => {
@@ -12,7 +15,14 @@ function listen(app) {
 }
 
 function close(server) {
-  return new Promise((resolve) => server.close(resolve));
+  return new Promise((resolve) => {
+    if (!server) return resolve();
+    server.close(() => resolve());
+  });
+}
+
+function closeQuiet(server) {
+  return close(server).catch(() => {});
 }
 
 test('prepare, manual start, auto gate, disabled start, and stop preserve safety boundaries', async () => {
@@ -224,8 +234,8 @@ test('prepare, manual start, auto gate, disabled start, and stop preserve safety
   } finally {
     cleanup();
     resetLiveProductionStateForTests();
-    await close(appServer);
-    await close(directorServer);
+    await closeQuiet(appServer);
+    await closeQuiet(directorServer);
   }
 });
 
@@ -319,7 +329,7 @@ test('start accepted but not confirmed issues STREAM_START_NOT_CONFIRMED and saf
   } finally {
     cleanup();
     resetLiveProductionStateForTests();
-    await close(appServer);
-    await close(directorServer);
+    await closeQuiet(appServer);
+    await closeQuiet(directorServer);
   }
 });

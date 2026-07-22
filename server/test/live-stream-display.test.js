@@ -1,5 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const { installIsolatedTestDatabase } = require('./live-stream-test-db');
+installIsolatedTestDatabase('live-stream-display');
 const { db } = require('../db/database');
 const {
   DEFAULT_LIVE_STREAM_DISPLAY_NAME,

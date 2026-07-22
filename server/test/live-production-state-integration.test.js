@@ -4,6 +4,9 @@ const { test, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { installIsolatedTestDatabase } = require('./live-stream-test-db');
+// room-state-broadcaster transitively opens SQLite; isolate before first require.
+installIsolatedTestDatabase('live-production-state-integration');
 
 const {
   updateLiveProductionState,
