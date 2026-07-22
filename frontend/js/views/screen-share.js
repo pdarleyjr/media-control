@@ -587,6 +587,11 @@ async function refreshSessionDiagnostics() {
     if (diag.audioKbps != null) parts.push(`${diag.audioKbps} kbps audio`);
     else if (diag.audioIncluded === false) parts.push('no audio track');
     if (diag.rttMs != null) parts.push(`${diag.rttMs} ms RTT`);
+    if (diag.path === 'turn') parts.push(`TURN${diag.protocol ? `/${diag.protocol}` : ''}`);
+    else if (diag.path === 'direct') {
+      const candidate = diag.localCandidateType ? ` ${diag.localCandidateType}` : '';
+      parts.push(`direct${candidate}${diag.protocol ? `/${diag.protocol}` : ''}`);
+    }
     if (diag.codec) parts.push(diag.codec);
     if (diag.qualityLimitationReason && diag.qualityLimitationReason !== 'none') {
       parts.push(`limited: ${diag.qualityLimitationReason}`);

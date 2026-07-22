@@ -213,8 +213,12 @@ export async function getTargetDiagnostics() {
       let audio = null;
       let selectedPair = null;
       const codecs = new Map();
+      const candidates = new Map();
       reports.forEach((report) => {
         if (report.type === 'codec') codecs.set(report.id, report);
+        if (report.type === 'local-candidate' || report.type === 'remote-candidate') {
+          candidates.set(report.id, report);
+        }
         if (report.type === 'outbound-rtp' && !report.isRemote) {
           if (report.kind === 'video' || report.mediaType === 'video') video = report;
           if (report.kind === 'audio' || report.mediaType === 'audio') audio = report;
@@ -236,6 +240,11 @@ export async function getTargetDiagnostics() {
       const audioKbps = prior ? toKbps(audioBytes, prior.audioBytes) : null;
       statsBaselines.set(deviceId, { timestamp, videoBytes, audioBytes });
       const codec = codecs.get(video?.codecId);
+      const localCandidate = candidates.get(selectedPair?.localCandidateId);
+      const remoteCandidate = candidates.get(selectedPair?.remoteCandidateId);
+      const usesTurn = localCandidate?.candidateType === 'relay' || remoteCandidate?.candidateType === 'relay';
+      const path = selectedPair ? (usesTurn ? 'turn' : 'direct') : null;
+      const protocol = localCandidate?.protocol || remoteCandidate?.protocol || null;
 
       out.set(deviceId, {
         mode: 'webrtc',
@@ -250,6 +259,11 @@ export async function getTargetDiagnostics() {
           ? Math.round(selectedPair.currentRoundTripTime * 1000)
           : null,
         codec: codec?.mimeType || null,
+        path,
+        protocol,
+        localCandidateType: localCandidate?.candidateType || null,
+        remoteCandidateType: remoteCandidate?.candidateType || null,
+        networkType: localCandidate?.networkType || null,
         qualityLimitationReason: video?.qualityLimitationReason || null,
       });
     } catch (error) {

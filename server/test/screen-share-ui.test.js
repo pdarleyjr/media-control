@@ -94,6 +94,8 @@ test('screen share exposes live per-target WebRTC transport diagnostics', () => 
 
   assert.match(engine, /export async function getTargetDiagnostics\(\)/);
   assert.match(engine, /currentRoundTripTime/);
+  assert.match(engine, /localCandidateId/);
+  assert.match(engine, /candidateType/);
   assert.match(engine, /qualityLimitationReason/);
   assert.match(view, /refreshSessionDiagnostics/);
   assert.match(view, /ss-session-metrics/);

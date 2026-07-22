@@ -177,7 +177,9 @@ motion or audio.
 The dashboard reports actual capture surface, resolution, returned frame rate,
 and whether the browser supplied an audio track. Every active WebRTC receiver is
 sampled for outbound video/audio kbps, encoded geometry/fps, RTT, codec, and the
-browser's quality-limitation reason. A first sample has no bitrate delta yet.
+selected direct-versus-TURN ICE path/protocol without exposing candidate IP
+addresses, plus the browser's quality-limitation reason. A first sample has no
+bitrate delta yet.
 CPU, GPU decode, and glass-to-glass latency are platform measurements rather
 than portable WebRTC stats; measure those on the source/display host during a
 room acceptance test.
