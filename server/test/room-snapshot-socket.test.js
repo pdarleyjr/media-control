@@ -116,6 +116,27 @@ test('five real dashboard clients converge on one persisted room revision and re
       revision: 1,
     });
 
+    const forcedOnePromise = once(clients[0], 'room:snapshot');
+    clients[0].emit('dashboard:room-resume', {
+      revision: 1,
+      snapshot_timestamp: initial[0].serverTimestamp + 1000,
+      force: true,
+    });
+    const forcedOne = await forcedOnePromise;
+    assert.equal(forcedOne.revision, 1);
+    assert.ok(forcedOne.serverTimestamp > initial[0].serverTimestamp + 1000);
+
+    // Forced refreshes bypass the normal resume throttle because every picker
+    // open must receive newly-read topology, even when operators act quickly.
+    const forcedTwoPromise = once(clients[0], 'room:snapshot');
+    clients[0].emit('dashboard:room-resume', {
+      revision: 1,
+      snapshot_timestamp: forcedOne.serverTimestamp,
+      force: true,
+    });
+    const forcedTwo = await forcedTwoPromise;
+    assert.ok(forcedTwo.serverTimestamp > forcedOne.serverTimestamp);
+
     clients[4].disconnect();
     const remainingPromises = clients.slice(0, 4).map((client) => once(client, 'room:snapshot'));
     publishRoomSnapshot(io, {

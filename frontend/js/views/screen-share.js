@@ -73,7 +73,13 @@ function computeWallTiles(wall) {
   const minY = Math.min(...members.map(d => d.viewport.y));
   const maxX = Math.max(...members.map(d => d.viewport.x + d.viewport.width));
   const maxY = Math.max(...members.map(d => d.viewport.y + d.viewport.height));
-  const playerRect = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+  const configured = wall.type === 'wall' ? wall.playerRect : null;
+  const playerRect = configured
+    && Number.isFinite(configured.x) && Number.isFinite(configured.y)
+    && Number.isFinite(configured.width) && Number.isFinite(configured.height)
+    && configured.width > 0 && configured.height > 0
+    ? { x: configured.x, y: configured.y, w: configured.width, h: configured.height }
+    : { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
   const tiles = new Map();
   for (const m of members) {
     tiles.set(m.id, {
@@ -130,7 +136,7 @@ export async function render(container) {
           <label class="ss-fit-control" for="ss-fit-mode">
             <strong>Destination fit</strong>
             <select id="ss-fit-mode">
-              <option value="auto">Auto — fit one display; span the full wall</option>
+              <option value="auto">Auto — fit one display; stretch once across the full wall</option>
               <option value="contain">Fit — show the entire source with letterboxing</option>
               <option value="cover">Fill — crop edges to avoid letterboxing</option>
               <option value="fill">Stretch — fill every pixel (may distort)</option>
@@ -254,25 +260,35 @@ function paintDiagnostics() {
 // ----------------------------------------------------------------------
 let walls = []; // cached authoritative catalog walls for checkbox resolution
 
+function catalogWallTargets(catalog) {
+  return [
+    ...(Array.isArray(catalog?.walls) ? catalog.walls : []),
+    ...(Array.isArray(catalog?.wallGroups) ? catalog.wallGroups : []),
+  ];
+}
+
 async function populateTargetList() {
   const listEl = document.getElementById('ss-target-list');
   if (!listEl) return;
   try {
-    const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false });
-    walls = Array.isArray(catalog.walls) ? catalog.walls : [];
+    const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false }, { requireFresh: true });
+    walls = catalogWallTargets(catalog);
     const devices = Array.isArray(catalog.standaloneDisplays) ? catalog.standaloneDisplays : [];
 
     let html = '';
 
     if (walls.length > 0) {
-      html += `<div class="ss-target-section-label">Video walls</div>`;
+      html += `<div class="ss-target-section-label">Video walls and active wall regions</div>`;
       for (const w of walls) {
         const members = w.members || [];
         const allOnline = members.length > 0 && w.onlineCount === members.length;
+        const capabilitySupported = members.every(member => member.capabilities?.screen_share !== false);
         const tiles = computeWallTiles(w);
         const wellFormed = tiles.size === members.length && tiles.size > 0;
-        const disabled = !(allOnline && wellFormed);
-        const reason = !wellFormed
+        const disabled = !(allOnline && wellFormed && capabilitySupported);
+        const reason = !capabilitySupported
+          ? 'Screen sharing is unsupported on one or more members'
+          : !wellFormed
           ? 'Missing calibrated canvas geometry'
           : (!allOnline ? `${members.length - w.onlineCount} of ${members.length} offline` : 'Ready');
         html += `
@@ -280,7 +296,7 @@ async function populateTargetList() {
             <input type="checkbox" data-wall-id="${escapeHtml(w.id)}" ${disabled ? 'disabled' : ''}>
             <span class="ss-target-name">
               <strong>${escapeHtml(w.name || 'Wall')}</strong>
-              <span class="muted">${escapeHtml(w.layoutMode)} · ${escapeHtml(w.dimensionsLabel)} · revision ${w.layoutRevision}</span>
+              <span class="muted">${w.type === 'wall-group' ? 'active region · ' : ''}${escapeHtml(w.layoutMode)} · ${escapeHtml(w.dimensionsLabel)} · revision ${w.layoutRevision}</span>
               <span class="muted ss-target-member-line">${escapeHtml(w.memberLine || '')}</span>
             </span>
             <span class="status-dot ${allOnline ? 'online' : 'offline'}"></span>
@@ -293,12 +309,13 @@ async function populateTargetList() {
     if (devices.length > 0) {
       html += `<div class="ss-target-section-label">Individual displays</div>`;
       for (const d of devices) {
+        const supported = d.capabilities?.screen_share !== false;
         html += `
           <label class="ss-target-row" data-device-id="${escapeHtml(d.id)}">
-            <input type="checkbox" data-device-id="${escapeHtml(d.id)}" ${d.online ? '' : 'disabled'}>
+            <input type="checkbox" data-device-id="${escapeHtml(d.id)}" ${d.online && supported ? '' : 'disabled'}>
             <span class="ss-target-name"><strong>${escapeHtml(d.name || 'Unnamed display')}</strong><span class="muted">standalone · ${escapeHtml(d.dimensionsLabel)}</span></span>
             <span class="status-dot ${d.online ? 'online' : 'offline'}"></span>
-            <span class="muted">${escapeHtml(d.status)}</span>
+            <span class="muted">${supported ? escapeHtml(d.status) : 'unsupported'}</span>
           </label>
         `;
       }
@@ -419,6 +436,19 @@ function wireTargetCheckboxHandlers() {
         e.target.disabled = true;
         try {
           if (isWall) {
+            const shown = walls.find(wall => wall.id === wallId);
+            const freshCatalog = await waitForTargetCatalog(
+              { includeVirtualDisplays: false },
+              { requireFresh: true },
+            );
+            const refreshedWalls = catalogWallTargets(freshCatalog);
+            const refreshed = refreshedWalls.find(wall => wall.id === wallId);
+            if (!refreshed || Number(refreshed.layoutRevision) !== Number(shown?.layoutRevision)) {
+              walls = refreshedWalls;
+              await populateTargetList();
+              throw new Error('Wall topology changed. Review the refreshed destinations and select again.');
+            }
+            walls = refreshedWalls;
             const targets = resolveWallTargets(wallId);
             if (targets.length === 0) throw new Error('wall has no broadcastable members');
             // Start all members in parallel; partial success is acceptable

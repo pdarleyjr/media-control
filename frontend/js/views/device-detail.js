@@ -674,7 +674,7 @@ async function setupActions(device) {
   // Copy playlist to another device
   document.getElementById('copyPlaylistBtn')?.addEventListener('click', async () => {
     try {
-      const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false });
+      const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false }, { requireFresh: true });
       const selection = await openTargetPicker({
         catalog,
         capability: 'content',

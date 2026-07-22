@@ -1100,6 +1100,25 @@ function healYoutubeMimeTypes() {
 }
 healYoutubeMimeTypes();
 
+// Governed content visibility and publishing lifecycle. This migration is
+// deliberately applied after the legacy additive columns above so it can
+// normalize the existing access_level values, add explicit template
+// assignments, and install fail-closed validation triggers in one transaction.
+function applyGovernedContentVisibility() {
+  try {
+    const { applyContentVisibilityMigration } = require('../lib/content-visibility');
+    applyContentVisibilityMigration(db);
+    console.log('[content_visibility_v1] governed visibility active');
+  } catch (error) {
+    // Visibility is an authorization boundary. Failing startup is safer than
+    // serving content with the legacy owner/NULL shortcut after a partial DB
+    // migration.
+    console.error(`[content_visibility_v1] migration failed: ${error.message}`);
+    throw error;
+  }
+}
+applyGovernedContentVisibility();
+
 // Clean databases should enforce topology invariants from their first boot.
 // Existing installations with drift stay available for the explicit,
 // hash-guarded repair workflow: never auto-repair or partially constrain an

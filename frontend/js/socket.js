@@ -27,11 +27,15 @@ function clearRoomRecovery() {
   roomRecoveryTimer = null;
 }
 
-function requestAuthoritativeRoomSnapshot() {
-  if (!dashboardSocket?.connected || roomRecoveryRequested) return;
+function requestAuthoritativeRoomSnapshot(options = {}) {
+  if (!dashboardSocket?.connected || (roomRecoveryRequested && options.force !== true)) return;
   roomRecoveryRequested = true;
   roomRecoveryTimer = setTimeout(clearRoomRecovery, 5000);
-  dashboardSocket.emit('dashboard:room-resume', { revision: roomState.getRevision() });
+  dashboardSocket.emit('dashboard:room-resume', {
+    revision: roomState.getRevision(),
+    snapshot_timestamp: roomState.getSnapshot()?.serverTimestamp,
+    force: options.force === true,
+  });
 }
 
 export const roomState = createRoomStateStore({
@@ -296,7 +300,7 @@ export function sendCommand(deviceId, type, payload, callback) {
 
 export function getSocket() { return dashboardSocket; }
 
-export function requestRoomSnapshot() { requestAuthoritativeRoomSnapshot(); }
+export function requestRoomSnapshot(options = {}) { requestAuthoritativeRoomSnapshot(options); }
 
 export function getNodeStatus(idOrRoom) {
   if (!idOrRoom) return null;

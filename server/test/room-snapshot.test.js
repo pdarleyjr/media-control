@@ -31,6 +31,7 @@ function createFixtureDb() {
       layout_id TEXT,
       playlist_id TEXT,
       updated_at INTEGER,
+      capabilities_json TEXT,
       device_token TEXT
     );
     CREATE TABLE display_states (
@@ -92,6 +93,10 @@ function createFixtureDb() {
       leader_device_id TEXT,
       content_id TEXT,
       playlist_id TEXT,
+      player_x REAL,
+      player_y REAL,
+      player_width REAL,
+      player_height REAL,
       layout_json TEXT,
       layout_revision INTEGER,
       updated_at INTEGER
@@ -200,11 +205,13 @@ test('authoritative snapshot loads workspace and room state without leaking cred
     ensureRoomRevisionSchema(db);
     db.prepare(`INSERT INTO devices VALUES
       ('display-a', 'ws-1', 'Front Left', 'online', 1700000000, 1, 3840, 2160,
-       'wall-a', 'layout-a', 'playlist-a', 1700000001, 'device-secret'),
+       'wall-a', 'layout-a', 'playlist-a', 1700000001,
+       '{"content":true,"screen_share":true,"preview":false,"access_token":"capability-secret","nested":{"password":"hidden"}}',
+       'device-secret'),
       ('live-stream-program-abc', 'ws-1', 'Content for live stream', 'online', 1700000000,
-       1, 1920, 1080, NULL, NULL, 'playlist-live', 1700000001, 'live-secret'),
+       1, 1920, 1080, NULL, NULL, 'playlist-live', 1700000001, '{}', 'live-secret'),
       ('other-display', 'ws-2', 'Other', 'online', 1700000000, 1, 1920, 1080,
-       NULL, NULL, NULL, 1700000001, 'other-secret')`).run();
+       NULL, NULL, NULL, 1700000001, '{}', 'other-secret')`).run();
     const insertState = db.prepare(`INSERT INTO display_states
       (target_type, target_id, workspace_id, current_content_id, current_asset_id,
        content_type, layout_mode, slide_index, slide_count, current_time, duration,
@@ -245,7 +252,9 @@ test('authoritative snapshot loads workspace and room state without leaking cred
        1000, 500, 'ready', 'hdmi', '{}', '{}', 'node-secret', 1700000001)`).run();
     db.prepare(`INSERT INTO video_walls VALUES
       ('wall-a', 'ws-1', 'Primary Wall', 3, 1, 'leader', 'span', 1, 'display-a',
-       'content-a', 'playlist-a', '{"version":1,"groups":[]}', 7, 1700000001)`).run();
+       'content-a', 'playlist-a', 120, 40, 5760, 1080,
+       '{"version":1,"preset":"span-all","groups":[{"id":"layout-group-a","name":"All displays","layout":"span","member_ids":["display-a"],"credential":"hidden"}]}',
+       7, 1700000001)`).run();
     db.prepare(`INSERT INTO video_wall_devices VALUES
       ('wall-a', 'display-a', 0, 0, 0, 0, 0, 3840, 2160)`).run();
     db.prepare(`INSERT INTO device_groups VALUES
@@ -282,8 +291,29 @@ test('authoritative snapshot loads workspace and room state without leaking cred
     assert.deepEqual(snapshot.confirmedState.displays.map((display) => display.id), ['display-a']);
     assert.equal(snapshot.confirmedState.displays[0].name, 'Front Left');
     assert.deepEqual(snapshot.deviceStates.displays.map((display) => display.id), ['display-a']);
+    assert.deepEqual(snapshot.deviceStates.displays[0].capabilities, {
+      content: true,
+      screen_share: true,
+      preview: false,
+    });
     assert.deepEqual(snapshot.deviceStates.nodes.map((node) => node.id), ['p3']);
     assert.equal(snapshot.layoutState.walls[0].leaderDeviceId, 'display-a');
+    assert.deepEqual(snapshot.layoutState.walls[0].playerRect, {
+      x: 120,
+      y: 40,
+      width: 5760,
+      height: 1080,
+    });
+    assert.deepEqual(snapshot.layoutState.walls[0].layout, {
+      version: 1,
+      preset: 'span-all',
+      groups: [{
+        id: 'layout-group-a',
+        name: 'All displays',
+        layout: 'span',
+        member_ids: ['display-a'],
+      }],
+    });
     assert.deepEqual(snapshot.layoutState.walls[0].members.map((member) => member.deviceId), ['display-a']);
     assert.deepEqual(snapshot.layoutState.groups[0].memberIds, ['display-a']);
     assert.deepEqual(snapshot.pendingCommands.map((command) => command.commandId), ['cmd-1']);
@@ -294,7 +324,7 @@ test('authoritative snapshot loads workspace and room state without leaking cred
     assert.deepEqual(snapshot.streamState, { status: 'live', active: true, viewers: 12 });
 
     const serialized = JSON.stringify(snapshot).toLowerCase();
-    assert.doesNotMatch(serialized, /must-not-leak|device-secret|node-secret|recording-secret|stream-secret/);
+    assert.doesNotMatch(serialized, /must-not-leak|device-secret|node-secret|recording-secret|stream-secret|capability-secret/);
     assert.doesNotMatch(serialized, /device_token|accesstoken|password/);
   } finally {
     db.close();
@@ -325,7 +355,13 @@ test('explicit state overrides are normalized and cannot change contract identit
       }],
       lastCommandId: 'override-command',
       deviceStates: {
-        displays: [{ id: 'override', name: 'Override display', status: 'online', password: 'hidden' }],
+        displays: [{
+          id: 'override', name: 'Override display', status: 'online', password: 'hidden',
+          capabilities: {
+            content: true, screen_share: false, webrtc: 'supported',
+            preview: 'hidden-secret', access_token: true,
+          },
+        }],
         nodes: [{
           id: 'p3', name: 'Podium', type: 'cache-agent', roomId: 'classroom-1',
           networkState: {
@@ -343,6 +379,7 @@ test('explicit state overrides are normalized and cannot change contract identit
       layoutState: {
         walls: [{
           id: 'wall-a', name: 'Primary', layoutMode: 'span', layoutRevision: 3,
+          playerRect: { x: 100, y: 50, width: 2200, height: 900, secret: 'hidden' },
           layout: {
             version: 1, preset: 'span-all',
             groups: [{
@@ -376,6 +413,17 @@ test('explicit state overrides are normalized and cannot change contract identit
     assert.deepEqual(snapshot.deviceStates.nodes[0].telemetry, {
       agent_uptime_sec: 120,
       cache: { cache_hits: 9 },
+    });
+    assert.deepEqual(snapshot.deviceStates.displays[0].capabilities, {
+      content: true,
+      screen_share: false,
+      webrtc: true,
+    });
+    assert.deepEqual(snapshot.layoutState.walls[0].playerRect, {
+      x: 100,
+      y: 50,
+      width: 2200,
+      height: 900,
     });
     assert.deepEqual(snapshot.layoutState.walls[0].layout, {
       version: 1,

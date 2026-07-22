@@ -780,18 +780,41 @@ async function applyWallRoutingModes(wallSelections) {
 }
 
 async function chooseRouteTargets(label) {
-  const allDisplays = routeableDisplays();
-  const result = await pickRoutingTargets({ displays: allDisplays, walls, label });
+  let catalog;
+  try {
+    catalog = await waitForTargetCatalog({ includeVirtualDisplays: false }, { requireFresh: true });
+  } catch (error) {
+    showToast(error?.message || t('mc.send.no_displays'), 'error');
+    return null;
+  }
+  const result = await openAuthoritativeTargetPicker({
+    catalog,
+    capability: 'content',
+    selection: 'multiple',
+    allowOffline: false,
+    availability: 'any',
+    allowIndividualWallMembers: false,
+    allowLiveProgram: false,
+    title: label,
+  });
   if (!result) return null;
-  const targetIds = [...new Set([
-    ...(result.displayIds || []),
-    ...(result.wallSelections || []).flatMap(sel => sel.deviceIds || wallDeviceIds(sel.wall)),
-  ])];
+  const targetIds = [...new Set(result.deviceIds || [])];
   if (!targetIds.length) {
     showToast(t('mc.send.no_displays'), 'error');
     return null;
   }
-  return { targetIds, wallSelections: result.wallSelections || [] };
+  const wallSelections = (result.targets || [])
+    .filter(target => target.type === 'wall' || target.type === 'wall-group')
+    .map(target => ({
+      wall: target.type === 'wall'
+        ? walls.find(wall => String(wall.id) === String(target.id))
+        : walls.find(wall => String(wall.id) === String(target.wallId)),
+      mode: 'preserve',
+      deviceIds: target.memberIds || [],
+      layoutRevision: target.layoutRevision,
+      groupId: target.groupId || null,
+    }));
+  return { targetIds, targetReferences: result.references, wallSelections };
 }
 
 async function routeSourceWithPicker(source, label = t('mc.tile.content_fallback')) {
@@ -806,7 +829,7 @@ async function routeSourceWithPicker(source, label = t('mc.tile.content_fallback
     showToast(e?.message || t('mc.wall.tpl_error'), 'error');
     return false;
   }
-  const ok = await sendToDisplays(source, route.targetIds, label);
+  const ok = await sendToDisplays(source, route.targetIds, label, { targets: route.targetReferences });
   if (ok) refreshAfterSend(route.targetIds);
   return ok;
 }
@@ -828,7 +851,7 @@ async function routeNextcloudWithPicker(path, label = t('mc.tile.content_fallbac
   if (!route) return false;
   try {
     await applyWallRoutingModes(route.wallSelections);
-    let result = await api.files.broadcast(path, route.targetIds);
+    let result = await api.files.broadcast(path, undefined, { targets: route.targetReferences });
     if (result && result.code === 'CONFIRM_ALL_REQUIRED') {
       const ok = await confirmDialog({
         title: t('mc.send.confirm_all_title', { n: result.count }),
@@ -837,7 +860,7 @@ async function routeNextcloudWithPicker(path, label = t('mc.tile.content_fallbac
         tone: 'default',
       });
       if (!ok) return false;
-      result = await api.files.broadcast(path, route.targetIds, { confirm_all: true });
+      result = await api.files.broadcast(path, undefined, { targets: route.targetReferences, confirm_all: true });
     }
     if (result && result.success) {
       sentToast(label, result.sent, result.total);
@@ -1714,12 +1737,14 @@ async function stopLive() {
 
 async function openTargetPickerModal() {
   try {
-    const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false });
-    // Command Center's large canvas currently renders whole walls or a single
-    // standalone display. Independent groups remain available in content
-    // routing, but are omitted here until the canvas has a confirmed group
-    // composition renderer.
+    const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false }, { requireFresh: true });
+    // Independent device groups remain hidden here; revisioned wall-layout
+    // groups are exposed separately by the catalog and map to the Command
+    // Center's existing confirmed group composition renderer.
     const viewCatalog = { ...catalog, groups: [] };
+    const selectedTarget = activeTarget?.type === 'group'
+      ? [{ type: 'wall-group', id: `${activeTarget.wall_id}:${activeTarget.id}` }]
+      : (activeTarget ? [{ type: activeTarget.type, id: activeTarget.id }] : []);
     const selection = await openAuthoritativeTargetPicker({
       catalog: viewCatalog,
       capability: 'preview',
@@ -1727,13 +1752,18 @@ async function openTargetPickerModal() {
       allowOffline: true,
       allowIndividualWallMembers: false,
       allowLiveProgram: false,
-      selectedTargets: activeTarget ? [{ type: activeTarget.type, id: activeTarget.id }] : [],
+      selectedTargets: selectedTarget,
     });
     const chosen = selection?.targets?.[0];
     if (!chosen) return;
     const target = chosen.type === 'wall'
       ? { type: 'wall', id: chosen.id, wall_id: chosen.id, supportsModes: true }
-      : { type: 'display', id: chosen.id, supportsModes: false };
+      : chosen.type === 'wall-group'
+        ? {
+            type: 'group', id: chosen.groupId, wall_id: chosen.wallId,
+            member_ids: chosen.memberIds, name: chosen.name, supportsModes: false,
+          }
+        : { type: 'display', id: chosen.id, supportsModes: false };
     targetApi?.setActive?.(target);
     handleTargetChange(target);
   } catch (error) {

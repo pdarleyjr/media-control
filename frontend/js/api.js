@@ -20,7 +20,11 @@ async function request(url, options = {}) {
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || 'Request failed');
+    const error = new Error(err.error || 'Request failed');
+    error.status = res.status;
+    error.code = err.code;
+    error.details = err;
+    throw error;
   }
   return res.json();
 }
@@ -120,12 +124,42 @@ export const api = {
     const q = folderId === null ? 'root' : encodeURIComponent(folderId);
     return request(`/content?folder_id=${q}`);
   },
+  getGovernedContent: (filters = {}) => {
+    const query = new URLSearchParams();
+    if (filters.folderId !== undefined) query.set('folder_id', filters.folderId === null ? 'root' : filters.folderId);
+    if (filters.visibility) query.set('visibility', filters.visibility);
+    if (filters.type) query.set('type', filters.type);
+    if (filters.search) query.set('search', filters.search);
+    if (filters.mine) query.set('owner', 'me');
+    if (filters.archived) query.set('archived', filters.archived);
+    const suffix = query.toString();
+    return request(`/content${suffix ? `?${suffix}` : ''}`);
+  },
   getContentItem: (id) => request(`/content/${id}`),
   deleteContent: (id) => request(`/content/${id}`, { method: 'DELETE' }),
   updateContent: (id, data) => request(`/content/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   moveContent: (id, folderId) => request(`/content/${id}`, {
     method: 'PUT',
     body: JSON.stringify({ folder_id: folderId })
+  }),
+  requestContentPublication: (id) => request(`/content/${id}/publication-request`, { method: 'POST' }),
+  duplicateContent: (id) => request(`/content/${id}/duplicate`, { method: 'POST' }),
+  archiveContent: (id, archived = true, confirmRevoke = false) => request(`/content/${id}/archive`, {
+    method: 'PUT',
+    body: JSON.stringify({ archived, confirm_revoke: confirmRevoke }),
+  }),
+  getContentUsage: (id) => request(`/content/${id}/usage`),
+  transferContent: (id, ownerUserId) => request(`/content/${id}/transfer`, {
+    method: 'PUT', body: JSON.stringify({ owner_user_id: ownerUserId }),
+  }),
+  getTemplateAssignments: (id) => request(`/content/${id}/template-assignments`),
+  updateTemplateAssignments: (id, workspaceIds) => request(`/content/${id}/template-assignments`, {
+    method: 'PUT', body: JSON.stringify({ workspace_ids: workspaceIds }),
+  }),
+  getPublicationRequests: () => request('/content/publication-requests'),
+  reviewPublicationRequest: (requestId, decision, reason = '') => request(`/content/publication-requests/${requestId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ decision, reason }),
   }),
 
   // Folders
@@ -396,8 +430,11 @@ export const api = {
     // resolve-not-throw contract: when targeting every display, the returned body
     // is { code:'CONFIRM_ALL_REQUIRED', count } so the UI can prompt and retry
     // with confirm_all:true (same as api.broadcast).
-    broadcast: (path, device_ids, opts = {}) =>
-      requestBroadcast({ path, device_ids, fit_mode: opts.fit_mode, confirm_all: opts.confirm_all }, '/files/broadcast'),
+    broadcast: (path, device_ids, opts = {}) => {
+      const targets = Array.isArray(opts.targets) ? opts.targets : [];
+      const targetPayload = targets.length ? { targets } : { device_ids };
+      return requestBroadcast({ path, ...targetPayload, fit_mode: opts.fit_mode, confirm_all: opts.confirm_all }, '/files/broadcast');
+    },
     importForCanvas: (path) => request('/files/broadcast', {
       method: 'POST',
       body: JSON.stringify({ path, import_only: true }),

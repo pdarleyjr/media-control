@@ -141,7 +141,7 @@ function renderForm() {
 
 async function chooseScheduleTarget() {
   try {
-    const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false });
+    const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false }, { requireFresh: true });
     const selection = await openTargetPicker({
       catalog,
       capability: (target) => target.type !== 'wall',

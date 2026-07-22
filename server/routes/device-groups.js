@@ -9,6 +9,7 @@ const commandModel = require('../lib/command-model');
 const { ensureDevicePlaylist: ensureWallAwareDevicePlaylist } = require('../lib/wall-playlists');
 const { assertCanJoinIndependentGroup, TopologyConflictError } = require('../lib/topology-membership');
 const { scheduleRoomSnapshot } = require('../lib/room-state-broadcaster');
+const { contentUseDecision, contextFromRequest } = require('../lib/content-visibility');
 
 function publishGroupMutation(req, workspaceId, reason) {
   const io = req.app.get('io');
@@ -243,11 +244,9 @@ router.post('/:id/assign-content', requireGroupWrite, (req, res) => {
 
   // Verify content lives in the same workspace as the group (or is a
   // platform-template row).
-  const content = db.prepare('SELECT id, workspace_id FROM content WHERE id = ?').get(content_id);
-  if (!content) return res.status(404).json({ error: 'Content not found' });
-  if (content.workspace_id && content.workspace_id !== req.group.workspace_id) {
-    return res.status(403).json({ error: 'Content is not in this group\'s workspace' });
-  }
+  const decision = contentUseDecision(db, content_id, req.group.workspace_id, contextFromRequest(req));
+  if (!decision.content) return res.status(404).json({ error: 'Content not found' });
+  if (!decision.allowed) return res.status(403).json({ error: decision.reason });
 
   const members = db.prepare('SELECT device_id FROM device_group_members WHERE group_id = ?').all(req.params.id);
 

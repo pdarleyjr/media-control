@@ -474,7 +474,7 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
         }
       }
 
-      db.prepare(`INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, duration_sec, remote_url, thumbnail_path, width, height, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(newId, userId, workspaceId, c.filename, newFilepath, c.mime_type, c.file_size || 0, c.duration_sec || null, c.remote_url || null, newThumbnail, c.width || null, c.height || null, c.created_at || Math.floor(Date.now() / 1000));
+      db.prepare(`INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, duration_sec, remote_url, thumbnail_path, width, height, access_level, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'private', ?)`).run(newId, userId, workspaceId, c.filename, newFilepath, c.mime_type, c.file_size || 0, c.duration_sec || null, c.remote_url || null, newThumbnail, c.width || null, c.height || null, c.created_at || Math.floor(Date.now() / 1000));
       stats.content++;
     }
 

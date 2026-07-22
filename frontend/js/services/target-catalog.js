@@ -71,6 +71,7 @@ function normalizeDisplay(raw, confirmed = null, fallback = null) {
     online: isOnlineStatus(status),
     dimensions: physicalDimensions,
     dimensionsLabel: formatDimensions(physicalDimensions),
+    capabilities: raw?.capabilities ?? raw?.capabilities_json ?? null,
     raw: raw || confirmed || fallback || null,
     confirmedState: confirmed || null,
   };
@@ -127,7 +128,8 @@ function gridBounds(wall, members) {
 }
 
 function wallDimensions(wall, members) {
-  return explicitCanvasDimensions(wall)
+  return dimensions(wall?.playerRect?.width, wall?.playerRect?.height)
+    || explicitCanvasDimensions(wall)
     || viewportBounds(members)
     || gridBounds(wall, members);
 }
@@ -260,12 +262,60 @@ export function buildTargetCatalog(snapshot, options = {}) {
       members,
       dimensions: logicalDimensions,
       dimensionsLabel: formatDimensions(logicalDimensions),
+      playerRect: rawWall?.playerRect || null,
       topologySummary: topologyParts.join(' · '),
       topologyLabel: [name, ...topologyParts].join(' · '),
       memberLine: memberLine(members),
       raw: rawWall,
     };
   }).filter((wall) => wall.id);
+
+  // Current wall layouts can expose independently routable regions (for
+  // example span-left plus solo-right). They are revision-bound wall children,
+  // not generic device groups.
+  const wallGroups = walls.flatMap((wall) => {
+    const rawGroups = Array.isArray(wall.raw?.layout?.groups) ? wall.raw.layout.groups : [];
+    return rawGroups.map((rawGroup) => {
+      const groupId = text(rawGroup?.id);
+      if (!groupId) return null;
+      const rawMemberIds = Array.isArray(rawGroup.member_ids)
+        ? rawGroup.member_ids
+        : (Array.isArray(rawGroup.memberIds) ? rawGroup.memberIds : []);
+      const requested = new Set(rawMemberIds.map(text).filter(Boolean));
+      const members = wall.members.filter((member) => requested.has(member.id));
+      if (!members.length) return null;
+      const name = `${wall.name} · ${text(rawGroup.name) || groupId}`;
+      const onlineCount = members.filter((member) => member.online).length;
+      const groupLayout = text(rawGroup.layout) || 'custom';
+      const groupDimensions = viewportBounds(members) || gridBounds(rawGroup, members);
+      const topologyParts = [
+        targetCountLabel(members.length), groupLayout,
+        `${onlineCount}/${members.length} online`, formatDimensions(groupDimensions),
+        `wall revision ${wall.layoutRevision}`,
+      ];
+      return {
+        type: 'wall-group',
+        id: `${wall.id}:${groupId}`,
+        groupId,
+        wallId: wall.id,
+        name,
+        label: name,
+        layoutMode: groupLayout,
+        layoutRevision: wall.layoutRevision,
+        preset: text(wall.raw?.layout?.preset) || null,
+        memberCount: members.length,
+        onlineCount,
+        memberIds: members.map((member) => member.id),
+        members,
+        dimensions: groupDimensions,
+        dimensionsLabel: formatDimensions(groupDimensions),
+        topologySummary: topologyParts.join(' · '),
+        topologyLabel: [name, ...topologyParts].join(' · '),
+        memberLine: memberLine(members),
+        raw: rawGroup,
+      };
+    }).filter(Boolean);
+  });
 
   const groups = groupRows.map((rawGroup) => {
     const id = text(rawGroup?.id);
@@ -340,11 +390,13 @@ export function buildTargetCatalog(snapshot, options = {}) {
     workspaceId: text(state.workspaceId) || null,
     roomId: text(state.roomId) || null,
     revision: Number(state.revision) || 0,
+    serverTimestamp: Number(state.serverTimestamp) || null,
     walls,
+    wallGroups,
     groups,
     displays,
     standaloneDisplays,
-    targets: [...walls, ...groups, ...standaloneDisplays],
+    targets: [...walls, ...wallGroups, ...groups, ...standaloneDisplays],
     physicalMembers,
     physicalMemberLine: memberLine(physicalMembers),
     liveProgram,
@@ -371,6 +423,9 @@ export function findCatalogTarget(catalog, target) {
   if (!reference?.id) return null;
   if (reference.type === 'wall') {
     return catalog?.walls?.find((candidate) => candidate.id === reference.id) || null;
+  }
+  if (reference.type === 'wall-group') {
+    return catalog?.wallGroups?.find((candidate) => candidate.id === reference.id) || null;
   }
   if (reference.type === 'group') {
     return catalog?.groups?.find((candidate) => candidate.id === reference.id) || null;

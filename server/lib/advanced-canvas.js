@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { db } = require('../db/database');
 const { deckPlayerUrl } = require('./deck-player-url');
 const { canvasAssetUrl } = require('./canvas-asset-signature');
+const { contentUseDecision } = require('./content-visibility');
 
 const MAX_LAYERS = 64;
 const MAX_CANVAS_DIMENSION = 32768;
@@ -163,20 +164,16 @@ async function resolveSource(
   canvasAssetSecret,
   renderWidth,
   renderHeight,
-  assertRemoteUrlSafe
+  assertRemoteUrlSafe,
+  contentContext
 ) {
   const value = source && typeof source === 'object' ? source : {};
 
   if (value.content_id) {
-    const content = db.prepare(`
-      SELECT id, workspace_id, mime_type, remote_url, duration_sec
-      FROM content
-      WHERE id = ?
-    `).get(String(value.content_id));
+    const decision = contentUseDecision(db, String(value.content_id), workspaceId, contentContext || {});
+    const content = decision.content;
     if (!content) throw new Error(`Content ${value.content_id} not found`);
-    if (content.workspace_id && content.workspace_id !== workspaceId) {
-      throw new Error(`Content ${value.content_id} is not in this workspace`);
-    }
+    if (!decision.allowed) throw new Error(decision.reason);
     return contentRenderDescriptor(
       content,
       publicBase,
@@ -219,7 +216,10 @@ async function resolveSource(
       WHERE pi.playlist_id = ? AND c.id IS NOT NULL
       ORDER BY pi.sort_order ASC, pi.id ASC
       LIMIT 200
-    `).all(playlist.id).map((item) => ({
+    `).all(playlist.id).map((item) => {
+      const decision = contentUseDecision(db, item.id, workspaceId, contentContext || {});
+      if (!decision.allowed) throw new Error(`Playlist ${value.playlist_id} contains unavailable content`);
+      return {
       ...contentRenderDescriptor({
         id: item.id,
         mime_type: item.mime_type,
@@ -228,7 +228,8 @@ async function resolveSource(
       }, publicBase, endpointId, workspaceId, canvasAssetSecret, renderWidth, renderHeight),
       duration_sec: Number(item.duration_sec) || Number(item.content_duration) || 10,
       fit_mode: item.fit_mode || null,
-    }));
+      };
+    });
     if (!items.length) throw new Error(`Playlist ${value.playlist_id} has no playable items`);
     return { kind: 'playlist', playlist_id: playlist.id, items };
   }
@@ -251,6 +252,7 @@ async function normalizeSceneLayers({
   endpointId,
   canvasAssetSecret,
   assertRemoteUrlSafe,
+  contentContext,
 }) {
   if (!Array.isArray(layers)) throw new Error('layers must be an array');
   if (layers.length > MAX_LAYERS) throw new Error(`A canvas scene supports at most ${MAX_LAYERS} layers`);
@@ -275,7 +277,8 @@ async function normalizeSceneLayers({
       canvasAssetSecret,
       width,
       height,
-      assertRemoteUrlSafe
+      assertRemoteUrlSafe,
+      contentContext
     );
     safe.push({
       id: String(layer.id || crypto.randomUUID()).slice(0, 128),

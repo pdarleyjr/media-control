@@ -78,6 +78,16 @@ test('layout endpoint uses optimistic revision checks and one atomic transaction
   assert.match(source, /pushToWallMembers\(req, wall\.id\)/);
 });
 
+test('every wall topology and membership mutation advances revision and invalidates stale groups', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'routes', 'video-walls.js'), 'utf8');
+  assert.match(source, /const topologyFields = new Set\(\[/);
+  assert.match(source, /updates\.push\('layout_json = NULL'\)/);
+  assert.match(source, /updates\.push\('layout_revision = layout_revision \+ 1'\)/);
+  assert.match(source, /router\.put\('\/:id\/devices'[\s\S]*expected_revision[\s\S]*LAYOUT_REVISION_CONFLICT/);
+  assert.match(source, /router\.put\('\/:id\/devices'[\s\S]*layout_json = NULL,[\s\S]*layout_revision = layout_revision \+ 1/);
+  assert.match(source, /if \(!topologyChanged\) return res\.json/);
+});
+
 test('player payload scopes sync and state to the persisted subgroup', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'ws', 'deviceSocket.js'), 'utf8');
   assert.match(source, /memberIds: layoutGroup\.member_ids/);

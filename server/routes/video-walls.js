@@ -14,6 +14,7 @@ const {
   presetGroups,
   validateLayout,
 } = require('../lib/wall-layout');
+const { contentUseDecision, contextFromRequest } = require('../lib/content-visibility');
 
 // Load a wall + access context. Returns the wall row or null after sending
 // 403/404. requireWrite=true also denies workspace_viewer.
@@ -165,11 +166,9 @@ router.put('/:id', requireWallWrite, (req, res) => {
     }
   }
   if (req.body.content_id) {
-    const c = db.prepare('SELECT workspace_id FROM content WHERE id = ?').get(req.body.content_id);
-    if (!c) return res.status(404).json({ error: 'Content not found' });
-    if (c.workspace_id && c.workspace_id !== wall.workspace_id) {
-      return res.status(403).json({ error: 'Content is not in this workspace' });
-    }
+    const decision = contentUseDecision(db, req.body.content_id, wall.workspace_id, contextFromRequest(req));
+    if (!decision.content) return res.status(404).json({ error: 'Content not found' });
+    if (!decision.allowed) return res.status(403).json({ error: decision.reason });
   }
   if (req.body.leader_device_id) {
     const d = db.prepare('SELECT workspace_id FROM devices WHERE id = ?').get(req.body.leader_device_id);
@@ -195,23 +194,20 @@ router.put('/:id', requireWallWrite, (req, res) => {
   for (const f of fields) {
     if (req.body[f] !== undefined) { updates.push(`${f} = ?`); values.push(req.body[f]); }
   }
+  const topologyFields = new Set([
+    'grid_cols', 'grid_rows', 'bezel_h_mm', 'bezel_v_mm', 'screen_w_mm', 'screen_h_mm',
+    'leader_device_id', 'player_x', 'player_y', 'player_width', 'player_height', 'layout_mode',
+  ]);
+  const topologyChanged = fields.some((field) => topologyFields.has(field) && req.body[field] !== undefined);
 
   if (updates.length > 0) {
+    if (topologyChanged) {
+      updates.push('layout_json = NULL');
+      updates.push('layout_revision = layout_revision + 1');
+    }
     updates.push("updated_at = strftime('%s','now')");
     values.push(req.params.id);
     db.prepare(`UPDATE video_walls SET ${updates.join(', ')} WHERE id = ?`).run(...values);
-  }
-
-  // The legacy Span/Split control intentionally replaces any custom subgroup
-  // layout. This keeps old clients deterministic and makes the migration fully
-  // reversible without deleting playlists or memberships.
-  if (req.body.layout_mode === 'span' || req.body.layout_mode === 'split') {
-    db.prepare(`
-      UPDATE video_walls
-      SET layout_json = NULL, layout_revision = layout_revision + 1,
-          updated_at = strftime('%s','now')
-      WHERE id = ?
-    `).run(req.params.id);
   }
 
   const nextLayoutMode = req.body.layout_mode !== undefined
@@ -362,6 +358,18 @@ router.put('/:id/devices', requireWallWrite, (req, res) => {
   if (!Array.isArray(devices)) return res.status(400).json({ error: 'devices array required' });
 
   const wall = req.wall;
+  const currentRevision = Number(wall.layout_revision) || 0;
+  if (req.body.expected_revision != null && Number(req.body.expected_revision) !== currentRevision) {
+    return res.status(409).json({
+      error: 'Wall layout changed in another session',
+      code: 'LAYOUT_REVISION_CONFLICT',
+      current: loadWallWithDevices(wall.id),
+    });
+  }
+  const incomingIds = new Set(devices.map((device) => device.device_id));
+  if (incomingIds.size !== devices.length) {
+    return res.status(400).json({ error: 'Each wall device may appear only once', code: 'INVALID_WALL_TOPOLOGY' });
+  }
   for (const d of devices) {
     const dev = db.prepare('SELECT workspace_id FROM devices WHERE id = ?').get(d.device_id);
     if (!dev) return res.status(404).json({ error: `Device ${d.device_id} not found` });
@@ -378,13 +386,26 @@ router.put('/:id/devices', requireWallWrite, (req, res) => {
     }
   }
 
-  const previous = db.prepare('SELECT device_id FROM video_wall_devices WHERE wall_id = ?').all(req.params.id);
+  const previous = db.prepare(`SELECT device_id, grid_col, grid_row, rotation,
+      canvas_x, canvas_y, canvas_width, canvas_height
+    FROM video_wall_devices WHERE wall_id = ?`).all(req.params.id);
   const previousIds = new Set(previous.map(p => p.device_id));
-  const incomingIds = new Set(devices.map(d => d.device_id));
   const removedIds = [...previousIds].filter(id => !incomingIds.has(id));
-  if (wall.is_locked && (previousIds.size !== incomingIds.size || removedIds.length > 0)) {
+  const normalizeTopology = (rows) => rows.map((row) => ({
+    device_id: String(row.device_id),
+    grid_col: Number(row.grid_col),
+    grid_row: Number(row.grid_row),
+    rotation: Number(row.rotation || 0),
+    canvas_x: row.canvas_x == null ? null : Number(row.canvas_x),
+    canvas_y: row.canvas_y == null ? null : Number(row.canvas_y),
+    canvas_width: row.canvas_width == null ? null : Number(row.canvas_width),
+    canvas_height: row.canvas_height == null ? null : Number(row.canvas_height),
+  })).sort((a, b) => a.device_id.localeCompare(b.device_id));
+  const topologyChanged = JSON.stringify(normalizeTopology(previous)) !== JSON.stringify(normalizeTopology(devices));
+  if (wall.is_locked && topologyChanged) {
     return res.status(423).json({ error: 'Wall is locked' });
   }
+  if (!topologyChanged) return res.json(loadWallWithDevices(req.params.id));
 
   const tx = db.transaction(() => {
     db.prepare('DELETE FROM video_wall_devices WHERE wall_id = ?').run(req.params.id);
@@ -418,6 +439,7 @@ router.put('/:id/devices', requireWallWrite, (req, res) => {
       updateDevice.run(req.params.id, playlistId, d.device_id);
     }
 
+    let leaderDeviceId = null;
     if (devices.length > 0) {
       // Prefer the device whose canvas rect is closest to the wall's top-left
       // (smallest canvas_x + canvas_y), falling back to grid 0,0, then first.
@@ -425,10 +447,16 @@ router.put('/:id/devices', requireWallWrite, (req, res) => {
         [...devices].sort((a, b) => ((a.canvas_x ?? 0) + (a.canvas_y ?? 0)) - ((b.canvas_x ?? 0) + (b.canvas_y ?? 0)))[0]
         || devices.find(d => d.grid_col === 0 && d.grid_row === 0)
         || devices[0];
-      db.prepare('UPDATE video_walls SET leader_device_id = ? WHERE id = ?').run(leader.device_id, req.params.id);
-    } else {
-      db.prepare('UPDATE video_walls SET leader_device_id = NULL WHERE id = ?').run(req.params.id);
+      leaderDeviceId = leader.device_id;
     }
+    // Membership/calibration edits invalidate subgroup layouts. Keep an
+    // explicit split wall split; every other layout safely falls back to a
+    // whole-wall span, and every real topology mutation advances the revision.
+    const fallbackMode = String(wall.layout_mode) === 'split' ? 'split' : 'span';
+    db.prepare(`UPDATE video_walls
+      SET leader_device_id = ?, layout_mode = ?, layout_json = NULL,
+          layout_revision = layout_revision + 1, updated_at = strftime('%s','now')
+      WHERE id = ?`).run(leaderDeviceId, fallbackMode, req.params.id);
   });
   tx();
 
@@ -448,11 +476,9 @@ router.put('/:id/content', requireWallWrite, (req, res) => {
   const wall = req.wall;
   const { content_id } = req.body;
   if (content_id) {
-    const c = db.prepare('SELECT workspace_id FROM content WHERE id = ?').get(content_id);
-    if (!c) return res.status(404).json({ error: 'Content not found' });
-    if (c.workspace_id && c.workspace_id !== wall.workspace_id) {
-      return res.status(403).json({ error: 'Content is not in this workspace' });
-    }
+    const decision = contentUseDecision(db, content_id, wall.workspace_id, contextFromRequest(req));
+    if (!decision.content) return res.status(404).json({ error: 'Content not found' });
+    if (!decision.allowed) return res.status(403).json({ error: decision.reason });
   }
   db.prepare("UPDATE video_walls SET content_id = ?, updated_at = strftime('%s','now') WHERE id = ?")
     .run(content_id || null, req.params.id);

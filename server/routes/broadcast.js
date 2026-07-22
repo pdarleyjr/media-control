@@ -21,8 +21,14 @@ const { deckPlayerUrl } = require('../lib/deck-player-url');
 const { assertRemoteUrlSafe } = require('../lib/ssrf-policy');
 const { audit } = require('../lib/audit');
 const { ensureLiveStreamDisplay, liveStreamProgramState, markLiveContentChanged } = require('../lib/live-stream-display');
-const { LIVE_STREAM_DEVICE_PREFIX, resolveBroadcastTargets } = require('../lib/broadcast-targets');
+const {
+  LIVE_STREAM_DEVICE_PREFIX,
+  isManagedLiveStreamTarget,
+  resolveBroadcastTargets,
+  resolveTypedBroadcastTargets,
+} = require('../lib/broadcast-targets');
 const nodeRegistry = require('../lib/node-registry');
+const { contentUseDecision, contextFromRequest } = require('../lib/content-visibility');
 
 async function callDirector(path, body) {
   const base = String(process.env.AI_DIRECTOR_URL || 'http://host.docker.internal:8766').replace(/\/+$/, '');
@@ -54,17 +60,30 @@ router.post('/', async (req, res) => {
   }
 
   const {
-    device_ids, content_id, remote_url, playlist_id, presentation_id, fit_mode, confirm_all, include_live_stream,
+    device_ids, targets: target_refs, content_id, remote_url, playlist_id, presentation_id, fit_mode, confirm_all, include_live_stream,
   } = req.body || {};
 
   // Validate the target selection.
-  if (!Array.isArray(device_ids) || (device_ids.length === 0 && include_live_stream !== true)) {
-    return res.status(400).json({ error: 'device_ids must be a non-empty array unless Live Program is explicitly selected' });
+  if (device_ids !== undefined && !Array.isArray(device_ids)) {
+    return res.status(400).json({ error: 'device_ids must be an array' });
+  }
+  if (target_refs !== undefined && !Array.isArray(target_refs)) {
+    return res.status(400).json({ error: 'targets must be an array' });
+  }
+  const legacyIds = Array.isArray(device_ids) ? device_ids : [];
+  const typedRefs = Array.isArray(target_refs) ? target_refs : [];
+  if (legacyIds.length === 0 && typedRefs.length === 0 && include_live_stream !== true) {
+    return res.status(400).json({ error: 'device_ids or targets must select at least one display unless Live Program is explicitly selected' });
   }
 
   // Validate at least one source (presentation_id counts as a valid source).
   if (!content_id && !remote_url && !playlist_id && !presentation_id) {
     return res.status(400).json({ error: 'one of content_id, remote_url, playlist_id, or presentation_id is required' });
+  }
+  if (content_id) {
+    const decision = contentUseDecision(db, String(content_id), req.workspaceId, contextFromRequest(req));
+    if (!decision.content) return res.status(404).json({ error: 'Content not found' });
+    if (!decision.allowed) return res.status(403).json({ error: decision.reason });
   }
 
   // SSRF gate: a hand-typed remote_url is broadcast straight to displays. Run
@@ -91,49 +110,86 @@ router.post('/', async (req, res) => {
     effectiveRemoteUrl = deckPlayerUrl(publicBase, pres.id);
   }
 
-  // De-dupe and confirm every target device is in this workspace.
-  const requested = [...new Set(device_ids.map(String))];
-  if (include_live_stream === true) {
-    const liveStreamDisplay = ensureLiveStreamDisplay({ workspaceId: req.workspaceId, userId: req.user.id });
-    if (liveStreamDisplay && !requested.includes(liveStreamDisplay.id)) requested.push(liveStreamDisplay.id);
-    if (liveStreamDisplay) markLiveContentChanged(liveStreamDisplay.id);
-  }
-  const resolvedTargets = resolveBroadcastTargets({
+  // Resolve logical targets from authoritative, current topology before any
+  // display mutation. Wall targets carry an optimistic layout revision: stale
+  // popup/card selections fail atomically instead of broadcasting to an old
+  // physical membership list supplied by the browser.
+  const typedResolution = resolveTypedBroadcastTargets({
     db,
-    requestedIds: requested,
+    refs: typedRefs,
     workspaceId: req.workspaceId,
-    allowLiveStream: include_live_stream === true,
   });
-  if (!resolvedTargets.ok) return res.status(resolvedTargets.status).json(resolvedTargets.body);
-  const targets = resolvedTargets.targets;
+  if (!typedResolution.ok) return res.status(typedResolution.status).json(typedResolution.body);
+
+  // Merge the revision-safe logical selection with legacy physical ids. The
+  // legacy contract remains compatible while new clients can use typed refs.
+  const requested = [...new Set(
+    typedRefs.length > 0 ? typedResolution.targets : legacyIds.map(String)
+  )];
+  // Live Program is represented only by its explicit boolean gate. Ignore any
+  // legacy managed id here and recreate/append the workspace's canonical live
+  // target only after validation and confirm-all have completed.
+  const requestedPhysical = requested.filter((id) => !isManagedLiveStreamTarget(id));
+  let resolvedTargets = resolveBroadcastTargets({
+    db,
+    requestedIds: requestedPhysical,
+    workspaceId: req.workspaceId,
+    allowLiveStream: false,
+  });
+  if (!resolvedTargets.ok) {
+    if (include_live_stream === true && resolvedTargets.status === 404) {
+      resolvedTargets = {
+        ok: true,
+        requested: requestedPhysical,
+        targets: [],
+        missing: resolvedTargets.body?.missing || requestedPhysical,
+      };
+    } else {
+      return res.status(resolvedTargets.status).json(resolvedTargets.body);
+    }
+  }
+  const physicalTargets = resolvedTargets.targets;
 
   // Confirmation gate when targeting ALL displays in the workspace.
   const totalInWorkspace = db.prepare(
     `SELECT COUNT(*) AS c FROM devices
      WHERE workspace_id = ?
-       AND (? = 1 OR id NOT LIKE ?)`
-  ).get(req.workspaceId, include_live_stream === true ? 1 : 0, `${LIVE_STREAM_DEVICE_PREFIX}%`).c;
-  const targetingAll = totalInWorkspace > 0 && targets.length === totalInWorkspace;
+       AND id NOT LIKE ?`
+  ).get(req.workspaceId, `${LIVE_STREAM_DEVICE_PREFIX}%`).c;
+  const targetingAll = totalInWorkspace > 0 && physicalTargets.length === totalInWorkspace;
   if (targetingAll && confirm_all !== true) {
     return res.status(409).json({ code: 'CONFIRM_ALL_REQUIRED', count: totalInWorkspace });
   }
 
+  // All read-only validation and the operator confirmation gate have passed.
+  // Only now may the request create/mark the managed Live Program display.
+  const targets = [...physicalTargets];
+  if (include_live_stream === true) {
+    const liveStreamDisplay = ensureLiveStreamDisplay({ workspaceId: req.workspaceId, userId: req.user.id });
+    if (liveStreamDisplay && !targets.includes(liveStreamDisplay.id)) targets.push(liveStreamDisplay.id);
+    if (liveStreamDisplay) markLiveContentChanged(liveStreamDisplay.id);
+  }
+
   const source = { content_id, remote_url: effectiveRemoteUrl, playlist_id, fit_mode };
   const io = req.app.get('io');
-  const cachePrewarm = content_id
-    ? nodeRegistry.requestContentPrewarm(io, db, { deviceIds: targets, contentId: content_id })
-    : { requested: false, reason: 'not_local_content' };
-
+  const totalRequested = targets.length + resolvedTargets.missing.length;
   let sent = 0;
   const failed = resolvedTargets.missing.slice();
   for (const deviceId of targets) {
     const ok = sceneEngine.pushSourceToDevice(io, deviceId, source, {
       workspaceId: req.workspaceId,
       userId: req.user.id,
+      contentContext: contextFromRequest(req),
       targetDeviceIds: targets,
     });
     if (ok) sent++; else failed.push(deviceId);
   }
+  // The device playlist assignment above is the authorization event that makes
+  // the asset eligible for the room node. Prewarm only after that transaction;
+  // upload-time library scans must never expose unassigned private content.
+  const cachePrewarm = content_id
+    ? nodeRegistry.requestContentPrewarm(io, db, { deviceIds: targets, contentId: content_id })
+    : { requested: false, reason: 'not_local_content' };
 
   // Log the broadcast (activityLogger middleware only captures a single
   // device_id; broadcasts touch many, so log an explicit summary here).
@@ -145,7 +201,7 @@ router.post('/', async (req, res) => {
     logActivity(
       req.user.id,
       'POST /api/broadcast',
-      `broadcast ${sourceLabel} to ${sent}/${requested.length} display(s)${targetingAll ? ' (ALL)' : ''}`,
+      `broadcast ${sourceLabel} to ${sent}/${totalRequested} display(s)${targetingAll ? ' (ALL)' : ''}`,
       null,
       getClientIp(req),
       req.workspaceId
@@ -168,7 +224,7 @@ router.post('/', async (req, res) => {
       presentation_id: presentation_id || null,
       remote_url: effectiveRemoteUrl || null,
       device_ids: targets,
-      target_count: requested.length,
+      target_count: totalRequested,
       missing_device_count: resolvedTargets.missing.length,
       sent,
       targeting_all: targetingAll,
@@ -181,7 +237,7 @@ router.post('/', async (req, res) => {
     liveProgram = liveStreamProgramState(req.workspaceId);
     liveProgram.program_refresh = await callDirector('/media-control/refresh');
   }
-  res.json({ success: true, sent, failed, total: requested.length, cache_prewarm: cachePrewarm, live_stream: liveProgram });
+  res.json({ success: true, sent, failed, total: totalRequested, cache_prewarm: cachePrewarm, live_stream: liveProgram });
 });
 
 module.exports = router;

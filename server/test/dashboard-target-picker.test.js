@@ -19,7 +19,7 @@ function functionSource(name, nextName) {
 test('dashboard quick broadcast uses the authoritative logical topology picker', () => {
   const picker = functionSource('openBroadcastPicker', 'doBroadcast');
 
-  assert.match(source, /waitForTargetCatalog\(\{ includeVirtualDisplays: false \}\)/);
+  assert.match(source, /waitForTargetCatalog\(\{ includeVirtualDisplays: false \}, \{ requireFresh: true \}\)/);
   assert.match(source, /openTargetPicker\(\{/);
   assert.match(picker, /capability: 'content'/);
   assert.match(picker, /selection: 'multiple'/);
@@ -34,7 +34,8 @@ test('dashboard quick broadcast never mutates wall topology', () => {
 
   assert.doesNotMatch(picker, /api\.(?:updateWall|setWallDevices|setWallLayout|setWallContent)\s*\(/);
   assert.doesNotMatch(picker, /layout_mode|layoutMode|grid_cols|grid_rows/);
-  assert.match(picker, /device_ids: ids/);
+  assert.match(picker, /targets: selection\.references/);
+  assert.doesNotMatch(picker, /\{ device_ids: ids, targets:/);
 });
 
 test('raw display selection remains a create-wall gesture, not a routing model', () => {

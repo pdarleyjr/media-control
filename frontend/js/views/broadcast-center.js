@@ -21,6 +21,7 @@ import { expandTargetsToDeviceIds, findCatalogTarget } from '../services/target-
 let data = { catalog: null, presentations: [], playlists: [], content: [], ncFiles: [], ncPath: '' };
 let sel = { type: 'presentation', id: null, label: '' };
 let targets = new Set();
+let targetReferences = [];
 let blanked = false;
 
 function esc(s) {
@@ -32,6 +33,9 @@ function asArray(v) { return Array.isArray(v) ? v : (v && Array.isArray(v.data) 
 function targetKey(target) { return `${target.type}:${target.id}`; }
 function selectedDeviceIds() {
   return data.catalog ? expandTargetsToDeviceIds([...targets], data.catalog) : [];
+}
+function selectedTypedTargets() {
+  return targetReferences.filter((target) => target.type !== 'live-program');
 }
 function liveProgramSelected() {
   return [...targets].some((key) => key.startsWith('live-program:'));
@@ -210,17 +214,21 @@ async function broadcast() {
     // GUARDRAIL: sel.id is the NC path (string); email comes from req.user.email
     // server-side — never sent from the client.
     if (sel.type === 'nc_file') {
-      let r = await api.files.broadcast(sel.id, device_ids);
+      let r = await api.files.broadcast(sel.id, undefined, { targets: selectedTypedTargets() });
       if (r && r.code === 'CONFIRM_ALL_REQUIRED') {
         const ok = await confirmDialog({ title: 'Broadcast to ALL displays?', message: `This takes over all ${r.count} displays in this workspace.`, confirmLabel: 'Broadcast to all', tone: 'danger' });
         if (!ok) { updateBar(); return; }
-        r = await api.files.broadcast(sel.id, device_ids, { confirm_all: true });
+        r = await api.files.broadcast(sel.id, undefined, { targets: selectedTypedTargets(), confirm_all: true });
       }
       showToast(`Broadcasting "${esc(sel.label)}" to ${r.sent != null ? r.sent : device_ids.length} display(s)`, 'success');
       return;
     }
 
-    const payload = { device_ids, include_live_stream };
+    const typedTargets = selectedTypedTargets();
+    const payload = {
+      ...(typedTargets.length ? { targets: typedTargets } : { device_ids }),
+      include_live_stream,
+    };
     if (sel.type === 'presentation') payload.remote_url = `${location.origin}/player/deck/${sel.id}`;
     else if (sel.type === 'playlist') payload.playlist_id = sel.id;
     else payload.content_id = sel.id;
@@ -241,6 +249,7 @@ async function broadcast() {
 export async function render(app) {
   sel = { type: 'presentation', id: null, label: '' };
   targets = new Set();
+  targetReferences = [];
   app.innerHTML = `
     <div class="mc-studio-surface">
       <div class="mc-studio-wrap" style="max-width:1200px">
@@ -299,6 +308,7 @@ export async function render(app) {
     sel = { type: b.dataset.tab, id: null, label: '' };
     if (sel.type === 'nc_file') {
       for (const key of [...targets]) if (key.startsWith('live-program:')) targets.delete(key);
+      targetReferences = targetReferences.filter((target) => target.type !== 'live-program');
       renderTargets();
     }
     renderTabs(); updateBar();
@@ -315,6 +325,15 @@ export async function render(app) {
   });
   document.getElementById('bcTargets').addEventListener('click', async (e) => {
     if (!e.target.closest('[data-choose-targets]') || !data.catalog) return;
+    try {
+      data.catalog = await waitForTargetCatalog(
+        { includeVirtualDisplays: false },
+        { requireFresh: true },
+      );
+    } catch (error) {
+      showToast(error.message || 'Could not refresh live room topology.', 'error');
+      return;
+    }
     const selection = await openTargetPicker({
       catalog: data.catalog,
       capability: 'content',
@@ -325,6 +344,7 @@ export async function render(app) {
       selectedTargets: [...targets],
     });
     if (!selection) return;
+    targetReferences = selection.references;
     targets = new Set(selection.references.map(targetKey));
     renderTargets();
     updateBar();

@@ -5,6 +5,7 @@ const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
 // Phase 2.2a: workspace-aware access. accessContext returns { workspaceRole, actingAs }
 // or null based on the caller's reach into a specific workspace.
 const { accessContext } = require('../lib/tenancy');
+const { contentUseDecision, contextFromRequest } = require('../lib/content-visibility');
 const { scheduleRoomSnapshot } = require('../lib/room-state-broadcaster');
 
 function publishDeviceMutation(req, workspaceId, reason) {
@@ -157,6 +158,11 @@ router.put('/:id', (req, res) => {
     // from the device's self-reported value.
     screen_width, screen_height, refresh_rate_hz, auto_detect_resolution,
   } = req.body;
+  if (default_content_id) {
+    const decision = contentUseDecision(db, default_content_id, device.workspace_id, contextFromRequest(req));
+    if (!decision.content) return res.status(404).json({ error: 'Default content not found' });
+    if (!decision.allowed) return res.status(403).json({ error: decision.reason });
+  }
   const ALLOWED_FIELDS = [
     'name', 'notes', 'timezone', 'orientation', 'default_content_id',
     'screen_width', 'screen_height', 'refresh_rate_hz', 'auto_detect_resolution',

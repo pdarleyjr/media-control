@@ -102,7 +102,7 @@ async function load(app) {
       const pid = present.dataset.present;
       present.disabled = true;
       try {
-        const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false });
+        const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false }, { requireFresh: true });
         const selection = await openTargetPicker({
           catalog,
           capability: 'content',
@@ -117,8 +117,9 @@ async function load(app) {
           showToast('Choose at least one physical wall, display, or Live Program.', 'info');
           return;
         }
+        const physicalTargets = selection.references.filter((target) => target.type !== 'live-program');
         const payload = {
-          device_ids: ids,
+          ...(physicalTargets.length ? { targets: physicalTargets } : { device_ids: ids }),
           presentation_id: pid,
           include_live_stream: selection.includesLiveProgram,
         };

@@ -59,6 +59,7 @@ test('classroom content broadcast sends a priority prewarm to the configured P3 
       wallIds: ['wall-1'],
       nodeId: 'classroom-1-p3',
     },
+    allowUnscoped: true,
   });
 
   assert.equal(result.requested, true);
@@ -95,6 +96,7 @@ test('new uploads are checksummed on GMKtec and immediately prewarmed on the P3'
       assert.equal(absolutePath, '/gmktec/uploads/upload-id.png');
       return item;
     },
+    allowUnscoped: true,
   });
 
   assert.equal(result.requested, true);
@@ -112,6 +114,7 @@ test('an upload never emits an empty prewarm item when checksum creation fails',
     absolutePath: '/gmktec/uploads/missing.png',
     classroomCache: { enabled: true, nodeId: 'classroom-1-p3' },
     writeManifest: async () => null,
+    allowUnscoped: true,
   });
 
   assert.deepEqual(result, { requested: false, reason: 'manifest_unavailable' });
@@ -124,6 +127,7 @@ test('prewarm signal is skipped for targets outside configured classroom walls',
     deviceIds: ['other-display'],
     contentId: 'video-id',
     classroomCache: { enabled: true, wallIds: ['wall-1'], nodeId: 'classroom-1-p3' },
+    allowUnscoped: true,
   });
   assert.equal(result.requested, false);
   assert.equal(result.reason, 'targets_not_cached');
@@ -144,7 +148,7 @@ test('cache HTTP access requires the configured node token', () => {
 test('public content route allows a valid cache node without weakening browser access', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   assert.match(source, /const nodeAuthorized = nodeRegistry\.nodeHttpAuthOk\(req\)/);
-  assert.match(source, /if \(!nodeAuthorized && !canServePublicContent\(db, content\)\)/);
+  assert.match(source, /if \(!nodeAuthorized && !signed && !canServePublicContent\(db, content\)\)/);
 });
 
 test('node telemetry persists only bounded diagnostics fields and excludes secrets', () => {

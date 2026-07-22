@@ -69,6 +69,24 @@ test('waits for the first snapshot without leaking its subscription', async () =
   assert.equal(store.listenerCount(), 0);
 });
 
+test('requireFresh waits for a newer authoritative timestamp instead of returning cached topology', async () => {
+  const createRuntime = await loadFactory();
+  const store = fakeStore({ revision: 7, serverTimestamp: 100 });
+  const requests = [];
+  const runtime = createRuntime({
+    roomStore: store,
+    requestSnapshot: (options) => { requests.push(options); },
+    buildCatalog: (snapshot) => ({ revision: snapshot.revision, serverTimestamp: snapshot.serverTimestamp }),
+  });
+
+  const pending = runtime.wait({}, { timeoutMs: 100, requireFresh: true });
+  assert.equal(store.listenerCount(), 1);
+  assert.equal(requests[0].force, true);
+  store.publish({ revision: 7, serverTimestamp: 101 });
+  assert.deepEqual(await pending, { revision: 7, serverTimestamp: 101 });
+  assert.equal(store.listenerCount(), 0);
+});
+
 test('fails closed when live room topology cannot be obtained', async () => {
   const createRuntime = await loadFactory();
   const store = fakeStore();
@@ -80,4 +98,3 @@ test('fails closed when live room topology cannot be obtained', async () => {
   );
   assert.equal(store.listenerCount(), 0);
 });
-

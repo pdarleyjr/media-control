@@ -9,6 +9,9 @@ test('Broadcast Center uses typed authoritative topology targets instead of raw 
   assert.match(source, /waitForTargetCatalog\(\{ includeVirtualDisplays: false \}\)/);
   assert.match(source, /openTargetPicker\(\{/);
   assert.match(source, /expandTargetsToDeviceIds/);
+  assert.match(source, /targets: selectedTypedTargets\(\)/);
+  assert.match(source, /targetReferences = selection\.references/);
+  assert.match(source, /api\.files\.broadcast\(sel\.id, undefined, \{ targets: selectedTypedTargets\(\) \}\)/);
   assert.match(source, /allowIndividualWallMembers: false/);
   assert.doesNotMatch(source, /api\.getDevices\(\)/);
   assert.doesNotMatch(source, /data-all=/);
@@ -20,4 +23,3 @@ test('Broadcast Center shows and transmits Live Program only through explicit se
   assert.match(source, /allowLiveProgram: sel\.type !== 'nc_file'/);
   assert.match(source, /Live Program explicitly selected/);
 });
-

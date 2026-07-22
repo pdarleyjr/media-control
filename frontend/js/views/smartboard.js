@@ -220,7 +220,7 @@ function requestedTargetReference(catalog, deviceId) {
 
 async function chooseSmartboardTarget(deepLinkedDeviceId = '') {
   try {
-    const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false });
+    const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false }, { requireFresh: true });
     if (!activeContainer) return;
     const requested = requestedTargetReference(catalog, deepLinkedDeviceId);
     const selection = await openTargetPicker({
@@ -228,6 +228,7 @@ async function chooseSmartboardTarget(deepLinkedDeviceId = '') {
       capability: 'whiteboard',
       selection: 'single',
       allowOffline: false,
+      availability: 'all',
       allowIndividualWallMembers: false,
       allowLiveProgram: false,
       selectedTargets: requested ? [requested] : [],

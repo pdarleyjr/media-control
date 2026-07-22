@@ -14,6 +14,11 @@ const revisionSchemaReady = new WeakSet();
 // look secret; a deny-list alone cannot prevent a credential hidden under an
 // innocuous or newly introduced property name from reaching dashboards.
 const PUBLIC_SCALAR = true;
+const PUBLIC_CAPABILITIES = Symbol('public-capabilities');
+const PUBLIC_CAPABILITY_KEYS = new Set([
+  'audio', 'content', 'dash', 'hls', 'image', 'pdf', 'presentation',
+  'preview', 'screen_share', 'screenshare', 'video', 'webrtc', 'whiteboard',
+]);
 const CONFIRMED_DISPLAY_SCHEMA = {
   id: PUBLIC_SCALAR, name: PUBLIC_SCALAR, status: PUBLIC_SCALAR,
   contentId: PUBLIC_SCALAR, assetId: PUBLIC_SCALAR, contentType: PUBLIC_SCALAR,
@@ -37,7 +42,8 @@ const DEVICE_DISPLAY_SCHEMA = {
   id: PUBLIC_SCALAR, name: PUBLIC_SCALAR, status: PUBLIC_SCALAR,
   lastHeartbeat: PUBLIC_SCALAR, screenOn: PUBLIC_SCALAR, width: PUBLIC_SCALAR,
   height: PUBLIC_SCALAR, wallId: PUBLIC_SCALAR, layoutId: PUBLIC_SCALAR,
-  playlistId: PUBLIC_SCALAR, updatedAt: PUBLIC_SCALAR,
+  playlistId: PUBLIC_SCALAR, capabilities: PUBLIC_CAPABILITIES,
+  updatedAt: PUBLIC_SCALAR,
 };
 const NETWORK_STATE_SCHEMA = {
   adapter_name: PUBLIC_SCALAR, adapter_description: PUBLIC_SCALAR,
@@ -99,6 +105,9 @@ const NODE_SCHEMA = {
 const VIEWPORT_SCHEMA = {
   x: PUBLIC_SCALAR, y: PUBLIC_SCALAR, width: PUBLIC_SCALAR, height: PUBLIC_SCALAR,
 };
+const PLAYER_RECT_SCHEMA = {
+  x: PUBLIC_SCALAR, y: PUBLIC_SCALAR, width: PUBLIC_SCALAR, height: PUBLIC_SCALAR,
+};
 const WALL_MEMBER_SCHEMA = {
   deviceId: PUBLIC_SCALAR, gridColumn: PUBLIC_SCALAR, gridRow: PUBLIC_SCALAR,
   rotation: PUBLIC_SCALAR, viewport: VIEWPORT_SCHEMA,
@@ -123,6 +132,7 @@ const WALL_SCHEMA = {
   gridRows: PUBLIC_SCALAR, syncMode: PUBLIC_SCALAR, layoutMode: PUBLIC_SCALAR,
   locked: PUBLIC_SCALAR, leaderDeviceId: PUBLIC_SCALAR,
   contentId: PUBLIC_SCALAR, playlistId: PUBLIC_SCALAR,
+  playerRect: PLAYER_RECT_SCHEMA,
   layoutRevision: PUBLIC_SCALAR, layout: STORED_LAYOUT_SCHEMA,
   members: [WALL_MEMBER_SCHEMA], updatedAt: PUBLIC_SCALAR,
 };
@@ -265,8 +275,27 @@ function sanitizePublicScalar(value) {
   return undefined;
 }
 
+function sanitizePublicCapabilities(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const result = {};
+  for (const [key, rawSupport] of Object.entries(value)) {
+    if (!PUBLIC_CAPABILITY_KEYS.has(key)) continue;
+    if (typeof rawSupport === 'boolean') {
+      result[key] = rawSupport;
+    } else if (rawSupport === 0 || rawSupport === 1) {
+      result[key] = rawSupport === 1;
+    } else if (rawSupport === 'supported' || rawSupport === 'true') {
+      result[key] = true;
+    } else if (rawSupport === 'unsupported' || rawSupport === 'false') {
+      result[key] = false;
+    }
+  }
+  return result;
+}
+
 function sanitizePublicState(value, schema) {
   if (schema === PUBLIC_SCALAR) return sanitizePublicScalar(value);
+  if (schema === PUBLIC_CAPABILITIES) return sanitizePublicCapabilities(value);
   if (Array.isArray(schema)) {
     if (!Array.isArray(value)) return [];
     return value
@@ -351,7 +380,7 @@ function loadConfirmedState(db, workspaceId) {
 function loadDeviceStates(db, workspaceId, roomId) {
   const displays = db.prepare(`
     SELECT id, name, status, last_heartbeat, screen_on, screen_width, screen_height,
-           wall_id, layout_id, playlist_id, updated_at
+           wall_id, layout_id, playlist_id, capabilities_json, updated_at
     FROM devices
     WHERE workspace_id = ? AND id NOT LIKE ?
     ORDER BY name COLLATE NOCASE, id
@@ -366,6 +395,7 @@ function loadDeviceStates(db, workspaceId, roomId) {
     wallId: row.wall_id ?? null,
     layoutId: row.layout_id ?? null,
     playlistId: row.playlist_id ?? null,
+    capabilities: parsePublicJson(row.capabilities_json, {}, PUBLIC_CAPABILITIES),
     updatedAt: row.updated_at ?? null,
   }));
 
@@ -427,7 +457,8 @@ function loadLayoutState(db, workspaceId) {
 
   const walls = db.prepare(`
     SELECT id, name, grid_cols, grid_rows, sync_mode, layout_mode, is_locked,
-           leader_device_id, content_id, playlist_id, layout_json,
+           leader_device_id, content_id, playlist_id,
+           player_x, player_y, player_width, player_height, layout_json,
            layout_revision, updated_at
     FROM video_walls
     WHERE workspace_id = ?
@@ -443,6 +474,15 @@ function loadLayoutState(db, workspaceId) {
     leaderDeviceId: row.leader_device_id ?? null,
     contentId: row.content_id ?? null,
     playlistId: row.playlist_id ?? null,
+    playerRect: [row.player_x, row.player_y, row.player_width, row.player_height]
+      .every((value) => value == null)
+      ? null
+      : {
+        x: row.player_x ?? null,
+        y: row.player_y ?? null,
+        width: row.player_width ?? null,
+        height: row.player_height ?? null,
+      },
     layoutRevision: Number(row.layout_revision) || 0,
     layout: parsePublicJson(row.layout_json, null, STORED_LAYOUT_SCHEMA),
     members: membersByWall.get(row.id) || [],

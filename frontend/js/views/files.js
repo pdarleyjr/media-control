@@ -32,7 +32,7 @@ const NC_BROADCASTABLE = /^(image|video)\//;
 // displays. Returns after the broadcast (success or failure).
 async function broadcastNcFile(path, label) {
   try {
-    const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false });
+    const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false }, { requireFresh: true });
     const selection = await openTargetPicker({
       catalog,
       capability: 'content',
@@ -48,7 +48,7 @@ async function broadcastNcFile(path, label) {
       return;
     }
 
-    let result = await api.files.broadcast(path, deviceIds);
+    let result = await api.files.broadcast(path, undefined, { targets: selection.references });
     if (result && result.code === 'CONFIRM_ALL_REQUIRED') {
       const ok = await confirmDialog({
         title: `Show on ALL ${result.count} displays?`,
@@ -57,7 +57,7 @@ async function broadcastNcFile(path, label) {
         tone: 'default',
       });
       if (!ok) return;
-      result = await api.files.broadcast(path, deviceIds, { confirm_all: true });
+      result = await api.files.broadcast(path, undefined, { targets: selection.references, confirm_all: true });
     }
     if (result && result.success) {
       const offline = (result.total || 0) - (result.sent || 0);

@@ -54,7 +54,12 @@ export function createRoomStateStore(options = {}) {
       return { applied: false, reason: 'stale_revision', revision: current.revision };
     }
     if (current && revision === current.revision) {
-      return { applied: false, reason: 'duplicate_revision', revision: current.revision };
+      // A force-refresh snapshot can legitimately carry the same state
+      // revision with a newer server timestamp. Accept it so a picker can prove
+      // that its topology was re-read immediately before operator selection.
+      if (!(Number(snapshot.serverTimestamp) > Number(current.serverTimestamp))) {
+        return { applied: false, reason: 'duplicate_revision', revision: current.revision };
+      }
     }
     identity = nextIdentity;
     current = { ...snapshot, revision };

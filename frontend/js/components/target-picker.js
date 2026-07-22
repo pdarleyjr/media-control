@@ -9,7 +9,14 @@ import { t } from '../i18n.js';
 let dialogSequence = 0;
 
 function targetReference(target) {
-  return { type: String(target?.type || 'display'), id: String(target?.id || '') };
+  const reference = { type: String(target?.type || 'display'), id: String(target?.id || '') };
+  if (target?.type === 'wall') reference.layout_revision = Number(target.layoutRevision) || 0;
+  if (target?.type === 'wall-group') {
+    reference.wall_id = String(target.wallId || '');
+    reference.group_id = String(target.groupId || '');
+    reference.layout_revision = Number(target.layoutRevision) || 0;
+  }
+  return reference;
 }
 
 function targetKey(target) {
@@ -74,21 +81,25 @@ function supportsCapability(target, capability) {
   if (Array.isArray(capability)) {
     return capability.every((entry) => supportsCapability(target, entry));
   }
-  if (target?.type === 'wall' || target?.type === 'group') {
+  if (target?.type === 'wall' || target?.type === 'wall-group' || target?.type === 'group') {
     return (target.members || []).every((member) => declaredCapability(member, capability) !== false);
   }
   return declaredCapability(target, capability) !== false;
 }
 
 function targetHasOnlineMember(target) {
-  if (target?.type === 'wall' || target?.type === 'group') return Number(target.onlineCount) > 0;
+  if (target?.type === 'wall' || target?.type === 'wall-group' || target?.type === 'group') return Number(target.onlineCount) > 0;
   return target?.online === true;
 }
 
-function decorateTarget(target, { capability, allowOffline }) {
+function decorateTarget(target, { capability, allowOffline, availability }) {
   const supported = supportsCapability(target, capability);
   const available = targetHasOnlineMember(target);
-  const disabledReason = !supported ? 'unsupported' : (!allowOffline && !available ? 'offline' : null);
+  const composite = ['wall', 'wall-group', 'group'].includes(target?.type);
+  const partial = composite && Number(target.onlineCount) > 0 && Number(target.onlineCount) < Number(target.memberCount);
+  const disabledReason = !supported
+    ? 'unsupported'
+    : (!allowOffline && availability === 'all' && partial ? 'partial' : (!allowOffline && !available ? 'offline' : null));
   return {
     key: targetKey(target),
     reference: targetReference(target),
@@ -123,6 +134,7 @@ export function createTargetPickerModel(options = {}) {
   const catalog = {
     ...sourceCatalog,
     walls: Array.isArray(sourceCatalog.walls) ? sourceCatalog.walls : [],
+    wallGroups: Array.isArray(sourceCatalog.wallGroups) ? sourceCatalog.wallGroups : [],
     groups: Array.isArray(sourceCatalog.groups) ? sourceCatalog.groups : [],
     displays: Array.isArray(sourceCatalog.displays) ? sourceCatalog.displays : [],
     standaloneDisplays: Array.isArray(sourceCatalog.standaloneDisplays)
@@ -135,11 +147,15 @@ export function createTargetPickerModel(options = {}) {
   const decoratorOptions = {
     capability: options.capability || null,
     allowOffline: options.allowOffline === true,
+    availability: options.availability === 'all' ? 'all' : 'any',
   };
   const sections = [];
 
   if (catalog.walls.length) {
     sections.push({ kind: 'walls', targets: decorateTargets(catalog.walls, decoratorOptions) });
+  }
+  if (catalog.wallGroups.length) {
+    sections.push({ kind: 'wall-groups', targets: decorateTargets(catalog.wallGroups, decoratorOptions) });
   }
   if (catalog.groups.length) {
     sections.push({ kind: 'groups', targets: decorateTargets(catalog.groups, decoratorOptions) });
@@ -165,6 +181,7 @@ export function createTargetPickerModel(options = {}) {
     capability: options.capability || null,
     selection,
     allowOffline: decoratorOptions.allowOffline,
+    availability: decoratorOptions.availability,
     allowIndividualWallMembers: options.allowIndividualWallMembers === true,
     allowLiveProgram: options.allowLiveProgram === true,
     sections,
@@ -193,17 +210,22 @@ function layoutModeLabel(mode) {
 function disabledLabel(reason) {
   if (reason === 'unsupported') return t('mc.target_picker.unsupported');
   if (reason === 'offline') return t('mc.target_picker.unavailable');
+  if (reason === 'partial') return t('mc.target_picker.requires_all_online');
   return '';
 }
 
 function statusLabel(target) {
+  if (['wall', 'wall-group', 'group'].includes(target?.type)
+      && Number(target.onlineCount) > 0 && Number(target.onlineCount) < Number(target.memberCount)) {
+    return t('mc.target_picker.status_partial');
+  }
   return targetHasOnlineMember(target)
     ? t('mc.target_picker.status_online')
     : t('mc.target_picker.status_offline');
 }
 
 function targetMeta(target) {
-  if (target.type === 'wall') {
+  if (target.type === 'wall' || target.type === 'wall-group') {
     return t('mc.target_picker.wall_meta', {
       mode: layoutModeLabel(target.layoutMode),
       dimensions: target.dimensionsLabel,
@@ -226,7 +248,7 @@ function targetMeta(target) {
 }
 
 function renderMemberTopology(target) {
-  if (target.type !== 'wall' || !target.members?.length) return '';
+  if (!['wall', 'wall-group'].includes(target.type) || !target.members?.length) return '';
   const memberDescription = target.members
     .map((member) => `${member.name}: ${statusLabel(member)}`)
     .join('; ');
@@ -338,7 +360,7 @@ export function buildTargetSelectionResult(catalog, selectedTargets = []) {
     const target = findCatalogTarget(catalog, reference);
     if (!target) continue;
     seen.add(key);
-    references.push(reference);
+    references.push(targetReference(target));
     resolvedTargets.push(target);
   }
   const liveProgram = resolvedTargets.find((target) => target.type === 'live-program') || null;

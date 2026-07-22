@@ -126,8 +126,8 @@ function finalizeDownload({ db, contentDir, jobId }) {
   // call from double-inserting; if it didn't take, roll back the content insert.
   const tx = db.transaction(() => {
     db.prepare(`
-      INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size)
-      VALUES (@id, @user_id, @workspace_id, @filename, @filepath, @mime_type, @file_size)
+      INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, access_level)
+      VALUES (@id, @user_id, @workspace_id, @filename, @filepath, @mime_type, @file_size, 'private')
     `).run(row);
     const res = db.prepare('UPDATE download_jobs SET content_id = ?, local_path = ? WHERE id = ? AND content_id IS NULL')
       .run(row.id, filename, jobId);

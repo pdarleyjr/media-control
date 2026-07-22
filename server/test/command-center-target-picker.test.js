@@ -7,7 +7,7 @@ const source = fs.readFileSync(path.join(__dirname, '../../frontend/js/views/med
 
 test('Command Center view picker uses authoritative wall and standalone topology', () => {
   assert.match(source, /openAuthoritativeTargetPicker\(\{/);
-  assert.match(source, /waitForTargetCatalog\(\{ includeVirtualDisplays: false \}\)/);
+  assert.match(source, /waitForTargetCatalog\(\{ includeVirtualDisplays: false \}, \{ requireFresh: true \}\)/);
   assert.match(source, /selection: 'single'/);
   assert.match(source, /allowIndividualWallMembers: false/);
   assert.match(source, /allowLiveProgram: false/);
@@ -19,4 +19,3 @@ test('Command Center screen share preselects a logical wall without exposing mem
   assert.doesNotMatch(source, /mc\.cc\.share\.member/);
   assert.doesNotMatch(source, /pickOptionDialog/);
 });
-

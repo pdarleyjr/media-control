@@ -44,6 +44,13 @@ function roomSnapshot() {
           name: 'Primary Wall',
           layoutMode: 'span',
           layoutRevision: 9,
+          layout: {
+            preset: 'span-left-right',
+            groups: [
+              { id: 'span-left', name: 'Left span', layout: 'span', member_ids: ['primary-left', 'primary-center'] },
+              { id: 'span-right', name: 'Right solo', layout: 'solo', member_ids: ['primary-right'] },
+            ],
+          },
           gridColumns: 3,
           gridRows: 1,
           members: [
@@ -119,6 +126,24 @@ test('catalog exposes stored groups and only truly standalone physical displays'
     catalog.standaloneDisplays[0].topologyLabel,
     'Podium Confidence · standalone display · online · 1920 × 1080',
   );
+});
+
+test('catalog exposes active wall layout groups as distinct revisioned targets', async () => {
+  const { buildTargetCatalog, expandTargetToDeviceIds } = await loadCatalogModule();
+  const catalog = buildTargetCatalog(roomSnapshot());
+
+  assert.deepEqual(catalog.wallGroups.map((group) => group.id), [
+    'primary-wall:span-left',
+    'primary-wall:span-right',
+  ]);
+  assert.equal(catalog.wallGroups[0].type, 'wall-group');
+  assert.equal(catalog.wallGroups[0].wallId, 'primary-wall');
+  assert.equal(catalog.wallGroups[0].layoutRevision, 9);
+  assert.equal(catalog.wallGroups[0].preset, 'span-left-right');
+  assert.deepEqual(catalog.wallGroups[0].dimensions, { width: 7680, height: 2160 });
+  assert.deepEqual(expandTargetToDeviceIds('wall-group:primary-wall:span-left', catalog), [
+    'primary-left', 'primary-center',
+  ]);
 });
 
 test('live stream program is separate and its virtual display is excluded by default', async () => {

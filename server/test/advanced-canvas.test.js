@@ -111,6 +111,7 @@ test('normalizeSceneLayers clamps coordinates and resolves local media and playl
       endpointId: `${prefix}endpoint`,
       canvasAssetSecret: 'test-canvas-secret',
       assertRemoteUrlSafe: async () => ({ ok: true }),
+      contentContext: { userId, userRole: 'platform_admin', isPlatformAdmin: true },
     });
 
     assert.equal(layers[0].x, 0);

@@ -10,7 +10,7 @@ test('Nextcloud can import content for an advanced canvas without legacy display
     'utf8'
   );
 
-  assert.match(route, /import_only !== true && \(!Array\.isArray\(device_ids\)/);
+  assert.match(route, /import_only !== true && legacyIds\.length === 0 && typedRefs\.length === 0/);
   assert.match(route, /imported: true/);
   assert.match(view, /api\.files\.importForCanvas\(path\)/);
   assert.match(view, /routeSourceToAdvancedCanvas\(\{ content_id: imported\.content_id \}, label\)/);

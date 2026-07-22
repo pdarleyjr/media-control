@@ -9,7 +9,7 @@ const source = fs.readFileSync(
 );
 
 test('screen share targets come from the authoritative catalog, not racing device and wall endpoints', () => {
-  assert.match(source, /waitForTargetCatalog\(\{ includeVirtualDisplays: false \}\)/);
+  assert.match(source, /waitForTargetCatalog\(\{ includeVirtualDisplays: false \}, \{ requireFresh: true \}\)/);
   assert.doesNotMatch(source, /apiGet\('\/api\/(?:devices|walls)'\)/);
   assert.match(source, /catalog\.standaloneDisplays/);
 });
@@ -33,4 +33,3 @@ test('screen share wall tiles use snapshot viewport geometry without a hardcoded
   assert.match(source, /m\.viewport\.height/);
   assert.doesNotMatch(source, /1280\s*[x×]\s*720/i);
 });
-

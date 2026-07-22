@@ -54,6 +54,13 @@ function snapshot() {
         name: 'Primary Wall',
         layoutMode: 'span',
         layoutRevision: 88,
+        layout: {
+          preset: 'span-left-right',
+          groups: [
+            { id: 'span-left', name: 'Left span', layout: 'span', member_ids: ['tv-1', 'tv-2'] },
+            { id: 'span-right', name: 'Right solo', layout: 'solo', member_ids: ['tv-3'] },
+          ],
+        },
         members: [
           { deviceId: 'tv-1', viewport: { x: 0, y: 0, width: 1920, height: 1080 } },
           { deviceId: 'tv-2', viewport: { x: 1920, y: 0, width: 2560, height: 1440 } },
@@ -116,6 +123,30 @@ test('wall members are hidden by default and become individually addressable onl
     serviceMode.sections.find((section) => section.kind === 'wall-members').targets.map((item) => item.target.id),
     ['tv-1', 'tv-2', 'tv-3'],
   );
+});
+
+test('active wall layout groups appear as accurate typed revisioned choices', async () => {
+  const { createTargetPickerModel, buildTargetSelectionResult } = await loadPickerModule();
+  const model = createTargetPickerModel({ snapshot: snapshot(), allowOffline: true });
+  const groups = model.sections.find((section) => section.kind === 'wall-groups').targets;
+  assert.deepEqual(groups.map((item) => item.target.name), [
+    'Primary Wall · Left span',
+    'Primary Wall · Right solo',
+  ]);
+  const result = buildTargetSelectionResult(model.catalog, ['wall-group:primary-wall:span-left']);
+  assert.deepEqual(result.references, [{
+    type: 'wall-group', id: 'primary-wall:span-left', wall_id: 'primary-wall',
+    group_id: 'span-left', layout_revision: 88,
+  }]);
+  assert.deepEqual(result.deviceIds, ['tv-1', 'tv-2']);
+});
+
+test('all-member operations label partial targets and disable them', async () => {
+  const { createTargetPickerModel, renderTargetPickerContent } = await loadPickerModule();
+  const model = createTargetPickerModel({ snapshot: snapshot(), availability: 'all', allowOffline: false });
+  const wall = model.sections.find((section) => section.kind === 'walls').targets[0];
+  assert.equal(wall.disabledReason, 'partial');
+  assert.match(renderTargetPickerContent(model), /mc\.target_picker\.status_partial/);
 });
 
 test('single selection renders a shared radio group and retains only the first valid initial destination', async () => {
@@ -181,7 +212,7 @@ test('selection results are typed, deduplicated and keep live output separate fr
   ]);
 
   assert.deepEqual(result.references, [
-    { type: 'wall', id: 'primary-wall' },
+    { type: 'wall', id: 'primary-wall', layout_revision: 88 },
     { type: 'display', id: 'tv-1' },
     { type: 'live-program', id: 'live-stream-program-main' },
   ]);

@@ -28,6 +28,7 @@ const { db } = require('../db/database');
 const { ensureDevicePlaylist } = require('../lib/wall-playlists');
 const { parseStoredLayout, groupForDevice } = require('../lib/wall-layout');
 const whiteboardState = require('./whiteboard-state');
+const { contentUseDecision } = require('../lib/content-visibility');
 
 // Mirror routes/playlists.js + routes/assignments.js snapshot select so the
 // published snapshot the player consumes carries the same denormalized shape.
@@ -86,8 +87,8 @@ function resolveRemoteUrlContent(remoteUrl, workspaceId, userId) {
   let filename;
   try { filename = new URL(remoteUrl).hostname || 'remote'; } catch { filename = 'remote'; }
   db.prepare(`
-    INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, remote_url)
-    VALUES (?, ?, ?, ?, '', ?, 0, ?)
+    INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, remote_url, access_level)
+    VALUES (?, ?, ?, ?, '', ?, 0, ?, 'private')
   `).run(id, userId || null, workspaceId || null, filename, mimeType, remoteUrl);
   return id;
 }
@@ -203,7 +204,7 @@ function fanOutPlaylistToPlaybackScope(io, deviceId, playlistId, { singleScreenO
 // content/remote   -> replace the device's own auto-playlist with one item,
 //                     publish it, point devices.playlist_id at it.
 function pushSourceToDevice(io, deviceId, source, opts = {}) {
-  const { workspaceId = null, userId = null, targetDeviceIds = null } = opts;
+  const { workspaceId = null, userId = null, targetDeviceIds = null, contentContext = null } = opts;
   try {
     const device = db.prepare('SELECT id, workspace_id, user_id FROM devices WHERE id = ?').get(deviceId);
     if (!device) return false;
@@ -215,6 +216,17 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
       // Tenancy guard: playlist must be in the device's workspace (or a
       // platform template with no workspace_id).
       if (pl.workspace_id && device.workspace_id && pl.workspace_id !== device.workspace_id) return false;
+      const playlistContent = db.prepare(`
+        SELECT DISTINCT content_id FROM playlist_items
+        WHERE playlist_id = ? AND content_id IS NOT NULL
+      `).all(source.playlist_id);
+      const callerContext = { ...(contentContext || {}), userId: contentContext?.userId || userId };
+      if (playlistContent.some((item) => !contentUseDecision(
+        db,
+        item.content_id,
+        device.workspace_id || workspaceId,
+        callerContext,
+      ).allowed)) return false;
       db.prepare('UPDATE devices SET playlist_id = ? WHERE id = ?').run(source.playlist_id, deviceId);
       whiteboardState.clearForMedia(io, deviceId);
       pushPlaylistUpdate(io, deviceId);
@@ -230,9 +242,14 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
     if (!contentId) return false;
 
     // Tenancy guard for explicit content_id.
-    const content = db.prepare('SELECT id, workspace_id, mime_type, remote_url FROM content WHERE id = ?').get(contentId);
-    if (!content) return false;
-    if (content.workspace_id && device.workspace_id && content.workspace_id !== device.workspace_id) return false;
+    const decision = contentUseDecision(
+      db,
+      contentId,
+      device.workspace_id || workspaceId,
+      { ...(contentContext || {}), userId: contentContext?.userId || userId },
+    );
+    const content = decision.content;
+    if (!content || !decision.allowed) return false;
 
     const playlistId = ensureDevicePlaylist(deviceId, userId || device.user_id, {
       mutableDeviceIds: targetDeviceIds,
@@ -304,7 +321,7 @@ function resolveScene(activityId) {
 
 // Trigger a scene: loop placements, push each to its device. Returns a summary
 // { activityId, pushed, failed, total }.
-function triggerScene(io, activityId) {
+function triggerScene(io, activityId, contentContext = null) {
   const resolved = resolveScene(activityId);
   if (!resolved) return { activityId, pushed: 0, failed: 0, total: 0, found: false };
 
@@ -319,7 +336,11 @@ function triggerScene(io, activityId) {
       remote_url: p.remote_url,
       playlist_id: p.playlist_id,
       fit_mode: p.fit_mode,
-    }, { workspaceId: activity.workspace_id, userId: activity.created_by });
+    }, {
+      workspaceId: activity.workspace_id,
+      userId: contentContext?.userId || activity.created_by,
+      contentContext,
+    });
     if (ok) pushed++; else failed++;
   }
 

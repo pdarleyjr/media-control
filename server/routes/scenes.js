@@ -13,6 +13,7 @@ const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const { db } = require('../db/database');
 const sceneEngine = require('../services/scene-engine');
+const { contentUseDecision, contextFromRequest } = require('../lib/content-visibility');
 const { checkRemoteUrlShape } = require('../lib/ssrf-policy');
 
 // Deny writes for read-only members. Returns true if the caller may write in
@@ -177,6 +178,28 @@ router.put('/:id/placements', (req, res) => {
         return res.status(403).json({ error: `Device ${p.device_id} is not in this workspace` });
       }
     }
+    if (p.content_id) {
+      const decision = contentUseDecision(db, p.content_id, req.workspaceId, contextFromRequest(req));
+      if (!decision.content) return res.status(404).json({ error: `Content ${p.content_id} not found` });
+      if (!decision.allowed) return res.status(403).json({ error: decision.reason });
+    }
+    if (p.playlist_id) {
+      const playlist = db.prepare('SELECT workspace_id FROM playlists WHERE id = ?').get(p.playlist_id);
+      if (!playlist) return res.status(404).json({ error: `Playlist ${p.playlist_id} not found` });
+      if (playlist.workspace_id !== req.workspaceId) {
+        return res.status(403).json({ error: `Playlist ${p.playlist_id} is not in this workspace` });
+      }
+      const items = db.prepare(`SELECT DISTINCT content_id FROM playlist_items
+        WHERE playlist_id = ? AND content_id IS NOT NULL`).all(p.playlist_id);
+      if (items.some((item) => !contentUseDecision(
+        db,
+        item.content_id,
+        req.workspaceId,
+        contextFromRequest(req),
+      ).allowed)) {
+        return res.status(403).json({ error: `Playlist ${p.playlist_id} contains unavailable content` });
+      }
+    }
   }
 
   const insert = db.prepare(`
@@ -207,7 +230,7 @@ router.post('/:id/trigger', (req, res) => {
   const scene = loadScene(req, res);
   if (!scene) return;
   const io = req.app.get('io');
-  const result = sceneEngine.triggerScene(io, scene.id);
+  const result = sceneEngine.triggerScene(io, scene.id, contextFromRequest(req));
   res.json({ success: true, ...result });
 });
 

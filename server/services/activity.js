@@ -54,11 +54,13 @@ function logActivity(userId, action, details = null, deviceId = null, ipAddress 
       const d = db.prepare('SELECT workspace_id FROM devices WHERE id = ?').get(deviceId);
       ws = d?.workspace_id || null;
     }
-    db.prepare(
+    const result = db.prepare(
       'INSERT INTO activity_log (user_id, device_id, action, details, ip_address, workspace_id) VALUES (?, ?, ?, ?, ?, ?)'
     ).run(userId || null, deviceId || null, action, details || null, ipAddress || null, ws);
+    return result.lastInsertRowid;
   } catch (e) {
     console.error('Activity log error:', e.message);
+    return null;
   }
 }
 

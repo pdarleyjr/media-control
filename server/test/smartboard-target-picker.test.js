@@ -9,7 +9,7 @@ const source = fs.readFileSync(
 );
 
 test('Smartboard chooses one authoritative logical destination', () => {
-  assert.match(source, /waitForTargetCatalog\(\{ includeVirtualDisplays: false \}\)/);
+  assert.match(source, /waitForTargetCatalog\(\{ includeVirtualDisplays: false \}, \{ requireFresh: true \}\)/);
   assert.match(source, /openTargetPicker\(\{/);
   assert.match(source, /capability: 'whiteboard'/);
   assert.match(source, /selection: 'single'/);

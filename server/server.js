@@ -317,8 +317,9 @@ app.get('/api/live-stream/local/program-state', (req, res) => {
 // Advanced canvas media is private workspace content, so it cannot use the
 // presentation-only public asset route below. This endpoint accepts only an
 // HMAC-bound endpoint/content/workspace tuple generated while publishing the
-// scene. It exposes no device or user token and checks current DB ownership on
-// every request, so deleting an endpoint immediately revokes its asset URLs.
+// scene. It exposes no device or user token and checks the current layer plus
+// governed visibility on every request, so removing the layer, archiving the
+// content, or revoking its scope immediately invalidates old URLs.
 app.get('/player/canvas-asset/:endpointId/:contentId/:width/:height/:signature', async (req, res) => {
   const { db } = require('./db/database');
   const { verifyCanvasAsset } = require('./lib/canvas-asset-signature');
@@ -327,10 +328,14 @@ app.get('/player/canvas-asset/:endpointId/:contentId/:width/:height/:signature',
   ).get(req.params.endpointId);
   if (!endpoint) return res.status(404).type('text/plain').send('not found');
   const content = db.prepare(
-    'SELECT id, workspace_id, filepath, mime_type FROM content WHERE id = ?'
+    'SELECT id, workspace_id, filepath, mime_type, access_level, archived_at FROM content WHERE id = ?'
   ).get(req.params.contentId);
   if (!content || !content.filepath) return res.status(404).type('text/plain').send('not found');
-  if (content.workspace_id && content.workspace_id !== endpoint.workspace_id) {
+  const { visibilityAllowsWorkspace } = require('./lib/public-content-access');
+  const currentLayer = db.prepare(`SELECT 1 FROM advanced_canvas_layers
+    WHERE endpoint_id = ? AND source_json LIKE ? LIMIT 1`)
+    .get(endpoint.id, `%"content_id":"${content.id}"%`);
+  if (!currentLayer || !visibilityAllowsWorkspace(db, content, endpoint.workspace_id)) {
     return res.status(403).type('text/plain').send('forbidden');
   }
   if (!verifyCanvasAsset({
@@ -478,8 +483,10 @@ const { assertRemoteUrlSafe } = require('./lib/ssrf-policy');
 app.get('/player/site-shot/:id', async (req, res) => {
   try {
     const { db } = require('./db/database');
-    const c = db.prepare('SELECT id, remote_url, mime_type FROM content WHERE id = ?').get(req.params.id);
+    const c = db.prepare('SELECT * FROM content WHERE id = ?').get(req.params.id);
     if (!c || !c.remote_url) return res.status(404).type('text/plain').send('not found');
+    const { canServePublicContent } = require('./lib/public-content-access');
+    if (!canServePublicContent(db, c)) return res.status(403).type('text/plain').send('forbidden');
     if (c.mime_type !== 'text/html' || !isExternalHttpUrl(c.remote_url)) {
       return res.status(400).type('text/plain').send('not a website');
     }
@@ -719,9 +726,13 @@ app.get('/api/content/:id/file', (req, res) => {
   const { db } = require('./db/database');
   const content = db.prepare('SELECT * FROM content WHERE id = ?').get(req.params.id);
   if (!content) return res.status(404).json({ error: 'Content not found' });
+  if (content.archived_at != null) return res.status(410).json({ error: 'Content is archived' });
   if (!content.filepath) return res.status(404).json({ error: 'No file (remote URL content)' });
-  const nodeAuthorized = nodeRegistry.nodeHttpAuthOk(req);
-  if (!nodeAuthorized && !canServePublicContent(db, content)) return res.status(403).json({ error: 'Content not assigned to any playlist or widget' });
+  const nodeAuthorized = nodeRegistry.nodeHttpAuthOk(req)
+    && nodeRegistry.nodeCanAccessContent(db, content);
+  const { verifyContentAssetSignature } = require('./lib/content-asset-signature');
+  const signed = verifyContentAssetSignature(req.params.id, 'file', req.query, config.jwtSecret);
+  if (!nodeAuthorized && !signed && !canServePublicContent(db, content)) return res.status(403).json({ error: 'Content asset authorization required' });
   const safePath = path.resolve(config.contentDir, path.basename(content.filepath));
   if (!safePath.startsWith(path.resolve(config.contentDir))) return res.status(403).json({ error: 'Invalid path' });
   if (content.mime_type) res.setHeader('Content-Type', content.mime_type);
@@ -734,6 +745,14 @@ app.get('/api/content/:id/thumbnail', (req, res) => {
   const { db } = require('./db/database');
   const content = db.prepare('SELECT * FROM content WHERE id = ?').get(req.params.id);
   if (!content || !content.thumbnail_path) return res.status(404).json({ error: 'Thumbnail not found' });
+  if (content.archived_at != null) return res.status(410).json({ error: 'Content is archived' });
+  const { verifyContentAssetSignature } = require('./lib/content-asset-signature');
+  const nodeAuthorized = nodeRegistry.nodeHttpAuthOk(req)
+    && nodeRegistry.nodeCanAccessContent(db, content);
+  const signed = verifyContentAssetSignature(req.params.id, 'thumbnail', req.query, config.jwtSecret);
+  if (!nodeAuthorized && !signed && !canServePublicContent(db, content)) {
+    return res.status(403).json({ error: 'Content asset authorization required' });
+  }
   const safePath = path.resolve(config.contentDir, path.basename(content.thumbnail_path));
   if (!safePath.startsWith(path.resolve(config.contentDir))) return res.status(403).json({ error: 'Invalid path' });
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -965,6 +984,22 @@ app.get('/api/update/check', (req, res) => {
 // Serve uploaded content files directly (with CORS for web player canvas capture)
 // Long cache for media files — Cloudflare and browsers can cache these aggressively
 app.use('/uploads/content', (req, res, next) => {
+  const { db } = require('./db/database');
+  let filename;
+  try { filename = decodeURIComponent(req.path || '').replace(/^\/+/, ''); }
+  catch { return res.status(400).json({ error: 'Invalid content asset path' }); }
+  if (!filename || filename !== path.basename(filename)) {
+    return res.status(400).json({ error: 'Invalid content asset path' });
+  }
+  const rows = db.prepare(`SELECT * FROM content
+    WHERE filepath = ? OR thumbnail_path = ?`).all(filename, filename);
+  if (!rows.length) return res.status(404).json({ error: 'Content asset not found' });
+  const content = rows.find((row) => canServePublicContent(db, row));
+  const nodeContent = nodeRegistry.nodeHttpAuthOk(req)
+    && rows.find((row) => nodeRegistry.nodeCanAccessContent(db, row));
+  if (!nodeContent && !content) {
+    return res.status(403).json({ error: 'Raw content asset authorization required' });
+  }
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   res.setHeader('Cache-Control', 'public, max-age=2592000, immutable'); // 30 days

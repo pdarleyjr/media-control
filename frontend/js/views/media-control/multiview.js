@@ -30,6 +30,7 @@ import { t } from '../../i18n.js';
 import { showToast } from '../../components/toast.js';
 import { openTargetPicker } from '../../components/target-picker.js';
 import { waitForTargetCatalog } from '../../services/target-catalog-runtime.js';
+import { findCatalogTarget } from '../../services/target-catalog.js';
 import * as screenShareEngine from '../../services/screen-share-engine.js';
 
 // 4-left / 2-center / 4-right, in percent of the 16:9 canvas. MIRROR of SLOTS
@@ -730,12 +731,13 @@ function renderMonitor() {
 // geometry/status, hides wall members, and keeps Live Program out of this flow.
 async function pickDisplay() {
   try {
-    const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false });
+    const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false }, { requireFresh: true });
     return openTargetPicker({
       catalog,
       capability: 'screen_share',
       selection: 'single',
       allowOffline: false,
+      availability: 'all',
       allowIndividualWallMembers: false,
       allowLiveProgram: false,
     });
@@ -796,10 +798,36 @@ function frameShareTargets(target, frameRect) {
   }));
 }
 
+function targetMemberIds(target) {
+  const ids = target?.type === 'display'
+    ? [target.id]
+    : (target?.members || []).map((member) => member.id);
+  return [...new Set(ids.filter(Boolean).map(String))].sort();
+}
+
+function sameTargetTopology(selected, fresh) {
+  if (!selected || !fresh || selected.type !== fresh.type || String(selected.id) !== String(fresh.id)) return false;
+  if ((selected.type === 'wall' || selected.type === 'wall-group')
+      && Number(selected.layoutRevision) !== Number(fresh.layoutRevision)) return false;
+  return JSON.stringify(targetMemberIds(selected)) === JSON.stringify(targetMemberIds(fresh));
+}
+
 async function startShare(slotId) {
   const selection = await pickDisplay();
   if (!selection) return;
-  const target = selection.targets[0];
+  const selectedTarget = selection.targets[0];
+  let freshCatalog;
+  try {
+    freshCatalog = await waitForTargetCatalog({ includeVirtualDisplays: false }, { requireFresh: true });
+  } catch (error) {
+    showToast(error?.message || t('mc.mv.no_online_displays'), 'error');
+    return;
+  }
+  const target = findCatalogTarget(freshCatalog, selection.references[0]);
+  if (!sameTargetTopology(selectedTarget, target)) {
+    showToast('Display topology changed. Reopen the destination picker and try again.', 'error');
+    return;
+  }
   const r = cellRect(slotId);
   const entries = frameShareTargets(target, r);
   if (!entries.length) {

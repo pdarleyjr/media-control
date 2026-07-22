@@ -41,7 +41,7 @@ test('schedules uses the authoritative picker and preserves the one-device-or-gr
 test('device playlist copy replaces the numbered prompt with logical topology targets', () => {
   const view = source(deviceDetailPath);
 
-  assert.match(view, /waitForTargetCatalog\(\{ includeVirtualDisplays: false \}\)/);
+  assert.match(view, /waitForTargetCatalog\(\{ includeVirtualDisplays: false \}, \{ requireFresh: true \}\)/);
   assert.match(view, /openTargetPicker\(\{/);
   assert.match(view, /selection:\s*'single'/);
   assert.match(view, /allowIndividualWallMembers:\s*false/);

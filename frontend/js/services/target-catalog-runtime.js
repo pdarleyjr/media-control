@@ -30,16 +30,25 @@ export function createTargetCatalogRuntime(options = {}) {
 
   function wait(projectOptions = {}, waitOptions = {}) {
     const available = current(projectOptions);
-    if (available) {
+    const requireFresh = waitOptions.requireFresh === true;
+    if (available && !requireFresh) {
       requestSnapshot();
       return Promise.resolve(available);
     }
+
+    const baseline = store.getSnapshot();
+    const isAcceptable = (snapshot) => {
+      if (!snapshot) return false;
+      if (!requireFresh || !baseline) return true;
+      return Number(snapshot.revision) > Number(baseline.revision)
+        || Number(snapshot.serverTimestamp) > Number(baseline.serverTimestamp);
+    };
 
     const timeoutMs = Number.isFinite(Number(waitOptions.timeoutMs))
       ? Math.max(0, Number(waitOptions.timeoutMs))
       : DEFAULT_WAIT_MS;
 
-    requestSnapshot();
+    requestSnapshot(requireFresh ? { force: true } : undefined);
     return new Promise((resolve, reject) => {
       let settled = false;
       let unsubscribe = () => {};
@@ -54,12 +63,12 @@ export function createTargetCatalogRuntime(options = {}) {
       };
 
       unsubscribe = store.subscribe((snapshot) => {
-        if (snapshot) finish(resolve, project(snapshot, projectOptions));
+        if (isAcceptable(snapshot)) finish(resolve, project(snapshot, projectOptions));
       });
 
       // Close the subscribe/check race if a snapshot landed synchronously.
       const raced = current(projectOptions);
-      if (raced) {
+      if (raced && isAcceptable(store.getSnapshot())) {
         finish(resolve, raced);
         return;
       }
@@ -85,4 +94,3 @@ export function getCurrentTargetCatalog(options = {}) {
 export function waitForTargetCatalog(options = {}, waitOptions = {}) {
   return runtime.wait(options, waitOptions);
 }
-

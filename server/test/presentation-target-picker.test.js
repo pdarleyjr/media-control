@@ -9,7 +9,7 @@ const source = fs.readFileSync(
 );
 
 test('presentation action uses the authoritative topology picker', () => {
-  assert.match(source, /waitForTargetCatalog\(\{ includeVirtualDisplays: false \}\)/);
+  assert.match(source, /waitForTargetCatalog\(\{ includeVirtualDisplays: false \}, \{ requireFresh: true \}\)/);
   assert.match(source, /openTargetPicker\(\{/);
   assert.match(source, /allowIndividualWallMembers: false/);
   assert.doesNotMatch(source, /api\.getDevices\(\)/);
@@ -18,7 +18,7 @@ test('presentation action uses the authoritative topology picker', () => {
 test('presentation keeps Live Program separate and passes the explicit server gate', () => {
   assert.match(source, /allowLiveProgram: true/);
   assert.match(source, /include_live_stream: selection\.includesLiveProgram/);
-  assert.match(source, /device_ids: ids/);
+  assert.match(source, /const physicalTargets = selection\.references\.filter\(\(target\) => target\.type !== 'live-program'\)/);
+  assert.match(source, /physicalTargets\.length \? \{ targets: physicalTargets \} : \{ device_ids: ids \}/);
   assert.match(source, /presentation_id: pid/);
 });
-

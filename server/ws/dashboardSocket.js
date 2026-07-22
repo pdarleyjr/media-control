@@ -212,12 +212,16 @@ function mirrorTransportToLiveStream(deviceNs, deviceId, command) {
     if (roomWorkspaceId) socket.join(roomStateRoom(roomWorkspaceId, roomId));
     console.log(`Dashboard client connected: ${socket.id} (user: ${socket.userId}, rooms: ${wsIds.length})`);
 
-    function sendAuthoritativeRoomSnapshot() {
+    function sendAuthoritativeRoomSnapshot(minimumTimestamp = 0) {
       if (!socket.roomWorkspaceId) return null;
       const snapshot = createRoomSnapshot({
         workspaceId: socket.roomWorkspaceId,
         roomId: socket.roomId,
       });
+      snapshot.serverTimestamp = Math.max(
+        Number(snapshot.serverTimestamp) || 0,
+        (Number(minimumTimestamp) || 0) + 1,
+      );
       socket.emit('room:snapshot', snapshot);
       return snapshot;
     }
@@ -230,10 +234,14 @@ function mirrorTransportToLiveStream(deviceNs, deviceId, command) {
     socket.on('dashboard:room-resume', (data) => {
       if (!socket.roomWorkspaceId) return;
       const now = Date.now();
-      if (now - lastRoomResumeAt < 250) return;
+      if (data?.force !== true && now - lastRoomResumeAt < 250) return;
       lastRoomResumeAt = now;
       const currentRevision = getRoomRevision(db, socket.roomWorkspaceId, socket.roomId);
       const requestedRevision = Number(data?.revision);
+      if (data?.force === true) {
+        sendAuthoritativeRoomSnapshot(data?.snapshot_timestamp);
+        return;
+      }
       if (Number.isInteger(requestedRevision) && requestedRevision === currentRevision) {
         socket.emit('room:resumed', {
           schemaVersion: 1,
@@ -588,7 +596,21 @@ function mirrorTransportToLiveStream(deviceNs, deviceId, command) {
       }
       try {
         const sceneEngine = require('../services/scene-engine');
-        const result = sceneEngine.triggerScene(io, activityId);
+        const scene = db.prepare(`SELECT oa.workspace_id, w.organization_id
+          FROM operational_activities oa JOIN workspaces w ON w.id = oa.workspace_id
+          WHERE oa.id = ?`).get(activityId);
+        const access = scene && accessContext(socket.userId, socket.userRole, { id: scene.workspace_id, organization_id: scene.organization_id });
+        const orgMembership = scene && db.prepare(`SELECT role FROM organization_members
+          WHERE organization_id = ? AND user_id = ?`).get(scene.organization_id, socket.userId);
+        const result = sceneEngine.triggerScene(io, activityId, {
+          userId: socket.userId,
+          userRole: socket.userRole,
+          workspaceId: scene?.workspace_id || null,
+          organizationId: scene?.organization_id || null,
+          workspaceRole: access?.workspaceRole || null,
+          orgRole: orgMembership?.role || null,
+          isPlatformAdmin: ['platform_admin', 'superadmin'].includes(socket.userRole),
+        });
         console.log(`Scene triggered ${activityId}: pushed=${result.pushed}, failed=${result.failed}`);
         if (typeof ack === 'function') ack({ delivered: true, ...result });
         let sceneWs = null;

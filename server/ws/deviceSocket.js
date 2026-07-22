@@ -478,7 +478,7 @@ module.exports = function setupDeviceSocket(io) {
       console.log(`Node connected: ${nodeId} (${hsAuth.node_type || 'node'})`);
       socket.emit('node:joined', { node_id: nodeId });
       // Push the initial pre-warm manifest so the cache fills ahead of use.
-      try { socket.emit('node:sync-manifest', nodeRegistry.buildContentManifest(db)); } catch (_) {}
+      try { socket.emit('node:sync-manifest', nodeRegistry.buildContentManifest(db, { nodeId })); } catch (_) {}
       socket.on('node:heartbeat', (payload) => {
         let recorded = false;
         try { recorded = nodeRegistry.recordHeartbeat(db, nodeId, payload); } catch (_) {}
@@ -510,7 +510,7 @@ module.exports = function setupDeviceSocket(io) {
         } catch (_) {}
       });
       socket.on('node:request-manifest', () => {
-        try { socket.emit('node:sync-manifest', nodeRegistry.buildContentManifest(db)); } catch (_) {}
+        try { socket.emit('node:sync-manifest', nodeRegistry.buildContentManifest(db, { nodeId })); } catch (_) {}
       });
       socket.on('join', (data) => {
         try { if (data && data.room) socket.join(String(data.room)); } catch (_) {}

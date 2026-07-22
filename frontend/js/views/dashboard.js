@@ -525,7 +525,7 @@ const VALID_FIT_MODES = ['cover', 'contain', 'fill', 'none', 'scale-down'];
 async function openBroadcastPicker() {
   let selection;
   try {
-    const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false });
+    const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false }, { requireFresh: true });
     selection = await openTargetPicker({
       catalog,
       capability: 'content',
@@ -663,7 +663,7 @@ async function openBroadcastPicker() {
   sendBtn.addEventListener('click', async () => {
     const fitRaw = modal.querySelector('#bcFitMode').value;
     const fit_mode = VALID_FIT_MODES.includes(fitRaw) ? fitRaw : undefined;
-    const payload = { device_ids: ids };
+    const payload = { targets: selection.references };
     if (fit_mode) payload.fit_mode = fit_mode;
     if (activeTab === 'url') {
       const url = urlInput.value.trim();
