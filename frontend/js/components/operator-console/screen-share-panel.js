@@ -15,8 +15,10 @@ export function mountScreenSharePanel(host, { store, i18n, adapter, engine = nul
   host.setAttribute('aria-label', i18n ? i18n('mc.e.ss.aria') : 'Screen share');
 
   function diagnostics() {
-    if (api && typeof api.screenShare?.diagnostics === 'function') return api.screenShare.diagnostics(engine);
-    if (engine && typeof engine.getTargetDiagnostics === 'function') return engine.getTargetDiagnostics();
+    try {
+      if (api && typeof api.screenShare?.diagnostics === 'function') return api.screenShare.diagnostics(engine);
+      if (engine && typeof engine.getTargetDiagnostics === 'function') return engine.getTargetDiagnostics();
+    } catch { /* diagnostics unavailable — degrade to empty state */ }
     return null;
   }
 

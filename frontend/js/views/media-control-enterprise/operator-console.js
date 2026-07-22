@@ -13,7 +13,7 @@
 // store + socket adapter. This is a NEW view entry — it does not replace the
 // existing media-control.js view. A minimal navigation entry is documented in
 // the integration guide (not applied here).
-import { roomState } from '../../socket.js';
+import { roomState, on as socketOn, off as socketOff, sendCommand as socketSendCommand, selectTarget as socketSelectTarget, clearTarget as socketClearTarget, requestRoomSnapshot as socketRequestRoomSnapshot } from '../../socket.js';
 import { createOperatorStore } from '../../state/operator-store.js';
 import { createOperatorSocketAdapter } from '../../state/socket-adapter.js';
 import { enterpriseApi } from '../../state/enterprise-api.js';
@@ -220,9 +220,20 @@ function getSocketStub() {
 // console into the provided host (the #app container) and keep a module-level
 // handle so the router's cleanup/unmount contract can be wired at integration.
 let _active = null;
+function realSocketInterface() {
+  return {
+    roomStore: roomState,
+    on: socketOn,
+    off: socketOff,
+    sendCommand: socketSendCommand,
+    selectTarget: socketSelectTarget,
+    clearTarget: socketClearTarget,
+    requestRoomSnapshot: socketRequestRoomSnapshot,
+  };
+}
 export function render(host, ..._rest) {
   if (_active) { try { _active.destroy(); } catch {} }
-  _active = mountOperatorConsole(host, {});
+  _active = mountOperatorConsole(host, { socket: realSocketInterface() });
   return _active;
 }
 
