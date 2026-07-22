@@ -31,11 +31,20 @@ COPY --from=deps /app/server/node_modules ./server/node_modules
 ARG CACHEBUST=dev
 RUN echo "cachebust=$CACHEBUST"
 ARG GIT_COMMIT=unknown
+ARG GIT_TREE=unknown
 ARG GIT_BRANCH=unknown
 ARG BUILD_TIMESTAMP=unknown
-ENV GIT_COMMIT=$GIT_COMMIT
-ENV GIT_BRANCH=$GIT_BRANCH
-ENV BUILD_TIMESTAMP=$BUILD_TIMESTAMP
+ARG BUILD_ID=unknown
+ARG IMAGE_TAG=unknown
+ENV GIT_COMMIT=$GIT_COMMIT \
+    GIT_TREE=$GIT_TREE \
+    GIT_BRANCH=$GIT_BRANCH \
+    BUILD_TIMESTAMP=$BUILD_TIMESTAMP \
+    BUILD_ID=$BUILD_ID \
+    IMAGE_TAG=$IMAGE_TAG
+LABEL org.opencontainers.image.revision=$GIT_COMMIT \
+      org.opencontainers.image.source="https://github.com/pdarleyjr/media-control" \
+      org.opencontainers.image.title="media-control"
 COPY server ./server
 COPY frontend ./frontend
 COPY scripts ./scripts

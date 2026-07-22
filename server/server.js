@@ -906,15 +906,35 @@ updateFrontendHash();
 // Recheck every 30 seconds
 setInterval(updateFrontendHash, 30000);
 app.get('/api/version', (req, res) => {
-  let version = '1.2.0';
-  try { version = fs.readFileSync(path.join(__dirname, '..', 'VERSION'), 'utf8').trim(); } catch {}
-  res.json({ hash: frontendHash, version, player_hash: playerHash, contract_version: 1 });
+  // Identity for soft-reload clients + deploy provenance. Must never be cacheable
+  // across releases (Cloudflare / browsers / intermediaries).
+  res.setHeader('Cache-Control', 'no-store, private');
+  const { buildSystemVersion } = require('./lib/system-version');
+  let db = null;
+  try { db = require('./db/database').db; } catch (_) { db = null; }
+  const body = buildSystemVersion({ db, frontendHash, playerHash });
+  // Preserve historic field names used by App / player / SW caches.
+  res.json({
+    hash: body.hash,
+    version: body.version,
+    player_hash: body.player_hash,
+    contract_version: body.contract_version,
+    git_commit: body.git_commit,
+    git_tree: body.git_tree,
+    build_id: body.build_id,
+    build_timestamp: body.build_timestamp,
+    image_digest: body.image_digest,
+    image_tag: body.image_tag,
+    branch: body.branch,
+    frontend_bundle_hash: body.frontend_bundle_hash,
+    player_bundle_hash: body.player_bundle_hash,
+  });
 });
 
 app.get('/api/system/version', (req, res) => {
   const { buildSystemVersion } = require('./lib/system-version');
   const { db } = require('./db/database');
-  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Cache-Control', 'no-store, private');
   res.json(buildSystemVersion({ db, frontendHash, playerHash }));
 });
 
