@@ -1,13 +1,13 @@
 # Dockerfile — Media Control (derived from Screen Tinker, MIT)
 # Build context = repo root. Two-stage: compile native deps (better-sqlite3,
 # sharp/libvips) then a slim runtime with ffmpeg/yt-dlp/poppler for media.
-FROM node:22-alpine AS deps
+FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 AS deps
 RUN apk add --no-cache python3 make g++ vips-dev pkgconfig
 WORKDIR /app/server
 COPY server/package.json server/package-lock.json* ./
 RUN npm ci --omit=dev --no-audit --no-fund
 
-FROM node:22-alpine
+FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2
 # poppler-utils: PDF page-1 -> image (pdftoppm) for PDF thumbnails.
 # libreoffice + fonts: headless office->PDF so PowerPoint/Word/Excel/ODF uploads
 #   (incl. exports with no embedded preview, e.g. Gamma) get a real slide/page
