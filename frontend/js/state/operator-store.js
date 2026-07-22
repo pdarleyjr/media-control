@@ -51,6 +51,37 @@ function indexPendingCommands(commands) {
   return byTarget;
 }
 
+// Derive classroom audio state from the room snapshot (task §9, audio-state-contract.md).
+// Returns a normalized projection or null when the backend contract is absent
+// (Resolution C: UI shows "audio state unavailable" and disables audio controls).
+function deriveAudioState(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const ca = raw.classroom_audio || raw.classroomAudio || null;
+  const pa = raw.program_audio || raw.programAudio || null;
+  if (!ca && !pa) return null;
+  return {
+    classroomAudio: ca ? {
+      status: ca.status || 'unconfirmed',
+      rendererDeviceId: ca.renderer_device_id ?? ca.rendererDeviceId ?? null,
+      rendererName: ca.renderer_name ?? ca.rendererName ?? null,
+      outputEndpoint: ca.output_endpoint ?? ca.outputEndpoint ?? null,
+      muted: !!ca.muted,
+      volume: typeof ca.volume === 'number' ? ca.volume : null,
+      trackPresent: ca.track_present ?? ca.trackPresent ?? null,
+      autoplayBlocked: !!ca.autoplay_blocked || !!ca.autoplayBlocked,
+      lastConfirmedAt: ca.last_confirmed_at ?? ca.lastConfirmedAt ?? null,
+    } : null,
+    programAudio: pa ? {
+      roomMicActive: !!pa.room_mic_active || !!pa.roomMicActive,
+      contentAudioActive: !!pa.content_audio_active || !!pa.contentAudioActive,
+      screenShareAudioActive: !!pa.screen_share_audio_active || !!pa.screenShareAudioActive,
+      duckingActive: !!pa.ducking_active || !!pa.duckingActive,
+      recordingTrackActive: !!pa.recording_track_active || !!pa.recordingTrackActive,
+      streamTrackActive: !!pa.stream_track_active || !!pa.streamTrackActive,
+    } : null,
+  };
+}
+
 export function createOperatorStore(options = {}) {
   const roomStore = options.roomStore;
   const staleToleranceMs = options.staleToleranceMs ?? DEFAULT_STALE_TOLERANCE_MS;
@@ -159,7 +190,10 @@ export function createOperatorStore(options = {}) {
       : null;
 
     const classroomProgram = snapshot.classroomProgram
-      ? { targets: asArray(snapshot.classroomProgram.targets) }
+      ? {
+          targets: asArray(snapshot.classroomProgram.targets),
+          audioState: deriveAudioState(snapshot.classroomProgram.audioState),
+        }
       : null;
 
     const aggregateState = highestState([

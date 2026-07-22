@@ -20,6 +20,52 @@ function displayCard(display, i18n) {
   </li>`;
 }
 
+// Audio status block (task §9). Displays CONFIRMED/PENDING/FAILED/STALE/UNAVAILABLE
+// based on the real audio-state contract from the room snapshot. When the contract
+// is absent, shows "audio state unavailable" and disables audio controls.
+function audioStatusBlock(audioState, stale, i18n) {
+  const L = (k, fallback) => esc(i18n ? i18n(k) : fallback);
+  if (!audioState) {
+    return `<div class="mc-e-ro-audio mc-e-ro-audio-unavailable" role="status">
+      <span class="mc-e-ro-audio-label">${L('mc.e.audio.label', 'Classroom audio')}</span>
+      <span class="mc-e-ro-audio-unavailable-reason">${L('mc.e.audio.unavailable', 'Audio state unavailable — controls disabled')}</span>
+    </div>`;
+  }
+  const ca = audioState.classroomAudio;
+  if (!ca) {
+    return `<div class="mc-e-ro-audio mc-e-ro-audio-unavailable" role="status">
+      <span class="mc-e-ro-audio-label">${L('mc.e.audio.label', 'Classroom audio')}</span>
+      <span class="mc-e-ro-audio-unavailable-reason">${L('mc.e.audio.unavailable', 'Audio state unavailable — controls disabled')}</span>
+    </div>`;
+  }
+  // Map audio status to display state
+  let stateClass = 'mc-e-audio-confirmed';
+  let stateText = L('mc.e.audio.confirmed', 'Confirmed');
+  let details = [];
+  if (stale || (ca.lastConfirmedAt && Date.now() - new Date(ca.lastConfirmedAt).getTime() > 60000)) {
+    stateClass = 'mc-e-audio-stale';
+    stateText = L('mc.e.audio.stale', 'Stale');
+  } else if (ca.status === 'error') {
+    stateClass = 'mc-e-audio-error';
+    stateText = L('mc.e.audio.error', 'Error');
+  } else if (ca.status === 'unconfirmed') {
+    stateClass = 'mc-e-audio-unconfirmed';
+    stateText = L('mc.e.audio.unconfirmed', 'Unconfirmed');
+  }
+  if (ca.muted) details.push(L('mc.e.audio.muted', 'Muted'));
+  if (ca.volume != null) details.push(`${L('mc.e.audio.volume', 'Volume')}: ${Math.round(ca.volume * 100)}%`);
+  if (ca.trackPresent === false) details.push(L('mc.e.audio.no_track', 'No audio track received'));
+  if (ca.autoplayBlocked) details.push(L('mc.e.audio.autoplay_blocked', 'Browser blocked audio'));
+  if (!ca.rendererName && ca.status === 'error') details.push(L('mc.e.audio.classroom_unavailable', 'Classroom output unavailable'));
+  const detailStr = details.length ? `<span class="mc-e-ro-audio-details">${details.join(' · ')}</span>` : '';
+  return `<div class="mc-e-ro-audio ${stateClass}" role="status" data-audio-status="${esc(ca.status)}">
+    <span class="mc-e-ro-audio-label">${L('mc.e.audio.label', 'Classroom audio')}</span>
+    <span class="mc-e-ro-audio-state">${stateText}</span>
+    ${ca.rendererName ? `<span class="mc-e-ro-audio-renderer">${esc(ca.rendererName)}</span>` : ''}
+    ${detailStr}
+  </div>`;
+}
+
 export function mountRoomOverview(host, { store, i18n }) {
   if (!host) throw new Error('mountRoomOverview requires a host element');
   if (!store || typeof store.subscribe !== 'function') throw new Error('mountRoomOverview requires the operator store');
@@ -60,6 +106,7 @@ export function mountRoomOverview(host, { store, i18n }) {
       <ul class="mc-e-ro-map" aria-label="${esc(i18n ? i18n('mc.e.overview.map_label') : 'Display map')}">
         ${displays.map((d) => displayCard(d, i18n)).join('') || `<li class="mc-e-ro-empty">${esc(i18n ? i18n('mc.e.overview.no_displays') : 'No displays')}</li>`}
       </ul>
+      ${audioStatusBlock(state.classroomProgram?.audioState, state.stale, i18n)}
       <footer class="mc-e-ro-footer">
         <span class="mc-e-ro-classroom">${esc(i18n ? i18n('mc.e.overview.classroom_program') : 'Classroom program')}: ${state.classroomProgram ? esc(String(state.classroomProgram.targets?.length ?? 0)) : '—'}</span>
         ${live}
