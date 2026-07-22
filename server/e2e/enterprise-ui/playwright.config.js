@@ -7,7 +7,13 @@ module.exports = defineConfig({
   testDir: './tests',
   timeout: 30000,
   expect: { timeout: 10000 },
-  use: { headless: true, viewport: { width: 1440, height: 900 } },
+  fullyParallel: false,
+  workers: 1,
+  use: {
+    headless: true,
+    baseURL: 'http://127.0.0.1:4321',
+    viewport: { width: 1440, height: 900 },
+  },
   projects: [
     { name: 'podium', use: { viewport: { width: 1280, height: 800 } } },
     { name: 'handheld-admin', use: { viewport: { width: 480, height: 800 } } },
