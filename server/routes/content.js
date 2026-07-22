@@ -11,7 +11,7 @@ const { sanitizeString } = require('../middleware/sanitize');
 const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
 // Phase 2.2b: workspace-aware access. Mirrors the pattern from devices.js.
 const { accessContext } = require('../lib/tenancy');
-const { ownedContentScope } = require('../lib/content-scope');
+const { libraryContentScope } = require('../lib/content-scope');
 const { contentRowsWithThumbnailUrls } = require('../lib/content-response');
 const { checkRemoteUrlShape, assertRemoteUrlSafe } = require('../lib/ssrf-policy');
 const { isDocThumbnailMime, kickDocThumbnail } = require('../lib/doc-thumbnail');
@@ -60,7 +60,7 @@ router.get('/', (req, res) => {
   if (!req.workspaceId) return res.json([]);
   const folder = req.query.folder;
   const folderId = req.query.folder_id;
-  const scope = ownedContentScope(req.workspaceId, req.user.id);
+  const scope = libraryContentScope(req.workspaceId, req.user.id);
   let sql = `SELECT * FROM content WHERE ${scope.clause}`;
   const params = [...scope.params];
   if (folder) { sql += ' AND folder = ?'; params.push(folder); }
@@ -81,7 +81,7 @@ router.get('/', (req, res) => {
 // Get folders list for the caller's current workspace.
 router.get('/folders', (req, res) => {
   if (!req.workspaceId) return res.json([]);
-  const scope = ownedContentScope(req.workspaceId, req.user.id);
+  const scope = libraryContentScope(req.workspaceId, req.user.id);
   const folders = db.prepare(
     `SELECT folder, COUNT(*) as count FROM content WHERE folder IS NOT NULL AND ${scope.clause} GROUP BY folder ORDER BY folder`
   ).all(...scope.params);

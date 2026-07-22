@@ -740,6 +740,15 @@ app.get('/api/content/:id/thumbnail', (req, res) => {
   res.sendFile(safePath);
 });
 
+// PeerTube replay media is never represented by an HTML watch page mislabeled
+// as video/mp4. This adapter fetches the actual private media file server-side
+// with the PeerTube bearer token and forwards byte ranges. Unauthenticated
+// display access is allowed only while the linked content is part of a
+// published playlist/widget payload, matching local content-file policy.
+const { publicPlayback: servePeerTubePlayback } = require('./routes/peertube-playback');
+app.get('/api/peertube-replays/:id/playback', servePeerTubePlayback);
+app.head('/api/peertube-replays/:id/playback', servePeerTubePlayback);
+
 // Protected API Routes.
 // Phase 2.1: resolveTenancy runs right after requireAuth on every resource
 // route. It attaches req.workspaceId, req.workspaceRole, req.orgRole,
@@ -1115,7 +1124,7 @@ server.listen(listenPort, '0.0.0.0', () => {
   `);
   // PeerTube replay → Media Control discovery worker. Inert unless
   // PEERTUBE_REPLAY_ENABLED + API credentials are set in env.
-  try { require('./services/peertube-replay').start(); } catch (e) { console.warn('[peertube-replay] start failed:', e.message); }
+  try { require('./services/peertube-replay').start({ io }); } catch (e) { console.warn('[peertube-replay] start failed:', e.message); }
   // Self-heal any video that isn't yet a browser-safe MP4 (e.g. a transcode that
   // a previous deploy/restart killed mid-flight). Deferred + single-flight so it
   // never blocks startup or stacks ffmpeg processes. Non-fatal.

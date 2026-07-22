@@ -342,6 +342,31 @@ export const api = {
     refresh: () => request('/live-stream/refresh', { method: 'POST' }),
   },
 
+  // PeerTube post-class recording review and publication workflow.
+  peertubeReplays: {
+    list: () => request('/peertube-replays'),
+    pending: () => request('/peertube-replays/pending'),
+    health: () => request('/peertube-replays/health'),
+    playbackGrant: (id, download = false) => request(`/peertube-replays/${encodeURIComponent(id)}/playback-grant`, {
+      method: 'POST', body: JSON.stringify({ download: download === true }),
+    }),
+    add: (id, visibility, title) => request(`/peertube-replays/${encodeURIComponent(id)}/add`, {
+      method: 'POST', body: JSON.stringify({ visibility, title }),
+    }),
+    discard: (id) => request(`/peertube-replays/${encodeURIComponent(id)}/discard`, { method: 'POST' }),
+    retry: (id) => request(`/peertube-replays/${encodeURIComponent(id)}/retry`, { method: 'POST' }),
+    archive: (id) => request(`/peertube-replays/${encodeURIComponent(id)}/archive`, { method: 'POST' }),
+    visibility: (id, visibility) => request(`/peertube-replays/${encodeURIComponent(id)}/visibility`, {
+      method: 'PATCH', body: JSON.stringify({ visibility }),
+    }),
+    visibilityRequest: (id) => request(`/peertube-replays/${encodeURIComponent(id)}/visibility-request`, {
+      method: 'POST', body: JSON.stringify({ visibility: 'ORGANIZATION_SHARED' }),
+    }),
+    approveOrganization: (id) => request(`/peertube-replays/${encodeURIComponent(id)}/organization-publication/approve`, {
+      method: 'POST',
+    }),
+  },
+
   // ==================== MBFD Media Control Studio: Presentations ====================
   presentations: {
     list: () => request('/presentations'),

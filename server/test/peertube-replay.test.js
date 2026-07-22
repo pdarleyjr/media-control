@@ -1,175 +1,226 @@
+'use strict';
+
 const assert = require('node:assert/strict');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const test = require('node:test');
 
-// Isolated temp DB so this test never touches the real one. Set BEFORE
-// requiring anything that opens the database.
 const tempBase = process.env.KILO_TEMP || path.join(os.tmpdir(), 'kilo');
 fs.mkdirSync(tempBase, { recursive: true });
-const dbDir = fs.mkdtempSync(path.join(tempBase, 'mc-peertube-db-'));
+const dbDir = fs.mkdtempSync(path.join(tempBase, 'mc-peertube-v2-db-'));
 process.env.DB_PATH = path.join(dbDir, 'test.db');
 
-const svc = require('../services/peertube-replay');
 const { db } = require('../db/database');
+const svc = require('../services/peertube-replay');
+const { VISIBILITY } = require('../lib/peertube-replay-permissions');
 
 process.on('exit', () => {
+  try { svc.stop(); } catch {}
   try { db.close(); } catch {}
   fs.rmSync(dbDir, { recursive: true, force: true });
 });
 
 const READY_VIDEO = {
-  uuid: 'vid-ready-001', id: 101, name: 'Classroom Replay 1',
-  description: 'desc', duration: 1800, isLive: false,
-  state: { id: 5, label: 'Published' }, privacy: 1,
-  thumbnailPath: '/static/thumbnails/101.jpg', path: '/w/vid-ready-001',
+  uuid: 'vid-ready-001',
+  id: 101,
+  name: 'Classroom Replay 1',
+  description: 'desc',
+  duration: 1800,
+  isLive: false,
+  state: { id: 5, label: 'Published' },
+  privacy: 3,
+  tags: ['rec:session-ws1'],
+  thumbnailPath: '/static/thumbnails/101.jpg',
+  path: '/w/vid-ready-001',
+  files: [{ fileUrl: 'https://peertube.example.test/static/web-videos/vid-ready-001.mp4' }],
 };
 
 const PROCESSING_VIDEO = {
-  uuid: 'vid-proc-002', id: 102, name: 'Classroom Replay 2', isLive: false,
-  state: { id: 3, label: 'To transcode' }, privacy: 1, duration: 600,
+  uuid: 'vid-processing-002',
+  id: 102,
+  name: 'Classroom Replay 2',
+  duration: 600,
+  isLive: false,
+  state: { id: 3, label: 'To transcode' },
+  privacy: 1,
+  tags: ['rec:session-ws1-processing'],
 };
 
-const LIVE_VIDEO = { uuid: 'vid-live-003', id: 103, isLive: true, state: { id: 1 }, privacy: 1, name: 'live' };
+test.before(() => {
+  db.prepare("INSERT OR IGNORE INTO users (id, email, name, role, plan_id) VALUES (?, ?, ?, 'user', 'enterprise')")
+    .run('u1', 'u1@mbfd.test', 'Instructor One');
+  db.prepare("INSERT OR IGNORE INTO users (id, email, name, role, plan_id) VALUES (?, ?, ?, 'user', 'enterprise')")
+    .run('u2', 'u2@mbfd.test', 'Instructor Two');
+  db.prepare('INSERT OR IGNORE INTO organizations (id, name, owner_user_id) VALUES (?, ?, ?)').run('org1', 'Org One', 'u1');
+  db.prepare('INSERT OR IGNORE INTO organizations (id, name, owner_user_id) VALUES (?, ?, ?)').run('org2', 'Org Two', 'u2');
+  db.prepare('INSERT OR IGNORE INTO workspaces (id, organization_id, name) VALUES (?, ?, ?)').run('ws1', 'org1', 'Workspace One');
+  db.prepare('INSERT OR IGNORE INTO workspaces (id, organization_id, name) VALUES (?, ?, ?)').run('ws2', 'org2', 'Workspace Two');
 
-test('migration created the peertube_replays table', () => {
-  const row = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='peertube_replays'").get();
-  assert.ok(row, 'peertube_replays table exists');
+  svc.registerRecordingSession({
+    id: 'session-ws1', workspaceId: 'ws1', instructorUserId: 'u1',
+    title: 'Classroom Replay 1', roomId: 'classroom-1', streamSessionId: 'stream-ws1', startedAt: 1000, endedAt: 2000,
+  });
+  svc.registerRecordingSession({
+    id: 'session-ws1-processing', workspaceId: 'ws1', instructorUserId: 'u1',
+    title: 'Classroom Replay 2', roomId: 'classroom-1', obsRecordingId: 'obs-002', startedAt: 3000, endedAt: 4000,
+  });
+  svc.registerRecordingSession({
+    id: 'session-ws2', workspaceId: 'ws2', instructorUserId: 'u2',
+    title: 'Other Tenant Recording', roomId: 'classroom-2', expectedReplayUuid: 'vid-ws2-003', startedAt: 5000, endedAt: 6000,
+  });
 });
 
-// Seed a user + workspace so content FKs (user_id → users, workspace_id →
-// workspaces) hold for the add-to-media-control tests. Conditional on the
-// multitenancy migration having created workspaces.
-test('seed user + workspace for content FKs', () => {
-  db.prepare(`INSERT OR IGNORE INTO users (id, email, name, role, plan_id) VALUES (?, ?, ?, 'admin', 'enterprise')`)
-    .run('u1', 'u1@mbfd.test', 'Test Operator');
-  db.prepare(`INSERT OR IGNORE INTO users (id, email, name, role, plan_id) VALUES (?, ?, ?, 'admin', 'enterprise')`)
-    .run('u2', 'u2@mbfd.test', 'Test Operator Two');
-  const hasWorkspaces = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workspaces'").get();
-  if (hasWorkspaces) {
-    db.prepare(`INSERT OR IGNORE INTO organizations (id, name, owner_user_id) VALUES (?, ?, ?)`).run('org1', 'Test Org', 'u1');
-    db.prepare(`INSERT OR IGNORE INTO workspaces (id, organization_id, name) VALUES (?, ?, ?)`).run('ws1', 'org1', 'Test Workspace');
-    db.prepare(`INSERT OR IGNORE INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, ?)`).run('ws1', 'u1', 'owner');
-  }
-  assert.ok(true);
+test('only explicitly correlated PeerTube videos become replay rows; unrelated videos are quarantined', () => {
+  const matched = svc.upsertReplay(READY_VIDEO);
+  assert.equal(matched.matched, true);
+  assert.equal(matched.workspace_id, 'ws1');
+
+  const unrelated = svc.upsertReplay({
+    ...READY_VIDEO,
+    uuid: 'unrelated-local-video',
+    id: 999,
+    name: 'Unrelated PeerTube upload',
+    tags: [],
+  });
+  assert.equal(unrelated.matched, false);
+  assert.equal(unrelated.quarantined, true);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM peertube_replays WHERE peertube_video_uuid = ?').get('unrelated-local-video').n, 0);
+  assert.equal(db.prepare('SELECT reason_code FROM peertube_replay_quarantine WHERE peertube_video_uuid = ?').get('unrelated-local-video').reason_code, 'no_known_recording_session');
 });
 
-test('upsert is idempotent — duplicate poll never duplicates a row', () => {
-  svc.upsertReplay(READY_VIDEO);
-  svc.upsertReplay(READY_VIDEO);
-  svc.upsertReplay(READY_VIDEO);
-  const rows = db.prepare('SELECT * FROM peertube_replays WHERE peertube_video_uuid = ?').all('vid-ready-001');
-  assert.equal(rows.length, 1, 'exactly one row per video uuid');
+test('workspace-scoped list/get prevent cross-workspace reads and direct-ID enumeration', () => {
+  const ws2Video = { ...READY_VIDEO, uuid: 'vid-ws2-003', id: 103, name: 'Tenant Two', tags: [] };
+  const inserted = svc.upsertReplay(ws2Video);
+  assert.equal(inserted.workspace_id, 'ws2');
+
+  const ws1Rows = svc.listAll({ workspaceId: 'ws1' });
+  const ws2Rows = svc.listAll({ workspaceId: 'ws2' });
+  assert.ok(ws1Rows.every((row) => row.workspace_id === 'ws1'));
+  assert.ok(ws2Rows.every((row) => row.workspace_id === 'ws2'));
+  assert.equal(svc.getById(inserted.replay_id, 'ws1'), undefined);
+  assert.equal(svc.getById(inserted.replay_id, 'ws2').peertube_video_uuid, 'vid-ws2-003');
 });
 
-test('processing-state mapping: published video → ready, transcode pending → processing, live → processing', () => {
-  assert.equal(svc._mapProcessingState(READY_VIDEO), 'ready');
-  assert.equal(svc._mapProcessingState(PROCESSING_VIDEO), 'processing');
-  assert.equal(svc._mapProcessingState(LIVE_VIDEO), 'processing');
+test('upsert is idempotent and never regresses terminal added/discarded states', () => {
+  svc.registerRecordingSession({
+    id: 'session-terminal', workspaceId: 'ws1', instructorUserId: 'u1', title: 'Terminal State Test',
+    streamSessionId: 'stream-terminal', startedAt: 11000, endedAt: 12000,
+  });
+  const terminalVideo = {
+    ...READY_VIDEO,
+    uuid: 'vid-terminal-005',
+    id: 105,
+    tags: ['rec:session-terminal'],
+    files: [{ fileUrl: 'https://peertube.example.test/static/web-videos/vid-terminal-005.mp4' }],
+  };
+  const first = svc.upsertReplay(terminalVideo);
+  svc.upsertReplay(terminalVideo);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM peertube_replays WHERE peertube_video_uuid = ?').get(terminalVideo.uuid).n, 1);
+
+  db.prepare("UPDATE peertube_replays SET processing_state='discarded' WHERE id=?").run(first.replay_id);
+  svc.upsertReplay(terminalVideo);
+  assert.equal(svc.getById(first.replay_id, 'ws1').processing_state, 'discarded');
 });
 
-test('live videos are not discovered as replays', () => {
-  // The worker skips isLive; simulate by checking the state is processing not ready.
-  assert.notEqual(svc._mapProcessingState(LIVE_VIDEO), 'ready');
+test('processing replay advances to ready and captures a playable file URL', () => {
+  const inserted = svc.upsertReplay(PROCESSING_VIDEO);
+  assert.equal(svc.getById(inserted.replay_id, 'ws1').processing_state, 'processing');
+
+  svc.upsertReplay({
+    ...PROCESSING_VIDEO,
+    state: { id: 5, label: 'Published' },
+    files: [{ fileUrl: 'https://peertube.example.test/static/web-videos/vid-processing-002.mp4' }],
+  });
+  const ready = svc.getById(inserted.replay_id, 'ws1');
+  assert.equal(ready.processing_state, 'ready');
+  assert.match(ready.playback_url, /\.mp4$/);
+  assert.equal(ready.media_validation, 'valid');
 });
 
-test('delayed replay: processing row advances to ready when PeerTube finishes', () => {
-  svc.upsertReplay(PROCESSING_VIDEO);
-  const before = db.prepare("SELECT processing_state FROM peertube_replays WHERE peertube_video_uuid='vid-proc-002'").get();
-  assert.equal(before.processing_state, 'processing');
-  // PeerTube finishes transcoding.
-  const finished = { ...PROCESSING_VIDEO, state: { id: 5, label: 'Published' } };
-  svc.upsertReplay(finished);
-  const after = db.prepare("SELECT processing_state FROM peertube_replays WHERE peertube_video_uuid='vid-proc-002'").get();
-  assert.equal(after.processing_state, 'ready');
+test('PeerTube privacy is separate from Media Control visibility and defaults to PRIVATE', () => {
+  const replay = db.prepare('SELECT * FROM peertube_replays WHERE peertube_video_uuid = ?').get(READY_VIDEO.uuid);
+  assert.equal(replay.peertube_privacy, 3, 'PeerTube may be public');
+  assert.equal(replay.library_visibility, VISIBILITY.PRIVATE, 'Media Control remains private');
+  assert.equal(replay.publication_status, 'not_requested');
 });
 
-test('addToMediaControl creates a default-private content row and links it', () => {
-  svc.upsertReplay(READY_VIDEO);
-  const replay = db.prepare("SELECT id FROM peertube_replays WHERE peertube_video_uuid='vid-ready-001'").get();
-  const result = svc.addToMediaControl({ replayId: replay.id, userId: 'u1', workspaceId: 'ws1' });
-  assert.equal(result.created, true);
-  assert.ok(result.content_id);
-  const content = db.prepare('SELECT * FROM content WHERE id = ?').get(result.content_id);
-  assert.ok(content.remote_url, 'content row references the PeerTube watch URL');
-  assert.equal(content.access_level, 'private', 'default private');
-  assert.equal(content.content_type, 'peertube-replay');
-  assert.equal(content.processing_status, 'remote');
-  const linked = db.prepare('SELECT content_id, processing_state FROM peertube_replays WHERE id=?').get(replay.id);
-  assert.equal(linked.processing_state, 'added');
-  assert.equal(linked.content_id, result.content_id);
+test('concurrency-safe add is idempotent, workspace-scoped, and stores the private playback adapter—not a watch page', () => {
+  const replay = db.prepare('SELECT id FROM peertube_replays WHERE peertube_video_uuid = ?').get(READY_VIDEO.uuid);
+  assert.throws(() => svc.addToMediaControl({
+    replayId: replay.id, userId: 'u2', workspaceId: 'ws2', visibility: VISIBILITY.PRIVATE,
+  }), /not found/i);
+
+  const first = svc.addToMediaControl({
+    replayId: replay.id, userId: 'u1', workspaceId: 'ws1', visibility: VISIBILITY.PRIVATE,
+  });
+  const second = svc.addToMediaControl({
+    replayId: replay.id, userId: 'u1', workspaceId: 'ws1', visibility: VISIBILITY.PRIVATE,
+  });
+  assert.equal(first.created, true);
+  assert.equal(second.created, false);
+  assert.equal(second.content_id, first.content_id);
+
+  const content = db.prepare('SELECT * FROM content WHERE id = ?').get(first.content_id);
+  assert.equal(content.mime_type, 'video/mp4');
+  assert.equal(content.access_level, 'private');
+  assert.match(content.remote_url, /^\/api\/peertube-replays\/[^/]+\/playback$/);
+  assert.notEqual(content.remote_url, READY_VIDEO.path);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM content WHERE content_type='peertube-replay'").get().n, 1);
 });
 
-test('operator double-click (duplicate add) does not create a second content row', () => {
-  svc.upsertReplay(READY_VIDEO);
-  const replay = db.prepare("SELECT id FROM peertube_replays WHERE peertube_video_uuid='vid-ready-001'").get();
-  const first = svc.addToMediaControl({ replayId: replay.id, userId: 'u1', workspaceId: 'ws1' });
-  const second = svc.addToMediaControl({ replayId: replay.id, userId: 'u1', workspaceId: 'ws1' });
-  assert.equal(second.created, false, 'second add returns existing, not created');
-  assert.equal(second.content_id, first.content_id, 'same content_id');
-  const count = db.prepare('SELECT COUNT(*) c FROM content WHERE content_type = ?').get('peertube-replay').c;
-  assert.equal(count, 1, 'still one content row');
+test('discard is workspace-scoped and cannot overwrite an added terminal state', () => {
+  const linked = db.prepare('SELECT id FROM peertube_replays WHERE peertube_video_uuid = ?').get(READY_VIDEO.uuid);
+  assert.throws(() => svc.discard({ replayId: linked.id, workspaceId: 'ws2', userId: 'u2' }), /not found/i);
+  assert.throws(() => svc.discard({ replayId: linked.id, workspaceId: 'ws1', userId: 'u1' }), /already linked/i);
+
+  const processing = db.prepare('SELECT id FROM peertube_replays WHERE peertube_video_uuid = ?').get(PROCESSING_VIDEO.uuid);
+  svc.discard({ replayId: processing.id, workspaceId: 'ws1', userId: 'u1' });
+  assert.equal(svc.getById(processing.id, 'ws1').processing_state, 'discarded');
 });
 
-test('cannot add a replay that is not yet ready', () => {
-  svc.upsertReplay(PROCESSING_VIDEO);
-  const replay = db.prepare("SELECT id FROM peertube_replays WHERE peertube_video_uuid='vid-proc-002'").get();
-  assert.throws(() => svc.addToMediaControl({ replayId: replay.id, userId: 'u1', workspaceId: 'ws1' }),
-    /not ready/i);
+test('organization sharing creates a pending request and changes visibility only after approval', () => {
+  const video = {
+    ...READY_VIDEO,
+    uuid: 'vid-org-share-004',
+    id: 104,
+    tags: ['rec:session-org-share'],
+    files: [{ fileUrl: 'https://peertube.example.test/static/web-videos/vid-org-share-004.mp4' }],
+  };
+  svc.registerRecordingSession({
+    id: 'session-org-share', workspaceId: 'ws1', instructorUserId: 'u1', title: 'Organization Share',
+    streamSessionId: 'stream-org-share', startedAt: 7000, endedAt: 8000,
+  });
+  const replay = svc.upsertReplay(video);
+  svc.requestVisibility({
+    replayId: replay.replay_id, workspaceId: 'ws1', userId: 'u1', visibility: VISIBILITY.ORGANIZATION_SHARED,
+  });
+  let row = svc.getById(replay.replay_id, 'ws1');
+  assert.equal(row.library_visibility, VISIBILITY.PRIVATE);
+  assert.equal(row.publication_status, 'pending');
+
+  svc.approveOrganizationPublication({ replayId: replay.replay_id, workspaceId: 'ws1', userId: 'org-admin' });
+  row = svc.getById(replay.replay_id, 'ws1');
+  assert.equal(row.library_visibility, VISIBILITY.ORGANIZATION_SHARED);
+  assert.equal(row.publication_status, 'approved');
 });
 
-test('discard marks a replay failed without adding content', () => {
-  const v = { ...READY_VIDEO, uuid: 'vid-discard-004', id: 104, state: { id: 5, label: 'Published' } };
-  svc.upsertReplay(v);
-  const replay = db.prepare("SELECT id FROM peertube_replays WHERE peertube_video_uuid='vid-discard-004'").get();
-  svc.discard({ replayId: replay.id, userId: 'u1' });
-  const row = db.prepare("SELECT processing_state, content_id FROM peertube_replays WHERE id=?").get(replay.id);
-  assert.equal(row.processing_state, 'failed');
-  assert.equal(row.content_id, null);
+test('revision monotonically advances for workspace mutations', () => {
+  const before = svc.getRevision('ws1');
+  svc.registerRecordingSession({
+    id: 'session-revision', workspaceId: 'ws1', instructorUserId: 'u1', title: 'Revision Test',
+    streamSessionId: 'stream-revision', startedAt: 9000, endedAt: 10000,
+  });
+  const after = svc.getRevision('ws1');
+  assert.ok(after > before);
 });
 
-test('cannot discard a replay already linked to content', () => {
-  const v = { ...READY_VIDEO, uuid: 'vid-linked-005', id: 105, state: { id: 5, label: 'Published' } };
-  svc.upsertReplay(v);
-  const replay = db.prepare("SELECT id FROM peertube_replays WHERE peertube_video_uuid='vid-linked-005'").get();
-  svc.addToMediaControl({ replayId: replay.id, userId: 'u1', workspaceId: 'ws1' });
-  assert.throws(() => svc.discard({ replayId: replay.id, userId: 'u1' }), /already linked/i);
-});
-
-test('organization-publication request: privacy=3 marks content public', () => {
-  const v = { ...READY_VIDEO, uuid: 'vid-pub-006', id: 106, state: { id: 5, label: 'Published' } };
-  svc.upsertReplay(v);
-  const replay = db.prepare("SELECT id FROM peertube_replays WHERE peertube_video_uuid='vid-pub-006'").get();
-  const result = svc.addToMediaControl({ replayId: replay.id, userId: 'u1', workspaceId: 'ws1', privacy: 3 });
-  const content = db.prepare('SELECT access_level FROM content WHERE id=?').get(result.content_id);
-  assert.equal(content.access_level, 'public');
-});
-
-test('secrets are never persisted in replay rows', () => {
-  svc.upsertReplay(READY_VIDEO);
-  const rows = db.prepare("SELECT * FROM peertube_replays WHERE peertube_video_uuid='vid-ready-001'").all();
-  const blob = JSON.stringify(rows);
-  assert.ok(!/token|secret|password|stream.?key/i.test(blob), 'no credential-like fields in row');
-});
-
-test('worker restart resumes without data loss (state persists across restart)', () => {
-  svc.upsertReplay(READY_VIDEO);
-  const before = svc.listPending({ limit: 100 });
+test('replay persistence and workspace scoping survive service restart', () => {
+  const before = svc.listAll({ workspaceId: 'ws1' }).map((row) => row.id).sort();
   svc.stop();
-  // Simulate restart by re-requiring the module (state lives in the DB, not memory).
   delete require.cache[require.resolve('../services/peertube-replay')];
-  const svc2 = require('../services/peertube-replay');
-  const after = svc2.listPending({ limit: 100 });
-  assert.equal(after.length, before.length, 'pending list survives restart');
-});
-
-test('listPending only returns ready, unlinked replays', () => {
-  const all = svc.listAll({ limit: 500 });
-  const pending = svc.listPending({ limit: 500 });
-  for (const p of pending) {
-    assert.equal(p.processing_state, 'ready');
-    assert.equal(p.content_id, null);
-  }
-  assert.ok(pending.length <= all.length);
+  const restarted = require('../services/peertube-replay');
+  const after = restarted.listAll({ workspaceId: 'ws1' }).map((row) => row.id).sort();
+  assert.deepEqual(after, before);
+  assert.ok(restarted.listAll({ workspaceId: 'ws1' }).every((row) => row.workspace_id === 'ws1'));
 });
