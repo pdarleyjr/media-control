@@ -43,6 +43,7 @@ export function mountOperatorConsole(host, { socket, i18n, api = enterpriseApi, 
   host.setAttribute('data-component', 'operator-console');
 
   const cleanups = [];
+  let destroyed = false;
   let selectedRoom = null;
   let selectedLayout = null;
   let selectedContent = null;
@@ -140,7 +141,12 @@ export function mountOperatorConsole(host, { socket, i18n, api = enterpriseApi, 
     updateStepValue('content', selectedContent?.item?.title || '—');
   }
 
-  host.addEventListener('click', async (ev) => {
+  host.addEventListener('click', onClick);
+  function onClick(ev) {
+    if (destroyed) return;
+    handleSurfaceClick(ev).catch(() => {});
+  }
+  async function handleSurfaceClick(ev) {
     const surfaceBtn = ev.target.closest('button[data-surface]');
     if (surfaceBtn) {
       activeSurface = surfaceBtn.getAttribute('data-surface');
@@ -169,11 +175,11 @@ export function mountOperatorConsole(host, { socket, i18n, api = enterpriseApi, 
     } catch (err) {
       setError(null, { status: err?.status, reason: err?.message, code: err?.code });
     }
-  });
+  }
 
   // Minimal broadcast via the existing api.broadcast (confirmed-all gate handled there).
   async function api_broadcast(_adapter, content, includeLive) {
-    const { api: realApi } = await import('../api.js');
+    const { api: realApi } = await import('../../api.js');
     try {
       const res = await realApi.broadcast({ content_id: content.id, targets: [], include_live_stream: includeLive });
       return !res?.code;
@@ -185,6 +191,7 @@ export function mountOperatorConsole(host, { socket, i18n, api = enterpriseApi, 
 
   // Pick a default room from the adapter.
   api.rooms.list().then((rooms) => {
+    if (destroyed) return;
     selectedRoom = (rooms || [])[0] || null;
     refreshSteps();
   }).catch(() => {});
@@ -193,7 +200,10 @@ export function mountOperatorConsole(host, { socket, i18n, api = enterpriseApi, 
 
   return {
     destroy() {
+      destroyed = true;
+      host.removeEventListener('click', onClick);
       cleanups.forEach((c) => { try { c(); } catch {} });
+      cleanups.length = 0;
       adapter.disconnect();
       host.innerHTML = '';
       host.removeAttribute('data-component');

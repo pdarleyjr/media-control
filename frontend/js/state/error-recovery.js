@@ -22,6 +22,7 @@ export const ERROR_CODES = Object.freeze({
   OBS_UNAVAILABLE: 'obs_unavailable',
   RECORDING_FAILURE: 'recording_failure',
   REVISION_MISMATCH: 'revision_mismatch',
+  UNKNOWN: 'unknown_error',
 });
 
 // Each entry: titleKey, whatHappenedKey, remainsActiveKey, actionKey, retrySafe.
@@ -117,10 +118,17 @@ export const ERROR_RECOVERY = Object.freeze({
     actionKey: 'mc.e.err.revision_mismatch.action',
     retrySafe: true,
   },
+  [ERROR_CODES.UNKNOWN]: {
+    titleKey: 'mc.e.err.unknown.title',
+    whatHappenedKey: 'mc.e.err.unknown.what',
+    remainsActiveKey: 'mc.e.err.unknown.active',
+    actionKey: 'mc.e.err.unknown.action',
+    retrySafe: true,
+  },
 });
 
 export function recoveryForCode(code) {
-  return ERROR_RECOVERY[code] || null;
+  return ERROR_RECOVERY[code] || ERROR_RECOVERY[ERROR_CODES.UNKNOWN];
 }
 
 // Derive an error code from a raw failure signal (HTTP code / ack reason /
@@ -141,5 +149,5 @@ export function deriveErrorCode(signal = {}) {
   if (signal.reason === 'offline' || signal.offline === true) return ERROR_CODES.DISPLAY_OFFLINE;
   if (signal.status === 'timeout' || signal.stale === true) return ERROR_CODES.STALE_ROOM_STATE;
   if (signal.processing === true) return ERROR_CODES.CONTENT_PROCESSING;
-  return null;
+  return ERROR_CODES.UNKNOWN;
 }
