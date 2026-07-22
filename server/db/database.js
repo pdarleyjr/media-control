@@ -1095,48 +1095,11 @@ function healYoutubeMimeTypes() {
 }
 healYoutubeMimeTypes();
 
-// ── PeerTube replay → Media Control integration ────────────────────────────
-// Idempotent, self-healing table for replay discovery. One row per
-// (recording_session, peertube video uuid). PeerTube remains the authoritative
-// storage; the optional content_id links the operator-approved Media Control
-// content row (remote_url → PeerTube). Defaults to private visibility.
-const PEERTUBE_REPLAY_ID = 'peertube_replay_discovery';
-function migratePeerTubeReplay() {
-  try {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS peertube_replays (
-        id                   TEXT PRIMARY KEY,
-        recording_session_id TEXT NOT NULL,
-        workspace_id         TEXT,
-        peertube_video_uuid  TEXT,
-        peertube_video_id    INTEGER,
-        title                TEXT,
-        description          TEXT,
-        duration_sec         REAL,
-        thumbnail_url        TEXT,
-        watch_url            TEXT,
-        embed_url            TEXT,
-        processing_state    TEXT NOT NULL DEFAULT 'discovering',
-        privacy              INTEGER NOT NULL DEFAULT 1,
-        content_id          TEXT,
-        error_message       TEXT,
-        discovered_at       INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        ready_at            INTEGER,
-        added_at            INTEGER,
-        added_by            TEXT,
-        updated_at          INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-      );
-    `);
-    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_peertube_replays_session_uuid ON peertube_replays(recording_session_id, peertube_video_uuid) WHERE peertube_video_uuid IS NOT NULL');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_peertube_replays_state ON peertube_replays(processing_state, discovered_at DESC)');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_peertube_replays_content ON peertube_replays(content_id) WHERE content_id IS NOT NULL');
-  } catch (e) {
-    console.error('[peertube_replay] migration failed:', e.message);
-  }
-  try { db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(PEERTUBE_REPLAY_ID); }
-  catch (e) { /* best-effort stamp */ }
-}
-migratePeerTubeReplay();
+// PeerTube replay schema is a transactional, validated migration. Unlike the
+// prototype, a failed/partial migration is fatal and is never stamped as
+// successful. The legacy prototype table is preserved for rollback and its
+// uncorrelated rows are quarantined instead of being trusted as recordings.
+require('./migrations/peertube-replays').migratePeerTubeReplay(db);
 
 // Prune old telemetry (keep last 24h worth at 15s intervals = ~5760, cap at 6000)
 function pruneTelemetry(deviceId) {

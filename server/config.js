@@ -253,9 +253,17 @@ module.exports = {
     apiToken: process.env.PEERTUBE_API_TOKEN || '',
     apiUsername: process.env.PEERTUBE_API_USERNAME || '',
     apiPassword: process.env.PEERTUBE_API_PASSWORD || '',
+    // Optional overrides. When omitted, username/password auth discovers the
+    // actual local OAuth client from PeerTube instead of assuming an id.
+    oauthClientId: process.env.PEERTUBE_OAUTH_CLIENT_ID || '',
+    oauthClientSecret: process.env.PEERTUBE_OAUTH_CLIENT_SECRET || '',
     pollIntervalMs: parseInt(process.env.PEERTUBE_REPLAY_POLL_MS, 10) || 60000,
     pollBackoffMaxMs: parseInt(process.env.PEERTUBE_REPLAY_BACKOFF_MAX_MS, 10) || 600000,
+    requestTimeoutMs: parseInt(process.env.PEERTUBE_REPLAY_REQUEST_TIMEOUT_MS, 10) || 10000,
+    leaseMs: parseInt(process.env.PEERTUBE_REPLAY_LEASE_MS, 10) || 120000,
+    initialDelayMs: parseInt(process.env.PEERTUBE_REPLAY_INITIAL_DELAY_MS, 10) || 5000,
     publicWatchBase: (process.env.PEERTUBE_PUBLIC_BASE || '').replace(/\/+$/, ''),
-    fallbackDownloadDir: process.env.PEERTUBE_FALLBACK_DOWNLOAD_DIR || '',
+    playbackAllowedOrigins: String(process.env.PEERTUBE_PLAYBACK_ALLOWED_ORIGINS || '')
+      .split(',').map((value) => value.trim()).filter(Boolean),
   },
 };

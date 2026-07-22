@@ -27,6 +27,7 @@ import * as broadcastCenter from './views/broadcast-center.js';
 import * as schedules from './views/schedules.js';
 import * as workspaceMembers from './views/workspace-members.js';
 import * as mediaControl from './views/media-control.js';
+import * as peertubeReplays from './views/peertube-replays.js';
 import { applyBranding } from './branding.js';
 import { t } from './i18n.js';
 import { esc, isPlatformAdmin } from './utils.js';
@@ -216,6 +217,7 @@ const NAV_LABEL_KEYS = {
   'slide-editor': 'nav.slide_editor',
   content: 'nav.media_library',
   downloads: 'nav.downloads',
+  replays: 'nav.replays',
   playlists: 'nav.playlists',
   layouts: 'nav.layouts',
   schedule: 'nav.schedule',
@@ -757,6 +759,7 @@ async function route() {
     else if (hash === '#/ai-deck' && link.dataset.view === 'ai-deck') link.classList.add('active');
     else if (hash.startsWith('#/slide-editor') && link.dataset.view === 'slide-editor') link.classList.add('active');
     else if (hash === '#/downloads' && link.dataset.view === 'downloads') link.classList.add('active');
+    else if (hash === '#/replays' && link.dataset.view === 'replays') link.classList.add('active');
     else if (hash === '#/broadcast' && link.dataset.view === 'broadcast') link.classList.add('active');
     else if (hash === '#/files' && link.dataset.view === 'files') link.classList.add('active');
     else if (hash === '#/audit' && link.dataset.view === 'audit') link.classList.add('active');
@@ -846,6 +849,9 @@ async function route() {
   } else if (hash === '#/downloads') {
     currentView = downloadsView;
     downloadsView.render(app);
+  } else if (hash === '#/replays') {
+    currentView = peertubeReplays;
+    peertubeReplays.render(app);
   } else if (hash === '#/broadcast') {
     currentView = broadcastCenter;
     broadcastCenter.render(app);

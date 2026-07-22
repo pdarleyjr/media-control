@@ -5,7 +5,7 @@ const { v4: uuidv4 } = require('uuid');
 const { execFile } = require('child_process');
 const { db } = require('../db/database');
 const { accessContext } = require('../lib/tenancy');
-const { ownedContentScope } = require('../lib/content-scope');
+const { libraryContentScope } = require('../lib/content-scope');
 const { finalizeDownload } = require('../lib/finalize-download');
 const config = require('../config');
 
@@ -48,7 +48,7 @@ router.get('/health', async (req, res) => {
 // scope helper keeps the pattern consistent with content/presentations).
 router.get('/', (req, res) => {
   if (!req.workspaceId) return res.json([]);
-  const scope = ownedContentScope(req.workspaceId, req.user.id);
+  const scope = libraryContentScope(req.workspaceId, req.user.id);
   const jobs = db.prepare(`SELECT * FROM download_jobs WHERE ${scope.clause} ORDER BY created_at DESC LIMIT 100`).all(...scope.params);
   // Self-heal: any 'done' job still missing a content_id (completed before this
   // fix shipped, or whose worker-side finalize threw) gets its content row now.

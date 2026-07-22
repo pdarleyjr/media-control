@@ -87,6 +87,10 @@ export function connectSocket() {
     emit('wall-changed');
   });
 
+  dashboardSocket.on('dashboard:peertube-replays-changed', (data) => {
+    emit('peertube-replays-changed', data);
+  });
+
 // Content ack
   dashboardSocket.on('dashboard:content-ack', (data) => {
     emit('content-ack', data);
