@@ -156,5 +156,10 @@
 
 /* ── Global a11y: visible focus, no hover-only ── */
 .mc-e-console button:focus-visible,
-.mc-e-console input:focus-visible { outline: none; box-shadow: var(--mc-e-focus); border-color: var(--accent); }
+.mc-e-console input:focus-visible,
+#harness .mc-e-privacy button:focus-visible { outline: none; box-shadow: var(--mc-e-focus); border-color: var(--accent); }
+/* Ensure all interactive controls meet the 44px touch-target floor (min 36px) */
+.mc-e-console button:not([disabled]),
+#harness .mc-e-privacy button:not([disabled]),
+#harness button[class*="mc-e-"]:not([disabled]) { min-width: 36px; min-height: 36px; }
 @media (prefers-reduced-motion: reduce) { .mc-e-console * { transition: none !important; } }
