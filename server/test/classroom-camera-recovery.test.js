@@ -37,6 +37,6 @@ test('camera feed drawer exposes a same-origin Focus 210 control surface', () =>
   assert.match(feeds, /camera=1&controls=1&preset=wide/);
   assert.match(catalog, /url: `\/player\/classroom-camera\.html/);
   assert.doesNotMatch(catalog, /media-control\.mbfdhub\.com\/player\/classroom-camera/);
-  assert.match(catalog, /ANNKE · Video Wall 1/);
-  assert.match(catalog, /Focus 210 · Video Wall 2/);
+  assert.match(catalog, /ANNKE · Primary Wall/);
+  assert.match(catalog, /Focus 210 · Secondary Wall/);
 });

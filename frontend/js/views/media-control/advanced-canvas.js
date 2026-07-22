@@ -4,8 +4,15 @@ import { t } from '../../i18n.js';
 import { showToast } from '../../components/toast.js';
 import { confirmDialog } from '../../components/confirm.js';
 import { getSocket } from '../../socket.js';
+import { waitForTargetCatalog } from '../../services/target-catalog-runtime.js';
+import { normalizeCanvasTopology } from '../../services/canvas-topology.js';
 
 let instance = null;
+
+function endpointWithTopology(endpoint, catalog) {
+  if (!endpoint) return endpoint;
+  return { ...endpoint, topology: normalizeCanvasTopology(endpoint.topology, catalog) };
+}
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -43,16 +50,11 @@ function unionRects(rects) {
   return { x, y, width: right - x, height: bottom - y };
 }
 
-function wallOutputs(topology, wall) {
-  const outputs = topology.outputs || [];
-  const matched = outputs.filter((output) => {
-    const haystack = `${output.slug || ''} ${output.group || ''}`.toLowerCase();
-    return wall === 'primary'
-      ? haystack.includes('front') || haystack.includes('primary')
-      : haystack.includes('side') || haystack.includes('secondary');
-  });
-  if (matched.length) return matched;
-  return wall === 'primary' ? outputs.slice(0, 3) : outputs.slice(3, 5);
+function wallOutputs(topology, wallId) {
+  const wall = (topology.walls || []).find((candidate) => candidate.id === wallId);
+  if (!wall) return [];
+  const ids = new Set(wall.outputIds || []);
+  return (topology.outputs || []).filter((output) => ids.has(output.id));
 }
 
 function placementForDrop(state, x, y) {
@@ -61,19 +63,18 @@ function placementForDrop(state, x, y) {
     output,
     rect: outputRect(output, topology),
   }));
-  if (state.snapMode === 'primary') {
-    return unionRects(wallOutputs(topology, 'primary').map((output) => outputRect(output, topology)));
-  }
-  if (state.snapMode === 'secondary') {
-    return unionRects(wallOutputs(topology, 'secondary').map((output) => outputRect(output, topology)));
+  if (state.snapMode.startsWith('wall:')) {
+    const wallId = state.snapMode.slice(5);
+    return unionRects(wallOutputs(topology, wallId).map((output) => outputRect(output, topology)));
   }
   const containing = outputRects.find(({ rect }) => (
     x >= rect.x && x < rect.x + rect.width &&
     y >= rect.y && y < rect.y + rect.height
   ));
   if (state.snapMode === 'display' && containing) return containing.rect;
-  const width = Math.min(containing?.rect.width || 1280, topology.width);
-  const height = Math.min(containing?.rect.height || 720, topology.height);
+  const referenceRect = containing?.rect || outputRects[0]?.rect || topology;
+  const width = Math.min(referenceRect.width, topology.width);
+  const height = Math.min(referenceRect.height, topology.height);
   return {
     x: clamp(x - width / 2, 0, topology.width - width),
     y: clamp(y - height / 2, 0, topology.height - height),
@@ -86,13 +87,18 @@ function statusLabel(endpoint) {
   return endpoint.status === 'online' ? t('mc.canvas.online') : t('mc.canvas.offline');
 }
 
-function modeMeta(mode) {
-  return {
-    display: { icon: '1', title: 'Single TV', detail: 'Drop on the exact screen' },
-    primary: { icon: '3', title: 'Span Wall 1', detail: 'One image across 3 TVs' },
-    secondary: { icon: '2', title: 'Span Wall 2', detail: 'One image across 2 TVs' },
-    free: { icon: '+', title: 'Freeform', detail: 'Place and resize anywhere' },
-  }[mode];
+function modeMeta(mode, topology) {
+  if (mode.startsWith('wall:')) {
+    const wall = (topology.walls || []).find((candidate) => candidate.id === mode.slice(5));
+    return wall ? {
+      icon: String(wall.memberCount || wall.outputIds?.length || 0),
+      title: wall.name,
+      detail: `${wall.layoutMode || 'layout'} · ${Math.round(wall.rect.width)} × ${Math.round(wall.rect.height)} · ${wall.onlineCount}/${wall.memberCount} online · r${wall.layoutRevision}`,
+    } : { icon: '!', title: 'Unavailable wall', detail: 'Topology changed; choose another target' };
+  }
+  return mode === 'display'
+    ? { icon: '1', title: 'Single display', detail: 'Drop on the exact physical display' }
+    : { icon: '+', title: 'Freeform', detail: 'Place and resize anywhere' };
 }
 
 function chooseCanvasTarget(state, label) {
@@ -107,13 +113,17 @@ function chooseCanvasTarget(state, label) {
         <span class="mc-route-meta">${esc(t('mc.canvas.route_single'))}</span>
       </span>
     </button>`).join('');
+  const wallButtons = (topology.walls || []).map((wall) => `
+    <button type="button" class="mc-route-row" data-canvas-target="wall:${esc(wall.id)}">
+      <span class="mc-route-row-main"><strong class="mc-route-name">${esc(wall.name)}</strong>
+      <span class="mc-route-meta">${esc(`${wall.layoutMode || 'layout'} · ${Math.round(wall.rect.width)} × ${Math.round(wall.rect.height)} · ${wall.onlineCount}/${wall.memberCount} online · r${wall.layoutRevision}`)}</span></span>
+    </button>`).join('');
   dialog.innerHTML = `
     <div class="mc-dialog-card mc-route-card">
       <h3 class="mc-dialog-title">${esc(t('mc.canvas.route_title'))}</h3>
       <p class="mc-dialog-msg">${esc(t('mc.canvas.route_message', { label }))}</p>
       <div class="mc-route-list">
-        <button type="button" class="mc-route-row" data-canvas-target="primary"><span class="mc-route-row-main"><strong class="mc-route-name">${esc(t('mc.canvas.mode_primary'))}</strong><span class="mc-route-meta">${esc(t('mc.canvas.route_span_three'))}</span></span></button>
-        <button type="button" class="mc-route-row" data-canvas-target="secondary"><span class="mc-route-row-main"><strong class="mc-route-name">${esc(t('mc.canvas.mode_secondary'))}</strong><span class="mc-route-meta">${esc(t('mc.canvas.route_span_two'))}</span></span></button>
+        ${wallButtons}
         <button type="button" class="mc-route-row" data-canvas-target="all"><span class="mc-route-row-main"><strong class="mc-route-name">${esc(t('mc.canvas.route_all'))}</strong><span class="mc-route-meta">${esc(t('mc.canvas.route_span_all'))}</span></span></button>
         ${outputButtons}
       </div>
@@ -140,8 +150,8 @@ function chooseCanvasTarget(state, label) {
 
 function placementForTarget(state, target) {
   const topology = state.endpoint.topology;
-  if (target === 'primary' || target === 'secondary') {
-    return unionRects(wallOutputs(topology, target).map((output) => outputRect(output, topology)));
+  if (target?.startsWith('wall:')) {
+    return unionRects(wallOutputs(topology, target.slice(5)).map((output) => outputRect(output, topology)));
   }
   if (target === 'all') return { x: 0, y: 0, width: topology.width, height: topology.height };
   if (target && target.startsWith('display:')) {
@@ -179,42 +189,37 @@ function layerMarkup(layer, topology, selected) {
 
 function outputMarkup(output, topology, index) {
   const rect = outputRect(output, topology);
-  const wall = index < 3 ? 'WALL 1' : 'WALL 2';
+  const wall = (topology.walls || []).find((candidate) => candidate.outputIds?.includes(output.id));
   return `
-    <div class="mc-canvas-output${index === 3 ? ' is-wall-break' : ''}" data-output-id="${esc(output.id)}"
+    <div class="mc-canvas-output" data-output-id="${esc(output.id)}"
          style="left:${(rect.x / topology.width) * 100}%;top:${(rect.y / topology.height) * 100}%;
                 width:${(rect.width / topology.width) * 100}%;height:${(rect.height / topology.height) * 100}%">
       <span class="mc-canvas-output-number">TV ${index + 1}</span>
-      <span class="mc-canvas-output-wall">${wall}</span>
+      <span class="mc-canvas-output-wall">${esc(wall?.name || 'Standalone display')}</span>
       <span class="mc-canvas-output-name">${esc((output.name || output.slug || `${t('mc.canvas.output')} ${index + 1}`).replace('Classroom 1 - ', ''))}</span>
       <span class="mc-canvas-output-size">${Math.round(rect.width)} &times; ${Math.round(rect.height)}</span>
       <span class="mc-canvas-output-drop">DROP HERE</span>
     </div>`;
 }
 
-function wallZoneMarkup(topology, wall, label) {
-  const rect = unionRects(wallOutputs(topology, wall).map((output) => outputRect(output, topology)));
+function wallZoneMarkup(topology, wall) {
+  const rect = unionRects(wallOutputs(topology, wall.id).map((output) => outputRect(output, topology)));
   if (!rect) return '';
-  return `<div class="mc-canvas-wall-zone mc-canvas-wall-zone-${wall}"
+  return `<div class="mc-canvas-wall-zone"
     style="left:${(rect.x / topology.width) * 100}%;top:${(rect.y / topology.height) * 100}%;
            width:${(rect.width / topology.width) * 100}%;height:${(rect.height / topology.height) * 100}%">
-    <span>${esc(label)}</span>
+    <span>${esc(`${wall.name} / ${wall.memberCount} displays / ${wall.onlineCount} online / r${wall.layoutRevision}`)}</span>
   </div>`;
 }
 
 function render(state) {
   const { host, endpoint } = state;
-  const topology = endpoint.topology || {
-    origin_x: 0,
-    origin_y: 0,
-    width: endpoint.canvas_width || 6400,
-    height: endpoint.canvas_height || 720,
-    outputs: [],
-  };
+  const topology = endpoint.topology;
   const statusClass = endpoint.status === 'online' ? 'is-online' : 'is-offline';
   const revision = endpoint.scene_revision || 0;
   const selectedLayer = (endpoint.layers || []).find((layer) => layer.id === state.selectedLayerId);
-  const activeMode = modeMeta(state.snapMode);
+  const activeMode = modeMeta(state.snapMode, topology);
+  const routingModes = ['display', ...(topology.walls || []).map((wall) => `wall:${wall.id}`), 'free'];
   host.innerHTML = `
     <section class="mc-canvas-console" aria-labelledby="mc-canvas-title">
       <header class="mc-canvas-console-head">
@@ -239,8 +244,8 @@ function render(state) {
           <strong>Where should content go?</strong>
         </div>
         <div class="mc-canvas-modes">
-        ${['display', 'primary', 'secondary', 'free'].map((mode) => {
-          const meta = modeMeta(mode);
+        ${routingModes.map((mode) => {
+          const meta = modeMeta(mode, topology);
           return `
           <button type="button" class="mc-canvas-mode${state.snapMode === mode ? ' is-active' : ''}"
                   data-canvas-mode="${mode}" aria-pressed="${state.snapMode === mode ? 'true' : 'false'}">
@@ -251,8 +256,6 @@ function render(state) {
         </div>
         <span class="mc-canvas-toolbar-spacer"></span>
         <div class="mc-canvas-actions">
-          <button type="button" class="mc-canvas-action" data-canvas-camera="1" data-canvas-preset="wall-1">Wall 1</button>
-          <button type="button" class="mc-canvas-action" data-canvas-camera="1" data-canvas-preset="wall-2">Wall 2</button>
           <button type="button" class="mc-canvas-action" data-canvas-camera="3">Room overview</button>
           <button type="button" class="mc-canvas-action mc-canvas-action-danger" data-canvas-clear>Clear canvas</button>
           <button type="button" class="mc-canvas-action mc-canvas-action-apply" data-canvas-apply><span class="mc-canvas-action-dot"></span>Take live</button>
@@ -273,8 +276,7 @@ function render(state) {
             <video class="mc-canvas-live-video" data-canvas-video autoplay playsinline muted tabindex="0"
                    aria-label="${esc(t('mc.canvas.live_preview'))}"></video>
             <div class="mc-canvas-live-state" data-canvas-video-state>${esc(t('mc.canvas.preview_connecting'))}</div>
-            ${wallZoneMarkup(topology, 'primary', 'VIDEO WALL 1 / 3 DISPLAYS')}
-            ${wallZoneMarkup(topology, 'secondary', 'VIDEO WALL 2 / 2 DISPLAYS')}
+            ${(topology.walls || []).map((wall) => wallZoneMarkup(topology, wall)).join('')}
             ${(topology.outputs || []).map((output, index) => outputMarkup(output, topology, index)).join('')}
             ${(endpoint.layers || []).map((layer) => layerMarkup(layer, topology, state.selectedLayerId === layer.id)).join('')}
             <div class="mc-canvas-drop-preview" data-canvas-drop-preview hidden><span></span></div>
@@ -560,11 +562,9 @@ function requestCamera(state, { camera, preset = '' }) {
   const status = state.host.querySelector('[data-canvas-camera-state]');
   const title = state.host.querySelector('[data-canvas-monitor-title]');
   monitor.hidden = false;
-  title.textContent = preset === 'wall-1'
-    ? 'Focus 210 - Video Wall 1'
-    : preset === 'wall-2'
-      ? 'Focus 210 - Video Wall 2'
-      : 'ANNKE - Full wall overview';
+  title.textContent = preset
+    ? `${state.endpoint.name} · configured camera preset`
+    : 'Room camera overview';
   image.hidden = true;
   status.hidden = true;
   const query = new URLSearchParams({ camera, fit: 'contain' });
@@ -581,7 +581,7 @@ async function publishScene(state, { quiet = false } = {}) {
   if (button) button.disabled = true;
   try {
     const result = await api.canvas.publish(state.endpoint.id, state.endpoint.layers);
-    state.endpoint = result.endpoint;
+    state.endpoint = endpointWithTopology(result.endpoint, state.catalog);
     if (!quiet) showToast(t('mc.canvas.applied'), 'success');
     render(state);
   } catch (error) {
@@ -598,7 +598,7 @@ function showDropPreview(state, board, event) {
   const topology = state.endpoint.topology;
   const point = canvasPoint(board, event, topology);
   const rect = placementForDrop(state, point.x, point.y);
-  const meta = modeMeta(state.snapMode);
+  const meta = modeMeta(state.snapMode, topology);
   preview.style.left = `${(rect.x / topology.width) * 100}%`;
   preview.style.top = `${(rect.y / topology.height) * 100}%`;
   preview.style.width = `${(rect.width / topology.width) * 100}%`;
@@ -619,7 +619,7 @@ function wire(state) {
         candidate.setAttribute('aria-pressed', active ? 'true' : 'false');
       });
       board.dataset.canvasMode = state.snapMode;
-      const meta = modeMeta(state.snapMode);
+      const meta = modeMeta(state.snapMode, topology);
       const program = state.host.querySelector('.mc-canvas-programbar');
       if (program) {
         const strong = program.querySelector('strong');
@@ -714,7 +714,7 @@ function wire(state) {
     if (!confirmed) return;
     try {
       const result = await api.canvas.clear(state.endpoint.id);
-      state.endpoint = result.endpoint;
+      state.endpoint = endpointWithTopology(result.endpoint, state.catalog);
       showToast(t('mc.canvas.cleared'), 'success');
       render(state);
     } catch (error) {
@@ -737,13 +737,18 @@ export async function mountAdvancedCanvas(host) {
   if (!host) return null;
   unmountAdvancedCanvas();
   let result;
+  let catalog = null;
   try {
-    result = await api.canvas.list();
+    [result, catalog] = await Promise.all([
+      api.canvas.list(),
+      waitForTargetCatalog({ includeVirtualDisplays: false }),
+    ]);
   } catch {
     host.hidden = true;
     return null;
   }
-  const endpoint = result?.endpoints?.[0];
+  const rawEndpoint = result?.endpoints?.[0];
+  const endpoint = endpointWithTopology(rawEndpoint, catalog);
   if (!endpoint) {
     host.hidden = true;
     return null;
@@ -752,6 +757,7 @@ export async function mountAdvancedCanvas(host) {
   instance = {
     host,
     endpoint,
+    catalog,
     snapMode: 'display',
     selectedLayerId: null,
     peer: null,
@@ -767,9 +773,9 @@ export async function mountAdvancedCanvas(host) {
     if (!payload || payload.endpoint_id !== instance?.endpoint.id) return;
     instance.endpoint.status = payload.status || instance.endpoint.status;
     if (payload.topology) {
-      instance.endpoint.topology = payload.topology;
-      instance.endpoint.canvas_width = payload.topology.width;
-      instance.endpoint.canvas_height = payload.topology.height;
+      instance.endpoint.topology = normalizeCanvasTopology(payload.topology, instance.catalog);
+      instance.endpoint.canvas_width = instance.endpoint.topology.width;
+      instance.endpoint.canvas_height = instance.endpoint.topology.height;
     }
     render(instance);
   };
@@ -829,7 +835,7 @@ export async function routeSourceToAdvancedCanvas(source, label = t('mc.canvas.s
 export async function setAdvancedCanvasBlanked(blanked) {
   if (!instance?.endpoint) return false;
   const result = await api.canvas.setActive(instance.endpoint.id, !blanked);
-  instance.endpoint = result.endpoint;
+  instance.endpoint = endpointWithTopology(result.endpoint, instance.catalog);
   render(instance);
   return true;
 }

@@ -734,6 +734,23 @@ CREATE TABLE IF NOT EXISTS display_states (
     PRIMARY KEY (target_type, target_id)
 );
 
+-- Persisted global revision for the authoritative room snapshot contract.
+-- A composite key keeps two control rooms in the same workspace independent,
+-- while UPDATE ... revision + 1 provides a monotonic resume cursor that
+-- survives server restarts.
+CREATE TABLE IF NOT EXISTS room_state_revisions (
+    workspace_id TEXT NOT NULL,
+    room_id      TEXT NOT NULL,
+    revision     INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+    last_reason  TEXT,
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, room_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_room_state_revisions_updated
+    ON room_state_revisions(updated_at DESC);
+
 -- P3/Kamrui managed-node registry. node_token is a per-node bearer (generated
 -- server-side, stored hashed elsewhere); never committed in the clear.
 CREATE TABLE IF NOT EXISTS managed_nodes (

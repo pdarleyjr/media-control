@@ -80,7 +80,9 @@ test('layout endpoint uses optimistic revision checks and one atomic transaction
 
 test('player payload scopes sync and state to the persisted subgroup', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'ws', 'deviceSocket.js'), 'utf8');
-  assert.match(source, /groupIds = new Set\(layoutGroup\.member_ids\)/);
+  assert.match(source, /memberIds: layoutGroup\.member_ids/);
+  assert.match(source, /layout_assignment: layoutAssignment/);
+  assert.match(source, /logical_canvas \+ viewport/);
   assert.match(source, /group_member_ids: layoutGroup\.member_ids/);
   assert.match(source, /group_id: layoutGroup\.id/);
   assert.match(source, /wallDevices = group\.member_ids\.filter/);

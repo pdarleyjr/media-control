@@ -15,9 +15,11 @@ test('classroom source taps use the advanced canvas while standard workspaces re
 
   assert.match(view, /if \(hasAdvancedCanvasEndpoint\(\)\)/);
   assert.match(view, /return routeSourceToAdvancedCanvas\(source, label\)/);
-  assert.match(canvas, /data-canvas-target="primary"/);
-  assert.match(canvas, /data-canvas-target="secondary"/);
+  assert.match(canvas, /\(topology\.walls \|\| \[\]\)\.map\(\(wall\)/);
+  assert.match(canvas, /data-canvas-target="wall:\$\{esc\(wall\.id\)\}"/);
   assert.match(canvas, /data-canvas-target="display:\$\{index\}"/);
+  assert.doesNotMatch(canvas, /data-canvas-target="primary"/);
+  assert.doesNotMatch(canvas, /data-canvas-target="secondary"/);
 });
 
 test('canvas blanking preserves layers and clear requires confirmation', () => {

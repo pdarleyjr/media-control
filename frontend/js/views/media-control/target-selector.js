@@ -11,13 +11,11 @@
 import { esc } from '../../utils.js';
 import { t } from '../../i18n.js';
 
-// Friendlier wall labels that match the classroom mockup. "Primary Wall" ->
-// "Video Wall 1", "Secondary Wall" -> "Video Wall 2"; any other wall keeps its
-// own name so bespoke walls still read correctly.
+// Preserve the operator-configured physical wall name. Renaming real walls to
+// ordinal mockup labels made popups disagree with topology, signage, and the
+// wall editor (and failed as soon as a third wall was provisioned).
 function wallLabel(wall) {
   const name = (wall && wall.name) || '';
-  if (/primary\s+wall/i.test(name)) return 'Video Wall 1';
-  if (/secondary\s+wall/i.test(name)) return 'Video Wall 2';
   return name || ((wall && wall.id) || '');
 }
 

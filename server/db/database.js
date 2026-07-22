@@ -18,6 +18,12 @@ db.pragma('foreign_keys = ON');
 const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
 db.exec(schema);
 
+// Self-heal the persisted authoritative-room revision ledger on every boot.
+// This stays additive and idempotent so databases created by older images gain
+// the resume cursor before Socket.IO begins accepting dashboard connections.
+const { ensureRoomRevisionSchema } = require('../lib/room-snapshot');
+ensureRoomRevisionSchema(db);
+
 // Auto-apply Phase 1 multi-tenancy migration if not yet applied. Without this
 // a self-hoster who pulls latest and restarts hits a crash in
 // migrateFolderWorkspaceIds (queries workspaces table that doesn't exist).

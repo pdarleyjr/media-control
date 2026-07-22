@@ -5,6 +5,8 @@ const router = express.Router();
 const config = require('../config');
 const { db } = require('../db/database');
 const { buildLiveStreamPlayerUrl, ensureLiveStreamDisplay, liveStreamProgramState, markLiveContentChanged } = require('../lib/live-stream-display');
+const { updateLiveProductionState, getLiveProductionState } = require('../lib/live-production-state');
+const { publishRoomSnapshot } = require('../lib/room-state-broadcaster');
 const { logActivity, getClientIp } = require('../services/activity');
 const { audit } = require('../lib/audit');
 
@@ -122,13 +124,35 @@ function logLiveStreamAction(req, action, details) {
   } catch (_) {}
 }
 
+function observeDirectorResult(req, result, reason) {
+  const observation = updateLiveProductionState(req.workspaceId, result);
+  if (observation.changed) {
+    try {
+      const io = req.app && typeof req.app.get === 'function' ? req.app.get('io') : null;
+      if (io) {
+        publishRoomSnapshot(io, {
+          workspaceId: req.workspaceId,
+          roomId: config.console.roomId,
+          reason,
+          bump: true,
+        });
+      }
+    } catch (error) {
+      console.warn(`[live-production] room snapshot publish failed: ${error.message}`);
+    }
+  }
+  return observation.state;
+}
+
 router.get('/status', async (req, res) => {
   if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
   const payload = displayPayload(req);
   const director = await callDirector('GET', '/status');
+  const productionState = observeDirectorResult(req, director, 'status:checked');
   res.json({
     ...payload,
     ai_director: director,
+    production_state: productionState,
     peertube_watch_url: config.liveStream.peerTubeWatchUrl || null,
   });
 });
@@ -186,6 +210,7 @@ router.post('/start', async (req, res) => {
   const statusAfterMode = await waitForDirector(
     data => sceneMatchesProgramState(data, programState.content_active),
   );
+  const preparedProductionState = observeDirectorResult(req, statusAfterMode, 'stream:prepared');
   if (!statusAfterMode || !statusAfterMode.ok
       || !sceneMatchesProgramState(statusAfterMode.data, programState.content_active)) {
     return res.status(503).json({
@@ -194,6 +219,7 @@ router.post('/start', async (req, res) => {
       error: 'AI Director did not prepare a current camera scene; the stream was not started',
       program_state: programState,
       selected_scene: statusAfterMode,
+      production_state: preparedProductionState,
     });
   }
 
@@ -207,9 +233,11 @@ router.post('/start', async (req, res) => {
       program_state: programState,
       selected_scene: statusAfterMode,
       stream_start: stream,
+      production_state: preparedProductionState,
     });
   }
   const status = await waitForDirector(data => data.stream_active === true, 8000);
+  const productionState = observeDirectorResult(req, status, 'stream:start-verified');
   const streamVerified = !!(status && status.ok && status.data && status.data.stream_active === true);
   if (!streamVerified) {
     await callDirector('POST', '/stream/stop');
@@ -221,6 +249,7 @@ router.post('/start', async (req, res) => {
       selected_scene: statusAfterMode,
       stream_start: stream,
       ai_director_status: status,
+      production_state: productionState,
     });
   }
   logLiveStreamAction(req, 'start', {
@@ -241,6 +270,7 @@ router.post('/start', async (req, res) => {
     stream_start: stream,
     stream_started: streamStarted,
     ai_director_status: status,
+    production_state: productionState,
     peertube_watch_url: config.liveStream.peerTubeWatchUrl || null,
   });
 });
@@ -258,18 +288,29 @@ router.post('/stop', async (req, res) => {
   // stream_active is still true, send a second stop command.
   let verifiedActive = null;
   let secondStop = null;
+  let productionState = getLiveProductionState(req.workspaceId);
   try {
     const deadline = Date.now() + 10000;
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 2000));
       const check = await callDirector('GET', '/status');
-      const active = !!(check && check.data && check.data.stream_active);
+      productionState = observeDirectorResult(req, check, 'stream:stop-verification');
+      const active = check && check.ok && check.data
+        && typeof check.data.stream_active === 'boolean'
+        ? check.data.stream_active
+        : null;
       verifiedActive = active;
-      if (!active) break;
+      if (active === false) break;
     }
-    if (verifiedActive) {
+    if (verifiedActive === true) {
       secondStop = await callDirector('POST', '/stream/stop');
-      verifiedActive = !!(secondStop && secondStop.data && secondStop.data.stream_active);
+      await new Promise((r) => setTimeout(r, 1000));
+      const check = await callDirector('GET', '/status');
+      productionState = observeDirectorResult(req, check, 'stream:stop-verification');
+      verifiedActive = check && check.ok && check.data
+        && typeof check.data.stream_active === 'boolean'
+        ? check.data.stream_active
+        : null;
     }
   } catch (_) { /* verification is best-effort; the primary stop already ran */ }
 
@@ -281,12 +322,13 @@ router.post('/stop', async (req, res) => {
   });
   res.json({
     ...payload,
-    success: stream.ok && !verifiedActive,
+    success: stream.ok && verifiedActive === false,
     stream_stop: stream,
     mode,
     scene,
     stream_active_after: verifiedActive,
     second_stop: secondStop,
+    production_state: productionState,
   });
 });
 

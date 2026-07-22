@@ -1,6 +1,8 @@
 import { api } from '../api.js';
 import { on, off, requestScreenshot, startRemote, stopRemote, sendTouch, sendKey, sendCommand } from '../socket.js';
 import { showToast } from '../components/toast.js';
+import { openTargetPicker } from '../components/target-picker.js';
+import { waitForTargetCatalog } from '../services/target-catalog-runtime.js';
 import { esc } from '../utils.js';
 import { t, tn } from '../i18n.js';
 
@@ -10,6 +12,11 @@ let screenshotHandler = null;
 let playbackHandler = null;
 let screenshotInterval = null;
 let remoteActive = false;
+
+export function copyPlaylistTargetIds(selection, sourceDeviceId) {
+  return [...new Set(Array.isArray(selection?.deviceIds) ? selection.deviceIds : [])]
+    .filter((id) => id && id !== sourceDeviceId);
+}
 
 function formatBytes(mb) {
   if (mb === null || mb === undefined) return '--';
@@ -667,24 +674,38 @@ async function setupActions(device) {
   // Copy playlist to another device
   document.getElementById('copyPlaylistBtn')?.addEventListener('click', async () => {
     try {
-      const devices = await api.getDevices();
-      const others = devices.filter(d => d.id !== device.id);
-      if (!others.length) { showToast(t('device.copy.no_other_devices'), 'info'); return; }
-
-      const targetId = prompt(t('device.copy.prompt', { list: others.map((d, i) => `${i + 1}. ${d.name}`).join('\n') }));
-      if (!targetId) return;
-      const target = others[parseInt(targetId) - 1];
-      if (!target) { showToast(t('device.copy.invalid_selection'), 'error'); return; }
+      const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false });
+      const selection = await openTargetPicker({
+        catalog,
+        capability: 'content',
+        selection: 'single',
+        allowOffline: true,
+        allowIndividualWallMembers: false,
+        allowLiveProgram: false,
+      });
+      if (!selection) return;
+      const targetIds = copyPlaylistTargetIds(selection, device.id);
+      if (!targetIds.length) { showToast(t('device.copy.no_other_devices'), 'info'); return; }
 
       const token = localStorage.getItem('token');
-      const res = await fetch(`/api/assignments/device/${device.id}/copy-to/${target.id}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ replace: false })
-      });
-      const data = await res.json();
-      if (res.ok) showToast(t('device.copy.toast', { n: data.copied, device: target.name }), 'success');
-      else showToast(data.error, 'error');
+      const results = await Promise.allSettled(targetIds.map(async (targetId) => {
+        const response = await fetch(`/api/assignments/device/${device.id}/copy-to/${targetId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ replace: false }),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.error || `Copy failed for ${targetId}`);
+        return result;
+      }));
+      const successes = results.filter((result) => result.status === 'fulfilled');
+      const failures = results.filter((result) => result.status === 'rejected');
+      const copied = successes.reduce((sum, result) => sum + (Number(result.value?.copied) || 0), 0);
+      const targetName = selection.targets[0]?.name || `${successes.length} destination(s)`;
+      if (successes.length) showToast(t('device.copy.toast', { n: copied, device: targetName }), 'success');
+      if (failures.length) {
+        showToast(`Playlist copied to ${successes.length} of ${targetIds.length} displays. ${failures[0].reason?.message || 'One or more copies failed.'}`, 'error');
+      }
     } catch (err) { showToast(err.message, 'error'); }
   });
 

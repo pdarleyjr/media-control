@@ -49,7 +49,8 @@ router.get('/', (req, res) => {
   const walls = db.prepare('SELECT * FROM video_walls WHERE workspace_id = ? ORDER BY created_at DESC').all(req.workspaceId);
 
   const devStmt = db.prepare(`
-    SELECT vwd.*, d.name as device_name, d.status as device_status, d.playlist_id
+    SELECT vwd.*, d.name as device_name, d.status as device_status, d.playlist_id,
+           d.screen_width, d.screen_height
     FROM video_wall_devices vwd
     JOIN devices d ON vwd.device_id = d.id
     WHERE vwd.wall_id = ?
@@ -71,6 +72,13 @@ function notifyDashboards(req, workspaceId) {
     if (!io || !workspaceId) return;
     const { workspaceRoom, emitToWorkspace } = require('../lib/socket-rooms');
     emitToWorkspace(io.of('/dashboard'), workspaceRoom(workspaceId), 'dashboard:wall-changed', null);
+    const { publishRoomSnapshot } = require('../lib/room-state-broadcaster');
+    publishRoomSnapshot(io, {
+      workspaceId,
+      roomId: require('../config').console.roomId,
+      reason: 'topology:wall-changed',
+      bump: true,
+    });
   } catch (e) { /* silent */ }
 }
 
@@ -78,7 +86,8 @@ function loadWallWithDevices(id) {
   const wall = db.prepare('SELECT * FROM video_walls WHERE id = ?').get(id);
   if (!wall) return null;
   wall.devices = db.prepare(`
-    SELECT vwd.*, d.name as device_name, d.status as device_status, d.playlist_id
+    SELECT vwd.*, d.name as device_name, d.status as device_status, d.playlist_id,
+           d.screen_width, d.screen_height
     FROM video_wall_devices vwd JOIN devices d ON vwd.device_id = d.id
     WHERE vwd.wall_id = ? ORDER BY vwd.grid_row, vwd.grid_col
   `).all(id);
@@ -246,7 +255,8 @@ router.put('/:id', requireWallWrite, (req, res) => {
 router.put('/:id/layout', requireWallWrite, (req, res) => {
   const wall = req.wall;
   const members = db.prepare(`
-    SELECT vwd.*, d.name AS device_name, d.status AS device_status, d.playlist_id
+    SELECT vwd.*, d.name AS device_name, d.status AS device_status, d.playlist_id,
+           d.screen_width, d.screen_height
     FROM video_wall_devices vwd
     JOIN devices d ON d.id = vwd.device_id
     WHERE vwd.wall_id = ?
@@ -446,6 +456,8 @@ router.put('/:id/content', requireWallWrite, (req, res) => {
   }
   db.prepare("UPDATE video_walls SET content_id = ?, updated_at = strftime('%s','now') WHERE id = ?")
     .run(content_id || null, req.params.id);
+  pushToWallMembers(req, wall.id);
+  notifyDashboards(req, wall.workspace_id);
   res.json({ success: true });
 });
 

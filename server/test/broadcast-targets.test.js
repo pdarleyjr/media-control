@@ -55,3 +55,29 @@ test('resolveBroadcastTargets fails clearly when every target is stale', () => {
   assert.equal(result.body.error, 'No valid target devices found');
   assert.deepEqual(result.body.missing, ['old-a', 'old-b']);
 });
+
+test('managed live-program targets require the explicit include-live-stream gate', () => {
+  const liveId = 'live-stream-program-abc123';
+  const db = makeDb({
+    d1: { id: 'd1', workspace_id: 'ws1' },
+    [liveId]: { id: liveId, workspace_id: 'ws1' },
+  });
+
+  const blocked = resolveBroadcastTargets({
+    db,
+    requestedIds: ['d1', liveId],
+    workspaceId: 'ws1',
+  });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.status, 400);
+  assert.equal(blocked.body.code, 'LIVE_STREAM_CONFIRMATION_REQUIRED');
+
+  const allowed = resolveBroadcastTargets({
+    db,
+    requestedIds: ['d1', liveId],
+    workspaceId: 'ws1',
+    allowLiveStream: true,
+  });
+  assert.equal(allowed.ok, true);
+  assert.deepEqual(allowed.targets, ['d1', liveId]);
+});

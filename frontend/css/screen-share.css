@@ -94,6 +94,20 @@
 }
 .ss-target-name {
   font-weight: 500;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: .15rem;
+}
+
+.ss-target-name > .muted {
+  font-size: .75rem;
+  font-weight: 400;
+  line-height: 1.35;
+}
+
+.ss-target-member-line {
+  overflow-wrap: anywhere;
 }
 
 .ss-target-section-label {

@@ -1,6 +1,7 @@
 const { db } = require('../db/database');
 const config = require('../config');
 const { deviceRoom, emitToWorkspace } = require('../lib/socket-rooms');
+const { scheduleRoomSnapshot } = require('../lib/room-state-broadcaster');
 
 // Track connected device sockets: deviceId -> { socketId, lastHeartbeat }
 const deviceConnections = new Map();
@@ -11,7 +12,7 @@ function startHeartbeatChecker(io) {
     const dashboardNs = io.of('/dashboard');
 
     // Check database for devices that should be offline
-    const onlineDevices = db.prepare("SELECT id, last_heartbeat FROM devices WHERE status = 'online'").all();
+    const onlineDevices = db.prepare("SELECT id, workspace_id, last_heartbeat FROM devices WHERE status = 'online'").all();
 
     for (const device of onlineDevices) {
       const conn = deviceConnections.get(device.id);
@@ -28,6 +29,13 @@ function startHeartbeatChecker(io) {
           status: 'offline',
           telemetry: null
         });
+        if (device.workspace_id) {
+          scheduleRoomSnapshot(io, {
+            workspaceId: device.workspace_id,
+            roomId: config.console.roomId,
+            reason: 'device:heartbeat-timeout',
+          }, 100);
+        }
 
         console.log(`Device ${device.id} marked offline (heartbeat timeout)`);
         try {

@@ -968,6 +968,252 @@
 .mc-route-section { min-width: 0; flex-direction: column; align-items: flex-start; gap: 2px; }
 .mc-route-section.is-disabled { opacity: 0.45; cursor: not-allowed; }
 
+/* Authoritative room target picker. Wall topology is the signature: operators
+   see the real layout, canvas, revision and each physical member before they
+   route content. Borders-only depth keeps the live decision surface calm. */
+.mc-target-picker {
+  box-sizing: border-box;
+  width: min(840px, calc(100vw - var(--space-4) - var(--space-4)));
+  max-width: none;
+  max-height: calc(100dvh - var(--space-4) - var(--space-4));
+  margin: auto;
+  overflow: hidden;
+}
+.mc-target-picker-card {
+  box-sizing: border-box;
+  width: 100%;
+  max-height: calc(100dvh - var(--space-4) - var(--space-4));
+  overflow: hidden;
+  background: var(--bg-card);
+}
+.mc-target-picker-header {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.mc-target-picker-hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--font-2);
+}
+.mc-target-picker-scroll {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: var(--space-1);
+  scrollbar-gutter: stable;
+}
+.mc-target-picker-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.mc-target-picker-section h4 {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-2);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.mc-target-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+.mc-target-picker-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: var(--tap-min);
+  padding: var(--space-3);
+  color: var(--text-primary);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+.mc-target-picker-choice:hover { background: var(--bg-secondary); border-color: var(--accent); }
+.mc-target-picker-choice:focus-within {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+  border-color: var(--accent);
+}
+.mc-target-picker-choice:has(input:checked) {
+  background: rgba(37, 99, 235, 0.06);
+  border-color: var(--accent);
+}
+.mc-target-picker-choice:has(input:disabled) {
+  cursor: not-allowed;
+  background: var(--bg-secondary);
+}
+.mc-target-picker-choice > input {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+.mc-target-picker-choice-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.mc-target-picker-choice-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.mc-target-picker-choice-heading strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--font-4);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mc-target-picker-status {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-secondary);
+  font-size: var(--font-1);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.mc-target-picker-status > span {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--standby);
+}
+.mc-target-picker-status.is-online { color: var(--success-text); }
+.mc-target-picker-status.is-online > span { background: var(--success); }
+.mc-target-picker-meta {
+  color: var(--text-secondary);
+  font-family: var(--mc-font-family-mono);
+  font-size: var(--font-2);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+}
+.mc-target-picker-topology {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-height: 16px;
+  padding-top: var(--space-1);
+}
+.mc-target-picker-member {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: 2px;
+}
+.mc-target-picker-member > span[aria-hidden="true"] {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--standby);
+}
+.mc-target-picker-member.is-online { border-color: var(--success); }
+.mc-target-picker-member.is-online > span[aria-hidden="true"] { background: var(--success); }
+.mc-target-picker-reason {
+  color: var(--warning-text);
+  font-size: var(--font-2);
+  font-weight: 700;
+}
+.mc-target-picker-live {
+  padding: var(--space-3);
+  background: var(--mc-live-dim);
+  border: 1px solid rgba(220, 38, 38, 0.28);
+  border-radius: var(--radius-lg);
+}
+.mc-target-picker-live h4 { color: var(--mc-live-text); }
+.mc-target-picker-live-warning {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--mc-live-text);
+  font-size: var(--font-3);
+  font-weight: 700;
+  line-height: 1.45;
+}
+.mc-target-picker-live-warning > span { color: var(--live); }
+.mc-target-picker-live-guard {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--tap-min);
+  padding: 0 var(--space-3);
+  color: var(--text-primary);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-weight: 600;
+}
+.mc-target-picker-live-guard:focus-within { outline: 3px solid var(--accent); outline-offset: 2px; }
+.mc-target-picker-live-guard input { width: 20px; height: 20px; accent-color: var(--live); }
+.mc-target-picker-choice.is-live-program:has(input:checked) {
+  background: var(--mc-live-dim);
+  border-color: var(--live);
+}
+.mc-target-picker-empty,
+.mc-target-picker-error {
+  margin: 0;
+  padding: var(--space-4);
+  color: var(--text-secondary);
+  text-align: center;
+}
+.mc-target-picker-error {
+  flex: 0 0 auto;
+  padding-block: 0;
+  color: var(--danger-text);
+  font-size: var(--font-3);
+  font-weight: 700;
+}
+.mc-target-picker-card > .mc-dialog-actions { flex: 0 0 auto; }
+.mc-visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+@media (max-width: 640px) {
+  .mc-target-picker {
+    width: calc(100vw - var(--space-2) - var(--space-2));
+    max-height: calc(100dvh - var(--space-2) - var(--space-2));
+  }
+  .mc-target-picker-card {
+    max-height: calc(100dvh - var(--space-2) - var(--space-2));
+    padding: var(--space-4);
+  }
+  .mc-target-picker-grid { grid-template-columns: 1fr; }
+  .mc-target-picker-card > .mc-dialog-actions { flex-direction: column-reverse; }
+  .mc-target-picker-card > .mc-dialog-actions .mc-btn { width: 100%; min-height: var(--tap-min); }
+}
+
 /* ════════════════════════════════════════════════════════════════════════
    Command bar — classroom quick actions (folds in the Present surface).
    A white band under the header: PRIMARY "Start Class" (orange --cta, the one

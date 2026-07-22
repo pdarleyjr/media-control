@@ -11,6 +11,7 @@ const crypto = require('crypto');
 const config = require('../config');
 const { db } = require('../db/database');
 const deviceContract = require('../player/device-contract');
+const { scheduleRoomSnapshot } = require('./room-state-broadcaster');
 
 // ── prepared statements (memoized per-process) ────────────────────────────
 function p(sql) {
@@ -395,6 +396,14 @@ function startAckSweep(io) {
               error: 'Command not acknowledged within ' +
                 Math.round(config.commandAckTimeoutMs / 1000) + 's',
             });
+            const workspaceId = room.startsWith('workspace:') ? room.slice('workspace:'.length) : null;
+            if (workspaceId) {
+              scheduleRoomSnapshot(io, {
+                workspaceId,
+                roomId: config.console.roomId,
+                reason: 'command:timeout',
+              }, 100);
+            }
           } catch (_) { /* broadcast is best-effort */ }
         }
       }

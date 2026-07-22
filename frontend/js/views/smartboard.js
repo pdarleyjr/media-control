@@ -32,28 +32,9 @@
  */
 
 import { getSocket } from '../socket.js';
-
-// ----------------------------------------------------------------------
-// Self-contained API helper - intentionally does NOT import from api.js so
-// this view ships as a single drop-in (mirrors screen-share.js). Uses the
-// same JWT bearer pattern as the rest of the dashboard.
-// ----------------------------------------------------------------------
-async function apiGet(path) {
-  const token = localStorage.getItem('token');
-  const res = await fetch(path, {
-    headers: token ? { 'Authorization': 'Bearer ' + token, 'Accept': 'application/json' } : {},
-    credentials: 'same-origin',
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error('HTTP ' + res.status + ': ' + body.slice(0, 200));
-  }
-  return res.json();
-}
-
-function listDevices() {
-  return apiGet('/api/devices');
-}
+import { openTargetPicker } from '../components/target-picker.js';
+import { showToast } from '../components/toast.js';
+import { waitForTargetCatalog } from '../services/target-catalog-runtime.js';
 
 // ----------------------------------------------------------------------
 // Tools / defaults
@@ -70,9 +51,8 @@ const ERASER_BG = '#ffffff';  // board background; eraser paints with this color
 // so re-entering the route never inherits a zombie session.
 // ----------------------------------------------------------------------
 let activeContainer = null;
-// Targets for the live whiteboard. A single display ([id]) or the whole room
-// (every online display) — strokes fan to ALL of them so a drawing made on the
-// controller reflects on every chosen display at once.
+// Physical device ids resolved from one logical wall, group, or standalone
+// destination. Wall members are never offered as duplicate picker choices.
 let targetDeviceIds = [];
 let targetLabel = '';
 
@@ -197,68 +177,73 @@ function emitWbAck(event, payload, timeoutMs = 5000) {
 }
 
 // ----------------------------------------------------------------------
-// Step 1: display picker
+// Step 1: authoritative logical target picker
 // ----------------------------------------------------------------------
-async function renderPicker() {
+function renderPicker() {
   if (!activeContainer) return;
   activeContainer.innerHTML = `
     <div class="view-smartboard sb-picker">
       <header class="view-header">
         <h1>Smartboard</h1>
-        <p class="muted">Pick a display to start a live whiteboard. Draw on this tablet and it appears on the chosen display in real time.</p>
+        <p class="muted">Choose a video wall, display group, or standalone display. Draw on this tablet and it appears on that destination in real time.</p>
       </header>
       <section class="sb-display-list" id="sb-display-list">
-        <div class="muted">Loading displays&hellip;</div>
+        <button type="button" class="sb-display-card" data-smartboard-pick>
+          <span class="sb-display-name">Choose whiteboard destination</span>
+          <span class="sb-display-status">View current wall layout and display status</span>
+        </button>
       </section>
     </div>
   `;
 
-  const listEl = activeContainer.querySelector('#sb-display-list');
-  if (!listEl) return;
-  try {
-    const devices = await listDevices();
-    if (!activeContainer) return; // unmounted mid-fetch
-    if (!Array.isArray(devices) || devices.length === 0) {
-      listEl.innerHTML = '<div class="muted">No paired displays in this workspace yet. Pair a display under Displays.</div>';
-      return;
-    }
-    const onlineIds = devices.filter(d => d.status === 'online').map(d => d.id);
-    // "All displays" — draw once, reflect on every online display in the room.
-    const allCard = onlineIds.length > 1
-      ? `<button class="sb-display-card sb-display-all" data-all="1">
-           <span class="sb-display-name">All displays (whole room)</span>
-           <span class="sb-display-status"><span class="status-dot online"></span>${onlineIds.length} online</span>
-         </button>`
-      : '';
-    listEl.innerHTML = allCard + devices.map((d) => {
-      const online = d.status === 'online';
-      return `
-        <button class="sb-display-card" data-device-id="${escapeHtml(d.id)}" ${online ? '' : 'disabled'}>
-          <span class="sb-display-name">${escapeHtml(d.name || 'Unnamed display')}</span>
-          <span class="sb-display-status">
-            <span class="status-dot ${online ? 'online' : 'offline'}"></span>
-            ${escapeHtml(d.status || 'unknown')}
-          </span>
-        </button>
-      `;
-    }).join('');
+  activeContainer.querySelector('[data-smartboard-pick]')?.addEventListener('click', () => {
+    chooseSmartboardTarget().catch(() => {});
+  });
+  if (requestedDeviceId) {
+    const deepLinkedDeviceId = requestedDeviceId;
+    requestedDeviceId = null;
+    chooseSmartboardTarget(deepLinkedDeviceId).catch(() => {});
+  }
+}
 
-    const allBtn = listEl.querySelector('.sb-display-all[data-all]');
-    if (allBtn) allBtn.addEventListener('click', () => selectTargets(onlineIds, 'All displays'));
-    listEl.querySelectorAll('.sb-display-card[data-device-id]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const id = btn.dataset.deviceId;
-        const name = btn.querySelector('.sb-display-name')?.textContent || 'Display';
-        if (id) selectTargets([id], name);
-      });
+// Deep links historically named an individual device. If that device is a wall
+// member, preselect its logical wall so the popup cannot bypass wall topology.
+function requestedTargetReference(catalog, deviceId) {
+  if (!deviceId) return null;
+  const wall = (catalog.walls || []).find((candidate) => (
+    candidate.members.some((member) => member.id === deviceId)
+  ));
+  if (wall) return { type: 'wall', id: wall.id };
+  const standalone = (catalog.standaloneDisplays || []).find((display) => display.id === deviceId);
+  return standalone ? { type: 'display', id: standalone.id } : null;
+}
+
+async function chooseSmartboardTarget(deepLinkedDeviceId = '') {
+  try {
+    const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false });
+    if (!activeContainer) return;
+    const requested = requestedTargetReference(catalog, deepLinkedDeviceId);
+    const selection = await openTargetPicker({
+      catalog,
+      capability: 'whiteboard',
+      selection: 'single',
+      allowOffline: false,
+      allowIndividualWallMembers: false,
+      allowLiveProgram: false,
+      selectedTargets: requested ? [requested] : [],
     });
-    if (requestedDeviceId) {
-      const target = devices.find(d => d.id === requestedDeviceId && d.status === 'online');
-      requestedDeviceId = null;
-      if (target) selectTargets([target.id], target.name || 'Display');
+    if (!selection || !activeContainer) return;
+    const onlineIds = new Set((catalog.displays || []).filter((display) => display.online).map((display) => display.id));
+    const ids = selection.deviceIds.filter((deviceId) => onlineIds.has(deviceId));
+    const selectedTarget = selection.targets[0];
+    if (!ids.length || !selectedTarget) throw new Error('That destination has no online whiteboard displays.');
+    if (selectedTarget.type === 'wall' && selectedTarget.onlineCount !== selectedTarget.memberCount) {
+      throw new Error(`${selectedTarget.name} is incomplete (${selectedTarget.onlineCount}/${selectedTarget.memberCount} online).`);
     }
-  } catch (e) {
-    listEl.innerHTML = `<div class="muted">Could not load displays: ${escapeHtml(e.message || String(e))}</div>`;
+    targetLabel = selectedTarget.topologyLabel || selectedTarget.name || selectedTarget.id;
+    await selectTargets(ids, targetLabel);
+  } catch (error) {
+    showToast(error?.message || 'Could not load whiteboard destinations.', 'error');
   }
 }
 

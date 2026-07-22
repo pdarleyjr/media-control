@@ -1029,6 +1029,17 @@ app.post('/api/provision/pair', requireAuth, resolveTenancy, requireWorkspaceWri
   // Phase 2.3: scope to the workspace the device was just claimed into.
   const { workspaceRoom, emitToWorkspace } = require('./lib/socket-rooms');
   emitToWorkspace(dashboardNs, workspaceRoom(updated.workspace_id), 'dashboard:device-added', updated);
+  try {
+    const { publishRoomSnapshot } = require('./lib/room-state-broadcaster');
+    publishRoomSnapshot(io, {
+      workspaceId: updated.workspace_id,
+      roomId: config.console.roomId,
+      reason: 'device:paired',
+      bump: true,
+    });
+  } catch (error) {
+    console.warn(`[room-state] pairing snapshot failed: ${error.message}`);
+  }
 
   // Security audit trail. Note: pairing_code is intentionally NOT included
   // (it's a secret); the audit writer would redact it anyway by key name.

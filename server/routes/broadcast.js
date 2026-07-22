@@ -21,7 +21,7 @@ const { deckPlayerUrl } = require('../lib/deck-player-url');
 const { assertRemoteUrlSafe } = require('../lib/ssrf-policy');
 const { audit } = require('../lib/audit');
 const { ensureLiveStreamDisplay, liveStreamProgramState, markLiveContentChanged } = require('../lib/live-stream-display');
-const { resolveBroadcastTargets } = require('../lib/broadcast-targets');
+const { LIVE_STREAM_DEVICE_PREFIX, resolveBroadcastTargets } = require('../lib/broadcast-targets');
 const nodeRegistry = require('../lib/node-registry');
 
 async function callDirector(path, body) {
@@ -58,8 +58,8 @@ router.post('/', async (req, res) => {
   } = req.body || {};
 
   // Validate the target selection.
-  if (!Array.isArray(device_ids) || device_ids.length === 0) {
-    return res.status(400).json({ error: 'device_ids must be a non-empty array' });
+  if (!Array.isArray(device_ids) || (device_ids.length === 0 && include_live_stream !== true)) {
+    return res.status(400).json({ error: 'device_ids must be a non-empty array unless Live Program is explicitly selected' });
   }
 
   // Validate at least one source (presentation_id counts as a valid source).
@@ -98,14 +98,21 @@ router.post('/', async (req, res) => {
     if (liveStreamDisplay && !requested.includes(liveStreamDisplay.id)) requested.push(liveStreamDisplay.id);
     if (liveStreamDisplay) markLiveContentChanged(liveStreamDisplay.id);
   }
-  const resolvedTargets = resolveBroadcastTargets({ db, requestedIds: requested, workspaceId: req.workspaceId });
+  const resolvedTargets = resolveBroadcastTargets({
+    db,
+    requestedIds: requested,
+    workspaceId: req.workspaceId,
+    allowLiveStream: include_live_stream === true,
+  });
   if (!resolvedTargets.ok) return res.status(resolvedTargets.status).json(resolvedTargets.body);
   const targets = resolvedTargets.targets;
 
   // Confirmation gate when targeting ALL displays in the workspace.
   const totalInWorkspace = db.prepare(
-    'SELECT COUNT(*) AS c FROM devices WHERE workspace_id = ?'
-  ).get(req.workspaceId).c;
+    `SELECT COUNT(*) AS c FROM devices
+     WHERE workspace_id = ?
+       AND (? = 1 OR id NOT LIKE ?)`
+  ).get(req.workspaceId, include_live_stream === true ? 1 : 0, `${LIVE_STREAM_DEVICE_PREFIX}%`).c;
   const targetingAll = totalInWorkspace > 0 && targets.length === totalInWorkspace;
   if (targetingAll && confirm_all !== true) {
     return res.status(409).json({ code: 'CONFIRM_ALL_REQUIRED', count: totalInWorkspace });

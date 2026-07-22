@@ -35,6 +35,9 @@ import * as auditLogView from './audit-log.js';
 import * as settingsView from './settings.js';
 import * as videoWallView from './video-wall.js';
 import { mount as mountWhiteboardSurface } from './media-control/whiteboard.js';
+import { openTargetPicker as openAuthoritativeTargetPicker } from '../components/target-picker.js';
+import { getCurrentTargetCatalog, waitForTargetCatalog } from '../services/target-catalog-runtime.js';
+import { buildWhiteboardTargets, findWhiteboardTargetForActive } from '../services/whiteboard-targets.js';
 // transport.js is used by stage.js internally — no direct import needed here.
 
 // Rail "Room setup" launcher icons (stroke icons, dashboard SVG vocabulary).
@@ -770,19 +773,10 @@ function wallTransportDeviceId(wall) {
 }
 
 async function applyWallRoutingModes(wallSelections) {
-  const changes = [];
-  for (const selection of (wallSelections || [])) {
-    const wall = selection.wall;
-    if (!wall || !wall.id) continue;
-    const desired = selection.mode === 'sections' ? 'split' : 'span';
-    const current = wall.layout_mode === 'split' ? 'split' : 'span';
-    if (current !== desired) changes.push(api.updateWall(wall.id, { layout_mode: desired }));
-  }
-  if (!changes.length) return;
-  await Promise.all(changes);
-  await loadWalls();
-  paintStage();
-  paintSummary();
+  // Content selection is never a topology mutation. Every wall selection is
+  // resolved against its already-confirmed revision/layout, and the explicit
+  // layout controls remain the only place that may change span/split/groups.
+  void wallSelections;
 }
 
 async function chooseRouteTargets(label) {
@@ -1654,13 +1648,9 @@ async function blankAllTargets() {
   showToast(t('mc.cmd.blanked'), 'info');
   displayState.refresh().catch(() => {});
 }
-// Open the existing screen-share flow. The active Command Center target decides
-// the default share destination per the Phase-8 default-one-region guard:
-//   • display target  → share to that one display directly (no picker)
-//   • wall target     → show a picker (each member TV label + "Span across wall"
-//                       explicit + "Cancel") — auto-stretch across the wall is no
-//                       longer the default; the operator must choose it explicitly
-//   • no target       → open the share view as before (its own picker)
+// Open the existing screen-share flow. The active logical wall or standalone
+// display is only a preselection hint: capture never starts until the operator
+// confirms it in Screen Share's authoritative topology list.
 // The resolved target is handed to the share view via sessionStorage (read by
 // views/screen-share.js) which only PRE-HIGHLIGHTS the matching row — the
 // existing capture-then-check WebRTC signalling is untouched.
@@ -1670,26 +1660,7 @@ function shareScreenActive() {
 async function shareScreenActiveAsync() {
   const target = activeTarget;
   if (target && target.type === 'wall') {
-    const wall = (walls || []).find((w) => w.id === target.id);
-    const members = (wall && Array.isArray(wall.devices)) ? wall.devices : [];
-    const options = members
-      .filter((m) => m && m.device_id)
-      .map((m) => ({ value: 'device:' + m.device_id, label: m.device_name || t('mc.cc.share.member') }));
-    options.push({ value: 'span', label: t('mc.cc.share.span_wall'), tone: 'primary' });
-    if (options.length <= 1) {
-      // Wall has no exposeable members — fall back to spanning the wall explicitly.
-      stagePreselectShareTarget({ kind: 'wall', id: target.id });
-      window.location.hash = '#/screen-share';
-      return;
-    }
-    const choice = await pickOptionDialog({
-      title: t('mc.cc.share.where'),
-      options,
-      cancelLabel: t('mc.cc.share.cancel'),
-    });
-    if (!choice) return; // Cancel — do not open the share view
-    if (choice === 'span') stagePreselectShareTarget({ kind: 'wall', id: target.id });
-    else if (String(choice).startsWith('device:')) stagePreselectShareTarget({ kind: 'device', id: String(choice).slice(7) });
+    stagePreselectShareTarget({ kind: 'wall', id: target.id });
     window.location.hash = '#/screen-share';
     return;
   }
@@ -1705,57 +1676,6 @@ function stagePreselectShareTarget(preselect) {
     if (preselect) sessionStorage.setItem('ss.preselect', JSON.stringify(preselect));
     else sessionStorage.removeItem('ss.preselect');
   } catch { /* sessionStorage unavailable — share view just opens normally */ }
-}
-// A transient <dialog> with N options + a Cancel button, reusing the same
-// .mc-dialog* classes / structure as components/confirm.js (consistent style,
-// no new CSS). Resolves the chosen option's value, or null on cancel/Esc/
-// backdrop. Mirrors chooseLiveStreamInclusion() in send.js.
-function pickOptionDialog({ title, message, options = [], cancelLabel } = {}) {
-  return new Promise((resolve) => {
-    let dialogEl = null;
-    let settled = false;
-    try { dialogEl = document.createElement('dialog'); }
-    catch { resolve(null); return; }
-    dialogEl.className = 'mc-dialog';
-    dialogEl.setAttribute('aria-labelledby', 'mcPickOptionTitle');
-    const msgHtml = message ? `<p class="mc-dialog-msg">${esc(message)}</p>` : '';
-    const optButtons = options.map((o, i) => {
-      const cls = o.tone === 'primary' ? 'mc-btn mc-btn-confirm' : 'mc-btn mc-btn-ghost';
-      return `<button type="button" class="${cls}" data-mc-pick="${esc(o.value)}">${esc(o.label)}</button>`;
-    }).join('');
-    dialogEl.innerHTML = `
-      <form method="dialog" class="mc-dialog-card">
-        <h3 id="mcPickOptionTitle" class="mc-dialog-title">${esc(title || '')}</h3>
-        ${msgHtml}
-        <div class="mc-dialog-actions">
-          <button type="button" class="mc-btn mc-btn-ghost" data-mc-pick-cancel>${esc(cancelLabel || 'Cancel')}</button>
-          ${optButtons}
-        </div>
-      </form>`;
-    document.body.appendChild(dialogEl);
-    const cleanup = () => {
-      dialogEl.querySelectorAll('[data-mc-pick]').forEach((b) => b.removeEventListener('click', onPick));
-      cancelBtn.removeEventListener('click', onCancel);
-      dialogEl.removeEventListener('cancel', onCancel);
-      dialogEl.removeEventListener('close', onCancel);
-      if (dialogEl.parentNode) dialogEl.parentNode.removeChild(dialogEl);
-    };
-    const finish = (val) => {
-      if (settled) return;
-      settled = true;
-      try { if (dialogEl.open) dialogEl.close(); } catch { /* noop */ }
-      cleanup();
-      resolve(val);
-    };
-    const onCancel = (e) => { if (e && e.preventDefault) e.preventDefault(); finish(null); };
-    const onPick = (e) => finish(e.currentTarget.dataset.mcPick);
-    const cancelBtn = dialogEl.querySelector('[data-mc-pick-cancel]');
-    cancelBtn.addEventListener('click', onCancel);
-    dialogEl.querySelectorAll('[data-mc-pick]').forEach((b) => b.addEventListener('click', onPick));
-    dialogEl.addEventListener('cancel', onCancel);
-    dialogEl.addEventListener('close', onCancel);
-    try { dialogEl.showModal(); } catch (e) { cleanup(); resolve(null); }
-  });
 }
 async function startLive() {
   const ok = await confirmDialog({
@@ -1792,43 +1712,33 @@ async function stopLive() {
   catch (e) { showToast(e && e.message ? e.message : t('mc.cmd.live_stop_failed'), 'error'); }
 }
 
-function openTargetPickerModal() {
-  let controller;
-  controller = openViewModal({
-    title: 'Choose a display',
-    render: (body) => {
-      const displayTargets = routeableDisplays();
-      const groupTargets = layoutGroupTargets();
-      body.innerHTML = `<div class="mc-route-list mc-target-choice-list">
-        ${(walls || []).map((wall) => `<button type="button" class="mc-route-row mc-target-choice" data-type="wall" data-id="${esc(wall.id)}">
-          <strong>${esc(wall.name || wall.id)}</strong><span>${esc(wall.layout_mode === 'split' ? 'Split mode' : 'Span mode')}</span>
-        </button>`).join('')}
-        ${groupTargets.map((group) => `<button type="button" class="mc-route-row mc-target-choice" data-type="group" data-id="${esc(group.id)}">
-          <strong>${esc(group.label || group.name || group.id)}</strong><span>${esc(group.layout === 'span' ? 'Spanned group' : 'Independent display')}</span>
-        </button>`).join('')}
-        ${displayTargets.map((display) => `<button type="button" class="mc-route-row mc-target-choice" data-type="display" data-id="${esc(display.id)}">
-          <strong>${esc(display.name || display.id)}</strong><span>${esc(display.online ? 'Connected' : 'Not connected')}</span>
-        </button>`).join('')}
-      </div>`;
-      body.querySelectorAll('[data-type][data-id]').forEach((button) => {
-        button.addEventListener('click', () => {
-          const isWall = button.dataset.type === 'wall';
-          const isGroup = button.dataset.type === 'group';
-          const group = isGroup ? layoutGroupById(button.dataset.id) : null;
-          const target = isGroup
-            ? { type: 'group', ...group, id: button.dataset.id, supportsModes: false }
-            : {
-              type: isWall ? 'wall' : 'display',
-              id: button.dataset.id,
-              ...(isWall ? { wall_id: button.dataset.id, supportsModes: true } : { supportsModes: false }),
-            };
-          if (targetApi) targetApi.setActive(target);
-          handleTargetChange(target);
-          controller.close();
-        });
-      });
-    },
-  });
+async function openTargetPickerModal() {
+  try {
+    const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false });
+    // Command Center's large canvas currently renders whole walls or a single
+    // standalone display. Independent groups remain available in content
+    // routing, but are omitted here until the canvas has a confirmed group
+    // composition renderer.
+    const viewCatalog = { ...catalog, groups: [] };
+    const selection = await openAuthoritativeTargetPicker({
+      catalog: viewCatalog,
+      capability: 'preview',
+      selection: 'single',
+      allowOffline: true,
+      allowIndividualWallMembers: false,
+      allowLiveProgram: false,
+      selectedTargets: activeTarget ? [{ type: activeTarget.type, id: activeTarget.id }] : [],
+    });
+    const chosen = selection?.targets?.[0];
+    if (!chosen) return;
+    const target = chosen.type === 'wall'
+      ? { type: 'wall', id: chosen.id, wall_id: chosen.id, supportsModes: true }
+      : { type: 'display', id: chosen.id, supportsModes: false };
+    targetApi?.setActive?.(target);
+    handleTargetChange(target);
+  } catch (error) {
+    showToast(error?.message || 'Could not load live room topology.', 'error');
+  }
 }
 
 // Keep every rail surface inside the fixed Command Center. Hash navigation hid
@@ -2169,116 +2079,13 @@ pruneSelection();
   // independently-routable display in its own target selector.
   let wbApi = null;
   let wbHost = null;
-  function whiteboardDisplayTarget(device, wall = null) {
-    if (!device || !device.id) return null;
-    const split = wall && wall.layout_mode === 'split';
-    return {
-      target_type: split ? 'split' : 'display',
-      target_id: device.id,
-      split_device_id: split ? device.id : null,
-      wall_id: split ? wall.id : null,
-      preview_device_id: device.id,
-      label: wall ? `${wall.name}: ${device.name || device.id}` : (device.name || device.id),
-      screenshot_url: device.screenshot_url || null,
-      width: device.width || 1920,
-      height: device.height || 1080,
-    };
-  }
-  function whiteboardWallTarget(wall, byId) {
-    if (!wall || !wall.id) return null;
-    const leaderId = wallTransportDeviceId(wall) || wallDeviceIds(wall)[0];
-    const leader = leaderId ? byId.get(leaderId) : null;
-    if (!leaderId) return null;
-    const cols = Math.max(1, Number(wall.grid_cols) || 1);
-    const rows = Math.max(1, Number(wall.grid_rows) || 1);
-    const members = (wall.devices || []).map((member) => {
-      const live = byId.get(member.device_id) || {};
-      return {
-        id: member.device_id,
-        screenshot_url: live.screenshot_url || null,
-        x: (Number(member.grid_col) || 0) / cols,
-        y: (Number(member.grid_row) || 0) / rows,
-        width: 1 / cols,
-        height: 1 / rows,
-      };
-    });
-    return {
-      target_type: 'wall',
-      target_id: leaderId,
-      wall_id: wall.id,
-      preview_device_id: leaderId,
-      label: wall.name || wall.id,
-      screenshot_url: leader && leader.screenshot_url,
-      members,
-      width: (leader && leader.width || 1920) * cols,
-      height: (leader && leader.height || 1080) * rows,
-    };
-  }
   function whiteboardTargets() {
-    const all = displayState.getAll();
-    const byId = new Map(all.map((d) => [d.id, d]));
-    const result = [];
-    for (const wall of (Array.isArray(walls) ? walls : [])) {
-      const wallTarget = whiteboardWallTarget(wall, byId);
-      if (wallTarget) result.push(wallTarget);
-      if (wall.layout_mode === 'split') {
-        for (const id of wallDeviceIds(wall)) {
-          const memberTarget = whiteboardDisplayTarget(byId.get(id), wall);
-          if (memberTarget) result.push(memberTarget);
-        }
-      }
-      if (wall.layout_mode === 'groups') {
-        for (const group of (wall.layout?.groups || [])) {
-          const leaderId = group.leader_device_id || group.member_ids[0];
-          const leader = byId.get(leaderId);
-          const groupMembers = (wall.devices || []).filter((member) => group.member_ids.includes(member.device_id));
-          const minCol = Math.min(...groupMembers.map((member) => Number(member.grid_col) || 0));
-          const minRow = Math.min(...groupMembers.map((member) => Number(member.grid_row) || 0));
-          const cols = Math.max(1, Number(group.geometry?.columns) || groupMembers.length);
-          const rows = Math.max(1, Number(group.geometry?.rows) || 1);
-          result.push({
-            target_type: 'group',
-            target_id: leaderId,
-            wall_id: wall.id,
-            group_id: group.id,
-            member_ids: group.member_ids,
-            preview_device_id: leaderId,
-            label: `${wall.name}: ${group.name}`,
-            screenshot_url: leader && leader.screenshot_url,
-            members: groupMembers.map((member) => ({
-              id: member.device_id,
-              screenshot_url: byId.get(member.device_id)?.screenshot_url || null,
-              x: ((Number(member.grid_col) || 0) - minCol) / cols,
-              y: ((Number(member.grid_row) || 0) - minRow) / rows,
-              width: 1 / cols,
-              height: 1 / rows,
-            })),
-            width: (leader && leader.width || 1920) * cols,
-            height: (leader && leader.height || 1080) * rows,
-          });
-        }
-      }
-    }
-    for (const device of all) {
-      if (!device || wallMemberIds.has(device.id) || isLiveStreamTargetId(device.id)) continue;
-      const displayTarget = whiteboardDisplayTarget(device);
-      if (displayTarget) result.push(displayTarget);
-    }
-    return result;
+    return buildWhiteboardTargets(getCurrentTargetCatalog(), displayState.getAll());
   }
   function whiteboardTargetFromActive() {
-    const all = displayState.getAll();
-    const byId = new Map(all.map((d) => [d.id, d]));
-    if (activeTarget && activeTarget.type === 'wall') {
-      return whiteboardWallTarget((walls || []).find((w) => w.id === activeTarget.id), byId);
-    }
-    if (activeTarget && activeTarget.type === 'display') {
-      return whiteboardDisplayTarget(byId.get(activeTarget.id), wallForDeviceId(activeTarget.id));
-    }
-    if (activeTarget && activeTarget.type === 'group') {
-      return whiteboardTargets().find((target) => target.group_id === activeTarget.id) || null;
-    }
-    return whiteboardTargets()[0] || null;
+    const catalog = getCurrentTargetCatalog();
+    const targets = buildWhiteboardTargets(catalog, displayState.getAll());
+    return findWhiteboardTargetForActive(targets, catalog, activeTarget);
   }
   function removeWhiteboardHost() {
     if (wbHost && wbHost.parentNode) wbHost.parentNode.removeChild(wbHost);
@@ -2290,13 +2097,18 @@ pruneSelection();
   }
   window.mcOpenWhiteboard = function (targetArg) {
     closeWhiteboard();
+    const targets = whiteboardTargets();
     const tgt = targetArg || whiteboardTargetFromActive();
+    if (!tgt || targets.length === 0) {
+      showToast(t('mc.wb.status_no_target'), 'error');
+      return;
+    }
     wbHost = document.createElement('div');
     wbHost.className = 'mc-wb-host';
     document.body.appendChild(wbHost);
     wbApi = mountWhiteboardSurface(wbHost, {
       initialTarget: tgt,
-      targets: whiteboardTargets(),
+      targets,
       onStatus: (m) => { if (m) showToast(m); },
       onClose: () => { wbApi = null; removeWhiteboardHost(); },
     });

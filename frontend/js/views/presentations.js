@@ -7,6 +7,8 @@
 import { api } from '../api.js';
 import { confirmDialog } from '../components/confirm.js';
 import { showToast } from '../components/toast.js';
+import { openTargetPicker } from '../components/target-picker.js';
+import { waitForTargetCatalog } from '../services/target-catalog-runtime.js';
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
@@ -98,13 +100,29 @@ async function load(app) {
     if (preview) { window.open(`/player/deck/${encodeURIComponent(preview.dataset.preview)}`, '_blank', 'noopener'); return; }
     if (present) {
       const pid = present.dataset.present;
-      let devices = [];
-      try { devices = await api.getDevices(); if (!Array.isArray(devices)) devices = []; } catch (_) { /* */ }
-      const ids = devices.map((d) => d.id);
-      if (!ids.length) { showToast('No displays paired yet — pair one from Displays first.', 'info'); return; }
-      const url = `${location.origin}/player/deck/${pid}`;
+      present.disabled = true;
       try {
-        let r = await api.broadcast({ device_ids: ids, remote_url: url });
+        const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false });
+        const selection = await openTargetPicker({
+          catalog,
+          capability: 'content',
+          selection: 'multiple',
+          allowOffline: false,
+          allowIndividualWallMembers: false,
+          allowLiveProgram: true,
+        });
+        if (!selection) return;
+        const ids = selection.deviceIds;
+        if (!ids.length && !selection.includesLiveProgram) {
+          showToast('Choose at least one physical wall, display, or Live Program.', 'info');
+          return;
+        }
+        const payload = {
+          device_ids: ids,
+          presentation_id: pid,
+          include_live_stream: selection.includesLiveProgram,
+        };
+        let r = await api.broadcast(payload);
         if (r && r.code === 'CONFIRM_ALL_REQUIRED') {
           const ok = await confirmDialog({
             title: 'Present to ALL displays?',
@@ -112,10 +130,14 @@ async function load(app) {
             confirmLabel: 'Present to all', cancelLabel: 'Cancel', tone: 'danger',
           });
           if (!ok) return;
-          r = await api.broadcast({ device_ids: ids, remote_url: url, confirm_all: true });
+          r = await api.broadcast({ ...payload, confirm_all: true });
         }
-        showToast(`Presenting to ${r.sent != null ? r.sent : ids.length} display(s)`, 'success');
-      } catch (err) { showToast(err.message || 'Broadcast failed', 'error'); }
+        showToast(`Presenting to ${r.sent != null ? r.sent : ids.length} destination(s)`, 'success');
+      } catch (err) {
+        showToast(err.message || 'Broadcast failed', 'error');
+      } finally {
+        present.disabled = false;
+      }
       return;
     }
     if (dup) {

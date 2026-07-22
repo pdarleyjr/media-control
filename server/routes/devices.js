@@ -5,6 +5,12 @@ const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
 // Phase 2.2a: workspace-aware access. accessContext returns { workspaceRole, actingAs }
 // or null based on the caller's reach into a specific workspace.
 const { accessContext } = require('../lib/tenancy');
+const { scheduleRoomSnapshot } = require('../lib/room-state-broadcaster');
+
+function publishDeviceMutation(req, workspaceId, reason) {
+  const io = req.app.get('io');
+  if (io && workspaceId) scheduleRoomSnapshot(io, { workspaceId, reason });
+}
 
 // List devices in the caller's current workspace.
 // Phase 2.2a: filter by workspace_id instead of user_id. The caller's current
@@ -196,6 +202,7 @@ router.put('/:id', (req, res) => {
         }
       } catch (e) { /* silent */ }
     }
+    publishDeviceMutation(req, device.workspace_id, wroteGeometry ? 'device:geometry' : 'device:updated');
   }
 
   const updated = db.prepare('SELECT * FROM devices WHERE id = ?').get(req.params.id);
@@ -257,6 +264,7 @@ router.delete('/:id', (req, res) => {
     const { workspaceRoom, emitToWorkspace } = require('../lib/socket-rooms');
     emitToWorkspace(io.of('/dashboard'), workspaceRoom(device.workspace_id), 'dashboard:device-removed', { device_id: req.params.id });
   }
+  publishDeviceMutation(req, device.workspace_id, 'device:removed');
 
   res.json({ success: true });
 });
