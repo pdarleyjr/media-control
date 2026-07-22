@@ -241,4 +241,21 @@ module.exports = {
     playerBaseUrl: process.env.LIVE_STREAM_PLAYER_BASE_URL || process.env.APP_URL || '',
     peerTubeWatchUrl: process.env.PEERTUBE_LIVE_WATCH_URL || '',
   },
+
+  // PeerTube replay → Media Control integration. The worker polls PeerTube for
+  // VOD replays of classroom live streams, tracks their transcoding state, and
+  // surfaces them for operator review before adding a (default-private) content
+  // row that references PeerTube as the authoritative storage. All credentials
+  // come from env (never committed); with no token the feature is inert.
+  peerTubeReplay: {
+    enabled: ['true', '1'].includes(String(process.env.PEERTUBE_REPLAY_ENABLED || '').toLowerCase()),
+    apiBase: (process.env.PEERTUBE_API_BASE || 'http://127.0.0.1:8098').replace(/\/+$/, ''),
+    apiToken: process.env.PEERTUBE_API_TOKEN || '',
+    apiUsername: process.env.PEERTUBE_API_USERNAME || '',
+    apiPassword: process.env.PEERTUBE_API_PASSWORD || '',
+    pollIntervalMs: parseInt(process.env.PEERTUBE_REPLAY_POLL_MS, 10) || 60000,
+    pollBackoffMaxMs: parseInt(process.env.PEERTUBE_REPLAY_BACKOFF_MAX_MS, 10) || 600000,
+    publicWatchBase: (process.env.PEERTUBE_PUBLIC_BASE || '').replace(/\/+$/, ''),
+    fallbackDownloadDir: process.env.PEERTUBE_FALLBACK_DOWNLOAD_DIR || '',
+  },
 };
