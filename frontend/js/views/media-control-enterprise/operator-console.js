@@ -13,17 +13,17 @@
 // store + socket adapter. This is a NEW view entry — it does not replace the
 // existing media-control.js view. A minimal navigation entry is documented in
 // the integration guide (not applied here).
-import { roomState } from '../socket.js';
-import { createOperatorStore } from '../state/operator-store.js';
-import { createOperatorSocketAdapter } from '../state/socket-adapter.js';
-import { enterpriseApi } from '../state/enterprise-api.js';
-import { ERROR_CODES, recoveryForCode, deriveErrorCode } from '../state/error-recovery.js';
-import { esc } from '../display-layout/render-helpers.js';
-import { mountRoomOverview } from '../components/room-state/room-overview.js';
-import { mountLayoutSelector } from '../components/display-layout/layout-selector.js';
-import { mountContentSelector } from '../components/content-library/content-selector.js';
-import { mountPlaybackControl } from '../components/playback-control/playback-control.js';
-import { mountScreenSharePanel } from './screen-share-panel.js';
+import { roomState } from '../../socket.js';
+import { createOperatorStore } from '../../state/operator-store.js';
+import { createOperatorSocketAdapter } from '../../state/socket-adapter.js';
+import { enterpriseApi } from '../../state/enterprise-api.js';
+import { ERROR_CODES, recoveryForCode, deriveErrorCode } from '../../state/error-recovery.js';
+import { esc } from '../../components/display-layout/render-helpers.js';
+import { mountRoomOverview } from '../../components/room-state/room-overview.js';
+import { mountLayoutSelector } from '../../components/display-layout/layout-selector.js';
+import { mountContentSelector } from '../../components/content-library/content-selector.js';
+import { mountPlaybackControl } from '../../components/playback-control/playback-control.js';
+import { mountScreenSharePanel } from '../../components/operator-console/screen-share-panel.js';
 
 const SURFACES = {
   PREVIEW: 'preview',
