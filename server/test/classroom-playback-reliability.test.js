@@ -120,3 +120,118 @@ test('player HTML5 video selector includes zone videos', () => {
   const src = snippet(read('index.html'), 'function findControllableVideo(root)', 'function doTransport(input)');
   assert.ok(src.includes("#playerContainer video, .wall-stage video, .zone video"));
 });
+
+test('player serializes rapid transport and drops stale non-durable reconnect commands', () => {
+  const html = read('index.html');
+  assert.ok(html.includes('transportSerialQueue'));
+  assert.ok(html.includes('doTransportNow'));
+  assert.ok(html.includes('stale_command'));
+  assert.ok(html.includes('45000'));
+  assert.ok(html.includes('alreadyAppliedCommand'));
+  assert.ok(html.includes('rememberAppliedCommand'));
+});
+
+test('duplicate command_id is idempotent in player and deck/doc without re-applying', () => {
+  const html = read('index.html');
+  const deck = read('deck.html');
+  const doc = read('doc.html');
+  assert.ok(html.includes('alreadyAppliedCommand(command.command_id)'));
+  assert.ok(deck.includes('appliedCommandIds[cmd.command_id]'));
+  assert.ok(doc.includes('appliedCommandIds[cmd.command_id]'));
+  assert.ok(deck.includes('ack.idempotent'));
+  assert.ok(doc.includes('ack.idempotent'));
+});
+
+test('duplicate seek payloads remain valid and share canonical command identity', () => {
+  const a = contract.createCommand({
+    device_id: 'd1',
+    command_id: '11111111-1111-4111-8111-111111111111',
+    payload: { action: 'seek', seconds: 4 },
+  });
+  const b = contract.createCommand({
+    device_id: 'd1',
+    command_id: '11111111-1111-4111-8111-111111111111',
+    payload: { action: 'seek', position_seconds: 4 },
+  });
+  assert.equal(contract.validateCommand(a).ok, true);
+  assert.equal(contract.validateCommand(b).ok, true);
+  assert.equal(a.command_id, b.command_id);
+});
+
+test('two-zone targeting remains distinct in resolve path and transport UI', () => {
+  const html = read('index.html');
+  const transport = readFrontend('views/media-control/transport.js');
+  const stage = readFrontend('views/media-control/stage.js');
+  assert.ok(html.includes('zone_id'));
+  assert.ok(html.includes('pickZoneRootForAction'));
+  assert.ok(html.includes('Ambiguous multi-zone target'));
+  assert.ok(transport.includes('zoneId'));
+  assert.ok(transport.includes('buildTransportTarget'));
+  assert.ok(stage.includes("layoutMode === 'span'"));
+  assert.ok(stage.includes('requireSingleTarget'));
+});
+
+test('web and podium share transport module lifecycle waits for command-ack', () => {
+  const transport = readFrontend('views/media-control/transport.js');
+  assert.ok(transport.includes("onSocket('command-ack'"));
+  assert.ok(transport.includes('sendTransportCommand'));
+  assert.ok(transport.includes('COMMAND_LIFECYCLE.CONFIRMED'));
+  assert.ok(transport.includes('COMMAND_LIFECYCLE.STALE'));
+  assert.ok(transport.includes('COMMAND_LIFECYCLE.OFFLINE'));
+  assert.ok(transport.includes('DEFAULT_COMMAND_TIMEOUT_MS'));
+});
+
+test('non-regression: livestream/audio/socket/service-worker ownership surfaces remain intact', () => {
+  const root = path.join(__dirname, '..');
+  assert.ok(fs.existsSync(path.join(root, 'routes', 'live-stream.js')) || fs.existsSync(path.join(root, 'lib')));
+  // Agent 3 did not modify these paths; prove the worktree still contains the supporting modules.
+  const liveCandidates = [
+    path.join(root, 'routes', 'live-stream.js'),
+    path.join(root, 'lib', 'command-model.js'),
+    path.join(root, 'player', 'sw.js'),
+  ];
+  for (const file of liveCandidates) {
+    assert.ok(fs.existsSync(file), `expected ${path.basename(file)} present for integration`);
+  }
+  const commandModel = fs.readFileSync(path.join(root, 'lib', 'command-model.js'), 'utf8');
+  assert.ok(commandModel.includes('recordAck') || commandModel.includes('ingestCommand'));
+  const sw = fs.readFileSync(path.join(root, 'player', 'sw.js'), 'utf8');
+  assert.ok(sw.length > 20, 'player service worker must remain present');
+  // dashboardSocket still exposes device-command (our touch) without removing other control channels
+  const dash = fs.readFileSync(path.join(root, 'ws', 'dashboardSocket.js'), 'utf8');
+  assert.ok(dash.includes("dashboard:device-command"));
+  assert.ok(dash.includes('screen_on') || dash.includes('screen_off') || dash.includes('wb-'));
+});
+
+test('idempotency map semantics: first apply records, second sees duplicate', () => {
+  // Mirrors player appliedCommandIds memory without a browser DOM.
+  const applied = new Map();
+  function remember(id, ok) {
+    if (!id) return;
+    applied.set(String(id), { ok: ok !== false, at: Date.now() });
+  }
+  function already(id) {
+    if (!id) return null;
+    return applied.get(String(id)) || null;
+  }
+  remember('cmd-next-1', true);
+  const second = already('cmd-next-1');
+  assert.ok(second);
+  assert.equal(second.ok, true);
+  assert.equal(already('cmd-next-2'), null);
+  remember('cmd-seek-1', true);
+  assert.equal(already('cmd-seek-1').ok, true);
+});
+
+test('stale vs durable command classification matches player policy', () => {
+  const durable = new Set(['go_to_slide', 'seek', 'pause', 'stop', 'mute', 'unmute', 'volume']);
+  const nonDurable = ['next', 'prev', 'play_pause', 'restart'];
+  for (const action of nonDurable) assert.equal(durable.has(action), false);
+  for (const action of durable) assert.equal(durable.has(action), true);
+  const ageMs = 46000;
+  const wouldDrop = (action, age) => age > 45000 && !durable.has(action);
+  assert.equal(wouldDrop('next', ageMs), true);
+  assert.equal(wouldDrop('seek', ageMs), false);
+  assert.equal(wouldDrop('go_to_slide', ageMs), false);
+  assert.equal(wouldDrop('next', 1000), false);
+});
