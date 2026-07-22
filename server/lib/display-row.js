@@ -10,9 +10,11 @@
 //   { id, name, status, last_heartbeat, screen_width, screen_height,
 //     screen_on, playlist_id, layout_id, shot_at, ... }
 // `nowPlaying` is the resolved now-playing summary (see lib/display-state.js).
-// `now` is the current unix time (seconds) used for the online window.
+// `now` is unix time: seconds preferred; Date.now() milliseconds accepted.
+const { isHeartbeatFresh } = require('./heartbeat-age');
+
 function mapDisplayRow(row, nowPlaying, now, assetCache = null) {
-  const online = row.status === 'online' && row.last_heartbeat && (now - row.last_heartbeat) < 60;
+  const online = row.status === 'online' && isHeartbeatFresh(row.last_heartbeat, now, 60);
   return {
     id: row.id,
     name: row.name,

@@ -53,6 +53,12 @@ test('online window: stale heartbeat -> offline', () => {
   assert.equal(out.online, false);
 });
 
+test('online window: accepts Date.now() ms for now against unix-second heartbeats', () => {
+  const hbSec = Math.floor(Date.now() / 1000) - 5;
+  const out = mapDisplayRow(baseRow({ status: 'online', last_heartbeat: hbSec }), NP, Date.now());
+  assert.equal(out.online, true);
+});
+
 test('screen_on: 0 -> false, anything else -> true', () => {
   assert.equal(mapDisplayRow(baseRow({ screen_on: 0 }), NP, 1000).screen_on, false);
   assert.equal(mapDisplayRow(baseRow({ screen_on: 1 }), NP, 1000).screen_on, true);
