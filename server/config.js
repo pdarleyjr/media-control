@@ -1,6 +1,7 @@
 const path = require('path');
 const os = require('os');
 const { localContentBaseUrlFromEnv } = require('./lib/local-asset-url');
+const { buildEnterpriseOperatorUiFlag } = require('./lib/feature-flags');
 
 // Parse a human-friendly cache-quota string ("60G", "60GB", "6000000000", 60).
 // Used by roomAgentCacheQuotaBytes below + the backfill/agent scripts. Returns
@@ -152,22 +153,6 @@ module.exports = {
     guestEmail: process.env.CONSOLE_GUEST_EMAIL || 'guest@mbfd.local',
   },
 
-  // ── Feature flags ────────────────────────────────────────────────────────
-  // Server-controlled feature flags. The frontend fetches these via
-  // GET /api/features (requires auth). A flag defaulting to false means the
-  // feature is invisible and non-functional in production until explicitly
-  // enabled. Rollback = set env var to false (no rebuild).
-  features: {
-    enterpriseOperatorUi: {
-      enabled: ['true', '1'].includes(String(process.env.ENTERPRISE_OPERATOR_UI_ENABLED || '').toLowerCase()),
-      // Optional comma-separated allowlist of user IDs that may access the
-      // enterprise operator console during canary. When empty, any authed
-      // workspace member in a deployment with the flag on can access it.
-      allowlist: (process.env.ENTERPRISE_OPERATOR_UI_USERS || '')
-        .split(',').map((s) => s.trim()).filter(Boolean),
-    },
-  },
-
   // ── Classroom-only local content cache (P3 room-agent) ───────────────────
   // When enabled, ONLY the displays that belong to the listed classroom video
   // walls get their playlist asset_url rewritten to the on-box room-agent cache
@@ -240,7 +225,11 @@ module.exports = {
     writeToken: process.env.NC_WRITE_TOKEN || '',
   },
   // Feature flags — flip a module off without touching the core player/display
-  // system. Default ON; set ENABLE_*=false to disable.
+  // system. The frontend fetches these via GET /api/features (auth required).
+  // The ENABLE_* flags default ON; set ENABLE_*=false to disable. The
+  // enterprise operator UI flag defaults OFF and is fail-closed (see
+  // lib/feature-flags.js); set ENTERPRISE_OPERATOR_UI_ENABLED=true and an
+  // explicit ENTERPRISE_OPERATOR_UI_USERS allowlist (or "*") to canary it.
   features: {
     presentationStudio: process.env.ENABLE_PRESENTATION_STUDIO !== 'false',
     aiDeckBuilder: process.env.ENABLE_AI_DECK_BUILDER !== 'false',
@@ -248,6 +237,7 @@ module.exports = {
     nextcloudSync: process.env.ENABLE_NEXTCLOUD_SYNC !== 'false',
     videoWallStudio: process.env.ENABLE_VIDEO_WALL_STUDIO !== 'false',
     broadcastCenter: process.env.ENABLE_BROADCAST_CENTER !== 'false',
+    enterpriseOperatorUi: buildEnterpriseOperatorUiFlag(process.env),
   },
   // Live stream orchestration. Media Control only talks to the local AI Director
   // API; OBS websocket remains local-only behind that service.

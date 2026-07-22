@@ -6,6 +6,7 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const config = require('./config');
+const { resolveFeatureFlags } = require('./lib/feature-flags');
 
 // 2026-05-28: top-level safety nets. A single unhandled throw inside a
 // Socket.IO listener used to kill the entire Node process, putting the
@@ -799,15 +800,11 @@ app.use('/api/workspaces', requireAuth, require('./routes/workspaces'));
 // to decide whether to expose gated routes. Unauthorized users cannot enable a
 // flag via query parameter — the value comes solely from server config/env.
 app.get('/api/features', requireAuth, resolveTenancy, (req, res) => {
-  const flags = config.features || {};
-  const out = {};
-  for (const [key, flag] of Object.entries(flags)) {
-    const enabled = !!flag.enabled;
-    const allowlist = Array.isArray(flag.allowlist) ? flag.allowlist : [];
-    const userAllowed = enabled && (allowlist.length === 0 || allowlist.includes(req.user.id));
-    out[key] = { enabled, authorized: userAllowed };
-  }
-  res.json({ features: out });
+  // no-store: the response is per-user (authorized depends on req.user.id);
+  // a cached response must never be reused across sessions or users.
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Pragma', 'no-cache');
+  res.json({ features: resolveFeatureFlags(config.features, req.user.id) });
 });
 
 app.use('/api/devices', requireAuth, resolveTenancy, require('./routes/devices'));
