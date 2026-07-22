@@ -142,6 +142,31 @@ function groupForDevice(layout, deviceId) {
   return layout?.groups?.find((group) => group.member_ids.includes(deviceId)) || null;
 }
 
+// Keep the configured leader durable while deriving a deterministic online
+// failover for the current payload. Reconnect/disconnect must never rewrite
+// video_walls.leader_device_id or stored layout JSON. When the configured
+// leader returns, it automatically resumes its role without a topology change.
+function resolveEffectiveLayoutLeaders(layout, members) {
+  if (!layout) return layout;
+  const statusById = new Map((members || []).map((member) => [member.device_id, member.status]));
+  return {
+    ...layout,
+    groups: (layout.groups || []).map((group) => {
+      const configuredLeader = group.leader_device_id || group.member_ids?.[0] || null;
+      const configuredOnline = configuredLeader && statusById.get(configuredLeader) === 'online';
+      const effectiveLeader = configuredOnline
+        ? configuredLeader
+        : (group.member_ids || []).find((deviceId) => statusById.get(deviceId) === 'online') || configuredLeader;
+      return {
+        ...group,
+        configured_leader_device_id: configuredLeader,
+        leader_device_id: effectiveLeader,
+        leader_failover_active: !!configuredLeader && effectiveLeader !== configuredLeader,
+      };
+    }),
+  };
+}
+
 module.exports = {
   LAYOUT_VERSION,
   orderedMembers,
@@ -151,4 +176,5 @@ module.exports = {
   presetForGroups,
   validateLayout,
   groupForDevice,
+  resolveEffectiveLayoutLeaders,
 };

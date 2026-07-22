@@ -83,9 +83,95 @@ test('player teardown prevents stale YouTube transport from hijacking local vide
   assert.ok(snippet.includes('activeYtPlayer.destroy()'), 'teardown should release the previous YouTube player');
   assert.ok(snippet.includes('activeYtPlayer = null'), 'teardown should return transport authority to the visible media');
   assert.ok(
-    snippet.indexOf('activeYtPlayer = null') < snippet.indexOf("container.querySelectorAll('video')"),
+    snippet.indexOf('activeYtPlayer = null') < snippet.indexOf("container.querySelectorAll('video, audio')"),
     'embedded transport state should be cleared before mounting replacement media'
   );
+});
+
+test('player initialization and media callbacks are generation-safe', () => {
+  const html = readPlayerFile('index.html');
+  const teardown = readSnippet(
+    path.join(__dirname, '..', 'player', 'index.html'),
+    'function teardownCurrentMedia() {',
+    'function isWallFillContent(item)'
+  );
+  const localVideo = readSnippet(
+    path.join(__dirname, '..', 'player', 'index.html'),
+    "const video = document.createElement('video');",
+    '} else if (isImage) {'
+  );
+
+  assert.ok(html.includes('window.__MBFD_PLAYER_INITIALIZED__'), 'duplicate script initialization should be rejected');
+  assert.match(
+    html,
+    /<script>\s*if \(window\.__MBFD_PLAYER_INITIALIZED__\)[\s\S]*?window\.__MBFD_PLAYER_INITIALIZED__ = true;\s*\/\/ =+ i18n/,
+    'the initialization guard must wrap the main player script rather than an earlier independent script block'
+  );
+  assert.ok(html.includes('let playbackGeneration = 0'), 'media transitions should have a monotonic generation');
+  assert.ok(teardown.includes('++playbackGeneration'), 'teardown should invalidate every prior media callback');
+  assert.ok(teardown.includes("querySelectorAll('video, audio')"), 'teardown should include every audible HTML media element');
+  assert.ok(teardown.includes('v.muted = true'), 'old media should be muted before it is paused');
+  assert.ok(teardown.includes('v.srcObject = null'), 'old capture streams should be detached');
+  assert.ok(teardown.includes("v.removeAttribute('src')"), 'old media URLs should be cleared');
+  assert.ok(localVideo.includes('const myGeneration = playbackGeneration'), 'a mounted video should capture its generation');
+  assert.match(localVideo, /video\.onended = \(\) => \{\s*if \(playbackGeneration !== myGeneration\) return;/);
+  assert.match(localVideo, /video\.onloadeddata = \(\) => \{\s*if \(playbackGeneration !== myGeneration\) return;/);
+  assert.ok(localVideo.includes('playbackGeneration === myGeneration'), 'late play promises should not revive replaced media');
+});
+
+test('player teardown detaches all stale HTML media event handlers', () => {
+  const teardown = readSnippet(
+    path.join(__dirname, '..', 'player', 'index.html'),
+    'function teardownCurrentMedia() {',
+    'function isWallFillContent(item)'
+  );
+
+  for (const handler of [
+    'onended', 'onerror', 'onloadeddata', 'onplay', 'onpause',
+    'onplaying', 'oncanplay', 'ontimeupdate', 'onvolumechange'
+  ]) {
+    assert.ok(teardown.includes(`v.${handler} = null`), `${handler} should be detached during teardown`);
+  }
+});
+
+test('origin fallback listeners and pending seeks are cancelled across media generations', () => {
+  const html = readPlayerFile('index.html');
+  const fallback = readSnippet(
+    path.join(__dirname, '..', 'player', 'index.html'),
+    'function attachOriginFallback(',
+    '// Extract YouTube video ID'
+  );
+  const seek = readSnippet(
+    path.join(__dirname, '..', 'player', 'index.html'),
+    'function finishVideoSeek(',
+    'function findControllableVideo()'
+  );
+  const teardown = readSnippet(
+    path.join(__dirname, '..', 'player', 'index.html'),
+    'function teardownCurrentMedia() {',
+    'function isWallFillContent(item)'
+  );
+
+  assert.ok(html.includes('let currentMediaAbortController = null'));
+  assert.ok(html.includes('let activeSeekCancel = null'));
+  assert.match(fallback, /const generation = playbackGeneration/);
+  assert.match(fallback, /if \(generation !== playbackGeneration\) return;/);
+  assert.match(fallback, /signal: currentMediaAbortController\.signal/);
+  assert.match(teardown, /currentMediaAbortController\.abort\(\)/);
+  assert.match(teardown, /activeSeekCancel\('Media changed before seek completed'\)/);
+  assert.match(seek, /const seekGeneration = playbackGeneration/);
+  assert.match(seek, /currentVideoEl === video/);
+  assert.match(seek, /activeSeekCancel === cancel/);
+});
+
+test('zone videos also reject late callbacks from a replaced render', () => {
+  const zones = readSnippet(
+    path.join(__dirname, '..', 'player', 'index.html'),
+    'function renderZones(container, defaultItem) {',
+    '// ==================== Screenshots'
+  );
+  assert.match(zones, /const zoneGeneration = playbackGeneration/);
+  assert.match(zones, /if \(playbackGeneration !== zoneGeneration\) return;/);
 });
 
 test('parent media acknowledgements do not freeze the authoritative playback clock', () => {
@@ -170,7 +256,11 @@ test('video startup fallback does not override an operator pause', () => {
   assert.ok(html.includes('video.__mcOperatorPaused = true'), 'pause transport should mark explicit operator intent');
   assert.ok(html.includes('if (!videoStartIsCurrent()) return;'), 'a delayed synchronized start must not override an immediate operator pause');
   assert.ok(html.includes('video.isConnected && currentVideoEl === video'), 'a delayed start must not revive detached or superseded media');
-  assert.ok(html.includes('if (!videoStartIsCurrent()) { video.pause(); return; }'), 'a pending play promise must reassert pause if operator intent changes');
+  assert.match(
+    html,
+    /if \(!videoStartIsCurrent\(\)\) \{ try \{ video\.pause\(\);(?: video\.muted = true;)? \} catch \(_\) \{\} return; \}/,
+    'a pending play promise must reassert pause if operator intent changes'
+  );
   assert.ok(html.includes('if (!videoHasStarted && !video.__mcOperatorPaused && video.paused)'), 'fallback replay must not restart an intentionally paused video');
 });
 

@@ -559,7 +559,9 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
           w.screen_h_mm || 225,
           w.sync_mode || 'leader',
           w.layout_mode || 'span',
-          w.leader_device_id ? (idMap.devices[w.leader_device_id] || null) : null,
+          // Membership rows are inserted below. A leader cannot validly point
+          // at a display until that wall membership exists.
+          null,
           w.content_id ? (idMap.content[w.content_id] || null) : null,
           w.playlist_id ? (idMap.playlists[w.playlist_id] || null) : null,
           w.player_x ?? null,
@@ -577,6 +579,17 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
       const devId = idMap.devices[wd.device_id];
       if (!wallId || !devId) continue;
       db.prepare(`INSERT INTO video_wall_devices (wall_id, device_id, grid_col, grid_row, rotation) VALUES (?, ?, ?, ?, ?)`).run(wallId, devId, wd.grid_col, wd.grid_row, wd.rotation || 0);
+    }
+    for (const w of (data.video_walls || [])) {
+      const wallId = idMap.walls[w.id];
+      const leaderId = w.leader_device_id ? idMap.devices[w.leader_device_id] : null;
+      if (!wallId || !leaderId) continue;
+      const isMember = db.prepare(
+        'SELECT 1 FROM video_wall_devices WHERE wall_id = ? AND device_id = ?'
+      ).get(wallId, leaderId);
+      if (isMember) {
+        db.prepare('UPDATE video_walls SET leader_device_id = ? WHERE id = ?').run(leaderId, wallId);
+      }
     }
 
     // Import kiosk pages

@@ -960,11 +960,10 @@ function migrateAuditLog() {
 }
 migrateAuditLog();
 
-// Phase 2 (Classroom 1 command center): seed the three fixed Classroom-1
-// device-group membership sets from the appliance's wall topology. Idempotent
-// (INSERT OR IGNORE) and gated on schema_migrations so it runs exactly once
-// per database. Mirrors the one-shot harness pattern above. See
-// scripts/backfill-classroom-groups.js.
+// The legacy Classroom-1 wall-to-group backfill is retired. It now writes only
+// its one-shot retirement marker so fresh databases cannot recreate the old
+// wall/group mutual-exclusivity violation. Existing rows require the explicit,
+// audited topology repair command.
 const CLASSROOM1_GROUP_MEMBERS_ID = 'classroom1_group_members';
 function backfillClassroomGroupMembers() {
   const already = db.prepare('SELECT 1 FROM schema_migrations WHERE id = ?').get(CLASSROOM1_GROUP_MEMBERS_ID);
@@ -973,7 +972,7 @@ function backfillClassroomGroupMembers() {
     const { runBackfill } = require('../scripts/backfill-classroom-groups');
     const r = runBackfill({ db });
     if (!r.skipped) {
-      console.log(`[classroom1_group_members] backfill: all=${r.report.all} primary=${r.report.primary} secondary=${r.report.secondary}`);
+      console.log(`[classroom1_group_members] ${r.reason}`);
     }
   } catch (e) {
     console.warn(`[classroom1_group_members] backfill failed: ${e.message}`);
@@ -1094,6 +1093,29 @@ function healYoutubeMimeTypes() {
   try { db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(YOUTUBE_MIME_HEAL_ID); } catch { /* ignore */ }
 }
 healYoutubeMimeTypes();
+
+// Clean databases should enforce topology invariants from their first boot.
+// Existing installations with drift stay available for the explicit,
+// hash-guarded repair workflow: never auto-repair or partially constrain an
+// inconsistent topology here.
+function activateDisplayTopologyGuards() {
+  try {
+    const { analyzeTopology, installTopologyGuards } = require('../lib/topology-repair');
+    const report = analyzeTopology(db);
+    if (report.issueCount === 0) {
+      installTopologyGuards(db);
+      console.log('[display_topology_integrity_v1] durable guards active');
+      return;
+    }
+    console.warn(
+      `[display_topology_integrity_v1] ${report.issueCount} issue(s) detected; ` +
+      'guards pending explicit topology repair'
+    );
+  } catch (error) {
+    console.warn(`[display_topology_integrity_v1] guard activation skipped: ${error.message}`);
+  }
+}
+activateDisplayTopologyGuards();
 
 // Prune old telemetry (keep last 24h worth at 15s intervals = ~5760, cap at 6000)
 function pruneTelemetry(deviceId) {

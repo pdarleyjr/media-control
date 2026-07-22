@@ -8,6 +8,7 @@ const { db } = require('../db/database');
 // anymore; team_members is a vestigial table from the pre-workspace model).
 const { accessContext } = require('../lib/tenancy');
 const { ensureDevicePlaylist } = require('../lib/wall-playlists');
+const { assertCanJoinWall, TopologyConflictError } = require('../lib/topology-membership');
 const {
   parseStoredLayout,
   presetGroups,
@@ -357,6 +358,14 @@ router.put('/:id/devices', requireWallWrite, (req, res) => {
     if (dev.workspace_id !== wall.workspace_id) {
       return res.status(403).json({ error: `Device ${d.device_id} is not in this workspace` });
     }
+    try {
+      assertCanJoinWall(db, d.device_id, wall.id);
+    } catch (error) {
+      if (error instanceof TopologyConflictError) {
+        return res.status(error.statusCode).json({ error: error.message, code: error.code, details: error.details });
+      }
+      throw error;
+    }
   }
 
   const previous = db.prepare('SELECT device_id FROM video_wall_devices WHERE wall_id = ?').all(req.params.id);
@@ -385,6 +394,10 @@ router.put('/:id/devices', requireWallWrite, (req, res) => {
     const splitMode = String(wall.layout_mode || 'span') === 'split';
 
     for (const d of devices) {
+      // Wall assignment is an atomic transfer from the independent-group
+      // model. Delete group membership before INSERT so the durable database
+      // guard never observes a display in both models, even momentarily.
+      db.prepare('DELETE FROM device_group_members WHERE device_id = ?').run(d.device_id);
       insertPos.run(
         req.params.id, d.device_id,
         d.grid_col, d.grid_row, d.rotation || 0,
@@ -393,9 +406,6 @@ router.put('/:id/devices', requireWallWrite, (req, res) => {
       );
       const playlistId = splitMode ? ensureDevicePlaylist(d.device_id, req.user.id) : (wall.playlist_id || null);
       updateDevice.run(req.params.id, playlistId, d.device_id);
-      // A device joining a wall leaves all of its groups (walls and groups
-      // are mutually exclusive concepts in this UX).
-      db.prepare('DELETE FROM device_group_members WHERE device_id = ?').run(d.device_id);
     }
 
     if (devices.length > 0) {

@@ -7,6 +7,7 @@ const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
 const { accessContext } = require('../lib/tenancy');
 const commandModel = require('../lib/command-model');
 const { ensureDevicePlaylist: ensureWallAwareDevicePlaylist } = require('../lib/wall-playlists');
+const { assertCanJoinIndependentGroup, TopologyConflictError } = require('../lib/topology-membership');
 
 const VALID_COLOR = /^#[0-9A-Fa-f]{6}$/;
 const ALLOWED_COMMANDS = ['screen_on', 'screen_off', 'launch', 'update', 'reboot', 'shutdown'];
@@ -153,6 +154,7 @@ router.post('/:id/devices', requireGroupWrite, (req, res) => {
     return res.status(403).json({ error: 'Device is not in this group\'s workspace' });
   }
   try {
+    assertCanJoinIndependentGroup(db, device_id, req.params.id);
     db.prepare('INSERT OR IGNORE INTO device_group_members (device_id, group_id) VALUES (?, ?)').run(device_id, req.params.id);
 
     // Sync device's playlist to the group's: a defined playlist is inherited,
@@ -165,7 +167,8 @@ router.post('/:id/devices', requireGroupWrite, (req, res) => {
     pushPlaylistToDevice(req, device_id);
     res.status(201).json({ success: true, playlist_id: newPlaylist });
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    const status = e instanceof TopologyConflictError ? e.statusCode : 400;
+    res.status(status).json({ error: e.message, code: e.code, details: e.details });
   }
 });
 

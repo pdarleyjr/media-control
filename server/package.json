@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env server.js",
     "dev": "node --watch --env-file-if-exists=.env server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "topology:report": "node scripts/repair-display-topology.js"
   },
   "dependencies": {
     "@azure/msal-node": "^5.2.1",
@@ -21,9 +22,9 @@
     "google-auth-library": "^10.6.2",
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.3",
-    "multer": "^1.4.5-lts.1",
+    "multer": "^2.2.0",
     "pptxgenjs": "^3.12.0",
-    "sharp": "^0.33.2",
+    "sharp": "^0.35.3",
     "socket.io": "^4.7.2",
     "stripe": "^20.4.1",
     "unzipper": "^0.12.3",

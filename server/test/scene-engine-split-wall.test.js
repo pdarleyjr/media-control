@@ -68,18 +68,18 @@ test('split wall cell broadcast creates a private playlist and preserves sibling
       VALUES (?, ?, ?, ?, 2, 1, ?, ?, 'split')
     `).run(wallId, userId, workspaceId, 'Split Wall', wallPlaylistId, null);
     db.prepare(`
-      INSERT INTO devices (id, user_id, workspace_id, name, status, playlist_id, wall_id)
-      VALUES (?, ?, ?, ?, 'online', ?, ?)
-    `).run(d1, userId, workspaceId, 'Wall Left', wallPlaylistId, wallId);
+      INSERT INTO devices (id, user_id, workspace_id, name, status, playlist_id)
+      VALUES (?, ?, ?, ?, 'online', ?)
+    `).run(d1, userId, workspaceId, 'Wall Left', wallPlaylistId);
     db.prepare(`
-      INSERT INTO devices (id, user_id, workspace_id, name, status, playlist_id, wall_id)
-      VALUES (?, ?, ?, ?, 'online', ?, ?)
-    `).run(d2, userId, workspaceId, 'Wall Right', wallPlaylistId, wallId);
-    db.prepare('UPDATE video_walls SET leader_device_id = ? WHERE id = ?').run(d1, wallId);
+      INSERT INTO devices (id, user_id, workspace_id, name, status, playlist_id)
+      VALUES (?, ?, ?, ?, 'online', ?)
+    `).run(d2, userId, workspaceId, 'Wall Right', wallPlaylistId);
     db.prepare('INSERT INTO video_wall_devices (wall_id, device_id, grid_col, grid_row) VALUES (?, ?, 0, 0)')
       .run(wallId, d1);
     db.prepare('INSERT INTO video_wall_devices (wall_id, device_id, grid_col, grid_row) VALUES (?, ?, 1, 0)')
       .run(wallId, d2);
+    db.prepare('UPDATE video_walls SET leader_device_id = ? WHERE id = ?').run(d1, wallId);
 
     const ok = sceneEngine.pushSourceToDevice(null, d1, { content_id: newContent }, { workspaceId, userId });
     assert.equal(ok, true);

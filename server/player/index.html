@@ -270,6 +270,10 @@
 </script>
 
   <script>
+    if (window.__MBFD_PLAYER_INITIALIZED__) {
+      console.warn('[player] duplicate initialization prevented');
+    } else {
+    window.__MBFD_PLAYER_INITIALIZED__ = true;
     // ==================== i18n ====================
     // Lightweight inline i18n for the player. The player is a standalone page
     // on display devices — it doesn't import the dashboard's i18n module.
@@ -445,6 +449,9 @@
     let currentMediaEnded = false;
     let currentMediaError = null;
     let lastPlaybackProgressAt = 0;
+    let playbackGeneration = 0;
+    let currentMediaAbortController = null;
+    let activeSeekCancel = null;
     let transportSeekInProgress = false;
     let currentLocalAssetReady = null;
     let currentCacheStatus = 'direct';
@@ -2514,11 +2521,16 @@
       }
 
       function finishVideoSeek(video, command, position) {
+        if (activeSeekCancel) activeSeekCancel('Superseded by a newer seek command');
+        const seekGeneration = playbackGeneration;
         let settled = false;
         let appliedPosition = null;
         const wasPaused = video.paused;
         const wasMuted = video.muted;
         const tolerance = 0.75;
+        const isCurrentSeek = () => playbackGeneration === seekGeneration
+          && currentVideoEl === video
+          && activeSeekCancel === cancel;
         const cleanup = () => {
           video.removeEventListener('seeked', onSeekProgress);
           video.removeEventListener('timeupdate', onSeekProgress);
@@ -2528,15 +2540,24 @@
           if (settled) return;
           settled = true;
           cleanup();
-          if (wasPaused && !video.paused) video.pause();
-          video.muted = audioOutputAllowed() ? wasMuted : true;
-          transportSeekInProgress = false;
+          if (isCurrentSeek()) {
+            if (wasPaused && !video.paused) video.pause();
+            video.muted = audioOutputAllowed() ? wasMuted : true;
+          }
+          if (activeSeekCancel === cancel) {
+            activeSeekCancel = null;
+            transportSeekInProgress = false;
+          }
           finishTransportCommand(command, ok, error || null, buildPlayerState());
         };
-        const converged = () => appliedPosition !== null
+        const cancel = (reason) => complete(false, reason || 'Video seek cancelled');
+        activeSeekCancel = cancel;
+        transportSeekInProgress = true;
+        const converged = () => isCurrentSeek() && appliedPosition !== null
           && Number.isFinite(Number(video.currentTime))
           && Math.abs(Number(video.currentTime) - appliedPosition) <= tolerance;
         function onSeekProgress() {
+          if (!isCurrentSeek()) return;
           if (converged()) complete(true, null);
         }
         const timeout = setTimeout(() => {
@@ -2546,6 +2567,7 @@
         video.addEventListener('seeked', onSeekProgress);
         video.addEventListener('timeupdate', onSeekProgress);
         const apply = () => {
+          if (!isCurrentSeek()) return;
           try {
             appliedPosition = applySeekToVideo(video, position);
             _showTransportDebug('seek pending ' + appliedPosition.toFixed(2) + 's');
@@ -2559,7 +2581,6 @@
           // Chromium can leave a paused MP4 clock pinned even with valid Range
           // responses. Wake the decoder silently, seek, then restore pause/mute
           // before publishing the authoritative acknowledgement.
-          transportSeekInProgress = true;
           video.muted = true;
           Promise.resolve(video.play()).then(apply).catch((error) => {
             complete(false, error && error.message ? error.message : 'Video decoder could not resume for seek');
@@ -3221,9 +3242,11 @@
     // current src is a local/LAN asset_url that differs from the origin URL, and
     // only once (this.onerror=null) so a genuinely-broken asset still advances.
     function attachOriginFallback(el, item, onFinalError) {
+      const generation = playbackGeneration;
       const origin = originSrcForItem(item);
       let swapped = false;
-      el.addEventListener('error', function handler() {
+      const handler = () => {
+        if (generation !== playbackGeneration) return;
         const usedLocal = item && (item.asset_proxy === 'local' || (item.asset_url && el.src === item.asset_url));
         if (!swapped && origin && usedLocal && el.src !== origin) {
           console.warn('[local-cache] asset_url failed, falling back to origin:', origin);
@@ -3235,7 +3258,12 @@
           return;
         }
         if (typeof onFinalError === 'function') onFinalError();
-      });
+      };
+      if (currentMediaAbortController) {
+        el.addEventListener('error', handler, { signal: currentMediaAbortController.signal });
+      } else {
+        el.addEventListener('error', handler);
+      }
     }
 
     // Extract YouTube video ID from embed URL
@@ -3418,6 +3446,12 @@
     // can't fire into a stale playlist state. Queries all <video> elements so
     // zone-mode (multi-region) videos get cleaned up too, not just currentVideoEl.
     function teardownCurrentMedia() {
+      ++playbackGeneration;
+      if (currentMediaAbortController) {
+        currentMediaAbortController.abort();
+        currentMediaAbortController = null;
+      }
+      if (activeSeekCancel) activeSeekCancel('Media changed before seek completed');
       if (advanceTimer) { clearTimeout(advanceTimer); advanceTimer = null; }
       // A detached YouTube player must never remain transport-authoritative.
       // Without this reset, commands for the next local MP4 are acknowledged
@@ -3430,10 +3464,14 @@
       }
       const container = document.getElementById('playerContainer');
       if (container) {
-        container.querySelectorAll('video').forEach(v => {
+        container.querySelectorAll('video, audio').forEach(v => {
           try {
             v.onended = null; v.onerror = null; v.onloadeddata = null;
+            v.onplay = null; v.onpause = null; v.onplaying = null;
+            v.oncanplay = null; v.ontimeupdate = null; v.onvolumechange = null;
+            v.muted = true;
             v.pause();
+            try { if (v.srcObject) v.srcObject = null; } catch (_) {}
             v.removeAttribute('src');
             v.load();
           } catch (e) { /* element may already be detached */ }
@@ -3465,6 +3503,7 @@
 
     function renderContent(item) {
       teardownCurrentMedia();
+      currentMediaAbortController = new AbortController();
 
       const localPlayableAsset = usesClassroomLocalAsset(item);
       currentLocalAssetReady = localPlayableAsset ? false : null;
@@ -3643,6 +3682,7 @@
           }
         } else if (isVideo) {
           const video = document.createElement('video');
+          const myGeneration = playbackGeneration;
           let videoHasStarted = false;
           video.src = src;
           const wallStartDelayMs = wallConfig && currentItemStartedAt > Date.now() + 40
@@ -3666,6 +3706,7 @@
           video.style.cssText = `width:100%;height:100%;object-fit:${cssFit};background:#000`;
           video.loop = (playlist.length === 1);
           video.onended = () => {
+            if (playbackGeneration !== myGeneration) return;
             currentMediaEnded = true;
             publishPlayerState();
             if (!video.loop && !isFollower) nextItem();
@@ -3673,6 +3714,7 @@
           // Emit playback-state so the dashboard transport bar label (Play/Pause)
           // stays in sync with the physical wall's actual play/pause state.
           const emitPlaybackState = (paused) => {
+            if (playbackGeneration !== myGeneration) return;
             if (transportSeekInProgress) return;
             if (socket?.connected) {
               socket.emit('device:playback-state', {
@@ -3684,9 +3726,10 @@
             }
             publishPlayerState();
           };
-          video.addEventListener('play',  () => emitPlaybackState(false));
-          video.addEventListener('pause', () => emitPlaybackState(true));
+          video.addEventListener('play',  () => { if (playbackGeneration === myGeneration) emitPlaybackState(false); });
+          video.addEventListener('pause', () => { if (playbackGeneration === myGeneration) emitPlaybackState(true); });
           video.addEventListener('timeupdate', () => {
+            if (playbackGeneration !== myGeneration) return;
             const now = Date.now();
             if (transportSeekInProgress || now - lastPlaybackProgressAt < 1000 || !socket?.connected) return;
             lastPlaybackProgressAt = now;
@@ -3700,6 +3743,7 @@
             });
           });
           video.addEventListener('playing', () => {
+            if (playbackGeneration !== myGeneration) return;
             videoHasStarted = true;
             currentMediaEnded = false;
             currentMediaError = null;
@@ -3707,6 +3751,7 @@
           // Local-cache safety: swap to the server origin once if a local asset_url
           // fails, else (origin also failed / non-local) skip to the next item.
           attachOriginFallback(video, item, () => {
+            if (playbackGeneration !== myGeneration) return;
             console.error('Video error:', src);
             currentMediaError = video.error
               ? { code: video.error.code, message: video.error.message || 'Video playback failed' }
@@ -3715,6 +3760,7 @@
             if (!isFollower) advanceTimer = setTimeout(nextItem, 3000);
           });
           video.onloadeddata = () => {
+            if (playbackGeneration !== myGeneration) return;
             if (currentCacheStatus === 'staging') {
               currentLocalAssetReady = true;
               currentCacheStatus = 'local';
@@ -3727,6 +3773,7 @@
           // bug — without it, a single stray unmute call causes echo.
           if (!audioOutputAllowed()) {
             video.addEventListener('volumechange', () => {
+              if (playbackGeneration !== myGeneration) return;
               if (!video.muted) { video.muted = true; }
             });
           }
@@ -3735,12 +3782,13 @@
           // Try playing as we set muted above. If the browser blocks
           // unmuted autoplay (e.g. no user gesture yet), retry muted.
           const videoStartIsCurrent = () => (
+            playbackGeneration === myGeneration &&
             !video.__mcOperatorPaused && video.isConnected && currentVideoEl === video
           );
           const startVideo = () => {
             if (!videoStartIsCurrent()) return;
             video.play().then(() => {
-              if (!videoStartIsCurrent()) { video.pause(); return; }
+              if (!videoStartIsCurrent()) { try { video.pause(); video.muted = true; } catch (_) {} return; }
               console.log('[wall/audio] play() ok muted=' + video.muted + ' volume=' + video.volume);
             }).catch((err) => {
               if (!videoStartIsCurrent()) return;
@@ -3748,18 +3796,22 @@
               video.muted = true;
               video.play()
                 .then(() => {
-                  if (!videoStartIsCurrent()) { video.pause(); return; }
+                  if (!videoStartIsCurrent()) { try { video.pause(); } catch (_) {} return; }
                   console.log('[wall/audio] muted-fallback play() ok');
                 })
-                .catch((e2) => console.error('[wall/audio] muted-fallback play() also failed: ' + (e2?.name || e2?.message || e2)));
+                .catch((e2) => {
+                  if (!videoStartIsCurrent()) return;
+                  console.error('[wall/audio] muted-fallback play() also failed: ' + (e2?.name || e2?.message || e2));
+                });
             });
           };
-          if (wallStartDelayMs > 0) setTimeout(startVideo, wallStartDelayMs);
+          if (wallStartDelayMs > 0) setTimeout(() => { if (playbackGeneration === myGeneration) startVideo(); }, wallStartDelayMs);
           else startVideo();
           // Fallback only covers an autoplay that never started. Once playback
           // has begun, a paused element reflects an operator transport command
           // and must not be restarted by this startup timer.
           setTimeout(() => {
+            if (playbackGeneration !== myGeneration) return;
             if (!videoHasStarted && !video.__mcOperatorPaused && video.paused) {
               video.muted = true;
               video.play().catch(() => {});
@@ -3824,6 +3876,7 @@
     }
 
     function renderZones(container, defaultItem) {
+      const zoneGeneration = playbackGeneration;
       // Multi-zone layout — zones are percentage-based (x_percent/width_percent…)
       // and rendered as CSS %, so a split-screen template auto-scales and snaps to
       // ANY target geometry (a 1080p TV or the ultra-wide wall) with no overrides.
@@ -3859,7 +3912,10 @@
           video.playsInline = true;
           video.style.cssText = `width:100%;height:100%;object-fit:${zone.fit_mode || 'cover'}`;
           attachOriginFallback(video, assignment);
-          if (!video.loop) video.onended = () => nextItem();
+          if (!video.loop) video.onended = () => {
+            if (playbackGeneration !== zoneGeneration) return;
+            nextItem();
+          };
           div.appendChild(video);
         } else if (isPdf || isOffice) {
           const iframe = document.createElement('iframe');
@@ -3867,21 +3923,30 @@
           iframe.style.cssText = 'width:100%;height:100%;border:none;background:#000';
           iframe.allow = 'autoplay; fullscreen';
           div.appendChild(iframe);
-          if (playlist.length > 1) advanceTimer = setTimeout(nextItem, (assignment.duration_sec || 30) * 1000);
+          if (playlist.length > 1) advanceTimer = setTimeout(() => {
+            if (playbackGeneration !== zoneGeneration) return;
+            nextItem();
+          }, (assignment.duration_sec || 30) * 1000);
         } else if (isImage) {
           const img = document.createElement('img');
           img.src = src;
           img.style.cssText = `width:100%;height:100%;object-fit:${zone.fit_mode || 'cover'}`;
           attachOriginFallback(img, assignment);
           div.appendChild(img);
-          if (playlist.length > 1) advanceTimer = setTimeout(nextItem, (assignment.duration_sec || 10) * 1000);
+          if (playlist.length > 1) advanceTimer = setTimeout(() => {
+            if (playbackGeneration !== zoneGeneration) return;
+            nextItem();
+          }, (assignment.duration_sec || 10) * 1000);
         } else {
           const iframe = document.createElement('iframe');
           iframe.src = src;
           iframe.style.cssText = 'width:100%;height:100%;border:none;background:#000';
           iframe.allow = 'autoplay; fullscreen';
           div.appendChild(iframe);
-          if (playlist.length > 1) advanceTimer = setTimeout(nextItem, (assignment.duration_sec || 30) * 1000);
+          if (playlist.length > 1) advanceTimer = setTimeout(() => {
+            if (playbackGeneration !== zoneGeneration) return;
+            nextItem();
+          }, (assignment.duration_sec || 30) * 1000);
         }
 
         container.appendChild(div);
@@ -4103,6 +4168,7 @@
         else document.documentElement.requestFullscreen();
       }
     });
+    }
   </script>
   <script src="/player/screen-share-receiver.js" defer></script>
 </body>

@@ -27,7 +27,7 @@ const OFFLINE_DEBOUNCE_MS = 5000;
 const { deviceRoom, emitToWorkspace, targetRoomsForDevice, displayRoom } = require('../lib/socket-rooms');
 const commandModel = require('../lib/command-model');
 const nodeRegistry = require('../lib/node-registry');
-const { parseStoredLayout, groupForDevice } = require('../lib/wall-layout');
+const { parseStoredLayout, groupForDevice, resolveEffectiveLayoutLeaders } = require('../lib/wall-layout');
 
 function emitToDeviceWorkspace(dashboardNs, deviceId, event, payload) {
   emitToWorkspace(dashboardNs, deviceRoom(deviceId), event, payload);
@@ -42,6 +42,16 @@ function emitToDeviceTargetAndWorkspace(dashboardNs, deviceId, event, payload) {
     op.emit(event, payload);
   } catch (_) {
     // Dashboard fanout is best-effort; device handling must keep running.
+  }
+}
+
+function pushEffectiveWallLeadership(deviceNs, wallId, exceptDeviceId = null) {
+  if (!wallId) return;
+  const members = db.prepare('SELECT device_id FROM video_wall_devices WHERE wall_id = ?').all(wallId);
+  for (const member of members) {
+    if (member.device_id !== exceptDeviceId) {
+      commandQueue.queueOrEmitPlaylistUpdate(deviceNs, member.device_id, buildPlaylistPayload);
+    }
   }
 }
 
@@ -289,11 +299,11 @@ function buildPlaylistPayload(deviceId) {
     wall = db.prepare('SELECT * FROM video_walls WHERE id = ?').get(device.wall_id);
     const pos = db.prepare('SELECT * FROM video_wall_devices WHERE wall_id = ? AND device_id = ?').get(device.wall_id, deviceId);
     const allMembers = wall ? db.prepare(`
-      SELECT vwd.*, d.name AS device_name, d.playlist_id
+      SELECT vwd.*, d.name AS device_name, d.playlist_id, d.status
       FROM video_wall_devices vwd JOIN devices d ON d.id = vwd.device_id
       WHERE vwd.wall_id = ? ORDER BY vwd.grid_row, vwd.grid_col
     `).all(wall.id) : [];
-    wallLayout = wall ? parseStoredLayout(wall, allMembers) : null;
+    wallLayout = wall ? resolveEffectiveLayoutLeaders(parseStoredLayout(wall, allMembers), allMembers) : null;
     layoutGroup = groupForDevice(wallLayout, deviceId);
     // Solo groups play independently. Spanned groups receive a composite that
     // is bounded only by their own contiguous members.
@@ -381,6 +391,8 @@ function buildPlaylistPayload(deviceId) {
       group_member_ids: layoutGroup.member_ids,
       group_layout: layoutGroup.layout,
       leader_device_id: layoutGroup.leader_device_id,
+      configured_leader_device_id: layoutGroup.configured_leader_device_id,
+      leader_failover_active: !!layoutGroup.leader_failover_active,
     } : null,
     // 2026-05-28: surface the device's authoritative geometry so the player
     // can size to the canonical (admin-overridden) resolution rather than the
@@ -632,38 +644,14 @@ module.exports = function setupDeviceSocket(io) {
           // Flush any commands/playlist-updates queued while this device was offline.
           commandQueue.flushQueue(deviceNs, device_id, buildPlaylistPayload);
 
-          // If this device is part of a wall, re-evaluate leadership.
-          // Preferred leader = online member with smallest (canvas_x +
-          // canvas_y), falling back to grid 0,0. If the original leader
-          // (top-left tile) is back, they reclaim the role and peers re-sync.
+          // Recompute effective (online) leadership in payloads without ever
+          // rewriting the persisted configured leader. Peers receive the same
+          // deterministic failover view; when the configured leader returns,
+          // it resumes automatically without a topology revision or restart.
           if (device.wall_id) {
             try {
-              const wall = db.prepare('SELECT * FROM video_walls WHERE id = ?').get(device.wall_id);
-              if (wall) {
-                const candidates = db.prepare(`
-                  SELECT vwd.device_id, vwd.canvas_x, vwd.canvas_y, vwd.grid_col, vwd.grid_row
-                  FROM video_wall_devices vwd
-                  JOIN devices d ON d.id = vwd.device_id
-                  WHERE vwd.wall_id = ? AND d.status = 'online'
-                `).all(wall.id);
-                if (candidates.length > 0) {
-                  const score = (c) => (c.canvas_x ?? c.grid_col * 320) + (c.canvas_y ?? c.grid_row * 180);
-                  candidates.sort((a, b) => score(a) - score(b));
-                  const preferredLeader = candidates[0].device_id;
-                  if (wall.leader_device_id !== preferredLeader) {
-                    db.prepare('UPDATE video_walls SET leader_device_id = ? WHERE id = ?').run(preferredLeader, wall.id);
-                    console.log(`Wall ${wall.id} leader reassigned to ${preferredLeader} on reconnect`);
-                    // Re-push payload to every member so role flags refresh.
-                    const members = db.prepare('SELECT device_id FROM video_wall_devices WHERE wall_id = ?').all(wall.id);
-                    for (const m of members) {
-                      if (m.device_id !== device_id) {
-                        commandQueue.queueOrEmitPlaylistUpdate(deviceNs, m.device_id, buildPlaylistPayload);
-                      }
-                    }
-                  }
-                }
-              }
-            } catch (e) { console.error('Wall leader reclaim failed:', e.message); }
+              pushEffectiveWallLeadership(deviceNs, device.wall_id, device_id);
+            } catch (e) { console.error('Wall effective-leader refresh failed:', e.message); }
           }
 
           // Device access gating removed — checkDeviceAccess always grants access.
@@ -1159,11 +1147,11 @@ socket.on('device:wb-undo', () => {
       if (!data?.wall_id) return;
       const wall = db.prepare('SELECT * FROM video_walls WHERE id = ?').get(data.wall_id);
       const members = wall ? db.prepare(`
-        SELECT vwd.*, d.name AS device_name, d.playlist_id
+        SELECT vwd.*, d.name AS device_name, d.playlist_id, d.status
         FROM video_wall_devices vwd JOIN devices d ON d.id = vwd.device_id
         WHERE vwd.wall_id = ? ORDER BY vwd.grid_row, vwd.grid_col
       `).all(data.wall_id) : [];
-      const layout = wall ? parseStoredLayout(wall, members) : null;
+      const layout = wall ? resolveEffectiveLayoutLeaders(parseStoredLayout(wall, members), members) : null;
       const group = groupForDevice(layout, currentDeviceId);
       if (!group || group.layout !== 'span' || group.leader_device_id !== currentDeviceId) return;
       const wallDevices = group.member_ids.filter((id) => id !== currentDeviceId);
@@ -1187,11 +1175,11 @@ socket.on('device:wb-undo', () => {
         if (!data?.wall_id) return;
         const wall = db.prepare('SELECT * FROM video_walls WHERE id = ?').get(data.wall_id);
         const members = wall ? db.prepare(`
-          SELECT vwd.*, d.name AS device_name, d.playlist_id
+          SELECT vwd.*, d.name AS device_name, d.playlist_id, d.status
           FROM video_wall_devices vwd JOIN devices d ON d.id = vwd.device_id
           WHERE vwd.wall_id = ? ORDER BY vwd.grid_row, vwd.grid_col
         `).all(data.wall_id) : [];
-        const layout = wall ? parseStoredLayout(wall, members) : null;
+        const layout = wall ? resolveEffectiveLayoutLeaders(parseStoredLayout(wall, members), members) : null;
         const group = groupForDevice(layout, currentDeviceId);
         if (!group || group.layout !== 'span' || group.leader_device_id === currentDeviceId) return;
         deviceNs.to(group.leader_device_id).emit('wall:sync-request', {
@@ -1240,27 +1228,13 @@ socket.on('device:wb-undo', () => {
         logDeviceStatus(deviceId, 'offline');
         emitToDeviceWorkspace(dashboardNs, deviceId, 'dashboard:device-status', { device_id: deviceId, status: 'offline' });
 
-        // If this device was leading a wall, reassign leadership to the next
-        // online member so playback stays driven.
+        // Notify wall peers so their payloads derive the same deterministic
+        // online failover leader. The configured leader remains persisted and
+        // is never changed by a transient socket disconnect.
         try {
-          const wall = db.prepare('SELECT id FROM video_walls WHERE leader_device_id = ?').get(deviceId);
-          if (wall) {
-            const candidates = db.prepare(`
-              SELECT vwd.device_id FROM video_wall_devices vwd
-              JOIN devices d ON d.id = vwd.device_id
-              WHERE vwd.wall_id = ? AND d.status = 'online' AND vwd.device_id != ?
-              ORDER BY vwd.grid_row, vwd.grid_col LIMIT 1
-            `).all(wall.id, deviceId);
-            const newLeader = candidates[0]?.device_id || null;
-            db.prepare('UPDATE video_walls SET leader_device_id = ? WHERE id = ?').run(newLeader, wall.id);
-            const members = db.prepare('SELECT device_id FROM video_wall_devices WHERE wall_id = ?').all(wall.id);
-            for (const m of members) {
-              if (m.device_id !== deviceId) {
-                commandQueue.queueOrEmitPlaylistUpdate(deviceNs, m.device_id, buildPlaylistPayload);
-              }
-            }
-          }
-        } catch (e) { console.error('Wall leader reassign failed:', e.message); }
+          const wall = db.prepare('SELECT wall_id AS id FROM video_wall_devices WHERE device_id = ?').get(deviceId);
+          if (wall) pushEffectiveWallLeadership(deviceNs, wall.id, deviceId);
+        } catch (e) { console.error('Wall effective-leader refresh failed:', e.message); }
 
         // Save last screenshot to disk as offline snapshot
         const lastB64 = lastScreenshots[deviceId];
