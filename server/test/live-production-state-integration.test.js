@@ -49,9 +49,11 @@ test('live stream status, start verification, and stop verification update the a
   const source = fs.readFileSync(path.join(__dirname, '..', 'routes', 'live-stream.js'), 'utf8');
 
   assert.match(source, /updateLiveProductionState/);
-  assert.match(source, /observeDirectorResult\(req, director, 'status:checked'\)/);
+  assert.match(source, /observeDirectorResult\(req, directorResult, 'status:checked'\)/);
   assert.match(source, /observeDirectorResult\(req, statusAfterMode, 'stream:prepared'\)/);
   assert.match(source, /observeDirectorResult\(req, status, 'stream:start-verified'\)/);
   assert.match(source, /observeDirectorResult\(req, check, 'stream:stop-verification'\)/);
   assert.match(source, /publishRoomSnapshot/);
+  assert.match(source, /buildLivestreamCapabilities/);
+  assert.match(source, /redactDirectorResult/);
 });
