@@ -210,9 +210,30 @@ function toStateScalar(key, value) {
   }
   return toSqlScalar(value);
 }
+function resolveClassroomAudioAuthorityId() {
+  const raw = String(process.env.CLASSROOM_AUDIO_AUTHORITY_DEVICE_ID || '').trim();
+  return raw || null;
+}
+
+function enforceAudioAuthorityOnState(target_type, target_id, state) {
+  if (target_type !== 'display' || !state || typeof state !== 'object') return state;
+  const authorityId = resolveClassroomAudioAuthorityId();
+  if (!authorityId) return state;
+  const next = { ...state };
+  if (String(target_id) === String(authorityId)) return next;
+  if (next.muted === false || next.muted === 0 || next.muted === '0') {
+    next.muted = true;
+  }
+  if (next.volume != null && Number(next.volume) > 0) {
+    next.volume = 0;
+  }
+  return next;
+}
+
 function mergeDisplayState(target_type, target_id, state) {
   if (!state || typeof state !== 'object') return { applied: false, reason: 'invalid_state' };
   if (!target_type || !target_id) return { applied: false, reason: 'invalid_target' };
+  state = enforceAudioAuthorityOnState(target_type, target_id, state);
   const tx = db.transaction(() => {
     const now = Date.now();
     const vals = STATE_COLS.map((key) => toStateScalar(key, state[key]));
