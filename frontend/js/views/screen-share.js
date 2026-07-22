@@ -2,8 +2,8 @@
  * ScreenShare view - broadcaster (admin dashboard) side.
  *
  * Lets an authenticated MBFD admin pick a paired display and broadcast
- * their screen / window / browser tab live via WebRTC. Designed for
- * sub-300ms glass-to-glass latency.
+ * their screen / window / browser tab live via WebRTC. Direct connections are
+ * designed for low latency; blocked ICE falls back to labeled video-only frames.
  *
  * As of the unified-Media-Control refactor, the WebRTC engine (stream /
  * peerConnections / iceConfig + signaling) lives in a PERSISTENT singleton,
@@ -89,14 +89,17 @@ function computeWallTiles(wall) {
 // here we only track view-local presentation bits + subscriptions, reset at
 // the top of every render() so re-entering the route is clean.
 // ----------------------------------------------------------------------
-let currentContentHint = 'detail';    // 'detail' | 'motion' (UI radio mirror)
+let currentContentHint = 'detail';    // 'detail' | 'motion' | 'motion60' (UI radio mirror)
+let currentFitMode = 'auto';          // 'auto' | 'contain' | 'cover' | 'fill'
 let activeContainer = null;           // bound at render time for DOM lookups
 let engineUnsub = null;               // engine.onChange unsubscribe
 let captureEndedUnsub = null;         // engine.onCaptureEnded unsubscribe
+let sessionDiagTimer = null;           // view-only WebRTC stats polling
 
 function resetViewSubscriptions() {
   if (engineUnsub) { try { engineUnsub(); } catch (_) { /* */ } engineUnsub = null; }
   if (captureEndedUnsub) { try { captureEndedUnsub(); } catch (_) { /* */ } captureEndedUnsub = null; }
+  if (sessionDiagTimer) { clearInterval(sessionDiagTimer); sessionDiagTimer = null; }
 }
 
 // ----------------------------------------------------------------------
@@ -110,7 +113,7 @@ export async function render(container) {
     <div class="view-screen-share">
       <header class="view-header">
         <h1>Live Screen Share</h1>
-        <p class="muted">Broadcast your screen, a window, or a browser tab to any display in this workspace in real time. Sub-300ms WebRTC latency.</p>
+        <p class="muted">Broadcast your screen, a window, or a browser tab to real displays and calibrated video walls. Direct WebRTC is low latency; degraded fallback is labeled explicitly.</p>
       </header>
 
       <section class="ss-controls">
@@ -118,10 +121,21 @@ export async function render(container) {
           <h2>1. Pick what to share</h2>
           <div class="ss-content-hint">
             <label><input type="radio" name="content-hint" value="detail" checked>
-              <strong>Documents / slides</strong> <span class="muted">(crisp text, 30fps)</span></label>
+              <strong>Documents / slides</strong> <span class="muted">(crisp text, up to 30fps)</span></label>
             <label><input type="radio" name="content-hint" value="motion">
-              <strong>Video / motion</strong> <span class="muted">(smooth playback, 60fps)</span></label>
+              <strong>Video / motion</strong> <span class="muted">(balanced playback, requests 30fps)</span></label>
+            <label><input type="radio" name="content-hint" value="motion60">
+              <strong>High motion</strong> <span class="muted">(requests up to 60fps; actual rate depends on the source/browser)</span></label>
           </div>
+          <label class="ss-fit-control" for="ss-fit-mode">
+            <strong>Destination fit</strong>
+            <select id="ss-fit-mode">
+              <option value="auto">Auto — fit one display; span the full wall</option>
+              <option value="contain">Fit — show the entire source with letterboxing</option>
+              <option value="cover">Fill — crop edges to avoid letterboxing</option>
+              <option value="fill">Stretch — fill every pixel (may distort)</option>
+            </select>
+          </label>
           <button id="ss-start-capture" class="btn btn-primary">Choose screen / window / tab</button>
           <div id="ss-source-status" class="muted" style="margin-top:.5rem">No source selected.</div>
         </div>
@@ -171,8 +185,15 @@ export async function render(container) {
   container.querySelector('#ss-start-capture').addEventListener('click', () => startCapture());
   container.querySelector('#ss-stop-capture').addEventListener('click', () => engine.stopAll());
   container.querySelectorAll('input[name="content-hint"]').forEach(el => {
+    el.checked = el.value === currentContentHint;
     el.addEventListener('change', (e) => applyContentHint(e.target.value));
   });
+  const fitSelect = container.querySelector('#ss-fit-mode');
+  fitSelect.value = currentFitMode;
+  fitSelect.addEventListener('change', (e) => {
+    currentFitMode = e.target.value;
+  });
+  sessionDiagTimer = setInterval(() => refreshSessionDiagnostics(), 2000);
 
   // Fire-and-forget. The router does not await render().
   populateTargetList();
@@ -404,7 +425,10 @@ function wireTargetCheckboxHandlers() {
             // (the user sees per-tile status in the Active broadcasts list
             // and can stop the wall to roll back).
             const settled = await Promise.allSettled(
-              targets.map(t => engine.startBroadcastTo(t.device_id, { wallTile: t.wall_tile }))
+              targets.map(t => engine.startBroadcastTo(t.device_id, {
+                wallTile: t.wall_tile,
+                fitMode: currentFitMode,
+              }))
             );
             const failures = settled.filter(s => s.status === 'rejected');
             if (failures.length === targets.length) {
@@ -415,7 +439,7 @@ function wireTargetCheckboxHandlers() {
               showToast(`Broadcasting to ${targets.length - failures.length} of ${targets.length} wall tiles. Check Active broadcasts for failures.`, 'warning');
             }
           } else {
-            await engine.startBroadcastTo(deviceId);
+            await engine.startBroadcastTo(deviceId, { fitMode: currentFitMode });
           }
           // First successful broadcast may have triggered capture-on-demand;
           // reflect the preview if it's not already showing.
@@ -524,6 +548,7 @@ function refreshSessionList() {
       row.innerHTML = `
         <span class="ss-session-device"></span>
         <span class="ss-session-state"></span>
+        <span class="ss-session-metrics muted"></span>
         <button class="btn btn-small btn-danger">Stop</button>
       `;
       row.querySelector('.ss-session-device').textContent = deviceId;
@@ -540,6 +565,34 @@ function refreshSessionList() {
   // Remove rows for devices that are no longer active.
   for (const [deviceId, el] of existingRows) {
     if (!seen.has(deviceId)) el.remove();
+  }
+}
+
+async function refreshSessionDiagnostics() {
+  if (!activeContainer || !engine.isActive()) return;
+  const diagnostics = await engine.getTargetDiagnostics();
+  if (!activeContainer) return;
+  for (const [deviceId, diag] of diagnostics) {
+    const selector = `.ss-session-row[data-device-id="${cssEscape(deviceId)}"] .ss-session-metrics`;
+    const el = activeContainer.querySelector(selector);
+    if (!el) continue;
+    if (diag.mode === 'socket-frame-relay') {
+      el.textContent = `up to ${diag.maxWidth}×${diag.maxHeight} · ${diag.fps} fps · JPEG socket fallback · no audio`;
+      continue;
+    }
+    const parts = [];
+    if (diag.width && diag.height) parts.push(`${diag.width}×${diag.height}`);
+    if (diag.fps) parts.push(`${Math.round(diag.fps)} fps`);
+    if (diag.videoKbps != null) parts.push(`${diag.videoKbps} kbps video`);
+    if (diag.audioKbps != null) parts.push(`${diag.audioKbps} kbps audio`);
+    else if (diag.audioIncluded === false) parts.push('no audio track');
+    if (diag.rttMs != null) parts.push(`${diag.rttMs} ms RTT`);
+    if (diag.codec) parts.push(diag.codec);
+    if (diag.qualityLimitationReason && diag.qualityLimitationReason !== 'none') {
+      parts.push(`limited: ${diag.qualityLimitationReason}`);
+    }
+    if (diag.error) parts.push('stats unavailable');
+    el.textContent = parts.join(' · ');
   }
 }
 

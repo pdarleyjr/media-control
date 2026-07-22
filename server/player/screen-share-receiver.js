@@ -92,6 +92,9 @@
       // on the body so off-tile content is clipped). Absent => fullscreen.
       var wallTile = (data && data.wall_tile) || null;
       window.__screentinkerScreenShare.wallTile = wallTile;
+      var requestedFit = data && data.fit_mode;
+      window.__screentinkerScreenShare.fitMode =
+        ['auto', 'contain', 'cover', 'fill'].indexOf(requestedFit) >= 0 ? requestedFit : 'auto';
       log('session start', wallTile ? 'wall-tile' : 'fullscreen');
       window.__screentinkerScreenShare.active = true;
       reportStatus('started');
@@ -337,6 +340,12 @@
     videoEl.style.cssText = 'width:100%;height:100%;object-fit:contain;background:#000;';
   }
 
+  function resolveObjectFit(isWallTile) {
+    var mode = window.__screentinkerScreenShare.fitMode || 'auto';
+    if (mode === 'auto') return isWallTile ? 'fill' : 'contain';
+    return mode;
+  }
+
   function mountMediaOverlay(mediaEl) {
     hideConnectingChip();
     if (!overlayEl) {
@@ -359,7 +368,7 @@
           'left:' + left + 'vw;top:' + top + 'vh;' +
           'width:' + width + 'vw;height:' + height + 'vh;';
         mediaEl.style.cssText =
-          'width:100%;height:100%;object-fit:fill;background:#000;display:block;';
+          'width:100%;height:100%;object-fit:' + resolveObjectFit(true) + ';background:#000;display:block;';
         document.documentElement.style.overflow = 'hidden';
         document.body.style.overflow = 'hidden';
       }
@@ -368,7 +377,7 @@
         'position:fixed;inset:0;background:#000;z-index:99999;' +
         'display:flex;align-items:center;justify-content:center;';
       mediaEl.style.cssText =
-        'width:100%;height:100%;object-fit:contain;background:#000;display:block;';
+        'width:100%;height:100%;object-fit:' + resolveObjectFit(false) + ';background:#000;display:block;';
     }
 
     if (mediaEl.parentNode !== overlayEl) {
@@ -435,6 +444,7 @@
     videoEl = null;
     imageEl = null;
     window.__screentinkerScreenShare.wallTile = null;
+    window.__screentinkerScreenShare.fitMode = 'auto';
     log('overlay removed');
   }
 

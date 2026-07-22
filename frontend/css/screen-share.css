@@ -100,6 +100,22 @@
   gap: .15rem;
 }
 
+.ss-fit-control {
+  display: grid;
+  gap: .375rem;
+  margin: 0 0 1rem;
+  font-size: .9rem;
+}
+.ss-fit-control select {
+  min-height: 44px;
+  width: 100%;
+  padding: .55rem .65rem;
+  color: var(--text-primary, #e5e7eb);
+  background: var(--surface-default, #111827);
+  border: 1px solid var(--border-default, #374151);
+  border-radius: .375rem;
+}
+
 .ss-target-name > .muted {
   font-size: .75rem;
   font-weight: 400;
@@ -153,13 +169,32 @@
 }
 .ss-session-row {
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: minmax(11rem, 1fr) auto minmax(16rem, 2fr) auto;
   align-items: center;
   gap: .75rem;
   padding: .5rem .75rem;
   background: var(--surface-default, #111827);
   border-radius: .375rem;
   font-size: .9rem;
+}
+.ss-session-metrics {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: .75rem;
+  line-height: 1.35;
+}
+
+@media (max-width: 760px) {
+  .ss-session-row {
+    grid-template-columns: 1fr auto auto;
+  }
+  .ss-session-metrics {
+    grid-column: 1 / -1;
+  }
+  .ss-session-row > .btn {
+    grid-column: 3;
+    grid-row: 1;
+  }
 }
 .ss-session-device {
   font-family: ui-monospace, monospace;
