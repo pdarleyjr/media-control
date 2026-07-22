@@ -152,6 +152,22 @@ module.exports = {
     guestEmail: process.env.CONSOLE_GUEST_EMAIL || 'guest@mbfd.local',
   },
 
+  // ── Feature flags ────────────────────────────────────────────────────────
+  // Server-controlled feature flags. The frontend fetches these via
+  // GET /api/features (requires auth). A flag defaulting to false means the
+  // feature is invisible and non-functional in production until explicitly
+  // enabled. Rollback = set env var to false (no rebuild).
+  features: {
+    enterpriseOperatorUi: {
+      enabled: ['true', '1'].includes(String(process.env.ENTERPRISE_OPERATOR_UI_ENABLED || '').toLowerCase()),
+      // Optional comma-separated allowlist of user IDs that may access the
+      // enterprise operator console during canary. When empty, any authed
+      // workspace member in a deployment with the flag on can access it.
+      allowlist: (process.env.ENTERPRISE_OPERATOR_UI_USERS || '')
+        .split(',').map((s) => s.trim()).filter(Boolean),
+    },
+  },
+
   // ── Classroom-only local content cache (P3 room-agent) ───────────────────
   // When enabled, ONLY the displays that belong to the listed classroom video
   // walls get their playlist asset_url rewritten to the on-box room-agent cache

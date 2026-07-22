@@ -17,9 +17,10 @@
     <section id="host-privacy" aria-label="Privacy slot"></section>
   </main>
 
+  <script>globalThis.__MC_ENTERPRISE_MOCK_ONLY = true;</script>
   <script type="module">
-    // Force mock-only so enterprise-api never imports api.js / hits a backend.
-    globalThis.__MC_ENTERPRISE_MOCK_ONLY = true;
+    // __MC_ENTERPRISE_MOCK_ONLY is set by the classic script above (runs before
+    // module imports are hoisted) so enterprise-api evaluates MOCK_ONLY=true.
 
     import { createOperatorStore } from '/frontend/js/state/operator-store.js';
     import { createEnterpriseI18n } from '/frontend/js/state/enterprise-i18n.js';

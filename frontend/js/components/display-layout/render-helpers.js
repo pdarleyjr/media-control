@@ -1,6 +1,6 @@
 // Shared rendering helpers for enterprise components. Kept tiny and dependency
 // light so components can be unit-tested in isolation and rendered headlessly.
-import { OPERATOR_STATE_META, OPERATOR_STATE } from '../state/operator-state.js';
+import { OPERATOR_STATE_META, OPERATOR_STATE } from '../../state/operator-state.js';
 
 // Build a color-independent state chip: tone class + glyph + text label.
 // `i18n` is the t() function injected at mount so this module stays pure.

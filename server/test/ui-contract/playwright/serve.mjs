@@ -6,7 +6,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const ROOT = path.resolve(process.argv[2] || '../../..'); // worktree root
+const ROOT = path.resolve(process.argv[2] || '../../../..'); // worktree root
 const PORT = Number(process.argv[3] || 4321);
 
 const MIME = {

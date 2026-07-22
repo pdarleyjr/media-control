@@ -795,6 +795,21 @@ app.use(activityLogger);
 // no resolveTenancy. Permission gated per-handler via canAdminWorkspace().
 app.use('/api/workspaces', requireAuth, require('./routes/workspaces'));
 
+// Feature flags (server-controlled, auth-required). The frontend fetches these
+// to decide whether to expose gated routes. Unauthorized users cannot enable a
+// flag via query parameter — the value comes solely from server config/env.
+app.get('/api/features', requireAuth, resolveTenancy, (req, res) => {
+  const flags = config.features || {};
+  const out = {};
+  for (const [key, flag] of Object.entries(flags)) {
+    const enabled = !!flag.enabled;
+    const allowlist = Array.isArray(flag.allowlist) ? flag.allowlist : [];
+    const userAllowed = enabled && (allowlist.length === 0 || allowlist.includes(req.user.id));
+    out[key] = { enabled, authorized: userAllowed };
+  }
+  res.json({ features: out });
+});
+
 app.use('/api/devices', requireAuth, resolveTenancy, require('./routes/devices'));
 app.use('/api/displays', requireAuth, resolveTenancy, require('./routes/displays'));
 app.use('/api/advanced-canvas', requireAuth, resolveTenancy, require('./routes/advanced-canvas'));
