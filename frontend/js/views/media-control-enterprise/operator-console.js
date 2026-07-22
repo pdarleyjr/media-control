@@ -231,10 +231,39 @@ function realSocketInterface() {
     requestRoomSnapshot: socketRequestRoomSnapshot,
   };
 }
+function buildInfoHtml() {
+  const commit = (typeof window !== 'undefined' && (window.__MC_BUILD_COMMIT || window.MC_BUILD_COMMIT))
+    || (typeof document !== 'undefined' && document.querySelector('meta[name="mc-build-commit"]')?.content)
+    || 'unknown';
+  const sw = (typeof navigator !== 'undefined' && navigator.serviceWorker?.controller?.scriptURL) || 'none';
+  return `<section class="mc-e-system-panel" data-slot="system" aria-label="System">
+    <h2 class="mc-e-system-title">About / System</h2>
+    <dl class="mc-e-system-dl">
+      <div><dt>Build</dt><dd data-build-commit>${esc(String(commit).slice(0, 12))}</dd></div>
+      <div><dt>Route</dt><dd>#/operator-console</dd></div>
+      <div><dt>Emergency UI</dt><dd><a href="#/control">Legacy #/control</a></dd></div>
+      <div><dt>Service worker</dt><dd title="${esc(String(sw))}">${esc(String(sw).split('/').pop() || 'none')}</dd></div>
+    </dl>
+  </section>`;
+}
+
 export function render(host, ..._rest) {
   if (_active) { try { _active.destroy(); } catch {} }
   _active = mountOperatorConsole(host, { socket: realSocketInterface() });
+  try {
+    const shell = host.querySelector('.mc-e-console-grid') || host;
+    if (shell && !host.querySelector('[data-slot="system"]')) {
+      shell.insertAdjacentHTML('beforeend', buildInfoHtml());
+    }
+  } catch { /* non-fatal */ }
   return _active;
 }
+
+export function cleanup() {
+  if (_active) { try { _active.destroy(); } catch {} }
+  _active = null;
+}
+
+export function unmount() { cleanup(); }
 
 export default mountOperatorConsole;
