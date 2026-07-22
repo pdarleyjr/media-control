@@ -12,9 +12,22 @@
 // The real `api` is imported LAZILY (only when a live endpoint is actually
 // called) so this module is safe to import in pure-node tests (it does not
 // require fetch/io/localStorage at load time). Set globalThis.__MC_ENTERPRISE_MOCK_ONLY
-// to force mocks (used by the test harness).
+// to force mocks (used by the test harness ONLY). Production must NEVER set that
+// flag; a production-safety test (enterprise-api.test.js) proves production
+// mode rejects mock fallback.
+//
+// PRODUCTION SAFETY (task §8): when not in MOCK_ONLY mode, a missing or failing
+// backend contract throws an explicit Error with a `code` (never silently returns
+// mock data or fake success). Components map the code via error-recovery.js to a
+// visible disabled/reason state. Production code must not silently fall back to mocks.
 
 const MOCK_ONLY = (typeof globalThis !== 'undefined' && globalThis.__MC_ENTERPRISE_MOCK_ONLY) === true;
+
+function unavailableError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
 
 let _api = null;
 async function realApi() {
@@ -22,11 +35,6 @@ async function realApi() {
   const mod = await import('../api.js');
   _api = mod.api || mod.default?.api;
   return _api;
-}
-
-function maybeReal(realAsync, mock) {
-  if (MOCK_ONLY) return mock;
-  return realAsync; // returns a promise; caller awaits
 }
 
 // ---------------------------------------------------------------------------
@@ -43,12 +51,14 @@ const ROOMS_MOCK = Object.freeze([
 
 export const enterpriseApi = {
   rooms: {
-    // MOCK (gap G-01): no GET /api/rooms endpoint exists. The console uses
-    // config.console.roomId today; a rooms catalog endpoint is recommended.
-    list: maybeReal(
-      () => Promise.resolve(ROOMS_MOCK),
-      () => Promise.resolve(ROOMS_MOCK),
-    ),
+    // Gap G-01 (Resolution C): no GET /api/rooms endpoint exists. In production
+    // this throws ROOMS_CATALOG_UNAVAILABLE so the room selector can show an
+    // explicit "rooms catalog unavailable" reason and fall back to the single
+    // configured room. MOCK_ONLY returns a fixture for the test harness.
+    async list() {
+      if (MOCK_ONLY) return Promise.resolve(ROOMS_MOCK);
+      throw unavailableError('ROOMS_CATALOG_UNAVAILABLE', 'Rooms catalog endpoint is not available');
+    },
   },
 
   // ---------------------------------------------------------------------------
@@ -102,19 +112,17 @@ export const enterpriseApi = {
   content: {
     async list(filters = {}) {
       if (MOCK_ONLY) return MOCK_CONTENT_FIXTURE(filters);
-      try {
-        const api = await realApi();
-        return await api.getGovernedContent({
-          folder_id: filters.folderId,
-          visibility: filters.visibility,
-          type: filters.type,
-          search: filters.search,
-          owner: filters.mine ? 'me' : undefined,
-          archived: filters.archived ? true : undefined,
-        });
-      } catch {
-        return MOCK_CONTENT_FIXTURE(filters);
-      }
+      // Production: use the real governed-content endpoint. If it fails, throw
+      // the error — the content selector shows the failure reason. No mock fallback.
+      const api = await realApi();
+      return await api.getGovernedContent({
+        folder_id: filters.folderId,
+        visibility: filters.visibility,
+        type: filters.type,
+        search: filters.search,
+        owner: filters.mine ? 'me' : undefined,
+        archived: filters.archived ? true : undefined,
+      });
     },
     visibilityLevels: Object.freeze(['private', 'workspace_shared', 'organization_shared', 'platform_template']),
     filterFacets: Object.freeze(['recent', 'favorites', 'mine', 'workspace_shared', 'organization_shared', 'templates', 'type', 'owner', 'processing', 'archived']),
@@ -138,11 +146,14 @@ export const enterpriseApi = {
   // adapter consumer; no new endpoint. Mock returns a DEGRADED fixture for tests.
   // ---------------------------------------------------------------------------
   screenShare: {
+    // Gap G-05: uses the existing screen-share-engine directly (real contract).
+    // MOCK_ONLY returns a degraded fixture for the isolated test harness only.
     diagnostics(engine) {
       if (engine && typeof engine.getTargetDiagnostics === 'function') {
         return engine.getTargetDiagnostics();
       }
-      return MOCK_SCREENSHARE_DIAGNOSTICS();
+      if (MOCK_ONLY) return MOCK_SCREENSHARE_DIAGNOSTICS();
+      throw unavailableError('SCREENSHARE_DIAGNOSTICS_UNAVAILABLE', 'Screen-share diagnostics engine is not available');
     },
   },
 
@@ -151,27 +162,25 @@ export const enterpriseApi = {
   // endpoints (contentCapabilities, publication requests). MOCK for tests.
   // ---------------------------------------------------------------------------
   privacy: {
+    // Gap G-06 (Resolution C): the visibility/publication endpoints may not yet
+    // exist on api.js. In production, a missing method throws an explicit error
+    // so the publishing UI shows "feature unavailable" and disables the action.
+    // NEVER return fake success.
     async requestOrganizationPublication(contentId) {
       if (MOCK_ONLY) return { ok: true, status: 'requested' };
-      try {
-        const api = await realApi();
-        return api.requestOrganizationPublication
-          ? await api.requestOrganizationPublication(contentId)
-          : { ok: true, status: 'requested' };
-      } catch {
-        return { ok: true, status: 'requested' };
+      const api = await realApi();
+      if (typeof api.requestOrganizationPublication !== 'function') {
+        throw unavailableError('PUBLICATION_UNAVAILABLE', 'Organization publication endpoint is not available');
       }
+      return await api.requestOrganizationPublication(contentId);
     },
     async setVisibility(contentId, visibility) {
       if (MOCK_ONLY) return { ok: true, visibility };
-      try {
-        const api = await realApi();
-        return api.setContentVisibility
-          ? await api.setContentVisibility(contentId, visibility)
-          : { ok: true, visibility };
-      } catch {
-        return { ok: true, visibility };
+      const api = await realApi();
+      if (typeof api.setContentVisibility !== 'function') {
+        throw unavailableError('VISIBILITY_UNAVAILABLE', 'Content visibility endpoint is not available');
       }
+      return await api.setContentVisibility(contentId, visibility);
     },
   },
 };
