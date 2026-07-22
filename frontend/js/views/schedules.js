@@ -7,10 +7,13 @@
 import { api } from '../api.js';
 import { showToast } from '../components/toast.js';
 import { confirmDialog } from '../components/confirm.js';
+import { openTargetPicker } from '../components/target-picker.js';
+import { waitForTargetCatalog } from '../services/target-catalog-runtime.js';
 import { renderWeekInto } from './schedule-week.js';
 
 let data = { schedules: [], devices: [], groups: [], content: [], playlists: [] };
 let mode = 'list'; // 'list' | 'week'
+let selectedScheduleTarget = null;
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
@@ -24,6 +27,22 @@ const LABEL = 'display:block;font-size:var(--mc-font-size-xs);font-weight:var(--
 const WEEKDAYS = [['MO', 'Mon'], ['TU', 'Tue'], ['WE', 'Wed'], ['TH', 'Thu'], ['FR', 'Fri'], ['SA', 'Sat'], ['SU', 'Sun']];
 
 function deviceName(id) { const d = data.devices.find((x) => x.id === id); return d ? (d.name || 'Display') : id; }
+
+// The schedules API accepts exactly one physical device or one device group.
+// Video walls remain visible in the shared picker for topology awareness, but
+// are disabled until the server exposes an atomic wall-schedule contract.
+export function scheduleTargetPayload(target) {
+  if (!target?.id) return null;
+  if (target.type === 'display') return { device_id: target.id };
+  if (target.type === 'group') return { group_id: target.id };
+  return null;
+}
+
+function scheduleTargetSummary(target) {
+  if (!target) return 'Choose a display or group';
+  if (target.type === 'group') return `${target.name} · ${target.onlineCount}/${target.memberCount} online`;
+  return `${target.name} · ${target.status || 'offline'} · ${target.dimensionsLabel || 'dimensions unavailable'}`;
+}
 
 function targetLabel(s) {
   if (s.group_id) return `Group: ${esc(s.group_name || 'group')}`;
@@ -83,9 +102,6 @@ function renderList() {
 function renderForm() {
   const wrap = document.getElementById('schForm');
   if (!wrap) return;
-  const targetOpts = `
-    <optgroup label="Displays">${data.devices.map((d) => `<option value="dev:${esc(d.id)}">${esc(d.name || 'Display')}</option>`).join('')}</optgroup>
-    <optgroup label="Groups">${data.groups.map((g) => `<option value="grp:${esc(g.id)}">${esc(g.name)}</option>`).join('')}</optgroup>`;
   const sourceOpts = `
     <optgroup label="Playlists">${data.playlists.map((p) => `<option value="playlist:${esc(p.id)}">${esc(p.name)}</option>`).join('')}</optgroup>
     <optgroup label="Media">${data.content.map((c) => `<option value="content:${esc(c.id)}">${esc(c.filename || 'file')}</option>`).join('')}</optgroup>`;
@@ -94,7 +110,12 @@ function renderForm() {
     <div style="font-weight:var(--mc-fw-bold);color:var(--mc-text-primary);margin-bottom:14px">New schedule</div>
     ${noTargets ? '<div class="mc-panel-empty" style="margin-bottom:12px">Pair a display (or make a group) first — then you can schedule to it.</div>' : ''}
     <div style="margin-bottom:14px"><label style="${LABEL}">Title</label><input id="schTitle" type="text" placeholder="e.g. Morning briefing loop" style="${FIELD}"></div>
-    <div style="margin-bottom:14px"><label style="${LABEL}">Target display / group</label><select id="schTarget" style="${FIELD}">${targetOpts}</select></div>
+    <div style="margin-bottom:14px">
+      <label style="${LABEL}">Target display / group</label>
+      <button id="schTarget" type="button" style="${FIELD};min-height:var(--tap-min,48px);text-align:left;cursor:pointer" ${noTargets ? 'disabled' : ''}>
+        ${esc(scheduleTargetSummary(selectedScheduleTarget))}
+      </button>
+    </div>
     <div style="margin-bottom:14px"><label style="${LABEL}">Content</label><select id="schSource" style="${FIELD}">${sourceOpts}</select></div>
     <div style="display:flex;gap:12px;margin-bottom:14px">
       <div style="flex:1"><label style="${LABEL}">Start</label><input id="schStart" type="datetime-local" style="${FIELD}"></div>
@@ -114,16 +135,45 @@ function renderForm() {
   document.getElementById('schRepeat').addEventListener('change', (e) => {
     document.getElementById('schDays').style.display = e.target.value === 'WEEKLY' ? 'block' : 'none';
   });
+  document.getElementById('schTarget')?.addEventListener('click', chooseScheduleTarget);
   document.getElementById('schSave').addEventListener('click', save);
+}
+
+async function chooseScheduleTarget() {
+  try {
+    const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false }, { requireFresh: true });
+    const selection = await openTargetPicker({
+      catalog,
+      capability: (target) => target.type !== 'wall',
+      selection: 'single',
+      allowOffline: true,
+      allowIndividualWallMembers: false,
+      allowLiveProgram: false,
+      selectedTargets: selectedScheduleTarget
+        ? [{ type: selectedScheduleTarget.type, id: selectedScheduleTarget.id }]
+        : [],
+    });
+    if (!selection) return;
+    const target = selection.targets[0] || null;
+    if (!scheduleTargetPayload(target)) {
+      showToast('Video-wall schedules require atomic server support. Choose a display group or standalone display.', 'info');
+      return;
+    }
+    selectedScheduleTarget = target;
+    const button = document.getElementById('schTarget');
+    if (button) button.textContent = scheduleTargetSummary(target);
+  } catch (error) {
+    showToast(error?.message || 'Live room topology is unavailable.', 'error');
+  }
 }
 
 async function save() {
   const g = (id) => document.getElementById(id);
-  const target = g('schTarget').value;
   const source = g('schSource').value;
   const start = g('schStart').value;
   const end = g('schEnd').value;
-  if (!target) { showToast('Pick a target display or group', 'info'); return; }
+  const targetPayload = scheduleTargetPayload(selectedScheduleTarget);
+  if (!targetPayload) { showToast('Pick a target display or group', 'info'); return; }
   if (!start || !end) { showToast('Start and end time are required', 'info'); return; }
   if (end <= start) { showToast('End must be after start', 'info'); return; }
 
@@ -133,8 +183,7 @@ async function save() {
     timezone: (Intl.DateTimeFormat().resolvedOptions().timeZone) || 'UTC',
     priority: parseInt(g('schPriority').value, 10) || 0,
   };
-  const [tType, tId] = target.split(':');
-  if (tType === 'dev') payload.device_id = tId; else payload.group_id = tId;
+  Object.assign(payload, targetPayload);
   if (source) { const [sType, sId] = source.split(':'); if (sType === 'playlist') payload.playlist_id = sId; else payload.content_id = sId; }
 
   const repeat = g('schRepeat').value;
@@ -149,6 +198,7 @@ async function save() {
     await api.schedules.create(payload);
     showToast('Schedule created', 'success');
     data.schedules = asArray(await api.schedules.list());
+    selectedScheduleTarget = null;
     renderList();
     renderForm();
   } catch (e) { showToast(e.message || 'Could not create schedule', 'error'); if (btn) btn.disabled = false; }
@@ -200,6 +250,7 @@ function renderBody() {
 
 export async function render(app) {
   mode = 'list';
+  selectedScheduleTarget = null;
   app.innerHTML = `
     <div class="mc-studio-surface">
       <div class="mc-studio-wrap" style="max-width:1300px">

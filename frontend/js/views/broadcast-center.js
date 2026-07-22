@@ -14,10 +14,14 @@ import { api } from '../api.js';
 import { showToast } from '../components/toast.js';
 import { confirmDialog } from '../components/confirm.js';
 import { sendCommand } from '../socket.js';
+import { openTargetPicker } from '../components/target-picker.js';
+import { waitForTargetCatalog } from '../services/target-catalog-runtime.js';
+import { expandTargetsToDeviceIds, findCatalogTarget } from '../services/target-catalog.js';
 
-let data = { devices: [], groups: [], presentations: [], playlists: [], content: [], ncFiles: [], ncPath: '' };
+let data = { catalog: null, presentations: [], playlists: [], content: [], ncFiles: [], ncPath: '' };
 let sel = { type: 'presentation', id: null, label: '' };
 let targets = new Set();
+let targetReferences = [];
 let blanked = false;
 
 function esc(s) {
@@ -26,7 +30,16 @@ function esc(s) {
   ));
 }
 function asArray(v) { return Array.isArray(v) ? v : (v && Array.isArray(v.data) ? v.data : []); }
-function isOnline(d) { return String(d.status || '').toLowerCase() === 'online'; }
+function targetKey(target) { return `${target.type}:${target.id}`; }
+function selectedDeviceIds() {
+  return data.catalog ? expandTargetsToDeviceIds([...targets], data.catalog) : [];
+}
+function selectedTypedTargets() {
+  return targetReferences.filter((target) => target.type !== 'live-program');
+}
+function liveProgramSelected() {
+  return [...targets].some((key) => key.startsWith('live-program:'));
+}
 
 const ROW = 'display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:var(--mc-radius-sm);cursor:pointer;border:1px solid var(--mc-border-light);background:var(--mc-surface);margin-bottom:6px';
 const ROW_SEL = 'display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:var(--mc-radius-sm);cursor:pointer;border:1px solid var(--mc-primary);background:var(--mc-live-dim,#FEE2E2);margin-bottom:6px';
@@ -149,58 +162,73 @@ function renderTabs() {
 function renderTargets() {
   const wrap = document.getElementById('bcTargets');
   if (!wrap) return;
-  if (!data.devices.length) {
-    wrap.innerHTML = `<div class="mc-panel-empty">No displays paired yet. Pair one from <a class="mc-panel-empty-cta" href="#/">Displays</a>, then broadcast here.</div>`;
+  if (!data.catalog) {
+    wrap.innerHTML = '<div class="mc-panel-empty">Live room topology is unavailable. Check the server connection.</div>';
     return;
   }
-  const groupChips = data.groups.length ? `
-    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
-      <button type="button" data-all="1" style="background:var(--mc-surface);border:1px solid var(--mc-border-medium);border-radius:999px;padding:5px 12px;cursor:pointer;font-size:var(--mc-font-size-xs);color:var(--mc-text-primary)">Select all</button>
-      ${data.groups.map((g) => `<button type="button" data-group="${esc(g.id)}" style="background:var(--mc-surface);border:1px solid var(--mc-border-medium);border-radius:999px;padding:5px 12px;cursor:pointer;font-size:var(--mc-font-size-xs);color:var(--mc-text-primary)">${esc(g.name)}</button>`).join('')}
-    </div>` : `
-    <div style="margin-bottom:10px"><button type="button" data-all="1" style="background:var(--mc-surface);border:1px solid var(--mc-border-medium);border-radius:999px;padding:5px 12px;cursor:pointer;font-size:var(--mc-font-size-xs);color:var(--mc-text-primary)">Select all</button></div>`;
-  wrap.innerHTML = groupChips + data.devices.map((d) => `
-    <label data-dev="${esc(d.id)}" style="${targets.has(d.id) ? ROW_SEL : ROW}">
-      <input type="checkbox" ${targets.has(d.id) ? 'checked' : ''} style="margin:0">
-      <span style="width:8px;height:8px;border-radius:50%;background:${isOnline(d) ? 'var(--mc-online,#16A34A)' : 'var(--mc-text-tertiary,#9CA3AF)'};flex:0 0 auto"></span>
-      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--mc-text-primary)">${esc(d.name || 'Display')}</span>
-      <span style="font-size:var(--mc-font-size-xs);color:var(--mc-text-tertiary)">${isOnline(d) ? 'online' : 'offline'}</span>
-    </label>`).join('');
+  const selectedRows = [...targets].map((key) => {
+    const target = findCatalogTarget(data.catalog, key);
+    if (!target) return '';
+    const live = target.type === 'live-program';
+    const detail = target.topologyLabel || `${target.name} · ${target.status || ''} · ${target.dimensionsLabel || ''}`;
+    return `<div class="mc-target-picker-choice${live ? ' is-live-program' : ''}" style="cursor:default">
+      <span class="mc-target-picker-choice-body">
+        <span class="mc-target-picker-choice-heading"><strong>${esc(target.name)}</strong>${live ? '<span class="mc-target-picker-status is-live">ON-AIR PATH</span>' : ''}</span>
+        <span class="mc-target-picker-meta">${esc(detail)}</span>
+      </span>
+    </div>`;
+  }).filter(Boolean).join('');
+  const physicalCount = selectedDeviceIds().length;
+  wrap.innerHTML = `
+    <button type="button" data-choose-targets class="mc-action-btn-primary" style="width:100%;border:0;border-radius:var(--mc-radius-sm);padding:11px 16px;font-weight:var(--mc-fw-bold);cursor:pointer">
+      ${targets.size ? 'Change destinations' : 'Choose walls and displays'}
+    </button>
+    <p style="margin:8px 0 12px;color:var(--mc-text-tertiary);font-size:var(--mc-font-size-xs)">
+      ${physicalCount} physical display${physicalCount === 1 ? '' : 's'}${liveProgramSelected() ? ' · Live Program explicitly selected' : ' · Live Program not selected'}
+    </p>
+    ${selectedRows || '<div class="mc-panel-empty">No destinations selected.</div>'}`;
 }
 
 function updateBar() {
   const btn = document.getElementById('bcGo');
   const info = document.getElementById('bcInfo');
-  if (info) info.textContent = `${targets.size} display${targets.size === 1 ? '' : 's'} · ${sel.id ? '1 source' : 'no source'}`;
+  const ids = selectedDeviceIds();
+  const destinationCount = ids.length + (liveProgramSelected() ? 1 : 0);
+  if (info) info.textContent = `${destinationCount} destination${destinationCount === 1 ? '' : 's'} · ${sel.id ? '1 source' : 'no source'}`;
   if (btn) btn.disabled = !(sel.id && targets.size);
   // Live-control buttons act on the selected displays (independent of source).
-  document.querySelectorAll('.bc-ctl').forEach((b) => { b.disabled = !targets.size; b.style.opacity = targets.size ? '1' : '.45'; b.style.cursor = targets.size ? 'pointer' : 'not-allowed'; });
+  document.querySelectorAll('.bc-ctl').forEach((b) => { b.disabled = !ids.length; b.style.opacity = ids.length ? '1' : '.45'; b.style.cursor = ids.length ? 'pointer' : 'not-allowed'; });
   const ci = document.getElementById('bcCtlInfo');
-  if (ci) ci.textContent = targets.size ? `${targets.size} display${targets.size === 1 ? '' : 's'} selected` : 'select displays above';
+  if (ci) ci.textContent = ids.length ? `${ids.length} physical display${ids.length === 1 ? '' : 's'} selected` : 'select a physical wall or display above';
 }
 
 async function broadcast() {
   if (!sel.id || !targets.size) return;
   const btn = document.getElementById('bcGo');
   if (btn) btn.disabled = true;
-  const device_ids = [...targets];
+  const device_ids = selectedDeviceIds();
+  const include_live_stream = liveProgramSelected();
 
   try {
     // Nextcloud file: import bytes → content row → broadcast via /api/files/broadcast.
     // GUARDRAIL: sel.id is the NC path (string); email comes from req.user.email
     // server-side — never sent from the client.
     if (sel.type === 'nc_file') {
-      let r = await api.files.broadcast(sel.id, device_ids);
+      let r = await api.files.broadcast(sel.id, undefined, { targets: selectedTypedTargets() });
       if (r && r.code === 'CONFIRM_ALL_REQUIRED') {
         const ok = await confirmDialog({ title: 'Broadcast to ALL displays?', message: `This takes over all ${r.count} displays in this workspace.`, confirmLabel: 'Broadcast to all', tone: 'danger' });
         if (!ok) { updateBar(); return; }
-        r = await api.files.broadcast(sel.id, device_ids, { confirm_all: true });
+        r = await api.files.broadcast(sel.id, undefined, { targets: selectedTypedTargets(), confirm_all: true });
       }
       showToast(`Broadcasting "${esc(sel.label)}" to ${r.sent != null ? r.sent : device_ids.length} display(s)`, 'success');
       return;
     }
 
-    const payload = { device_ids };
+    const typedTargets = selectedTypedTargets();
+    const payload = {
+      ...(typedTargets.length ? { targets: typedTargets } : { device_ids }),
+      include_live_stream,
+    };
     if (sel.type === 'presentation') payload.remote_url = `${location.origin}/player/deck/${sel.id}`;
     else if (sel.type === 'playlist') payload.playlist_id = sel.id;
     else payload.content_id = sel.id;
@@ -221,6 +249,7 @@ async function broadcast() {
 export async function render(app) {
   sel = { type: 'presentation', id: null, label: '' };
   targets = new Set();
+  targetReferences = [];
   app.innerHTML = `
     <div class="mc-studio-surface">
       <div class="mc-studio-wrap" style="max-width:1200px">
@@ -262,14 +291,13 @@ export async function render(app) {
   document.getElementById('bcSources').innerHTML = '<div class="mc-panel-empty">Loading…</div>';
   document.getElementById('bcTargets').innerHTML = '<div class="mc-panel-empty">Loading…</div>';
 
-  const [devices, groups, presentations, playlists, content] = await Promise.all([
-    api.getDevices().catch(() => []),
-    api.getGroups().catch(() => []),
+  const [catalog, presentations, playlists, content] = await Promise.all([
+    waitForTargetCatalog({ includeVirtualDisplays: false }).catch(() => null),
     api.presentations.list().catch(() => []),
     api.getPlaylists().catch(() => []),
     api.getContent().catch(() => []),
   ]);
-  data = { devices: asArray(devices), groups: asArray(groups), presentations: asArray(presentations), playlists: asArray(playlists), content: asArray(content) };
+  data = { catalog, presentations: asArray(presentations), playlists: asArray(playlists), content: asArray(content), ncFiles: [], ncPath: '' };
 
   renderSources();
   renderTargets();
@@ -278,6 +306,11 @@ export async function render(app) {
   document.getElementById('bcTabs').addEventListener('click', async (e) => {
     const b = e.target.closest('[data-tab]'); if (!b) return;
     sel = { type: b.dataset.tab, id: null, label: '' };
+    if (sel.type === 'nc_file') {
+      for (const key of [...targets]) if (key.startsWith('live-program:')) targets.delete(key);
+      targetReferences = targetReferences.filter((target) => target.type !== 'live-program');
+      renderTargets();
+    }
     renderTabs(); updateBar();
     if (b.dataset.tab === 'nc_file') {
       data.ncPath = '';
@@ -291,26 +324,30 @@ export async function render(app) {
     renderSources(); updateBar();
   });
   document.getElementById('bcTargets').addEventListener('click', async (e) => {
-    const all = e.target.closest('[data-all]');
-    const grp = e.target.closest('[data-group]');
-    const dev = e.target.closest('[data-dev]');
-    if (all) {
-      if (targets.size === data.devices.length) targets.clear();
-      else data.devices.forEach((d) => targets.add(d.id));
-      renderTargets(); updateBar(); return;
+    if (!e.target.closest('[data-choose-targets]') || !data.catalog) return;
+    try {
+      data.catalog = await waitForTargetCatalog(
+        { includeVirtualDisplays: false },
+        { requireFresh: true },
+      );
+    } catch (error) {
+      showToast(error.message || 'Could not refresh live room topology.', 'error');
+      return;
     }
-    if (grp) {
-      try {
-        const members = asArray(await api.getGroupDevices(grp.dataset.group));
-        members.forEach((m) => targets.add(m.id || m.device_id));
-      } catch { showToast('Could not load group displays', 'error'); }
-      renderTargets(); updateBar(); return;
-    }
-    if (dev) {
-      const id = dev.dataset.dev;
-      if (targets.has(id)) targets.delete(id); else targets.add(id);
-      renderTargets(); updateBar();
-    }
+    const selection = await openTargetPicker({
+      catalog: data.catalog,
+      capability: 'content',
+      selection: 'multiple',
+      allowOffline: false,
+      allowIndividualWallMembers: false,
+      allowLiveProgram: sel.type !== 'nc_file',
+      selectedTargets: [...targets],
+    });
+    if (!selection) return;
+    targetReferences = selection.references;
+    targets = new Set(selection.references.map(targetKey));
+    renderTargets();
+    updateBar();
   });
   document.getElementById('bcGo').addEventListener('click', broadcast);
 
@@ -320,8 +357,8 @@ export async function render(app) {
   });
   document.getElementById('bcCtl').addEventListener('click', (e) => {
     const b = e.target.closest('[data-ctl]'); if (!b || b.disabled) return;
-    if (!targets.size) { showToast('Select one or more displays first', 'info'); return; }
-    const ids = [...targets];
+    const ids = selectedDeviceIds();
+    if (!ids.length) { showToast('Select one or more physical displays first', 'info'); return; }
     const ctl = b.dataset.ctl;
     if (ctl === 'blank') {
       ids.forEach((id) => sendCommand(id, blanked ? 'screen_on' : 'screen_off'));

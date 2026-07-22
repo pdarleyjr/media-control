@@ -1,5 +1,6 @@
 import { t } from './i18n.js';
 import { performanceMetrics } from './services/ui-runtime-v1.js';
+import { createRoomStateStore } from './services/room-state-store.js';
 
 let dashboardSocket = null;
 const listeners = new Map();
@@ -7,9 +8,52 @@ const nodeStatusById = new Map();
 const nodeStatusByRoom = new Map();
 let selectedTarget = null;
 const pendingCommandMetrics = new Map();
+let socketIdentity = null;
+let roomRecoveryRequested = false;
+let roomRecoveryTimer = null;
+
+function identityFromToken(token) {
+  try {
+    const payload = JSON.parse(atob(String(token || '').split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+    return `${payload.id || ''}\u0000${payload.current_workspace_id || ''}`;
+  } catch {
+    return String(token || '');
+  }
+}
+
+function clearRoomRecovery() {
+  roomRecoveryRequested = false;
+  if (roomRecoveryTimer) clearTimeout(roomRecoveryTimer);
+  roomRecoveryTimer = null;
+}
+
+function requestAuthoritativeRoomSnapshot(options = {}) {
+  if (!dashboardSocket?.connected || (roomRecoveryRequested && options.force !== true)) return;
+  roomRecoveryRequested = true;
+  roomRecoveryTimer = setTimeout(clearRoomRecovery, 5000);
+  dashboardSocket.emit('dashboard:room-resume', {
+    revision: roomState.getRevision(),
+    snapshot_timestamp: roomState.getSnapshot()?.serverTimestamp,
+    force: options.force === true,
+  });
+}
+
+export const roomState = createRoomStateStore({
+  onGap: requestAuthoritativeRoomSnapshot,
+});
 
 export function connectSocket() {
   const token = localStorage.getItem('token');
+  const nextIdentity = identityFromToken(token);
+  if (socketIdentity && nextIdentity !== socketIdentity) {
+    roomState.reset();
+    nodeStatusById.clear();
+    nodeStatusByRoom.clear();
+    selectedTarget = null;
+    pendingCommandMetrics.clear();
+  }
+  socketIdentity = nextIdentity;
+  clearRoomRecovery();
   if (dashboardSocket) {
     try { dashboardSocket.disconnect(); } catch { /* reconnect best-effort */ }
     dashboardSocket = null;
@@ -26,6 +70,7 @@ export function connectSocket() {
     console.log('Dashboard connected, socket id:', dashboardSocket.id);
     updateConnectionStatus(true);
     emitSelectedTarget();
+    requestAuthoritativeRoomSnapshot();
     emit('connected');
   });
 
@@ -113,6 +158,24 @@ export function connectSocket() {
       pendingCommandMetrics.delete(commandId);
     }
     emit('state-sync', data);
+  });
+
+  // The room contract is the sole full-state reconciliation path. Snapshot
+  // revisions survive reconnects; deltas are accepted only when contiguous.
+  dashboardSocket.on('room:snapshot', (snapshot) => {
+    clearRoomRecovery();
+    const result = roomState.applySnapshot(snapshot);
+    if (result.applied) emit('room-snapshot', roomState.getSnapshot());
+  });
+
+  dashboardSocket.on('room:resumed', (data) => {
+    clearRoomRecovery();
+    emit('room-resumed', data);
+  });
+
+  dashboardSocket.on('room:delta', (delta) => {
+    const result = roomState.applyDelta(delta);
+    if (result.applied) emit('room-snapshot', roomState.getSnapshot());
   });
 
   return dashboardSocket;
@@ -236,6 +299,8 @@ export function sendCommand(deviceId, type, payload, callback) {
 }
 
 export function getSocket() { return dashboardSocket; }
+
+export function requestRoomSnapshot(options = {}) { requestAuthoritativeRoomSnapshot(options); }
 
 export function getNodeStatus(idOrRoom) {
   if (!idOrRoom) return null;

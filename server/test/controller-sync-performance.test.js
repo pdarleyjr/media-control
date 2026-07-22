@@ -170,17 +170,16 @@ test('known inactive live state never delays a normal content broadcast with a d
   assert.match(send, /if \(isLiveStateKnown\(\)\) return isLiveActive\(\)/);
 });
 
-test('camera catalog maps Focus to wall 2 and ANNKE to wall 1', () => {
+test('camera catalog uses configured wall names while the canvas avoids ordinal camera presets', () => {
   const catalog = read('frontend/js/views/media-control/camera-feeds-catalog.js');
   const canvas = read('frontend/js/views/media-control/advanced-canvas.js');
 
-  assert.match(catalog, /, 1, 'wall-2'\)/);
-  assert.doesNotMatch(catalog, /, 1, 'wall-1'\)/);
-  assert.match(catalog, /Video Wall 1', 3\)/);
-  assert.match(canvas, /data-canvas-preset="wall-1"/);
-  assert.match(canvas, /data-canvas-preset="wall-2"/);
+  assert.match(catalog, /Focus 210 · Secondary Wall', 1, 'wall-2'\)/);
+  assert.match(catalog, /ANNKE · Primary Wall', 3\)/);
+  assert.doesNotMatch(catalog, /Video Wall [12]/);
+  assert.doesNotMatch(canvas, /data-canvas-preset="wall-[12]"/);
   assert.match(canvas, /data-canvas-camera="3"/);
-  assert.match(canvas, /preset: button\.dataset\.canvasPreset/);
+  assert.match(canvas, /Room overview/);
 });
 
 test('periodic state timestamps never hide an authoritative device screenshot', () => {

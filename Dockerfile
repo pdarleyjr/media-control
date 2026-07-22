@@ -1,13 +1,13 @@
 # Dockerfile — Media Control (derived from Screen Tinker, MIT)
 # Build context = repo root. Two-stage: compile native deps (better-sqlite3,
 # sharp/libvips) then a slim runtime with ffmpeg/yt-dlp/poppler for media.
-FROM node:22-alpine AS deps
+FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 AS deps
 RUN apk add --no-cache python3 make g++ vips-dev pkgconfig
 WORKDIR /app/server
 COPY server/package.json server/package-lock.json* ./
-RUN npm install --omit=dev --no-audit --no-fund
+RUN npm ci --omit=dev --no-audit --no-fund
 
-FROM node:22-alpine
+FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2
 # poppler-utils: PDF page-1 -> image (pdftoppm) for PDF thumbnails.
 # libreoffice + fonts: headless office->PDF so PowerPoint/Word/Excel/ODF uploads
 #   (incl. exports with no embedded preview, e.g. Gamma) get a real slide/page
@@ -31,11 +31,20 @@ COPY --from=deps /app/server/node_modules ./server/node_modules
 ARG CACHEBUST=dev
 RUN echo "cachebust=$CACHEBUST"
 ARG GIT_COMMIT=unknown
+ARG GIT_TREE=unknown
 ARG GIT_BRANCH=unknown
 ARG BUILD_TIMESTAMP=unknown
-ENV GIT_COMMIT=$GIT_COMMIT
-ENV GIT_BRANCH=$GIT_BRANCH
-ENV BUILD_TIMESTAMP=$BUILD_TIMESTAMP
+ARG BUILD_ID=unknown
+ARG IMAGE_TAG=unknown
+ENV GIT_COMMIT=$GIT_COMMIT \
+    GIT_TREE=$GIT_TREE \
+    GIT_BRANCH=$GIT_BRANCH \
+    BUILD_TIMESTAMP=$BUILD_TIMESTAMP \
+    BUILD_ID=$BUILD_ID \
+    IMAGE_TAG=$IMAGE_TAG
+LABEL org.opencontainers.image.revision=$GIT_COMMIT \
+      org.opencontainers.image.source="https://github.com/pdarleyjr/media-control" \
+      org.opencontainers.image.title="media-control"
 COPY server ./server
 COPY frontend ./frontend
 COPY scripts ./scripts

@@ -41,6 +41,7 @@ const WALL_ROOM_PREFIX = 'wall:';
 const GROUP_ROOM_PREFIX = 'group:';
 const NODE_ROOM_PREFIX = 'node:';
 const LIVE_PROGRAM_PREFIX = 'live-program:';
+const ROOM_STATE_PREFIX = 'room-state:';
 
 function displayRoom(displayId) {
   return displayId ? DISPLAY_ROOM_PREFIX + displayId : null;
@@ -64,6 +65,11 @@ function nodeRoom(nodeId) {
 
 function liveProgramRoom(workspaceId) {
   return workspaceId ? LIVE_PROGRAM_PREFIX + workspaceId : null;
+}
+
+function roomStateRoom(workspaceId, roomId) {
+  if (!workspaceId || !roomId) return null;
+  return `${ROOM_STATE_PREFIX}${encodeURIComponent(String(workspaceId))}:${encodeURIComponent(String(roomId))}`;
 }
 
 // Resolve EVERY per-target room a member device should join on register: its
@@ -97,5 +103,5 @@ function targetRoomsForDevice(deviceId) {
 
 module.exports = {
   workspaceRoom, deviceRoom, wallRoom, emitToWorkspace,
-  displayRoom, wallTargetRoom, groupRoom, nodeRoom, liveProgramRoom, targetRoomsForDevice,
+  displayRoom, wallTargetRoom, groupRoom, nodeRoom, liveProgramRoom, roomStateRoom, targetRoomsForDevice,
 };

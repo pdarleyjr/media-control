@@ -1,6 +1,6 @@
 import { api } from '../api.js';
 import { showToast } from '../components/toast.js';
-import { esc } from '../utils.js';
+import { esc, isPlatformAdmin } from '../utils.js';
 import { t } from '../i18n.js';
 
 function formatFileSize(bytes) {
@@ -33,7 +33,38 @@ function docLabel(mt) {
   return t('content.type_document');
 }
 
+const VISIBILITIES = ['private', 'workspace_shared', 'organization_shared', 'platform_template'];
+
+function visibilityLabel(level) {
+  return t(`content.visibility.${VISIBILITIES.includes(level) ? level : 'private'}`);
+}
+
+function contentTypeLabel(content) {
+  if (content.mime_type === 'video/youtube') return t('content.type_youtube');
+  if (content.remote_url) return t('content.type_remote');
+  if (content.mime_type?.startsWith('video/')) return t('content.type_video');
+  if (isDocMime(content.mime_type)) return docLabel(content.mime_type);
+  return t('content.type_image');
+}
+
+function governedActions(content) {
+  const permissions = content.permissions || {};
+  const pending = content.visibility?.publication_request_status === 'pending';
+  return `
+    ${permissions?.can_edit ? `<button class="btn btn-secondary btn-sm" data-edit-content="${content.id}">${t('content.btn_edit')}</button>` : ''}
+    ${permissions?.can_request_organization && !pending ? `<button class="btn btn-secondary btn-sm" data-request-publication="${content.id}">${t('content.btn_request_org')}</button>` : ''}
+    ${pending ? `<span class="content-request-status">${t('content.request_pending')}</span>` : ''}
+    ${permissions?.can_duplicate ? `<button class="btn btn-secondary btn-sm" data-duplicate-content="${content.id}">${t('content.btn_duplicate')}</button>` : ''}
+    ${permissions?.can_transfer ? `<button class="btn btn-secondary btn-sm" data-transfer-content="${content.id}">${t('content.btn_transfer')}</button>` : ''}
+    ${permissions?.can_change_visibility && content.visibility?.access_level === 'platform_template' ? `<button class="btn btn-secondary btn-sm" data-template-assignments="${content.id}">${t('content.btn_assign_workspaces')}</button>` : ''}
+    ${permissions?.can_archive ? `<button class="btn btn-secondary btn-sm" data-archive-content="${content.id}" data-archived="${content.visibility?.archived_at ? 'true' : 'false'}">${content.visibility?.archived_at ? t('content.btn_restore') : t('content.btn_archive')}</button>` : ''}
+    ${permissions?.can_delete ? `<button class="btn btn-danger btn-sm" data-delete-content="${content.id}">${t('content.btn_delete')}</button>` : ''}
+  `;
+}
+
 export function render(container) {
+  let currentUser = {};
+  try { currentUser = JSON.parse(localStorage.getItem('user') || '{}'); } catch { /* keep empty identity */ }
   container.innerHTML = `
     <div class="page-header">
       <div>
@@ -94,9 +125,23 @@ export function render(container) {
     </div>
     </div>
 
-    <div style="display:flex;gap:12px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
-      <input type="text" id="contentSearch" class="input" placeholder="${t('content.search_placeholder')}" style="max-width:250px;width:100%">
+    <div class="content-governance-toolbar" aria-label="${t('content.filters_label')}">
+      <input type="search" id="contentSearch" class="input" placeholder="${t('content.search_placeholder')}" value="${esc(state.filters.search)}">
+      <select id="contentVisibilityFilter" class="input" aria-label="${t('content.filter_visibility')}">
+        <option value="">${t('content.filter_all_visibility')}</option>
+        ${VISIBILITIES.map(level => `<option value="${level}" ${state.filters.visibility === level ? 'selected' : ''}>${visibilityLabel(level)}</option>`).join('')}
+      </select>
+      <select id="contentTypeFilter" class="input" aria-label="${t('content.filter_type')}">
+        <option value="">${t('content.filter_all_types')}</option>
+        <option value="video" ${state.filters.type === 'video' ? 'selected' : ''}>${t('content.type_video')}</option>
+        <option value="image" ${state.filters.type === 'image' ? 'selected' : ''}>${t('content.type_image')}</option>
+        <option value="application" ${state.filters.type === 'application' ? 'selected' : ''}>${t('content.type_document')}</option>
+      </select>
+      <label class="content-filter-check"><input type="checkbox" id="contentMineFilter" ${state.filters.mine ? 'checked' : ''}> ${t('content.filter_mine')}</label>
+      <label class="content-filter-check"><input type="checkbox" id="contentArchivedFilter" ${state.filters.archived ? 'checked' : ''}> ${t('content.filter_archived')}</label>
       <button class="btn btn-secondary btn-sm" id="newFolderBtn">${t('content.new_folder_btn')}</button>
+      ${isPlatformAdmin(currentUser) || ['org_owner', 'org_admin'].includes(currentUser.current_org_role || currentUser.org_role)
+        ? `<button class="btn btn-secondary btn-sm" data-review-publications>${t('content.review_requests')}</button>` : ''}
     </div>
     <div id="folderBreadcrumb" style="display:flex;gap:6px;align-items:center;margin-bottom:12px;font-size:13px;flex-wrap:wrap"></div>
     <div id="folderGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:16px"></div>
@@ -170,19 +215,18 @@ export function render(container) {
     }
   });
 
-  // Content search filters items currently shown in the grid.
-  function filterContent() {
-    const q = document.getElementById('contentSearch').value.toLowerCase();
-    document.querySelectorAll('.content-item').forEach(item => {
-      const name = item.querySelector('.content-item-name')?.textContent.toLowerCase() || '';
-      item.style.display = (!q || name.includes(q)) ? '' : 'none';
-    });
-    document.querySelectorAll('.folder-card').forEach(card => {
-      const name = card.dataset.name?.toLowerCase() || '';
-      card.style.display = (!q || name.includes(q)) ? '' : 'none';
-    });
-  }
-  document.getElementById('contentSearch').oninput = filterContent;
+  // Governed filters execute server-side so shared/template/archived results are
+  // never inferred from whatever happened to be loaded in the current grid.
+  let searchTimer;
+  document.getElementById('contentSearch').oninput = (event) => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => { state.filters.search = event.target.value.trim(); loadContent(); }, 250);
+  };
+  document.getElementById('contentVisibilityFilter').onchange = (event) => { state.filters.visibility = event.target.value; loadContent(); };
+  document.getElementById('contentTypeFilter').onchange = (event) => { state.filters.type = event.target.value; loadContent(); };
+  document.getElementById('contentMineFilter').onchange = (event) => { state.filters.mine = event.target.checked; loadContent(); };
+  document.getElementById('contentArchivedFilter').onchange = (event) => { state.filters.archived = event.target.checked; loadContent(); };
+  container.querySelector('[data-review-publications]')?.addEventListener('click', showPublicationReviewModal);
 
   // Create folder in the current folder.
   document.getElementById('newFolderBtn').onclick = async () => {
@@ -203,6 +247,7 @@ export function render(container) {
 const state = {
   currentFolderId: null, // null = root
   folders: [],           // all folders for this user (flat tree)
+  filters: { search: '', visibility: '', type: '', mine: false, archived: false },
 };
 
 async function handleFiles(files) {
@@ -243,7 +288,16 @@ async function loadContent() {
 
   try {
     const [content, folders] = await Promise.all([
-      api.getContent(state.currentFolderId === null ? null : state.currentFolderId),
+      api.getGovernedContent({
+        // The root governance view intentionally spans owner/workspace/org/template
+        // sources. Folder navigation narrows to an explicit owned folder.
+        folderId: state.currentFolderId === null ? undefined : state.currentFolderId,
+        visibility: state.filters.visibility,
+        type: state.filters.type,
+        search: state.filters.search,
+        mine: state.filters.mine,
+        archived: state.filters.archived ? 'include' : '',
+      }),
       api.getFolders(),
     ]);
     state.folders = folders;
@@ -375,11 +429,11 @@ async function loadContent() {
     }
 
     grid.innerHTML = content.map(c => `
-      <div class="content-item" draggable="true" data-content-id="${c.id}" data-folder="${c.folder || ''}">
+      <div class="content-item ${c.visibility?.archived_at ? 'is-archived' : ''}" draggable="${c.permissions?.can_edit ? 'true' : 'false'}" data-content-id="${c.id}" data-folder="${c.folder || ''}">
         <div class="content-item-preview">
           ${c.mime_type === 'video/youtube'
             ? `<div style="position:relative;width:100%;height:100%;background:#000;display:flex;align-items:center;justify-content:center">
-                <img src="${c.thumbnail_path}" alt="${esc(c.filename)}" loading="lazy" style="width:100%;height:100%;object-fit:cover">
+                <img src="${esc(c.thumbnail_url || c.thumbnail_path)}" alt="${esc(c.filename)}" loading="lazy" style="width:100%;height:100%;object-fit:cover">
                 <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center">
                   <svg width="40" height="40" viewBox="0 0 24 24" fill="red" stroke="none">
                     <path d="M22.54 6.42a2.78 2.78 0 0 0-1.94-2C18.88 4 12 4 12 4s-6.88 0-8.6.46a2.78 2.78 0 0 0-1.94 2A29 29 0 0 0 1 11.75a29 29 0 0 0 .46 5.33A2.78 2.78 0 0 0 3.4 19.13C5.12 19.56 12 19.56 12 19.56s6.88 0 8.6-.46a2.78 2.78 0 0 0 1.94-2 29 29 0 0 0 .46-5.25 29 29 0 0 0-.46-5.43z"/>
@@ -395,8 +449,8 @@ async function loadContent() {
                 </svg>
                 <span style="font-size:10px;color:var(--text-muted)">${t('content.type_remote_short')}</span>
               </div>`
-            : c.thumbnail_path
-              ? `<img src="/api/content/${c.id}/thumbnail" alt="${esc(c.filename)}" loading="lazy">`
+            : c.thumbnail_url || c.thumbnail_path
+              ? `<img src="${esc(c.thumbnail_url || c.thumbnail_path)}" alt="${esc(c.filename)}" loading="lazy">`
               : c.mime_type?.startsWith('video/')
                 ? `<div class="video-icon">
                     <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -408,33 +462,29 @@ async function loadContent() {
                       <span style="font-size:32px;line-height:1">${docGlyph(c.mime_type)}</span>
                       <span style="font-size:10px;color:var(--text-muted)">${esc(docLabel(c.mime_type))}</span>
                     </div>`
-                  : `<img src="/api/content/${c.id}/file" alt="${esc(c.filename)}" loading="lazy">`
+                : `<img src="${esc(c.thumbnail_url || c.file_url || `/api/content/${c.id}/file`)}" alt="${esc(c.filename)}" loading="lazy">`
           }
         </div>
         <div class="content-item-body">
-          <div class="content-item-name" title="${esc(c.filename)}">${esc(c.filename)}</div>
+          <div class="content-item-heading">
+            <div class="content-item-name" title="${esc(c.filename)}">${esc(c.filename)}</div>
+            <span class="content-visibility-badge visibility-${esc(c.visibility?.access_level || 'private')}">${visibilityLabel(c.visibility?.access_level)}</span>
+          </div>
           <div class="content-item-size">
-            ${c.mime_type === 'video/youtube' ? t('content.type_youtube') : c.remote_url ? t('content.type_remote') : (c.mime_type?.startsWith('video/') ? t('content.type_video') : isDocMime(c.mime_type) ? docLabel(c.mime_type) : t('content.type_image'))}
+            ${contentTypeLabel(c)}
             ${c.duration_sec ? ` &middot; ${Math.floor(c.duration_sec / 60)}:${String(Math.floor(c.duration_sec % 60)).padStart(2, '0')}` : ''}
             ${c.file_size ? ' &middot; ' + formatFileSize(c.file_size) : ''}
             ${c.width && c.height ? ` &middot; ${c.width}x${c.height}` : ''}
           </div>
+          <div class="content-governance-meta">
+            <span>${t('content.owner')}: ${esc(c.visibility?.owner_name || t('content.owner_unknown'))}</span>
+            <span>${t('content.version', { version: c.version || 1 })}</span>
+            ${c.source_content_id ? `<span>${t('content.source_copy')}</span>` : ''}
+            ${c.usage_count ? `<span>${t('content.in_use', { count: c.usage_count })}</span>` : ''}
+          </div>
         </div>
         <div class="content-item-actions">
-          <button class="btn btn-secondary btn-sm" data-edit-content="${c.id}" title="${t('content.btn_edit')}">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-            </svg>
-            ${t('content.btn_edit')}
-          </button>
-          <button class="btn btn-danger btn-sm" data-delete-content="${c.id}" title="${t('content.btn_delete')}">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="3 6 5 6 21 6"/>
-              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-            </svg>
-            ${t('content.btn_delete')}
-          </button>
+          ${governedActions(c)}
         </div>
       </div>
     `).join('');
@@ -467,6 +517,62 @@ async function loadContent() {
         const id = editBtn.dataset.editContent;
         const c = content.find(x => x.id === id);
         if (c) showEditModal(c, loadContent);
+        return;
+      }
+
+      const requestBtn = e.target.closest('[data-request-publication]');
+      if (requestBtn) {
+        requestBtn.disabled = true;
+        try {
+          await api.requestContentPublication(requestBtn.dataset.requestPublication);
+          showToast(t('content.toast.publication_requested'), 'success');
+          loadContent();
+        } catch (err) { showToast(err.message, 'error'); requestBtn.disabled = false; }
+        return;
+      }
+
+      const duplicateBtn = e.target.closest('[data-duplicate-content]');
+      if (duplicateBtn) {
+        duplicateBtn.disabled = true;
+        try {
+          await api.duplicateContent(duplicateBtn.dataset.duplicateContent);
+          showToast(t('content.toast.duplicated'), 'success');
+          loadContent();
+        } catch (err) { showToast(err.message, 'error'); duplicateBtn.disabled = false; }
+        return;
+      }
+
+      const transferBtn = e.target.closest('[data-transfer-content]');
+      if (transferBtn) {
+        const item = content.find(entry => entry.id === transferBtn.dataset.transferContent);
+        if (item) showTransferModal(item, loadContent);
+        return;
+      }
+
+      const assignmentsBtn = e.target.closest('[data-template-assignments]');
+      if (assignmentsBtn) {
+        const item = content.find(entry => entry.id === assignmentsBtn.dataset.templateAssignments);
+        if (item) showTemplateAssignmentsModal(item, loadContent);
+        return;
+      }
+
+      const archiveBtn = e.target.closest('[data-archive-content]');
+      if (archiveBtn) {
+        const restoring = archiveBtn.dataset.archived === 'true';
+        const message = restoring ? t('content.confirm_restore') : t('content.confirm_archive');
+        if (!confirm(message)) return;
+        archiveBtn.disabled = true;
+        try {
+          await api.archiveContent(archiveBtn.dataset.archiveContent, !restoring);
+          showToast(restoring ? t('content.toast.restored') : t('content.toast.archived'), 'success');
+          loadContent();
+        } catch (err) {
+          if (err.code === 'CONTENT_IN_USE') {
+            const usage = await api.getContentUsage(archiveBtn.dataset.archiveContent).catch(() => err.details);
+            showUsageConflict(usage);
+          } else showToast(err.message, 'error');
+          archiveBtn.disabled = false;
+        }
         return;
       }
 
@@ -561,6 +667,17 @@ function showEditModal(contentItem, onSave) {
             ${state.folders.map(f => `<option value="${f.id}" ${contentItem.folder_id === f.id ? 'selected' : ''}>${esc(folderPath(f, state.folders))}</option>`).join('')}
           </select>
         </div>
+        ${contentItem.permissions?.can_change_visibility ? `
+        <div class="form-group">
+          <label>${t('content.label_visibility')}</label>
+          <select id="editAccessLevel" class="input" style="background:var(--bg-input)">
+            ${(contentItem.permissions.allowed_visibilities || []).map(level => `
+              <option value="${level}" ${contentItem.visibility?.access_level === level ? 'selected' : ''}>${visibilityLabel(level)}</option>
+            `).join('')}
+          </select>
+          <p class="content-field-hint">${t('content.visibility_hint')}</p>
+        </div>
+        ` : ''}
         <div class="form-group">
           <label>Default display fit</label>
           <select id="editFitMode" class="input" style="background:var(--bg-input)">
@@ -604,30 +721,36 @@ function showEditModal(contentItem, onSave) {
       // Update metadata
       const folderId = overlay.querySelector('#editFolderId')?.value || '';
       const fitMode = overlay.querySelector('#editFitMode')?.value || '';
+      const accessLevel = overlay.querySelector('#editAccessLevel')?.value;
       const updateData = {};
       if (filename !== contentItem.filename) updateData.filename = filename;
       if (mimeType !== contentItem.mime_type) updateData.mime_type = mimeType;
       if (remoteUrl !== undefined && remoteUrl !== contentItem.remote_url) updateData.remote_url = remoteUrl;
       if ((contentItem.folder_id || '') !== folderId) updateData.folder_id = folderId || null;
       if ((contentItem.default_fit_mode || '') !== fitMode) updateData.default_fit_mode = fitMode || null;
+      if (accessLevel && accessLevel !== contentItem.visibility?.access_level) updateData.access_level = accessLevel;
 
+      let expectedVersion = Number(contentItem.version) || 1;
       if (Object.keys(updateData).length > 0) {
-        await fetch('/api/content/' + contentItem.id, {
-          method: 'PUT',
-          headers: { ...headers, 'Content-Type': 'application/json' },
-          body: JSON.stringify(updateData)
-        });
+        updateData.expected_version = expectedVersion;
+        const updated = await api.updateContent(contentItem.id, updateData);
+        expectedVersion = Number(updated?.version) || expectedVersion + 1;
       }
 
       // Replace file if provided
       if (replaceFile) {
         const formData = new FormData();
         formData.append('file', replaceFile);
-        await fetch('/api/content/' + contentItem.id + '/replace', {
+        formData.append('expected_version', String(expectedVersion));
+        const response = await fetch('/api/content/' + contentItem.id + '/replace', {
           method: 'PUT',
           headers,
           body: formData
         });
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          throw new Error(body.error || t('content.error_update_failed'));
+        }
       }
 
       overlay.remove();
@@ -642,7 +765,7 @@ function showEditModal(contentItem, onSave) {
 function showPreview(content) {
   const isYoutube = content.mime_type === 'video/youtube';
   const isVideo = !isYoutube && content.mime_type?.startsWith('video/');
-  const src = content.remote_url || `/uploads/content/${content.filepath}`;
+  const src = content.remote_url || content.file_url || `/api/content/${content.id}/file`;
 
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
@@ -667,6 +790,205 @@ function showPreview(content) {
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
   overlay.querySelector('#closePreview').onclick = () => overlay.remove();
   document.body.appendChild(overlay);
+}
+
+function showUsageConflict(usage = {}) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.style.display = 'flex';
+  const playlists = Array.isArray(usage.playlists) ? usage.playlists : [];
+  const assignments = Array.isArray(usage.assignments) ? usage.assignments : [];
+  const references = Array.isArray(usage.references) ? usage.references : [];
+  overlay.innerHTML = `
+    <div class="modal content-governance-modal" role="dialog" aria-modal="true" aria-labelledby="usageConflictTitle">
+      <div class="modal-header">
+        <h3 id="usageConflictTitle">${t('content.in_use_title')}</h3>
+        <button class="btn-icon" data-close-modal aria-label="${t('common.close')}">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p>${t('content.in_use_desc', { count: usage.usage_count || playlists.length + assignments.length })}</p>
+        ${playlists.length ? `<h4>${t('content.usage_playlists')}</h4><ul>${playlists.map(item => `<li>${esc(item.name || item.id)}</li>`).join('')}</ul>` : ''}
+        ${assignments.length ? `<h4>${t('content.usage_displays')}</h4><ul>${assignments.map(item => `<li>${esc(item.device_name || item.device_id || item.id)}</li>`).join('')}</ul>` : ''}
+        ${references.length ? `<h4>${t('content.usage_routes')}</h4><ul>${references.map(item => `<li>${esc(item.type)}: ${esc(item.name || item.id)}</li>`).join('')}</ul>` : ''}
+      </div>
+      <div class="modal-footer"><button class="btn btn-primary" data-close-modal>${t('common.close')}</button></div>
+    </div>`;
+  overlay.querySelectorAll('[data-close-modal]').forEach(button => { button.onclick = () => overlay.remove(); });
+  overlay.onclick = (event) => { if (event.target === overlay) overlay.remove(); };
+  document.body.appendChild(overlay);
+}
+
+async function showTransferModal(contentItem, onSave) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.style.display = 'flex';
+  overlay.innerHTML = `
+    <div class="modal content-governance-modal" role="dialog" aria-modal="true" aria-labelledby="transferContentTitle">
+      <div class="modal-header">
+        <div><h3 id="transferContentTitle">${t('content.transfer_title')}</h3><p class="content-modal-subtitle">${esc(contentItem.filename)}</p></div>
+        <button class="btn-icon" data-close-modal aria-label="${t('common.close')}">&times;</button>
+      </div>
+      <div class="modal-body" data-transfer-body><div class="empty-state"><h3>${t('common.loading')}</h3></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-close-modal>${t('common.cancel')}</button>
+        <button class="btn btn-primary" data-transfer-save disabled>${t('content.transfer_save')}</button>
+      </div>
+    </div>`;
+  overlay.querySelectorAll('[data-close-modal]').forEach(button => { button.onclick = () => overlay.remove(); });
+  overlay.onclick = event => { if (event.target === overlay) overlay.remove(); };
+  document.body.appendChild(overlay);
+
+  const body = overlay.querySelector('[data-transfer-body]');
+  const save = overlay.querySelector('[data-transfer-save]');
+  try {
+    const members = await api.getWorkspaceMembers(contentItem.workspace_id);
+    const eligible = members.filter(member => member.user_id && member.user_id !== contentItem.user_id);
+    if (!eligible.length) {
+      body.innerHTML = `<div class="empty-state"><h3>${t('content.transfer_empty')}</h3><p>${t('content.transfer_empty_desc')}</p></div>`;
+      return;
+    }
+    body.innerHTML = `
+      <div class="form-group">
+        <label for="transferOwnerId">${t('content.transfer_owner_label')}</label>
+        <select id="transferOwnerId" class="input" style="background:var(--bg-input)">
+          <option value="">${t('content.transfer_owner_placeholder')}</option>
+          ${eligible.map(member => `<option value="${esc(member.user_id)}">${esc(member.name || member.email)}${member.name && member.email ? ` — ${esc(member.email)}` : ''}</option>`).join('')}
+        </select>
+        <p class="content-field-hint">${t('content.transfer_warning')}</p>
+      </div>`;
+    const select = body.querySelector('#transferOwnerId');
+    select.onchange = () => { save.disabled = !select.value; };
+    save.onclick = async () => {
+      if (!select.value) return;
+      save.disabled = true;
+      try {
+        await api.transferContent(contentItem.id, select.value);
+        overlay.remove();
+        showToast(t('content.toast.transferred'), 'success');
+        if (onSave) onSave();
+      } catch (err) {
+        showToast(err.message, 'error');
+        save.disabled = false;
+      }
+    };
+  } catch (err) {
+    body.innerHTML = `<div class="empty-state"><h3>${t('content.transfer_failed')}</h3><p>${esc(err.message)}</p></div>`;
+  }
+}
+
+async function showTemplateAssignmentsModal(contentItem, onSave) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.style.display = 'flex';
+  overlay.innerHTML = `
+    <div class="modal content-governance-modal" role="dialog" aria-modal="true" aria-labelledby="templateAssignmentsTitle">
+      <div class="modal-header">
+        <div><h3 id="templateAssignmentsTitle">${t('content.template_assignments_title')}</h3><p class="content-modal-subtitle">${esc(contentItem.filename)}</p></div>
+        <button class="btn-icon" data-close-modal aria-label="${t('common.close')}">&times;</button>
+      </div>
+      <div class="modal-body" data-template-body><div class="empty-state"><h3>${t('common.loading')}</h3></div></div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-close-modal>${t('common.cancel')}</button>
+        <button class="btn btn-primary" data-template-save disabled>${t('content.template_assignments_save')}</button>
+      </div>
+    </div>`;
+  overlay.querySelectorAll('[data-close-modal]').forEach(button => { button.onclick = () => overlay.remove(); });
+  overlay.onclick = event => { if (event.target === overlay) overlay.remove(); };
+  document.body.appendChild(overlay);
+
+  const body = overlay.querySelector('[data-template-body]');
+  const save = overlay.querySelector('[data-template-save]');
+  try {
+    const [me, assignments] = await Promise.all([
+      api.getMe(),
+      api.getTemplateAssignments(contentItem.id),
+    ]);
+    const selected = new Set(assignments.workspace_ids || []);
+    const workspaces = me.accessible_workspaces || [];
+    body.innerHTML = workspaces.length
+      ? `<p class="content-field-hint">${t('content.template_assignments_desc')}</p>
+         <div class="content-template-workspaces">${workspaces.map(workspace => `
+           <label class="content-template-workspace">
+             <input type="checkbox" value="${esc(workspace.id)}" ${selected.has(workspace.id) ? 'checked' : ''}>
+             <span><strong>${esc(workspace.name)}</strong><small>${esc(workspace.organization_name || '')}</small></span>
+           </label>`).join('')}</div>`
+      : `<div class="empty-state"><h3>${t('content.template_assignments_empty')}</h3></div>`;
+    save.disabled = !workspaces.length;
+    save.onclick = async () => {
+      save.disabled = true;
+      const workspaceIds = [...body.querySelectorAll('input[type="checkbox"]:checked')].map(input => input.value);
+      try {
+        await api.updateTemplateAssignments(contentItem.id, workspaceIds);
+        overlay.remove();
+        showToast(t('content.toast.template_assignments_saved'), 'success');
+        if (onSave) onSave();
+      } catch (err) {
+        if (err.code === 'CONTENT_IN_USE') showUsageConflict(err.details);
+        else showToast(err.message, 'error');
+        save.disabled = false;
+      }
+    };
+  } catch (err) {
+    body.innerHTML = `<div class="empty-state"><h3>${t('content.template_assignments_failed')}</h3><p>${esc(err.message)}</p></div>`;
+  }
+}
+
+async function showPublicationReviewModal() {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.style.display = 'flex';
+  overlay.innerHTML = `
+    <div class="modal content-governance-modal" role="dialog" aria-modal="true" aria-labelledby="publicationReviewTitle">
+      <div class="modal-header">
+        <div><h3 id="publicationReviewTitle">${t('content.review_title')}</h3><p class="content-modal-subtitle">${t('content.review_desc')}</p></div>
+        <button class="btn-icon" data-close-modal aria-label="${t('common.close')}">&times;</button>
+      </div>
+      <div class="modal-body" data-review-list><div class="empty-state"><h3>${t('common.loading')}</h3></div></div>
+    </div>`;
+  overlay.querySelector('[data-close-modal]').onclick = () => overlay.remove();
+  overlay.onclick = (event) => { if (event.target === overlay) overlay.remove(); };
+  document.body.appendChild(overlay);
+
+  const list = overlay.querySelector('[data-review-list]');
+  try {
+    const requests = await api.getPublicationRequests();
+    if (!requests.length) {
+      list.innerHTML = `<div class="empty-state"><h3>${t('content.review_empty')}</h3><p>${t('content.review_empty_desc')}</p></div>`;
+      return;
+    }
+    list.innerHTML = requests.map(request => `
+      <article class="content-review-row" data-request-id="${esc(request.id)}">
+        <div>
+          <strong>${esc(request.filename)}</strong>
+          <div class="content-governance-meta">${t('content.owner')}: ${esc(request.owner_name || request.owner_user_id || t('content.owner_unknown'))}</div>
+        </div>
+        <div class="content-review-actions">
+          <button class="btn btn-danger btn-sm" data-review-decision="rejected">${t('content.reject')}</button>
+          <button class="btn btn-primary btn-sm" data-review-decision="approved">${t('content.approve')}</button>
+        </div>
+      </article>`).join('');
+    list.onclick = async (event) => {
+      const button = event.target.closest('[data-review-decision]');
+      if (!button) return;
+      const row = button.closest('[data-request-id]');
+      const decision = button.dataset.reviewDecision;
+      const reason = prompt(t('content.review_reason_prompt'));
+      if (reason === null) return;
+      row.querySelectorAll('button').forEach(item => { item.disabled = true; });
+      try {
+        await api.reviewPublicationRequest(row.dataset.requestId, decision, reason.trim());
+        row.remove();
+        showToast(decision === 'approved' ? t('content.toast.approved') : t('content.toast.rejected'), 'success');
+        if (!list.querySelector('[data-request-id]')) list.innerHTML = `<div class="empty-state"><h3>${t('content.review_empty')}</h3></div>`;
+        loadContent();
+      } catch (err) {
+        showToast(err.message, 'error');
+        row.querySelectorAll('button').forEach(item => { item.disabled = false; });
+      }
+    };
+  } catch (err) {
+    list.innerHTML = `<div class="empty-state"><h3>${t('content.review_failed')}</h3><p>${esc(err.message)}</p></div>`;
+  }
 }
 
 // Build a "Parent / Child / Leaf" path for a folder so the move-to dropdown is unambiguous

@@ -28,7 +28,9 @@ import { api } from '../../api.js';
 import { esc } from '../../utils.js';
 import { t } from '../../i18n.js';
 import { showToast } from '../../components/toast.js';
-import * as displayState from '../../services/display-state.js';
+import { openTargetPicker } from '../../components/target-picker.js';
+import { waitForTargetCatalog } from '../../services/target-catalog-runtime.js';
+import { findCatalogTarget } from '../../services/target-catalog.js';
 import * as screenShareEngine from '../../services/screen-share-engine.js';
 
 // 4-left / 2-center / 4-right, in percent of the 16:9 canvas. MIRROR of SLOTS
@@ -83,7 +85,7 @@ const FIT_PARAM_RE = /^\/player\/(?:(oz|hls|cam|site)\.html|doc\/[^/?#]+)(\?|$)/
 // ---- module state (one composer per Command Center mount) ----
 let cells = {};               // slotId -> { cellUrl, monitorUrl, kind, label, thumb, category }
 let geoms = {};               // slotId -> { x,y,w,h } percent override (absent = fixed SLOT)
-let shareDevice = {};         // slotId -> deviceId currently receiving this frame's screen share
+let shareDevice = {};         // slotId -> { deviceIds, label } receiving this frame's screen share
 let contentIndex = {};        // content_id -> { mime, thumbnail_url, filename }
 let routeSourceFn = null;     // injected: (source, label) => Promise<bool>
 let onCloseFn = null;         // injected: () => void — closes the composer panel
@@ -361,11 +363,11 @@ function handlesHtml() {
 }
 
 function shareControlsHtml(slotId) {
-  const dev = shareDevice[slotId];
-  const active = dev && screenShareEngine.getActiveTargets().includes(dev);
+  const share = shareDevice[slotId];
+  const activeIds = new Set(screenShareEngine.getActiveTargets());
+  const active = share && share.deviceIds.some((deviceId) => activeIds.has(deviceId));
   if (active) {
-    const d = displayState.get(dev);
-    const name = (d && d.name) || t('mc.mv.slot.' + slotId);
+    const name = share.label || t('mc.mv.slot.' + slotId);
     return `<div class="mc-mv-share-controls">
       <span class="mc-mv-share-on">${esc(t('mc.mv.sharing_to', { name }))}</span>
       <button type="button" class="mc-btn mc-btn-sm mc-mv-share-stop" data-mv-share-stop="${esc(slotId)}">${esc(t('mc.mv.stop_share'))}</button>
@@ -516,7 +518,10 @@ function dropIntoSlot(slotId, parsed) {
 
 function clearCell(slotId) {
   // Stop any active share for this frame before removing it.
-  if (shareDevice[slotId]) { screenShareEngine.stopBroadcastTo(shareDevice[slotId]).catch(() => {}); delete shareDevice[slotId]; }
+  if (shareDevice[slotId]) {
+    for (const deviceId of shareDevice[slotId].deviceIds) screenShareEngine.stopBroadcastTo(deviceId).catch(() => {});
+    delete shareDevice[slotId];
+  }
   delete cells[slotId];
   if (monitorSlot === slotId) monitorSlot = null;
   saveStore();
@@ -524,7 +529,9 @@ function clearCell(slotId) {
 }
 
 function clearAll() {
-  for (const id of Object.keys(shareDevice)) { screenShareEngine.stopBroadcastTo(shareDevice[id]).catch(() => {}); }
+  for (const id of Object.keys(shareDevice)) {
+    for (const deviceId of shareDevice[id].deviceIds) screenShareEngine.stopBroadcastTo(deviceId).catch(() => {});
+  }
   shareDevice = {};
   cells = {}; geoms = {}; monitorSlot = null;
   saveStore(); render();
@@ -719,49 +726,124 @@ function renderMonitor() {
 }
 
 // ---------- screen share into a frame ----------
-// Minimal display picker (CSP-safe native <dialog>; createElement + listeners).
-// Resolves to a display object { id, name } or null.
-function pickDisplay() {
-  const online = displayState.getAll().filter((d) => d && d.online);
-  if (online.length === 0) { showToast(t('mc.mv.no_online_displays'), 'error'); return Promise.resolve(null); }
-  const dlg = document.createElement('dialog');
-  dlg.className = 'mc-dialog mc-pick';
-  const items = online.map((d) =>
-    `<button type="button" class="mc-pick-item" data-pick-id="${esc(d.id)}"><span class="mc-pick-name">${esc(d.name || d.id)}</span></button>`
-  ).join('');
-  dlg.innerHTML = `
-    <div class="mc-dialog-card">
-      <h3 class="mc-dialog-title">${esc(t('mc.mv.pick_display_title'))}</h3>
-      <div class="mc-pick-list" role="listbox">${items}</div>
-      <div class="mc-dialog-actions">
-        <button type="button" class="mc-btn mc-btn-ghost" data-pick-cancel>${esc(t('mc.add.cancel'))}</button>
-      </div>
-    </div>`;
-  document.body.appendChild(dlg);
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (val) => { if (settled) return; settled = true; if (dlg.open) dlg.close(); dlg.remove(); resolve(val); };
-    dlg.querySelectorAll('[data-pick-id]').forEach((b) => b.addEventListener('click', () => {
-      const d = online.find((x) => x.id === b.dataset.pickId);
-      finish(d || null);
+// Intent: a live instructor chooses one physical destination without needing to
+// know which display ids form a wall. The shared picker exposes calibrated wall
+// geometry/status, hides wall members, and keeps Live Program out of this flow.
+async function pickDisplay() {
+  try {
+    const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false }, { requireFresh: true });
+    return openTargetPicker({
+      catalog,
+      capability: 'screen_share',
+      selection: 'single',
+      allowOffline: false,
+      availability: 'all',
+      allowIndividualWallMembers: false,
+      allowLiveProgram: false,
+    });
+  } catch (error) {
+    showToast(error?.message || t('mc.mv.no_online_displays'), 'error');
+    return null;
+  }
+}
+
+function validViewport(viewport) {
+  return viewport
+    && Number.isFinite(viewport.x) && Number.isFinite(viewport.y)
+    && Number.isFinite(viewport.width) && Number.isFinite(viewport.height)
+    && viewport.width > 0 && viewport.height > 0;
+}
+
+// Resolve a logical picker target into the receiver payloads for this frame.
+// A wall uses its authoritative canvas geometry so the frame spans the wall as
+// one surface. A group or standalone display receives the frame independently.
+function frameShareTargets(target, frameRect) {
+  if (!target) return [];
+  if (target.type !== 'wall') {
+    const members = target.type === 'display' ? [target] : (target.members || []);
+    return members.filter((member) => member.online).map((member) => ({
+      deviceId: member.id,
+      wallTile: {
+        screen_rect: { x: 0, y: 0, w: 100, h: 100 },
+        player_rect: { ...frameRect },
+      },
     }));
-    dlg.querySelector('[data-pick-cancel]').addEventListener('click', () => finish(null));
-    dlg.addEventListener('cancel', () => finish(null));
-    dlg.showModal();
-  });
+  }
+
+  const members = (target.members || []).filter((member) => member.online && validViewport(member.viewport));
+  if (!members.length || members.length !== target.onlineCount || target.onlineCount !== target.memberCount) return [];
+  const minX = Math.min(...members.map((member) => member.viewport.x));
+  const minY = Math.min(...members.map((member) => member.viewport.y));
+  const maxX = Math.max(...members.map((member) => member.viewport.x + member.viewport.width));
+  const maxY = Math.max(...members.map((member) => member.viewport.y + member.viewport.height));
+  const canvasWidth = maxX - minX;
+  const canvasHeight = maxY - minY;
+  const playerRect = {
+    x: minX + (canvasWidth * frameRect.x / 100),
+    y: minY + (canvasHeight * frameRect.y / 100),
+    w: canvasWidth * frameRect.w / 100,
+    h: canvasHeight * frameRect.h / 100,
+  };
+  return members.map((member) => ({
+    deviceId: member.id,
+    wallTile: {
+      screen_rect: {
+        x: member.viewport.x,
+        y: member.viewport.y,
+        w: member.viewport.width,
+        h: member.viewport.height,
+      },
+      player_rect: { ...playerRect },
+    },
+  }));
+}
+
+function targetMemberIds(target) {
+  const ids = target?.type === 'display'
+    ? [target.id]
+    : (target?.members || []).map((member) => member.id);
+  return [...new Set(ids.filter(Boolean).map(String))].sort();
+}
+
+function sameTargetTopology(selected, fresh) {
+  if (!selected || !fresh || selected.type !== fresh.type || String(selected.id) !== String(fresh.id)) return false;
+  if ((selected.type === 'wall' || selected.type === 'wall-group')
+      && Number(selected.layoutRevision) !== Number(fresh.layoutRevision)) return false;
+  return JSON.stringify(targetMemberIds(selected)) === JSON.stringify(targetMemberIds(fresh));
 }
 
 async function startShare(slotId) {
-  const target = await pickDisplay();
-  if (!target) return;
-  const r = cellRect(slotId);
-  // Receiver wall-tile rect mode: screen_rect = the whole display, player_rect =
-  // this frame's rect. Percent units (px cancel out), so no device-pixel lookup.
-  const wallTile = { screen_rect: { x: 0, y: 0, w: 100, h: 100 }, player_rect: { x: r.x, y: r.y, w: r.w, h: r.h } };
+  const selection = await pickDisplay();
+  if (!selection) return;
+  const selectedTarget = selection.targets[0];
+  let freshCatalog;
   try {
-    await screenShareEngine.startBroadcastTo(target.id, { wallTile });
-    shareDevice[slotId] = target.id;
-    showToast(t('mc.mv.share_started', { name: target.name || target.id }), 'success');
+    freshCatalog = await waitForTargetCatalog({ includeVirtualDisplays: false }, { requireFresh: true });
+  } catch (error) {
+    showToast(error?.message || t('mc.mv.no_online_displays'), 'error');
+    return;
+  }
+  const target = findCatalogTarget(freshCatalog, selection.references[0]);
+  if (!sameTargetTopology(selectedTarget, target)) {
+    showToast('Display topology changed. Reopen the destination picker and try again.', 'error');
+    return;
+  }
+  const r = cellRect(slotId);
+  const entries = frameShareTargets(target, r);
+  if (!entries.length) {
+    showToast(t('mc.mv.no_online_displays'), 'error');
+    return;
+  }
+  try {
+    const settled = await Promise.allSettled(entries.map((entry) => (
+      screenShareEngine.startBroadcastTo(entry.deviceId, { wallTile: entry.wallTile })
+    )));
+    const deviceIds = entries
+      .filter((_, index) => settled[index].status === 'fulfilled')
+      .map((entry) => entry.deviceId);
+    if (!deviceIds.length) throw settled.find((result) => result.status === 'rejected')?.reason || new Error(t('mc.mv.share_failed'));
+    shareDevice[slotId] = { deviceIds, label: target.topologyLabel || target.name || target.id };
+    showToast(t('mc.mv.share_started', { name: target.name || target.id }), settled.some((result) => result.status === 'rejected') ? 'warning' : 'success');
   } catch (e) {
     showToast((e && e.message) || t('mc.mv.share_failed'), 'error');
   }
@@ -769,8 +851,11 @@ async function startShare(slotId) {
 }
 
 async function stopShare(slotId) {
-  const dev = shareDevice[slotId];
-  if (dev) { try { await screenShareEngine.stopBroadcastTo(dev); } catch { /* */ } delete shareDevice[slotId]; }
+  const share = shareDevice[slotId];
+  if (share) {
+    await Promise.allSettled(share.deviceIds.map((deviceId) => screenShareEngine.stopBroadcastTo(deviceId)));
+    delete shareDevice[slotId];
+  }
   showToast(t('mc.mv.share_stopped'), 'info');
   render();
 }
@@ -781,7 +866,10 @@ async function stopShare(slotId) {
 function syncShareUi() {
   if (!rootEl) return;
   const active = new Set(screenShareEngine.getActiveTargets());
-  for (const id of Object.keys(shareDevice)) { if (!active.has(shareDevice[id])) delete shareDevice[id]; }
+  for (const id of Object.keys(shareDevice)) {
+    shareDevice[id].deviceIds = shareDevice[id].deviceIds.filter((deviceId) => active.has(deviceId));
+    if (!shareDevice[id].deviceIds.length) delete shareDevice[id];
+  }
   rootEl.querySelectorAll('.mc-mv-cell-share[data-mv-cell]').forEach((el) => {
     const slotId = el.dataset.mvCell;
     const host = el.querySelector('.mc-mv-share-controls');

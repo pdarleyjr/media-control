@@ -263,18 +263,34 @@ function runOneTranscode(job, done) {
     try {
       const prev = db.prepare('SELECT filepath, thumbnail_path FROM content WHERE id = ?').get(contentId);
       const outputProbe = probeMedia(outPath);
-      db.prepare(`
-        UPDATE content SET filepath=?, mime_type='video/mp4', file_size=?, duration_sec=?,
-          width=?, height=?, thumbnail_path=COALESCE(?, thumbnail_path),
-          original_filepath=COALESCE(original_filepath, ?), processing_status='ready',
-          processing_error=NULL, media_probe_json=?, updated_at=?
-        WHERE id=?
-      `).run(
-        outName, fileSize, durationSec, width, height, thumbName,
-        prev && prev.filepath || path.basename(absPath),
-        outputProbe ? JSON.stringify(outputProbe) : null,
-        Math.floor(Date.now() / 1000), contentId
-      );
+      const sourceName = path.basename(absPath);
+      const changed = db.transaction(() => {
+        const result = db.prepare(`
+          UPDATE content SET filepath=?, mime_type='video/mp4', file_size=?, duration_sec=?,
+            width=?, height=?, thumbnail_path=COALESCE(?, thumbnail_path),
+            original_filepath=COALESCE(original_filepath, ?), processing_status='ready',
+            processing_error=NULL, media_probe_json=?, version=COALESCE(version, 1) + 1, updated_at=?
+          WHERE id=? AND filepath=?
+        `).run(
+          outName, fileSize, durationSec, width, height, thumbName,
+          prev && prev.filepath || sourceName,
+          outputProbe ? JSON.stringify(outputProbe) : null,
+          Math.floor(Date.now() / 1000), contentId, sourceName
+        );
+        if (result.changes) {
+          db.prepare(`UPDATE content_publication_requests
+            SET status='cancelled', decided_by=NULL,
+              decision_reason='Transcoded asset changed after review was requested',
+              decided_at=strftime('%s','now'), updated_at=strftime('%s','now')
+            WHERE content_id=? AND status='pending'`).run(contentId);
+        }
+        return result.changes;
+      })();
+      if (!changed) {
+        try { fs.unlinkSync(outPath); } catch { /* stale job */ }
+        try { if (thumbName) fs.unlinkSync(path.join(config.contentDir, thumbName)); } catch { /* stale job */ }
+        return done();
+      }
       if (prev && prev.thumbnail_path && thumbName && prev.thumbnail_path !== thumbName) { try { fs.unlinkSync(path.join(config.contentDir, prev.thumbnail_path)); } catch { /* ignore */ } }
       queueAssetManifest(db, contentId, outPath);
       console.log(`[transcode] ${contentId} -> ${outName} (${width}x${height}, ${durationSec}s, ${Math.round(fileSize / 1e6)}MB)`);

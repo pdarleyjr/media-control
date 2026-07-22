@@ -18,6 +18,12 @@ db.pragma('foreign_keys = ON');
 const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
 db.exec(schema);
 
+// Self-heal the persisted authoritative-room revision ledger on every boot.
+// This stays additive and idempotent so databases created by older images gain
+// the resume cursor before Socket.IO begins accepting dashboard connections.
+const { ensureRoomRevisionSchema } = require('../lib/room-snapshot');
+ensureRoomRevisionSchema(db);
+
 // Auto-apply Phase 1 multi-tenancy migration if not yet applied. Without this
 // a self-hoster who pulls latest and restarts hits a crash in
 // migrateFolderWorkspaceIds (queries workspaces table that doesn't exist).
@@ -960,11 +966,10 @@ function migrateAuditLog() {
 }
 migrateAuditLog();
 
-// Phase 2 (Classroom 1 command center): seed the three fixed Classroom-1
-// device-group membership sets from the appliance's wall topology. Idempotent
-// (INSERT OR IGNORE) and gated on schema_migrations so it runs exactly once
-// per database. Mirrors the one-shot harness pattern above. See
-// scripts/backfill-classroom-groups.js.
+// The legacy Classroom-1 wall-to-group backfill is retired. It now writes only
+// its one-shot retirement marker so fresh databases cannot recreate the old
+// wall/group mutual-exclusivity violation. Existing rows require the explicit,
+// audited topology repair command.
 const CLASSROOM1_GROUP_MEMBERS_ID = 'classroom1_group_members';
 function backfillClassroomGroupMembers() {
   const already = db.prepare('SELECT 1 FROM schema_migrations WHERE id = ?').get(CLASSROOM1_GROUP_MEMBERS_ID);
@@ -973,7 +978,7 @@ function backfillClassroomGroupMembers() {
     const { runBackfill } = require('../scripts/backfill-classroom-groups');
     const r = runBackfill({ db });
     if (!r.skipped) {
-      console.log(`[classroom1_group_members] backfill: all=${r.report.all} primary=${r.report.primary} secondary=${r.report.secondary}`);
+      console.log(`[classroom1_group_members] ${r.reason}`);
     }
   } catch (e) {
     console.warn(`[classroom1_group_members] backfill failed: ${e.message}`);
@@ -1094,6 +1099,48 @@ function healYoutubeMimeTypes() {
   try { db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(YOUTUBE_MIME_HEAL_ID); } catch { /* ignore */ }
 }
 healYoutubeMimeTypes();
+
+// Governed content visibility and publishing lifecycle. This migration is
+// deliberately applied after the legacy additive columns above so it can
+// normalize the existing access_level values, add explicit template
+// assignments, and install fail-closed validation triggers in one transaction.
+function applyGovernedContentVisibility() {
+  try {
+    const { applyContentVisibilityMigration } = require('../lib/content-visibility');
+    applyContentVisibilityMigration(db);
+    console.log('[content_visibility_v1] governed visibility active');
+  } catch (error) {
+    // Visibility is an authorization boundary. Failing startup is safer than
+    // serving content with the legacy owner/NULL shortcut after a partial DB
+    // migration.
+    console.error(`[content_visibility_v1] migration failed: ${error.message}`);
+    throw error;
+  }
+}
+applyGovernedContentVisibility();
+
+// Clean databases should enforce topology invariants from their first boot.
+// Existing installations with drift stay available for the explicit,
+// hash-guarded repair workflow: never auto-repair or partially constrain an
+// inconsistent topology here.
+function activateDisplayTopologyGuards() {
+  try {
+    const { analyzeTopology, installTopologyGuards } = require('../lib/topology-repair');
+    const report = analyzeTopology(db);
+    if (report.issueCount === 0) {
+      installTopologyGuards(db);
+      console.log('[display_topology_integrity_v1] durable guards active');
+      return;
+    }
+    console.warn(
+      `[display_topology_integrity_v1] ${report.issueCount} issue(s) detected; ` +
+      'guards pending explicit topology repair'
+    );
+  } catch (error) {
+    console.warn(`[display_topology_integrity_v1] guard activation skipped: ${error.message}`);
+  }
+}
+activateDisplayTopologyGuards();
 
 // Prune old telemetry (keep last 24h worth at 15s intervals = ~5760, cap at 6000)
 function pruneTelemetry(deviceId) {

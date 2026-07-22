@@ -30,16 +30,28 @@ function buildSystemVersion(options = {}) {
     databaseSchema = { count: Number(row?.count) || 0, latest: row?.latest || null };
   } catch (_) {}
 
+  const gitCommit = env.GIT_COMMIT || env.COMMIT_SHA || gitValue(['rev-parse', 'HEAD'], repoRoot) || 'unknown';
+  const gitTree = env.GIT_TREE || gitValue(['rev-parse', 'HEAD^{tree}'], repoRoot) || 'unknown';
+
   return {
     api_version: fileText(path.join(repoRoot, 'VERSION'), '0.0.0'),
-    git_commit: env.GIT_COMMIT || env.COMMIT_SHA || gitValue(['rev-parse', 'HEAD'], repoRoot) || 'unknown',
+    version: fileText(path.join(repoRoot, 'VERSION'), '0.0.0'),
+    git_commit: gitCommit,
+    git_tree: gitTree,
     branch: env.GIT_BRANCH || gitValue(['rev-parse', '--abbrev-ref', 'HEAD'], repoRoot) || 'unknown',
+    build_id: env.BUILD_ID || env.BUILD_TIMESTAMP || env.BUILD_TIME || 'unknown',
     build_timestamp: env.BUILD_TIMESTAMP || env.BUILD_TIME || (env.SERVER_STARTED_AT
       ? new Date(Number(env.SERVER_STARTED_AT)).toISOString()
       : STARTED_AT),
+    image_digest: env.IMAGE_DIGEST || env.IMAGE_ID || 'unknown',
+    image_tag: env.IMAGE_TAG || 'unknown',
     frontend_bundle_hash: options.frontendHash || 'unknown',
+    // Back-compat: clients historically poll /api/version.hash as the frontend MIME/bundle soft-reload trigger.
+    hash: options.frontendHash || 'unknown',
     player_bundle_hash: options.playerHash || 'unknown',
+    player_hash: options.playerHash || 'unknown',
     command_contract_version: CONTRACT_VERSION,
+    contract_version: CONTRACT_VERSION,
     database_schema: databaseSchema,
     runtime: {
       node: process.version,

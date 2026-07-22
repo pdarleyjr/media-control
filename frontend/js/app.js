@@ -27,6 +27,8 @@ import * as broadcastCenter from './views/broadcast-center.js';
 import * as schedules from './views/schedules.js';
 import * as workspaceMembers from './views/workspace-members.js';
 import * as mediaControl from './views/media-control.js';
+import * as operatorConsole from './views/media-control-enterprise/operator-console.js';
+import { isEnterpriseUiEnabled } from './state/feature-flags.js';
 import { applyBranding } from './branding.js';
 import { t } from './i18n.js';
 import { esc, isPlatformAdmin } from './utils.js';
@@ -775,6 +777,7 @@ async function route() {
     else if (hash === '#/designer' && link.dataset.view === 'designer') link.classList.add('active');
     else if ((hash === '#/kiosk' || hash.startsWith('#/kiosk/')) && link.dataset.view === 'kiosk') link.classList.add('active');
     else if (hash === '#/help' && link.dataset.view === 'help') link.classList.add('active');
+    else if ((hash === '#/operator-console' || hash.startsWith('#/operator-console?')) && link.dataset.view === 'operator-console') link.classList.add('active');
     else if (hash.startsWith('#/device/') && link.dataset.view === 'dashboard') link.classList.add('active');
   });
 
@@ -799,6 +802,18 @@ async function route() {
     const deviceId = hash.split('#/device/')[1].split('/')[0];
     currentView = deviceDetail;
     deviceDetail.render(app, deviceId);
+  } else if (hash === '#/operator-console' || hash.startsWith('#/operator-console?')) {
+    // Query suffixes in the hash (or search string) must never unlock enterprise UI.
+    // Unauthorized / flag-off always falls back to the existing control console shell.
+    const enterpriseOk = await isEnterpriseUiEnabled();
+    if (enterpriseOk) {
+      currentView = operatorConsole;
+      operatorConsole.render(app);
+    } else {
+      currentView = mediaControl;
+      await mediaControl.render({ signal, routeHash: '#/control' });
+      if (signal.aborted || generation !== routeGeneration) return;
+    }
   } else if (hash === '#/content') {
     currentView = contentLibrary;
     contentLibrary.render(app);
@@ -893,6 +908,12 @@ function updateSidebarUser() {
   // Show admin nav only for platform admins (legacy 'superadmin' or Phase 1 renamed 'platform_admin')
   const adminNav = document.getElementById('adminNavItem');
   if (adminNav) adminNav.style.display = isPlatformAdmin(user) ? '' : 'none';
+
+  // Enterprise operator console nav is gated by the server feature flag.
+  isEnterpriseUiEnabled().then((ok) => {
+    const nav = document.getElementById('operatorConsoleNavItem');
+    if (nav) nav.style.display = ok ? '' : 'none';
+  }).catch(() => {});
 
   let userEl = document.getElementById('sidebarUser');
   if (!userEl) {

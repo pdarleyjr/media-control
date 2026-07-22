@@ -1,9 +1,8 @@
 // routing-picker.js — source target picker for Command Center toolbox taps.
 //
 // Replaces the old click-to-current-selection broadcast with an explicit,
-// touch-friendly target picker. Video walls get a secondary prompt so the
-// operator chooses whether a source spans the full wall or lands on specific
-// wall sections.
+// touch-friendly target picker. Source routing preserves the wall's current,
+// revisioned composition; changing span/split/groups is a separate operation.
 
 import { esc } from '../../utils.js';
 import { t } from '../../i18n.js';
@@ -18,6 +17,34 @@ function wallMembers(wall) {
 
 function allWallDeviceIds(wall) {
   return unique(wallMembers(wall).map(m => m.device_id));
+}
+
+function wallCanvasSize(wall) {
+  const members = wallMembers(wall);
+  const calibrated = members.filter((member) =>
+    Number.isFinite(Number(member.canvas_x)) && Number.isFinite(Number(member.canvas_y))
+    && Number(member.canvas_width) > 0 && Number(member.canvas_height) > 0
+  );
+  if (calibrated.length === members.length && calibrated.length) {
+    const minX = Math.min(...calibrated.map((member) => Number(member.canvas_x)));
+    const minY = Math.min(...calibrated.map((member) => Number(member.canvas_y)));
+    const maxX = Math.max(...calibrated.map((member) => Number(member.canvas_x) + Number(member.canvas_width)));
+    const maxY = Math.max(...calibrated.map((member) => Number(member.canvas_y) + Number(member.canvas_height)));
+    return { width: Math.round(maxX - minX), height: Math.round(maxY - minY) };
+  }
+  const columnWidths = new Map();
+  const rowHeights = new Map();
+  for (const member of members) {
+    const column = Number(member.grid_col) || 0;
+    const row = Number(member.grid_row) || 0;
+    const width = Number(member.canvas_width) || Number(member.screen_width) || 0;
+    const height = Number(member.canvas_height) || Number(member.screen_height) || 0;
+    columnWidths.set(column, Math.max(columnWidths.get(column) || 0, width));
+    rowHeights.set(row, Math.max(rowHeights.get(row) || 0, height));
+  }
+  const width = [...columnWidths.values()].reduce((sum, value) => sum + value, 0);
+  const height = [...rowHeights.values()].reduce((sum, value) => sum + value, 0);
+  return width > 0 && height > 0 ? { width: Math.round(width), height: Math.round(height) } : null;
 }
 
 function wallSectionBuckets(wall) {
@@ -78,12 +105,23 @@ function showPrimaryTargetDialog({ displays = [], walls = [], label = '' }) {
     </label>`;
   }).join('');
   const wallRows = walls.map(w => {
+    const members = wallMembers(w);
     const count = allWallDeviceIds(w).length;
+    const onlineCount = members.filter((member) => member.device_status === 'online').length;
+    const canvas = wallCanvasSize(w);
+    const mode = w.layout_mode === 'groups' ? 'custom groups' : (w.layout_mode || 'span');
+    const dimensions = canvas ? `${canvas.width}×${canvas.height}` : 'geometry pending';
+    const revision = Number(w.layout_revision) || 0;
+    const topology = members.map((member) => {
+      const online = member.device_status === 'online';
+      return `<span class="mc-route-member${online ? ' is-online' : ' is-offline'}" title="${esc(member.device_name || member.device_id)}">${online ? '●' : '○'}</span>`;
+    }).join('');
     return `<label class="mc-route-row mc-route-wall-row">
       <input type="checkbox" value="${esc(w.id)}" data-route-wall>
       <span class="mc-route-row-main">
         <span class="mc-route-name">${esc(w.name || t('mc.route.wall_fallback'))}</span>
-        <span class="mc-route-meta">${esc(t('mc.route.wall_meta', { n: count }))}</span>
+        <span class="mc-route-meta">${esc(`${mode} · ${dimensions} · ${onlineCount}/${count} online · r${revision}`)}</span>
+        <span class="mc-route-topology" data-route-topology aria-label="${esc(`${onlineCount} of ${count} wall displays online`)}">${topology}</span>
       </span>
     </label>`;
   }).join('');
@@ -213,10 +251,12 @@ export async function pickRoutingTargets({ displays = [], walls = [], label = ''
   const selectedWalls = primary.wallIds
     .map(id => (walls || []).find(w => String(w.id) === String(id)))
     .filter(Boolean);
-  const wallSelections = selectedWalls.length
-    ? await showWallModeDialog({ selectedWalls })
-    : [];
-  if (selectedWalls.length && !wallSelections) return null;
+  const wallSelections = selectedWalls.map((wall) => ({
+    wall,
+    mode: 'preserve',
+    deviceIds: allWallDeviceIds(wall),
+    sections: [],
+  }));
   return {
     displayIds: unique(primary.displayIds),
     wallSelections: wallSelections || [],

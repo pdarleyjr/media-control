@@ -1,6 +1,8 @@
 import { api } from '../api.js';
 import { on, off, requestScreenshot } from '../socket.js';
 import { showToast } from '../components/toast.js';
+import { openTargetPicker } from '../components/target-picker.js';
+import { waitForTargetCatalog } from '../services/target-catalog-runtime.js';
 import { esc } from '../utils.js';
 import { t, tn } from '../i18n.js';
 
@@ -279,6 +281,12 @@ export function render(container) {
         <div class="subtitle">${t('dashboard.subtitle')}</div>
       </div>
       <div style="display:flex;gap:8px">
+        <button class="btn" id="broadcastBtn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1"/>
+          </svg>
+          ${t('mc.target_picker.title')}
+        </button>
         <button class="btn" id="createGroupBtn">${t('dashboard.create_group')}</button>
         <button class="btn btn-primary" id="addDeviceBtn">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -290,12 +298,6 @@ export function render(container) {
     </div>
     <div id="selectionBar" style="display:none;align-items:center;gap:10px;padding:8px 12px;margin-bottom:12px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px">
       <span id="selectionCount" style="font-weight:500;font-size:13px"></span>
-      <button class="btn btn-primary btn-sm" id="broadcastBtn">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px">
-          <path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1"/>
-        </svg>
-        <span id="broadcastBtnLabel">Send to selection</span>
-      </button>
       <button class="btn btn-sm" id="createWallBtn">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px">
           <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="12" y1="3" x2="12" y2="21"/>
@@ -492,10 +494,6 @@ function refreshSelectionBar() {
   const btn = document.getElementById('createWallBtn');
   btn.disabled = n < 2;
   btn.title = n < 2 ? 'Select at least 2 displays to create a video wall' : '';
-  // Broadcast works with any 1+ selection - keep its label in sync with the
-  // count so "Send to N" reads accurately ("Send to 1 display" / "Send to 3").
-  const bLabel = document.getElementById('broadcastBtnLabel');
-  if (bLabel) bLabel.textContent = `Send to ${n} ${n === 1 ? 'display' : 'displays'}`;
 }
 
 // Pick a sensible default grid for n devices: prefer near-square layouts,
@@ -525,15 +523,37 @@ function defaultGridForCount(n) {
 const VALID_FIT_MODES = ['cover', 'contain', 'fill', 'none', 'scale-down'];
 
 async function openBroadcastPicker() {
-  const ids = [...selectedDeviceIds];
-  if (ids.length === 0) { showToast('Select at least 1 display', 'error'); return; }
+  let selection;
+  try {
+    const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false }, { requireFresh: true });
+    selection = await openTargetPicker({
+      catalog,
+      capability: 'content',
+      selection: 'multiple',
+      allowOffline: false,
+      allowIndividualWallMembers: false,
+      allowLiveProgram: false,
+    });
+  } catch (err) {
+    showToast(err?.message || 'Live room topology is unavailable.', 'error');
+    return;
+  }
+  if (!selection) return;
+  const ids = selection.deviceIds;
+  if (!ids.length) {
+    showToast('Choose at least one physical wall, group, or standalone display.', 'info');
+    return;
+  }
+  const destinationNames = selection.targets.map((target) => target.name).filter(Boolean);
+  const destinationSummary = destinationNames.join(', ');
 
   const modal = document.createElement('div');
   modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:1000';
   modal.innerHTML = `
     <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:24px;max-width:560px;width:95vw;max-height:85vh;display:flex;flex-direction:column">
-      <h3 style="margin-bottom:4px;color:var(--text-primary)">Send to ${ids.length} ${ids.length === 1 ? 'display' : 'displays'}</h3>
-      <p style="margin:0 0 16px;font-size:12px;color:var(--text-muted)">Pick content from your library, or paste a URL to show right now.</p>
+      <h3 style="margin-bottom:4px;color:var(--text-primary)">Send to ${selection.targets.length} ${selection.targets.length === 1 ? 'destination' : 'destinations'}</h3>
+      <p style="margin:0 0 4px;font-size:12px;color:var(--text-secondary)">${esc(destinationSummary)}</p>
+      <p style="margin:0 0 16px;font-size:12px;color:var(--text-muted)">${ids.length} physical display${ids.length === 1 ? '' : 's'} · Pick content from your library, or paste a URL to show right now.</p>
       <div style="display:flex;gap:8px;margin-bottom:12px">
         <button class="btn btn-primary btn-sm bc-tab active" data-tab="content">Library</button>
         <button class="btn btn-secondary btn-sm bc-tab" data-tab="url">URL</button>
@@ -643,7 +663,7 @@ async function openBroadcastPicker() {
   sendBtn.addEventListener('click', async () => {
     const fitRaw = modal.querySelector('#bcFitMode').value;
     const fit_mode = VALID_FIT_MODES.includes(fitRaw) ? fitRaw : undefined;
-    const payload = { device_ids: ids };
+    const payload = { targets: selection.references };
     if (fit_mode) payload.fit_mode = fit_mode;
     if (activeTab === 'url') {
       const url = urlInput.value.trim();

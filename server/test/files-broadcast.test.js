@@ -196,6 +196,26 @@ test('imports an image and broadcasts it to the selected display', async () => {
   assert.equal(se._pushes[0].opts.userId, 'u1');
 });
 
+test('typed file targets are authoritative and legacy expanded ids are not unioned', async () => {
+  mockFetch(() => binaryResp(200, Buffer.from([0x89, 0x50, 0x4e, 0x47]), 'image/png'));
+  patchFs();
+  const db = makeDb({ devices: DEVS, total: 5 });
+  const se = makeSceneEngine();
+  const router = loadRouter({ db, sceneEngine: se });
+  const handler = getHandler(router, 'POST', '/broadcast');
+  const req = makeReq({ body: {
+    path: 'Photos/current.png',
+    device_ids: ['d1'],
+    targets: [{ type: 'display', id: 'd2' }],
+  } });
+  const res = makeRes();
+  await handler(req, res);
+
+  assert.equal(res._status, 200);
+  assert.deepEqual(se._pushes.map((push) => push.deviceId), ['d2']);
+  assert.equal(res._json.total, 1);
+});
+
 // ══════════════════════════════════════════════════════════════════════════════
 // GUARDRAIL 1: the email is ALWAYS req.user.email, never a client header
 // ══════════════════════════════════════════════════════════════════════════════

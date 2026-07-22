@@ -11,9 +11,14 @@ test('whiteboard offers explicit wall/display targets and overlay or blank modes
   const host = read('frontend/js/views/media-control.js');
   const board = read('frontend/js/views/media-control/whiteboard.js');
 
+  assert.match(host, /getCurrentTargetCatalog/);
+  assert.match(host, /buildWhiteboardTargets/);
+  assert.match(host, /findWhiteboardTargetForActive/);
   assert.match(host, /function whiteboardTargets\(\)/);
   assert.match(host, /function whiteboardTargetFromActive\(\)/);
-  assert.match(host, /targets: whiteboardTargets\(\)/);
+  assert.match(host, /targets,\s*\n\s*onStatus/);
+  assert.doesNotMatch(host, /\(leader && leader\.width \|\| 1920\) \* cols/);
+  assert.doesNotMatch(host, /target_type: split \? 'split'/);
   assert.match(board, /id="mc-wb-target-select"/);
   assert.match(board, /data-wb-mode="overlay"/);
   assert.match(board, /data-wb-mode="blank"/);

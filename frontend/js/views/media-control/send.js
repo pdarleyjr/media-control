@@ -170,9 +170,10 @@ async function materializeYouTube(url) {
  *                              presentation_id | remote_url)
  * @param {string[]} targetIds  device ids to broadcast to
  * @param {string}  [label]     human-readable label for toasts
+ * @param {{targets?:object[]}} [options] authoritative typed picker references
  * @returns {Promise<boolean>}  true = sent successfully, false = cancelled/error
  */
-export async function sendToDisplays(source, targetIds, label = t('mc.tile.content_fallback')) {
+export async function sendToDisplays(source, targetIds, label = t('mc.tile.content_fallback'), options = {}) {
   const finishDispatchMetric = performanceMetrics.start('content.broadcast_accept');
   if (!Array.isArray(targetIds) || targetIds.length === 0) {
     showToast(t('mc.send.no_displays'), 'error');
@@ -191,9 +192,15 @@ export async function sendToDisplays(source, targetIds, label = t('mc.tile.conte
 const liveChoice = await resolveLiveStreamChoice(label);
   if (liveChoice === 'cancel') return false;          // Cancel aborts the whole broadcast
   const includeLiveStream = liveChoice === 'yes';     // 'no'/null → display only
+  const typedTargets = Array.isArray(options.targets) ? options.targets : [];
+  const targetPayload = typedTargets.length ? { targets: typedTargets } : { device_ids: targetIds };
   let result;
   try {
-    result = await api.broadcast({ ...resolvedSource, device_ids: targetIds, include_live_stream: includeLiveStream });
+    result = await api.broadcast({
+      ...resolvedSource,
+      ...targetPayload,
+      include_live_stream: includeLiveStream,
+    });
   } catch (e) {
     finishDispatchMetric();
     showToast(e?.message || t('mc.send.failed'), 'error');
@@ -210,7 +217,12 @@ const liveChoice = await resolveLiveStreamChoice(label);
     });
     if (!ok) return false;
     try {
-      result = await api.broadcast({ ...resolvedSource, device_ids: targetIds, confirm_all: true, include_live_stream: includeLiveStream });
+      result = await api.broadcast({
+        ...resolvedSource,
+        ...targetPayload,
+        confirm_all: true,
+        include_live_stream: includeLiveStream,
+      });
     } catch (e) {
       showToast(e?.message || t('mc.send.failed'), 'error');
       return false;

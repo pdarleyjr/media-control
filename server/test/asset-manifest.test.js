@@ -35,7 +35,7 @@ test('node manifest contains only checksum-ready canonical assets', () => {
       };
     },
   };
-  const manifest = buildContentManifest(fakeDb, { queueMissing: false });
+  const manifest = buildContentManifest(fakeDb, { queueMissing: false, allowUnscoped: true });
   assert.deepEqual(manifest, [{
     asset_id: 'asset-ready',
     content_id: 'ready',
@@ -61,6 +61,6 @@ test('node manifest stages videos first and newest content first within a media 
     },
   };
 
-  const manifest = buildContentManifest(fakeDb, { queueMissing: false });
+  const manifest = buildContentManifest(fakeDb, { queueMissing: false, allowUnscoped: true });
   assert.deepEqual(manifest.map((item) => item.content_id), ['video', 'new-image', 'old-image']);
 });

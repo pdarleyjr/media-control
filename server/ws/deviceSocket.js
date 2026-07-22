@@ -24,10 +24,17 @@ const pendingOfflines = new Map();
 const OFFLINE_DEBOUNCE_MS = 5000;
 // Phase 2.3: deviceRoom() resolves a device_id to its workspace room so
 // dashboardNs.emit can be scoped instead of broadcast platform-wide.
-const { deviceRoom, emitToWorkspace, targetRoomsForDevice, displayRoom } = require('../lib/socket-rooms');
+const { deviceRoom, emitToWorkspace, targetRoomsForDevice, displayRoom, roomStateRoom } = require('../lib/socket-rooms');
 const commandModel = require('../lib/command-model');
 const nodeRegistry = require('../lib/node-registry');
-const { parseStoredLayout, groupForDevice } = require('../lib/wall-layout');
+const { parseStoredLayout, groupForDevice, resolveEffectiveLayoutLeaders } = require('../lib/wall-layout');
+const { buildUniversalWallGeometry, buildLayoutAssignment } = require('../lib/wall-geometry');
+const { createRoomSnapshot, scheduleRoomSnapshot } = require('../lib/room-state-broadcaster');
+const {
+  isProgramReceiverId,
+  programReceiverEventGuard,
+  resolveProgramReceiverSnapshotTarget,
+} = require('../lib/program-receiver-policy');
 
 function emitToDeviceWorkspace(dashboardNs, deviceId, event, payload) {
   emitToWorkspace(dashboardNs, deviceRoom(deviceId), event, payload);
@@ -42,6 +49,32 @@ function emitToDeviceTargetAndWorkspace(dashboardNs, deviceId, event, payload) {
     op.emit(event, payload);
   } catch (_) {
     // Dashboard fanout is best-effort; device handling must keep running.
+  }
+}
+
+function scheduleDeviceRoomSnapshot(io, deviceId, reason) {
+  if (!io || !deviceId) return null;
+  try {
+    const device = db.prepare('SELECT workspace_id FROM devices WHERE id = ?').get(deviceId);
+    if (!device?.workspace_id) return null;
+    return scheduleRoomSnapshot(io, {
+      workspaceId: device.workspace_id,
+      roomId: config.console?.roomId,
+      reason,
+    });
+  } catch (error) {
+    console.warn(`[room-state] could not schedule ${reason || 'device transition'} for ${deviceId}: ${error.message}`);
+    return null;
+  }
+}
+
+function pushEffectiveWallLeadership(deviceNs, wallId, exceptDeviceId = null) {
+  if (!wallId) return;
+  const members = db.prepare('SELECT device_id FROM video_wall_devices WHERE wall_id = ?').all(wallId);
+  for (const member of members) {
+    if (member.device_id !== exceptDeviceId) {
+      commandQueue.queueOrEmitPlaylistUpdate(deviceNs, member.device_id, buildPlaylistPayload);
+    }
   }
 }
 
@@ -285,83 +318,67 @@ function buildPlaylistPayload(deviceId) {
   let wall = null;
   let wallLayout = null;
   let layoutGroup = null;
+  let layoutAssignment = null;
   if (device?.wall_id) {
     wall = db.prepare('SELECT * FROM video_walls WHERE id = ?').get(device.wall_id);
     const pos = db.prepare('SELECT * FROM video_wall_devices WHERE wall_id = ? AND device_id = ?').get(device.wall_id, deviceId);
     const allMembers = wall ? db.prepare(`
-      SELECT vwd.*, d.name AS device_name, d.playlist_id
+      SELECT vwd.*, d.name AS device_name, d.playlist_id, d.status,
+             d.screen_width, d.screen_height
       FROM video_wall_devices vwd JOIN devices d ON d.id = vwd.device_id
       WHERE vwd.wall_id = ? ORDER BY vwd.grid_row, vwd.grid_col
     `).all(wall.id) : [];
-    wallLayout = wall ? parseStoredLayout(wall, allMembers) : null;
+    wallLayout = wall ? resolveEffectiveLayoutLeaders(parseStoredLayout(wall, allMembers), allMembers) : null;
     layoutGroup = groupForDevice(wallLayout, deviceId);
-    // Solo groups play independently. Spanned groups receive a composite that
-    // is bounded only by their own contiguous members.
-    if (wall && pos && layoutGroup?.layout === 'span' && layoutGroup.member_ids.length > 1) {
-      const baseW = 320, baseH = 180;
-      const bezelH = wall.bezel_h_mm || 0;
-      const bezelV = wall.bezel_v_mm || 0;
-
-      // Backfill canvas rect from grid math when canvas_* is unset (legacy
-      // walls that haven't been touched by the new editor yet). Coords are
-      // rounded to integers so sub-pixel drift can't cause two visually
-      // identical rects to compute different stage offsets.
-      const screenRect = {
-        x: Math.round(pos.canvas_x ?? (pos.grid_col * (baseW + bezelH))),
-        y: Math.round(pos.canvas_y ?? (pos.grid_row * (baseH + bezelV))),
-        w: Math.round(pos.canvas_width ?? baseW),
-        h: Math.round(pos.canvas_height ?? baseH),
-      };
-
-      // Player rect defaults to the bounding box of this subgroup, never the
-      // full parent wall. Explicit wall player geometry applies only to the
-      // legacy/full-wall span.
-      let playerRect;
+    if (wall && pos && layoutGroup) {
+      // Canvas fallback now comes from each actual panel geometry. Calibrated
+      // canvas_* values still win; mixed-resolution seams convert physical
+      // bezel millimetres with a symmetric, deterministic density rule.
       const isFullWallGroup = layoutGroup.member_ids.length === allMembers.length;
-      if (isFullWallGroup && wall.player_x !== null && wall.player_x !== undefined) {
-        playerRect = { x: wall.player_x, y: wall.player_y, w: wall.player_width, h: wall.player_height };
-      } else {
-        const groupIds = new Set(layoutGroup.member_ids);
-        const all = allMembers.filter((member) => groupIds.has(member.device_id));
-        let x = Infinity, y = Infinity, x2 = -Infinity, y2 = -Infinity;
-        for (const p of all) {
-          const px = p.canvas_x ?? (p.grid_col * (baseW + bezelH));
-          const py = p.canvas_y ?? (p.grid_row * (baseH + bezelV));
-          const pw = p.canvas_width ?? baseW;
-          const ph = p.canvas_height ?? baseH;
-          if (px < x) x = px;
-          if (py < y) y = py;
-          if (px + pw > x2) x2 = px + pw;
-          if (py + ph > y2) y2 = py + ph;
-        }
-        playerRect = isFinite(x)
-          ? { x, y, w: x2 - x, h: y2 - y }
-          : { x: 0, y: 0, w: baseW, h: baseH };
-      }
-      // Round the player rect too — same rationale.
-      playerRect = {
-        x: Math.round(playerRect.x), y: Math.round(playerRect.y),
-        w: Math.round(playerRect.w), h: Math.round(playerRect.h),
-      };
+      const geometry = buildUniversalWallGeometry({
+        wall,
+        members: allMembers,
+        memberIds: layoutGroup.member_ids,
+        deviceId,
+        useExplicitPlayerRect: isFullWallGroup && layoutGroup.layout === 'span',
+      });
+      const restoredContentId = displayStateForDevice(deviceId)?.current_content_id || null;
+      const selectedAssignment = assignments.find((item) => item.content_id && item.content_id === restoredContentId)
+        || assignments[0]
+        || null;
+      layoutAssignment = buildLayoutAssignment({
+        layoutId: wallLayout.id,
+        layoutRevision: wallLayout.revision,
+        contentId: wall.content_id || restoredContentId || selectedAssignment?.content_id || null,
+        fitMode: selectedAssignment?.fit_mode || null,
+        synchronizedStartAt: selectedAssignment?.synchronized_start_at || null,
+        geometry,
+      });
 
-      wall_config = {
-        wall_id: wall.id,
-        wall_name: wall.name || null,
-        layout_id: wallLayout.id,
-        layout_revision: wallLayout.revision,
-        group_id: layoutGroup.id,
-        member_id: deviceId,
-        group_member_ids: layoutGroup.member_ids,
-        grid_col: pos.grid_col,
-        grid_row: pos.grid_row,
-        grid_cols: layoutGroup.geometry.columns,
-        grid_rows: layoutGroup.geometry.rows,
-        screen_rect: screenRect,
-        player_rect: playerRect,
-        is_leader: layoutGroup.leader_device_id === deviceId,
-        rotation: pos.rotation || 0,
-        refresh_rate_hz: wall.refresh_rate_hz || null,
-      };
+      // Solo groups keep normal independent playback. Only a multi-member span
+      // enters legacy wall mode; all groups still receive layout_assignment.
+      if (layoutGroup.layout === 'span' && layoutGroup.member_ids.length > 1 && geometry) {
+
+        wall_config = {
+          wall_id: wall.id,
+          wall_name: wall.name || null,
+          ...layoutAssignment,
+          group_id: layoutGroup.id,
+          member_id: deviceId,
+          group_member_ids: layoutGroup.member_ids,
+          grid_col: pos.grid_col,
+          grid_row: pos.grid_row,
+          grid_cols: layoutGroup.geometry.columns,
+          grid_rows: layoutGroup.geometry.rows,
+          // Backward-compatible player fields stay available while new clients
+          // consume logical_canvas + viewport from the same geometry result.
+          screen_rect: geometry.screenRect,
+          player_rect: geometry.playerRect,
+          is_leader: layoutGroup.leader_device_id === deviceId,
+          rotation: pos.rotation || 0,
+          refresh_rate_hz: wall.refresh_rate_hz || null,
+        };
+      }
     }
   }
 
@@ -370,6 +387,7 @@ function buildPlaylistPayload(deviceId) {
     layout,
     orientation: device?.orientation || 'landscape',
     wall_config,
+    layout_assignment: layoutAssignment,
     display_state: restoreStateForDevice(deviceId, device, wall, layoutGroup),
     wall_layout: wallLayout,
     layout_context: layoutGroup ? {
@@ -381,6 +399,8 @@ function buildPlaylistPayload(deviceId) {
       group_member_ids: layoutGroup.member_ids,
       group_layout: layoutGroup.layout,
       leader_device_id: layoutGroup.leader_device_id,
+      configured_leader_device_id: layoutGroup.configured_leader_device_id,
+      leader_failover_active: !!layoutGroup.leader_failover_active,
     } : null,
     // 2026-05-28: surface the device's authoritative geometry so the player
     // can size to the canonical (admin-overridden) resolution rather than the
@@ -402,6 +422,7 @@ function buildPlaylistPayload(deviceId) {
     layout: payload.layout,
     orientation: payload.orientation,
     wall_config: payload.wall_config,
+    layout_assignment: payload.layout_assignment,
     wall_layout: payload.wall_layout,
     layout_context: payload.layout_context,
     device_geometry: payload.device_geometry,
@@ -445,6 +466,11 @@ module.exports = function setupDeviceSocket(io) {
     let authenticated = false; // Track whether this socket has been authenticated
     let lastPlaylistSyncAt = 0;
 
+    // Once the managed OBS receiver authenticates, constrain every subsequent
+    // client-originated event to its read/report role. Ordinary displays and
+    // room nodes retain their existing protocol.
+    socket.use(programReceiverEventGuard(() => currentDeviceId));
+
     // ── Classroom room-agent ("node") branch ────────────────────────────────
     // A room-agent connects with handshake auth { role:'node', node_id, token }.
     // It is NOT a display: it never registers a device, never joins display
@@ -462,21 +488,39 @@ module.exports = function setupDeviceSocket(io) {
       console.log(`Node connected: ${nodeId} (${hsAuth.node_type || 'node'})`);
       socket.emit('node:joined', { node_id: nodeId });
       // Push the initial pre-warm manifest so the cache fills ahead of use.
-      try { socket.emit('node:sync-manifest', nodeRegistry.buildContentManifest(db)); } catch (_) {}
+      try { socket.emit('node:sync-manifest', nodeRegistry.buildContentManifest(db, { nodeId })); } catch (_) {}
       socket.on('node:heartbeat', (payload) => {
-        try { nodeRegistry.recordHeartbeat(db, nodeId, payload); } catch (_) {}
+        let recorded = false;
+        try { recorded = nodeRegistry.recordHeartbeat(db, nodeId, payload); } catch (_) {}
         try {
-          dashboardNs.emit('dashboard:node-status', {
+          const node = recorded ? db.prepare(`
+            SELECT node_id, node_name, node_type, room_id, workspace_id, last_heartbeat,
+                   software_version, free_disk, cache_size, sync_status, audio_endpoint
+            FROM managed_nodes WHERE node_id = ?
+          `).get(nodeId) : null;
+          if (!node?.workspace_id || !node?.room_id) return;
+          dashboardNs.to(roomStateRoom(node.workspace_id, node.room_id)).emit('dashboard:node-status', {
             node_id: nodeId,
-            node_type: payload && payload.node_type ? payload.node_type : hsAuth.node_type || 'node',
-            room_id: payload && payload.room_id ? payload.room_id : config.classroomCache && config.classroomCache.roomId || null,
+            node_name: node.node_name || nodeId,
+            node_type: node.node_type || 'node',
+            room_id: node.room_id,
             status: 'online',
-            ...payload,
+            last_heartbeat: node.last_heartbeat ?? null,
+            software_version: node.software_version || null,
+            free_disk: node.free_disk ?? null,
+            cache_size: node.cache_size ?? null,
+            sync_status: node.sync_status || 'unknown',
+            audio_endpoint: node.audio_endpoint || null,
           });
+          scheduleRoomSnapshot(io, {
+            workspaceId: node.workspace_id,
+            roomId: node.room_id,
+            reason: 'node:heartbeat',
+          }, 250);
         } catch (_) {}
       });
       socket.on('node:request-manifest', () => {
-        try { socket.emit('node:sync-manifest', nodeRegistry.buildContentManifest(db)); } catch (_) {}
+        try { socket.emit('node:sync-manifest', nodeRegistry.buildContentManifest(db, { nodeId })); } catch (_) {}
       });
       socket.on('join', (data) => {
         try { if (data && data.room) socket.join(String(data.room)); } catch (_) {}
@@ -556,6 +600,7 @@ module.exports = function setupDeviceSocket(io) {
                   joinDeviceTargetRooms(socket, existing.device_id);
                   logDeviceStatus(existing.device_id, 'online');
                   emitToDeviceWorkspace(dashboardNs, existing.device_id, 'dashboard:device-status', { device_id: existing.device_id, status: 'online' });
+                  scheduleDeviceRoomSnapshot(io, existing.device_id, 'device:online');
                   // Flush any commands/playlist-updates queued while this device was offline.
                   commandQueue.flushQueue(deviceNs, existing.device_id, buildPlaylistPayload);
                   // Send playlist
@@ -632,38 +677,14 @@ module.exports = function setupDeviceSocket(io) {
           // Flush any commands/playlist-updates queued while this device was offline.
           commandQueue.flushQueue(deviceNs, device_id, buildPlaylistPayload);
 
-          // If this device is part of a wall, re-evaluate leadership.
-          // Preferred leader = online member with smallest (canvas_x +
-          // canvas_y), falling back to grid 0,0. If the original leader
-          // (top-left tile) is back, they reclaim the role and peers re-sync.
+          // Recompute effective (online) leadership in payloads without ever
+          // rewriting the persisted configured leader. Peers receive the same
+          // deterministic failover view; when the configured leader returns,
+          // it resumes automatically without a topology revision or restart.
           if (device.wall_id) {
             try {
-              const wall = db.prepare('SELECT * FROM video_walls WHERE id = ?').get(device.wall_id);
-              if (wall) {
-                const candidates = db.prepare(`
-                  SELECT vwd.device_id, vwd.canvas_x, vwd.canvas_y, vwd.grid_col, vwd.grid_row
-                  FROM video_wall_devices vwd
-                  JOIN devices d ON d.id = vwd.device_id
-                  WHERE vwd.wall_id = ? AND d.status = 'online'
-                `).all(wall.id);
-                if (candidates.length > 0) {
-                  const score = (c) => (c.canvas_x ?? c.grid_col * 320) + (c.canvas_y ?? c.grid_row * 180);
-                  candidates.sort((a, b) => score(a) - score(b));
-                  const preferredLeader = candidates[0].device_id;
-                  if (wall.leader_device_id !== preferredLeader) {
-                    db.prepare('UPDATE video_walls SET leader_device_id = ? WHERE id = ?').run(preferredLeader, wall.id);
-                    console.log(`Wall ${wall.id} leader reassigned to ${preferredLeader} on reconnect`);
-                    // Re-push payload to every member so role flags refresh.
-                    const members = db.prepare('SELECT device_id FROM video_wall_devices WHERE wall_id = ?').all(wall.id);
-                    for (const m of members) {
-                      if (m.device_id !== device_id) {
-                        commandQueue.queueOrEmitPlaylistUpdate(deviceNs, m.device_id, buildPlaylistPayload);
-                      }
-                    }
-                  }
-                }
-              }
-            } catch (e) { console.error('Wall leader reclaim failed:', e.message); }
+              pushEffectiveWallLeadership(deviceNs, device.wall_id, device_id);
+            } catch (e) { console.error('Wall effective-leader refresh failed:', e.message); }
           }
 
           // Device access gating removed — checkDeviceAccess always grants access.
@@ -675,6 +696,7 @@ module.exports = function setupDeviceSocket(io) {
           }
 
           emitToDeviceWorkspace(dashboardNs, device_id, 'dashboard:device-status', { device_id, status: 'online' });
+          scheduleDeviceRoomSnapshot(io, device_id, 'device:online');
           console.log(`Device reconnected: ${device_id}`);
           return;
         }
@@ -726,6 +748,43 @@ module.exports = function setupDeviceSocket(io) {
       }
       return true;
     }
+
+    // The OBS receiver explicitly requests a complete, authoritative room
+    // snapshot after each registration/reconnect. Tenancy is derived from its
+    // authenticated device row; client-supplied workspace/room values may only
+    // confirm that identity, never select another tenant.
+    socket.on('device:room-snapshot', (data, acknowledge) => {
+      const reply = typeof acknowledge === 'function' ? acknowledge : () => {};
+      try {
+        if (!requireDeviceAuth()) return reply({ ok: false, code: 'DEVICE_AUTH_REQUIRED' });
+        if (!isProgramReceiverId(currentDeviceId)) {
+          return reply({ ok: false, code: 'PROGRAM_RECEIVER_REQUIRED' });
+        }
+        const target = resolveProgramReceiverSnapshotTarget({
+          db,
+          deviceId: currentDeviceId,
+          configuredRoomId: config.liveStream?.roomId || config.console?.roomId,
+          requestedWorkspaceId: data?.workspace_id || data?.workspaceId,
+          requestedRoomId: data?.room_id || data?.roomId,
+        });
+        const snapshot = createRoomSnapshot({
+          workspaceId: target.workspaceId,
+          roomId: target.roomId,
+          reason: 'device:room-snapshot',
+        });
+        socket.emit('device:room-snapshot', snapshot);
+        return reply({
+          ok: true,
+          schemaVersion: snapshot.schemaVersion,
+          revision: snapshot.revision,
+          serverTimestamp: snapshot.serverTimestamp,
+        });
+      } catch (error) {
+        const code = error?.code || 'PROGRAM_RECEIVER_SNAPSHOT_FAILED';
+        console.warn(`device:room-snapshot failed for ${currentDeviceId || 'unauthenticated'}: ${code}`);
+        return reply({ ok: false, code });
+      }
+    });
 
     // Heartbeat with telemetry
     // 2026-05-28: hardened against process-killing FK violations. If the
@@ -900,6 +959,7 @@ module.exports = function setupDeviceSocket(io) {
           ...ack, target_type: 'display', target_id: currentDeviceId,
           status: ok === false ? 'failed' : 'acked',
         });
+        scheduleDeviceRoomSnapshot(io, currentDeviceId, ok === false ? 'command:failed' : 'command:acked');
       } catch (e) {
         console.warn(`device:ack handler error for ${currentDeviceId}: ${e.message}`);
         const commandId = data && data.command_id;
@@ -935,6 +995,7 @@ module.exports = function setupDeviceSocket(io) {
           version: 1, type: 'device:state-report', target_type: 'display', target_id: currentDeviceId,
           state: { ...(state || {}), state_revision: result.state_revision },
         });
+        scheduleDeviceRoomSnapshot(io, currentDeviceId, 'device:state-report');
       } catch (e) {
         console.warn(`device:state-report handler error: ${e.message}`);
       }
@@ -1159,11 +1220,11 @@ socket.on('device:wb-undo', () => {
       if (!data?.wall_id) return;
       const wall = db.prepare('SELECT * FROM video_walls WHERE id = ?').get(data.wall_id);
       const members = wall ? db.prepare(`
-        SELECT vwd.*, d.name AS device_name, d.playlist_id
+        SELECT vwd.*, d.name AS device_name, d.playlist_id, d.status
         FROM video_wall_devices vwd JOIN devices d ON d.id = vwd.device_id
         WHERE vwd.wall_id = ? ORDER BY vwd.grid_row, vwd.grid_col
       `).all(data.wall_id) : [];
-      const layout = wall ? parseStoredLayout(wall, members) : null;
+      const layout = wall ? resolveEffectiveLayoutLeaders(parseStoredLayout(wall, members), members) : null;
       const group = groupForDevice(layout, currentDeviceId);
       if (!group || group.layout !== 'span' || group.leader_device_id !== currentDeviceId) return;
       const wallDevices = group.member_ids.filter((id) => id !== currentDeviceId);
@@ -1187,11 +1248,11 @@ socket.on('device:wb-undo', () => {
         if (!data?.wall_id) return;
         const wall = db.prepare('SELECT * FROM video_walls WHERE id = ?').get(data.wall_id);
         const members = wall ? db.prepare(`
-          SELECT vwd.*, d.name AS device_name, d.playlist_id
+          SELECT vwd.*, d.name AS device_name, d.playlist_id, d.status
           FROM video_wall_devices vwd JOIN devices d ON d.id = vwd.device_id
           WHERE vwd.wall_id = ? ORDER BY vwd.grid_row, vwd.grid_col
         `).all(data.wall_id) : [];
-        const layout = wall ? parseStoredLayout(wall, members) : null;
+        const layout = wall ? resolveEffectiveLayoutLeaders(parseStoredLayout(wall, members), members) : null;
         const group = groupForDevice(layout, currentDeviceId);
         if (!group || group.layout !== 'span' || group.leader_device_id === currentDeviceId) return;
         deviceNs.to(group.leader_device_id).emit('wall:sync-request', {
@@ -1239,28 +1300,15 @@ socket.on('device:wb-undo', () => {
         heartbeat.removeConnection(deviceId);
         logDeviceStatus(deviceId, 'offline');
         emitToDeviceWorkspace(dashboardNs, deviceId, 'dashboard:device-status', { device_id: deviceId, status: 'offline' });
+        scheduleDeviceRoomSnapshot(io, deviceId, 'device:offline');
 
-        // If this device was leading a wall, reassign leadership to the next
-        // online member so playback stays driven.
+        // Notify wall peers so their payloads derive the same deterministic
+        // online failover leader. The configured leader remains persisted and
+        // is never changed by a transient socket disconnect.
         try {
-          const wall = db.prepare('SELECT id FROM video_walls WHERE leader_device_id = ?').get(deviceId);
-          if (wall) {
-            const candidates = db.prepare(`
-              SELECT vwd.device_id FROM video_wall_devices vwd
-              JOIN devices d ON d.id = vwd.device_id
-              WHERE vwd.wall_id = ? AND d.status = 'online' AND vwd.device_id != ?
-              ORDER BY vwd.grid_row, vwd.grid_col LIMIT 1
-            `).all(wall.id, deviceId);
-            const newLeader = candidates[0]?.device_id || null;
-            db.prepare('UPDATE video_walls SET leader_device_id = ? WHERE id = ?').run(newLeader, wall.id);
-            const members = db.prepare('SELECT device_id FROM video_wall_devices WHERE wall_id = ?').all(wall.id);
-            for (const m of members) {
-              if (m.device_id !== deviceId) {
-                commandQueue.queueOrEmitPlaylistUpdate(deviceNs, m.device_id, buildPlaylistPayload);
-              }
-            }
-          }
-        } catch (e) { console.error('Wall leader reassign failed:', e.message); }
+          const wall = db.prepare('SELECT wall_id AS id FROM video_wall_devices WHERE device_id = ?').get(deviceId);
+          if (wall) pushEffectiveWallLeadership(deviceNs, wall.id, deviceId);
+        } catch (e) { console.error('Wall effective-leader refresh failed:', e.message); }
 
         // Save last screenshot to disk as offline snapshot
         const lastB64 = lastScreenshots[deviceId];
@@ -1286,3 +1334,7 @@ socket.on('device:wb-undo', () => {
 
   return deviceNs;
 };
+
+// Exposed for focused contract tests and internal reconciliation callers. The
+// production export remains the namespace setup function above.
+module.exports.buildPlaylistPayload = buildPlaylistPayload;

@@ -94,6 +94,12 @@ CREATE TABLE IF NOT EXISTS content (
     processing_status TEXT NOT NULL DEFAULT 'uploaded',
     processing_error TEXT,
     media_probe_json TEXT,
+    access_level    TEXT NOT NULL DEFAULT 'private',
+    published_at   INTEGER,
+    published_by   TEXT,
+    source_content_id TEXT REFERENCES content(id) ON DELETE SET NULL,
+    version         INTEGER NOT NULL DEFAULT 1,
+    archived_at     INTEGER,
     updated_at      INTEGER,
     created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
@@ -733,6 +739,48 @@ CREATE TABLE IF NOT EXISTS display_states (
     updated_at            INTEGER,
     PRIMARY KEY (target_type, target_id)
 );
+
+CREATE TABLE IF NOT EXISTS content_publication_requests (
+    id                   TEXT PRIMARY KEY,
+    content_id           TEXT NOT NULL REFERENCES content(id) ON DELETE CASCADE,
+    requested_by         TEXT NOT NULL REFERENCES users(id),
+    requested_visibility TEXT NOT NULL DEFAULT 'organization_shared'
+                           CHECK (requested_visibility = 'organization_shared'),
+    status               TEXT NOT NULL DEFAULT 'pending'
+                           CHECK (status IN ('pending', 'approved', 'rejected', 'cancelled')),
+    decided_by           TEXT REFERENCES users(id),
+    decision_reason      TEXT,
+    requested_version    INTEGER NOT NULL DEFAULT 1,
+    requested_sha256     TEXT,
+    decided_at           INTEGER,
+    created_at           INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    updated_at           INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE TABLE IF NOT EXISTS content_template_assignments (
+    content_id   TEXT NOT NULL REFERENCES content(id) ON DELETE CASCADE,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    assigned_by  TEXT REFERENCES users(id),
+    assigned_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    PRIMARY KEY (content_id, workspace_id)
+);
+
+-- Persisted global revision for the authoritative room snapshot contract.
+-- A composite key keeps two control rooms in the same workspace independent,
+-- while UPDATE ... revision + 1 provides a monotonic resume cursor that
+-- survives server restarts.
+CREATE TABLE IF NOT EXISTS room_state_revisions (
+    workspace_id TEXT NOT NULL,
+    room_id      TEXT NOT NULL,
+    revision     INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+    last_reason  TEXT,
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, room_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_room_state_revisions_updated
+    ON room_state_revisions(updated_at DESC);
 
 -- P3/Kamrui managed-node registry. node_token is a per-node bearer (generated
 -- server-side, stored hashed elsewhere); never committed in the clear.

@@ -11,7 +11,12 @@ const { logActivity, getClientIp } = require('../services/activity');
 const { resolveUploadMime } = require('../middleware/upload');
 const { isDocThumbnailMime, kickDocThumbnail } = require('../lib/doc-thumbnail');
 const { kickHevcTranscodeIfNeeded } = require('../lib/media-transcode');
-const { resolveBroadcastTargets } = require('../lib/broadcast-targets');
+const {
+  LIVE_STREAM_DEVICE_PREFIX,
+  resolveBroadcastTargets,
+  resolveTypedBroadcastTargets,
+} = require('../lib/broadcast-targets');
+const { contextFromRequest } = require('../lib/content-visibility');
 
 // MBFD Media Control Studio — Files (Nextcloud per-user raw-FS) API.
 //
@@ -139,20 +144,36 @@ router.post('/broadcast', async (req, res) => {
     return res.status(403).json({ error: 'Read-only access' });
   }
 
-  const { path: rawPath, device_ids, fit_mode, confirm_all, import_only } = req.body || {};
+  const { path: rawPath, device_ids, targets: target_refs, fit_mode, confirm_all, import_only } = req.body || {};
 
   // Validate the source path (and clamp traversal at this trust boundary).
   const relPath = clampRelPath(rawPath);
   if (!relPath) return res.status(400).json({ error: 'path is required and must be a relative file path' });
 
   // Validate the target selection (mirrors broadcast.js:32-34).
-  if (import_only !== true && (!Array.isArray(device_ids) || device_ids.length === 0)) {
-    return res.status(400).json({ error: 'device_ids must be a non-empty array' });
+  if (device_ids !== undefined && !Array.isArray(device_ids)) {
+    return res.status(400).json({ error: 'device_ids must be an array' });
+  }
+  if (target_refs !== undefined && !Array.isArray(target_refs)) {
+    return res.status(400).json({ error: 'targets must be an array' });
+  }
+  const legacyIds = Array.isArray(device_ids) ? device_ids : [];
+  const typedRefs = Array.isArray(target_refs) ? target_refs : [];
+  if (import_only !== true && legacyIds.length === 0 && typedRefs.length === 0) {
+    return res.status(400).json({ error: 'device_ids or targets must select at least one display' });
   }
 
-  // De-dupe and confirm target devices are in this workspace. Missing IDs are
-  // stale browser selections; skip them so valid targets still receive content.
-  const requested = import_only === true ? [] : [...new Set(device_ids.map(String))];
+  const typedResolution = import_only === true
+    ? { ok: true, targets: [] }
+    : resolveTypedBroadcastTargets({ db, refs: typedRefs, workspaceId: req.workspaceId });
+  if (!typedResolution.ok) return res.status(typedResolution.status).json(typedResolution.body);
+
+  // Typed picker references are the sole routing authority when present. The
+  // expanded device_ids field remains accepted only as an old-client fallback;
+  // unioning it would re-introduce members from a stale wall revision.
+  const requested = import_only === true ? [] : [...new Set(
+    typedRefs.length > 0 ? typedResolution.targets : legacyIds.map(String)
+  )];
   const resolvedTargets = import_only === true
     ? { ok: true, targets: [], missing: [] }
     : resolveBroadcastTargets({ db, requestedIds: requested, workspaceId: req.workspaceId });
@@ -161,8 +182,8 @@ router.post('/broadcast', async (req, res) => {
 
   // Confirmation gate when targeting ALL displays in the workspace (broadcast.js:54-60).
   const totalInWorkspace = db.prepare(
-    'SELECT COUNT(*) AS c FROM devices WHERE workspace_id = ?'
-  ).get(req.workspaceId).c;
+    'SELECT COUNT(*) AS c FROM devices WHERE workspace_id = ? AND id NOT LIKE ?'
+  ).get(req.workspaceId, `${LIVE_STREAM_DEVICE_PREFIX}%`).c;
   const targetingAll = import_only !== true && totalInWorkspace > 0 && targets.length === totalInWorkspace;
   if (targetingAll && confirm_all !== true) {
     return res.status(409).json({ code: 'CONFIRM_ALL_REQUIRED', count: totalInWorkspace });
@@ -238,6 +259,7 @@ router.post('/broadcast', async (req, res) => {
       workspaceId: req.workspaceId,
       userId: req.user.id,
       targetDeviceIds: targets,
+      contentContext: contextFromRequest(req),
     });
     if (ok) sent++; else failed.push(deviceId);
   }

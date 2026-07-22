@@ -9,6 +9,7 @@ const config = require('../config');
 const { accessContext } = require('../lib/tenancy');
 const { ELEVATED_ROLES } = require('../middleware/auth');
 const { ownedContentScope } = require('../lib/content-scope');
+const { contentUseDecision, contextFromRequest } = require('../lib/content-visibility');
 
 // Re-probe video duration with ffprobe if content.duration_sec is missing
 async function probeAndUpdateDuration(content) {
@@ -326,11 +327,13 @@ router.post('/:id/items', requirePlaylistWrite, async (req, res) => {
     }
 
     if (content_id) {
-      const content = db.prepare('SELECT id, workspace_id, duration_sec, mime_type, filepath FROM content WHERE id = ?').get(content_id);
-      if (!content) return res.status(404).json({ error: 'Content not found' });
-      if (content.workspace_id && content.workspace_id !== req.playlist.workspace_id) {
-        return res.status(403).json({ error: 'Content is not in this playlist\'s workspace' });
-      }
+      const decision = contentUseDecision(db, content_id, req.playlist.workspace_id, contextFromRequest(req, {
+        workspaceRole: req.playlistCtx?.workspaceRole || req.workspaceRole,
+        orgRole: req.playlistCtx?.orgRole || req.orgRole,
+      }));
+      if (!decision.content) return res.status(404).json({ error: 'Content not found' });
+      if (!decision.allowed) return res.status(403).json({ error: decision.reason });
+      const content = decision.content;
       if (duration_sec === undefined || duration_sec === null) {
         const contentDur = await probeAndUpdateDuration(content);
         if (contentDur) duration_sec = Math.ceil(contentDur);

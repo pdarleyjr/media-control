@@ -5,6 +5,7 @@ const { assertRemoteUrlSafe } = require('../lib/ssrf-policy');
 const { audit } = require('../lib/audit');
 const { getClientIp } = require('../services/activity');
 const config = require('../config');
+const { contextFromRequest } = require('../lib/content-visibility');
 const {
   generateEndpointToken,
   getEndpoint,
@@ -104,6 +105,7 @@ router.put('/:id/scene', async (req, res) => {
       endpointId: endpoint.id,
       canvasAssetSecret: config.jwtSecret,
       assertRemoteUrlSafe,
+      contentContext: contextFromRequest(req),
     });
   } catch (error) {
     return res.status(400).json({ error: error.message });

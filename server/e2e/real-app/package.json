@@ -1,0 +1,14 @@
+{
+  "name": "mc-real-app-playwright",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Real-application Playwright tests against the live Media Control server (NOT the mock fixture harness).",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "install-browsers": "playwright install --with-deps chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}

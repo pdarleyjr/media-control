@@ -10,6 +10,8 @@
 import { api } from '../api.js';
 import { showToast } from '../components/toast.js';
 import { confirmDialog } from '../components/confirm.js';
+import { openTargetPicker } from '../components/target-picker.js';
+import { waitForTargetCatalog } from '../services/target-catalog-runtime.js';
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
@@ -29,83 +31,44 @@ const NC_BROADCASTABLE = /^(image|video)\//;
 // Show a modal-style display picker and broadcast the NC file to the selected
 // displays. Returns after the broadcast (success or failure).
 async function broadcastNcFile(path, label) {
-  let devices = [];
   try {
-    const result = await api.getDevices();
-    devices = Array.isArray(result) ? result : (result && Array.isArray(result.devices) ? result.devices : []);
-  } catch (e) {
-    showToast('Could not load displays: ' + (e?.message || ''), 'error');
-    return;
-  }
-  if (!devices.length) {
-    showToast('No displays are paired yet.', 'error');
-    return;
-  }
-
-  // Build a simple modal with checkboxes for each display.
-  const modalId = 'nc-broadcast-modal';
-  let existing = document.getElementById(modalId);
-  if (existing) existing.remove();
-
-  const modal = document.createElement('div');
-  modal.id = modalId;
-  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:9999';
-  modal.innerHTML = `
-    <div style="background:var(--mc-surface,#0f172a);border:1px solid var(--mc-border,#243044);border-radius:var(--mc-radius,8px);padding:24px;min-width:320px;max-width:480px;width:90vw">
-      <div style="font-weight:var(--mc-fw-bold);font-size:var(--mc-font-size-lg,1.1rem);color:var(--mc-text-primary);margin-bottom:4px">Broadcast to displays</div>
-      <div style="font-size:var(--mc-font-size-sm);color:var(--mc-text-secondary);margin-bottom:16px">${esc(label)}</div>
-      <div id="nc-bcast-devlist" style="max-height:240px;overflow-y:auto;display:flex;flex-direction:column;gap:6px">
-        ${devices.map((d) => `
-          <label style="display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:var(--mc-radius-sm);cursor:pointer;border:1px solid var(--mc-border-light);background:var(--mc-surface)">
-            <input type="checkbox" value="${esc(d.id)}" style="margin:0">
-            <span style="width:8px;height:8px;border-radius:50%;background:${String(d.status||'').toLowerCase()==='online'?'var(--mc-online,#16A34A)':'var(--mc-text-tertiary,#9CA3AF)'};flex:0 0 auto"></span>
-            <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--mc-text-primary)">${esc(d.name || 'Display')}</span>
-          </label>`).join('')}
-      </div>
-      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px">
-        <button id="nc-bcast-cancel" style="background:var(--mc-surface);border:1px solid var(--mc-border-medium);border-radius:var(--mc-radius-sm);padding:9px 18px;cursor:pointer;color:var(--mc-text-primary)">Cancel</button>
-        <button id="nc-bcast-go" style="background:var(--mc-primary,#DC2626);color:#fff;border:none;border-radius:var(--mc-radius-sm);padding:9px 18px;cursor:pointer;font-weight:var(--mc-fw-bold)">Broadcast</button>
-      </div>
-    </div>`;
-  document.body.appendChild(modal);
-
-  await new Promise((resolve) => {
-    modal.querySelector('#nc-bcast-cancel').addEventListener('click', () => { modal.remove(); resolve(); });
-    modal.addEventListener('click', (e) => { if (e.target === modal) { modal.remove(); resolve(); } });
-    modal.querySelector('#nc-bcast-go').addEventListener('click', async () => {
-      const checked = [...modal.querySelectorAll('#nc-bcast-devlist input[type=checkbox]:checked')].map((cb) => cb.value);
-      if (!checked.length) { showToast('Select at least one display.', 'error'); return; }
-      const btn = modal.querySelector('#nc-bcast-go');
-      btn.disabled = true; btn.textContent = '…';
-      try {
-        let result = await api.files.broadcast(path, checked);
-        if (result && result.code === 'CONFIRM_ALL_REQUIRED') {
-          modal.remove();
-          const ok = await confirmDialog({
-            title: `Show on ALL ${result.count} displays?`,
-            message: `This puts "${esc(label)}" on every display in the room.`,
-            confirmLabel: 'Show on all',
-            tone: 'default',
-          });
-          if (!ok) { resolve(); return; }
-          result = await api.files.broadcast(path, checked, { confirm_all: true });
-        } else {
-          modal.remove();
-        }
-        if (result && result.success) {
-          const offline = (result.total || 0) - (result.sent || 0);
-          showToast(
-            `${esc(label)} → ${result.sent} display${result.sent === 1 ? '' : 's'}${offline > 0 ? ` (${offline} offline)` : ''}`,
-            'success'
-          );
-        }
-      } catch (err) {
-        showToast(err?.message || 'Broadcast failed.', 'error');
-        modal.remove();
-      }
-      resolve();
+    const catalog = await waitForTargetCatalog({ includeVirtualDisplays: false }, { requireFresh: true });
+    const selection = await openTargetPicker({
+      catalog,
+      capability: 'content',
+      selection: 'multiple',
+      allowOffline: false,
+      allowIndividualWallMembers: false,
+      allowLiveProgram: false,
     });
-  });
+    if (!selection) return;
+    const deviceIds = selection.deviceIds;
+    if (!deviceIds.length) {
+      showToast('Choose at least one physical wall or standalone display.', 'info');
+      return;
+    }
+
+    let result = await api.files.broadcast(path, undefined, { targets: selection.references });
+    if (result && result.code === 'CONFIRM_ALL_REQUIRED') {
+      const ok = await confirmDialog({
+        title: `Show on ALL ${result.count} displays?`,
+        message: `This puts "${label}" on every physical display in the room.`,
+        confirmLabel: 'Show on all',
+        tone: 'default',
+      });
+      if (!ok) return;
+      result = await api.files.broadcast(path, undefined, { targets: selection.references, confirm_all: true });
+    }
+    if (result && result.success) {
+      const offline = (result.total || 0) - (result.sent || 0);
+      showToast(
+        `${label} → ${result.sent} display${result.sent === 1 ? '' : 's'}${offline > 0 ? ` (${offline} offline)` : ''}`,
+        'success',
+      );
+    }
+  } catch (e) {
+    showToast(e?.message || 'Broadcast failed.', 'error');
+  }
 }
 
 let cur = '';

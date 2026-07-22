@@ -7,6 +7,14 @@ const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
 const { accessContext } = require('../lib/tenancy');
 const commandModel = require('../lib/command-model');
 const { ensureDevicePlaylist: ensureWallAwareDevicePlaylist } = require('../lib/wall-playlists');
+const { assertCanJoinIndependentGroup, TopologyConflictError } = require('../lib/topology-membership');
+const { scheduleRoomSnapshot } = require('../lib/room-state-broadcaster');
+const { contentUseDecision, contextFromRequest } = require('../lib/content-visibility');
+
+function publishGroupMutation(req, workspaceId, reason) {
+  const io = req.app.get('io');
+  if (io && workspaceId) scheduleRoomSnapshot(io, { workspaceId, reason });
+}
 
 const VALID_COLOR = /^#[0-9A-Fa-f]{6}$/;
 const ALLOWED_COMMANDS = ['screen_on', 'screen_off', 'launch', 'update', 'reboot', 'shutdown'];
@@ -62,6 +70,7 @@ router.post('/', (req, res) => {
   const id = uuidv4();
   db.prepare('INSERT INTO device_groups (id, user_id, workspace_id, name, color) VALUES (?, ?, ?, ?, ?)')
     .run(id, req.user.id, req.workspaceId, name, color || '#3B82F6');
+  publishGroupMutation(req, req.workspaceId, 'group:created');
   res.status(201).json(db.prepare('SELECT * FROM device_groups WHERE id = ?').get(id));
 });
 
@@ -71,6 +80,7 @@ router.put('/:id', requireGroupWrite, (req, res) => {
   if (color && !VALID_COLOR.test(color)) return res.status(400).json({ error: 'invalid color format, use #RRGGBB' });
   if (name) db.prepare('UPDATE device_groups SET name = ? WHERE id = ?').run(name, req.params.id);
   if (color) db.prepare('UPDATE device_groups SET color = ? WHERE id = ?').run(color, req.params.id);
+  if (name || color) publishGroupMutation(req, req.group.workspace_id, 'group:updated');
   res.json(db.prepare('SELECT * FROM device_groups WHERE id = ?').get(req.params.id));
 });
 
@@ -120,6 +130,7 @@ router.delete('/:id', requireGroupWrite, (req, res) => {
   });
 
   const result = convert();
+  publishGroupMutation(req, req.group.workspace_id, 'group:deleted');
   res.json({ success: true, schedules_converted: result.converted, devices: result.devices });
 });
 
@@ -153,6 +164,7 @@ router.post('/:id/devices', requireGroupWrite, (req, res) => {
     return res.status(403).json({ error: 'Device is not in this group\'s workspace' });
   }
   try {
+    assertCanJoinIndependentGroup(db, device_id, req.params.id);
     db.prepare('INSERT OR IGNORE INTO device_group_members (device_id, group_id) VALUES (?, ?)').run(device_id, req.params.id);
 
     // Sync device's playlist to the group's: a defined playlist is inherited,
@@ -163,9 +175,11 @@ router.post('/:id/devices', requireGroupWrite, (req, res) => {
     const newPlaylist = group?.playlist_id || null;
     db.prepare('UPDATE devices SET playlist_id = ? WHERE id = ?').run(newPlaylist, device_id);
     pushPlaylistToDevice(req, device_id);
+    publishGroupMutation(req, req.group.workspace_id, 'group:member-added');
     res.status(201).json({ success: true, playlist_id: newPlaylist });
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    const status = e instanceof TopologyConflictError ? e.statusCode : 400;
+    res.status(status).json({ error: e.message, code: e.code, details: e.details });
   }
 });
 
@@ -191,6 +205,7 @@ router.delete('/:id/devices/:deviceId', requireGroupWrite, (req, res) => {
   db.prepare('UPDATE devices SET playlist_id = ? WHERE id = ?').run(newPlaylist, deviceId);
   pushPlaylistToDevice(req, deviceId);
 
+  publishGroupMutation(req, req.group.workspace_id, 'group:member-removed');
   res.json({ success: true });
 });
 
@@ -229,11 +244,9 @@ router.post('/:id/assign-content', requireGroupWrite, (req, res) => {
 
   // Verify content lives in the same workspace as the group (or is a
   // platform-template row).
-  const content = db.prepare('SELECT id, workspace_id FROM content WHERE id = ?').get(content_id);
-  if (!content) return res.status(404).json({ error: 'Content not found' });
-  if (content.workspace_id && content.workspace_id !== req.group.workspace_id) {
-    return res.status(403).json({ error: 'Content is not in this group\'s workspace' });
-  }
+  const decision = contentUseDecision(db, content_id, req.group.workspace_id, contextFromRequest(req));
+  if (!decision.content) return res.status(404).json({ error: 'Content not found' });
+  if (!decision.allowed) return res.status(403).json({ error: decision.reason });
 
   const members = db.prepare('SELECT device_id FROM device_group_members WHERE group_id = ?').all(req.params.id);
 
@@ -248,6 +261,7 @@ router.post('/:id/assign-content', requireGroupWrite, (req, res) => {
   });
   transaction();
 
+  publishGroupMutation(req, req.group.workspace_id, 'group:content-assigned');
   res.json({ success: true, devices_updated: members.length });
 });
 
@@ -280,6 +294,7 @@ router.post('/:id/assign-playlist', requireGroupWrite, (req, res) => {
   transaction();
 
   for (const m of members) pushPlaylistToDevice(req, m.device_id);
+  publishGroupMutation(req, req.group.workspace_id, 'group:playlist-assigned');
   res.json({ success: true, devices_updated: members.length });
 });
 

@@ -80,8 +80,8 @@ export const CAMERA_FEED_GROUPS = [
     nameKey: 'mc.cf.group.classroom',
     feeds: [
       classroom('Focus 210 · Wide Room', 1, 'wide'),
-      classroom('Focus 210 · Video Wall 2', 1, 'wall-2'),
-      classroom('ANNKE · Video Wall 1', 3),
+      classroom('Focus 210 · Secondary Wall', 1, 'wall-2'),
+      classroom('ANNKE · Primary Wall', 3),
     ],
   },
   {

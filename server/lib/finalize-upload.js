@@ -107,8 +107,8 @@ async function finalizeUpload({ absPath, originalName, mimeType, size, userId, w
   } catch (e) { console.warn('finalizeUpload metadata (non-fatal):', e.message); }
 
   db.prepare(`
-    INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, duration_sec, thumbnail_path, width, height)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, duration_sec, thumbnail_path, width, height, access_level)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'private')
   `).run(id, userId, workspaceId, safeFilename(originalName), filename, mt, size || 0, durationSec, thumbnailPath, width, height);
 
   // PDF/Office/ODF docs uploaded via the resumable path get their thumbnail

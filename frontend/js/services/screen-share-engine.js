@@ -73,8 +73,9 @@ let peerConnections = new Map();         // device_id -> RTCPeerConnection
 let pendingDeviceCandidates = new Map(); // device_id -> RTCIceCandidateInit[]
 let connectionTimeouts = new Map();      // device_id -> setTimeout handle
 let iceConfig = null;                    // cached from /api/screen-share/turn-credentials
-let currentContentHint = 'detail';       // 'detail' | 'motion'
+let currentContentHint = 'detail';       // 'detail' | 'motion' | 'motion60'
 let relayFallbackTargets = new Set();     // targets receiving authenticated JPEG relay frames
+let statsBaselines = new Map();           // device_id -> byte counters used for live bitrate deltas
 let relayVideo = null;
 let relayCanvas = null;
 let relayTimer = null;
@@ -180,12 +181,101 @@ export function isActive() { return peerConnections.size > 0; }
 export function getTargetStates() {
   const out = new Map();
   for (const [deviceId, pc] of peerConnections) {
-    out.set(deviceId, relayFallbackTargets.has(deviceId) ? 'relay' : (pc.connectionState || 'new'));
+    out.set(deviceId, relayFallbackTargets.has(deviceId) ? 'relay (video only)' : (pc.connectionState || 'new'));
   }
   return out;
 }
 export function getStream() { return stream; }
 export function getIceConfig() { return iceConfig; }
+
+// Live transport measurements for the operator UI. WebRTC stats are sampled
+// on demand and byte deltas are converted to kbps. The emergency Socket.IO
+// frame relay reports its deliberately bounded behavior explicitly; it does
+// not pretend to carry the captured audio track.
+export async function getTargetDiagnostics() {
+  const out = new Map();
+  for (const [deviceId, pc] of peerConnections) {
+    if (relayFallbackTargets.has(deviceId) || typeof pc.getStats !== 'function') {
+      out.set(deviceId, {
+        mode: 'socket-frame-relay',
+        connectionState: 'relay',
+        maxWidth: RELAY_FRAME_MAX_WIDTH,
+        maxHeight: RELAY_FRAME_MAX_HEIGHT,
+        fps: Math.round(1000 / RELAY_FRAME_INTERVAL_MS),
+        audioIncluded: false,
+      });
+      continue;
+    }
+
+    try {
+      const reports = await pc.getStats();
+      let video = null;
+      let audio = null;
+      let selectedPair = null;
+      const codecs = new Map();
+      const candidates = new Map();
+      reports.forEach((report) => {
+        if (report.type === 'codec') codecs.set(report.id, report);
+        if (report.type === 'local-candidate' || report.type === 'remote-candidate') {
+          candidates.set(report.id, report);
+        }
+        if (report.type === 'outbound-rtp' && !report.isRemote) {
+          if (report.kind === 'video' || report.mediaType === 'video') video = report;
+          if (report.kind === 'audio' || report.mediaType === 'audio') audio = report;
+        }
+        if (report.type === 'candidate-pair' && report.state === 'succeeded' && (report.selected || report.nominated)) {
+          selectedPair = report;
+        }
+      });
+
+      const timestamp = Number(video?.timestamp || audio?.timestamp || Date.now());
+      const videoBytes = Number(video?.bytesSent || 0);
+      const audioBytes = Number(audio?.bytesSent || 0);
+      const prior = statsBaselines.get(deviceId);
+      const elapsedMs = prior ? Math.max(1, timestamp - prior.timestamp) : 0;
+      const toKbps = (bytes, oldBytes) => elapsedMs > 0
+        ? Math.max(0, Math.round(((bytes - oldBytes) * 8) / elapsedMs))
+        : null;
+      const videoKbps = prior ? toKbps(videoBytes, prior.videoBytes) : null;
+      const audioKbps = prior ? toKbps(audioBytes, prior.audioBytes) : null;
+      statsBaselines.set(deviceId, { timestamp, videoBytes, audioBytes });
+      const codec = codecs.get(video?.codecId);
+      const localCandidate = candidates.get(selectedPair?.localCandidateId);
+      const remoteCandidate = candidates.get(selectedPair?.remoteCandidateId);
+      const usesTurn = localCandidate?.candidateType === 'relay' || remoteCandidate?.candidateType === 'relay';
+      const path = selectedPair ? (usesTurn ? 'turn' : 'direct') : null;
+      const protocol = localCandidate?.protocol || remoteCandidate?.protocol || null;
+
+      out.set(deviceId, {
+        mode: 'webrtc',
+        connectionState: pc.connectionState || 'new',
+        width: Number(video?.frameWidth || 0) || null,
+        height: Number(video?.frameHeight || 0) || null,
+        fps: Number(video?.framesPerSecond || 0) || null,
+        videoKbps,
+        audioKbps,
+        audioIncluded: !!audio,
+        rttMs: Number.isFinite(selectedPair?.currentRoundTripTime)
+          ? Math.round(selectedPair.currentRoundTripTime * 1000)
+          : null,
+        codec: codec?.mimeType || null,
+        path,
+        protocol,
+        localCandidateType: localCandidate?.candidateType || null,
+        remoteCandidateType: remoteCandidate?.candidateType || null,
+        networkType: localCandidate?.networkType || null,
+        qualityLimitationReason: video?.qualityLimitationReason || null,
+      });
+    } catch (error) {
+      out.set(deviceId, {
+        mode: 'webrtc',
+        connectionState: pc.connectionState || 'unknown',
+        error: error?.message || 'stats_unavailable',
+      });
+    }
+  }
+  return out;
+}
 
 function blobToBase64(blob) {
   return blob.arrayBuffer().then((buffer) => {
@@ -451,14 +541,16 @@ async function ensureCapture() {
 // ----------------------------------------------------------------------
 // Per-device broadcast (one RTCPeerConnection per target device).
 //
-// opts: { wallTile, contentHint }
+// opts: { wallTile, contentHint, fitMode }
 //   - wallTile: optional wall-tile payload forwarded to the receiver so it
 //     renders its slice of the wall canvas instead of a fullscreen overlay.
-//   - contentHint: optional 'detail'|'motion' applied to the capture before it
+//   - contentHint: optional 'detail'|'motion'|'motion60' applied to the capture before it
 //     is established (only meaningful for the FIRST/capturing call).
+//   - fitMode: 'auto'|'contain'|'cover'|'fill'. Auto contains on one display
+//     and fills the calibrated canvas for wall spans.
 // ----------------------------------------------------------------------
 export async function startBroadcastTo(deviceId, opts = {}) {
-  const { wallTile = null, contentHint } = (opts && typeof opts === 'object') ? opts : {};
+  const { wallTile = null, contentHint, fitMode = 'auto' } = (opts && typeof opts === 'object') ? opts : {};
   if (typeof contentHint === 'string') currentContentHint = contentHint;
 
   if (peerConnections.has(deviceId)) {
@@ -486,8 +578,8 @@ export async function startBroadcastTo(deviceId, opts = {}) {
   // server forwards it to the receiver so it can render this device's
   // slice of the wall canvas instead of a fullscreen overlay.
   const startPayload = wallTile
-    ? { device_id: deviceId, wall_tile: wallTile }
-    : { device_id: deviceId };
+    ? { device_id: deviceId, wall_tile: wallTile, fit_mode: fitMode }
+    : { device_id: deviceId, fit_mode: fitMode };
   const startAck = await emitWithAck(sock, SS.START, startPayload);
   if (!startAck || !startAck.ok) {
     if (peerConnections.size === 0) stopCaptureOnly();
@@ -579,6 +671,7 @@ export async function startBroadcastTo(deviceId, opts = {}) {
       } else if (state === 'closed') {
         peerConnections.delete(deviceId);
         relayFallbackTargets.delete(deviceId);
+        statsBaselines.delete(deviceId);
         pendingDeviceCandidates.delete(deviceId);
         clearConnectTimeout(deviceId);
       }
@@ -626,6 +719,7 @@ export async function stopBroadcastTo(deviceId) {
     peerConnections.delete(deviceId);
   }
   relayFallbackTargets.delete(deviceId);
+  statsBaselines.delete(deviceId);
   pendingDeviceCandidates.delete(deviceId);
   clearConnectTimeout(deviceId);
   const sock = getSocket();
@@ -655,6 +749,7 @@ export async function stopAll() {
   connectionTimeouts.clear();
   pendingDeviceCandidates.clear();
   relayFallbackTargets.clear();
+  statsBaselines.clear();
   notifyChange();
 }
 
@@ -750,6 +845,7 @@ function wireSocketListeners() {
       peerConnections.delete(device_id);
     }
     relayFallbackTargets.delete(device_id);
+    statsBaselines.delete(device_id);
     pendingDeviceCandidates.delete(device_id);
     clearConnectTimeout(device_id);
     notifyChange();
@@ -765,6 +861,7 @@ function wireSocketListeners() {
       peerConnections.delete(device_id);
     }
     relayFallbackTargets.delete(device_id);
+    statsBaselines.delete(device_id);
     pendingDeviceCandidates.delete(device_id);
     clearConnectTimeout(device_id);
     notifyChange();

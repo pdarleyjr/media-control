@@ -2,7 +2,7 @@ const heartbeat = require('../services/heartbeat');
 const { verifyToken } = require('../middleware/auth');
 const { db } = require('../db/database');
 const { accessContext, accessibleWorkspaceIds } = require('../lib/tenancy');
-const { workspaceRoom, displayRoom, wallTargetRoom, groupRoom, nodeRoom, liveProgramRoom } = require('../lib/socket-rooms');
+const { workspaceRoom, displayRoom, wallTargetRoom, groupRoom, nodeRoom, liveProgramRoom, roomStateRoom } = require('../lib/socket-rooms');
 const whiteboardState = require('../services/whiteboard-state');
 const { profileForDevice } = require('../lib/display-profiles');
 const config = require('../config');
@@ -12,6 +12,8 @@ const { getSocketIp } = require('../services/activity');
 const { liveStreamDeviceId, liveStreamProgramState, markLiveContentChanged } = require('../lib/live-stream-display');
 const commandModel = require('../lib/command-model');
 const deviceContract = require('../player/device-contract');
+const { createRoomSnapshot, publishRoomSnapshot } = require('../lib/room-state-broadcaster');
+const { getRoomRevision } = require('../lib/room-snapshot');
 
 // Phase 2.3: workspace-scoped socket rooms + per-command permission gates.
 // Replaces the previous flat dashboardNs.emit broadcast (which leaked every
@@ -115,6 +117,14 @@ module.exports = function setupDashboardSocket(io) {
     });
   }
 
+  function workspaceIdForDevice(deviceId, fallback = null) {
+    try {
+      return db.prepare('SELECT workspace_id FROM devices WHERE id = ?').get(deviceId)?.workspace_id || fallback;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
 function mirrorTransportToLiveStream(deviceNs, deviceId, command) {
     const envelope = command && command.type === 'device:command' ? command : null;
     if (!envelope || !envelope.payload || !envelope.payload.action) return;
@@ -179,6 +189,7 @@ function mirrorTransportToLiveStream(deviceNs, deviceId, command) {
       const decoded = verifyToken(token);
       socket.userId = decoded.id;
       socket.userRole = decoded.role;
+      socket.requestedWorkspaceId = decoded.current_workspace_id || null;
       next();
     } catch {
       next(new Error('Invalid token'));
@@ -192,7 +203,56 @@ function mirrorTransportToLiveStream(deviceNs, deviceId, command) {
     // re-evaluated at connect time and we don't need to re-evaluate per-emit.
     const wsIds = accessibleWorkspaceIds(socket.userId, socket.userRole);
     for (const wsId of wsIds) socket.join(workspaceRoom(wsId));
+    const roomWorkspaceId = wsIds.includes(socket.requestedWorkspaceId)
+      ? socket.requestedWorkspaceId
+      : (wsIds[0] || null);
+    const roomId = config.console.roomId;
+    socket.roomWorkspaceId = roomWorkspaceId;
+    socket.roomId = roomId;
+    if (roomWorkspaceId) socket.join(roomStateRoom(roomWorkspaceId, roomId));
     console.log(`Dashboard client connected: ${socket.id} (user: ${socket.userId}, rooms: ${wsIds.length})`);
+
+    function sendAuthoritativeRoomSnapshot(minimumTimestamp = 0) {
+      if (!socket.roomWorkspaceId) return null;
+      const snapshot = createRoomSnapshot({
+        workspaceId: socket.roomWorkspaceId,
+        roomId: socket.roomId,
+      });
+      snapshot.serverTimestamp = Math.max(
+        Number(snapshot.serverTimestamp) || 0,
+        (Number(minimumTimestamp) || 0) + 1,
+      );
+      socket.emit('room:snapshot', snapshot);
+      return snapshot;
+    }
+
+    // Initial full truth is delivered on every connection. A reconnecting
+    // client can then submit its last accepted revision; equal revisions get a
+    // compact resume acknowledgement, while any mismatch receives full truth.
+    sendAuthoritativeRoomSnapshot();
+    let lastRoomResumeAt = 0;
+    socket.on('dashboard:room-resume', (data) => {
+      if (!socket.roomWorkspaceId) return;
+      const now = Date.now();
+      if (data?.force !== true && now - lastRoomResumeAt < 250) return;
+      lastRoomResumeAt = now;
+      const currentRevision = getRoomRevision(db, socket.roomWorkspaceId, socket.roomId);
+      const requestedRevision = Number(data?.revision);
+      if (data?.force === true) {
+        sendAuthoritativeRoomSnapshot(data?.snapshot_timestamp);
+        return;
+      }
+      if (Number.isInteger(requestedRevision) && requestedRevision === currentRevision) {
+        socket.emit('room:resumed', {
+          schemaVersion: 1,
+          workspaceId: socket.roomWorkspaceId,
+          roomId: socket.roomId,
+          revision: currentRevision,
+        });
+        return;
+      }
+      sendAuthoritativeRoomSnapshot();
+    });
 
     // Phase 2: dashboard selects the target it's currently controlling. It
     // joins the matching per-target room (display:<id>|wall:<id>|group:<id>|
@@ -211,11 +271,34 @@ function mirrorTransportToLiveStream(deviceNs, deviceId, command) {
       }
     }
 
+    function workspaceForTarget(targetType, targetId) {
+      try {
+        if (targetType === 'display') {
+          return db.prepare('SELECT workspace_id FROM devices WHERE id = ?').get(targetId)?.workspace_id || null;
+        }
+        if (targetType === 'wall') {
+          return db.prepare('SELECT workspace_id FROM video_walls WHERE id = ?').get(targetId)?.workspace_id || null;
+        }
+        if (targetType === 'group') {
+          return db.prepare('SELECT workspace_id FROM device_groups WHERE id = ?').get(targetId)?.workspace_id || null;
+        }
+        if (targetType === 'node') {
+          return db.prepare('SELECT workspace_id FROM managed_nodes WHERE node_id = ?').get(targetId)?.workspace_id || null;
+        }
+        if (targetType === 'live-program') return String(targetId || '');
+      } catch (_) { /* reject below */ }
+      return null;
+    }
+
     socket.on('dashboard:select-target', (data) => {
       const target_type = data && data.target_type;
       const target_id = data && data.target_id;
       const newRoom = resolveTargetRoom(target_type, target_id);
       if (!newRoom) return;
+      if (workspaceForTarget(target_type, target_id) !== socket.roomWorkspaceId) {
+        socket.emit('dashboard:target-rejected', { target_type, target_id, reason: 'forbidden' });
+        return;
+      }
       const prev = socket.currentTargetRoom;
       if (prev && prev !== newRoom) {
         try { socket.leave(prev); } catch (e) { /* non-fatal */ }
@@ -459,6 +542,12 @@ function mirrorTransportToLiveStream(deviceNs, deviceId, command) {
               .run(commandType === 'screen_on' ? 1 : 0, device_id);
           } catch (_) { /* non-fatal */ }
         }
+        publishRoomSnapshot(io, {
+          workspaceId: workspaceIdForDevice(device_id, socket.roomWorkspaceId),
+          roomId: socket.roomId,
+          reason: `command:${commandType}`,
+          bump: true,
+        });
         return;
       }
       // Device offline at emit time. Try to queue (lazy require so reverting
@@ -479,6 +568,12 @@ function mirrorTransportToLiveStream(deviceNs, deviceId, command) {
       } catch (e) { /* command-queue module absent; fall through to lost */ }
       console.log(`Command for offline device ${device_id}: ${commandType} (queued=${queued})`);
       mirrorTransportToLiveStream(deviceNs, device_id, envelope);
+      publishRoomSnapshot(io, {
+        workspaceId: workspaceIdForDevice(device_id, socket.roomWorkspaceId),
+        roomId: socket.roomId,
+        reason: `command:${commandType}:queued`,
+        bump: true,
+      });
       if (typeof ack === 'function') ack({ delivered: false, queued, reason: 'offline', command_id: envelope.command_id });
       auditDeviceControl(socket, 'display.command', device_id, { type: commandType, command_id: envelope.command_id, delivered: false, queued });
     });
@@ -501,11 +596,33 @@ function mirrorTransportToLiveStream(deviceNs, deviceId, command) {
       }
       try {
         const sceneEngine = require('../services/scene-engine');
-        const result = sceneEngine.triggerScene(io, activityId);
+        const scene = db.prepare(`SELECT oa.workspace_id, w.organization_id
+          FROM operational_activities oa JOIN workspaces w ON w.id = oa.workspace_id
+          WHERE oa.id = ?`).get(activityId);
+        const access = scene && accessContext(socket.userId, socket.userRole, { id: scene.workspace_id, organization_id: scene.organization_id });
+        const orgMembership = scene && db.prepare(`SELECT role FROM organization_members
+          WHERE organization_id = ? AND user_id = ?`).get(scene.organization_id, socket.userId);
+        const result = sceneEngine.triggerScene(io, activityId, {
+          userId: socket.userId,
+          userRole: socket.userRole,
+          workspaceId: scene?.workspace_id || null,
+          organizationId: scene?.organization_id || null,
+          workspaceRole: access?.workspaceRole || null,
+          orgRole: orgMembership?.role || null,
+          isPlatformAdmin: ['platform_admin', 'superadmin'].includes(socket.userRole),
+        });
         console.log(`Scene triggered ${activityId}: pushed=${result.pushed}, failed=${result.failed}`);
         if (typeof ack === 'function') ack({ delivered: true, ...result });
         let sceneWs = null;
         try { sceneWs = (db.prepare('SELECT workspace_id FROM operational_activities WHERE id = ?').get(activityId) || {}).workspace_id || null; } catch (_) {}
+        if (sceneWs) {
+          publishRoomSnapshot(io, {
+            workspaceId: sceneWs,
+            roomId: socket.roomId,
+            reason: 'scene:triggered',
+            bump: true,
+          });
+        }
         audit({
           actorType: 'user', actorId: socket.userId, action: 'scene.trigger',
           targetType: 'scene', targetId: activityId, workspaceId: sceneWs,

@@ -24,6 +24,7 @@ function makeDb() {
       filepath TEXT NOT NULL DEFAULT '',
       mime_type TEXT NOT NULL,
       file_size INTEGER NOT NULL DEFAULT 0,
+      access_level TEXT NOT NULL DEFAULT 'private',
       created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     );
     CREATE TABLE download_jobs (
@@ -118,6 +119,7 @@ test('finalizeDownload: completed job yields a content row with the right file p
   assert.equal(row.user_id, 'u-7');
   assert.equal(row.mime_type, 'video/mp4');
   assert.equal(row.file_size, 1234);               // real on-disk size
+  assert.equal(row.access_level, 'private');       // downloads are private by default
 
   // The job is now linked back to the content row (no longer an orphan).
   const updated = db.prepare('SELECT content_id, local_path FROM download_jobs WHERE id = ?').get(job.id);

@@ -8,6 +8,7 @@ const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
 // though playlists.js itself isn't yet workspace-filtered.
 const { accessContext } = require('../lib/tenancy');
 const { ensureDevicePlaylist: ensureWallAwareDevicePlaylist } = require('../lib/wall-playlists');
+const { contentUseDecision, contextFromRequest } = require('../lib/content-visibility');
 
 // Mark playlist as draft (called after any item mutation)
 function markDraft(playlistId) {
@@ -91,11 +92,13 @@ router.post('/device/:deviceId', (req, res) => {
   if (!content_id && !widget_id) return res.status(400).json({ error: 'content_id or widget_id required' });
 
   if (content_id) {
-    const content = db.prepare('SELECT id, workspace_id FROM content WHERE id = ?').get(content_id);
-    if (!content) return res.status(404).json({ error: 'Content not found' });
-    if (content.workspace_id && content.workspace_id !== access.device.workspace_id) {
-      return res.status(403).json({ error: 'Content is not in this device\'s workspace' });
-    }
+    const decision = contentUseDecision(db, content_id, access.device.workspace_id, contextFromRequest(req, {
+      workspaceRole: access.ctx.workspaceRole,
+      orgRole: access.ctx.orgRole,
+      isPlatformAdmin: access.ctx.actingAs && ['platform_admin', 'superadmin'].includes(req.user.role),
+    }));
+    if (!decision.content) return res.status(404).json({ error: 'Content not found' });
+    if (!decision.allowed) return res.status(403).json({ error: decision.reason });
   }
   if (widget_id) {
     const widget = db.prepare('SELECT id, workspace_id FROM widgets WHERE id = ?').get(widget_id);

@@ -26,6 +26,25 @@ test('migration created the audit_log table', () => {
   assert.ok(row, 'audit_log table exists');
 });
 
+test('clean databases install durable display-topology guards at boot', () => {
+  const requiredObjects = [
+    ['index', 'ux_device_group_members_one_group'],
+    ['index', 'ux_video_wall_devices_one_wall'],
+    ['index', 'ux_device_groups_workspace_name'],
+    ['trigger', 'trg_wall_membership_valid_insert'],
+    ['trigger', 'trg_group_membership_valid_insert'],
+    ['trigger', 'trg_wall_leader_valid_insert'],
+    ['trigger', 'trg_wall_leader_valid_update'],
+  ];
+
+  for (const [type, name] of requiredObjects) {
+    const row = db.prepare(
+      'SELECT name FROM sqlite_master WHERE type = ? AND name = ?'
+    ).get(type, name);
+    assert.ok(row, `${type} ${name} exists`);
+  }
+});
+
 test('audit() writes a row for a display-control action with who/what/when/where', () => {
   audit({
     actorType: 'user',

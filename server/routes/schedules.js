@@ -8,6 +8,7 @@ const { db } = require('../db/database');
 // the target. This closes a long-standing leak where POST accepted those
 // payload refs with no ownership check at all (only the target was checked).
 const { accessContext } = require('../lib/tenancy');
+const { contentUseDecision, contextFromRequest } = require('../lib/content-visibility');
 
 // Helper: build the expanded schedule query for a device (device-level + group-level)
 function getDeviceSchedulesQuery() {
@@ -180,8 +181,12 @@ router.post('/', (req, res) => {
 
   // Payload refs must live in the same workspace. Platform templates
   // (workspace_id IS NULL) on content / widget / layout / playlist are allowed.
+  if (content_id) {
+    const decision = contentUseDecision(db, String(content_id), targetWorkspaceId, contextFromRequest(req));
+    if (!decision.content) return res.status(404).json({ error: 'Content not found' });
+    if (!decision.allowed) return res.status(403).json({ error: decision.reason });
+  }
   const refChecks = [
-    ['content',   content_id,  true],
     ['widgets',   widget_id,   true],
     ['layouts',   layout_id,   true],
     ['playlists', playlist_id, true],
@@ -227,7 +232,6 @@ router.put('/:id', requireScheduleWrite, (req, res) => {
   const ownershipChecks = [
     ['devices',       req.body.device_id,   schedule.device_id,   false],
     ['device_groups', req.body.group_id,    schedule.group_id,    false],
-    ['content',       req.body.content_id,  schedule.content_id,  true],
     ['widgets',       req.body.widget_id,   schedule.widget_id,   true],
     ['layouts',       req.body.layout_id,   schedule.layout_id,   true],
     ['playlists',     req.body.playlist_id, schedule.playlist_id, true],
@@ -236,6 +240,17 @@ router.put('/:id', requireScheduleWrite, (req, res) => {
     if (newVal === undefined || newVal === oldVal || !newVal) continue;
     const err = checkRefInWorkspace(table, newVal, schedule.workspace_id, { allowNullWorkspace: allowNull });
     if (err) return res.status(err.status).json({ error: err.error });
+  }
+
+  if (req.body.content_id !== undefined && req.body.content_id !== schedule.content_id && req.body.content_id) {
+    const decision = contentUseDecision(
+      db,
+      String(req.body.content_id),
+      schedule.workspace_id,
+      contextFromRequest(req),
+    );
+    if (!decision.content) return res.status(404).json({ error: 'Content not found' });
+    if (!decision.allowed) return res.status(403).json({ error: decision.reason });
   }
 
   const fields = ['device_id', 'group_id', 'zone_id', 'content_id', 'widget_id', 'layout_id', 'playlist_id', 'title',

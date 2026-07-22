@@ -6,10 +6,9 @@
  *     <--- SDP offer/answer + ICE candidates --->
  *   Receiver (display / authenticated /device socket)
  *
- * The server is a stateless relay - it does NOT inspect SDP or candidates.
- * All payloads are forwarded verbatim between the broadcaster's dashboard
- * socket and the receiver's device socket using the existing namespace
- * pattern from ws/dashboardSocket.js.
+ * SDP and ICE stay opaque and are forwarded between authenticated namespaces.
+ * The server also owns bounded session/reconnect state and can fan out a
+ * low-rate JPEG video-only fallback when WebRTC is blocked.
  *
  * Security model:
  *   - Dashboard sockets are JWT-authenticated; they joined workspace rooms
@@ -49,6 +48,7 @@ const REAPER_INTERVAL_MS = 5_000;
 const RELAY_FRAME_MIN_INTERVAL_MS = 120;
 const RELAY_FRAME_MAX_BASE64_CHARS = 1_200_000;
 const RELAY_FRAME_MAX_TARGETS = 16;
+const ALLOWED_FIT_MODES = new Set(['auto', 'contain', 'cover', 'fill']);
 
 const activeSessions = new Map();
 
@@ -107,7 +107,7 @@ function setupScreenShareSignaling({ dashboardNs, deviceNs, canActOnDevice, devi
     socket.data.ownedScreenShareSessions = new Set();
 
     socket.on('screen-share:start', (data, ack) => {
-      const { device_id, wall_tile } = data || {};
+      const { device_id, wall_tile, fit_mode } = data || {};
       if (!device_id) {
         return ack && ack({ ok: false, error: 'device_id required' });
       }
@@ -132,6 +132,7 @@ function setupScreenShareSignaling({ dashboardNs, deviceNs, canActOnDevice, devi
           s.w > 0 && s.h > 0 && p.w > 0 && p.h > 0;
         if (ok) safeWallTile = { screen_rect: { ...s }, player_rect: { ...p } };
       }
+      const safeFitMode = ALLOWED_FIT_MODES.has(fit_mode) ? fit_mode : 'auto';
 
       const existing = activeSessions.get(device_id);
       if (existing && existing.broadcasterSocketId !== socket.id) {
@@ -153,12 +154,14 @@ function setupScreenShareSignaling({ dashboardNs, deviceNs, canActOnDevice, devi
         startedAt: Date.now(),
         disconnectedAt: null,
         wallTile: safeWallTile,
+        fitMode: safeFitMode,
       });
       socket.data.ownedScreenShareSessions.add(device_id);
 
       deviceNs.to(device_id).emit('device:screen-share-start', {
         broadcaster_socket: socket.id,
         wall_tile: safeWallTile,
+        fit_mode: safeFitMode,
       });
       console.log(`[screen-share] start: device=${device_id} broadcaster=${socket.id}${safeWallTile ? ' (wall-tile)' : ''}`);
       ack && ack({ ok: true });

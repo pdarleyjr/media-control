@@ -1,9 +1,9 @@
-// Client store for "what is live where". Fetches GET /api/displays/state once,
-// then merges live dashboard:* socket events (status / screenshot / playback)
-// on top, and notifies subscribers. Re-fetches on socket reconnect so the stage
-// is correct after navigation, reload, or a second operator's change.
+// Client projection for "what is live where". The authoritative room snapshot
+// owns full-state reconciliation; high-frequency device events remain additive
+// optimizations between monotonic room revisions.
 import { api } from '../api.js';
-import { on as onSocket } from '../socket.js';
+import { on as onSocket, roomState } from '../socket.js';
+import { projectRoomDisplays } from './room-display-projection.js';
 
 let displays = new Map();          // id -> display state
 const subs = new Set();
@@ -42,6 +42,15 @@ export async function refresh() {
 export function getAll() { return [...displays.values()]; }
 export function get(id) { return displays.get(id) || null; }
 
+function hydrateRoomSnapshot(snapshot) {
+  const projected = projectRoomDisplays(snapshot, displays, {
+    screenshotUrlForId: (id) => withToken(`/api/devices/${encodeURIComponent(id)}/screenshot`),
+  });
+  if (!projected) return;
+  displays = projected;
+  notify();
+}
+
 export function subscribe(cb) {
   subs.add(cb);
   ensureWired();
@@ -51,7 +60,9 @@ export function subscribe(cb) {
 function ensureWired() {
   if (wired) return;
   wired = true;
-  onSocket('connected', () => { refresh().catch(() => {}); });
+  onSocket('room-snapshot', hydrateRoomSnapshot);
+  roomState.subscribe(hydrateRoomSnapshot);
+  if (roomState.getSnapshot()) hydrateRoomSnapshot(roomState.getSnapshot());
   onSocket('device-status', (d) => {
     // Only patch fields actually present — never clobber screen_on with undefined
     // when a status event doesn't carry it.
@@ -130,8 +141,6 @@ function ensureWired() {
   // Pairing can happen from either the legacy Displays page or Command Center.
   // The server emits this after /api/provision/pair; refresh immediately so the
   // newly claimed display appears without relying on a manual reload.
-  onSocket('dashboard:device-added', () => { refresh().catch(() => {}); });
-  onSocket('wall-changed', () => { refresh().catch(() => {}); });
 }
 
 function merge(id, patch, silent) {
