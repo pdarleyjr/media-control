@@ -19,8 +19,8 @@ function readSnippet(filePath, startMarker, endMarker) {
 test('player transport normalization unwraps nested payload wrappers', () => {
   const snippet = readSnippet(
     path.join(__dirname, '..', 'player', 'index.html'),
-    'function normalizeTransportCommand(input) {',
-    'function postTransportToFrames(command)'
+    'function normalizeTransportCommand(input',
+    'function postTransportToFrames(command'
   );
 
   assert.ok(snippet.includes('unwrapTransportPayload'), 'normalizeTransportCommand should unwrap nested transport payloads');
@@ -33,7 +33,7 @@ test('player transport normalization unwraps nested payload wrappers', () => {
 test('player direct iframe transport handles go_to_slide targets', () => {
   const snippet = readSnippet(
     path.join(__dirname, '..', 'player', 'index.html'),
-    'function tryDirectIframeTransport(command) {',
+    'function tryDirectIframeTransport(command',
     'function doTransport(input)'
   );
 
@@ -60,7 +60,7 @@ test('player applies validated seek commands to YouTube and HTML5 video', () => 
   assert.ok(snippet.includes("action === 'seek'"), 'transport should recognize seek');
   assert.ok(snippet.includes('activeYtPlayer.seekTo(position, true)'), 'YouTube seek should use the IFrame API');
   assert.ok(snippet.includes('currentVideoEl && currentVideoEl.isConnected'), 'HTML5 transport should prefer the tracked active video');
-  assert.ok(snippet.includes("document.querySelector('#playerContainer video, .wall-stage video')"), 'HTML5 transport should fall back to a DOM lookup');
+  assert.ok(snippet.includes("document.querySelector('#playerContainer video, .wall-stage video, .zone video')"), 'HTML5 transport should fall back to a DOM lookup');
   assert.ok(snippet.includes('video.currentTime = boundedPosition'), 'HTML5 video seek should update currentTime');
   assert.ok(snippet.includes("video.addEventListener('seeked'"), 'HTML5 seek should wait for media-clock convergence');
   assert.ok(snippet.includes("'Video seek did not converge'"), 'HTML5 seek should fail instead of acknowledging an unapplied clock');
@@ -144,7 +144,7 @@ test('origin fallback listeners and pending seeks are cancelled across media gen
   const seek = readSnippet(
     path.join(__dirname, '..', 'player', 'index.html'),
     'function finishVideoSeek(',
-    'function findControllableVideo()'
+    'function findControllableVideo('
   );
   const teardown = readSnippet(
     path.join(__dirname, '..', 'player', 'index.html'),

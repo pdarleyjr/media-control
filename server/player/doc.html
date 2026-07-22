@@ -195,9 +195,11 @@
         }
         return { action: String(action || '').trim(), payload: payload || {}, command_id: commandId };
       }
+      var appliedCommandIds = Object.create(null);
       function goToPage(value) {
         var parsed = parseInt(value, 10);
         if (!Number.isFinite(parsed)) throw new Error('Missing page number');
+        if (parsed < 1 || (pages > 0 && parsed > pages)) throw new Error('Page out of range');
         render(parsed, true);
       }
       function handleAction(input) {
@@ -205,6 +207,11 @@
         var action = cmd.action;
         var ack = { command_id: cmd.command_id || null, action: action || null, ok: true, status: 'acked', type: 'transport' };
         try {
+          if (cmd.command_id && appliedCommandIds[cmd.command_id]) {
+            ack.idempotent = true;
+            ack.state = publishState(ack);
+            return ack;
+          }
           if (action === 'next' || action === 'next_slide') render(page + 1, true);
           else if (action === 'prev' || action === 'previous' || action === 'previous_slide') render(page - 1, true);
           else if (action === 'restart' || action === 'restart_deck' || action === 'reset') { stopAuto(); render(1, true); }
@@ -212,10 +219,11 @@
           else if (action === 'pause' || action === 'pause_deck') stopAuto();
           else if (action === 'play' || action === 'resume' || action === 'resume_deck') { if (!playTimer) toggleAuto(); }
           else if (action === 'go_to_slide' || action === 'slide' || action === 'goto') {
-            goToPage(cmd.payload.page || cmd.payload.slide || cmd.payload.index || cmd.payload.page_number);
+            goToPage(cmd.payload.page || cmd.payload.slide || cmd.payload.index || cmd.payload.page_number || cmd.payload.slide_number);
           } else {
             throw new Error('Unsupported action: ' + action);
           }
+          if (cmd.command_id) appliedCommandIds[cmd.command_id] = true;
         } catch (err) {
           ack.ok = false;
           ack.status = 'failed';

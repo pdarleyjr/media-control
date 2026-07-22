@@ -514,6 +514,25 @@ function mirrorTransportToLiveStream(deviceNs, deviceId, command) {
       if (normalized.legacy) {
         console.warn(`[device-contract] normalized legacy dashboard command for ${device_id}`);
       }
+      // Preserve explicit classroom targeting become authority on the player.
+      // Client payload fields win; never invent a different zone from "last click".
+      const incomingPayload = (data && data.payload && typeof data.payload === 'object') ? data.payload : {};
+      const targetKeys = [
+        'workspace_id', 'room_id', 'wall_id', 'zone_id', 'cell_id',
+        'content_instance_id', 'content_id', 'expected_revision',
+      ];
+      for (const key of targetKeys) {
+        const incoming = incomingPayload[key] ?? (data && data[key]);
+        if (incoming != null && incoming !== '' && envelope.payload[key] == null) {
+          envelope.payload[key] = incoming;
+        }
+      }
+      if (envelope.payload.device_id == null) envelope.payload.device_id = device_id;
+      // Reject wall-level payloads that claim a zone without a base target.
+      if ((envelope.payload.zone_id || envelope.payload.cell_id) && !device_id) {
+        if (typeof ack === 'function') ack({ delivered: false, reason: 'ambiguous_target' });
+        return;
+      }
       const room = deviceNs.adapter.rooms.get(device_id);
       const commandType = String(envelope.payload.action).toLowerCase();
       const requiresAck = 1;

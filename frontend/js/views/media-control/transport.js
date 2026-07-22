@@ -3,156 +3,361 @@
 //
 // Renders a compact control bar into `container`. Uses `sendCommand` from
 // socket.js with COMMAND_TYPES / TRANSPORT_ACTIONS constants from
-// player-protocol.js. The blank toggle uses the ack callback so the card's
-// screen_on status reflects the authoritative server-side value (Task 1.4 persists
-// it on the DB side; we update the display-state store client-side on ack here).
-//
-// The Play/Pause button reflects the device's CURRENT playback state: it shows
-// "Pause" when the display is playing and "Play" when it is paused. State comes
-// from display-state.js `now_playing.paused` which is kept live by the
-// dashboard:playback-state event stream. `paused` undefined (no state report
-// yet) defaults to the mid-state label "Play / Pause".
+// player-protocol.js. Transport clicks wait for server delivery AND player
+// command:ack confirmation (or timeout → STALE/FAILED) before reporting success.
 //
 // Public exports:
-//   renderTransportBar(container, { deviceId, transportDeviceIds, screenOn, paused, onScreenOnChange, onTransportAction })
-//     — Renders the bar into `container` immediately (synchronous DOM write).
-//       The `onScreenOnChange` callback is invoked with the new boolean value
-//       once the device acks the blank/unblank command so callers can repaint.
-//       The `onTransportAction` callback is invoked after transport sends so
-//       callers can refresh state and preview screenshots.
+//   renderTransportBar(container, opts)
+//   sendTransportCommand(deviceId, action, payload, opts) — explicit targeted send
 
 import { esc } from '../../utils.js';
 import { t } from '../../i18n.js';
-import { sendCommand } from '../../socket.js';
-import { COMMAND_TYPES, TRANSPORT_ACTIONS } from '../../player-protocol.js';
+import { sendCommand, on as onSocket, off as offSocket, roomState } from '../../socket.js';
+import {
+  COMMAND_TYPES,
+  TRANSPORT_ACTIONS,
+  COMMAND_LIFECYCLE,
+  DEFAULT_COMMAND_TIMEOUT_MS,
+  buildTransportTarget,
+  isTransportAction,
+} from '../../player-protocol.js';
 import { showToast } from '../../components/toast.js';
 
-// Fixed transport buttons — all except play_pause have invariant labels.
-// play_pause is rendered dynamically based on `paused` state (see below).
 const STATIC_TRANSPORT_BTNS = [
-  { action: TRANSPORT_ACTIONS[1], label: '⏮', titleKey: 'mc.tp.prev' },        // 'prev'
-  { action: TRANSPORT_ACTIONS[3], label: '↺', titleKey: 'mc.tp.restart' },     // 'restart'
-  // play_pause handled separately below
-  { action: TRANSPORT_ACTIONS[0], label: '⏭', titleKey: 'mc.tp.next' },        // 'next'
+  { action: TRANSPORT_ACTIONS[1], label: '⏮', titleKey: 'mc.tp.prev' },
+  { action: TRANSPORT_ACTIONS[3], label: '↺', titleKey: 'mc.tp.restart' },
+  { action: TRANSPORT_ACTIONS[0], label: '⏭', titleKey: 'mc.tp.next' },
 ];
+
+const pendingApply = new Map(); // command_id -> { resolve, timer, deviceId }
+
+function ensureCommandAckBridge() {
+  if (ensureCommandAckBridge.wired) return;
+  ensureCommandAckBridge.wired = true;
+  onSocket('command-ack', (data) => {
+    const commandId = data?.command_id || data?.id || null;
+    if (!commandId || !pendingApply.has(commandId)) return;
+    const entry = pendingApply.get(commandId);
+    pendingApply.delete(commandId);
+    clearTimeout(entry.timer);
+    const status = String(data?.status || '').toLowerCase();
+    const ok = data?.ok !== false && status !== 'timeout' && status !== 'failed';
+    let lifecycle = COMMAND_LIFECYCLE.CONFIRMED;
+    if (!ok) {
+      if (status === 'timeout' || status === 'stale') lifecycle = COMMAND_LIFECYCLE.STALE;
+      else if (status === 'offline') lifecycle = COMMAND_LIFECYCLE.OFFLINE;
+      else lifecycle = COMMAND_LIFECYCLE.FAILED;
+    } else if (status === 'acked' || status === 'acknowledged') {
+      lifecycle = COMMAND_LIFECYCLE.ACKNOWLEDGED;
+      // Player ack with ok is treated as confirmed for transport outcomes.
+      lifecycle = COMMAND_LIFECYCLE.CONFIRMED;
+    }
+    entry.resolve({
+      ok,
+      lifecycle,
+      command_id: commandId,
+      status: status || (ok ? 'acked' : 'failed'),
+      error: data?.error || null,
+      state: data?.state || null,
+      raw: data,
+    });
+  });
+}
+
+/**
+ * Send a transport action with explicit target metadata and full lifecycle.
+ * Rejects multi-device fan-out when opts.requireSingleTarget is true.
+ */
+export function sendTransportCommand(deviceId, action, payload = {}, opts = {}) {
+  ensureCommandAckBridge();
+  const resolvedAction = String(action || '').trim();
+  if (!deviceId) {
+    return Promise.resolve({
+      ok: false,
+      lifecycle: COMMAND_LIFECYCLE.FAILED,
+      error: 'missing_device_id',
+    });
+  }
+  if (!isTransportAction(resolvedAction) && resolvedAction !== COMMAND_TYPES.TRANSPORT) {
+    // Allow expanded actions even if list grows without UI restart
+  }
+  if (!resolvedAction) {
+    return Promise.resolve({ ok: false, lifecycle: COMMAND_LIFECYCLE.FAILED, error: 'missing_action' });
+  }
+
+  const targetMeta = buildTransportTarget({
+    ...(opts.target || {}),
+    device_id: deviceId,
+    ...(opts.zoneId ? { zone_id: opts.zoneId } : {}),
+    ...(opts.cellId ? { cell_id: opts.cellId } : {}),
+    ...(opts.contentInstanceId ? { content_instance_id: opts.contentInstanceId } : {}),
+    ...(opts.wallId ? { wall_id: opts.wallId } : {}),
+    ...(opts.workspaceId ? { workspace_id: opts.workspaceId } : {}),
+    ...(opts.roomId ? { room_id: opts.roomId } : {}),
+  });
+  if (opts.expectedRevision != null) targetMeta.expected_revision = opts.expectedRevision;
+  else {
+    try {
+      const rev = roomState && typeof roomState.getRevision === 'function' ? roomState.getRevision() : null;
+      if (rev != null) targetMeta.expected_revision = rev;
+    } catch { /* roomState optional */ }
+  }
+
+  const body = {
+    ...targetMeta,
+    ...(payload || {}),
+    action: resolvedAction,
+  };
+
+  const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : DEFAULT_COMMAND_TIMEOUT_MS;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
+    sendCommand(deviceId, COMMAND_TYPES.TRANSPORT, body, (ack) => {
+      if (!ack || (!ack.delivered && !ack.queued)) {
+        const offline = ack && (ack.reason === 'offline' || ack.queued);
+        finish({
+          ok: false,
+          lifecycle: offline ? COMMAND_LIFECYCLE.OFFLINE : COMMAND_LIFECYCLE.FAILED,
+          delivered: false,
+          queued: !!(ack && ack.queued),
+          reason: ack?.reason || 'no_ack',
+          command_id: ack?.command_id || null,
+          error: ack?.error || ack?.reason || 'delivery_failed',
+        });
+        return;
+      }
+      if (ack.queued && !ack.delivered) {
+        finish({
+          ok: false,
+          lifecycle: COMMAND_LIFECYCLE.OFFLINE,
+          delivered: false,
+          queued: true,
+          command_id: ack.command_id || null,
+          error: 'offline',
+        });
+        return;
+      }
+      const commandId = ack.command_id || null;
+      if (!commandId || opts.waitForApply === false) {
+        finish({
+          ok: true,
+          lifecycle: COMMAND_LIFECYCLE.DELIVERED,
+          delivered: true,
+          command_id: commandId,
+        });
+        return;
+      }
+      const timer = setTimeout(() => {
+        if (!pendingApply.has(commandId)) return;
+        pendingApply.delete(commandId);
+        finish({
+          ok: false,
+          lifecycle: COMMAND_LIFECYCLE.STALE,
+          delivered: true,
+          command_id: commandId,
+          error: 'apply_timeout',
+        });
+      }, timeoutMs);
+      pendingApply.set(commandId, {
+        resolve: (result) => finish({ ...result, delivered: true }),
+        timer,
+        deviceId,
+      });
+    });
+  });
+}
 
 /**
  * Render transport controls + blank toggle into `container`.
- *
- * @param {HTMLElement} container
- * @param {object}  opts
- * @param {string}  opts.deviceId          primary target device id
- * @param {string[]} [opts.transportDeviceIds]
- *   Transport target set. Standalone displays use [deviceId]. Span walls pass
- *   every member id so document/deck commands advance each physical player.
- * @param {boolean} [opts.screenOn=true]   current screen_on state (drives blank label/colour)
- * @param {boolean|undefined} [opts.paused]
- *   Current play/pause state from the device. `undefined` = unknown (shows "Play / Pause");
- *   `true` = paused (shows "Play"); `false` = playing (shows "Pause").
- * @param {(newValue:boolean)=>void} [opts.onScreenOnChange]
- *   Called after the device acks a blank/unblank command with the new boolean
- *   value. Callers should use this to update display-state so the stage card
- *   re-paints with the correct status dot and "Blanked" label.
- * @param {(ids:string[], action:string)=>void} [opts.onTransportAction]
- *   Called after a transport command is sent so callers can refresh the
- *   authoritative state and request a fresh preview.
  */
-export function renderTransportBar(container, { deviceId, transportDeviceIds, blankDeviceIds, screenOn = true, paused, onScreenOnChange, onTransportAction } = {}) {
+export function renderTransportBar(container, {
+  deviceId,
+  transportDeviceIds,
+  blankDeviceIds,
+  screenOn = true,
+  paused,
+  target,
+  zoneId,
+  cellId,
+  wallId,
+  contentInstanceId,
+  requireSingleTarget = false,
+  onScreenOnChange,
+  onTransportAction,
+  onCommandLifecycle,
+} = {}) {
   if (!container) return;
 
   const transportIds = (Array.isArray(transportDeviceIds) && transportDeviceIds.length)
     ? [...new Set(transportDeviceIds.filter(Boolean))]
-    : [deviceId];
+    : (deviceId ? [deviceId] : []);
 
-  // Blank/unblank target set. For a standalone display this is just [deviceId].
-  // For a video wall the caller passes every member id (data-blank-ids) so the
-  // toggle darkens ALL screens at once — the primary `deviceId` (leader) carries
-  // the ack that drives this button's UI state; the rest fire-and-forget.
   const blankIds = (Array.isArray(blankDeviceIds) && blankDeviceIds.length)
     ? [...new Set(blankDeviceIds.filter(Boolean))]
-    : [deviceId];
+    : (deviceId ? [deviceId] : []);
 
-  // Build static transport buttons (prev, restart, next).
   const staticHtml = STATIC_TRANSPORT_BTNS.map(b => {
     const title = t(b.titleKey);
     return `<button type="button" class="mc-tp-btn" data-tp-action="${esc(b.action)}" title="${esc(title)}" aria-label="${esc(title)}"><span class="mc-tp-ico" aria-hidden="true">${b.label}</span><span class="mc-tp-text">${esc(title)}</span></button>`;
   });
 
-  // Play/Pause button: label reflects actual device state when known.
-  // paused===true  → show "Play"  (clicking will resume)
-  // paused===false → show "Pause" (clicking will pause)
-  // paused===undefined → show "Play / Pause" (state not yet known)
   const ppLabel = paused === true ? '▶' : paused === false ? '⏸' : '⏯';
   const ppTitle = paused === true ? t('mc.tp.play') : paused === false ? t('mc.tp.pause') : t('mc.tp.play_pause');
   const ppHtml = `<button type="button" class="mc-tp-btn mc-tp-playpause" data-tp-action="${esc(TRANSPORT_ACTIONS[2])}" title="${esc(ppTitle)}" aria-label="${esc(ppTitle)}"><span class="mc-tp-ico" aria-hidden="true">${ppLabel}</span><span class="mc-tp-text">${esc(ppTitle)}</span></button>`;
 
-  // Insert play/pause after restart (index 1) so order is: ⏮ ↺ ⏯/▶/⏸ ⏭
   const allBtns = [...staticHtml.slice(0, 2), ppHtml, ...staticHtml.slice(2)];
-  const transportHtml = allBtns.join('');
+  // Direct slide jump when the display has reported a slide deck.
+  const slideCount = target?.slideCount ?? target?.now_playing?.slideCount;
+  const slideIndex = target?.slideIndex ?? target?.now_playing?.slideIndex;
+  const goToHtml = (Number(slideCount) > 0)
+    ? `<label class="mc-tp-goto"><span class="sr-only">Go to slide</span>
+        <input type="number" min="1" max="${esc(String(slideCount))}" step="1"
+          class="mc-tp-goto-input" data-tp-goto
+          value="${esc(String(slideIndex > 0 ? slideIndex : 1))}"
+          title="Go to slide" aria-label="Go to slide" />
+        <button type="button" class="mc-tp-btn mc-tp-goto-btn" data-tp-goto-send title="Go to slide">#</button>
+      </label>`
+    : '';
 
   const blankLabel = screenOn ? t('mc.tp.blank') : t('mc.tp.unblank');
   const blankTitle = screenOn ? t('mc.tp.blank_title') : t('mc.tp.unblank_title');
   const blankClass = screenOn ? 'mc-tp-blank' : 'mc-tp-blank mc-tp-blank-active';
 
+  const lifecycleChip = `<span class="mc-tp-lifecycle" data-tp-lifecycle aria-live="polite"></span>`;
+
   container.innerHTML = `
-    <div class="mc-transport-bar" role="toolbar" aria-label="${esc(t('mc.tp.toolbar'))}">
-      <div class="mc-tp-group">${transportHtml}</div>
+    <div class="mc-transport-bar" role="toolbar" aria-label="${esc(t('mc.tp.toolbar'))}"
+         data-device-id="${esc(deviceId || '')}"
+         data-zone-id="${esc(zoneId || '')}"
+         data-cell-id="${esc(cellId || '')}"
+         data-wall-id="${esc(wallId || '')}">
+      <div class="mc-tp-group">${allBtns.join('')}${goToHtml}</div>
+      ${lifecycleChip}
       <button type="button" class="${blankClass}" data-tp-blank
               title="${esc(blankTitle)}"
               aria-pressed="${screenOn ? 'false' : 'true'}">${esc(blankLabel)}</button>
     </div>`;
 
-  // Stop event propagation so clicks on transport buttons do NOT bubble up to
-  // the parent stage card's click handler (which would open the inspector).
-  container.querySelectorAll('.mc-tp-btn, [data-tp-blank]').forEach(btn => {
+  const lifecycleEl = container.querySelector('[data-tp-lifecycle]');
+  const setLifecycle = (lifecycle, detail) => {
+    if (lifecycleEl) {
+      lifecycleEl.dataset.state = lifecycle || '';
+      lifecycleEl.textContent = lifecycle ? String(lifecycle).toLowerCase() : '';
+      lifecycleEl.title = detail ? String(detail) : '';
+    }
+    if (typeof onCommandLifecycle === 'function') onCommandLifecycle(lifecycle, detail);
+  };
+
+  container.querySelectorAll('.mc-tp-btn, [data-tp-blank], [data-tp-goto], [data-tp-goto-send]').forEach(btn => {
     btn.addEventListener('click', e => e.stopPropagation());
   });
 
-  // Transport action buttons (prev / play_pause / next / restart)
+  async function dispatchTransport(resolvedAction, extraPayload = {}) {
+    if (requireSingleTarget && transportIds.length !== 1) {
+      setLifecycle(COMMAND_LIFECYCLE.FAILED, 'ambiguous_target_set');
+      showToast('Select a single display or zone before controlling playback', 'error');
+      return;
+    }
+    if (!transportIds.length) {
+      setLifecycle(COMMAND_LIFECYCLE.FAILED, 'missing_target');
+      showToast('No playback target selected', 'error');
+      return;
+    }
+
+    setLifecycle(COMMAND_LIFECYCLE.REQUESTED, resolvedAction);
+    const results = [];
+    for (const id of transportIds) {
+      setLifecycle(COMMAND_LIFECYCLE.PENDING, id);
+      // eslint-disable-next-line no-await-in-loop
+      const result = await sendTransportCommand(id, resolvedAction, extraPayload, {
+        target,
+        zoneId,
+        cellId,
+        wallId,
+        contentInstanceId,
+        timeoutMs: DEFAULT_COMMAND_TIMEOUT_MS,
+      });
+      results.push({ id, result });
+      setLifecycle(result.lifecycle, result.error || result.command_id);
+      if (!result.ok) {
+        const msg = result.lifecycle === COMMAND_LIFECYCLE.OFFLINE
+          ? 'Display offline — command queued or dropped'
+          : result.lifecycle === COMMAND_LIFECYCLE.STALE
+            ? 'Playback command timed out waiting for player confirmation'
+            : (result.error && result.error.message) || result.error || 'Playback command failed';
+        showToast(typeof msg === 'string' ? msg : 'Playback command failed', 'error');
+      }
+    }
+    if (typeof onTransportAction === 'function') onTransportAction(transportIds, resolvedAction, results);
+  }
+
   container.querySelectorAll('[data-tp-action]').forEach(btn => {
     btn.addEventListener('click', () => {
       const action = btn.dataset.tpAction;
-      if (!TRANSPORT_ACTIONS.includes(action)) return;
+      if (!TRANSPORT_ACTIONS.includes(action) && !isTransportAction(action)) return;
       const resolvedAction = action === 'play_pause' && paused !== undefined
         ? (paused ? 'play' : 'pause')
         : action;
-      transportIds.forEach(id => sendCommand(id, COMMAND_TYPES.TRANSPORT, { action: resolvedAction }));
-      if (typeof onTransportAction === 'function') onTransportAction(transportIds, resolvedAction);
+      btn.disabled = true;
+      dispatchTransport(resolvedAction).finally(() => { btn.disabled = false; });
     });
   });
 
-  // Blank / unblank toggle — uses ack callback for authoritative state update.
+  const gotoInput = container.querySelector('[data-tp-goto]');
+  const gotoBtn = container.querySelector('[data-tp-goto-send]');
+  if (gotoBtn && gotoInput) {
+    gotoBtn.addEventListener('click', () => {
+      const slide = parseInt(gotoInput.value, 10);
+      if (!Number.isInteger(slide) || slide < 1) {
+        showToast('Enter a valid slide number', 'error');
+        return;
+      }
+      if (Number(slideCount) > 0 && slide > Number(slideCount)) {
+        showToast(`Slide must be between 1 and ${slideCount}`, 'error');
+        return;
+      }
+      gotoBtn.disabled = true;
+      dispatchTransport('go_to_slide', { slide, page: slide, slide_index: slide }).finally(() => {
+        gotoBtn.disabled = false;
+      });
+    });
+  }
+
   const blankBtn = container.querySelector('[data-tp-blank]');
   if (blankBtn) {
     blankBtn.addEventListener('click', () => {
-      const turningOn = blankBtn.classList.contains('mc-tp-blank-active'); // currently blanked → turn on
+      const turningOn = blankBtn.classList.contains('mc-tp-blank-active');
       const type = turningOn ? COMMAND_TYPES.SCREEN_ON : COMMAND_TYPES.SCREEN_OFF;
       blankBtn.disabled = true;
-
-      // Fan to every other member first (fire-and-forget); the primary device's
-      // ack below drives the button's authoritative UI state.
       blankIds.filter(id => id && id !== deviceId).forEach(id => sendCommand(id, type, {}));
-
       sendCommand(deviceId, type, {}, (ack) => {
         blankBtn.disabled = false;
         if (!ack || (!ack.delivered && !ack.queued)) {
           showToast(turningOn ? t('mc.tp.unblank_failed') : t('mc.tp.blank_failed'), 'error');
           return;
         }
-        // Ack received: update the button label to reflect the new state
-        // immediately so the operator gets visual feedback even before the
-        // next full display-state refresh paints the status dot.
-        const newScreenOn = turningOn;   // screen_on = true means screen is ON
+        const newScreenOn = turningOn;
         blankBtn.textContent = newScreenOn ? t('mc.tp.blank') : t('mc.tp.unblank');
         blankBtn.title = newScreenOn ? t('mc.tp.blank_title') : t('mc.tp.unblank_title');
         blankBtn.setAttribute('aria-pressed', newScreenOn ? 'false' : 'true');
-        if (newScreenOn) {
-          blankBtn.classList.remove('mc-tp-blank-active');
-        } else {
-          blankBtn.classList.add('mc-tp-blank-active');
-        }
+        if (newScreenOn) blankBtn.classList.remove('mc-tp-blank-active');
+        else blankBtn.classList.add('mc-tp-blank-active');
         if (typeof onScreenOnChange === 'function') onScreenOnChange(newScreenOn);
       });
     });
   }
+}
+
+// Keep offSocket referenced so dead-code tooling doesn't drop the import contract.
+export function _disposeTransportAckForTests() {
+  pendingApply.forEach((entry) => clearTimeout(entry.timer));
+  pendingApply.clear();
+  if (typeof offSocket === 'function') {/* reserved */}
 }
