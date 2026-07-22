@@ -1,6 +1,7 @@
 const path = require('path');
 const os = require('os');
 const { localContentBaseUrlFromEnv } = require('./lib/local-asset-url');
+const { buildEnterpriseOperatorUiFlag } = require('./lib/feature-flags');
 
 // Parse a human-friendly cache-quota string ("60G", "60GB", "6000000000", 60).
 // Used by roomAgentCacheQuotaBytes below + the backfill/agent scripts. Returns
@@ -224,7 +225,11 @@ module.exports = {
     writeToken: process.env.NC_WRITE_TOKEN || '',
   },
   // Feature flags — flip a module off without touching the core player/display
-  // system. Default ON; set ENABLE_*=false to disable.
+  // system. The frontend fetches these via GET /api/features (auth required).
+  // The ENABLE_* flags default ON; set ENABLE_*=false to disable. The
+  // enterprise operator UI flag defaults OFF and is fail-closed (see
+  // lib/feature-flags.js); set ENTERPRISE_OPERATOR_UI_ENABLED=true and an
+  // explicit ENTERPRISE_OPERATOR_UI_USERS allowlist (or "*") to canary it.
   features: {
     presentationStudio: process.env.ENABLE_PRESENTATION_STUDIO !== 'false',
     aiDeckBuilder: process.env.ENABLE_AI_DECK_BUILDER !== 'false',
@@ -232,13 +237,24 @@ module.exports = {
     nextcloudSync: process.env.ENABLE_NEXTCLOUD_SYNC !== 'false',
     videoWallStudio: process.env.ENABLE_VIDEO_WALL_STUDIO !== 'false',
     broadcastCenter: process.env.ENABLE_BROADCAST_CENTER !== 'false',
+    enterpriseOperatorUi: buildEnterpriseOperatorUiFlag(process.env),
   },
   // Live stream orchestration. Media Control only talks to the local AI Director
   // API; OBS websocket remains local-only behind that service.
   liveStream: {
     aiDirectorUrl: process.env.AI_DIRECTOR_URL || 'http://127.0.0.1:8766',
     aiDirectorTimeoutMs: parseInt(process.env.AI_DIRECTOR_TIMEOUT_MS, 10) || 5000,
-    playerBaseUrl: process.env.LIVE_STREAM_PLAYER_BASE_URL || process.env.APP_URL || '',
+    // OBS runs beside Media Control and must not inherit the public APP_URL.
+    // Set this dedicated override only when OBS reaches the appliance through
+    // another direct LAN address; otherwise the route defaults to loopback.
+    playerBaseUrl: process.env.LIVE_STREAM_PLAYER_BASE_URL || '',
+    // Fixed OBS receiver tenancy. If omitted, bootstrap succeeds only when
+    // exactly one managed live-program display exists (fail closed on
+    // ambiguity). Direct-LAN exceptions remain opt-in; loopback is default.
+    workspaceId: process.env.LIVE_STREAM_WORKSPACE_ID || '',
+    roomId: process.env.LIVE_STREAM_ROOM_ID || process.env.ROOM_ID || 'classroom-1',
+    bootstrapHosts: process.env.LIVE_STREAM_BOOTSTRAP_HOSTS || '',
+    bootstrapRemoteAddresses: process.env.LIVE_STREAM_BOOTSTRAP_REMOTE_ADDRESSES || '',
     peerTubeWatchUrl: process.env.PEERTUBE_LIVE_WATCH_URL || '',
   },
 };

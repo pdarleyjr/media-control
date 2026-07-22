@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>UI Contract Harness — Enterprise Operator Console</title>
+  <link rel="stylesheet" href="/frontend/css/media-control-enterprise/operator-console.css" />
+  <style> body { margin: 0; background: var(--mc-bg-primary); } </style>
+</head>
+<body>
+  <main id="harness">
+    <section id="host-room-overview" aria-label="Room overview slot"></section>
+    <section id="host-layout" aria-label="Layout selector slot"></section>
+    <section id="host-content" aria-label="Content selector slot"></section>
+    <section id="host-playback" aria-label="Playback slot"></section>
+    <section id="host-screenshare" aria-label="Screen share slot"></section>
+    <section id="host-privacy" aria-label="Privacy slot"></section>
+  </main>
+
+  <script>globalThis.__MC_ENTERPRISE_MOCK_ONLY = true;</script>
+  <script type="module">
+    // __MC_ENTERPRISE_MOCK_ONLY is set by the classic script above (runs before
+    // module imports are hoisted) so enterprise-api evaluates MOCK_ONLY=true.
+
+    import { createOperatorStore } from '/frontend/js/state/operator-store.js';
+    import { createEnterpriseI18n } from '/frontend/js/state/enterprise-i18n.js';
+    import { enterpriseApi } from '/frontend/js/state/enterprise-api.js';
+    import { mountRoomOverview } from '/frontend/js/components/room-state/room-overview.js';
+    import { mountLayoutSelector } from '/frontend/js/components/display-layout/layout-selector.js';
+    import { mountContentSelector } from '/frontend/js/components/content-library/content-selector.js';
+    import { mountPlaybackControl } from '/frontend/js/components/playback-control/playback-control.js';
+    import { mountScreenSharePanel } from '/frontend/js/components/operator-console/screen-share-panel.js';
+    import { mountPrivacyPublishing } from '/frontend/js/components/content-library/privacy-publishing.js';
+
+    const i18n = createEnterpriseI18n((k) => k);
+
+    // Mock room store (the shared authoritative store contract).
+    const subs = new Set();
+    let snap = null;
+    const roomStore = {
+      getSnapshot: () => snap,
+      getRevision: () => snap?.revision ?? 0,
+      subscribe: (cb) => { subs.add(cb); return () => subs.delete(cb); },
+      applySnapshot: (s) => { snap = s; subs.forEach((cb) => cb(s)); return { applied: true }; },
+      reset: () => { snap = null; subs.forEach((cb) => cb(null)); },
+    };
+
+    const store = createOperatorStore({ roomStore });
+    store.connect();
+
+    // Expose for Playwright specs.
+    window.__store = store;
+    window.__roomStore = roomStore;
+    window.__applySnapshot = (s) => roomStore.applySnapshot(s);
+
+    function snapshot(revision, overrides = {}) {
+      return {
+        schemaVersion: 1, workspaceId: 'ws-1', roomId: 'classroom-1', revision,
+        serverTimestamp: Date.now(),
+        confirmedState: { displays: [{ id: 'd1', name: 'Podium Left', status: 'online', contentId: 'c1', contentType: 'slides', mediaTitle: 'Intro Deck', slideIndex: 3, slideCount: 24 }] },
+        pendingCommands: [], lastCommandId: null,
+        deviceStates: { displays: [{ id: 'd1', status: 'online', screenOn: true }], nodes: [] },
+        layoutState: { walls: [], groups: [] },
+        classroomProgram: { targets: [{ id: 'd1' }] },
+        livestreamProgram: { id: 'live-stream-program-ws-1', content_active: true },
+        recordingState: { active: true, reachable: true, status: 'recording' },
+        streamState: { active: true, reachable: true, status: 'live' },
+        ...overrides,
+      };
+    }
+    window.__snapshot = snapshot;
+    roomStore.applySnapshot(snapshot(1));
+
+    const adapter = {
+      sendCommand: (id, type, payload, cb) => { window.__sent = window.__sent || []; window.__sent.push({ id, type, payload }); if (cb) cb({ delivered: true }); },
+      selectTarget: () => {}, clearTarget: () => {}, on: () => {}, off: () => {}, requestRoomSnapshot: () => {},
+    };
+    window.__adapter = adapter;
+
+    window.__mounts = [];
+    window.__mounts.push(mountRoomOverview(document.getElementById('host-room-overview'), { store, i18n }));
+    window.__mounts.push(mountLayoutSelector(document.getElementById('host-layout'), { store, i18n, onSelect: (c) => { window.__selectedLayout = c; } }));
+    window.__mounts.push(mountContentSelector(document.getElementById('host-content'), { store, i18n, api: enterpriseApi, onSelect: (c) => { window.__selectedContent = c; } }));
+    window.__mounts.push(mountPlaybackControl(document.getElementById('host-playback'), { store, i18n, adapter }));
+    window.__mounts.push(mountScreenSharePanel(document.getElementById('host-screenshare'), { store, i18n, adapter, api: enterpriseApi }));
+    window.__mounts.push(mountPrivacyPublishing(document.getElementById('host-privacy'), { i18n, api: enterpriseApi, content: { id: 'c2', title: 'Safety Video', visibility: 'private', inUse: true }, onChanged: (c) => { window.__privacyChanged = c; } }));
+
+    window.dispatchEvent(new CustomEvent('harness-ready'));
+  </script>
+</body>
+</html>

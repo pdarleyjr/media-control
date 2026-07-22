@@ -8,6 +8,7 @@ const {
   LIVE_CONTENT_MAX_AGE_SECONDS,
   liveStreamDeviceId,
   liveStreamProgramState,
+  loadLiveStreamBootstrapDisplay,
   loadLiveStreamDisplay,
   markLiveContentChanged,
 } = require('../lib/live-stream-display');
@@ -83,10 +84,42 @@ test('loadLiveStreamDisplay requires the matching device token', () => {
   }
 });
 
-test('buildLiveStreamPlayerUrl points at the tokenized live stream player route', () => {
+test('buildLiveStreamPlayerUrl never places reusable receiver credentials in the URL', () => {
   const display = { id: 'live-stream-program-test', device_token: 'secret-token' };
   const url = buildLiveStreamPlayerUrl({ baseUrl: 'https://media-control.example.test/', display });
-  assert.equal(url, 'https://media-control.example.test/player/live-stream?device_id=live-stream-program-test&token=secret-token');
+  assert.equal(url, 'https://media-control.example.test/player/live-stream');
+  assert.equal(url.includes('secret-token'), false);
+  assert.equal(url.includes('device_id'), false);
+});
+
+test('bootstrap display resolves the configured workspace deterministically', () => {
+  const firstPrefix = `test-live-bootstrap-a-${Date.now()}-`;
+  const secondPrefix = `test-live-bootstrap-b-${Date.now()}-`;
+  const first = seedWorkspace(firstPrefix);
+  const second = seedWorkspace(secondPrefix);
+  try {
+    const firstDisplay = ensureLiveStreamDisplay(first);
+    ensureLiveStreamDisplay(second);
+    assert.equal(loadLiveStreamBootstrapDisplay(first.workspaceId).id, firstDisplay.id);
+  } finally {
+    cleanup(firstPrefix);
+    cleanup(secondPrefix);
+  }
+});
+
+test('bootstrap display fails closed when an unconfigured workspace is ambiguous', () => {
+  const firstPrefix = `test-live-bootstrap-ambiguous-a-${Date.now()}-`;
+  const secondPrefix = `test-live-bootstrap-ambiguous-b-${Date.now()}-`;
+  const first = seedWorkspace(firstPrefix);
+  const second = seedWorkspace(secondPrefix);
+  try {
+    ensureLiveStreamDisplay(first);
+    ensureLiveStreamDisplay(second);
+    assert.equal(loadLiveStreamBootstrapDisplay(''), null);
+  } finally {
+    cleanup(firstPrefix);
+    cleanup(secondPrefix);
+  }
 });
 
 test('abandoned live content expires and becomes active again when freshly routed', () => {

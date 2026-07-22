@@ -6,6 +6,7 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const config = require('./config');
+const { resolveFeatureFlags } = require('./lib/feature-flags');
 
 // 2026-05-28: top-level safety nets. A single unhandled throw inside a
 // Socket.IO listener used to kill the entire Node process, putting the
@@ -239,14 +240,19 @@ app.get('/player/deck/:id', (req, res) => {
   });
 });
 
-// MBFD live stream OBS browser source. This is a tokenized player URL for the
-// managed virtual display named "Content for live stream". It bypasses manual
-// pairing while still using the normal player and device socket protocol.
+// MBFD live stream OBS browser source. The URL is deliberately credential-free:
+// only direct loopback (or explicit direct-LAN allowlists) may bootstrap the
+// limited program receiver. Its per-device token exists only in the returned
+// no-store HTML and is never reusable from browser history or OBS settings.
 app.get('/player/live-stream', (req, res) => {
-  const { normalizePlayerAccessQuery } = require('./lib/player-access');
-  const { loadLiveStreamDisplay } = require('./lib/live-stream-display');
-  const { deviceId, token } = normalizePlayerAccessQuery(req.query);
-  const display = loadLiveStreamDisplay(deviceId, token);
+  const { isAllowedObsBootstrapRequest } = require('./lib/obs-bootstrap-access');
+  const { loadLiveStreamBootstrapDisplay } = require('./lib/live-stream-display');
+  const allowed = isAllowedObsBootstrapRequest(req, {
+    allowedHosts: config.liveStream.bootstrapHosts,
+    allowedRemoteAddresses: config.liveStream.bootstrapRemoteAddresses,
+  });
+  if (!allowed) return res.status(404).type('text/plain').send('not found');
+  const display = loadLiveStreamBootstrapDisplay(config.liveStream.workspaceId);
   if (!display) return res.status(404).type('text/plain').send('live stream display not found');
   const playerHtmlPath = path.join(__dirname, 'player', 'index.html');
   fs.readFile(playerHtmlPath, 'utf8', (err, html) => {
@@ -258,18 +264,27 @@ app.get('/player/live-stream', (req, res) => {
         deviceId: display.id,
         deviceToken: display.device_token,
         deviceName: display.name,
+        workspaceId: display.workspace_id,
+        roomId: config.liveStream.roomId,
+        receiverRole: 'program',
         // The live-stream player runs inside OBS's browser source on the SAME
         // machine. Always use localhost so the WebSocket + content bypass the
         // Cloudflare tunnel (which adds latency and can fail the WS upgrade,
         // leaving the PIP stuck in "connecting").
-        serverUrl: 'http://127.0.0.1:8096',
+        serverUrl: config.liveStream.playerBaseUrl || 'http://127.0.0.1:8096',
+        connectionScope: 'obs-same-host',
+        // OBS Browser Source has unattended autoplay permission. This is the
+        // single program-content audio source in OBS, so it must not inherit
+        // the muted-by-default policy used by wall followers.
+        audioEnabled: true,
       },
     };
-    const inject = '  <script>window.__playerConfig = ' + JSON.stringify(publicConfig).replace(/</g, '\\u003c') + ';</script>\n';
+    const inject = '  <script>window.__playerConfig = ' + JSON.stringify(publicConfig).replace(/</g, '\\u003c') + ';document.documentElement.classList.add("managed-program-receiver");</script>\n';
     const modified = html.indexOf('<script src="/player/debug-overlay.js"') >= 0
       ? html.replace('<script src="/player/debug-overlay.js"', inject + '  <script src="/player/debug-overlay.js"')
       : html.replace('</head>', inject + '</head>');
-    res.type('html').setHeader('Cache-Control', 'no-cache');
+    res.type('html').setHeader('Cache-Control', 'no-store, private');
+    res.setHeader('Referrer-Policy', 'no-referrer');
     res.send(modified);
   });
 });
@@ -781,6 +796,17 @@ app.use(activityLogger);
 // no resolveTenancy. Permission gated per-handler via canAdminWorkspace().
 app.use('/api/workspaces', requireAuth, require('./routes/workspaces'));
 
+// Feature flags (server-controlled, auth-required). The frontend fetches these
+// to decide whether to expose gated routes. Unauthorized users cannot enable a
+// flag via query parameter — the value comes solely from server config/env.
+app.get('/api/features', requireAuth, resolveTenancy, (req, res) => {
+  // no-store: the response is per-user (authorized depends on req.user.id);
+  // a cached response must never be reused across sessions or users.
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Pragma', 'no-cache');
+  res.json({ features: resolveFeatureFlags(config.features, req.user.id) });
+});
+
 app.use('/api/devices', requireAuth, resolveTenancy, require('./routes/devices'));
 app.use('/api/displays', requireAuth, resolveTenancy, require('./routes/displays'));
 app.use('/api/advanced-canvas', requireAuth, resolveTenancy, require('./routes/advanced-canvas'));
@@ -869,7 +895,7 @@ function updateFrontendHash() {
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'sw.js'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'debug-overlay.js'))); } catch {}
     frontendHash = crypto.createHash('md5').update(Buffer.concat(files.map(f => Buffer.from(f)))).digest('hex').slice(0, 8);
-    const playerFiles = ['index.html', 'doc.html', 'deck.html', 'device-contract.js', 'player-routing.js']
+    const playerFiles = ['index.html', 'doc.html', 'deck.html', 'device-contract.js', 'player-routing.js', 'managed-bootstrap.js']
       .map((file) => {
         try { return fs.readFileSync(path.join(__dirname, 'player', file)); } catch { return Buffer.from(''); }
       });

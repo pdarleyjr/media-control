@@ -52,6 +52,7 @@ export function mountActionDock(hostEl, opts = {}) {
       <button type="button" class="mc-dock-btn mc-dock-primary" data-dock="multiview">${esc(t('mc.cc.dock.multiview'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-default" data-dock="blank-toggle" id="mc-dock-blank-btn">${esc(t('mc.cc.dock.blank_all'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-default" data-dock="share">${esc(t('mc.cc.dock.share'))}</button>
+      <button type="button" class="mc-dock-btn mc-dock-prepare" data-dock="prepare-live" aria-pressed="false">${esc(t('mc.cc.dock.prepare_live'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-live" data-dock="start-live">${esc(t('mc.cc.dock.start_live'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-default" data-dock="remove-live" hidden>${esc(t('mc.cc.dock.remove_live'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-danger" data-dock="stop-live" hidden>${esc(t('mc.cc.dock.stop_live'))}</button>
@@ -68,6 +69,7 @@ export function mountActionDock(hostEl, opts = {}) {
       </div>
     </div>`;
 
+  const prepareBtn = hostEl.querySelector('[data-dock="prepare-live"]');
   const startBtn = hostEl.querySelector('[data-dock="start-live"]');
   const removeBtn = hostEl.querySelector('[data-dock="remove-live"]');
   const stopBtn = hostEl.querySelector('[data-dock="stop-live"]');
@@ -94,7 +96,14 @@ export function mountActionDock(hostEl, opts = {}) {
     else blankBtn.classList.remove('mc-dock-blank-active');
   }
 
+  let programPrepared = false;
   function repaintLive() {
+    if (prepareBtn) {
+      prepareBtn.hidden = liveActive;
+      prepareBtn.classList.toggle('is-prepared', programPrepared);
+      prepareBtn.setAttribute('aria-pressed', programPrepared ? 'true' : 'false');
+      prepareBtn.textContent = t(programPrepared ? 'mc.cc.dock.program_ready' : 'mc.cc.dock.prepare_live');
+    }
     if (startBtn) startBtn.hidden = liveActive;
     if (removeBtn) removeBtn.hidden = !liveActive;
     if (stopBtn) stopBtn.hidden = !liveActive;
@@ -168,6 +177,23 @@ export function mountActionDock(hostEl, opts = {}) {
     });
   }
 
+  async function onPrepareLive() {
+    if (!prepareBtn || prepareBtn.disabled) return;
+    prepareBtn.disabled = true;
+    try {
+      await api.liveStream.prepare();
+      programPrepared = true;
+      repaintLive();
+      showToast(t('mc.cc.live.prepared'), 'success');
+    } catch (e) {
+      programPrepared = false;
+      repaintLive();
+      showToast((e && e.message) ? e.message : t('mc.cc.live.prepare_failed'), 'error');
+    } finally {
+      prepareBtn.disabled = false;
+    }
+  }
+
   async function onStartLive() {
     const ok = await confirmDialog({
       title: t('mc.cc.confirm.start_live_title'),
@@ -177,7 +203,8 @@ export function mountActionDock(hostEl, opts = {}) {
     });
     if (!ok) return;
     try {
-      await api.liveStream.start();
+      await api.liveStream.start({ director_mode: 'manual' });
+      programPrepared = true;
       liveActive = true;
       repaintLive();
       showToast(t('mc.cc.live.started'), 'success');
@@ -235,6 +262,7 @@ export function mountActionDock(hostEl, opts = {}) {
           break;
         case 'blank-all': if (typeof cb.onBlankAll === 'function') await cb.onBlankAll(); break;
         case 'share': if (typeof cb.onShare === 'function') cb.onShare(); break;
+        case 'prepare-live': await onPrepareLive(); break;
         case 'start-live': await onStartLive(); await syncLive(); break;
         case 'stop-live': await onStopLive(); await syncLive(); break;
         case 'remove-live': await onRemoveLive(); await syncLive(); break;

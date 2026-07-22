@@ -29,7 +29,12 @@ const commandModel = require('../lib/command-model');
 const nodeRegistry = require('../lib/node-registry');
 const { parseStoredLayout, groupForDevice, resolveEffectiveLayoutLeaders } = require('../lib/wall-layout');
 const { buildUniversalWallGeometry, buildLayoutAssignment } = require('../lib/wall-geometry');
-const { scheduleRoomSnapshot } = require('../lib/room-state-broadcaster');
+const { createRoomSnapshot, scheduleRoomSnapshot } = require('../lib/room-state-broadcaster');
+const {
+  isProgramReceiverId,
+  programReceiverEventGuard,
+  resolveProgramReceiverSnapshotTarget,
+} = require('../lib/program-receiver-policy');
 
 function emitToDeviceWorkspace(dashboardNs, deviceId, event, payload) {
   emitToWorkspace(dashboardNs, deviceRoom(deviceId), event, payload);
@@ -461,6 +466,11 @@ module.exports = function setupDeviceSocket(io) {
     let authenticated = false; // Track whether this socket has been authenticated
     let lastPlaylistSyncAt = 0;
 
+    // Once the managed OBS receiver authenticates, constrain every subsequent
+    // client-originated event to its read/report role. Ordinary displays and
+    // room nodes retain their existing protocol.
+    socket.use(programReceiverEventGuard(() => currentDeviceId));
+
     // ── Classroom room-agent ("node") branch ────────────────────────────────
     // A room-agent connects with handshake auth { role:'node', node_id, token }.
     // It is NOT a display: it never registers a device, never joins display
@@ -738,6 +748,43 @@ module.exports = function setupDeviceSocket(io) {
       }
       return true;
     }
+
+    // The OBS receiver explicitly requests a complete, authoritative room
+    // snapshot after each registration/reconnect. Tenancy is derived from its
+    // authenticated device row; client-supplied workspace/room values may only
+    // confirm that identity, never select another tenant.
+    socket.on('device:room-snapshot', (data, acknowledge) => {
+      const reply = typeof acknowledge === 'function' ? acknowledge : () => {};
+      try {
+        if (!requireDeviceAuth()) return reply({ ok: false, code: 'DEVICE_AUTH_REQUIRED' });
+        if (!isProgramReceiverId(currentDeviceId)) {
+          return reply({ ok: false, code: 'PROGRAM_RECEIVER_REQUIRED' });
+        }
+        const target = resolveProgramReceiverSnapshotTarget({
+          db,
+          deviceId: currentDeviceId,
+          configuredRoomId: config.liveStream?.roomId || config.console?.roomId,
+          requestedWorkspaceId: data?.workspace_id || data?.workspaceId,
+          requestedRoomId: data?.room_id || data?.roomId,
+        });
+        const snapshot = createRoomSnapshot({
+          workspaceId: target.workspaceId,
+          roomId: target.roomId,
+          reason: 'device:room-snapshot',
+        });
+        socket.emit('device:room-snapshot', snapshot);
+        return reply({
+          ok: true,
+          schemaVersion: snapshot.schemaVersion,
+          revision: snapshot.revision,
+          serverTimestamp: snapshot.serverTimestamp,
+        });
+      } catch (error) {
+        const code = error?.code || 'PROGRAM_RECEIVER_SNAPSHOT_FAILED';
+        console.warn(`device:room-snapshot failed for ${currentDeviceId || 'unauthenticated'}: ${code}`);
+        return reply({ ok: false, code });
+      }
+    });
 
     // Heartbeat with telemetry
     // 2026-05-28: hardened against process-killing FK violations. If the

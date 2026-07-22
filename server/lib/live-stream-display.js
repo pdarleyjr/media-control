@@ -81,12 +81,31 @@ function loadLiveStreamDisplay(deviceId, token) {
   }
 }
 
+function loadLiveStreamBootstrapDisplay(workspaceId) {
+  const requestedWorkspace = String(workspaceId || '').trim();
+  if (requestedWorkspace) {
+    const row = rowById(liveStreamDeviceId(requestedWorkspace));
+    return row && row.workspace_id === requestedWorkspace && row.device_token ? row : null;
+  }
+  const rows = db.prepare(`
+    SELECT *
+    FROM devices
+    WHERE id LIKE ?
+      AND workspace_id IS NOT NULL
+      AND device_token IS NOT NULL
+    ORDER BY id
+    LIMIT 2
+  `).all(`${LIVE_STREAM_DEVICE_PREFIX}%`);
+  return rows.length === 1 ? rows[0] : null;
+}
+
 function buildLiveStreamPlayerUrl({ baseUrl, display }) {
   if (!baseUrl) throw new Error('baseUrl is required');
-  if (!display || !display.id || !display.device_token) throw new Error('display with device_token is required');
+  if (!display || !display.id || !String(display.id).startsWith(LIVE_STREAM_DEVICE_PREFIX)) {
+    throw new Error('managed live-stream display is required');
+  }
   const base = String(baseUrl).replace(/\/+$/, '');
-  const qs = new URLSearchParams({ device_id: display.id, token: display.device_token });
-  return `${base}/player/live-stream?${qs.toString()}`;
+  return `${base}/player/live-stream`;
 }
 
 function liveStreamProgramState(workspaceId) {
@@ -150,6 +169,7 @@ module.exports = {
   liveStreamDeviceId,
   liveStreamProgramState,
   liveStreamProgramStateAnyWorkspace,
+  loadLiveStreamBootstrapDisplay,
   loadLiveStreamDisplay,
   markLiveContentChanged,
 };

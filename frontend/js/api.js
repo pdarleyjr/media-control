@@ -370,7 +370,8 @@ export const api = {
   liveStream: {
     display: () => request('/live-stream/display'),
     status: () => request('/live-stream/status'),
-    start: () => request('/live-stream/start', { method: 'POST' }),
+    prepare: () => request('/live-stream/prepare', { method: 'POST' }),
+    start: (options = {}) => request('/live-stream/start', { method: 'POST', body: JSON.stringify(options) }),
     stop: () => request('/live-stream/stop', { method: 'POST' }),
     clearContent: () => request('/live-stream/clear-content', { method: 'POST' }),
     refresh: () => request('/live-stream/refresh', { method: 'POST' }),

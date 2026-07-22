@@ -1232,16 +1232,21 @@
 .mc-cmd-launch { display: flex; flex-wrap: wrap; gap: var(--space-2, 8px); margin-left: auto; }
 .mc-cmd-btn-label { white-space: nowrap; }
 .mc-control .mc-cmd-live {
-  background: var(--mc-live-dim, #FEF2F2);
-  border-color: rgba(220, 38, 38, 0.28);
-  color: var(--mc-live-text, #B91C1C);
+  background: var(--accent-light, #eff6ff);
+  border-color: rgba(37, 99, 235, 0.32);
+  color: var(--accent, #2563eb);
   font-weight: 800;
 }
 .mc-control .mc-cmd-live:hover:not(:disabled) {
-  background: #FEE2E2;
-  border-color: rgba(220, 38, 38, 0.48);
+  background: var(--accent-light, #dbeafe);
+  border-color: var(--accent, #2563eb);
 }
 .mc-control .mc-cmd-live-busy { opacity: 0.82; }
+.mc-control .mc-cmd-live-prepare.is-prepared {
+  background: var(--success-light, #f0fdf4);
+  border-color: rgba(22,163,74,0.42);
+  color: var(--success, #16a34a);
+}
 .mc-control .mc-cmd-live-stop {
   background: var(--mc-live-text, #B91C1C);
   border-color: #991B1B;
@@ -2219,13 +2224,16 @@ img.mc-cc-logo { background: transparent; box-shadow: none; padding: 0; }
 .mc-dock-primary { background: var(--cta, #f97316); color: var(--cta-contrast, #fff); border-color: var(--cta, #f97316); }
 .mc-dock-primary:hover { background: var(--cta-hover, #ea670c); border-color: var(--cta-hover, #ea670c); }
 .mc-dock-primary:focus-visible { outline-color: var(--cta, #f97316); }
-/* pale pink bg, red text — the "start" live stream affordance, slightly larger */
+/* Blue is an operator action; red is reserved for an actual on-air state or stop. */
 .mc-dock-live {
-  background: rgba(254, 202, 202, 0.55); border-color: rgba(244, 63, 94, 0.4);
-  color: #be123c; min-height: 60px; font-size: var(--font-4, 15px);
+  background: var(--accent, #2563eb); border-color: var(--accent, #2563eb);
+  color: #fff; min-height: 60px; font-size: var(--font-4, 15px);
 }
-.mc-dock-live:hover { background: rgba(254, 202, 202, 0.85); border-color: var(--danger, #ef4444); }
-.mc-dock-live:focus-visible { outline-color: var(--danger, #ef4444); }
+.mc-dock-live:hover { background: var(--accent-hover, #1d4ed8); border-color: var(--accent-hover, #1d4ed8); }
+.mc-dock-live:focus-visible { outline-color: var(--accent, #2563eb); }
+.mc-dock-prepare { background: #fff; color: var(--accent, #2563eb); border-color: rgba(37,99,235,0.42); }
+.mc-dock-prepare:hover { border-color: var(--accent, #2563eb); box-shadow: 0 5px 14px rgba(37,99,235,0.16); }
+.mc-dock-prepare.is-prepared { background: var(--success-light, #f0fdf4); color: var(--success, #16a34a); border-color: rgba(22,163,74,0.42); }
 /* strong red filled white — destructive stop */
 .mc-dock-danger { background: var(--danger, #ef4444); color: #fff; border-color: var(--danger, #ef4444); }
 .mc-dock-danger:hover { background: var(--danger-dim, #dc2626); border-color: var(--danger-dim, #dc2626); }
