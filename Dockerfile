@@ -5,7 +5,7 @@ FROM node:22-alpine AS deps
 RUN apk add --no-cache python3 make g++ vips-dev pkgconfig
 WORKDIR /app/server
 COPY server/package.json server/package-lock.json* ./
-RUN npm install --omit=dev --no-audit --no-fund
+RUN npm ci --omit=dev --no-audit --no-fund
 
 FROM node:22-alpine
 # poppler-utils: PDF page-1 -> image (pdftoppm) for PDF thumbnails.
