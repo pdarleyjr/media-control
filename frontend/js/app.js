@@ -777,7 +777,7 @@ async function route() {
     else if (hash === '#/designer' && link.dataset.view === 'designer') link.classList.add('active');
     else if ((hash === '#/kiosk' || hash.startsWith('#/kiosk/')) && link.dataset.view === 'kiosk') link.classList.add('active');
     else if (hash === '#/help' && link.dataset.view === 'help') link.classList.add('active');
-    else if (hash === '#/operator-console' && link.dataset.view === 'operator-console') link.classList.add('active');
+    else if ((hash === '#/operator-console' || hash.startsWith('#/operator-console?')) && link.dataset.view === 'operator-console') link.classList.add('active');
     else if (hash.startsWith('#/device/') && link.dataset.view === 'dashboard') link.classList.add('active');
   });
 
@@ -802,7 +802,9 @@ async function route() {
     const deviceId = hash.split('#/device/')[1].split('/')[0];
     currentView = deviceDetail;
     deviceDetail.render(app, deviceId);
-  } else if (hash === '#/operator-console') {
+  } else if (hash === '#/operator-console' || hash.startsWith('#/operator-console?')) {
+    // Query suffixes in the hash (or search string) must never unlock enterprise UI.
+    // Unauthorized / flag-off always falls back to the existing control console shell.
     const enterpriseOk = await isEnterpriseUiEnabled();
     if (enterpriseOk) {
       currentView = operatorConsole;

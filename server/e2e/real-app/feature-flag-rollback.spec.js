@@ -393,14 +393,15 @@ test.describe('Phase 4 — Stale browser state cannot reopen the enterprise rout
   test('4b. A query-param cannot enable the enterprise route', async ({ page }) => {
     const errors = attachErrorCollectors(page);
     await setupAuth(page, canaryToken, canaryUser);
-    // Attempt to force-enable via query param (the server ignores it).
-    await page.goto(`${BASE_URL}/app#/operator-console?enterprise=1&enabled=true`);
+    // Attempt to force-enable via search + hash query (server/gate ignores both).
+    await page.goto(`${BASE_URL}/app?enterprise=1&enabled=true#/operator-console?enterprise=1&enabled=true`);
     await page.waitForTimeout(4000);
 
     const grid = await page.locator('.mc-e-console-grid').count();
-    const shell = await page.locator('.mc-cc-shell').count();
+    // Fallback must fully render the existing control console (stable callback).
+    await expect(page.locator('.mc-cc-shell')).toBeVisible({ timeout: 20000 });
+    await expect(page.locator('.mc-cc-main')).toBeVisible();
     expect(grid, 'Query param must NOT enable enterprise console').toBe(0);
-    expect(shell, 'App must fall back to Command Center').toBeGreaterThan(0);
 
     assertNoErrors(errors, 'query-param fallback');
   });

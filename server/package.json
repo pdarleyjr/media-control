@@ -6,14 +6,15 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env server.js",
     "dev": "node --watch --env-file-if-exists=.env server.js",
-    "test": "npm run test:all",
+    "test": "npm run test:release",
     "test:node": "node scripts/run-node-tests.mjs",
     "test:ui-contract": "node --test --test-concurrency=1 test/ui-contract/enterprise-api.test.js test/ui-contract/enterprise-i18n.test.js test/ui-contract/error-recovery.test.js test/ui-contract/operator-state.test.js test/ui-contract/operator-store.test.js",
     "test:playwright": "npm --prefix e2e/enterprise-ui test",
     "test:real-app": "npm --prefix e2e/real-app test",
     "test:service-worker": "node e2e/real-app/run-playwright-config.js playwright.service-worker.config.js",
     "test:feature-flag-rollback": "node e2e/real-app/run-playwright-config.js playwright.feature-flag.config.js",
-    "test:all": "npm run test:node && npm run test:playwright && npm run test:real-app",
+    "test:release": "npm run test:node && npm run test:ui-contract && npm run test:playwright && npm run test:real-app && npm run test:feature-flag-rollback && npm run test:service-worker",
+    "test:all": "npm run test:release",
     "topology:report": "node scripts/repair-display-topology.js"
   },
   "dependencies": {
