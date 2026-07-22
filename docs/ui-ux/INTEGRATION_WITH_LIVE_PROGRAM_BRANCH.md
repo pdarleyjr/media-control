@@ -113,7 +113,7 @@ A single nav link/button pointing to `#/operator-console`. If the nav is rendere
 2. enterprise UI/UX branch rebased   → git rebase <active-branch-tip>
 3. resolve the 2 minimal integration points (app.js route + index.html link)
 4. complete combined frontend tests   → node --test server/test/ui-contract/*.test.js
-                                        + (isolated) cd server/test/ui-contract/playwright && npm test
+                                         + (isolated) cd server/e2e/enterprise-ui && npm test
 5. podium/web canary                   → load #/operator-console on a podium touchscreen
 ```
 
@@ -126,7 +126,7 @@ Do NOT merge branches while the active agent is working.
 node --test "server/test/ui-contract/*.test.js"          # expect 24 pass
 
 # Isolated Playwright DOM/a11y/viewport (one-time browser install):
-cd server/test/ui-contract/playwright
+cd server/e2e/enterprise-ui
 npm install
 npm run install-browsers
 npm test                                                  # a11y + workflow specs across 3 viewports

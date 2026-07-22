@@ -15,8 +15,8 @@ module.exports = defineConfig({
   ],
   webServer: {
     command: 'node serve.mjs',
-    port: 4321,
-    reuseExistingServer: true,
+    url: 'http://127.0.0.1:4321/',
+    reuseExistingServer: false,
     timeout: 15000,
   },
 });
