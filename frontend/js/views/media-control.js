@@ -1709,7 +1709,7 @@ async function startLive() {
   });
   if (!ok) return;
   try {
-    const result = await api.liveStream.start();
+    const result = await api.liveStream.start({ director_mode: 'manual' });
     const displayName = result && result.display && result.display.name ? result.display.name : t('mc.cmd.live_display');
     showToast(
       result && result.stream_started ? t('mc.cmd.live_started', { display: displayName }) : t('mc.cmd.live_prepared', { display: displayName, message: t('mc.cmd.live_stream_disabled') }),

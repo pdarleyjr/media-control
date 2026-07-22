@@ -137,6 +137,10 @@
       border: none; border-radius: max(6px, 0.5vmin); font-size: clamp(14px, 1.8vw, 18px); font-weight: 600; cursor: pointer; }
     #setupScreen button:hover { background: #2563eb; }
     #setupScreen button:disabled { opacity: 0.5; cursor: not-allowed; }
+    /* The OBS program receiver is provisioned by its loopback-only wrapper.
+       Never flash the interactive Connect/pairing surface during startup or
+       recovery; failures use the receiver health overlay below. */
+    .managed-program-receiver #setupScreen { display: none !important; }
     .pairing-code { font-size: clamp(48px, 8vw, 96px); font-weight: 700; color: #3b82f6; font-family: monospace;
       letter-spacing: max(8px, 1vw); margin: max(24px, 2.5vh) 0; }
     .pairing-hint { color: #64748b; font-size: clamp(12px, 1.5vw, 16px); }
@@ -249,6 +253,7 @@
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
+  <script src="/player/managed-bootstrap.js"></script>
   <script src="/player/device-contract.js"></script>
   <script src="/player/player-routing.js"></script>
 <script>
@@ -316,6 +321,10 @@
         calibration_follower: 'Follower',
         calibration_solo: 'Standalone',
         player_recovery_paused: 'Player recovery paused. Check network or reboot the display.',
+        receiver_connecting: 'Connecting live-program receiver...',
+        receiver_connected_waiting: 'Live-program receiver connected — waiting for content.',
+        receiver_stale: 'Live-program receiver state is stale. Reconnecting...',
+        receiver_error: 'Live-program receiver error. Retrying...',
       },
       es: {
         web_player: 'Reproductor web', server_url: 'URL del servidor', server_url_placeholder: 'https://signage.tudominio.com', connect: 'Conectar', pairing_code: 'Código de vinculación', pairing_hint: 'Ingresa este código en el panel para vincular esta pantalla', connecting: 'Conectando...', connecting_muted: 'Conectando (audio silenciado)...', info_title: 'Reproductor web Media Control', info_close_hint: 'Presiona Atrás de nuevo o haz clic para cerrar', info_device_id: 'ID del dispositivo', info_device_name: 'Nombre del dispositivo', info_server: 'Servidor', info_status: 'Estado', info_now_playing: 'Reproduciendo', info_resolution: 'Resolución', info_uptime: 'Tiempo activo', info_platform: 'Plataforma', info_cache: 'Caché', info_connected: 'Conectado', info_disconnected: 'Desconectado', info_active: 'Activo', info_inactive: 'Inactivo', info_nothing: 'Nada', info_na: 'N/D', info_sw: 'Service Worker',
@@ -363,10 +372,19 @@
     const HEARTBEAT_INTERVAL = 15000;
     const PLAYLIST_REFRESH_INTERVAL = 60000;
 
+    function isManagedProgramReceiver() {
+      return window.__playerConfig?.managedDisplay?.receiverRole === 'program';
+    }
     function getConfig() {
       try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch { return {}; }
     }
-    function saveConfig(cfg) { localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg)); }
+    function saveConfig(cfg) {
+      // The program receiver is re-provisioned from loopback HTML on every
+      // load. Never persist its reusable device token in browser storage.
+      const persisted = { ...(cfg || {}) };
+      if (isManagedProgramReceiver()) delete persisted.deviceToken;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
+    }
     const PLAYLIST_CACHE_KEY = 'rd_playlist_cache';
     function savePlaylistCache(items) {
       try { localStorage.setItem(PLAYLIST_CACHE_KEY, JSON.stringify(items)); } catch {}
@@ -388,17 +406,11 @@
       const managed = window.__playerConfig && window.__playerConfig.managedDisplay;
       if (!managed || !managed.deviceId || !managed.deviceToken) return;
       if (config.deviceId && config.deviceId !== managed.deviceId) savePlaylistCache([]);
-      // Prefer the page's own origin for the control channel + content URLs when
-      // the player is served over HTTPS (e.g. through a Cloudflare Tunnel). The
-      // server-injected serverUrl is built from req.protocol + Host header and
-      // CAN resolve to a slow/relayed internal address (Tailscale DERP) if the
-      // tunnel ever forwards the internal Host. The page origin is always the
-      // fast, correct public origin the browser used to load this page, and
-      // socket.io + content share that same origin. Fall back to the injected
-      // serverUrl only for non-HTTPS (direct LAN) access.
       const origin = window.location.origin;
-      const preferOrigin = /^https:/i.test(origin);
-      config.serverUrl = preferOrigin ? origin : (managed.serverUrl || origin);
+      const bootstrap = window.MbfdPlayerBootstrap;
+      config.serverUrl = bootstrap && typeof bootstrap.resolveManagedServerUrl === 'function'
+        ? bootstrap.resolveManagedServerUrl({ pageOrigin: origin, managed })
+        : (managed.serverUrl || origin);
       config.deviceId = managed.deviceId;
       config.deviceToken = managed.deviceToken;
       config.deviceName = managed.deviceName || 'Content for live stream';
@@ -415,6 +427,20 @@
     let isPlaying = false;
     let heartbeatTimer = null;
     let refreshTimer = null;
+    let receiverSnapshotTimer = null;
+    let receiverReloadTimer = null;
+    const receiverManagedConfig = isManagedProgramReceiver()
+      ? window.__playerConfig.managedDisplay
+      : null;
+    const receiverHealth = receiverManagedConfig && window.MbfdPlayerBootstrap?.createReceiverHealth
+      ? window.MbfdPlayerBootstrap.createReceiverHealth({
+          workspaceId: receiverManagedConfig.workspaceId,
+          roomId: receiverManagedConfig.roomId,
+          staleAfterMs: 20000,
+          onChange: renderReceiverHealth,
+        })
+      : null;
+    if (receiverHealth) renderReceiverHealth(receiverHealth.report());
     let appliedPlaylistRevision = null;
     let remoteStreaming = false;
     let streamTimer = null;
@@ -2021,14 +2047,21 @@
 
       socket.on('connect', () => {
         console.log('Connected');
-        // Clear any "reconnecting" overlay shown on disconnect/connect_error.
-        try { hideStatus(); } catch (e) { /* best-effort */ }
+        if (receiverHealth) receiverHealth.markConnecting(_t('receiver_connecting'));
+        else {
+          // Clear any "reconnecting" overlay shown on disconnect/connect_error.
+          try { hideStatus(); } catch (e) { /* best-effort */ }
+        }
         register();
       });
 
       socket.on('disconnect', () => {
         console.log('Disconnected');
         stopHeartbeat();
+        if (receiverHealth) {
+          receiverHealth.markStale(_t('receiver_stale'));
+          return;
+        }
         // Show a visible "reconnecting" overlay instead of a blank/frozen page.
         // Socket.io auto-reconnects underneath; this just tells a human (or a
         // glance at the wall) that the control channel dropped and is retrying.
@@ -2039,6 +2072,10 @@
       });
 
       socket.on('connect_error', (err) => {
+        if (receiverHealth) {
+          receiverHealth.markError(_t('receiver_error'), 'SOCKET_CONNECT_ERROR');
+          return;
+        }
         document.getElementById('setupStatus').textContent = 'Connection failed: ' + err.message;
         document.getElementById('setupSpinner').style.display = 'none';
         document.getElementById('connectBtn').disabled = false;
@@ -2074,6 +2111,14 @@
         // Phase 2: report this display's viewport/resolution/orientation/
         // capabilities so the dashboard can show per-display info.
         emitDisplayViewport();
+
+        if (receiverHealth) startReceiverSnapshotRefresh();
+      });
+
+      socket.on('device:room-snapshot', (snapshot) => {
+        if (!receiverHealth) return;
+        const health = receiverHealth.acceptSnapshot(snapshot);
+        if (health.state === 'connected') window.__playerRoomSnapshot = snapshot;
       });
 
       socket.on('device:paired', (data) => {
@@ -2086,6 +2131,11 @@
       });
 
       socket.on('device:unpaired', () => {
+        if (isManagedProgramReceiver()) {
+          receiverHealth?.markError('Live-program receiver was removed. Retrying bootstrap...', 'RECEIVER_REMOVED');
+          scheduleReceiverReload();
+          return;
+        }
         console.warn('Device not found on server — clearing credentials');
         delete config.deviceId;
         delete config.deviceToken;
@@ -2099,6 +2149,11 @@
       });
 
       socket.on('device:auth-error', (data) => {
+        if (isManagedProgramReceiver()) {
+          receiverHealth?.markError('Live-program receiver authentication failed. Retrying bootstrap...', 'RECEIVER_AUTH_FAILED');
+          scheduleReceiverReload();
+          return;
+        }
         console.warn('Device auth rejected:', data?.error || 'unknown');
         delete config.deviceId;
         delete config.deviceToken;
@@ -2844,9 +2899,39 @@
         screen_height: screen.height,
       };
       // Browser fingerprint (survives localStorage clear)
-      data.fingerprint = generateBrowserFingerprint();
+      if (!isManagedProgramReceiver()) data.fingerprint = generateBrowserFingerprint();
       console.log(`[register] device_id=${data.device_id || 'none'}, has_token=${!!data.device_token}, token_len=${data.device_token?.length || 0}, paired=${config.paired}, pairing_code=${data.pairing_code || 'none'}`);
       socket.emit('device:register', data);
+    }
+
+    function requestAuthoritativeRoomSnapshot() {
+      if (!receiverHealth || !socket?.connected) return;
+      socket.emit('device:room-snapshot', {
+        workspace_id: receiverManagedConfig.workspaceId,
+        room_id: receiverManagedConfig.roomId,
+      }, (result) => {
+        if (!result?.ok) {
+          receiverHealth.markError(
+            'Authoritative room snapshot failed. Retrying...',
+            result?.code || 'ROOM_SNAPSHOT_REQUEST_FAILED',
+          );
+        }
+      });
+    }
+
+    function startReceiverSnapshotRefresh() {
+      if (!receiverHealth) return;
+      if (receiverSnapshotTimer) clearInterval(receiverSnapshotTimer);
+      requestAuthoritativeRoomSnapshot();
+      receiverSnapshotTimer = setInterval(() => {
+        receiverHealth.checkFreshness();
+        requestAuthoritativeRoomSnapshot();
+      }, 5000);
+    }
+
+    function scheduleReceiverReload() {
+      if (receiverReloadTimer) return;
+      receiverReloadTimer = setTimeout(() => window.location.reload(), 5000);
     }
 
     // ==================== Heartbeat ====================
@@ -4053,6 +4138,22 @@
     }
 
     // ==================== UI Helpers ====================
+    function renderReceiverHealth(health) {
+      if (!health) return;
+      window.__playerHealth = health;
+      document.documentElement.setAttribute('data-receiver-health', health.state);
+      if (health.state === 'connected') {
+        if (isPlaying) hideStatus();
+        else showStatus(_t('receiver_connected_waiting'));
+      } else if (health.state === 'connecting') {
+        showStatus(health.message || _t('receiver_connecting'));
+      } else if (health.state === 'stale') {
+        showStatus(health.message || _t('receiver_stale'));
+      } else {
+        showStatus(health.message || _t('receiver_error'));
+      }
+    }
+
     function showStatus(msg) {
       document.getElementById('statusOverlay').style.display = 'flex';
       document.getElementById('statusText').textContent = msg;
