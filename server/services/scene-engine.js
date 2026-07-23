@@ -96,13 +96,18 @@ function resolveRemoteUrlContent(remoteUrl, workspaceId, userId) {
 // Emit 'device:playlist-update' (or queue it) for a single device. EXACT reuse
 // of the playlist-route push path. Lazy-requires deviceSocket / command-queue
 // to avoid circular requires at module load.
-function pushPlaylistUpdate(io, deviceId) {
+function pushPlaylistUpdate(io, deviceId, delivery = null) {
   try {
     if (!io) return { delivered: false };
     const { buildPlaylistPayload } = require('../ws/deviceSocket');
     const commandQueue = require('../lib/command-queue');
     const deviceNs = io.of('/device');
-    const result = commandQueue.queueOrEmitPlaylistUpdate(deviceNs, deviceId, buildPlaylistPayload);
+    const result = commandQueue.queueOrEmitPlaylistUpdate(
+      deviceNs,
+      deviceId,
+      buildPlaylistPayload,
+      delivery,
+    );
     if (result && result.delivered) {
       for (const delay of [1500, 6500]) {
         const timer = setTimeout(() => deviceNs.to(deviceId).emit('device:screenshot-request', {
@@ -158,21 +163,38 @@ function persistGroupPlaylist(scope, playlistId) {
   }), scope.wall.id);
 }
 
-function fanOutPlaylistToPlaybackScope(io, deviceId, playlistId, { singleScreenOnly = false } = {}) {
+function fanOutPlaylistToPlaybackScope(
+  io,
+  deviceId,
+  playlistId,
+  {
+    singleScreenOnly = false,
+    allowedDeviceIds = null,
+    emitFollowers = true,
+  } = {},
+) {
   const scope = playbackScopeForDevice(deviceId);
   if (!scope || singleScreenOnly) return;
+  const allowed = Array.isArray(allowedDeviceIds)
+    ? new Set(allowedDeviceIds.filter(Boolean).map(String))
+    : null;
 
   let memberIds = [];
   if (scope.wall.layout_mode === 'groups') {
     if (!scope.group) return;
-    persistGroupPlaylist(scope, playlistId);
     if (scope.group.layout !== 'span' || scope.group.member_ids.length <= 1) return;
-    memberIds = scope.group.member_ids;
+    memberIds = scope.group.member_ids.filter((id) => !allowed || allowed.has(String(id)));
+    if (memberIds.length === scope.group.member_ids.length) {
+      persistGroupPlaylist(scope, playlistId);
+    }
   } else {
     if (scope.wall.layout_mode === 'split') return;
-    db.prepare("UPDATE video_walls SET playlist_id = ?, updated_at = strftime('%s','now') WHERE id = ?")
-      .run(playlistId, scope.wall.id);
-    memberIds = scope.members.map((member) => member.device_id);
+    const allMemberIds = scope.members.map((member) => member.device_id);
+    memberIds = allMemberIds.filter((id) => !allowed || allowed.has(String(id)));
+    if (memberIds.length === allMemberIds.length) {
+      db.prepare("UPDATE video_walls SET playlist_id = ?, updated_at = strftime('%s','now') WHERE id = ?")
+        .run(playlistId, scope.wall.id);
+    }
   }
 
   const followers = [];
@@ -187,6 +209,7 @@ function fanOutPlaylistToPlaybackScope(io, deviceId, playlistId, { singleScreenO
       console.warn(`[scene-engine] playback-scope DB update failed for ${followerId}: ${error.message}`);
     }
   }
+  if (!emitFollowers) return;
   followers.forEach((followerId, index) => {
     const deliver = () => pushPlaylistUpdate(io, followerId);
     if (index === 0) deliver();
@@ -204,18 +227,40 @@ function fanOutPlaylistToPlaybackScope(io, deviceId, playlistId, { singleScreenO
 // content/remote   -> replace the device's own auto-playlist with one item,
 //                     publish it, point devices.playlist_id at it.
 function pushSourceToDevice(io, deviceId, source, opts = {}) {
-  const { workspaceId = null, userId = null, targetDeviceIds = null, contentContext = null } = opts;
+  const {
+    workspaceId = null,
+    userId = null,
+    targetDeviceIds = null,
+    contentContext = null,
+    delivery = null,
+    returnDetails = false,
+  } = opts;
+  const authoritativeTargets = Array.isArray(targetDeviceIds);
+  const finish = (ok, details = {}) => (
+    returnDetails
+      ? {
+          ok: !!ok,
+          delivered: details.delivered === true,
+          queued: details.queued === true,
+          playlistRevision: details.playlistRevision || null,
+          expectedSourceId: details.expectedSourceId || null,
+          failureReason: ok ? null : (details.failureReason || 'Broadcast mutation failed'),
+        }
+      : !!ok
+  );
   try {
     const device = db.prepare('SELECT id, workspace_id, user_id FROM devices WHERE id = ?').get(deviceId);
-    if (!device) return false;
+    if (!device) return finish(false, { failureReason: 'Display not found' });
 
     // --- Playlist source: reuse the assign-then-push path verbatim. ---
     if (source.playlist_id) {
       const pl = db.prepare('SELECT id, workspace_id FROM playlists WHERE id = ?').get(source.playlist_id);
-      if (!pl) return false;
+      if (!pl) return finish(false, { failureReason: 'Playlist not found' });
       // Tenancy guard: playlist must be in the device's workspace (or a
       // platform template with no workspace_id).
-      if (pl.workspace_id && device.workspace_id && pl.workspace_id !== device.workspace_id) return false;
+      if (pl.workspace_id && device.workspace_id && pl.workspace_id !== device.workspace_id) {
+        return finish(false, { failureReason: 'Playlist workspace mismatch' });
+      }
       const playlistContent = db.prepare(`
         SELECT DISTINCT content_id FROM playlist_items
         WHERE playlist_id = ? AND content_id IS NOT NULL
@@ -226,12 +271,19 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
         item.content_id,
         device.workspace_id || workspaceId,
         callerContext,
-      ).allowed)) return false;
+      ).allowed)) return finish(false, { failureReason: 'Playlist content unavailable' });
       db.prepare('UPDATE devices SET playlist_id = ? WHERE id = ?').run(source.playlist_id, deviceId);
       whiteboardState.clearForMedia(io, deviceId);
-      pushPlaylistUpdate(io, deviceId);
-      fanOutPlaylistToPlaybackScope(io, deviceId, source.playlist_id);
-      return true;
+      const dispatch = pushPlaylistUpdate(io, deviceId, delivery
+        ? { ...delivery, expectedSourceId: null }
+        : null);
+      // Routes that supplied an authoritative physical set already loop every
+      // intended member. Hidden span-wall fan-out would duplicate those emits
+      // and would mutate unrequested followers for a one-display action.
+      fanOutPlaylistToPlaybackScope(io, deviceId, source.playlist_id, authoritativeTargets
+        ? { allowedDeviceIds: targetDeviceIds, emitFollowers: false }
+        : {});
+      return finish(true, dispatch);
     }
 
     // --- Content / remote_url source: build a one-item published playlist. ---
@@ -239,7 +291,7 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
     if (!contentId && source.remote_url) {
       contentId = resolveRemoteUrlContent(source.remote_url, device.workspace_id || workspaceId, userId || device.user_id);
     }
-    if (!contentId) return false;
+    if (!contentId) return finish(false, { failureReason: 'Content could not be resolved' });
 
     // Tenancy guard for explicit content_id.
     const decision = contentUseDecision(
@@ -249,12 +301,12 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
       { ...(contentContext || {}), userId: contentContext?.userId || userId },
     );
     const content = decision.content;
-    if (!content || !decision.allowed) return false;
+    if (!content || !decision.allowed) return finish(false, { failureReason: 'Content unavailable' });
 
     const playlistId = ensureDevicePlaylist(deviceId, userId || device.user_id, {
       mutableDeviceIds: targetDeviceIds,
     });
-    if (!playlistId) return false;
+    if (!playlistId) return finish(false, { failureReason: 'Display playlist unavailable' });
 
     const fitMode = typeof source.fit_mode === 'string' && source.fit_mode ? source.fit_mode : null;
     const duration = (typeof source.duration_sec === 'number' && source.duration_sec >= 1)
@@ -274,7 +326,9 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
     tx();
 
     whiteboardState.clearForMedia(io, deviceId);
-    pushPlaylistUpdate(io, deviceId);
+    const dispatch = pushPlaylistUpdate(io, deviceId, delivery
+      ? { ...delivery, expectedSourceId: contentId }
+      : null);
 
     // ── Span-wall fan-out ────────────────────────────────────────────────────
     // Every member needs the new playlist payload. wall:sync only carries a
@@ -293,14 +347,20 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
       const isSingleScreenWeb = content.mime_type === 'text/html'
         && !isInternalPlayer
         && !isStreamingMedia;
-      fanOutPlaylistToPlaybackScope(io, deviceId, playlistId, { singleScreenOnly: isSingleScreenWeb });
+      fanOutPlaylistToPlaybackScope(io, deviceId, playlistId, authoritativeTargets
+        ? {
+            singleScreenOnly: isSingleScreenWeb,
+            allowedDeviceIds: targetDeviceIds,
+            emitFollowers: false,
+          }
+        : { singleScreenOnly: isSingleScreenWeb });
     } catch (e) {
       console.warn(`[scene-engine] span fan-out lookup failed: ${e.message}`);
     }
-    return true;
+    return finish(true, { ...dispatch, expectedSourceId: contentId });
   } catch (e) {
     console.warn(`[scene-engine] pushSourceToDevice failed for ${deviceId}: ${e.message}`);
-    return false;
+    return finish(false, { failureReason: e.message });
   }
 }
 
@@ -319,32 +379,87 @@ function resolveScene(activityId) {
   }
 }
 
+// Expand saved scene placements to the current authoritative physical players.
+// A wall placement is resolved from current membership at trigger time; a
+// direct display placement remains isolated. Last placement for a device wins,
+// matching the existing sequential mutation semantics without duplicate emits.
+function resolveSceneActions(activityId) {
+  const resolved = resolveScene(activityId);
+  if (!resolved) return null;
+  const actions = new Map();
+  const typedTargets = [];
+  for (const placement of resolved.placements) {
+    let deviceIds = [];
+    if (placement.wall_id) {
+      const wall = db.prepare(`
+        SELECT id, workspace_id, layout_revision
+        FROM video_walls WHERE id = ?
+      `).get(placement.wall_id);
+      if (!wall || wall.workspace_id !== resolved.activity.workspace_id) continue;
+      deviceIds = db.prepare(`
+        SELECT d.id
+        FROM video_wall_devices vwd
+        JOIN devices d ON d.id = vwd.device_id
+        WHERE vwd.wall_id = ? AND d.workspace_id = ?
+        ORDER BY vwd.grid_row, vwd.grid_col
+      `).all(wall.id, resolved.activity.workspace_id).map((row) => row.id);
+      if (deviceIds.length) {
+        typedTargets.push({
+          type: 'wall',
+          id: wall.id,
+          layout_revision: Number(wall.layout_revision) || 0,
+        });
+      }
+    } else if (placement.device_id) {
+      const device = db.prepare(
+        'SELECT id FROM devices WHERE id = ? AND workspace_id = ?'
+      ).get(placement.device_id, resolved.activity.workspace_id);
+      if (device) {
+        deviceIds = [device.id];
+        typedTargets.push({ type: 'display', id: device.id });
+      }
+    }
+    for (const deviceId of deviceIds) {
+      actions.set(deviceId, {
+        deviceId,
+        scopeDeviceIds: [...deviceIds],
+        source: {
+          content_id: placement.content_id,
+          remote_url: placement.remote_url,
+          playlist_id: placement.playlist_id,
+          fit_mode: placement.fit_mode,
+        },
+      });
+    }
+  }
+  return {
+    activity: resolved.activity,
+    actions: [...actions.values()],
+    typedTargets,
+  };
+}
+
 // Trigger a scene: loop placements, push each to its device. Returns a summary
 // { activityId, pushed, failed, total }.
 function triggerScene(io, activityId, contentContext = null) {
-  const resolved = resolveScene(activityId);
+  const resolved = resolveSceneActions(activityId);
   if (!resolved) return { activityId, pushed: 0, failed: 0, total: 0, found: false };
 
-  const { activity, placements } = resolved;
+  const { activity, actions } = resolved;
   let pushed = 0;
   let failed = 0;
 
-  for (const p of placements) {
-    if (!p.device_id) { failed++; continue; }
-    const ok = pushSourceToDevice(io, p.device_id, {
-      content_id: p.content_id,
-      remote_url: p.remote_url,
-      playlist_id: p.playlist_id,
-      fit_mode: p.fit_mode,
-    }, {
+  for (const action of actions) {
+    const ok = pushSourceToDevice(io, action.deviceId, action.source, {
       workspaceId: activity.workspace_id,
       userId: contentContext?.userId || activity.created_by,
       contentContext,
+      targetDeviceIds: action.scopeDeviceIds,
     });
     if (ok) pushed++; else failed++;
   }
 
-  return { activityId, pushed, failed, total: placements.length, found: true };
+  return { activityId, pushed, failed, total: actions.length, found: true };
 }
 
 // Capture the current state of the given devices into a NEW scene. Reads each
@@ -387,6 +502,7 @@ function captureCurrent(workspaceId, createdBy, name, deviceIds) {
 
 module.exports = {
   resolveScene,
+  resolveSceneActions,
   triggerScene,
   captureCurrent,
   // Exposed for the broadcast route so it reuses the exact same per-device push.

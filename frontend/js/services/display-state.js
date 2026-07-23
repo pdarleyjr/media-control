@@ -22,15 +22,138 @@ function notify() {
   else setTimeout(run, 0);
 }
 
-// The screenshot endpoint accepts the JWT via Authorization header OR ?token=.
-// Browser <img src> sends neither header, so it needs ?token= in the URL
-// (same convention as dashboard.js). We append it HERE, centrally, so every
-// consumer (stage, inspector) can use display.screenshot_url verbatim and the
-// SERVER never has to bake the token into its response.
+// Screenshots must be loaded via authenticated fetch (Authorization header),
+// NOT via ?token= in the URL which exposes the JWT in browser history, access
+// logs, and Referer headers. We fetch the blob and create a blob: URL that the
+// <img> can use safely.
+const blobUrlCache = new Map(); // apiPathKey -> { url, controllers, inFlight }
+const blobDebug = { loads: 0, revokes: 0, inflight: 0, fails: 0 };
+
+function apiPathKey(baseUrl) {
+  if (!baseUrl) return '';
+  try {
+    const u = new URL(baseUrl, typeof location !== 'undefined' ? location.origin : 'http://local');
+    // Collapse cache-busters so the same screenshot path reuses one blob slot.
+    u.searchParams.delete('t');
+    u.searchParams.delete('wb');
+    u.searchParams.delete('token');
+    return u.pathname + (u.searchParams.toString() ? `?${u.searchParams}` : '');
+  } catch {
+    return String(baseUrl).replace(/[?&](t|wb|token)=[^&]*/g, '').replace(/[?&]$/, '');
+  }
+}
+
+function screenshotRevisionKey(baseUrl) {
+  if (!baseUrl) return '';
+  try {
+    const u = new URL(baseUrl, typeof location !== 'undefined' ? location.origin : 'http://local');
+    u.searchParams.delete('token');
+    return u.pathname + (u.searchParams.toString() ? `?${u.searchParams}` : '');
+  } catch {
+    return String(baseUrl).replace(/[?&]token=[^&]*/g, '').replace(/[?&]$/, '');
+  }
+}
+
+export function getScreenshotBlobMetrics() {
+  return {
+    cachedObjectUrls: blobUrlCache.size,
+    loads: blobDebug.loads,
+    revokes: blobDebug.revokes,
+    inflight: blobDebug.inflight,
+    fails: blobDebug.fails,
+  };
+}
+
+export function revokeAllScreenshotObjectUrls() {
+  for (const entry of blobUrlCache.values()) {
+    if (entry.controller) {
+      try { entry.controller.abort(); } catch { /* ignore */ }
+    }
+    if (entry.url) {
+      try { URL.revokeObjectURL(entry.url); blobDebug.revokes += 1; } catch { /* ignore */ }
+    }
+  }
+  blobUrlCache.clear();
+}
+
+export async function secureScreenshotUrl(baseUrl, { signal } = {}) {
+  if (!baseUrl) return null;
+  if (baseUrl.startsWith('blob:') || baseUrl.startsWith('data:')) return baseUrl;
+  const key = apiPathKey(baseUrl);
+  const revisionKey = screenshotRevisionKey(baseUrl);
+  const cached = blobUrlCache.get(key);
+  if (cached && cached.revisionKey === revisionKey && cached.url && !cached.inFlight) return cached.url;
+  if (cached && cached.revisionKey === revisionKey && cached.inFlight) {
+    try { return await cached.inFlight; } catch { return cached.url || null; }
+  }
+  if (cached?.controller) {
+    try { cached.controller.abort(); } catch { /* ignore stale fetch */ }
+  }
+
+  const token = typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null;
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  if (signal && controller) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+  const entry = {
+    url: cached?.url || null,
+    revisionKey,
+    controller,
+    inFlight: null,
+  };
+  blobUrlCache.set(key, entry);
+  blobDebug.inflight += 1;
+
+  entry.inFlight = (async () => {
+    try {
+      const res = await fetch(baseUrl, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        credentials: 'same-origin',
+        signal: controller ? controller.signal : signal,
+      });
+      if (!res.ok) {
+        blobDebug.fails += 1;
+        if (res.status === 401 && typeof localStorage !== 'undefined') {
+          // Force next attempt after the session is refreshed.
+          return null;
+        }
+        return entry.url;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      // A newer screenshot revision may have replaced this request while fetch
+      // was pending. Never let the stale completion overwrite the current slot.
+      if (blobUrlCache.get(key) !== entry) {
+        try { URL.revokeObjectURL(url); blobDebug.revokes += 1; } catch { /* ignore */ }
+        return blobUrlCache.get(key)?.url || entry.url;
+      }
+      if (entry.url && entry.url !== url) {
+        try { URL.revokeObjectURL(entry.url); blobDebug.revokes += 1; } catch { /* ignore */ }
+      }
+      entry.url = url;
+      blobDebug.loads += 1;
+      return url;
+    } catch (err) {
+      if (err && err.name === 'AbortError') return entry.url;
+      blobDebug.fails += 1;
+      return entry.url;
+    } finally {
+      entry.inFlight = null;
+      entry.controller = null;
+      blobDebug.inflight = Math.max(0, blobDebug.inflight - 1);
+    }
+  })();
+
+  return entry.inFlight;
+}
+
+// Keep withToken for backward-compat but it no longer puts JWT in URL.
+// Instead it strips any existing token param and relies on the secure fetch.
 function withToken(url) {
   if (!url) return url;
-  const tok = localStorage.getItem('token') || '';
-  return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(tok);
+  // Strip any existing token= param — never expose JWT in URL.
+  return url.replace(/[?&]token=[^&]*/g, '').replace(/[?&]$/, '');
 }
 
 export async function refresh() {

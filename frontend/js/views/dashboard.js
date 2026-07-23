@@ -5,6 +5,7 @@ import { openTargetPicker } from '../components/target-picker.js';
 import { waitForTargetCatalog } from '../services/target-catalog-runtime.js';
 import { esc } from '../utils.js';
 import { t, tn } from '../i18n.js';
+import { secureScreenshotUrl } from '../services/display-state.js';
 
 const DESTRUCTIVE_COMMANDS = ['reboot', 'shutdown'];
 // Command types only — labels resolved through t('dashboard.cmd.<type>')
@@ -99,9 +100,8 @@ function renderProgressFor(deviceId) {
 }
 
 function renderDeviceCard(device) {
-  const token = localStorage.getItem('token');
   const screenshotUrl = device.screenshot_path
-    ? `/api/devices/${device.id}/screenshot?t=${device.screenshot_at || ''}&token=${token}`
+    ? `/api/devices/${device.id}/screenshot?t=${device.screenshot_at || ''}`
     : null;
 
   const checked = selectedDeviceIds.has(device.id);
@@ -113,7 +113,7 @@ function renderDeviceCard(device) {
       </label>
       <div class="device-card-preview" id="preview-${device.id}">
         ${screenshotUrl
-          ? `<img src="${screenshotUrl}" alt="Screenshot" loading="lazy">`
+          ? `<img data-mc-shot-api="${esc(screenshotUrl)}" alt="Screenshot" loading="lazy">`
           : `<div class="no-preview">
               <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                 <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
@@ -273,6 +273,43 @@ function renderGroupSection(group, devices, playlists) {
   `;
 }
 
+async function hydratePreviewImg(preview, apiSrc) {
+  if (!preview || !apiSrc) return;
+  let img = preview.querySelector('img');
+  if (!img) {
+    const statusHtml = preview.querySelector('.device-card-status')?.outerHTML || '';
+    preview.insertAdjacentHTML('afterbegin', `<img data-mc-shot-api="${esc(apiSrc)}" alt="Screenshot" loading="lazy">`);
+    img = preview.querySelector('img');
+    if (statusHtml && !preview.querySelector('.device-card-status')) {
+      preview.insertAdjacentHTML('beforeend', statusHtml);
+    }
+  }
+  if (!img) return;
+  img.dataset.mcShotApi = apiSrc;
+  try {
+    const blobUrl = await secureScreenshotUrl(apiSrc);
+    if (!blobUrl || !img.isConnected) return;
+    if (img.dataset.mcShotApi !== apiSrc) return;
+    const prev = img.getAttribute('src');
+    img.setAttribute('src', blobUrl);
+    if (prev && prev.startsWith('blob:') && prev !== blobUrl) {
+      try { URL.revokeObjectURL(prev); } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+}
+
+function hydrateDashboardScreenshots() {
+  document.querySelectorAll('.device-card-preview img[data-mc-shot-api], .device-card-preview img:not([src]), .device-card-preview img[src=""]').forEach((img) => {
+    const apiSrc = img.dataset.mcShotApi
+      || (img.closest('[data-device-id]') && `/api/devices/${img.closest('[data-device-id]').dataset.deviceId}/screenshot?t=${Date.now()}`);
+    if (apiSrc) hydratePreviewImg(img.closest('.device-card-preview') || img.parentElement, apiSrc);
+  });
+  document.querySelectorAll('.device-card-preview img[data-mc-shot-api]').forEach((img) => {
+    if (img.getAttribute('src')) return;
+    hydratePreviewImg(img.closest('.device-card-preview'), img.dataset.mcShotApi);
+  });
+}
+
 export function render(container) {
   container.innerHTML = `
     <div class="page-header">
@@ -415,7 +452,7 @@ export function render(container) {
   document.getElementById('broadcastBtn').addEventListener('click', () => openBroadcastPicker());
 
   // Load everything
-  loadDashboard();
+  loadDashboard().then(() => hydrateDashboardScreenshots()).catch(() => {});
 
   // Real-time updates
   statusHandler = (data) => {
@@ -428,14 +465,22 @@ export function render(container) {
 
   screenshotHandler = (data) => {
     document.querySelectorAll(`#preview-${data.device_id}`).forEach(preview => {
-      const imgSrc = data.image_data || (data.url + '&token=' + localStorage.getItem('token'));
-      const img = preview.querySelector('img');
-      if (img) {
-        img.src = imgSrc;
-      } else {
-        const statusHtml = preview.querySelector('.device-card-status')?.outerHTML || '';
-        preview.innerHTML = `<img src="${imgSrc}" alt="Screenshot" loading="lazy">${statusHtml}`;
+      // Prefer socket image_data (base64). Otherwise load via authenticated fetch.
+      if (data.image_data) {
+        const imgSrc = data.image_data;
+        const img = preview.querySelector('img');
+        if (img) {
+          img.src = imgSrc;
+        } else {
+          const statusHtml = preview.querySelector('.device-card-status')?.outerHTML || '';
+          preview.innerHTML = `<img src="${imgSrc}" alt="Screenshot" loading="lazy">${statusHtml}`;
+        }
+        return;
       }
+      const apiSrc = data.url && !String(data.url).includes('token=')
+        ? data.url
+        : `/api/devices/${encodeURIComponent(data.device_id)}/screenshot?t=${Date.now()}`;
+      hydratePreviewImg(preview, apiSrc);
     });
   };
 

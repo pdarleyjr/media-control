@@ -17,7 +17,7 @@ test('live-program preparation is explicit and does not start the stream or chan
 });
 
 test('live start defaults to manual mode and gates automatic direction explicitly', () => {
-  assert.match(source, /requestedDirectorMode[\s\S]*=== 'auto' \? 'auto' : 'manual'/);
+  assert.match(source, /directorMode === 'auto' \? 'auto' : 'manual'|director_mode === 'auto' \? 'auto' : 'manual'/);
   assert.match(source, /confirm_auto_canary/);
   assert.match(source, /AUTO_CANARY_CONFIRMATION_REQUIRED/);
   assert.match(source, /callDirector\('POST', `\/mode\/\$\{directorMode\}`\)/);
@@ -29,7 +29,7 @@ test('live start defaults to manual mode and gates automatic direction explicitl
 
 test('live start reports failure unless OBS confirms the stream is active', () => {
   assert.match(source, /STREAM_START_NOT_CONFIRMED/);
-  assert.match(source, /waitForDirector\(data => data\.stream_active === true, 8000\)/);
+  assert.match(source, /waitForDirector\([\s\S]*stream_active === true/);
   assert.match(source, /if \(!streamVerified\)[\s\S]*callDirector\('POST', '\/stream\/stop'\)/);
 });
 

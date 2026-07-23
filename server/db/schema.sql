@@ -704,6 +704,59 @@ CREATE TABLE IF NOT EXISTS command_logs (
 CREATE INDEX IF NOT EXISTS idx_command_logs_target_revision ON command_logs(target_id, revision);
 CREATE INDEX IF NOT EXISTS idx_command_logs_status ON command_logs(status);
 
+-- Broadcast delivery proof is intentionally separate from command_logs.
+-- A content broadcast has one operator request and one independently tracked
+-- player result per resolved physical display. HTTP acceptance or Socket.IO
+-- emission alone never marks a player confirmed.
+CREATE TABLE IF NOT EXISTS broadcast_requests (
+    id                       TEXT PRIMARY KEY,
+    workspace_id             TEXT NOT NULL,
+    user_id                  TEXT,
+    source_type              TEXT NOT NULL,
+    source_id                TEXT NOT NULL,
+    typed_targets_json       TEXT NOT NULL DEFAULT '[]',
+    resolved_target_ids_json TEXT NOT NULL DEFAULT '[]',
+    expected_target_count    INTEGER NOT NULL,
+    status                   TEXT NOT NULL DEFAULT 'requested'
+                             CHECK (status IN ('requested','in_progress','confirmed','partial','failed','timed_out')),
+    created_at               INTEGER NOT NULL,
+    expires_at               INTEGER NOT NULL,
+    completed_at             INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS broadcast_device_results (
+    request_id                  TEXT NOT NULL REFERENCES broadcast_requests(id) ON DELETE CASCADE,
+    device_id                   TEXT NOT NULL,
+    device_name                 TEXT NOT NULL,
+    ordinal                     INTEGER NOT NULL DEFAULT 0,
+    command_id                  TEXT NOT NULL UNIQUE,
+    expected_source_id          TEXT,
+    expected_playlist_revision  TEXT,
+    state                       TEXT NOT NULL DEFAULT 'requested'
+                                CHECK (state IN ('requested','delivered','acknowledged','confirmed','failed','offline','timed_out')),
+    delivery_state              TEXT NOT NULL DEFAULT 'requested'
+                                CHECK (delivery_state IN ('requested','delivered','offline','failed','timed_out')),
+    acknowledgment_state        TEXT NOT NULL DEFAULT 'pending'
+                                CHECK (acknowledgment_state IN ('pending','acknowledged','confirmed','failed','timed_out')),
+    confirmed_player_state_json TEXT,
+    failure_reason              TEXT,
+    renderer_session_id         TEXT,
+    render_generation           INTEGER,
+    requested_at                INTEGER NOT NULL,
+    delivered_at                INTEGER,
+    acknowledged_at             INTEGER,
+    confirmed_at                INTEGER,
+    updated_at                  INTEGER NOT NULL,
+    PRIMARY KEY (request_id, device_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_broadcast_requests_workspace_created
+    ON broadcast_requests(workspace_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_broadcast_requests_expiry
+    ON broadcast_requests(status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_broadcast_device_results_state
+    ON broadcast_device_results(request_id, state);
+
 -- Last-acked playback state per target (display node). Written on device:ack
 -- / device:state-report; consumed by the Command Center status chips. Kept
 -- distinct from devices.screen_on (on/off) so it never clobbers the legacy flag.

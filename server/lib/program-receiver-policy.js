@@ -6,6 +6,7 @@ const ALLOWED_EVENTS = new Set([
   'device:heartbeat',
   'device:playlist-sync',
   'device:screenshot',
+  'device:broadcast-status',
   'device:ack',
   'device:state-report',
   'device:playback-state',

@@ -12,6 +12,12 @@ let socketIdentity = null;
 let roomRecoveryRequested = false;
 let roomRecoveryTimer = null;
 
+// Persist the operator's selected control target across the seamless auto-update
+// reload (task §24) so the post-reload dashboard re-selects the same wall/group
+// without the instructor noticing. sessionStorage is scoped to this tab and
+// survives a same-tab reload.
+const TARGET_KEY = 'mc_selected_target_v1';
+
 function identityFromToken(token) {
   try {
     const payload = JSON.parse(atob(String(token || '').split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
@@ -69,6 +75,14 @@ export function connectSocket() {
   dashboardSocket.on('connect', () => {
     console.log('Dashboard connected, socket id:', dashboardSocket.id);
     updateConnectionStatus(true);
+    // Restore the selected control target after a seamless reload so the
+    // operator's wall/group selection survives the update invisibly.
+    if (!selectedTarget) {
+      try {
+        const saved = sessionStorage.getItem(TARGET_KEY);
+        if (saved) selectedTarget = JSON.parse(saved);
+      } catch { /* ignore */ }
+    }
     emitSelectedTarget();
     requestAuthoritativeRoomSnapshot();
     emit('connected');
@@ -218,9 +232,16 @@ function emit(event, data) {
   if (cbs) cbs.forEach(cb => cb(data));
 }
 
-export function requestScreenshot(deviceId) {
-  console.log('requestScreenshot:', deviceId, 'socket connected:', dashboardSocket?.connected);
-  if (dashboardSocket) dashboardSocket.emit('dashboard:request-screenshot', { device_id: deviceId });
+export function requestScreenshot(deviceId, options = {}) {
+  if (typeof localStorage !== 'undefined' && localStorage.getItem('mc_diag') === '1') {
+    console.log('requestScreenshot:', deviceId, 'socket connected:', dashboardSocket?.connected);
+  }
+  if (dashboardSocket) {
+    dashboardSocket.emit('dashboard:request-screenshot', {
+      device_id: deviceId,
+      correlation_id: options.correlationId || null,
+    });
+  }
 }
 
 function emitSelectedTarget() {
@@ -234,13 +255,19 @@ export function selectTarget(targetType, targetId) {
     return;
   }
   selectedTarget = { target_type: targetType, target_id: targetId };
+  try { sessionStorage.setItem(TARGET_KEY, JSON.stringify(selectedTarget)); } catch { /* ignore */ }
   emitSelectedTarget();
 }
 
 export function clearTarget() {
   selectedTarget = null;
+  try { sessionStorage.removeItem(TARGET_KEY); } catch { /* ignore */ }
   if (dashboardSocket && dashboardSocket.connected) dashboardSocket.emit('dashboard:clear-target');
 }
+
+// True while a device command ack is outstanding — used by the seamless
+// auto-update idle gate (app.js) to avoid reloading mid-command.
+export function hasPendingCommands() { return pendingCommandMetrics.size > 0; }
 
 export function startRemote(deviceId) {
   console.log('startRemote:', deviceId, 'socket connected:', dashboardSocket?.connected);

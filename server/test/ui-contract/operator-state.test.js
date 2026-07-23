@@ -40,7 +40,13 @@ test('displayOperatorState maps confirmed/pending/offline/failed/stale', async (
 test('commandOperatorState maps command status vocabulary', async () => {
   const m = await importModule(STATE);
   assert.equal(m.commandOperatorState({ status: 'sent' }), m.OPERATOR_STATE.PENDING);
-  assert.equal(m.commandOperatorState({ status: 'acked' }), m.OPERATOR_STATE.CONFIRMED);
+  // §8: a player ACK proves RECEIPT only — it is NOT physical confirmation.
+  // ACKNOWLEDGED stays PENDING until a matching player-state report arrives.
+  assert.equal(m.commandOperatorState({ status: 'acked' }), m.OPERATOR_STATE.PENDING);
+  assert.equal(m.commandOperatorState({ status: 'acknowledged' }), m.OPERATOR_STATE.PENDING);
+  // CONFIRMED requires an explicit server-side state-match reconciliation
+  // (matching paused/currentTime/content_instance_id) — never reached on ack alone.
+  assert.equal(m.commandOperatorState({ status: 'confirmed' }), m.OPERATOR_STATE.CONFIRMED);
   assert.equal(m.commandOperatorState({ status: 'timeout' }), m.OPERATOR_STATE.STALE);
   assert.equal(m.commandOperatorState({ status: 'failed' }), m.OPERATOR_STATE.FAILED);
   assert.equal(m.commandOperatorState({ ok: false }), m.OPERATOR_STATE.FAILED);

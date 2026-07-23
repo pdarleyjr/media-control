@@ -24,6 +24,104 @@ import { isLiveActive, isLiveStateKnown } from './action-dock.js';
 const YT_RE = /^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//i;
 
 let livePromptCache = { at: 0, active: false };
+const deliveryPanels = new Map();
+const DELIVERY_TERMINAL = new Set(['confirmed', 'partial', 'failed', 'timed_out']);
+
+function deliveryPanel(requestId, label) {
+  if (deliveryPanels.has(requestId)) return deliveryPanels.get(requestId);
+  const panel = document.createElement('section');
+  panel.className = 'mc-delivery-panel';
+  panel.dataset.requestId = requestId;
+  panel.setAttribute('role', 'status');
+  panel.setAttribute('aria-live', 'polite');
+
+  const header = document.createElement('div');
+  header.className = 'mc-delivery-panel-head';
+  const title = document.createElement('strong');
+  title.textContent = `Delivery — ${label}`;
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'mc-delivery-panel-close';
+  close.setAttribute('aria-label', 'Close delivery status');
+  close.textContent = '×';
+  close.addEventListener('click', () => {
+    panel.remove();
+    deliveryPanels.delete(requestId);
+  });
+  header.append(title, close);
+
+  const summary = document.createElement('p');
+  summary.className = 'mc-delivery-panel-summary';
+  summary.textContent = 'Requesting player confirmation…';
+  const list = document.createElement('ul');
+  list.className = 'mc-delivery-device-list';
+  panel.append(header, summary, list);
+  document.body.appendChild(panel);
+
+  const record = { panel, summary, list };
+  deliveryPanels.set(requestId, record);
+  return record;
+}
+
+function renderBroadcastDelivery(request, label) {
+  if (!request || !request.id) return;
+  const record = deliveryPanel(request.id, label);
+  const devices = Array.isArray(request.devices) ? request.devices : [];
+  const confirmed = devices.filter((device) => device.state === 'confirmed').length;
+  record.summary.textContent = `${confirmed}/${request.expected_target_count || devices.length} players confirmed`;
+  record.panel.dataset.status = request.status || 'requested';
+  record.list.replaceChildren();
+  for (const device of devices) {
+    const item = document.createElement('li');
+    item.className = 'mc-delivery-device';
+    item.dataset.state = device.state || 'requested';
+    const name = document.createElement('span');
+    name.textContent = device.device_name || device.device_id || 'Display';
+    const state = document.createElement('strong');
+    state.textContent = device.state || 'requested';
+    item.append(name, state);
+    if (device.failure_reason) {
+      const reason = document.createElement('small');
+      reason.textContent = device.failure_reason;
+      item.appendChild(reason);
+    }
+    record.list.appendChild(item);
+  }
+}
+
+/**
+ * Show and refresh the authoritative server/player result for one broadcast.
+ * HTTP 202 is only acceptance; success is announced only after every player
+ * reports the exact playlist revision as rendered.
+ */
+export async function trackBroadcastDelivery(requestId, label, initial = null) {
+  let request = initial;
+  if (request) renderBroadcastDelivery(request, label);
+  const startedAt = Date.now();
+  const localCeilingMs = 22000;
+  while (!request || !DELIVERY_TERMINAL.has(request.status)) {
+    if (Date.now() - startedAt >= localCeilingMs) break;
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    try {
+      request = await api.broadcastStatus(requestId);
+      renderBroadcastDelivery(request, label);
+    } catch (error) {
+      if (Date.now() - startedAt >= localCeilingMs) {
+        showToast(error?.message || 'Could not verify player delivery', 'error');
+        break;
+      }
+    }
+  }
+
+  if (request?.status === 'confirmed') {
+    showToast(`${label}: every player confirmed`, 'success', 6000);
+  } else if (request && DELIVERY_TERMINAL.has(request.status)) {
+    const devices = Array.isArray(request.devices) ? request.devices : [];
+    const confirmed = devices.filter((device) => device.state === 'confirmed').length;
+    showToast(`${label}: ${confirmed}/${request.expected_target_count || devices.length} players confirmed`, 'error', 9000);
+  }
+  return request;
+}
 
 async function shouldOfferLiveStreamInclusion() {
   const now = Date.now();
@@ -232,7 +330,6 @@ const liveChoice = await resolveLiveStreamChoice(label);
   finishDispatchMetric();
 
   if (result && result.success) {
-    sentToast(label, result.sent, result.total);
     // "Yes, add to live stream": the broadcast already reached the display(s);
     // now refresh the live program so the new content is marked as changed on the
     // server side (api.liveStream.refresh() -> markLiveContentChanged). Sent
@@ -240,6 +337,13 @@ const liveChoice = await resolveLiveStreamChoice(label);
     if (liveChoice === 'yes') {
       try { await api.liveStream.refresh(); } catch { /* best-effort; display send already succeeded */ }
     }
+    if (result.request_id) {
+      const delivery = await trackBroadcastDelivery(result.request_id, label, result.delivery || null);
+      return delivery?.status === 'confirmed';
+    }
+    // Compatibility for an older server during a rolling deployment. This is
+    // never used by a server that supports persistent player confirmation.
+    sentToast(label, Number(result.sent) || 0, Number(result.total) || 0);
     return true;
   }
   // Unexpected non-error non-success response — be silent (server logged it).

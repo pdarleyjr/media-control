@@ -22,6 +22,7 @@ import {
   isTransportAction,
 } from '../../player-protocol.js';
 import { showToast } from '../../components/toast.js';
+import { get as getDisplayState, subscribe as subscribeDisplayState } from '../../services/display-state.js';
 
 const STATIC_TRANSPORT_BTNS = [
   { action: TRANSPORT_ACTIONS[1], label: '⏮', titleKey: 'mc.tp.prev' },
@@ -29,7 +30,67 @@ const STATIC_TRANSPORT_BTNS = [
   { action: TRANSPORT_ACTIONS[0], label: '⏭', titleKey: 'mc.tp.next' },
 ];
 
-const pendingApply = new Map(); // command_id -> { resolve, timer, deviceId }
+// Pending transport commands awaiting player confirmation (task §8).
+// command_id -> { resolve, timer, deviceId, action, payload, contentInstanceId, acknowledged }
+const pendingApply = new Map();
+
+// §8: ACKNOWLEDGED is only RECEIPT. CONFIRMED requires a matching physical
+// player-state report. Correlate by device + content instance + the action's
+// expected outcome (paused / currentTime / slide_index / idle).
+function matchesExpectedState(entry, state) {
+  if (!state || typeof state !== 'object') return false;
+  if (state.device_id && entry.deviceId && state.device_id !== entry.deviceId) return false;
+  if (entry.contentInstanceId && state.content_instance_id
+      && state.content_instance_id !== entry.contentInstanceId) return false;
+  const action = entry.action;
+  if (action === 'pause') return state.paused === true;
+  if (action === 'play') return state.paused === false;
+  if (action === 'stop') return state.kind === 'idle' || state.paused === true || !state.kind;
+  if (action === 'seek') {
+    const target = entry.payload?.seconds ?? entry.payload?.position_seconds;
+    const ct = state.currentTime ?? state.current_time;
+    return target != null && ct != null && Math.abs(Number(ct) - Number(target)) <= 2;
+  }
+  if (action === 'go_to_slide') {
+    const target = entry.payload?.slide ?? entry.payload?.slide_index;
+    return target != null && Number(state.slide_index) === Number(target);
+  }
+  // Transitional actions (next/prev/restart/mute/unmute/volume/scroll): a state
+  // report for the right device + content after the command is sufficient.
+  return true;
+}
+
+// Late-confirmation path: promote an ACKNOWLEDGED (but unconfirmed) command to
+// CONFIRMED when the next authoritative state-sync matches. Wired once.
+let displayStateConfirmationWired = false;
+function ensureDisplayStateConfirmation() {
+  if (displayStateConfirmationWired) return;
+  displayStateConfirmationWired = true;
+  try {
+    subscribeDisplayState(() => {
+      if (!pendingApply.size) return;
+      for (const [commandId, entry] of pendingApply) {
+        if (!entry.acknowledged) continue;
+        const d = getDisplayState(entry.deviceId);
+        const np = d?.now_playing;
+        if (!np) continue;
+        const state = { ...np, device_id: entry.deviceId, content_instance_id: np.content_id || np.contentId };
+        if (matchesExpectedState(entry, state)) {
+          pendingApply.delete(commandId);
+          clearTimeout(entry.timer);
+          entry.resolve({
+            ok: true,
+            lifecycle: COMMAND_LIFECYCLE.CONFIRMED,
+            command_id: commandId,
+            status: 'confirmed',
+            state,
+            confirmed_by: 'state-sync',
+          });
+        }
+      }
+    });
+  } catch { /* display-state optional */ }
+}
 
 function ensureCommandAckBridge() {
   if (ensureCommandAckBridge.wired) return;
@@ -38,27 +99,61 @@ function ensureCommandAckBridge() {
     const commandId = data?.command_id || data?.id || null;
     if (!commandId || !pendingApply.has(commandId)) return;
     const entry = pendingApply.get(commandId);
-    pendingApply.delete(commandId);
-    clearTimeout(entry.timer);
     const status = String(data?.status || '').toLowerCase();
     const ok = data?.ok !== false && status !== 'timeout' && status !== 'failed';
-    let lifecycle = COMMAND_LIFECYCLE.CONFIRMED;
     if (!ok) {
+      pendingApply.delete(commandId);
+      clearTimeout(entry.timer);
+      let lifecycle = COMMAND_LIFECYCLE.FAILED;
       if (status === 'timeout' || status === 'stale') lifecycle = COMMAND_LIFECYCLE.STALE;
       else if (status === 'offline') lifecycle = COMMAND_LIFECYCLE.OFFLINE;
-      else lifecycle = COMMAND_LIFECYCLE.FAILED;
-    } else if (status === 'acked' || status === 'acknowledged') {
-      lifecycle = COMMAND_LIFECYCLE.ACKNOWLEDGED;
-      // Player ack with ok is treated as confirmed for transport outcomes.
-      lifecycle = COMMAND_LIFECYCLE.CONFIRMED;
+      entry.resolve({
+        ok,
+        lifecycle,
+        command_id: commandId,
+        status: status || 'failed',
+        error: data?.error || null,
+        state: data?.state || null,
+        raw: data,
+      });
+      return;
     }
+    const state = data?.state || null;
+    if (status === 'acked' || status === 'acknowledged') {
+      // ACK proves RECEIPT only. If the ack also carries a matching physical
+      // state, promote straight to CONFIRMED. Otherwise stay ACKNOWLEDGED and
+      // wait for the next state-sync (ensureDisplayStateConfirmation) or timeout.
+      if (matchesExpectedState(entry, state)) {
+        pendingApply.delete(commandId);
+        clearTimeout(entry.timer);
+        entry.resolve({
+          ok: true,
+          lifecycle: COMMAND_LIFECYCLE.CONFIRMED,
+          command_id: commandId,
+          status: 'confirmed',
+          state,
+          confirmed_by: 'ack-state',
+          raw: data,
+        });
+      } else {
+        // ACK only — surface ACKNOWLEDGED to the UI, then wait for the matching
+        // state-sync (ensureDisplayStateConfirmation) or the timeout (→ STALE).
+        entry.acknowledged = true;
+        if (typeof entry.onInterim === 'function') entry.onInterim(COMMAND_LIFECYCLE.ACKNOWLEDGED);
+        ensureDisplayStateConfirmation();
+        // do NOT resolve — the timer remains armed (→ STALE on confirmation timeout)
+      }
+      return;
+    }
+    // Any other successful status is treated as confirmed (the player reported ok).
+    pendingApply.delete(commandId);
+    clearTimeout(entry.timer);
     entry.resolve({
-      ok,
-      lifecycle,
+      ok: true,
+      lifecycle: COMMAND_LIFECYCLE.CONFIRMED,
       command_id: commandId,
-      status: status || (ok ? 'acked' : 'failed'),
-      error: data?.error || null,
-      state: data?.state || null,
+      status: status || 'ok',
+      state,
       raw: data,
     });
   });
@@ -169,6 +264,11 @@ export function sendTransportCommand(deviceId, action, payload = {}, opts = {}) 
         resolve: (result) => finish({ ...result, delivered: true }),
         timer,
         deviceId,
+        action: resolvedAction,
+        payload: payload || {},
+        contentInstanceId: opts.contentInstanceId || targetMeta.content_instance_id || null,
+        acknowledged: false,
+        onInterim: typeof opts.onInterim === 'function' ? opts.onInterim : null,
       });
     });
   });
@@ -283,6 +383,7 @@ export function renderTransportBar(container, {
         wallId,
         contentInstanceId,
         timeoutMs: DEFAULT_COMMAND_TIMEOUT_MS,
+        onInterim: (lc) => setLifecycle(lc, 'awaiting player confirmation'),
       });
       results.push({ id, result });
       setLifecycle(result.lifecycle, result.error || result.command_id);
@@ -302,8 +403,19 @@ export function renderTransportBar(container, {
     btn.addEventListener('click', () => {
       const action = btn.dataset.tpAction;
       if (!TRANSPORT_ACTIONS.includes(action) && !isTransportAction(action)) return;
-      const resolvedAction = action === 'play_pause' && paused !== undefined
-        ? (paused ? 'play' : 'pause')
+      // Authoritative paused state comes from the display-state store — NOT from
+      // the render-time `paused` closure which can be stale after rerenders.
+      // This is the core fix for the "paused video resumes after unrelated UI
+      // actions" defect: the play/pause button never uses a stale value.
+      let authoritativePaused = paused;
+      try {
+        const d = getDisplayState ? getDisplayState(deviceId) : null;
+        if (d && d.now_playing && typeof d.now_playing.paused === 'boolean') {
+          authoritativePaused = d.now_playing.paused;
+        }
+      } catch { /* display-state optional */ }
+      const resolvedAction = action === 'play_pause' && authoritativePaused !== undefined
+        ? (authoritativePaused ? 'play' : 'pause')
         : action;
       btn.disabled = true;
       dispatchTransport(resolvedAction).finally(() => { btn.disabled = false; });

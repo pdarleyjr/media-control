@@ -80,6 +80,31 @@ test('transport UI waits for delivery and player command-ack lifecycle', () => {
   assert.ok(src.includes('apply_timeout') || src.includes('STALE'));
 });
 
+// §8: ACKNOWLEDGED is RECEIPT only; CONFIRMED requires a matching physical
+// player-state report. ack alone must NEVER reach CONFIRMED.
+test('command confirmation requires matching player state, not ack alone (task §8)', () => {
+  const src = readFrontend('views/media-control/transport.js');
+  assert.ok(src.includes('function matchesExpectedState'));
+  // ack without a matching state stays ACKNOWLEDGED and waits for state-sync.
+  assert.ok(src.includes("COMMAND_LIFECYCLE.ACKNOWLEDGED"));
+  assert.ok(src.includes('entry.acknowledged = true'));
+  assert.ok(src.includes('ensureDisplayStateConfirmation'));
+  // A matching physical state promotes to CONFIRMED.
+  assert.ok(src.includes("COMMAND_LIFECYCLE.CONFIRMED"));
+  assert.ok(src.includes("confirmed_by: 'ack-state'"));
+  assert.ok(src.includes("confirmed_by: 'state-sync'"));
+  // Correlation fields carried on the pending entry.
+  assert.ok(src.includes('action: resolvedAction'));
+  assert.ok(src.includes('contentInstanceId'));
+  // Pause confirms only on paused=true; Play on paused=false; Seek on position.
+  assert.ok(src.includes("action === 'pause'") && src.includes('state.paused === true'));
+  assert.ok(src.includes("action === 'play'") && src.includes('state.paused === false'));
+  assert.ok(src.includes("action === 'seek'"));
+  // Wrong device / wrong content instance must NOT confirm.
+  assert.ok(src.includes('state.device_id') && src.includes('entry.deviceId'));
+  assert.ok(src.includes('entry.contentInstanceId') && src.includes('state.content_instance_id'));
+});
+
 test('player-protocol exports expanded transport + lifecycle vocabulary', () => {
   const src = readFrontend('player-protocol.js');
   assert.ok(src.includes('go_to_slide'));
@@ -89,12 +114,21 @@ test('player-protocol exports expanded transport + lifecycle vocabulary', () => 
   assert.ok(src.includes("'seek'"));
 });
 
-test('stage confines split/zone transport to a single device id', () => {
+test('stage cards are passive and transport is centralized (task §8)', () => {
   const src = readFrontend('views/media-control/stage.js');
-  assert.ok(src.includes("layoutMode === 'span'"));
-  assert.ok(src.includes('requireSingleTarget'));
-  assert.ok(src.includes('data-layout-mode'));
-  assert.ok(src.includes('zoneId'));
+  const main = readFrontend('views/media-control.js');
+  // Display cards are <article> (NOT <button>) so they can contain a screensaver
+  // <select> without nesting interactive controls. A dedicated select button is
+  // the sole inspect affordance.
+  assert.ok(src.includes('<article class="mc-card mc-display-card'));
+  assert.ok(src.includes('class="mc-card-select"'));
+  // NO per-card transport hosts — one authoritative toolbar lives below the canvas.
+  assert.ok(!src.includes('data-tp-host'));
+  assert.ok(!src.includes('mc-card-transport'));
+  assert.ok(!src.includes('mc-wall-transport'));
+  // The authoritative transport row + split/zone confinement live in media-control.js.
+  assert.ok(main.includes('function activeTargetTransportIds()'));
+  assert.ok(main.includes('function mountTransportRow('));
 });
 
 test('display-state does not clobber operator pause on progress tick', () => {
@@ -162,13 +196,19 @@ test('two-zone targeting remains distinct in resolve path and transport UI', () 
   const html = read('index.html');
   const transport = readFrontend('views/media-control/transport.js');
   const stage = readFrontend('views/media-control/stage.js');
+  const main = readFrontend('views/media-control.js');
   assert.ok(html.includes('zone_id'));
   assert.ok(html.includes('pickZoneRootForAction'));
   assert.ok(html.includes('Ambiguous multi-zone target'));
   assert.ok(transport.includes('zoneId'));
   assert.ok(transport.includes('buildTransportTarget'));
-  assert.ok(stage.includes("layoutMode === 'span'"));
-  assert.ok(stage.includes('requireSingleTarget'));
+  // §8: transport is centralized in media-control.js (mountTransportRow), not on
+  // stage cards. Span-wall fan-out resolves every wall member via
+  // activeTargetTransportIds → wallTransportDeviceIds; split/zone confinement is
+  // enforced by transport.js buildTransportTarget/requireSingleTarget.
+  assert.ok(main.includes('function activeTargetTransportIds()'));
+  assert.ok(main.includes('wallTransportDeviceIds'));
+  assert.ok(transport.includes('requireSingleTarget'));
 });
 
 test('web and podium share transport module lifecycle waits for command-ack', () => {

@@ -62,9 +62,7 @@ async function requestBroadcast(payload, endpoint = '/broadcast') {
 }
 
 async function requestStatus(url) {
-  const token = localStorage.getItem('token');
-  const sep = url.includes('?') ? '&' : '?';
-  const res = await fetch(API_BASE + url + (token ? `${sep}token=${encodeURIComponent(token)}` : ''), {
+  const res = await fetch(API_BASE + url, {
     headers: { Accept: 'application/json', ...getAuthHeaders() },
     credentials: 'same-origin',
   });
@@ -132,6 +130,8 @@ export const api = {
     if (filters.search) query.set('search', filters.search);
     if (filters.mine) query.set('owner', 'me');
     if (filters.archived) query.set('archived', filters.archived);
+    if (filters.limit) query.set('limit', String(filters.limit));
+    if (filters.offset) query.set('offset', String(filters.offset));
     const suffix = query.toString();
     return request(`/content${suffix ? `?${suffix}` : ''}`);
   },
@@ -142,6 +142,35 @@ export const api = {
     method: 'PUT',
     body: JSON.stringify({ folder_id: folderId })
   }),
+  // Authenticated content download. Fetches the file as a Blob with the bearer
+  // token in the Authorization header (NEVER in the URL) and resolves with the
+  // blob + a sanitized filename parsed from Content-Disposition. The caller
+  // triggers the save-to-disk via a temporary object URL.
+  downloadContent: async (id) => {
+    const res = await fetch(API_BASE + `/content/${id}/download`, {
+      headers: getAuthHeaders(),
+    });
+    if (res.status === 401) {
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      window.location.hash = '#/login';
+      window.location.reload();
+      throw new Error('Session expired');
+    }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      const error = new Error(err.error || 'Download failed');
+      error.status = res.status;
+      error.code = err.code;
+      throw error;
+    }
+    const blob = await res.blob();
+    let filename = '';
+    const cd = res.headers.get('content-disposition') || '';
+    const m = cd.match(/filename\*?=(?:UTF-8'')?["']?([^"';]+)/i);
+    if (m) filename = decodeURIComponent(m[1]);
+    return { blob, filename };
+  },
   requestContentPublication: (id) => request(`/content/${id}/publication-request`, { method: 'POST' }),
   duplicateContent: (id) => request(`/content/${id}/duplicate`, { method: 'POST' }),
   archiveContent: (id, archived = true, confirmRevoke = false) => request(`/content/${id}/archive`, {
@@ -365,16 +394,27 @@ export const api = {
   // { code:'CONFIRM_ALL_REQUIRED', count }; broadcast() resolves with that body
   // (instead of throwing) so the UI can prompt and retry with confirm_all:true.
   broadcast: (payload) => requestBroadcast(payload),
+  broadcastStatus: (requestId) => request(`/broadcast/${encodeURIComponent(requestId)}`, {
+    headers: { 'Cache-Control': 'no-store' },
+  }),
 
   // ==================== MBFD live stream orchestration ====================
   liveStream: {
     display: () => request('/live-stream/display'),
     status: () => request('/live-stream/status'),
+    // Fast operator poll (<500ms target). Uses director/state + cached deep probes.
+    operatorState: () => request('/live-stream/operator-state'),
     prepare: () => request('/live-stream/prepare', { method: 'POST' }),
+    productionPlan: (body) => request('/live-stream/production-plan', { method: 'POST', body: JSON.stringify(body || {}) }),
+    getProductionPlan: () => request('/live-stream/production-plan'),
     start: (options = {}) => request('/live-stream/start', { method: 'POST', body: JSON.stringify(options) }),
     stop: () => request('/live-stream/stop', { method: 'POST' }),
     clearContent: () => request('/live-stream/clear-content', { method: 'POST' }),
     refresh: () => request('/live-stream/refresh', { method: 'POST' }),
+    recordingStatus: () => request('/live-stream/recording/status'),
+    recordingPreflight: (body) => request('/live-stream/recording/preflight', { method: 'POST', body: JSON.stringify(body || {}) }),
+    recordingStart: (body) => request('/live-stream/recording/start', { method: 'POST', body: JSON.stringify(body || {}) }),
+    recordingStop: (body) => request('/live-stream/recording/stop', { method: 'POST', body: JSON.stringify(body || {}) }),
   },
 
   // ==================== MBFD Media Control Studio: Presentations ====================

@@ -1118,6 +1118,30 @@ router.get('/:id/file', (req, res) => {
   res.sendFile(safePath);
 });
 
+// Authenticated content download (task §13). Streams the owned storage file as an
+// attachment with a sanitized filename. Never accepts a path from the browser,
+// never puts the bearer token in the URL, and rejects remote-only content
+// (YouTube / uncached external URLs / Nextcloud references) with a precise reason.
+router.get('/:id/download', (req, res) => {
+  const content = checkContentRead(req, res);
+  if (!content) return;
+  if (!content.filepath) {
+    const kind = String(content.mime_type || '').toLowerCase();
+    if (kind === 'video/youtube' || content.remote_url) {
+      return res.status(422).json({ code: 'DOWNLOAD_UNAVAILABLE', error: 'This is a remote/YouTube item with no local file to download.' });
+    }
+    return res.status(404).json({ code: 'NO_FILE', error: 'No file is associated with this content.' });
+  }
+  const safePath = path.resolve(config.contentDir, path.basename(content.filepath));
+  if (!safePath.startsWith(path.resolve(config.contentDir))) return res.status(403).json({ error: 'Invalid path' });
+  const rawName = content.original_filename || content.filename || path.basename(content.filepath);
+  const safeName = String(rawName).replace(/[^\w.\- ]+/g, '_').slice(0, 200) || 'download';
+  res.setHeader('Content-Type', content.mime_type || 'application/octet-stream');
+  res.setHeader('Content-Disposition', `attachment; filename="${safeName.replace(/"/g, '_')}"; filename*=UTF-8''${encodeURIComponent(safeName)}`);
+  auditContent(req, 'content:download', content, content, { content_id: content.id, filename: safeName });
+  res.sendFile(safePath);
+});
+
 // Serve thumbnail
 router.get('/:id/thumbnail', (req, res) => {
   const content = checkContentRead(req, res);

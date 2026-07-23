@@ -35,14 +35,35 @@ function recoveryUser(decoded) {
 }
 
 // Express middleware - requires valid JWT
+// Accepts token from Authorization header OR httpOnly cookie (for <img> tags).
+// Never accepts token from URL query parameters — that exposes the JWT in
+// browser history, access logs, and Referer headers.
 function requireAuth(req, res, next) {
+  let token = null;
+
+  // 1. Authorization header (fetch/XHR)
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.split(' ')[1];
+  }
+
+  // 2. httpOnly cookie (for <img>, <video>, and other browser-initiated GETs
+  //    that cannot set Authorization headers). Parse manually since
+  //    cookie-parser is not installed.
+  if (!token && req.headers.cookie) {
+    const cookies = req.headers.cookie.split(';').reduce((acc, c) => {
+      const [k, ...v] = c.trim().split('=');
+      if (k) acc[k] = v.join('=');
+      return acc;
+    }, {});
+    if (cookies.mc_token) token = cookies.mc_token;
+  }
+
+  if (!token) {
     return res.status(401).json({ error: 'Authentication required' });
   }
 
   try {
-    const token = authHeader.split(' ')[1];
     const decoded = verifyToken(token);
     if (decoded.recovery) {
       req.user = recoveryUser(decoded);

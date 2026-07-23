@@ -85,8 +85,11 @@ export function commandOperatorState(command) {
   const status = String(command.status || command.state || '').toLowerCase();
   if (status === 'failed' || command.ok === false) return OPERATOR_STATE.FAILED;
   if (status === 'timeout') return OPERATOR_STATE.STALE;
-  if (status === 'acked' || status === 'confirmed') return OPERATOR_STATE.CONFIRMED;
-  if (status === 'sent' || status === 'requested' || status === 'queued') return OPERATOR_STATE.PENDING;
+  // ack proves RECEIPT only — it is NOT physical confirmation. Map to PENDING
+  // (awaiting the player's matching state report). Only an explicit 'confirmed'
+  // status (a server-side state-match reconciliation) reaches CONFIRMED.
+  if (status === 'confirmed') return OPERATOR_STATE.CONFIRMED;
+  if (status === 'acked' || status === 'acknowledged' || status === 'sent' || status === 'requested' || status === 'queued') return OPERATOR_STATE.PENDING;
   return OPERATOR_STATE.STANDBY;
 }
 

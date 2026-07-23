@@ -685,13 +685,28 @@ app.use('/api/console', rateLimit(60000, 60));
 app.use('/api/console', require('./routes/console'));
 
 
-// Screenshot route (before protected routes - needs custom auth for img tags)
+// Screenshot route (before protected routes). Auth: Bearer header preferred,
+// then httpOnly mc_token cookie. Query-string tokens are rejected so JWTs never
+// land in URLs, access logs, history, or Referer headers.
 const { verifyToken } = require('./middleware/auth');
+function extractScreenshotToken(req) {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    return authHeader.split(' ')[1];
+  }
+  if (req.headers.cookie) {
+    const cookies = req.headers.cookie.split(';').reduce((acc, c) => {
+      const [k, ...v] = c.trim().split('=');
+      if (k) acc[k] = v.join('=');
+      return acc;
+    }, {});
+    if (cookies.mc_token) return cookies.mc_token;
+  }
+  return null;
+}
 app.get('/api/devices/:id/screenshot', (req, res) => {
   let user = null;
-  const authHeader = req.headers.authorization;
-  const tokenParam = req.query.token;
-  const token = authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : tokenParam;
+  const token = extractScreenshotToken(req);
   if (!token) return res.status(401).json({ error: 'Authentication required' });
   try {
     const decoded = verifyToken(token);

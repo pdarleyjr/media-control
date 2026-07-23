@@ -196,7 +196,7 @@ test('player screenshot reporting tolerates socket startup and disconnect races'
   );
   const canvasCapture = readSnippet(
     path.join(__dirname, '..', 'player', 'index.html'),
-    'function captureAndSend() {',
+    'function captureAndSend(correlationId = null) {',
     'function startStreaming()'
   );
 
@@ -209,6 +209,29 @@ test('player screenshot reporting tolerates socket startup and disconnect races'
     canvasCapture,
     /if \(base64 && base64\.length > 100 && socket\?\.connected\) \{[\s\S]*?socket\.emit\('device:screenshot'/,
     'canvas screenshots must not emit after a device socket disconnect'
+  );
+});
+
+test('single-item playlists never timer-advance into a black-flash re-render', () => {
+  const html = readPlayerFile('index.html');
+  const nextItem = readSnippet(
+    path.join(__dirname, '..', 'player', 'index.html'),
+    'function nextItem() {',
+    'function contentSrcForItem(item) {'
+  );
+  assert.ok(
+    nextItem.includes('playlist.length <= 1') && nextItem.includes('return;'),
+    'nextItem must no-op for sticky single-item playlists'
+  );
+  assert.match(
+    html,
+    /isImage[\s\S]*?if \(!isFollower && playlist\.length > 1\) \{\s*advanceTimer = setTimeout\(nextItem/,
+    'image rotation must require multi-item playlists'
+  );
+  assert.match(
+    html,
+    /item\.widget_id[\s\S]*?if \(!isFollower && playlist\.length > 1\) \{\s*advanceTimer = setTimeout\(nextItem/,
+    'widget rotation must require multi-item playlists'
   );
 });
 

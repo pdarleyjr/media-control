@@ -40,7 +40,15 @@ function authorizeFlag(flag, userId) {
 function resolveFeatureFlags(featuresConfig, userId) {
   const out = {};
   for (const [key, flag] of Object.entries(featuresConfig || {})) {
-    out[key] = authorizeFlag(flag, userId);
+    if (flag && typeof flag === 'object') {
+      out[key] = authorizeFlag(flag, userId);
+    } else {
+      // Simple boolean feature flag (e.g. classroomMode): enabled for every
+      // authenticated workspace member when truthy. There is no per-user
+      // allowlist for these — they are global on/off switches.
+      const enabled = !!flag;
+      out[key] = { enabled, authorized: enabled };
+    }
   }
   return out;
 }

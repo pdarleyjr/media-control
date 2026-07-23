@@ -1,4 +1,4 @@
-import { connectSocket, disconnectSocket } from './socket.js';
+import { connectSocket, disconnectSocket, hasPendingCommands } from './socket.js';
 import * as dashboard from './views/dashboard.js';
 import * as deviceDetail from './views/device-detail.js';
 import * as contentLibrary from './views/content-library.js';
@@ -28,7 +28,7 @@ import * as schedules from './views/schedules.js';
 import * as workspaceMembers from './views/workspace-members.js';
 import * as mediaControl from './views/media-control.js';
 import * as operatorConsole from './views/media-control-enterprise/operator-console.js';
-import { isEnterpriseUiEnabled } from './state/feature-flags.js';
+import { isEnterpriseUiEnabled, isClassroomModeEnabled } from './state/feature-flags.js';
 import { applyBranding } from './branding.js';
 import { t } from './i18n.js';
 import { esc, isPlatformAdmin } from './utils.js';
@@ -734,6 +734,19 @@ async function route() {
     document.body.classList.remove('console-mode');
   }
   document.body.classList.toggle('cc-fullscreen', isControlRoute);
+  // Command Center on the web uses ONE collapsed (~72px) application sidebar so the
+  // wall previews get the full workspace. This is a LOCAL visual override — it does
+  // not persist to localStorage, so the operator's saved expand/collapse preference
+  // for other views is preserved and restored when leaving #/control.
+  const ccForceCollapsed = isControlRoute && !CONSOLE_MODE;
+  document.body.classList.toggle('cc-sidebar-forced', ccForceCollapsed);
+  if (ccForceCollapsed) {
+    sidebar?.classList.add('collapsed');
+    document.body.classList.add('sidebar-collapsed');
+  } else {
+    sidebar?.classList.toggle('collapsed', sidebarCollapsed());
+    document.body.classList.toggle('sidebar-collapsed', sidebarCollapsed());
+  }
   if (fullScreenChrome) {
     sidebar.style.display = 'none';
     app.style.marginLeft = '0';
@@ -744,6 +757,7 @@ async function route() {
   if (CONSOLE_MODE) renderConsoleHeader();
   const mb = document.getElementById('mobileMenuBtn');
   if (mb) mb.style.display = fullScreenChrome ? 'none' : '';
+  updateSidebarCollapseButton();
 
   // Update user info in sidebar
   updateSidebarUser();
@@ -919,6 +933,35 @@ function updateSidebarUser() {
     if (nav) nav.style.display = ok ? '' : 'none';
   }).catch(() => {});
 
+  // Classroom Mode (task §7): hide livestream/AI/camera nav items and show a
+  // banner so the instructor sees a clean control surface with no dead buttons.
+  // This is purely a UI affordance — the restrictions are enforced server-side
+  // by stopping the backing services, so it degrades safely if the flag fetch
+  // fails (the nav stays visible but the buttons simply no-op downstream).
+  isClassroomModeEnabled().then((on) => {
+    if (!on) return;
+    const hidden = ['cameras', 'multiview', 'ai-deck'];
+    document.querySelectorAll('a.nav-link[data-view]').forEach((link) => {
+      if (hidden.includes(link.getAttribute('data-view'))) {
+        const li = link.closest('li');
+        if (li) li.style.display = 'none';
+      }
+    });
+    let banner = document.getElementById('classroomModeBanner');
+    if (!banner) {
+      banner = document.createElement('div');
+      banner.id = 'classroomModeBanner';
+      banner.setAttribute('role', 'status');
+      // Fixed full-width thin top strip. Must NOT participate in the body flex
+      // row (the old position:sticky insertBefore(#app) made it a 500px+ flex
+      // block that ate half the viewport — the "giant blue area" regression).
+      banner.className = 'mc-classroom-banner';
+      document.body.classList.add('has-classroom-banner');
+      document.body.appendChild(banner);
+    }
+    banner.textContent = t('app.classroom_mode_banner') || 'CLASSROOM MODE — STREAMING AND AI FUNCTIONS TEMPORARILY DISABLED';
+  }).catch(() => {});
+
   let userEl = document.getElementById('sidebarUser');
   if (!userEl) {
     const footer = document.querySelector('.sidebar-footer');
@@ -944,7 +987,15 @@ function updateSidebarUser() {
     </button>
   `;
 
-  document.getElementById('logoutBtn')?.addEventListener('click', () => {
+  document.getElementById('logoutBtn')?.addEventListener('click', async () => {
+    try {
+      const token = localStorage.getItem('token');
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        credentials: 'same-origin',
+      });
+    } catch { /* best-effort cookie clear */ }
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     window.location.hash = '#/login';
@@ -1002,39 +1053,110 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && sidebarEl?.classList.contains('open')) setMobileNav(false);
 });
 
-// Auto-reload on frontend update (no more hard refresh needed)
+// Seamless idle-gated auto-update (task §24). When the server reports a new
+// build hash via /api/version, the dashboard waits until the operator app is
+// idle, persists operator state, reloads exactly once, then restores state and
+// reconnects Socket.IO automatically. Instructors never press Refresh.
+//
+// CRITICAL: a dashboard reload does NOT touch the classroom TV players (they
+// run on the separate /device Socket.IO namespace), so classroom content is
+// never interrupted by an update. The idle gate only protects the instructor's
+// own control flow (no reload mid-click / mid-command / behind a modal).
 let knownHash = null;
+let pendingUpdate = false;
+let lastInteractionAt = Date.now();
+const UPDATE_STATE_KEY = 'mc_update_state_v1';
+
+document.addEventListener('pointerdown', () => { lastInteractionAt = Date.now(); }, { passive: true });
+document.addEventListener('keydown', () => { lastInteractionAt = Date.now(); }, { passive: true });
+
+function saveOperatorStateForUpdate() {
+  try {
+    sessionStorage.setItem(UPDATE_STATE_KEY, JSON.stringify({
+      hash: knownHash,
+      route: window.location.hash,
+      saved_at: Date.now(),
+    }));
+  } catch { /* sessionStorage may be unavailable (private mode) */ }
+}
+
+// Restores the operator's route (view + panel) after a seamless reload. The
+// selected control target + room state are restored separately by socket.js
+// (selectedTarget persists across reload; room:snapshot/room:resumed are the
+// authoritative reconciliation path on reconnect).
+function restoreOperatorStateAfterUpdate() {
+  try {
+    const raw = sessionStorage.getItem(UPDATE_STATE_KEY);
+    if (!raw) return;
+    sessionStorage.removeItem(UPDATE_STATE_KEY);
+    const st = JSON.parse(raw);
+    if (st && st.route && window.location.hash !== st.route) {
+      window.location.hash = st.route;
+    }
+  } catch { /* ignore */ }
+}
+
+function isSafeToReload() {
+  if (document.hidden) return false;                         // tab not visible
+  if (typeof hasPendingCommands === 'function' && hasPendingCommands()) return false; // command ack outstanding
+  if (Date.now() - lastInteractionAt < 3000) return false;   // not mid-interaction
+  const openModal = document.querySelector('.modal-overlay:not([style*="display:none"])');
+  if (openModal) return false;                               // modal open
+  return true;
+}
+
+function showUpdateSuccessToast() {
+  const toast = document.getElementById('toastContainer');
+  if (!toast) return;
+  const notice = document.createElement('div');
+  notice.className = 'toast info';
+  notice.setAttribute('role', 'status');
+  notice.setAttribute('aria-live', 'polite');
+  notice.textContent = t('app.update_success') || 'Media Control updated successfully.';
+  toast.appendChild(notice);
+  setTimeout(() => notice.remove(), 6000);
+}
+
+function applySeamlessUpdate() {
+  if (!isSafeToReload()) { pendingUpdate = true; return; }
+  pendingUpdate = false;
+  saveOperatorStateForUpdate();
+  try { sessionStorage.setItem('mc_update_applied', String(Date.now())); } catch {}
+  window.location.reload();
+}
+
 setInterval(async () => {
   try {
-    const res = await fetch('/api/version');
+    const res = await fetch('/api/version', { cache: 'no-store' });
     const { hash } = await res.json();
-    if (knownHash === null) { knownHash = hash; return; }
+    if (knownHash === null) {
+      knownHash = hash;
+      restoreOperatorStateAfterUpdate();
+      // First poll after a seamless reload: confirm the build + greet the user.
+      try {
+        if (sessionStorage.getItem('mc_update_applied')) {
+          sessionStorage.removeItem('mc_update_applied');
+          showUpdateSuccessToast();
+        }
+      } catch {}
+      return;
+    }
     if (hash !== knownHash) {
       knownHash = hash;
-      if (CONSOLE_MODE) {
-        window.location.reload();
-        return;
-      }
-      const toast = document.getElementById('toastContainer');
-      if (toast) {
-        const notice = document.createElement('div');
-        notice.className = 'toast info';
-        notice.setAttribute('role', 'status');
-        notice.setAttribute('aria-live', 'polite');
-        const message = document.createElement('span');
-        message.textContent = t('app.update_available') + ' ';
-        const reload = document.createElement('button');
-        reload.type = 'button';
-        reload.textContent = t('app.reload_now');
-        reload.style.cssText = 'color:var(--accent);text-decoration:underline;font-weight:600;background:none;border:0;padding:0;cursor:pointer;font:inherit';
-        reload.addEventListener('click', () => window.location.reload());
-        message.appendChild(reload);
-        notice.appendChild(message);
-        toast.appendChild(notice);
-      }
+      if (CONSOLE_MODE) { window.location.reload(); return; }
+      applySeamlessUpdate();
     }
-  } catch {}
+  } catch { /* transient network error; retry next tick */ }
 }, 15000);
+
+// Retry a deferred update when the app returns to an idle/visible state.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && pendingUpdate) applySeamlessUpdate();
+});
+// Periodically retry a deferred update (e.g. a long-playing video keeps the
+// tab visible but idle; the gate still blocks until truly safe).
+setInterval(() => { if (pendingUpdate) applySeamlessUpdate(); }, 30000);
+
 
 // Session timeout warning - check JWT expiry every minute. Dedicated classroom
 // consoles refresh their own session through /api/console/session instead.

@@ -186,12 +186,27 @@ export async function render(container) {
     });
   }
 
-  // Export data handler
-  document.getElementById('exportDataBtn')?.addEventListener('click', () => {
+  // Export data handler — use authenticated fetch + blob to keep JWT out of URL
+  document.getElementById('exportDataBtn')?.addEventListener('click', async () => {
     const includeFiles = document.getElementById('exportIncludeFiles')?.checked;
     const token = localStorage.getItem('token');
-    const url = `/api/status/export?token=${token}${includeFiles ? '&include_files=true' : ''}`;
-    window.location.href = url;
+    const url = `/api/status/export${includeFiles ? '?include_files=true' : ''}`;
+    try {
+      const res = await fetch(url, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        credentials: 'same-origin',
+      });
+      if (!res.ok) throw new Error('Export failed');
+      const blob = await res.blob();
+      const dlUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = dlUrl;
+      a.download = `media-control-export-${Date.now()}.json`;
+      a.click();
+      URL.revokeObjectURL(dlUrl);
+    } catch (e) {
+      console.error('Export failed:', e);
+    }
   });
 
   // Import data handler
