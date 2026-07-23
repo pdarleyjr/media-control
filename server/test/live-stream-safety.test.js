@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const {
   sceneIsSafeToStream,
   sceneMatchesProgramState,
+  resolveDirectorContentActive,
 } = require('../lib/live-stream-safety');
 
 function status(overrides = {}) {
@@ -47,4 +48,49 @@ test('automatic start also requires director content and camera state to match t
     current_scene: 'KAMRUI_CAMERA_2_FULL',
     director: { active_camera: 2, content_active: false },
   }), false), false);
+});
+
+test('unconfigured/unknown content probes do not count as trustworthy content state', () => {
+  const unknown = resolveDirectorContentActive(status({
+    director: {
+      active_camera: 1,
+      content_active: false,
+      content_observation_state: 'unknown',
+      content_observation_reason: 'expected_room_not_configured',
+    },
+  }));
+  assert.equal(unknown.known, false);
+
+  const fromMc = resolveDirectorContentActive(status({
+    media_control_content_active: true,
+    director: {
+      active_camera: 1,
+      content_active: false,
+      content_observation_state: 'unknown',
+      content_observation_reason: 'expected_room_not_configured',
+    },
+  }));
+  assert.equal(fromMc.known, true);
+  assert.equal(fromMc.value, true);
+  assert.equal(fromMc.source, 'media_control_content_active');
+});
+
+test('auto go-live is not bricked when room content probe is unconfigured', () => {
+  const data = status({
+    mode: 'auto',
+    effective_mode: 'auto',
+    configured_mode: 'auto',
+    current_scene: 'KAMRUI_CAMERA_1_FULL',
+    media_control_content_active: true,
+    director: {
+      active_camera: 1,
+      content_active: false,
+      content_observation_state: 'unknown',
+      content_observation_reason: 'expected_room_not_configured',
+    },
+  });
+  assert.equal(sceneIsSafeToStream(data, 'auto', true), true);
+  const noMc = { ...data };
+  delete noMc.media_control_content_active;
+  assert.equal(sceneIsSafeToStream(noMc, 'auto', true), true);
 });

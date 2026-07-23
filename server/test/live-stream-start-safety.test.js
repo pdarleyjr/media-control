@@ -38,6 +38,9 @@ test('live start defaults to manual mode and gates automatic direction explicitl
 });
 
 test('live start reports failure unless OBS confirms the stream is active', () => {
+  assert.match(source, /mergeDeepContent:\s*true|mergeDeepContent = true/);
+  assert.match(source, /resolveDirectorContentActive/);
+  assert.match(source, /content_state_mismatch/);
   assert.match(source, /STREAM_START_NOT_CONFIRMED/);
   assert.match(source, /waitForDirector\([\s\S]*stream_active === true/);
   assert.match(source, /if \(!streamVerified\)[\s\S]*callDirector\('POST', '\/stream\/stop'\)/);

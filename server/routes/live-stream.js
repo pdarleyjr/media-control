@@ -20,7 +20,11 @@ const {
 const { publishRoomSnapshot } = require('../lib/room-state-broadcaster');
 const { logActivity, getClientIp } = require('../services/activity');
 const { audit } = require('../lib/audit');
-const { sceneIsSafeToStream, APPROVED_PROGRAM_SCENES } = require('../lib/live-stream-safety');
+const {
+  sceneIsSafeToStream,
+  APPROVED_PROGRAM_SCENES,
+  resolveDirectorContentActive,
+} = require('../lib/live-stream-safety');
 const {
   ERROR_CODES,
   buildLivestreamCapabilities,
@@ -41,17 +45,40 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function waitForDirector(predicate, timeoutMs = 12000) {
+async function waitForDirector(predicate, timeoutMs = 12000, { mergeDeepContent = false } = {}) {
   // Use the fast /director/state endpoint for scene confirmation — not the
   // heavy /status endpoint which does HLS/RTSP/ffprobe/Ollama probes and takes
   // 2-3 seconds per call. /director/state reads cached policy state + a single
   // OBS scene read, targeting <250ms. Fall back to /status when the fast
   // endpoint is unavailable (older director builds / test doubles).
+  // When mergeDeepContent is set, seed one deep /status for media_control_content_active
+  // and stream probes used by start-gate composition checks.
   const deadline = Date.now() + timeoutMs;
   let latest = null;
+  let deep = null;
+  if (mergeDeepContent) {
+    deep = await callDirector('GET', '/status');
+  }
   while (Date.now() < deadline) {
     latest = await callDirector('GET', '/director/state');
-    if (!latest.ok) latest = await callDirector('GET', '/status');
+    if (!latest.ok) latest = deep && deep.ok ? deep : await callDirector('GET', '/status');
+    if (latest.ok && deep && deep.ok) {
+      const fast = latest.data || {};
+      const full = deep.data || {};
+      latest = {
+        ...latest,
+        data: {
+          ...full,
+          ...fast,
+          media_control_content_active: full.media_control_content_active,
+          kamrui_camera_1_stream: full.kamrui_camera_1_stream,
+          kamrui_camera_2_stream: full.kamrui_camera_2_stream,
+          annke_camera_3_stream: full.annke_camera_3_stream,
+          peertube_configured: full.peertube_configured,
+          mode: fast.effective_mode || fast.configured_mode || fast.mode || full.mode,
+        },
+      };
+    }
     if (latest.ok && predicate(latest.data || {})) return latest;
     await sleep(300);
   }
@@ -77,15 +104,17 @@ function planAwareSafetyGate(data, plan, contentActive) {
     if (effectiveMode !== 'manual') failures.push('effective_mode_not_manual');
     if (data && data.manual_hold === false) failures.push('manual_hold_false');
     if (autoswitchRt) failures.push('autoswitch_still_enabled');
-    // Camera health is not in the past endpoint; accept if scene matches.
+    // Camera health is not in the fast endpoint; accept if scene matches.
   } else if (plan.production_mode === 'ai_director') {
     if (configuredMode !== 'auto') failures.push('mode_not_auto');
     if (effectiveMode !== 'auto') failures.push('effective_mode_not_auto');
     if (!autoswitchRt && data && data.autoswitch_runtime_enabled === false) failures.push('autoswitch_not_enabled');
     if (data && data.manual_hold === true) failures.push('manual_hold_still_true');
-    // Content composition: check director.content_active vs contentActive
-    const director = (data && data.director) || {};
-    if (typeof director.content_active === 'boolean' && director.content_active !== !!contentActive) {
+    // Content composition: only fail when director has a trustworthy observation
+    // that disagrees with MC program content. Unknown / unconfigured room probes
+    // (expected_room_not_configured) must not brick Start Live Stream.
+    const observed = resolveDirectorContentActive(data);
+    if (observed.known && observed.value !== !!contentActive) {
       failures.push('content_state_mismatch');
     }
   } else if (plan.production_mode === 'manual_multicamera') {
@@ -979,7 +1008,7 @@ router.post('/start', async (req, res) => {
     const result = planAwareSafetyGate(data, plan, programState.content_active);
     return result.safe;
   };
-  const statusAfterMode = await waitForDirector(safetyCheck);
+  const statusAfterMode = await waitForDirector(safetyCheck, 12000, { mergeDeepContent: true });
   const preparedProductionState = observeDirectorResult(req, statusAfterMode, 'stream:prepared');
   const safetyResult = statusAfterMode && statusAfterMode.ok
     ? planAwareSafetyGate(statusAfterMode.data, plan, programState.content_active)
