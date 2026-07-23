@@ -7,6 +7,7 @@
 
 const DEFAULT_STALE_AFTER_MS = 30000;
 const stateByWorkspace = new Map();
+const lastErrorByWorkspace = new Map();
 
 function normalizeWorkspaceId(workspaceId) {
   const normalized = typeof workspaceId === 'string' ? workspaceId.trim() : '';
@@ -160,8 +161,36 @@ function getLiveProductionState(workspaceId, options = {}) {
   return state;
 }
 
+function setLiveStreamLastError(workspaceId, error, options = {}) {
+  const id = normalizeWorkspaceId(workspaceId);
+  if (!error || !error.code) {
+    lastErrorByWorkspace.delete(id);
+    return null;
+  }
+  const entry = {
+    code: safeText(String(error.code), 80),
+    message: safeText(String(error.message || error.error || ''), 240),
+    at: Number.isFinite(Number(options.now)) ? Number(options.now) : Date.now(),
+    requestId: error.requestId || error.request_id || null,
+  };
+  lastErrorByWorkspace.set(id, entry);
+  return { ...entry };
+}
+
+function clearLiveStreamLastError(workspaceId) {
+  const id = normalizeWorkspaceId(workspaceId);
+  lastErrorByWorkspace.delete(id);
+}
+
+function getLiveStreamLastError(workspaceId) {
+  const id = normalizeWorkspaceId(workspaceId);
+  const entry = lastErrorByWorkspace.get(id);
+  return entry ? { ...entry } : null;
+}
+
 function resetLiveProductionStateForTests() {
   stateByWorkspace.clear();
+  lastErrorByWorkspace.clear();
 }
 
 module.exports = {
@@ -169,5 +198,8 @@ module.exports = {
   mapDirectorStatus,
   updateLiveProductionState,
   getLiveProductionState,
+  setLiveStreamLastError,
+  clearLiveStreamLastError,
+  getLiveStreamLastError,
   resetLiveProductionStateForTests,
 };

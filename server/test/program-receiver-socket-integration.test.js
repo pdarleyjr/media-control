@@ -5,6 +5,8 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const { Server } = require('socket.io');
 const { io: connectClient } = require('socket.io-client');
+const { installIsolatedTestDatabase } = require('./live-stream-test-db');
+installIsolatedTestDatabase('program-receiver-socket');
 const { db } = require('../db/database');
 const setupDeviceSocket = require('../ws/deviceSocket');
 const { ensureLiveStreamDisplay } = require('../lib/live-stream-display');
