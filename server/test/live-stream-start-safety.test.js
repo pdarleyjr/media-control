@@ -18,6 +18,16 @@ test('live-program preparation is explicit and does not start the stream or chan
 
 test('live start defaults to manual mode and gates automatic direction explicitly', () => {
   assert.match(source, /directorMode === 'auto' \? 'auto' : 'manual'|director_mode === 'auto' \? 'auto' : 'manual'/);
+  assert.match(
+    source,
+    /ensureDeepDirectorHealth|deepHealthHasStreamProbes/,
+    'operator-state must seed deep /status stream probes so go-live safety is not falsely blocked'
+  );
+  assert.match(
+    source,
+    /mergeDirectorForCapabilities/,
+    'operator-state must merge fast director state with deep camera stream probes'
+  );
   assert.match(source, /confirm_auto_canary/);
   assert.match(source, /AUTO_CANARY_CONFIRMATION_REQUIRED/);
   assert.match(source, /callDirector\('POST', `\/mode\/\$\{directorMode\}`\)/);

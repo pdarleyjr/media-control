@@ -391,50 +391,79 @@ function getCachedDeepHealth(workspaceId) {
   return hit;
 }
 
+function deepHealthHasStreamProbes(directorResult) {
+  const data = directorResult && directorResult.ok ? (directorResult.data || {}) : {};
+  return typeof data.kamrui_camera_1_stream === 'boolean'
+    || typeof data.kamrui_camera_2_stream === 'boolean'
+    || typeof data.annke_camera_3_stream === 'boolean'
+    || typeof data.kamrui_camera_3_stream === 'boolean';
+}
+
+// /director/state is fast but omits camera stream probes + peertube flags that the
+// go-live safety ladder needs. Keep a deep /status cache and refresh when missing/stale.
+async function ensureDeepDirectorHealth(workspaceId) {
+  const cached = getCachedDeepHealth(workspaceId);
+  const stale = !cached || (Date.now() - cached.at > DEEP_HEALTH_TTL_MS);
+  const missingStreams = !cached || !deepHealthHasStreamProbes(cached.director);
+  if (!stale && !missingStreams) return cached;
+  const full = await callDirector('GET', '/status');
+  if (full && full.ok) cacheDeepHealth(workspaceId, full);
+  return getCachedDeepHealth(workspaceId);
+}
+
+function mergeDirectorForCapabilities(fastDirector, deepCached) {
+  if (!fastDirector || !fastDirector.ok) return fastDirector;
+  const fast = fastDirector.data || {};
+  const deep = deepCached && deepCached.director && deepCached.director.ok
+    ? (deepCached.director.data || {})
+    : {};
+  const mode = fast.effective_mode || fast.configured_mode || fast.mode
+    || deep.effective_mode || deep.configured_mode || deep.mode || null;
+  return {
+    ...fastDirector,
+    data: {
+      ...deep,
+      ...fast,
+      stream_active: fast.stream_active ?? deep.stream_active,
+      stream_state: fast.stream_state || deep.stream_state,
+      recording_active: fast.recording_active ?? deep.recording_active,
+      recording_state: fast.recording_state || deep.recording_state,
+      current_scene: fast.current_scene || deep.current_scene || deep.actual_obs_scene || null,
+      desired_scene: fast.desired_scene || deep.desired_scene || null,
+      configured_mode: fast.configured_mode || deep.configured_mode || deep.mode || mode,
+      effective_mode: fast.effective_mode || deep.effective_mode || deep.mode || mode,
+      mode,
+      manual_hold: fast.manual_hold ?? deep.manual_hold,
+      autoswitch_runtime_enabled: fast.autoswitch_runtime_enabled ?? deep.autoswitch_runtime_enabled,
+      autoswitch_enabled: fast.autoswitch_enabled ?? deep.autoswitch_enabled,
+      obs: fast.obs_connected ?? fast.obs ?? deep.obs,
+      // deep probes win for stream health — fast endpoint never carries them
+      kamrui_camera_1_stream: deep.kamrui_camera_1_stream,
+      kamrui_camera_2_stream: deep.kamrui_camera_2_stream,
+      annke_camera_3_stream: deep.annke_camera_3_stream,
+      kamrui_camera_3_stream: deep.kamrui_camera_3_stream,
+      peertube_configured: typeof deep.peertube_configured === 'boolean'
+        ? deep.peertube_configured
+        : fast.peertube_configured,
+      operator_stream_start_allowed: fast.operator_stream_start_allowed
+        ?? deep.operator_stream_start_allowed
+        ?? deep.stream_start_allowed,
+      stream_start_allowed: fast.stream_start_allowed ?? deep.stream_start_allowed,
+    },
+  };
+}
+
 router.get('/operator-state', async (req, res) => {
   const requestId = createRequestId();
   if (!workspaceGuard(req, res, requestId)) return;
   const t0 = Date.now();
   const director = await callDirector('GET', '/director/state');
-  const cached = getCachedDeepHealth(req.workspaceId);
-  // Merge camera/health summary from cache when fast endpoint lacks streams.
-  let directorForCaps = director;
-  if (director.ok && cached && cached.director && cached.director.ok) {
-    const fast = director.data || {};
-    const deep = cached.director.data || {};
-    directorForCaps = {
-      ...director,
-      data: {
-        ...deep,
-        ...fast,
-        // Prefer fast stream/recording/mode flags; keep deep probe flags only if missing.
-        stream_active: fast.stream_active ?? deep.stream_active,
-        stream_state: fast.stream_state || deep.stream_state,
-        recording_active: fast.recording_active ?? deep.recording_active,
-        recording_state: fast.recording_state || deep.recording_state,
-        current_scene: fast.current_scene || deep.current_scene,
-        desired_scene: fast.desired_scene || deep.desired_scene,
-        configured_mode: fast.configured_mode || deep.configured_mode || deep.mode,
-        effective_mode: fast.effective_mode || deep.effective_mode || deep.mode,
-        manual_hold: fast.manual_hold ?? deep.manual_hold,
-        autoswitch_runtime_enabled: fast.autoswitch_runtime_enabled ?? deep.autoswitch_runtime_enabled,
-        obs: fast.obs_connected ?? deep.obs,
-        kamrui_camera_1_stream: deep.kamrui_camera_1_stream,
-        kamrui_camera_2_stream: deep.kamrui_camera_2_stream,
-        annke_camera_3_stream: deep.annke_camera_3_stream,
-      },
-    };
-  } else if (director.ok) {
-    const fast = director.data || {};
-    directorForCaps = {
-      ...director,
-      data: {
-        ...fast,
-        obs: fast.obs_connected ?? fast.obs,
-        mode: fast.effective_mode || fast.configured_mode || fast.mode,
-      },
-    };
-  }
+  const cached = await ensureDeepDirectorHealth(req.workspaceId);
+  // Merge camera/health summary from deep /status so approved scenes are not
+  // falsely marked unsafe when the UI only polls the fast operator-state path.
+  const directorForCaps = director.ok
+    ? mergeDirectorForCapabilities(director, cached)
+    : director;
   const contract = await buildStatusContract(req, directorForCaps, requestId);
   const plan = getPlan(req.workspaceId);
   const elapsed = Date.now() - t0;
