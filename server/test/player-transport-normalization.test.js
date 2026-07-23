@@ -196,7 +196,7 @@ test('player screenshot reporting tolerates socket startup and disconnect races'
   );
   const canvasCapture = readSnippet(
     path.join(__dirname, '..', 'player', 'index.html'),
-    'function captureAndSend() {',
+    'function captureAndSend(correlationId = null) {',
     'function startStreaming()'
   );
 

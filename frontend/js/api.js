@@ -363,6 +363,9 @@ export const api = {
   // { code:'CONFIRM_ALL_REQUIRED', count }; broadcast() resolves with that body
   // (instead of throwing) so the UI can prompt and retry with confirm_all:true.
   broadcast: (payload) => requestBroadcast(payload),
+  broadcastStatus: (requestId) => request(`/broadcast/${encodeURIComponent(requestId)}`, {
+    headers: { 'Cache-Control': 'no-store' },
+  }),
 
   // ==================== MBFD live stream orchestration ====================
   liveStream: {

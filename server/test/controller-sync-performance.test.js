@@ -41,7 +41,7 @@ test('media control drag drop refreshes the active visual truth without polling 
   assert.match(source, /activeIntervalMs: LIVE_EMBED_PREVIEWS \? BACKGROUND_PREVIEW_INTERVAL_MS : ACTIVE_PREVIEW_INTERVAL_MS/);
   assert.match(source, /backgroundIntervalMs: BACKGROUND_PREVIEW_INTERVAL_MS/);
   assert.match(source, /for \(const delay of \[350, 1400\]\)/);
-  assert.match(source, /const ok = await sendToDisplays\(parsed\.source, \[deviceId\], parsed\.label\)/);
+  assert.match(source, /const ok = await sendToPhysicalScope\(parsed\.source, \[deviceId\], parsed\.label\)/);
   assert.match(source, /if \(ok\) refreshAfterSend\(\[deviceId\]\)/);
 });
 
@@ -254,10 +254,10 @@ test('document player publishes the actual rendered slide to the parent screensh
 test('parent screenshot requests never overwrite iframe content with a fake fallback card', () => {
   const player = fs.readFileSync(path.join(__dirname, '..', 'player', 'index.html'), 'utf8');
 
-  assert.match(player, /function requestIframeScreenshot\(\)/);
+  assert.match(player, /function requestIframeScreenshot\(correlationId = null\)/);
   assert.match(player, /typeof childWindow\.publishScreenshot === 'function'/);
   assert.match(player, /__mc_screenshot_request: true/);
-  assert.match(player, /if \(requestIframeScreenshot\(\)\) return/);
+  assert.match(player, /if \(requestIframeScreenshot\(correlationId\)\) return/);
 });
 
 test('server requests fresh previews after delivered content changes', () => {

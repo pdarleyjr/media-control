@@ -218,11 +218,16 @@ function emit(event, data) {
   if (cbs) cbs.forEach(cb => cb(data));
 }
 
-export function requestScreenshot(deviceId) {
+export function requestScreenshot(deviceId, options = {}) {
   if (typeof localStorage !== 'undefined' && localStorage.getItem('mc_diag') === '1') {
     console.log('requestScreenshot:', deviceId, 'socket connected:', dashboardSocket?.connected);
   }
-  if (dashboardSocket) dashboardSocket.emit('dashboard:request-screenshot', { device_id: deviceId });
+  if (dashboardSocket) {
+    dashboardSocket.emit('dashboard:request-screenshot', {
+      device_id: deviceId,
+      correlation_id: options.correlationId || null,
+    });
+  }
 }
 
 function emitSelectedTarget() {

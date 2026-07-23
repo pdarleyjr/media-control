@@ -26,6 +26,8 @@ const OFFLINE_DEBOUNCE_MS = 5000;
 // dashboardNs.emit can be scoped instead of broadcast platform-wide.
 const { deviceRoom, emitToWorkspace, targetRoomsForDevice, displayRoom, roomStateRoom } = require('../lib/socket-rooms');
 const commandModel = require('../lib/command-model');
+const { getBroadcastDeliveryStore } = require('../lib/broadcast-delivery');
+const broadcastDelivery = getBroadcastDeliveryStore(db);
 const nodeRegistry = require('../lib/node-registry');
 const { parseStoredLayout, groupForDevice, resolveEffectiveLayoutLeaders } = require('../lib/wall-layout');
 const { buildUniversalWallGeometry, buildLayoutAssignment } = require('../lib/wall-geometry');
@@ -255,7 +257,7 @@ function restoreStateForDevice(deviceId, device, wall, layoutGroup) {
 
 // Build playlist payload with layout and zones
 // Reads from published_snapshot (Phase 3) so draft edits don't affect live devices
-function buildPlaylistPayload(deviceId) {
+function buildPlaylistPayload(deviceId, delivery = null) {
   const device = db.prepare('SELECT id, name, playlist_id, layout_id, orientation, wall_id, screen_width, screen_height, refresh_rate_hz, auto_detect_resolution FROM devices WHERE id = ?').get(deviceId);
 
   let assignments = [];
@@ -428,6 +430,33 @@ function buildPlaylistPayload(deviceId) {
     device_geometry: payload.device_geometry,
     display_profile: payload.display_profile,
   })).digest('hex').slice(0, 24);
+  let activeDelivery = delivery && typeof delivery === 'object' ? delivery : null;
+  if (!activeDelivery) {
+    activeDelivery = broadcastDelivery.pendingForDevice(deviceId, payload.playlist_revision);
+  }
+  if (
+    activeDelivery
+    && typeof activeDelivery === 'object'
+    && activeDelivery.requestId
+    && activeDelivery.commandId
+    && activeDelivery.sourceId
+  ) {
+    const prepared = broadcastDelivery.markPrepared({
+      requestId: activeDelivery.requestId,
+      deviceId,
+      commandId: activeDelivery.commandId,
+      playlistRevision: payload.playlist_revision,
+      expectedSourceId: activeDelivery.expectedSourceId || null,
+    });
+    if (prepared.applied) payload.broadcast_delivery = {
+      request_id: String(activeDelivery.requestId),
+      command_id: String(activeDelivery.commandId),
+      source_id: String(activeDelivery.sourceId),
+      source_type: String(activeDelivery.sourceType || 'content'),
+      expected_source_id: activeDelivery.expectedSourceId ? String(activeDelivery.expectedSourceId) : null,
+      expected_playlist_revision: payload.playlist_revision,
+    };
+  }
   return payload;
 }
 
@@ -895,7 +924,7 @@ module.exports = function setupDeviceSocket(io) {
     // Screenshot received from device - relay via WebSocket, keep latest in memory
     socket.on('device:screenshot', (data) => {
       if (!requireDeviceAuth()) return;
-      const { device_id, image_b64, captured_at, timestamp } = data;
+      const { device_id, image_b64, captured_at, timestamp, correlation_id } = data;
       if (!device_id || device_id !== currentDeviceId || !image_b64) return;
       // Validate screenshot size (max 2MB base64 ≈ 1.5MB image)
       if (image_b64.length > 2 * 1024 * 1024) return;
@@ -919,6 +948,7 @@ module.exports = function setupDeviceSocket(io) {
           image_data: `data:image/jpeg;base64,${image_b64}`,
           timestamp: Date.now(),
           captured_at: Math.floor(Date.now() / 1000),
+          correlation_id: correlation_id || null,
         });
       } catch (err) {
         console.error('Screenshot save error:', err);
@@ -932,6 +962,63 @@ module.exports = function setupDeviceSocket(io) {
       if (device_id !== currentDeviceId) return;
       console.log(`Device ${device_id} content ${content_id}: ${status}`);
       emitToDeviceWorkspace(dashboardNs, device_id, 'dashboard:content-ack', { device_id, content_id, status });
+    });
+
+    // Content-broadcast receipt/render proof. The player socket is already
+    // authenticated; always stamp currentDeviceId instead of trusting a
+    // client-provided device id. The store rejects the event unless request,
+    // per-device command, and exact playlist revision all match.
+    socket.on('device:broadcast-status', (data) => {
+      try {
+        if (!requireDeviceAuth()) return;
+        const raw = data && typeof data === 'object' ? data : {};
+        const requestId = String(raw.request_id || '').slice(0, 128);
+        const commandId = String(raw.command_id || '').slice(0, 128);
+        const playlistRevision = String(raw.playlist_revision || '').slice(0, 128);
+        const phase = String(raw.phase || '').toLowerCase();
+        if (!requestId || !commandId || !playlistRevision) return;
+
+        const rawState = raw.player_state && typeof raw.player_state === 'object'
+          ? raw.player_state
+          : {};
+        const playerState = {
+          current_content_id: rawState.current_content_id || null,
+          current_asset_id: rawState.current_asset_id || null,
+          content_type: rawState.content_type || null,
+          layout_mode: rawState.layout_mode || null,
+          render_state: rawState.render_state || null,
+          error_state: rawState.error_state || null,
+          paused: rawState.paused == null ? null : !!rawState.paused,
+          muted: rawState.muted == null ? null : !!rawState.muted,
+          volume: Number.isFinite(Number(rawState.volume)) ? Number(rawState.volume) : null,
+          wall_id: rawState.wall_id || null,
+          group_id: rawState.group_id || null,
+          member_id: rawState.member_id || currentDeviceId,
+        };
+        const result = broadcastDelivery.markPlayerStatus({
+          requestId,
+          deviceId: currentDeviceId,
+          commandId,
+          phase,
+          playlistRevision,
+          rendererSessionId: raw.renderer_session_id,
+          renderGeneration: raw.render_generation,
+          playerState,
+          failureReason: raw.failure_reason ? String(raw.failure_reason).slice(0, 500) : null,
+        });
+        if (!result.applied) return;
+
+        const request = broadcastDelivery.getRequest(requestId);
+        const device = request?.devices?.find((entry) => entry.device_id === currentDeviceId) || null;
+        emitToDeviceWorkspace(dashboardNs, currentDeviceId, 'dashboard:broadcast-status', {
+          request_id: requestId,
+          status: request?.status || 'in_progress',
+          device,
+        });
+        scheduleDeviceRoomSnapshot(io, currentDeviceId, `broadcast:${phase}`);
+      } catch (e) {
+        console.warn(`device:broadcast-status handler error for ${currentDeviceId}: ${e.message}`);
+      }
     });
 
     // ── Phase 2: reliable command/state model ─────────────────────────────

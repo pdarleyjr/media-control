@@ -11,7 +11,7 @@ import { mountActionDock } from './media-control/action-dock.js';
 import * as displayState from '../services/display-state.js';
 import { previewSource, renderStage } from './media-control/stage.js';
 import { renderToolbox } from './media-control/toolbox.js';
-import { sendToDisplays, sentToast } from './media-control/send.js';
+import { sendToDisplays, sentToast, trackBroadcastDelivery } from './media-control/send.js';
 import { renderInspector, closeInspector } from './media-control/inspector.js';
 import { renderMultiview, teardownMultiview, buildSplitGridUrl } from './media-control/multiview.js';
 import { pickRoutingTargets } from './media-control/routing-picker.js';
@@ -39,6 +39,16 @@ import { mount as mountWhiteboardSurface } from './media-control/whiteboard.js';
 import { openTargetPicker as openAuthoritativeTargetPicker } from '../components/target-picker.js';
 import { getCurrentTargetCatalog, waitForTargetCatalog } from '../services/target-catalog-runtime.js';
 import { buildWhiteboardTargets, findWhiteboardTargetForActive } from '../services/whiteboard-targets.js';
+import {
+  VIEW_MODE,
+  buildBroadcastSelection,
+  buildRoomBroadcastSelection,
+  createCommandCenterState,
+  enterFocusView,
+  setBroadcastTargets,
+  setControlTarget,
+  showRoomOverview,
+} from '../services/command-center-state.js';
 // transport.js is used by stage.js internally — no direct import needed here.
 
 // Rail "Room setup" launcher icons (stroke icons, dashboard SVG vocabulary).
@@ -127,6 +137,7 @@ function openContentDrawerFiltered(folderName) {
 let activeTarget = null;
 let activeControlTarget = null;
 const LAST_TARGET_KEY = 'mc_control_last_target';
+let commandCenterState = createCommandCenterState();
 let targetApi = null;       // target-selector module API
 let transportApi = null;    // canvas-level transport row
 let spanSplitApi = null;    // Span | Split toggle
@@ -137,7 +148,8 @@ let unsub = null;
 let unsubChip = null;   // broadcast-chip unsubscribe (Task 4.5)
 let cmdAckHandler = null;   // Phase-2 command:ack (toast on timeout/failure)
 let stateSyncHandler = null;
-let playbackStateHandler = null;  // dashboard:playback-state listener
+let playbackStateHandler = null;  // playback-state listener (bridged from dashboard socket)
+let screenshotReadyHandler = null;
 let previewAudioGestureHandler = null;
 let multiviewEscapeHandler = null;
 let selectedIds = [];   // ids on the stage; re-hydrated from the server, persisted on change
@@ -205,6 +217,99 @@ function layoutGroupForDevice(deviceId) {
   return layoutGroupTargets().find((group) => group.member_ids.includes(deviceId)) || null;
 }
 
+function commandCenterCatalog() {
+  const displays = displayState.getAll()
+    .filter((display) => display && !isLiveStreamTargetId(display.id))
+    .map((display) => ({
+      ...display,
+      type: 'display',
+      memberIds: [display.id],
+    }));
+  const byId = new Map(displays.map((display) => [display.id, display]));
+  const wallTargets = (walls || []).map((wall) => {
+    const memberIds = wallDeviceIds(wall);
+    return {
+      ...wall,
+      type: 'wall',
+      layoutRevision: Number(wall.layout_revision) || 0,
+      memberIds,
+      members: memberIds.map((id) => byId.get(id)).filter(Boolean),
+    };
+  });
+  const wallGroups = wallTargets.flatMap((wall) => (
+    (wall.layout?.groups || []).map((group) => {
+      const memberIds = [...new Set((group.member_ids || []).filter(Boolean))];
+      return {
+        ...group,
+        type: 'wall-group',
+        id: `${wall.id}:${group.id}`,
+        wallId: wall.id,
+        groupId: group.id,
+        layoutRevision: wall.layoutRevision,
+        memberIds,
+        members: memberIds.map((id) => byId.get(id)).filter(Boolean),
+      };
+    })
+  ));
+  return {
+    walls: wallTargets,
+    wallGroups,
+    groups: [],
+    displays,
+    standaloneDisplays: displays.filter((display) =>
+      selectedIds.includes(display.id)
+      && !wallMemberIds.has(display.id)
+      && !isRetiredDisplay(display.id)
+    ),
+  };
+}
+
+function refreshBroadcastTargets() {
+  commandCenterState = setBroadcastTargets(
+    commandCenterState,
+    buildRoomBroadcastSelection(commandCenterCatalog()),
+  );
+}
+
+function sameTargetSet(left, right) {
+  const a = [...new Set((left || []).filter(Boolean).map(String))].sort();
+  const b = [...new Set((right || []).filter(Boolean).map(String))].sort();
+  return a.length === b.length && a.every((id, index) => id === b[index]);
+}
+
+function selectionForPhysicalIds(ids) {
+  const catalog = commandCenterCatalog();
+  const normalized = [...new Set((ids || []).filter(Boolean).map(String))];
+  if (sameTargetSet(normalized, commandCenterState.physicalResolvedTargets)) {
+    return {
+      broadcastTargets: [...commandCenterState.broadcastTargets],
+      physicalResolvedTargets: [...commandCenterState.physicalResolvedTargets],
+    };
+  }
+  const matchingWall = catalog.walls.find((wall) => sameTargetSet(wall.memberIds, normalized));
+  if (matchingWall) return buildBroadcastSelection(catalog, [matchingWall]);
+  const matchingGroup = catalog.wallGroups.find((group) => sameTargetSet(group.memberIds, normalized));
+  if (matchingGroup) return buildBroadcastSelection(catalog, [matchingGroup]);
+  return buildBroadcastSelection(
+    catalog,
+    normalized.map((id) => ({ type: 'display', id })),
+  );
+}
+
+async function sendToPhysicalScope(source, ids, label) {
+  const selection = selectionForPhysicalIds(ids);
+  if (!selection.physicalResolvedTargets.length) {
+    showToast(t('mc.send.no_displays'), 'error');
+    return false;
+  }
+  return sendToDisplays(
+    source,
+    selection.physicalResolvedTargets,
+    label,
+    { targets: selection.broadcastTargets },
+  );
+}
+
 function wallViewForLayoutGroup(wall, group) {
   if (!wall || !group) return null;
   const members = (wall.devices || []).filter((member) => group.member_ids.includes(member.device_id));
@@ -242,6 +347,7 @@ function pruneSelection() {
     selectedIds = next;
     persistSelection();
   }
+  refreshBroadcastTargets();
 }
 
 function stageEl()    { return document.getElementById('mc-stage'); }
@@ -359,6 +465,7 @@ function paintStage() {
     selectedIds: renderSelectedIds,
     livePreviewDeviceId: LIVE_EMBED_PREVIEWS ? activePreviewDeviceId() : null,
     activeControlTargetId: activeControlTarget?.id || null,
+    overviewMode: commandCenterState.viewMode === VIEW_MODE.OVERVIEW,
     onSelect: selectStageDisplayTarget,
     onSelectGroup: selectLayoutGroupTarget,
     onCalibrateWall: showWallCalibration,
@@ -375,6 +482,7 @@ function paintStage() {
   const isCinemaTarget = !!(activeTarget &&
     (activeTarget.type === 'wall' || activeTarget.type === 'group' || activeTarget.type === 'display'));
   el.classList.toggle('mc-cc-cinema', isCinemaTarget);
+  paintViewModeControls();
   // Re-attach drop handlers on the freshly-rendered cards.
   attachStageDrop(el);
   // Record what we just rendered so screenshot-only updates can patch in place
@@ -388,10 +496,19 @@ function paintStage() {
   }, 0);
 }
 
+function paintViewModeControls() {
+  document.querySelectorAll('[data-mc-view-mode]').forEach((button) => {
+    const active = button.dataset.mcViewMode === commandCenterState.viewMode;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+}
+
 function selectLayoutGroupTarget(groupId) {
   const group = layoutGroupById(groupId);
   if (!group) return;
   activeControlTarget = { ...group, type: 'group', id: group.id, wall_id: group.wall_id };
+  commandCenterState = setControlTarget(commandCenterState, activeControlTarget);
   syncSocketTarget(activeControlTarget);
   paintStage();
   paintSummary();
@@ -624,11 +741,11 @@ function applyScreensaver(ids, source, label) {
   }
   if (source && source._screensaver === 'blank' && source.variant === 'black') {
     if (!Array.isArray(ids) || ids.length === 0) return Promise.resolve(false);
-    return sendToDisplays({ remote_url: BLACK_SCREENSAVER_URL }, ids, label || t('mc.saver.blank_black'))
+    return sendToPhysicalScope({ remote_url: BLACK_SCREENSAVER_URL }, ids, label || t('mc.saver.blank_black'))
       .then((ok) => { if (ok) refreshAfterSend(ids); return ok; });
   }
   if (!Array.isArray(ids) || ids.length === 0 || !source) return Promise.resolve(false);
-  return sendToDisplays(source, ids, label).then((ok) => { if (ok) refreshAfterSend(ids); return ok; });
+  return sendToPhysicalScope(source, ids, label).then((ok) => { if (ok) refreshAfterSend(ids); return ok; });
 }
 
 function showWallCalibration(deviceIds, wallName) {
@@ -649,7 +766,10 @@ async function setWallMode(wallId, mode) {
   try {
     await api.updateWall(wallId, { layout_mode: mode });
     await loadWalls();
-    if (activeControlTarget?.wall_id === wallId) activeControlTarget = null;
+    if (activeControlTarget?.wall_id === wallId) {
+      activeControlTarget = null;
+      commandCenterState = setControlTarget(commandCenterState, null);
+    }
     paintStage();
     paintSummary();
     showToast(t(mode === 'split' ? 'mc.wall.tpl_split_on' : 'mc.wall.tpl_span_on'), 'success');
@@ -671,6 +791,7 @@ async function setWallLayout(wallId, preset, expectedRevision) {
     activeControlTarget = preferred
       ? { type: 'group', ...preferred, id: preferred.id, wall_id: wallId, supportsModes: false }
       : null;
+    commandCenterState = setControlTarget(commandCenterState, activeControlTarget);
     const wallTarget = { type: 'wall', id: wallId, wall_id: wallId, supportsModes: true };
     if (targetApi) targetApi.setActive(wallTarget);
     handleTargetChange(wallTarget);
@@ -712,7 +833,7 @@ async function dropOnWallHalf(wallId, halfIndex, source, label) {
     catch { /* best-effort; broadcast still targets the device directly */ }
   }
 
-  const ok = await sendToDisplays({ remote_url: url }, [leaderId], label || t('mc.wall.split_label'));
+  const ok = await sendToPhysicalScope({ remote_url: url }, [leaderId], label || t('mc.wall.split_label'));
   if (ok) { refreshAfterSend([leaderId]); paintStage(); }
 }
 
@@ -754,8 +875,12 @@ function startPreviewRefresh() {
     minIntervalMs: PREVIEW_REQUEST_MIN_MS,
     activeIntervalMs: LIVE_EMBED_PREVIEWS ? BACKGROUND_PREVIEW_INTERVAL_MS : ACTIVE_PREVIEW_INTERVAL_MS,
     backgroundIntervalMs: BACKGROUND_PREVIEW_INTERVAL_MS,
-    requestScreenshot: (id) => requestScreenshot(id),
+    requestScreenshot: (id, meta) => requestScreenshot(id, meta),
     isRetired: isRetiredDisplay,
+    isOffline: (id) => {
+      const display = displayState.get?.(id) || displayState.getAll?.().find((candidate) => candidate.id === id);
+      return !!display && display.online === false;
+    },
     isFresh: (id, freshSeconds) => {
       try {
         const d = displayState.get?.(id) || displayState.getAll?.().find((x) => x.id === id);
@@ -793,10 +918,19 @@ function stopPreviewRefresh() {
 // Content-send target scope: the displays on the stage (the current selection).
 // Dragging a source onto a single card always targets just that card.
 function roomDisplayIds() {
-  return displayState.getAll().filter(d => !wallMemberIds.has(d.id) && !isLiveStreamTargetId(d.id)).map(d => d.id);
+  return displayState.getAll().filter(d =>
+    !wallMemberIds.has(d.id)
+    && !isLiveStreamTargetId(d.id)
+    && !isRetiredDisplay(d.id)
+  ).map(d => d.id);
 }
 function onlineRoomDisplayIds() {
-  return displayState.getAll().filter(d => d.online && !wallMemberIds.has(d.id) && !isLiveStreamTargetId(d.id)).map(d => d.id);
+  return displayState.getAll().filter(d =>
+    d.online
+    && !wallMemberIds.has(d.id)
+    && !isLiveStreamTargetId(d.id)
+    && !isRetiredDisplay(d.id)
+  ).map(d => d.id);
 }
 // The managed "Content for live stream" target must NEVER be an implicit
 // broadcast target. It only receives content when the instructor explicitly
@@ -804,7 +938,7 @@ function onlineRoomDisplayIds() {
 // stage-background "send to all on stage" drop from leaking classroom content
 // onto the live program.
 function effectiveTargets() {
-  return selectedIds.filter((id) => !isLiveStreamTargetId(id));
+  return [...commandCenterState.physicalResolvedTargets];
 }
 
 // Physical screen-power scope for Blank all: EVERY controllable display PLUS
@@ -919,7 +1053,15 @@ async function routeNextcloudWithPicker(path, label = t('mc.tile.content_fallbac
       result = await api.files.broadcast(path, undefined, { targets: route.targetReferences, confirm_all: true });
     }
     if (result && result.success) {
-      sentToast(label, result.sent, result.total);
+      if (result.request_id) {
+        const delivery = await trackBroadcastDelivery(result.request_id, label, result.delivery || null);
+        if (delivery?.status === 'confirmed') {
+          refreshAfterSend(route.targetIds);
+          return true;
+        }
+        return false;
+      }
+      sentToast(label, Number(result.sent) || 0, Number(result.total) || 0);
       refreshAfterSend(route.targetIds);
       return true;
     }
@@ -1188,7 +1330,7 @@ function attachStageDrop(stageContainer) {
       const parsed = parseDragSource(e);
       const deviceId = card.dataset.deviceId;
       if (!parsed || !deviceId) return;
-      const ok = await sendToDisplays(parsed.source, [deviceId], parsed.label);
+      const ok = await sendToPhysicalScope(parsed.source, [deviceId], parsed.label);
       if (ok) refreshAfterSend([deviceId]); // re-fetch state + refresh THIS card's preview
     };
     card.addEventListener('drop', handleDrop);
@@ -1245,11 +1387,11 @@ function attachStageDrop(stageContainer) {
         const wall = (walls || []).find((w) => w.id === wallId);
         const single = wallTransportDeviceId(wall) || ids[0];
         showToast(t('mc.route.single_screen_only'), 'info');
-        const ok = await sendToDisplays(parsed.source, [single], parsed.label);
+        const ok = await sendToPhysicalScope(parsed.source, [single], parsed.label);
         if (ok) refreshAfterSend([single]);
         return;
       }
-      const ok = await sendToDisplays(parsed.source, ids, parsed.label);
+      const ok = await sendToPhysicalScope(parsed.source, ids, parsed.label);
       if (ok) refreshAfterSend(ids);
     };
     zone.addEventListener('drop', handleDrop);
@@ -1278,7 +1420,12 @@ function attachStageDrop(stageContainer) {
     if (!parsed) return;
     const targets = effectiveTargets();
     if (!targets.length) { showToast(t('mc.send.no_displays'), 'error'); return; }
-    const ok = await sendToDisplays(parsed.source, targets, parsed.label);
+    const ok = await sendToDisplays(
+      parsed.source,
+      targets,
+      parsed.label,
+      { targets: commandCenterState.broadcastTargets },
+    );
     if (ok) refreshAfterSend(targets);
   });
   stageContainer.addEventListener('mc:source-drop', async (e) => {
@@ -1288,7 +1435,12 @@ function attachStageDrop(stageContainer) {
     if (!parsed) return;
     const targets = effectiveTargets();
     if (!targets.length) { showToast(t('mc.send.no_displays'), 'error'); return; }
-    const ok = await sendToDisplays(parsed.source, targets, parsed.label);
+    const ok = await sendToDisplays(
+      parsed.source,
+      targets,
+      parsed.label,
+      { targets: commandCenterState.broadcastTargets },
+    );
     if (ok) refreshAfterSend(targets);
   });
 }
@@ -1388,12 +1540,17 @@ function syncSocketTarget(tgt) {
 // controls. This is view-only; the socket target join only selects the live
 // ack/state stream for the web/Electron controller.
 function handleTargetChange(tgt) {
+  if (!tgt) {
+    activateRoomOverview();
+    return;
+  }
   if (tgt?.type === 'group') {
     activeControlTarget = tgt;
     activeTarget = { type: 'wall', id: tgt.wall_id, wall_id: tgt.wall_id, supportsModes: true };
+    commandCenterState = setControlTarget(commandCenterState, activeControlTarget);
     targetApi?.setActive?.(activeTarget);
   } else {
-    activeTarget = tgt || null;
+    activeTarget = tgt;
     if (activeTarget?.type === 'wall') {
       const wall = (walls || []).find((candidate) => candidate.id === activeTarget.id);
       const retained = activeControlTarget?.wall_id === wall?.id
@@ -1406,10 +1563,13 @@ function handleTargetChange(tgt) {
     } else {
       activeControlTarget = null;
     }
+    commandCenterState = setControlTarget(commandCenterState, activeControlTarget);
   }
+  commandCenterState = enterFocusView(commandCenterState, activeTarget);
   try {
-    if (activeTarget) sessionStorage.setItem(LAST_TARGET_KEY, JSON.stringify(activeTarget));
-    else sessionStorage.removeItem(LAST_TARGET_KEY);
+    // Migrate the legacy preference that automatically reopened the first wall
+    // in Focus View. Focus is now explicit for each mounted Command Center view.
+    sessionStorage.removeItem(LAST_TARGET_KEY);
   } catch { /* session storage is best effort */ }
   activePreviewCursor = 0;
   syncSocketTarget(activeTarget);
@@ -1423,18 +1583,33 @@ function handleTargetChange(tgt) {
   if (previewId) queuePreviewRequests([previewId], 50, true);
 }
 
+function activateRoomOverview() {
+  activeTarget = null;
+  commandCenterState = showRoomOverview(commandCenterState);
+  try { sessionStorage.removeItem(LAST_TARGET_KEY); } catch { /* best effort */ }
+  activePreviewCursor = 0;
+  syncSocketTarget(activeControlTarget);
+  paintStage();
+  paintSummary();
+  paintChips();
+  transportApi?.repaint?.();
+  spanSplitApi?.repaint?.();
+  screensaverApi?.repaint?.();
+}
+
+function activateFocusView() {
+  const target = activeControlTarget?.type === 'group'
+    ? { type: 'wall', id: activeControlTarget.wall_id, wall_id: activeControlTarget.wall_id, supportsModes: true }
+    : (activeControlTarget || chooseInitialTarget());
+  if (!target) return;
+  targetApi?.setActive?.(target);
+  handleTargetChange(target);
+}
+
 // Pick the initial canvas target so the canvas opens on ONE large preview (per
 // the mockup): the first video wall, else the first online non-wall display,
 // else the first non-wall display. Returns a target object or null.
 function chooseInitialTarget() {
-  try {
-    const saved = JSON.parse(sessionStorage.getItem(LAST_TARGET_KEY) || 'null');
-    if (saved?.type === 'wall' && walls.some((wall) => wall.id === saved.id)) return saved;
-    if (saved?.type === 'group' && layoutGroupById(saved.id)) {
-      return { type: 'wall', id: saved.wall_id, wall_id: saved.wall_id, supportsModes: true };
-    }
-    if (saved?.type === 'display' && displayState.get(saved.id)) return saved;
-  } catch { /* ignore stale target state */ }
   if (Array.isArray(walls) && walls.length) {
     const w = walls.slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))[0];
     if (w && w.id) return { type: 'wall', id: w.id, wall_id: w.id, supportsModes: true };
@@ -1989,6 +2164,10 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
             <div id="mc-summary" class="mc-control-summary" aria-live="polite"></div>
           </div>
         </div>
+        <div class="mc-cc-view-switch" role="group" aria-label="Command Center view">
+          <button type="button" class="mc-cc-view-btn is-active" data-mc-view-mode="overview" aria-pressed="true">Room Overview</button>
+          <button type="button" class="mc-cc-view-btn" data-mc-view-mode="focus" aria-pressed="false">Focus View</button>
+        </div>
         <div class="mc-cc-target" id="mc-target-host"></div>
         <div class="mc-cc-tools">
           <div id="mc-broadcast-chip" class="mc-chip mc-chip-live" hidden></div>
@@ -2058,6 +2237,17 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
         <aside id="mc-inspector" class="mc-inspector" hidden></aside>
       </div>
     </div>`;
+
+  commandCenterState = createCommandCenterState();
+  activeTarget = null;
+  activeControlTarget = null;
+  try { sessionStorage.removeItem(LAST_TARGET_KEY); } catch { /* migrate legacy focus preference */ }
+  document.querySelectorAll('[data-mc-view-mode]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (button.dataset.mcViewMode === VIEW_MODE.OVERVIEW) activateRoomOverview();
+      else activateFocusView();
+    });
+  });
 
   if (!previewAudioGestureHandler) {
     previewAudioGestureHandler = () => enableLivePreviewAudio(app);
@@ -2145,16 +2335,10 @@ pruneSelection();
     getActiveTargetDeviceIds: activeTargetDeviceIds,
     getDisplayState: () => displayState,
   });
-  // Open on ONE large preview per the mockup (first wall, else first display).
-  const initialTarget = chooseInitialTarget();
-  if (initialTarget && targetApi) {
-    targetApi.setActive(initialTarget);
-    handleTargetChange(initialTarget); // paints stage/chips/transport/span/saver
-  }
-
-  paintStage();
+  // Room Overview is the safe enterprise default. Focus View is entered only
+  // after the operator presses Focus View or chooses a target explicitly.
+  activateRoomOverview();
   paintToolbox();
-  paintSummary();
 
   // Phase-2 non-silent ack: surface command:ack ok:false as a toast + chip flip,
   // and refresh chips on display state-sync. Registered for the view's lifetime.
@@ -2333,7 +2517,10 @@ pruneSelection();
   // Fresh data (status, screenshots, wall changes) repaints the stage. The
   // store re-fetches walls-affecting changes via its own 'wall-changed' refresh;
   // we re-derive wall membership opportunistically on each repaint cycle.
-  unsub = displayState.subscribe(() => {
+  unsub = displayState.subscribe((displayList = []) => {
+    for (const display of displayList) {
+      if (display && display.online === false) screenshotPoller?.markOffline(display.id);
+    }
     pruneSelection();
     // Screenshot-only change (same structure) → patch previews in place so the
     // cards (especially the wall) don't flash on every capture. Any structural
@@ -2361,10 +2548,16 @@ pruneSelection();
   // Drive live previews: players only send a screenshot when asked, so poke the
   // displays on the stage shortly after the socket connects, then keep them fresh.
   startPreviewRefresh();
+  screenshotReadyHandler = (data) => {
+    if (!data?.device_id) return;
+    screenshotPoller?.markReady(data.device_id, data.correlation_id);
+  };
+  socketOn('screenshot-ready', screenshotReadyHandler);
 
   // Listen for real-time play/pause events from wall players so the transport
   // bar Play/Pause label stays accurate (the player emits device:playback-state
-  // which the server relays as dashboard:playback-state to this dashboard).
+  // which the server relays as dashboard:playback-state; socket.js bridges to
+  // the local 'playback-state' event used by the UI layer).
   playbackStateHandler = (data) => {
     if (!data || !data.device_id) return;
     // Immediately repaint the transport controls — the transport API reads
@@ -2374,7 +2567,7 @@ pruneSelection();
     // Repaint the blank button in case a screen-on/off event arrives via this path.
     if (dockApi && typeof dockApi.repaintBlank === 'function') dockApi.repaintBlank();
   };
-  socketOn('dashboard:playback-state', playbackStateHandler);
+  socketOn('playback-state', playbackStateHandler);
 
   if (routeHash.includes('panel=cameras')) openLibraryTab('camerafeeds');
   if (routeHash.includes('panel=multiview')) toggleMultiview();
@@ -2405,10 +2598,15 @@ export function unmount() {
   if (dockApi && typeof dockApi.destroy === 'function') dockApi.destroy();
   if (cmdAckHandler) { try { socketOff('command-ack', cmdAckHandler); } catch (_) {} cmdAckHandler = null; }
   if (stateSyncHandler) { try { socketOff('state-sync', stateSyncHandler); } catch (_) {} stateSyncHandler = null; }
-  try { if (playbackStateHandler) socketOff('dashboard:playback-state', playbackStateHandler); } catch (_) {}
+  if (screenshotReadyHandler) {
+    try { socketOff('screenshot-ready', screenshotReadyHandler); } catch (_) {}
+    screenshotReadyHandler = null;
+  }
+  try { if (playbackStateHandler) socketOff('playback-state', playbackStateHandler); } catch (_) {}
   teardownMultiview();    // stop any local audio monitor so it can't keep playing
   closeViewModal();       // dismiss any open room-setup overlay (e.g. Schedules)
   stopPreviewRefresh();   // stop poking players once we leave the control surface
+  displayState.revokeAllScreenshotObjectUrls();
   if (refreshAfterSendTimer) { clearTimeout(refreshAfterSendTimer); refreshAfterSendTimer = null; }
   clearSocketTarget();
   // Close the inspector so a stale panel can't linger across navigations.
@@ -2418,6 +2616,8 @@ export function unmount() {
   // Drop Command Center target + canvas-control state so a stale preview / target
   // can't survive navigation away from #/control.
   activeTarget = null;
+  activeControlTarget = null;
+  commandCenterState = createCommandCenterState();
   targetApi = null;
   transportApi = null;
   spanSplitApi = null;

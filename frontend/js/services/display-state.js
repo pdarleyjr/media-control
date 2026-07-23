@@ -43,6 +43,17 @@ function apiPathKey(baseUrl) {
   }
 }
 
+function screenshotRevisionKey(baseUrl) {
+  if (!baseUrl) return '';
+  try {
+    const u = new URL(baseUrl, typeof location !== 'undefined' ? location.origin : 'http://local');
+    u.searchParams.delete('token');
+    return u.pathname + (u.searchParams.toString() ? `?${u.searchParams}` : '');
+  } catch {
+    return String(baseUrl).replace(/[?&]token=[^&]*/g, '').replace(/[?&]$/, '');
+  }
+}
+
 export function getScreenshotBlobMetrics() {
   return {
     cachedObjectUrls: blobUrlCache.size,
@@ -69,10 +80,14 @@ export async function secureScreenshotUrl(baseUrl, { signal } = {}) {
   if (!baseUrl) return null;
   if (baseUrl.startsWith('blob:') || baseUrl.startsWith('data:')) return baseUrl;
   const key = apiPathKey(baseUrl);
+  const revisionKey = screenshotRevisionKey(baseUrl);
   const cached = blobUrlCache.get(key);
-  if (cached && cached.url && !cached.inFlight) return cached.url;
-  if (cached && cached.inFlight) {
+  if (cached && cached.revisionKey === revisionKey && cached.url && !cached.inFlight) return cached.url;
+  if (cached && cached.revisionKey === revisionKey && cached.inFlight) {
     try { return await cached.inFlight; } catch { return cached.url || null; }
+  }
+  if (cached?.controller) {
+    try { cached.controller.abort(); } catch { /* ignore stale fetch */ }
   }
 
   const token = typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null;
@@ -81,7 +96,12 @@ export async function secureScreenshotUrl(baseUrl, { signal } = {}) {
     if (signal.aborted) controller.abort();
     else signal.addEventListener('abort', () => controller.abort(), { once: true });
   }
-  const entry = { url: cached?.url || null, controller, inFlight: null };
+  const entry = {
+    url: cached?.url || null,
+    revisionKey,
+    controller,
+    inFlight: null,
+  };
   blobUrlCache.set(key, entry);
   blobDebug.inflight += 1;
 
@@ -102,6 +122,12 @@ export async function secureScreenshotUrl(baseUrl, { signal } = {}) {
       }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
+      // A newer screenshot revision may have replaced this request while fetch
+      // was pending. Never let the stale completion overwrite the current slot.
+      if (blobUrlCache.get(key) !== entry) {
+        try { URL.revokeObjectURL(url); blobDebug.revokes += 1; } catch { /* ignore */ }
+        return blobUrlCache.get(key)?.url || entry.url;
+      }
       if (entry.url && entry.url !== url) {
         try { URL.revokeObjectURL(entry.url); blobDebug.revokes += 1; } catch { /* ignore */ }
       }

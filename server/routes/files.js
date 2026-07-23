@@ -6,6 +6,8 @@ const router = express.Router();
 const config = require('../config');
 const ncfs = require('../services/nextcloud-fs');
 const { db } = require('../db/database');
+const { getBroadcastDeliveryStore } = require('../lib/broadcast-delivery');
+const broadcastDelivery = getBroadcastDeliveryStore(db);
 const sceneEngine = require('../services/scene-engine');
 const { logActivity, getClientIp } = require('../services/activity');
 const { resolveUploadMime } = require('../middleware/upload');
@@ -252,16 +254,56 @@ router.post('/broadcast', async (req, res) => {
   // Push to each target via the UNMODIFIED shared push path (broadcast.js:62-73).
   const source = { content_id: id, fit_mode: typeof fit_mode === 'string' ? fit_mode : null };
   const io = req.app.get('io');
+  const totalRequested = targets.length + resolvedTargets.missing.length;
+  const deliveryRequest = broadcastDelivery.createRequest({
+    workspaceId: req.workspaceId,
+    userId: req.user.id,
+    sourceType: 'content',
+    sourceId: id,
+    typedTargets: typedRefs,
+    expectedTargetCount: totalRequested,
+    targets: [
+      ...targets.map((deviceId) => ({ deviceId, expectedSourceId: id })),
+      ...resolvedTargets.missing.map((deviceId) => ({
+        deviceId,
+        resolved: false,
+        initialState: 'failed',
+        failureReason: 'Display was not found in the active workspace',
+      })),
+    ],
+  });
+  const deliveryByDevice = new Map(
+    deliveryRequest.devices.map((entry) => [entry.device_id, entry])
+  );
   let sent = 0;
   const failed = resolvedTargets.missing.slice();
   for (const deviceId of targets) {
-    const ok = sceneEngine.pushSourceToDevice(io, deviceId, source, {
+    const delivery = deliveryByDevice.get(deviceId);
+    const result = sceneEngine.pushSourceToDevice(io, deviceId, source, {
       workspaceId: req.workspaceId,
       userId: req.user.id,
       targetDeviceIds: targets,
       contentContext: contextFromRequest(req),
+      delivery: {
+        requestId: deliveryRequest.id,
+        commandId: delivery.command_id,
+        sourceId: id,
+        sourceType: 'content',
+        expectedSourceId: id,
+      },
+      returnDetails: true,
     });
-    if (ok) sent++; else failed.push(deviceId);
+    broadcastDelivery.markDispatched({
+      requestId: deliveryRequest.id,
+      deviceId,
+      commandId: delivery.command_id,
+      delivered: result.delivered,
+      queued: result.queued,
+      playlistRevision: result.playlistRevision,
+      expectedSourceId: result.expectedSourceId,
+      failureReason: result.failureReason,
+    });
+    if (result.ok) sent++; else failed.push(deviceId);
   }
 
   // Explicit summary log (a broadcast touches many devices).
@@ -276,7 +318,17 @@ router.post('/broadcast', async (req, res) => {
     );
   } catch (e) { /* logging best-effort */ }
 
-  res.json({ success: true, content_id: id, sent, failed, total: requested.length });
+  res.status(202).json({
+    accepted: true,
+    success: true,
+    content_id: id,
+    request_id: deliveryRequest.id,
+    status_url: `/api/broadcast/${encodeURIComponent(deliveryRequest.id)}`,
+    delivery: broadcastDelivery.getRequest(deliveryRequest.id, req.workspaceId),
+    sent,
+    failed,
+    total: totalRequested,
+  });
 });
 
 module.exports = router;

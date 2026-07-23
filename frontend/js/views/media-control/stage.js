@@ -338,7 +338,7 @@ function wallEmptySlot(screenNo) {
 // mirror the wall's leader (single-player walls drive every screen from one
 // player), so all N screens reflect the wall's content. Each screen is its own
 // drop/inspect target; the footer strip fills every screen at once.
-function wallCard(wall, byId, livePreviewDeviceId = null) {
+function wallCard(wall, byId, livePreviewDeviceId = null, overviewMode = false) {
   const members = (wall.devices || []).map(m => wallMemberView(m, byId));
   const cols = Math.max(1, wall.grid_cols || members.reduce((mx, m) => Math.max(mx, (m.grid_col || 0) + 1), 1));
   const rows = Math.max(1, wall.grid_rows || members.reduce((mx, m) => Math.max(mx, (m.grid_row || 0) + 1), 1));
@@ -374,10 +374,15 @@ function wallCard(wall, byId, livePreviewDeviceId = null) {
     for (let c = 0; c < cols; c++) {
       n++;
       const m = byPos.get(c + ',' + r) || leader;
-      cells.push(m ? wallCell(m, n, { showPreview: mode === 'split', livePreview: m.id === livePreviewDeviceId }) : wallEmptySlot(n));
+      cells.push(m ? wallCell(m, n, {
+        showPreview: overviewMode || mode === 'split',
+        livePreview: m.id === livePreviewDeviceId,
+      }) : wallEmptySlot(n));
     }
   }
-  const spanLayer = mode === 'span' ? wallSpanPreview(leader, !!leader && leader.id === livePreviewDeviceId) : '';
+  const spanLayer = mode === 'span' && !overviewMode
+    ? wallSpanPreview(leader, !!leader && leader.id === livePreviewDeviceId)
+    : '';
   return `
     <section class="mc-card mc-wall mc-wall-mode-${mode}" data-wall-id="${esc(wall.id)}" data-layout-mode="${mode}" style="--mc-cols:${cols}; --mc-cell-ar:${cellAr}" aria-label="${esc(t('mc.wall.aria', { name: wall.name }))}">
       <div class="mc-wall-head">
@@ -407,7 +412,7 @@ function wallCard(wall, byId, livePreviewDeviceId = null) {
     </section>`;
 }
 
-function wallGroupsCard(wall, byId, livePreviewDeviceId, activeControlTargetId) {
+function wallGroupsCard(wall, byId, livePreviewDeviceId, activeControlTargetId, overviewMode = false) {
   const groups = wall.layout?.groups || [];
   const orderedMembers = [...(wall.devices || [])].sort((a, b) =>
     (Number(a.grid_row) - Number(b.grid_row)) || (Number(a.grid_col) - Number(b.grid_col))
@@ -436,7 +441,7 @@ function wallGroupsCard(wall, byId, livePreviewDeviceId, activeControlTargetId) 
       data-layout-group-id="${esc(group.id)}" role="button" tabindex="0"
       style="--mc-region-cols:${regionWall.grid_cols}"
       aria-label="${esc(`Control ${regionWall.name}`)}">
-      ${wallCard(regionWall, byId, livePreviewDeviceId)}
+      ${wallCard(regionWall, byId, livePreviewDeviceId, overviewMode)}
     </div>`;
   }).join('');
   return `<section class="mc-wall-groups-overview" data-wall-id="${esc(wall.id)}">
@@ -515,7 +520,7 @@ function wallSplitGroup(wall, byId, livePreviewDeviceId = null) {
       <div class="mc-wall-grid" style="grid-template-columns:repeat(${cols}, 1fr)">
         ${halves.join('')}
       </div>
-      ${transportId ? `<div class="mc-wall-transport" data-tp-host data-device-id="${esc(transportId)}" data-transport-ids="${esc(ids)}" data-blank-ids="${esc(ids)}" data-wall-id="${esc(wall.id)}" data-layout-mode="${esc(mode)}"></div>` : ''}
+      ${transportId ? `<div class="mc-wall-transport" data-tp-host data-device-id="${esc(transportId)}" data-transport-ids="${esc(ids)}" data-blank-ids="${esc(ids)}" data-wall-id="${esc(wall.id)}" data-layout-mode="split"></div>` : ''}
     </section>`;
   }
 
@@ -589,7 +594,7 @@ function emptyState() {
  * @param {(ids:string[], source:object, label:string)=>void} [opts.onScreensaver]
  *   A screensaver option was chosen on a card; broadcast `source` to `ids`.
  */
-export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], livePreviewDeviceId = null, activeControlTargetId = null, onSelect, onSelectGroup, onCalibrateWall, onAddDisplay, onScreenOnChange, onTransportAction, onSetWallMode, onScreensaver } = {}) {
+export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], livePreviewDeviceId = null, activeControlTargetId = null, overviewMode = false, onSelect, onSelectGroup, onCalibrateWall, onAddDisplay, onScreenOnChange, onTransportAction, onSetWallMode, onScreensaver } = {}) {
   if (!container) return;
   const selected = new Set(selectedIds);
 
@@ -623,10 +628,10 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
   // Span walls render as one composite card; SPLIT walls render each member as
   // its own independent display card (see wallSplitGroup).
   const wallCards = wallList.map(w => (w.layout_mode === 'groups'
-    ? wallGroupsCard(w, byId, livePreviewDeviceId, activeControlTargetId)
+    ? wallGroupsCard(w, byId, livePreviewDeviceId, activeControlTargetId, overviewMode)
     : (w.layout_mode === 'split'
       ? wallSplitGroup(w, byId, livePreviewDeviceId)
-      : wallCard(w, byId, livePreviewDeviceId)))).join('');
+      : wallCard(w, byId, livePreviewDeviceId, overviewMode)))).join('');
 
   const isEmpty = !cards && !wallCards;
   container.classList.toggle('mc-stage-is-empty', isEmpty);

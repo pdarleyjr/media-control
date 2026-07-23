@@ -12,6 +12,8 @@ const express = require('express');
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const { db } = require('../db/database');
+const { getBroadcastDeliveryStore } = require('../lib/broadcast-delivery');
+const broadcastDelivery = getBroadcastDeliveryStore(db);
 const sceneEngine = require('../services/scene-engine');
 const { contentUseDecision, contextFromRequest } = require('../lib/content-visibility');
 const { checkRemoteUrlShape } = require('../lib/ssrf-policy');
@@ -229,9 +231,68 @@ router.post('/:id/trigger', (req, res) => {
   if (!requireWorkspaceWrite(req, res)) return;
   const scene = loadScene(req, res);
   if (!scene) return;
+  const resolved = sceneEngine.resolveSceneActions(scene.id);
+  if (!resolved || resolved.actions.length === 0) {
+    return res.status(409).json({ error: 'Scene has no valid physical display targets' });
+  }
   const io = req.app.get('io');
-  const result = sceneEngine.triggerScene(io, scene.id, contextFromRequest(req));
-  res.json({ success: true, ...result });
+  const targetIds = resolved.actions.map((action) => action.deviceId);
+  const deliveryRequest = broadcastDelivery.createRequest({
+    workspaceId: req.workspaceId,
+    userId: req.user.id,
+    sourceType: 'scene',
+    sourceId: scene.id,
+    typedTargets: resolved.typedTargets,
+    expectedTargetCount: targetIds.length,
+    targets: resolved.actions.map((action) => ({
+      deviceId: action.deviceId,
+      expectedSourceId: action.source.content_id || null,
+    })),
+  });
+  const deliveryByDevice = new Map(
+    deliveryRequest.devices.map((entry) => [entry.device_id, entry])
+  );
+  let pushed = 0;
+  let failed = 0;
+  for (const action of resolved.actions) {
+    const delivery = deliveryByDevice.get(action.deviceId);
+    const result = sceneEngine.pushSourceToDevice(io, action.deviceId, action.source, {
+      workspaceId: req.workspaceId,
+      userId: req.user.id,
+      contentContext: contextFromRequest(req),
+      targetDeviceIds: action.scopeDeviceIds,
+      delivery: {
+        requestId: deliveryRequest.id,
+        commandId: delivery.command_id,
+        sourceId: scene.id,
+        sourceType: 'scene',
+        expectedSourceId: action.source.content_id || null,
+      },
+      returnDetails: true,
+    });
+    broadcastDelivery.markDispatched({
+      requestId: deliveryRequest.id,
+      deviceId: action.deviceId,
+      commandId: delivery.command_id,
+      delivered: result.delivered,
+      queued: result.queued,
+      playlistRevision: result.playlistRevision,
+      expectedSourceId: result.expectedSourceId,
+      failureReason: result.failureReason,
+    });
+    if (result.ok) pushed++; else failed++;
+  }
+  res.status(202).json({
+    accepted: true,
+    success: true,
+    activityId: scene.id,
+    pushed,
+    failed,
+    total: targetIds.length,
+    request_id: deliveryRequest.id,
+    status_url: `/api/broadcast/${encodeURIComponent(deliveryRequest.id)}`,
+    delivery: broadcastDelivery.getRequest(deliveryRequest.id, req.workspaceId),
+  });
 });
 
 // POST /capture — snapshot the current state of { device_ids } into a new scene.
