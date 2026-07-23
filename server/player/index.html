@@ -1703,11 +1703,16 @@
       pendingBroadcastDelivery = null;
     }
 
-    function confirmPendingBroadcastRender(reason = 'render-ready') {
+function confirmPendingBroadcastRender(reason = 'render-ready') {
       const pending = pendingBroadcastDelivery;
       if (!pending) return false;
-      if (pending.playlistRevision !== appliedPlaylistRevision) return false;
-      if (!pending.renderGeneration || pending.renderGeneration !== playbackGeneration) return false;
+      // Bind generation if playlist application finished after accept but before paint.
+      if (!pending.renderGeneration) pending.renderGeneration = playbackGeneration;
+      if (pending.playlistRevision && appliedPlaylistRevision
+          && pending.playlistRevision !== appliedPlaylistRevision) {
+        return false;
+      }
+      if (pending.renderGeneration && pending.renderGeneration !== playbackGeneration) return false;
       if (pending.pendingZones && pending.pendingZones.size > 0) return false;
       const state = buildPlayerState();
       if (
@@ -1722,6 +1727,7 @@
         failPendingBroadcastRender('Player reported a render error');
         return false;
       }
+      // If image/video already painted, allow confirm even when generation bind lagged.
       state.confirmation_reason = reason;
       emitPendingBroadcastStatus('confirmed');
       pendingBroadcastDelivery = null;
@@ -1789,6 +1795,9 @@
         device_id: config.deviceId,
         state,
       });
+      // Re-check pending broadcast confirmation on every state publish so wall
+      // followers / late paints do not sit in acknowledged until timed_out.
+      try { confirmCurrentRenderIfReady(); } catch (_) {}
       if (options.ack && options.ack.command_id) {
         socket.emit('device:ack', window.MbfdDeviceContract.createAck({
           device_id: config.deviceId,
