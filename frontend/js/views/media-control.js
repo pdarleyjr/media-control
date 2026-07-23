@@ -3,6 +3,7 @@ import { esc } from '../utils.js';
 import { t, tn } from '../i18n.js';
 import { showToast } from '../components/toast.js';
 import { clearTarget as clearSocketTarget, identifyDevice, requestScreenshot, selectTarget as selectSocketTarget, sendCommand, getSocket, on as socketOn, off as socketOff } from '../socket.js';
+import { createScreenshotPoller, getScreenshotPollMetrics } from '../services/screenshot-poll.js';
 import { COMMAND_TYPES } from '../player-protocol.js';
 import { mountTargetSelector } from './media-control/target-selector.js';
 import { mountSpanSplit } from './media-control/span-split.js';
@@ -152,11 +153,12 @@ let previewRequestTimer = null;
 const postActionPreviewTimers = new Set();
 const pendingPreviewRequestIds = new Set();
 const lastPreviewRequestAt = new Map();
+let screenshotPoller = null;
 // Keep one embedded player for the active target so the operator sees real
 // playback. `live_preview=0` is an explicit diagnostics/fallback mode only.
 const LIVE_EMBED_PREVIEWS = new URLSearchParams(window.location.search).get('live_preview') !== '0';
 const PREVIEW_REQUEST_MIN_MS = 750;
-const ACTIVE_PREVIEW_INTERVAL_MS = 1000;
+const ACTIVE_PREVIEW_INTERVAL_MS = 4000;
 const BACKGROUND_PREVIEW_INTERVAL_MS = 60000;
 // Per-wall split-column sources for a SINGLE spanning device (Mosaic): wallId ->
 // array indexed by column (0=left). Survives repaint (kept here, NOT in the DOM)
@@ -528,8 +530,31 @@ function scheduleDisplayStateRefresh(delay = 250) {
   }, delay);
 }
 
+function isLiveStreamTargetId(id) {
+  return typeof id === 'string' && id.startsWith('live-stream-program-');
+}
+
+function isRetiredDisplay(id) {
+  if (!id) return true;
+  if (isLiveStreamTargetId(id)) return true;
+  try {
+    const d = displayState.get?.(id) || displayState.getAll?.().find((x) => x.id === id);
+    if (!d) return false;
+    const tags = [].concat(d.tags || d.labels || []).map((x) => String(x).toLowerCase());
+    if (d.retired === true || d.status === 'retired' || d.enabled === false) return true;
+    if (d.disposition === 'retired' || tags.includes('retired')) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 function requestScreenshotThrottled(id, force = false) {
-  if (!id) return;
+  if (!id || isRetiredDisplay(id)) return;
+  if (screenshotPoller) {
+    screenshotPoller.requestIds([id], force);
+    return;
+  }
   const now = Date.now();
   const last = lastPreviewRequestAt.get(id) || 0;
   if (!force && now - last < PREVIEW_REQUEST_MIN_MS) return;
@@ -539,7 +564,7 @@ function requestScreenshotThrottled(id, force = false) {
 
 function queuePreviewRequests(ids, delay = 1200, force = false) {
   for (const id of (Array.isArray(ids) ? ids : [])) {
-    if (id) pendingPreviewRequestIds.add(id);
+    if (id && !isRetiredDisplay(id)) pendingPreviewRequestIds.add(id);
   }
   if (previewRequestTimer) clearTimeout(previewRequestTimer);
   previewRequestTimer = setTimeout(() => {
@@ -677,51 +702,61 @@ async function dropOnWallHalf(wallId, halfIndex, source, label) {
 // the selected non-wall cards PLUS every wall member screen (wall cells each render
 // their own member's live preview). Offline devices are a server-side no-op.
 function visibleDeviceIds() {
-  const ids = new Set(selectedIds.filter(id => id && !wallMemberIds.has(id)));
-  for (const id of wallMemberIds) if (id) ids.add(id);
+  const ids = new Set(selectedIds.filter(id => id && !wallMemberIds.has(id) && !isRetiredDisplay(id)));
+  for (const id of wallMemberIds) if (id && !isRetiredDisplay(id)) ids.add(id);
   return [...ids];
+}
+function activePreviewIdList() {
+  if (!activeTarget) return [];
+  if (activeTarget.type === 'display') return activeTarget.id ? [activeTarget.id] : [];
+  if (activeTarget.type === 'group') return activeTargetDeviceIds();
+  const wall = (walls || []).find((candidate) => candidate.id === activeTarget.id);
+  if (!wall) return [];
+  if (wall.layout_mode !== 'split') {
+    const id = wallTransportDeviceId(wall);
+    return id ? [id] : [];
+  }
+  return wallDeviceIds(wall).filter(Boolean);
 }
 function requestVisiblePreviews() {
   queuePreviewRequests(visibleDeviceIds(), 0, false);
 }
 function requestActivePreview() {
-  if (!activeTarget) return;
-  if (activeTarget.type === 'display') {
-    queuePreviewRequests([activeTarget.id], 0, false);
-    return;
-  }
-  if (activeTarget.type === 'group') {
-    queuePreviewRequests(activeTargetDeviceIds(), 0, false);
-    return;
-  }
-  const wall = (walls || []).find((candidate) => candidate.id === activeTarget.id);
-  if (!wall) return;
-  if (wall.layout_mode !== 'split') {
-    queuePreviewRequests([wallTransportDeviceId(wall)], 0, false);
-    return;
-  }
-  const ids = wallDeviceIds(wall);
-  if (!ids.length) return;
-  const id = ids[activePreviewCursor % ids.length];
-  activePreviewCursor = (activePreviewCursor + 1) % ids.length;
-  queuePreviewRequests([id], 0, false);
+  queuePreviewRequests(activePreviewIdList(), 0, false);
 }
 function startPreviewRefresh() {
   stopPreviewRefresh();
-  previewKickoff = setTimeout(() => {
-    requestActivePreview();
-    requestVisiblePreviews();
-  }, 350);
-  // The active target already has a live embedded player. Polling another full
-  // renderer screenshot every second duplicates work and makes the podium
-  // renderer janky; retain the one initial capture as a fallback and refresh
-  // background tiles at the normal low-frequency cadence.
-  if (!LIVE_EMBED_PREVIEWS) {
-    activePreviewInterval = setInterval(requestActivePreview, ACTIVE_PREVIEW_INTERVAL_MS);
-  }
-  backgroundPreviewInterval = setInterval(requestVisiblePreviews, BACKGROUND_PREVIEW_INTERVAL_MS);
+  screenshotPoller = createScreenshotPoller({
+    minIntervalMs: PREVIEW_REQUEST_MIN_MS,
+    activeIntervalMs: LIVE_EMBED_PREVIEWS ? BACKGROUND_PREVIEW_INTERVAL_MS : ACTIVE_PREVIEW_INTERVAL_MS,
+    backgroundIntervalMs: BACKGROUND_PREVIEW_INTERVAL_MS,
+    requestScreenshot: (id) => requestScreenshot(id),
+    isRetired: isRetiredDisplay,
+    isFresh: (id, freshSeconds) => {
+      try {
+        const d = displayState.get?.(id) || displayState.getAll?.().find((x) => x.id === id);
+        if (!d?.screenshot_at || !d?.screenshot_url) return false;
+        const age = Math.floor(Date.now() / 1000) - Number(d.screenshot_at);
+        return Number.isFinite(age) && age >= 0 && age < freshSeconds;
+      } catch {
+        return false;
+      }
+    },
+    listVisibleIds: ({ activeOnly } = {}) => {
+      if (activeOnly) return activePreviewIdList().filter((id) => !isRetiredDisplay(id));
+      return visibleDeviceIds();
+    },
+  });
+  screenshotPoller.start();
+  try {
+    window.__mcScreenshotPollMetrics = getScreenshotPollMetrics;
+  } catch { /* ignore */ }
 }
 function stopPreviewRefresh() {
+  if (screenshotPoller) {
+    try { screenshotPoller.stop(); } catch { /* ignore */ }
+    screenshotPoller = null;
+  }
   if (previewKickoff) { clearTimeout(previewKickoff); previewKickoff = null; }
   if (activePreviewInterval) { clearInterval(activePreviewInterval); activePreviewInterval = null; }
   if (backgroundPreviewInterval) { clearInterval(backgroundPreviewInterval); backgroundPreviewInterval = null; }
@@ -733,9 +768,6 @@ function stopPreviewRefresh() {
 
 // Content-send target scope: the displays on the stage (the current selection).
 // Dragging a source onto a single card always targets just that card.
-function isLiveStreamTargetId(id) {
-  return typeof id === 'string' && id.startsWith('live-stream-program-');
-}
 function roomDisplayIds() {
   return displayState.getAll().filter(d => !wallMemberIds.has(d.id) && !isLiveStreamTargetId(d.id)).map(d => d.id);
 }
