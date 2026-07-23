@@ -3695,6 +3695,11 @@
     }
 
     function nextItem() {
+      // Single-item playlists must never "advance". nextItem() tears down the
+      // stage (black) then re-mounts the same asset — classic blink every
+      // duration_sec on a sticky image/wallpaper. Multi-item rotation only.
+      if (!Array.isArray(playlist) || playlist.length <= 1) return;
+
       // Send play_end for current
       if (playlist[currentIndex] && socket?.connected) {
         socket.emit('device:play-event', {
@@ -4366,8 +4371,11 @@
           });
           img.src = src;
           mount.appendChild(img);
-          // Leader / single screen drives image advance; follower waits for sync
-          if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 10) * 1000);
+          // Leader/solo rotates multi-item slide shows. A single sticky image
+          // must NOT timer-advance (would black-flash every duration_sec).
+          if (!isFollower && playlist.length > 1) {
+            advanceTimer = setTimeout(nextItem, (item.duration_sec || 10) * 1000);
+          }
         } else if (isPdf) {
           // Controllable PDF player: renders cached Poppler page images and
           // listens for Command Center transport messages. This avoids native
@@ -4401,7 +4409,9 @@
           iframe.addEventListener('load', () => markBroadcastElementReady(iframe, 'widget-frame-ready'), { once: true });
           iframe.addEventListener('error', () => failPendingBroadcastRender('Widget frame failed to load'), { once: true });
           mount.appendChild(iframe);
-          if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 30) * 1000);
+          if (!isFollower && playlist.length > 1) {
+            advanceTimer = setTimeout(nextItem, (item.duration_sec || 30) * 1000);
+          }
         }
       }
     }

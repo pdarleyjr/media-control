@@ -212,6 +212,29 @@ test('player screenshot reporting tolerates socket startup and disconnect races'
   );
 });
 
+test('single-item playlists never timer-advance into a black-flash re-render', () => {
+  const html = readPlayerFile('index.html');
+  const nextItem = readSnippet(
+    path.join(__dirname, '..', 'player', 'index.html'),
+    'function nextItem() {',
+    'function contentSrcForItem(item) {'
+  );
+  assert.ok(
+    nextItem.includes('playlist.length <= 1') && nextItem.includes('return;'),
+    'nextItem must no-op for sticky single-item playlists'
+  );
+  assert.match(
+    html,
+    /isImage[\s\S]*?if \(!isFollower && playlist\.length > 1\) \{\s*advanceTimer = setTimeout\(nextItem/,
+    'image rotation must require multi-item playlists'
+  );
+  assert.match(
+    html,
+    /item\.widget_id[\s\S]*?if \(!isFollower && playlist\.length > 1\) \{\s*advanceTimer = setTimeout\(nextItem/,
+    'widget rotation must require multi-item playlists'
+  );
+});
+
 test('player version handshake reloads stale renderers after a socket reconnect', () => {
   const versionCheck = readSnippet(
     path.join(__dirname, '..', 'player', 'index.html'),
