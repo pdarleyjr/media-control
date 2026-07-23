@@ -52,12 +52,13 @@ test('span wall transport controls fan out to every wall member', () => {
 
   assert.match(main, /function activeTargetTransportIds\(\)/);
   assert.match(main, /ids\.forEach\(id => sendCommand\(id, COMMAND_TYPES\.TRANSPORT/);
-  assert.match(stage, /data-transport-ids="\$\{esc\(ids\)\}"/);
+  // §8: stage cards are passive — they no longer carry transport ids. Fan-out to
+  // every wall member is resolved centrally by activeTargetTransportIds() (which
+  // calls wallTransportDeviceIds for a span wall) and serialized per-id below.
   assert.match(transport, /transportDeviceIds/);
   // Transport now serializes per-id through sendTransportCommand (delivery + player ack).
   assert.match(transport, /sendTransportCommand/);
   assert.match(transport, /for \(const id of transportIds\)/);
-  assert.match(stage, /layoutMode === 'span'/);
   assert.match(transport, /action === 'play_pause' && (paused|authoritativePaused) !== undefined/);
   assert.match(main, /action === 'play_pause' && paused !== undefined/);
   assert.match(main, /paused \? 'play' : 'pause'/);
@@ -77,8 +78,9 @@ test('transport actions refresh state and force previews so dashboard mirrors sl
 
   assert.match(main, /onTransportAction: \(ids\) => refreshAfterSend\(ids\)/);
   assert.match(main, /refreshAfterSend\(ids\)/);
-  assert.match(stage, /onTransportAction/);
-  assert.match(stage, /onTransportAction\(ids && ids\.length \? ids : \[deviceId\], action\)/);
+  // §8: stage cards are passive — transport actions are issued by the centralized
+  // toolbar (mountTransportRow → refreshAfterSend) and serialized through
+  // transport.js sendTransportCommand, not from per-card handlers on the stage.
   assert.match(transport, /onTransportAction/);
   assert.match(transport, /if \(typeof onTransportAction === 'function'\) onTransportAction\(transportIds, resolvedAction/);
   assert.match(transport, /COMMAND_LIFECYCLE/);
@@ -121,28 +123,29 @@ test('embedded live playback is the default while screenshot-only mode is an exp
   const stage = read('frontend/js/views/media-control/stage.js');
   const grid = read('server/player/grid.html');
 
-  assert.match(livePreview, /opts\.audioPreview === true/);
+  // Live embed is the DEFAULT; screenshot-only is an explicit opt-out (?live_preview=0).
   assert.match(livePreview, /operator_preview=1/);
-  assert.match(livePreview, /audioPreview \? '&audio_preview=1' : ''/);
-  assert.doesNotMatch(livePreview, /preview=1&audio_preview=1/);
-  assert.doesNotMatch(livePreview, /autoplay muted loop/);
-  assert.match(livePreview, /export function enableLivePreviewAudio/);
-  assert.match(livePreview, /video\.muted = false/);
-  assert.match(livePreview, /child\.__mcEnableAudio\(\)/);
   assert.match(stage, /livePreviewDeviceId/);
-  assert.match(stage, /audioPreview: livePreview/);
   const main = read('frontend/js/views/media-control.js');
   assert.match(main, /const LIVE_EMBED_PREVIEWS = new URLSearchParams\(window\.location\.search\)\.get\('live_preview'\) !== '0'/);
   assert.match(main, /livePreviewDeviceId: LIVE_EMBED_PREVIEWS \? activePreviewDeviceId\(\) : null/);
   assert.match(main, /const PREVIEW_REQUEST_MIN_MS = 750/);
   assert.match(main, /const ACTIVE_PREVIEW_INTERVAL_MS = 4000/);
-  assert.match(main, /enableLivePreviewAudio\(app\)/);
-  assert.match(main, /document\.addEventListener\('pointerdown', previewAudioGestureHandler, true\)/);
+  // §9: dashboard previews are PASSIVE — always muted, no native controls, no
+  // pointer events, and NEVER request browser/classroom audio. The old
+  // operator-gesture audio hook (enableLivePreviewAudio + audio_preview=1 +
+  // child.__mcEnableAudio()) unmuted+played every preview on any touch — removed.
+  assert.match(livePreview, /muted loop playsinline/);
+  assert.match(livePreview, /pointer-events:none/);
+  assert.doesNotMatch(livePreview, /audio_preview/);
+  assert.doesNotMatch(livePreview, /enableLivePreviewAudio/);
+  assert.doesNotMatch(livePreview, /video\.muted = false/);
+  assert.doesNotMatch(main, /enableLivePreviewAudio/);
+  assert.doesNotMatch(main, /previewAudioGestureHandler/);
+  // The physical multiview grid still exposes its own audio hook for the TV
+  // (legitimate when loaded AS the player); the dashboard just never activates it.
   assert.match(grid, /var operatorPreview = params\.get\('operator_preview'\) === '1'/);
-  assert.match(grid, /var audioPreview = \(previewMode \|\| operatorPreview\) && params\.get\('audio_preview'\) === '1'/);
   assert.match(grid, /var STAGGER_MS = operatorPreview \? 600 : 1500/);
-  assert.match(grid, /if \(item\.isAudio && _audioArmed\)[\s\S]*setTimeout\(enableAudioCell, 0\)/);
-  assert.match(grid, /if \(audioPreview\)[\s\S]*window\.__mcEnableAudio\(\)/);
 });
 
 test('video previews reconcile seek and play state from the physical player', () => {
