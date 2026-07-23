@@ -143,7 +143,9 @@ test('organization-publication request: privacy=3 marks content public', () => {
   const replay = db.prepare("SELECT id FROM peertube_replays WHERE peertube_video_uuid='vid-pub-006'").get();
   const result = svc.addToMediaControl({ replayId: replay.id, userId: 'u1', workspaceId: 'ws1', privacy: 3 });
   const content = db.prepare('SELECT access_level FROM content WHERE id=?').get(result.content_id);
-  assert.equal(content.access_level, 'public');
+  // Governed visibility vocabulary (main): PeerTube privacy=3 (public/org-wide)
+  // maps to organization_shared. 'public' is rejected by the visibility trigger.
+  assert.equal(content.access_level, 'organization_shared');
 });
 
 test('secrets are never persisted in replay rows', () => {

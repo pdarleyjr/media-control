@@ -218,7 +218,7 @@ function addToMediaControl({ replayId, userId, workspaceId, privacy = 1, title }
                            access_level, content_type, processing_status, original_sha256)
       VALUES (?, ?, ?, ?, '', ?, 0, ?, ?, 'peertube-replay', 'remote', ?)
     `).run(contentId, userId, workspaceId, safeTitle, 'video/mp4', replay.watch_url,
-      privacy === 3 ? 'public' : 'private', replay.peertube_video_uuid);
+      privacy === 3 ? 'organization_shared' : 'private', replay.peertube_video_uuid);
     db.prepare(`
       UPDATE peertube_replays
       SET content_id=?, processing_state='added', privacy=?, added_at=strftime('%s','now'),

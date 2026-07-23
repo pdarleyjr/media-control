@@ -26,15 +26,20 @@ test('dashboard socket exposes selected target helpers and reselects after recon
 
 test('media control drag drop refreshes the active visual truth without polling every display', () => {
   const source = read('frontend/js/views/media-control.js');
-  assert.match(source, /const ACTIVE_PREVIEW_INTERVAL_MS = 1000/);
+  // Active tile refresh is bounded and routed through the instrumented
+  // screenshot poller (dedupe, freshness skip, visibility pause, backoff).
+  assert.match(source, /const ACTIVE_PREVIEW_INTERVAL_MS = 4000/);
   assert.match(source, /const BACKGROUND_PREVIEW_INTERVAL_MS = 60000/);
   assert.match(source, /function requestActivePreview/);
   assert.match(source, /function activePreviewDeviceId/);
   assert.match(source, /function scheduleDisplayStateRefresh/);
   assert.match(source, /function queuePreviewRequests/);
   assert.match(source, /displayState\.refresh\(\)\.catch/);
-  assert.match(source, /setInterval\(requestActivePreview, ACTIVE_PREVIEW_INTERVAL_MS\)/);
-  assert.match(source, /setInterval\(requestVisiblePreviews, BACKGROUND_PREVIEW_INTERVAL_MS\)/);
+  assert.match(source, /createScreenshotPoller\(\{/);
+  assert.match(source, /screenshotPoller\.start\(\)/);
+  assert.match(source, /screenshotPoller\.stop\(\)/);
+  assert.match(source, /activeIntervalMs: LIVE_EMBED_PREVIEWS \? BACKGROUND_PREVIEW_INTERVAL_MS : ACTIVE_PREVIEW_INTERVAL_MS/);
+  assert.match(source, /backgroundIntervalMs: BACKGROUND_PREVIEW_INTERVAL_MS/);
   assert.match(source, /for \(const delay of \[350, 1400\]\)/);
   assert.match(source, /const ok = await sendToDisplays\(parsed\.source, \[deviceId\], parsed\.label\)/);
   assert.match(source, /if \(ok\) refreshAfterSend\(\[deviceId\]\)/);
@@ -130,7 +135,7 @@ test('embedded live playback is the default while screenshot-only mode is an exp
   assert.match(main, /const LIVE_EMBED_PREVIEWS = new URLSearchParams\(window\.location\.search\)\.get\('live_preview'\) !== '0'/);
   assert.match(main, /livePreviewDeviceId: LIVE_EMBED_PREVIEWS \? activePreviewDeviceId\(\) : null/);
   assert.match(main, /const PREVIEW_REQUEST_MIN_MS = 750/);
-  assert.match(main, /const ACTIVE_PREVIEW_INTERVAL_MS = 1000/);
+  assert.match(main, /const ACTIVE_PREVIEW_INTERVAL_MS = 4000/);
   assert.match(main, /enableLivePreviewAudio\(app\)/);
   assert.match(main, /document\.addEventListener\('pointerdown', previewAudioGestureHandler, true\)/);
   assert.match(grid, /var operatorPreview = params\.get\('operator_preview'\) === '1'/);
