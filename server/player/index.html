@@ -4210,17 +4210,22 @@ function confirmPendingBroadcastRender(reason = 'render-ready') {
           const myGeneration = playbackGeneration;
           let videoHasStarted = false;
           video.src = src;
-          const wallStartDelayMs = wallConfig && currentItemStartedAt > Date.now() + 40
-            ? Math.min(2000, currentItemStartedAt - Date.now())
-            : 0;
-          video.autoplay = wallStartDelayMs <= 0;
-          // Followers stay muted unconditionally (leader-only audio); leaders
-          // start muted only if the user hasn't gestured yet (autoplay policy).
-          video.muted = !audioOutputAllowed() || !userHasInteracted;
-          // Explicit max volume on the leader so audio is at full level when
-          // unmute happens (default is 1.0 but make it visible in logs).
+          video.preload = 'auto';
+          // Wall span must not delay local decode waiting on leader clock —
+          // followers previously sat on LOCKED "loading"/poster until wall:sync.
+          // Start immediately (muted) so every tile paints frames; wall:sync only
+          // nudges currentTime/playbackRate after play begins.
+          const wallStartDelayMs = 0;
+          video.autoplay = true;
+          // Wall tiles ALWAYS start muted so Chromium autoplay policy cannot
+          // block paint. Leader may unmute after first playing event if audio
+          // is allowed and the user has activated audio.
+          const mayUnmuteLater = audioOutputAllowed() && userHasInteracted && !isFollower;
+          video.muted = true;
           if (audioOutputAllowed()) video.volume = 1.0;
           video.playsInline = true;
+          video.setAttribute('playsinline', '');
+          video.setAttribute('webkit-playsinline', '');
           video.crossOrigin = 'anonymous';
           // object-fit is driven by cssFit, which defaults to 'fill' on a wall
           // (edge-to-edge wallpaper stretch) and 'contain' solo (no crop).
@@ -4322,17 +4327,28 @@ function confirmPendingBroadcastRender(reason = 'render-ready') {
           );
           const startVideo = () => {
             if (!videoStartIsCurrent()) return;
+            // Clear sticky operator-pause leftover that can trap wall tiles on
+            // the loading frame after a prior pause command.
+            try { delete video.__mcOperatorPaused; } catch (_) {}
+            video.muted = true;
             video.play().then(() => {
               if (!videoStartIsCurrent()) { try { video.pause(); video.muted = true; } catch (_) {} return; }
-              console.log('[wall/audio] play() ok muted=' + video.muted + ' volume=' + video.volume);
+              videoHasStarted = true;
+              console.log('[wall/audio] play() ok muted=' + video.muted + ' volume=' + video.volume + ' wall=' + !!(wallConfig) + ' leader=' + !!(wallConfig && wallConfig.is_leader));
+              if (mayUnmuteLater) {
+                try { video.muted = false; } catch (_) {}
+              }
+              markBroadcastElementReady(video, 'video-playing');
             }).catch((err) => {
               if (!videoStartIsCurrent()) return;
-              console.warn('[wall/audio] play() rejected, falling back to muted: ' + (err?.name || err?.message || err));
+              console.warn('[wall/audio] play() rejected, muted retry: ' + (err?.name || err?.message || err));
               video.muted = true;
               video.play()
                 .then(() => {
                   if (!videoStartIsCurrent()) { try { video.pause(); } catch (_) {} return; }
+                  videoHasStarted = true;
                   console.log('[wall/audio] muted-fallback play() ok');
+                  markBroadcastElementReady(video, 'video-playing-muted-fallback');
                 })
                 .catch((e2) => {
                   if (!videoStartIsCurrent()) return;
@@ -4340,18 +4356,26 @@ function confirmPendingBroadcastRender(reason = 'render-ready') {
                 });
             });
           };
+          // Kick decode as soon as enough data is buffered.
+          video.addEventListener('loadeddata', () => {
+            if (playbackGeneration === myGeneration && video.paused && !video.__mcOperatorPaused) startVideo();
+          });
+          video.addEventListener('canplay', () => {
+            if (playbackGeneration === myGeneration && video.paused && !video.__mcOperatorPaused) startVideo();
+          });
           if (wallStartDelayMs > 0) setTimeout(() => { if (playbackGeneration === myGeneration) startVideo(); }, wallStartDelayMs);
           else startVideo();
-          // Fallback only covers an autoplay that never started. Once playback
-          // has begun, a paused element reflects an operator transport command
-          // and must not be restarted by this startup timer.
-          setTimeout(() => {
-            if (playbackGeneration !== myGeneration) return;
-            if (!videoHasStarted && !video.__mcOperatorPaused && video.paused) {
-              video.muted = true;
-              video.play().catch(() => {});
-            }
-          }, wallStartDelayMs + 2000);
+          // Aggressive retries: previews confirm with tiny ranges while the TVs
+          // were left paused on first-frame / autoplay rejection.
+          [500, 1500, 3000, 6000, 10000].forEach((ms) => {
+            setTimeout(() => {
+              if (playbackGeneration !== myGeneration) return;
+              if (!videoHasStarted && !video.__mcOperatorPaused && video.paused) {
+                video.muted = true;
+                video.play().then(() => { videoHasStarted = true; }).catch(() => {});
+              }
+            }, wallStartDelayMs + ms);
+          });
         } else if (isImage) {
           const img = document.createElement('img');
           // Classroom displays normally read images from the P3 cache, which is
