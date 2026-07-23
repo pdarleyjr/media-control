@@ -3,8 +3,10 @@
 // TRUE aspect ratio (so a portrait kiosk looks portrait), a live screenshot
 // with a freshness caption, a status dot, and the now-playing label.
 //
-// Each card includes a transport bar (Task 4.6): prev / play_pause / next /
-// restart buttons and a Blank toggle via renderTransportBar from transport.js.
+// Cards are PASSIVE status/selection surfaces (task §8): an <article> with a
+// dedicated select button. NO transport controls live inside cards — one
+// authoritative transport toolbar (prev/restart/play_pause/next/blank) is
+// mounted below the canvas by media-control.js (mountTransportRow).
 //
 // Wall members never render as their own card: a video wall is a single
 // logical display, so it gets ONE wall card (mirrors dashboard.js:789-793).
@@ -13,7 +15,6 @@
 
 import { esc } from '../../utils.js';
 import { t, tn } from '../../i18n.js';
-import { renderTransportBar } from './transport.js';
 import { liveEmbedHtml } from './live-preview.js';
 import {
   MIXED_SCREENSAVER_VALUE,
@@ -189,7 +190,7 @@ function displayCard(display, { livePreview = false } = {}) {
   const showingPoster = !!(pv && pv.poster);
   const staleCls = (pv && !pv.poster && (f.stale || offline)) ? ' mc-shot-stale' : '';
   const live = livePreview
-    ? liveEmbedHtml(display.now_playing, 'mc-card-shot', { fallbackSrc: pv && pv.src, audioPreview: livePreview })
+    ? liveEmbedHtml(display.now_playing, 'mc-card-shot', { fallbackSrc: pv && pv.src })
     : null;
   const preview = live
     ? live
@@ -201,23 +202,29 @@ function displayCard(display, { livePreview = false } = {}) {
   const captionText = showingPoster ? t('mc.card.now_showing') : f.text;
   const captionStale = (!showingPoster && f.stale) ? ' mc-stale' : '';
 
-  // data-tp-host is populated after innerHTML injection by mountCardTransport.
+  // Card is a passive status/selection surface (task §8): an <article> (NOT a
+  // <button>) so it can legally contain a screensaver <select> without nesting
+  // interactive controls. A dedicated <button class="mc-card-select"> wraps only
+  // the non-interactive preview media and is the sole inspect/select affordance.
+  // Per-card transport is intentionally absent — ONE authoritative transport
+  // toolbar lives below the canvas (mountTransportRow in media-control.js).
   return `
-    <button type="button" class="mc-card mc-display-card ${s.cls}${sb ? ' mc-display-card-tile' : ''}"
-            data-device-id="${esc(display.id)}"${sb ? ' style="--mc-cols:1"' : ''}
-            aria-label="${esc(t('mc.card.inspect_aria', { name: display.name }))}">
-      <div class="mc-card-media" style="aspect-ratio:${ar}">
-        ${preview}
-        ${statusBadge(s)}
-        <span class="mc-card-caption${captionStale}">${esc(captionText)}</span>
-      </div>
+    <article class="mc-card mc-display-card ${s.cls}${sb ? ' mc-display-card-tile' : ''}"
+            data-device-id="${esc(display.id)}"${sb ? ' style="--mc-cols:1"' : ''}>
+      <button type="button" class="mc-card-select" data-device-id="${esc(display.id)}"
+              aria-label="${esc(t('mc.card.inspect_aria', { name: display.name }))}">
+        <div class="mc-card-media" style="aspect-ratio:${ar}">
+          ${preview}
+          ${statusBadge(s)}
+          <span class="mc-card-caption${captionStale}">${esc(captionText)}</span>
+        </div>
+        <div class="mc-card-nowplaying" title="${nowPlaying}">${nowPlaying}</div>
+      </button>
       <div class="mc-card-foot">
         <span class="mc-card-title">${esc(display.name)}</span>
         ${screensaverSelect(`data-device-id="${esc(display.id)}"`, screensaverValueForDisplays([display]))}
       </div>
-      <div class="mc-card-nowplaying" title="${nowPlaying}">${nowPlaying}</div>
-      <div class="mc-card-transport" data-tp-host data-device-id="${esc(display.id)}"></div>
-    </button>`;
+    </article>`;
 }
 
 // A video wall is rendered as a COMPOSITE of its real member screens, laid out on
@@ -270,7 +277,7 @@ function wallCell(member, screenNo, { showPreview = true, livePreview = false } 
   const pv = previewSource(member);
   const staleCls = (pv && !pv.poster && (f.stale || offline)) ? ' mc-shot-stale' : '';
   const live = showPreview && livePreview
-    ? liveEmbedHtml(member.now_playing, 'mc-wall-cell-shot', { allowVideo: true, fallbackSrc: pv && pv.src, audioPreview: livePreview })
+    ? liveEmbedHtml(member.now_playing, 'mc-wall-cell-shot', { allowVideo: true, fallbackSrc: pv && pv.src })
     : null;
   const preview = !showPreview
     ? ''
@@ -300,7 +307,7 @@ function wallSpanPreview(leader, livePreview = false) {
   // physical wall is showing. Previously allowVideo=false caused a screenshot
   // fallback which is a black tile for video (canvas capture is tainted).
   const live = leader && livePreview
-    ? liveEmbedHtml(leader.now_playing, 'mc-wall-span-shot', { allowVideo: true, fallbackSrc: pv && pv.src, audioPreview: livePreview })
+    ? liveEmbedHtml(leader.now_playing, 'mc-wall-span-shot', { allowVideo: true, fallbackSrc: pv && pv.src })
     : null;
   if (live) {
     return `<div class="mc-wall-span-layer" data-device-id="${esc(leader.id)}">${live}</div>`;
@@ -404,7 +411,6 @@ function wallCard(wall, byId, livePreviewDeviceId = null, overviewMode = false) 
         ${spanLayer}
         ${cells.join('')}
       </div>
-      ${transportId ? `<div class="mc-wall-transport" data-tp-host data-device-id="${esc(transportId)}" data-transport-ids="${esc(ids)}" data-blank-ids="${esc(ids)}" data-wall-id="${esc(wall.id)}" data-layout-mode="${esc(mode)}"></div>` : ''}
       <div class="mc-wall-all" data-wall-ids="${esc(ids)}">
         <span class="mc-wall-all-ico" aria-hidden="true">${ICON_WALL_ALL}</span>
         <span>${esc(fillLabel)}</span>
@@ -520,7 +526,6 @@ function wallSplitGroup(wall, byId, livePreviewDeviceId = null) {
       <div class="mc-wall-grid" style="grid-template-columns:repeat(${cols}, 1fr)">
         ${halves.join('')}
       </div>
-      ${transportId ? `<div class="mc-wall-transport" data-tp-host data-device-id="${esc(transportId)}" data-transport-ids="${esc(ids)}" data-blank-ids="${esc(ids)}" data-wall-id="${esc(wall.id)}" data-layout-mode="split"></div>` : ''}
     </section>`;
   }
 
@@ -639,11 +644,13 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
     ? emptyState()
     : `${wallCards}${cards}${addTile()}`;
 
-  // Display cards (<button>) and wall screen cells (<div role=button>) both open
-  // the inspector for that display. The whole-wall <a href="#/walls"> "Edit" link
-  // navigates natively. Transport bars live inside display cards (data-tp-host)
-  // and stopPropagation, so they never trigger the inspector.
-  container.querySelectorAll('.mc-display-card[data-device-id]').forEach(el => {
+  // Display cards are <article> with a dedicated <button class="mc-card-select">
+  // (the preview media) as the sole inspect/select affordance; wall screen cells
+  // are <div role=button>. Both open the inspector for that display. The
+  // whole-wall <a href="#/walls"> "Edit" link navigates natively. There are NO
+  // transport controls inside cards — one authoritative toolbar lives below the
+  // canvas, so there is nothing to stopPropagation against here.
+  container.querySelectorAll('.mc-card-select[data-device-id]').forEach(el => {
     el.addEventListener('click', () => { if (typeof onSelect === 'function') onSelect(el.dataset.deviceId); });
   });
   container.querySelectorAll('.mc-wall-cell[data-device-id]').forEach(el => {
@@ -654,7 +661,7 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
   });
   container.querySelectorAll('[data-layout-group-id]').forEach((region) => {
     const select = (event) => {
-      if (event.target.closest('button, select, a, [data-tp-host]')) return;
+      if (event.target.closest('button, select, a')) return;
       if (typeof onSelectGroup === 'function') onSelectGroup(region.dataset.layoutGroupId);
     };
     region.addEventListener('click', select);
@@ -688,50 +695,8 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
     });
   });
 
-  // Mount transport bars into each card's [data-tp-host] container. Standalone
-  // display cards resolve from displayMap; wall card state uses the leader, then
-  // fans transport to every member listed in data-transport-ids — but only for
-  // span lockstep modes. Split walls render per-member cards with single ids.
-  container.querySelectorAll('[data-tp-host]').forEach(host => {
-    const deviceId = host.dataset.deviceId;
-    const display  = displayMap.get(deviceId) || byId.get(deviceId);
-    if (!deviceId || !display) return;
-    const wallCard = host.closest('[data-layout-mode]');
-    const layoutMode = wallCard?.dataset?.layoutMode || host.dataset.layoutMode || '';
-    // Span walls may list every member so doc/deck slides stay in lockstep.
-    // Split / single / zone-targeted hosts must NEVER fan-out.
-    const rawTransportIds = String(host.dataset.transportIds || '').split(',').filter(Boolean);
-    const blankIds = String(host.dataset.blankIds || '').split(',').filter(Boolean);
-    const zoneId = host.dataset.zoneId || host.dataset.cellId || '';
-    const cellId = host.dataset.cellId || '';
-    const wallId = host.dataset.wallId || wallCard?.dataset?.wallId || '';
-    const transportIds = (layoutMode === 'span' && !zoneId && rawTransportIds.length)
-      ? rawTransportIds
-      : [deviceId];
-    const paused = display.now_playing ? display.now_playing.paused : undefined;
-    renderTransportBar(host, {
-      deviceId,
-      transportDeviceIds: transportIds,
-      blankDeviceIds: blankIds.length ? blankIds : undefined,
-      screenOn: display.screen_on !== false,
-      paused,
-      target: display,
-      zoneId: zoneId || undefined,
-      cellId: cellId || undefined,
-      wallId: wallId || undefined,
-      contentInstanceId: display.now_playing?.content_id || display.now_playing?.contentId || undefined,
-      requireSingleTarget: layoutMode === 'split' || !!zoneId,
-      onScreenOnChange: (newValue) => {
-        if (typeof onScreenOnChange === 'function') onScreenOnChange(deviceId, newValue);
-      },
-      onTransportAction: (ids, action) => {
-        if (typeof onTransportAction === 'function') onTransportAction(ids && ids.length ? ids : [deviceId], action);
-      },
-    });
-  });
-
   // Per-card Screensaver dropdown. stopPropagation so opening/changing it never
-  // bubbles to the card's inspector-open click. Keep the chosen option visible;
+  // bubbles to the card's select button. Keep the chosen option visible;
   // the next authoritative display-state paint confirms or corrects it.
   container.querySelectorAll('select.mc-screensaver').forEach(sel => {
     ['pointerdown', 'mousedown', 'click'].forEach(ev => sel.addEventListener(ev, e => e.stopPropagation()));

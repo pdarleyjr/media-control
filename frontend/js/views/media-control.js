@@ -21,7 +21,6 @@ import { renderRoomPresets } from './media-control/room-presets.js';
 import { renderRecentPanel } from './media-control/recent-panel.js';
 import { openViewModal, closeViewModal } from './media-control/view-modal.js';
 import { hasAdvancedCanvasEndpoint, routeSourceToAdvancedCanvas } from './media-control/advanced-canvas.js';
-import { enableLivePreviewAudio } from './media-control/live-preview.js';
 import {
   BLACK_SCREENSAVER_URL,
   MIXED_SCREENSAVER_VALUE,
@@ -150,7 +149,6 @@ let cmdAckHandler = null;   // Phase-2 command:ack (toast on timeout/failure)
 let stateSyncHandler = null;
 let playbackStateHandler = null;  // playback-state listener (bridged from dashboard socket)
 let screenshotReadyHandler = null;
-let previewAudioGestureHandler = null;
 let multiviewEscapeHandler = null;
 let selectedIds = [];   // ids on the stage; re-hydrated from the server, persisted on change
 let wallMemberIds = new Set();   // device ids owned by a video wall (never their own card)
@@ -260,6 +258,7 @@ function commandCenterCatalog() {
       selectedIds.includes(display.id)
       && !wallMemberIds.has(display.id)
       && !isRetiredDisplay(display.id)
+      && !isNonDisplaySource(display)
     ),
   };
 }
@@ -488,11 +487,10 @@ function paintStage() {
   // Record what we just rendered so screenshot-only updates can patch in place
   // (see stageSignature / refreshPreviewsInPlace) instead of rebuilding + flashing.
   lastStageSig = stageSignature();
-  // Electron can autoplay immediately; normal browsers retry on the operator's
-  // next gesture through the view-level handler installed by render().
+  // Previews are passive + always muted (task §9): muted autoplay is permitted
+  // without a gesture, so there is no operator-gesture audio hook to re-arm here.
   setTimeout(() => {
     refreshPreviewsInPlace();
-    enableLivePreviewAudio(el);
   }, 0);
 }
 
@@ -690,8 +688,31 @@ function isRetiredDisplay(id) {
   }
 }
 
+// Authoritative screenshot-target classification (task §12). Cameras and other
+// non-display sources are excluded by DEVICE TYPE/CAPABILITY — NOT by abusing the
+// retired flag. Only physical classroom displays are screenshot-poll targets:
+//   retired/disabled  → excluded (isRetiredDisplay)
+//   livestream receiver → excluded (isLiveStreamTargetId)
+//   camera / non-display source → excluded (isNonDisplaySource)
+// An unknown device (not yet in displayState) is treated as pollable and left for
+// the server to no-op when offline — this preserves preview loading during the
+// brief window before state arrives, instead of permanently failing closed.
+function isNonDisplaySource(d) {
+  if (!d) return false;
+  const tags = [].concat(d.tags || d.labels || []).map((x) => String(x).toLowerCase());
+  const dtype = String(d.device_type || d.type || d.kind || '').toLowerCase();
+  if (dtype === 'camera' || tags.includes('camera') || /camera/i.test(d.name || '')) return true;
+  return false;
+}
+function isPollableDisplay(id) {
+  if (!id || isLiveStreamTargetId(id) || isRetiredDisplay(id)) return false;
+  const d = displayState.get?.(id) || displayState.getAll?.().find((x) => x.id === id);
+  if (!d) return true; // unknown: let the poller try (server no-ops offline)
+  return !isNonDisplaySource(d);
+}
+
 function requestScreenshotThrottled(id, force = false) {
-  if (!id || isRetiredDisplay(id)) return;
+  if (!id || !isPollableDisplay(id)) return;
   if (screenshotPoller) {
     screenshotPoller.requestIds([id], force);
     return;
@@ -705,7 +726,7 @@ function requestScreenshotThrottled(id, force = false) {
 
 function queuePreviewRequests(ids, delay = 1200, force = false) {
   for (const id of (Array.isArray(ids) ? ids : [])) {
-    if (id && !isRetiredDisplay(id)) pendingPreviewRequestIds.add(id);
+    if (id && isPollableDisplay(id)) pendingPreviewRequestIds.add(id);
   }
   if (previewRequestTimer) clearTimeout(previewRequestTimer);
   previewRequestTimer = setTimeout(() => {
@@ -847,8 +868,8 @@ async function dropOnWallHalf(wallId, halfIndex, source, label) {
 // the selected non-wall cards PLUS every wall member screen (wall cells each render
 // their own member's live preview). Offline devices are a server-side no-op.
 function visibleDeviceIds() {
-  const ids = new Set(selectedIds.filter(id => id && !wallMemberIds.has(id) && !isRetiredDisplay(id)));
-  for (const id of wallMemberIds) if (id && !isRetiredDisplay(id)) ids.add(id);
+  const ids = new Set(selectedIds.filter(id => id && !wallMemberIds.has(id) && isPollableDisplay(id)));
+  for (const id of wallMemberIds) if (id && isPollableDisplay(id)) ids.add(id);
   return [...ids];
 }
 function activePreviewIdList() {
@@ -876,7 +897,7 @@ function startPreviewRefresh() {
     activeIntervalMs: LIVE_EMBED_PREVIEWS ? BACKGROUND_PREVIEW_INTERVAL_MS : ACTIVE_PREVIEW_INTERVAL_MS,
     backgroundIntervalMs: BACKGROUND_PREVIEW_INTERVAL_MS,
     requestScreenshot: (id, meta) => requestScreenshot(id, meta),
-    isRetired: isRetiredDisplay,
+    isRetired: (id) => !isPollableDisplay(id),
     isOffline: (id) => {
       const display = displayState.get?.(id) || displayState.getAll?.().find((candidate) => candidate.id === id);
       return !!display && display.online === false;
@@ -892,7 +913,7 @@ function startPreviewRefresh() {
       }
     },
     listVisibleIds: ({ activeOnly } = {}) => {
-      if (activeOnly) return activePreviewIdList().filter((id) => !isRetiredDisplay(id));
+      if (activeOnly) return activePreviewIdList().filter((id) => isPollableDisplay(id));
       return visibleDeviceIds();
     },
   });
@@ -922,6 +943,7 @@ function roomDisplayIds() {
     !wallMemberIds.has(d.id)
     && !isLiveStreamTargetId(d.id)
     && !isRetiredDisplay(d.id)
+    && !isNonDisplaySource(d)
   ).map(d => d.id);
 }
 function onlineRoomDisplayIds() {
@@ -930,6 +952,7 @@ function onlineRoomDisplayIds() {
     && !wallMemberIds.has(d.id)
     && !isLiveStreamTargetId(d.id)
     && !isRetiredDisplay(d.id)
+    && !isNonDisplaySource(d)
   ).map(d => d.id);
 }
 // The managed "Content for live stream" target must NEVER be an implicit
@@ -2249,11 +2272,11 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
     });
   });
 
-  if (!previewAudioGestureHandler) {
-    previewAudioGestureHandler = () => enableLivePreviewAudio(app);
-    document.addEventListener('pointerdown', previewAudioGestureHandler, true);
-    document.addEventListener('keydown', previewAudioGestureHandler, true);
-  }
+  // Previews are passive (task §9): no global gesture listener is installed. The
+  // old capture-phase pointerdown/keydown handler unmuted and played every preview
+  // video on ANY touch anywhere in the document — the "touch anywhere resumes
+  // video" defect. Dashboard previews are always muted and never produce audio, so
+  // no operator-gesture audio hook exists.
 
   // The right Content Library tab is now the only fixed right-edge element — the
   // collapsed tab (data-open="false") re-shows itself when the drawer toggles.
@@ -2584,11 +2607,6 @@ export function unmount() {
   const dockBtn = document.getElementById('mc-wb-dock-btn');
   if (dockBtn) dockBtn.remove();
   if (unsub) { unsub(); unsub = null; }
-  if (previewAudioGestureHandler) {
-    document.removeEventListener('pointerdown', previewAudioGestureHandler, true);
-    document.removeEventListener('keydown', previewAudioGestureHandler, true);
-    previewAudioGestureHandler = null;
-  }
   if (multiviewEscapeHandler) {
     document.removeEventListener('keydown', multiviewEscapeHandler);
     multiviewEscapeHandler = null;

@@ -73,26 +73,17 @@ function presentationFrameHtml(src, klass, slide) {
   return `<iframe class="${klass}" src="${esc(src)}" loading="eager" allow="${IFRAME_ALLOW}" referrerpolicy="no-referrer" style="pointer-events:none" data-mc-presentation="1" data-mc-slide-index="${slide}"></iframe>`;
 }
 
-export function enableLivePreviewAudio(root = document) {
-  root.querySelectorAll('video.mc-live-embed').forEach((video) => {
-    video.muted = false;
-    video.volume = 1;
-    video.play().catch(() => {});
-  });
-  root.querySelectorAll('iframe.mc-live-embed').forEach((frame) => {
-    try {
-      const child = frame.contentWindow;
-      if (child && typeof child.__mcEnableAudio === 'function') child.__mcEnableAudio();
-    } catch { /* Cross-origin previews cannot expose the same-origin audio hook. */ }
-  });
-}
+// Dashboard previews are PASSIVE (task §9): they must NEVER produce classroom
+// or browser audio and must never control the physical television. Previews
+// stay muted at all times and only mirror the physical player's state — there is
+// no operator-gesture audio enable and no audio parameter is ever sent to a
+// preview frame.
 
 // kinds we can render as ONE live element.
 export function liveEmbedHtml(nowPlaying, cls = '', opts = {}) {
   const np = nowPlaying || null;
   if (!np) return null;
   const allowVideo  = opts.allowVideo !== false;
-  const audioPreview = opts.audioPreview === true;
   const fallbackSrc = typeof opts.fallbackSrc === 'string' ? opts.fallbackSrc : '';
   const id   = np.contentId ? encodeURIComponent(np.contentId) : '';
   const klass = `mc-live-embed${cls ? ' ' + esc(cls) : ''}`;
@@ -114,7 +105,10 @@ export function liveEmbedHtml(nowPlaying, cls = '', opts = {}) {
 
     case 'video':
       if (!allowVideo || !id) return null;
-      return `<video class="${klass}" src="/api/content/${id}/file"${np.paused === true ? '' : ' autoplay'}${audioPreview ? '' : ' muted'} loop playsinline controls data-mc-video="1" data-mc-current-time="${playbackSeconds(np)}" data-mc-paused="${np.paused === true ? '1' : '0'}"></video>`;
+      // Passive preview (task §11): always muted, no native controls, no pointer
+      // events. Autoplay mirrors the physical player's reported state (plays only
+      // when the TV is playing). It never issues commands and never produces audio.
+      return `<video class="${klass}" src="/api/content/${id}/file"${np.paused === true ? '' : ' autoplay'} muted loop playsinline data-mc-video="1" data-mc-current-time="${playbackSeconds(np)}" data-mc-paused="${np.paused === true ? '1' : '0'}" style="pointer-events:none"></video>`;
 
     case 'pdf':
     case 'document': {
@@ -136,7 +130,7 @@ export function liveEmbedHtml(nowPlaying, cls = '', opts = {}) {
       // the old N-cards-times-N-streams cascade while preserving real playback.
       if (np.remoteUrl) {
         const src = toRootRelative(np.remoteUrl);
-        const previewSrc = src + (src.includes('?') ? '&' : '?') + 'operator_preview=1' + (audioPreview ? '&audio_preview=1' : '');
+        const previewSrc = src + (src.includes('?') ? '&' : '?') + 'operator_preview=1';
         return `<iframe class="${klass}" src="${esc(previewSrc)}" loading="lazy" allow="${IFRAME_ALLOW}" referrerpolicy="no-referrer" style="pointer-events:none"></iframe>`;
       }
       return null;
