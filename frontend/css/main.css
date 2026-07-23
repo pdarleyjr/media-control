@@ -3,9 +3,36 @@ body {
   display: flex;
   overflow: hidden;
   --sidebar-current-width: var(--sidebar-width);
+  --classroom-banner-height: 0px;
 }
 
 body.sidebar-collapsed { --sidebar-current-width: var(--sidebar-collapsed-width, 72px); }
+
+/* Classroom Mode status banner — a thin fixed full-width top strip.
+   The sidebar (position:fixed) and main content both shift down by the
+   banner height so nothing is covered and the banner never becomes a
+   horizontal flex block. See app.js updateSidebarUser(). */
+body.has-classroom-banner { --classroom-banner-height: 32px; }
+.mc-classroom-banner {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 300;
+  height: var(--classroom-banner-height);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(90deg, #1e3a5f, #2d5a8f);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  padding: 0 12px;
+  letter-spacing: .2px;
+}
+body.has-classroom-banner .sidebar { top: var(--classroom-banner-height); height: calc(100vh - var(--classroom-banner-height)); }
+body.has-classroom-banner #app.content { margin-top: var(--classroom-banner-height); height: calc(100vh - var(--classroom-banner-height)); }
+body.has-classroom-banner.cc-fullscreen .content { height: calc(100vh - var(--classroom-banner-height)); }
+
 
 .sidebar {
   width: var(--sidebar-current-width);

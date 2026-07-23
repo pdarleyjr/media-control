@@ -734,6 +734,19 @@ async function route() {
     document.body.classList.remove('console-mode');
   }
   document.body.classList.toggle('cc-fullscreen', isControlRoute);
+  // Command Center on the web uses ONE collapsed (~72px) application sidebar so the
+  // wall previews get the full workspace. This is a LOCAL visual override — it does
+  // not persist to localStorage, so the operator's saved expand/collapse preference
+  // for other views is preserved and restored when leaving #/control.
+  const ccForceCollapsed = isControlRoute && !CONSOLE_MODE;
+  document.body.classList.toggle('cc-sidebar-forced', ccForceCollapsed);
+  if (ccForceCollapsed) {
+    sidebar?.classList.add('collapsed');
+    document.body.classList.add('sidebar-collapsed');
+  } else {
+    sidebar?.classList.toggle('collapsed', sidebarCollapsed());
+    document.body.classList.toggle('sidebar-collapsed', sidebarCollapsed());
+  }
   if (fullScreenChrome) {
     sidebar.style.display = 'none';
     app.style.marginLeft = '0';
@@ -744,6 +757,7 @@ async function route() {
   if (CONSOLE_MODE) renderConsoleHeader();
   const mb = document.getElementById('mobileMenuBtn');
   if (mb) mb.style.display = fullScreenChrome ? 'none' : '';
+  updateSidebarCollapseButton();
 
   // Update user info in sidebar
   updateSidebarUser();
@@ -938,9 +952,12 @@ function updateSidebarUser() {
       banner = document.createElement('div');
       banner.id = 'classroomModeBanner';
       banner.setAttribute('role', 'status');
-      banner.style.cssText = 'position:sticky;top:0;z-index:50;background:linear-gradient(90deg,#1e3a5f,#2d5a8f);color:#fff;font-size:13px;font-weight:600;text-align:center;padding:7px 12px;letter-spacing:.2px';
-      const main = document.getElementById('app');
-      if (main && main.parentNode) main.parentNode.insertBefore(banner, main);
+      // Fixed full-width thin top strip. Must NOT participate in the body flex
+      // row (the old position:sticky insertBefore(#app) made it a 500px+ flex
+      // block that ate half the viewport — the "giant blue area" regression).
+      banner.className = 'mc-classroom-banner';
+      document.body.classList.add('has-classroom-banner');
+      document.body.appendChild(banner);
     }
     banner.textContent = t('app.classroom_mode_banner') || 'CLASSROOM MODE — STREAMING AND AI FUNCTIONS TEMPORARILY DISABLED';
   }).catch(() => {});
