@@ -7,10 +7,12 @@
 //
 // Two structures, both keyed by device_id, both pruned by TTL:
 //
-//   pendingPlaylistUpdate: Map<deviceId, { expiresAt }>
+//   pendingPlaylistUpdate: Map<deviceId, { expiresAt, context }>
 //     We don't store the payload. On flush we rebuild via buildPlaylistPayload
 //     so the device gets the LATEST DB state, not a stale snapshot from when
-//     the update was first queued.
+//     the update was first queued. `context` carries only server-generated
+//     delivery correlation metadata for the latest request; it is never a
+//     browser-supplied playlist payload.
 //
 //   pendingCommands: Map<deviceId, Map<type, { payload, expiresAt }>>
 //     One entry per command type per device. Last-of-type wins (the most
@@ -48,15 +50,31 @@ function pruneDevice(deviceId) {
 // deviceNs.to(deviceId).emit('device:playlist-update', buildPlaylistPayload(deviceId));
 // directly. Now they call queueOrEmitPlaylistUpdate which checks room presence
 // first and queues only if the device is offline.
-function queueOrEmitPlaylistUpdate(deviceNs, deviceId, buildPayload) {
+function queueOrEmitPlaylistUpdate(deviceNs, deviceId, buildPayload, context = null) {
   if (!deviceNs || !deviceId || typeof buildPayload !== 'function') return { delivered: false };
+  // Build before checking room presence so any server-side delivery store can
+  // persist the exact playlist revision before an online emit, and so an
+  // offline request records the revision it intends to replay.
+  const payload = buildPayload(deviceId, context);
   const room = deviceNs.adapter.rooms.get(deviceId);
   if (room && room.size > 0) {
-    deviceNs.to(deviceId).emit('device:playlist-update', buildPayload(deviceId));
-    return { delivered: true };
+    deviceNs.to(deviceId).emit('device:playlist-update', payload);
+    return {
+      delivered: true,
+      playlistRevision: payload?.playlist_revision || null,
+      expectedSourceId: payload?.broadcast_delivery?.expected_source_id || null,
+    };
   }
-  pendingPlaylistUpdate.set(deviceId, { expiresAt: Date.now() + config.commandQueueTtlMs });
-  return { delivered: false, queued: true };
+  pendingPlaylistUpdate.set(deviceId, {
+    expiresAt: Date.now() + config.commandQueueTtlMs,
+    context: context && typeof context === 'object' ? { ...context } : null,
+  });
+  return {
+    delivered: false,
+    queued: true,
+    playlistRevision: payload?.playlist_revision || null,
+    expectedSourceId: payload?.broadcast_delivery?.expected_source_id || null,
+  };
 }
 
 // Queue a single command for an offline device. Returns true if accepted
@@ -91,7 +109,7 @@ function flushQueue(deviceNs, deviceId, buildPayload) {
   if (pu) {
     pendingPlaylistUpdate.delete(deviceId);
     if (typeof buildPayload === 'function') {
-      deviceNs.to(deviceId).emit('device:playlist-update', buildPayload(deviceId));
+      deviceNs.to(deviceId).emit('device:playlist-update', buildPayload(deviceId, pu.context || null));
       playlistUpdate = true;
     }
   }

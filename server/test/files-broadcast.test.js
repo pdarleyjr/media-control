@@ -84,20 +84,85 @@ function makeDb({ devices = {}, total = null } = {}) {
   return db;
 }
 
-// ---- fake scene-engine (records each push, returns true/false) ----
+// ---- fake broadcast-delivery store (per-player confirmation tracking) ----
+function makeBroadcastDelivery() {
+  let seq = 0;
+  const requests = new Map();
+  return {
+    createRequest(args = {}) {
+      const id = `req-${++seq}`;
+      const devices = (Array.isArray(args.targets) ? args.targets : []).map((target, ordinal) => ({
+        request_id: id,
+        device_id: target.deviceId,
+        device_name: target.deviceName || target.deviceId,
+        command_id: `cmd-${seq}-${ordinal}`,
+        expected_source_id: target.expectedSourceId || null,
+        state: target.initialState === 'failed' ? 'failed' : 'requested',
+        delivery_state: target.initialState === 'failed' ? 'failed' : 'requested',
+        acknowledgment_state: target.initialState === 'failed' ? 'failed' : 'pending',
+        failure_reason: target.failureReason || null,
+      }));
+      const request = {
+        id,
+        workspace_id: args.workspaceId || null,
+        source_type: args.sourceType || null,
+        source_id: args.sourceId || null,
+        expected_target_count: args.expectedTargetCount || devices.length,
+        status: 'requested',
+        devices,
+      };
+      requests.set(id, request);
+      return request;
+    },
+    markDispatched(args = {}) {
+      const request = requests.get(args.requestId);
+      if (!request) return { applied: false, reason: 'unknown' };
+      const device = request.devices.find((entry) => entry.device_id === args.deviceId);
+      if (!device || device.command_id !== args.commandId) return { applied: false, reason: 'command_mismatch' };
+      if (args.delivered) {
+        device.state = 'delivered';
+        device.delivery_state = 'delivered';
+      } else if (args.queued) {
+        device.state = 'offline';
+        device.delivery_state = 'offline';
+      } else {
+        device.state = 'failed';
+        device.delivery_state = 'failed';
+        device.failure_reason = args.failureReason || 'Broadcast dispatch failed';
+      }
+      return { applied: true, state: device.state };
+    },
+    getRequest(requestId) {
+      return requests.get(requestId) || null;
+    },
+  };
+}
+
+// ---- fake scene-engine (records each push; supports returnDetails contract) ----
 function makeSceneEngine({ result = () => true } = {}) {
   const pushes = [];
   return {
     _pushes: pushes,
-    pushSourceToDevice: (io, deviceId, source, opts) => {
+    pushSourceToDevice: (io, deviceId, source, opts = {}) => {
       pushes.push({ deviceId, source, opts });
-      return result(deviceId);
+      const ok = result(deviceId);
+      if (opts && opts.returnDetails) {
+        return {
+          ok: !!ok,
+          delivered: !!ok,
+          queued: false,
+          playlistRevision: ok ? `rev-${deviceId}` : null,
+          expectedSourceId: (source && source.content_id) || null,
+          failureReason: ok ? null : 'Broadcast mutation failed',
+        };
+      }
+      return !!ok;
     },
   };
 }
 
 // ---- install stubs in the require cache, then (re)load the router ----
-function loadRouter({ db, sceneEngine } = {}) {
+function loadRouter({ db, sceneEngine, delivery } = {}) {
   const dbPath = require.resolve('../db/database');
   require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: { db } };
   const sePath = require.resolve('../services/scene-engine');
@@ -106,6 +171,16 @@ function loadRouter({ db, sceneEngine } = {}) {
   require.cache[actPath] = {
     id: actPath, filename: actPath, loaded: true,
     exports: { logActivity: () => {}, getClientIp: () => '127.0.0.1' },
+  };
+  const bdPath = require.resolve('../lib/broadcast-delivery');
+  const store = delivery || makeBroadcastDelivery();
+  require.cache[bdPath] = {
+    id: bdPath, filename: bdPath, loaded: true,
+    exports: {
+      getBroadcastDeliveryStore: () => store,
+      createBroadcastDeliveryStore: () => store,
+      REQUEST_TERMINAL: new Set(['confirmed', 'partial', 'failed', 'timed_out']),
+    },
   };
   delete require.cache[require.resolve('../routes/files')];
   delete require.cache[require.resolve('../services/nextcloud-fs')];
@@ -148,6 +223,7 @@ afterEach(() => {
   delete require.cache[require.resolve('../db/database')];
   delete require.cache[require.resolve('../services/scene-engine')];
   delete require.cache[require.resolve('../services/activity')];
+  delete require.cache[require.resolve('../lib/broadcast-delivery')];
   delete require.cache[require.resolve('../routes/files')];
   delete require.cache[require.resolve('../services/nextcloud-fs')];
 });
@@ -169,11 +245,15 @@ test('imports an image and broadcasts it to the selected display', async () => {
   const res = makeRes();
   await handler(req, res);
 
-  assert.equal(res._status, 200);
+  assert.equal(res._status, 202);
+  assert.equal(res._json.accepted, true);
   assert.equal(res._json.success, true);
   assert.equal(res._json.sent, 1);
   assert.deepEqual(res._json.failed, []);
   assert.ok(res._json.content_id, 'returns the new content id');
+  assert.ok(res._json.request_id, 'returns a broadcast request id');
+  assert.ok(res._json.delivery, 'returns per-player delivery state');
+  assert.ok(res._json.status_url, 'returns a delivery status URL');
 
   // A content row was inserted, owned by the importer + workspace, marked import/private.
   assert.equal(db._inserts.length, 1);
@@ -194,6 +274,9 @@ test('imports an image and broadcasts it to the selected display', async () => {
   assert.equal(se._pushes[0].source.fit_mode, 'contain');
   assert.equal(se._pushes[0].opts.workspaceId, 'ws1');
   assert.equal(se._pushes[0].opts.userId, 'u1');
+  assert.equal(se._pushes[0].opts.returnDetails, true);
+  assert.equal(se._pushes[0].opts.delivery.requestId, res._json.request_id);
+  assert.ok(se._pushes[0].opts.delivery.commandId);
 });
 
 test('typed file targets are authoritative and legacy expanded ids are not unioned', async () => {
@@ -211,7 +294,7 @@ test('typed file targets are authoritative and legacy expanded ids are not union
   const res = makeRes();
   await handler(req, res);
 
-  assert.equal(res._status, 200);
+  assert.equal(res._status, 202);
   assert.deepEqual(se._pushes.map((push) => push.deviceId), ['d2']);
   assert.equal(res._json.total, 1);
 });
@@ -231,7 +314,7 @@ test('reads with req.user.email — a spoofed X-OpenWebUI-User-Email header is i
   const res = makeRes();
   await handler(req, res);
 
-  assert.equal(res._status, 200);
+  assert.equal(res._status, 202);
   assert.equal(fetchCalls.length, 1, 'exactly one read call');
   assert.equal(
     fetchCalls[0].opts.headers['X-OpenWebUI-User-Email'],
@@ -308,7 +391,7 @@ test('skips stale target ids and broadcasts to valid displays', async () => {
   const res = makeRes();
   await handler(req, res);
 
-  assert.equal(res._status, 200);
+  assert.equal(res._status, 202);
   assert.equal(res._json.success, true);
   assert.equal(res._json.sent, 1);
   assert.equal(res._json.total, 2);
@@ -350,7 +433,7 @@ test('proceeds when targeting all displays WITH confirm_all:true', async () => {
   const res = makeRes();
   await handler(req, res);
 
-  assert.equal(res._status, 200);
+  assert.equal(res._status, 202);
   assert.equal(res._json.sent, 2);
   assert.equal(se._pushes.length, 2);
 });

@@ -196,7 +196,7 @@ test('player screenshot reporting tolerates socket startup and disconnect races'
   );
   const canvasCapture = readSnippet(
     path.join(__dirname, '..', 'player', 'index.html'),
-    'function captureAndSend() {',
+    'function captureAndSend(correlationId = null) {',
     'function startStreaming()'
   );
 
@@ -209,6 +209,37 @@ test('player screenshot reporting tolerates socket startup and disconnect races'
     canvasCapture,
     /if \(base64 && base64\.length > 100 && socket\?\.connected\) \{[\s\S]*?socket\.emit\('device:screenshot'/,
     'canvas screenshots must not emit after a device socket disconnect'
+  );
+});
+
+test('wall video autoplay starts muted immediately without wallStartDelay gate', () => {
+  const html = readPlayerFile('index.html');
+  assert.match(html, /const wallStartDelayMs = 0/);
+  assert.match(html, /Wall tiles ALWAYS start muted/);
+  assert.match(html, /video\.preload = 'auto'/);
+  assert.match(html, /Aggressive retries/);
+});
+
+test('single-item playlists never timer-advance into a black-flash re-render', () => {
+  const html = readPlayerFile('index.html');
+  const nextItem = readSnippet(
+    path.join(__dirname, '..', 'player', 'index.html'),
+    'function nextItem() {',
+    'function contentSrcForItem(item) {'
+  );
+  assert.ok(
+    nextItem.includes('playlist.length <= 1') && nextItem.includes('return;'),
+    'nextItem must no-op for sticky single-item playlists'
+  );
+  assert.match(
+    html,
+    /isImage[\s\S]*?if \(!isFollower && playlist\.length > 1\) \{\s*advanceTimer = setTimeout\(nextItem/,
+    'image rotation must require multi-item playlists'
+  );
+  assert.match(
+    html,
+    /item\.widget_id[\s\S]*?if \(!isFollower && playlist\.length > 1\) \{\s*advanceTimer = setTimeout\(nextItem/,
+    'widget rotation must require multi-item playlists'
   );
 });
 
@@ -244,7 +275,10 @@ test('managed display audio permission remains authoritative in split mode', () 
   assert.ok(html.includes('function audioOutputAllowed()'), 'player should centralize output audio permission');
   assert.ok(html.includes('managedDisplay.audioEnabled === true'), 'managed TVs should require an explicit audio grant');
   assert.match(html, /if \(!audioOutputAllowed\(\)\) \{\r?\n\s+document\.querySelectorAll/, 'transport audio unlock should hard-mute non-audio displays');
-  assert.ok(html.includes('video.muted = !audioOutputAllowed() || !userHasInteracted'), 'local videos should mount muted on non-audio displays');
+  assert.ok(
+    html.includes('video.muted = true') && html.includes('mayUnmuteLater'),
+    'local videos should mount muted on non-audio displays'
+  );
   assert.ok(html.includes('mute: youtubeAudioAllowed && userHasInteracted ? 0 : 1'), 'YouTube should obey the same output policy');
   assert.ok(html.includes('video.muted = audioOutputAllowed() ? wasMuted : true'), 'seek completion must not restore forbidden audio');
 });

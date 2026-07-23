@@ -15,6 +15,7 @@ import { esc } from '../../utils.js';
 import { t } from '../../i18n.js';
 import { api } from '../../api.js';
 import { showToast } from '../../components/toast.js';
+import { trackBroadcastDelivery } from './send.js';
 
 // ---- composed state blocks (icon + message — never a bare sentence) ----
 const ICON_EMPTY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><path d="M3 9h18M9 21V9"></path></svg>';
@@ -61,9 +62,14 @@ function attachRecall(tile, onAfterApply) {
     tile.disabled = true;
     tile.setAttribute('aria-busy', 'true');
     try {
-      await api.scenes.trigger(id);
-      showToast(t('mc.presets.recalled', { name }), 'success');
-      if (typeof onAfterApply === 'function') onAfterApply();
+      const result = await api.scenes.trigger(id);
+      if (result?.request_id) {
+        const delivery = await trackBroadcastDelivery(result.request_id, name, result.delivery || null);
+        if (delivery?.status === 'confirmed' && typeof onAfterApply === 'function') onAfterApply();
+      } else {
+        showToast(t('mc.presets.recalled', { name }), 'success');
+        if (typeof onAfterApply === 'function') onAfterApply();
+      }
     } catch (e) {
       showToast(e?.message || t('mc.presets.recall_failed'), 'error');
     } finally {

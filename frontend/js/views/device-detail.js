@@ -64,11 +64,8 @@ export function render(container, deviceId) {
 
   screenshotHandler = (data) => {
     if (data.device_id !== deviceId) return;
-    // Use inline base64 data if available, otherwise fall back to URL
-    const imgSrc = data.image_data || (() => {
-      const token = localStorage.getItem('token');
-      return data.url + (data.url.includes('?') ? '&' : '?') + 'token=' + token;
-    })();
+    // Use inline base64 data if available, otherwise the raw URL without JWT
+    const imgSrc = data.image_data || data.url;
     // Update screenshot in Now Playing tab
     const screenshotEl = document.getElementById('currentScreenshot');
     if (screenshotEl) {
@@ -149,7 +146,7 @@ async function loadDevice(deviceId, activeTab = null) {
       <div class="tab-content active" id="tab-nowplaying">
         <div class="screenshot-container">
           ${device.screenshot
-            ? `<img id="currentScreenshot" src="/api/devices/${device.id}/screenshot?t=${Date.now()}&token=${localStorage.getItem('token')}" alt="Current screen">`
+            ? `<img id="currentScreenshot" src="/api/devices/${device.id}/screenshot?t=${Date.now()}" alt="Current screen">`
             : `<div class="no-screenshot" id="currentScreenshot">
                 <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                   <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>

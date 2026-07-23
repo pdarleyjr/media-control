@@ -22,6 +22,7 @@ import {
   isTransportAction,
 } from '../../player-protocol.js';
 import { showToast } from '../../components/toast.js';
+import { get as getDisplayState } from '../../services/display-state.js';
 
 const STATIC_TRANSPORT_BTNS = [
   { action: TRANSPORT_ACTIONS[1], label: '⏮', titleKey: 'mc.tp.prev' },
@@ -302,8 +303,19 @@ export function renderTransportBar(container, {
     btn.addEventListener('click', () => {
       const action = btn.dataset.tpAction;
       if (!TRANSPORT_ACTIONS.includes(action) && !isTransportAction(action)) return;
-      const resolvedAction = action === 'play_pause' && paused !== undefined
-        ? (paused ? 'play' : 'pause')
+      // Authoritative paused state comes from the display-state store — NOT from
+      // the render-time `paused` closure which can be stale after rerenders.
+      // This is the core fix for the "paused video resumes after unrelated UI
+      // actions" defect: the play/pause button never uses a stale value.
+      let authoritativePaused = paused;
+      try {
+        const d = getDisplayState ? getDisplayState(deviceId) : null;
+        if (d && d.now_playing && typeof d.now_playing.paused === 'boolean') {
+          authoritativePaused = d.now_playing.paused;
+        }
+      } catch { /* display-state optional */ }
+      const resolvedAction = action === 'play_pause' && authoritativePaused !== undefined
+        ? (authoritativePaused ? 'play' : 'pause')
         : action;
       btn.disabled = true;
       dispatchTransport(resolvedAction).finally(() => { btn.disabled = false; });

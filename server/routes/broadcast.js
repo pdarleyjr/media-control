@@ -13,8 +13,11 @@
 // workspace_viewer (mirrors playlists.js / scenes.js).
 
 const express = require('express');
+const crypto = require('crypto');
 const router = express.Router();
 const { db } = require('../db/database');
+const { getBroadcastDeliveryStore } = require('../lib/broadcast-delivery');
+const broadcastDelivery = getBroadcastDeliveryStore(db);
 const sceneEngine = require('../services/scene-engine');
 const { logActivity, getClientIp } = require('../services/activity');
 const { deckPlayerUrl } = require('../lib/deck-player-url');
@@ -29,6 +32,14 @@ const {
 } = require('../lib/broadcast-targets');
 const nodeRegistry = require('../lib/node-registry');
 const { contentUseDecision, contextFromRequest } = require('../lib/content-visibility');
+
+function sourceIdentity({ contentId, playlistId, presentationId, remoteUrl }) {
+  if (contentId) return { type: 'content', id: String(contentId) };
+  if (playlistId) return { type: 'playlist', id: String(playlistId) };
+  if (presentationId) return { type: 'presentation', id: String(presentationId) };
+  const digest = crypto.createHash('sha256').update(String(remoteUrl || '')).digest('hex').slice(0, 32);
+  return { type: 'remote_url', id: `sha256:${digest}` };
+}
 
 async function callDirector(path, body) {
   const base = String(process.env.AI_DIRECTOR_URL || 'http://host.docker.internal:8766').replace(/\/+$/, '');
@@ -52,6 +63,15 @@ async function callDirector(path, body) {
     clearTimeout(timeout);
   }
 }
+
+router.get('/:requestId', (req, res) => {
+  if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
+  broadcastDelivery.sweepExpired();
+  const request = broadcastDelivery.getRequest(String(req.params.requestId || ''), req.workspaceId);
+  if (!request) return res.status(404).json({ error: 'Broadcast request not found' });
+  res.set('Cache-Control', 'no-store');
+  return res.json(request);
+});
 
 router.post('/', async (req, res) => {
   if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
@@ -173,16 +193,64 @@ router.post('/', async (req, res) => {
   const source = { content_id, remote_url: effectiveRemoteUrl, playlist_id, fit_mode };
   const io = req.app.get('io');
   const totalRequested = targets.length + resolvedTargets.missing.length;
+  const sourceRef = sourceIdentity({
+    contentId: content_id,
+    playlistId: playlist_id,
+    presentationId: presentation_id,
+    remoteUrl: effectiveRemoteUrl,
+  });
+  const deliveryRequest = broadcastDelivery.createRequest({
+    workspaceId: req.workspaceId,
+    userId: req.user.id,
+    sourceType: sourceRef.type,
+    sourceId: sourceRef.id,
+    typedTargets: typedRefs,
+    expectedTargetCount: totalRequested,
+    targets: [
+      ...targets.map((deviceId) => ({
+        deviceId,
+        expectedSourceId: content_id ? String(content_id) : null,
+      })),
+      ...resolvedTargets.missing.map((deviceId) => ({
+        deviceId,
+        resolved: false,
+        initialState: 'failed',
+        failureReason: 'Display was not found in the active workspace',
+      })),
+    ],
+  });
+  const deliveryByDevice = new Map(
+    deliveryRequest.devices.map((entry) => [entry.device_id, entry])
+  );
   let sent = 0;
   const failed = resolvedTargets.missing.slice();
   for (const deviceId of targets) {
-    const ok = sceneEngine.pushSourceToDevice(io, deviceId, source, {
+    const delivery = deliveryByDevice.get(deviceId);
+    const result = sceneEngine.pushSourceToDevice(io, deviceId, source, {
       workspaceId: req.workspaceId,
       userId: req.user.id,
       contentContext: contextFromRequest(req),
       targetDeviceIds: targets,
+      delivery: {
+        requestId: deliveryRequest.id,
+        commandId: delivery.command_id,
+        sourceId: sourceRef.id,
+        sourceType: sourceRef.type,
+        expectedSourceId: content_id ? String(content_id) : null,
+      },
+      returnDetails: true,
     });
-    if (ok) sent++; else failed.push(deviceId);
+    broadcastDelivery.markDispatched({
+      requestId: deliveryRequest.id,
+      deviceId,
+      commandId: delivery.command_id,
+      delivered: result.delivered,
+      queued: result.queued,
+      playlistRevision: result.playlistRevision,
+      expectedSourceId: result.expectedSourceId,
+      failureReason: result.failureReason,
+    });
+    if (result.ok) sent++; else failed.push(deviceId);
   }
   // The device playlist assignment above is the authorization event that makes
   // the asset eligible for the room node. Prewarm only after that transaction;
@@ -237,7 +305,19 @@ router.post('/', async (req, res) => {
     liveProgram = liveStreamProgramState(req.workspaceId);
     liveProgram.program_refresh = await callDirector('/media-control/refresh');
   }
-  res.json({ success: true, sent, failed, total: totalRequested, cache_prewarm: cachePrewarm, live_stream: liveProgram });
+  const deliveryStatus = broadcastDelivery.getRequest(deliveryRequest.id, req.workspaceId);
+  res.status(202).json({
+    accepted: true,
+    success: true,
+    request_id: deliveryRequest.id,
+    status_url: `/api/broadcast/${encodeURIComponent(deliveryRequest.id)}`,
+    delivery: deliveryStatus,
+    sent,
+    failed,
+    total: totalRequested,
+    cache_prewarm: cachePrewarm,
+    live_stream: liveProgram,
+  });
 });
 
 module.exports = router;

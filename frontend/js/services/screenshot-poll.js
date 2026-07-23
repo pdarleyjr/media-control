@@ -1,12 +1,14 @@
 // Bounded screenshot polling with instrumentation for the Command Center.
-// Prefer socket screenshot-ready pushes; poll only active room visible devices.
+// A request stays in-flight until screenshot-ready, rejection, offline, timeout,
+// or view cancellation — never simply because the socket emit returned.
 
 const DEFAULTS = {
   minIntervalMs: 750,
   activeIntervalMs: 4000,
-  backgroundIntervalMs: 60000,
-  freshSeconds: 25,
+  backgroundIntervalMs: 8000,
+  freshSeconds: 12,
   maxBackoffMs: 60000,
+  requestTimeoutMs: 12000,
 };
 
 const metrics = {
@@ -15,6 +17,7 @@ const metrics = {
   pollsLastMinute: 0,
   duplicateSuppressed: 0,
   socketListeners: 0,
+  timeouts: 0,
   _pollBucket: [],
 };
 
@@ -32,6 +35,7 @@ export function getScreenshotPollMetrics() {
     pollsPerMinute: metrics.pollsLastMinute,
     duplicateSuppressionCount: metrics.duplicateSuppressed,
     socketListenerCount: metrics.socketListeners,
+    timeouts: metrics.timeouts,
   };
 }
 
@@ -39,13 +43,12 @@ export function createScreenshotPoller(options = {}) {
   const cfg = { ...DEFAULTS, ...options };
   const requestFn = typeof cfg.requestScreenshot === 'function' ? cfg.requestScreenshot : () => {};
   const listVisibleIds = typeof cfg.listVisibleIds === 'function' ? cfg.listVisibleIds : () => [];
-  const isFresh = typeof cfg.isFresh === 'function'
-    ? cfg.isFresh
-    : () => false;
+  const isFresh = typeof cfg.isFresh === 'function' ? cfg.isFresh : () => false;
   const isRetired = typeof cfg.isRetired === 'function' ? cfg.isRetired : () => false;
+  const isOffline = typeof cfg.isOffline === 'function' ? cfg.isOffline : () => false;
 
   const lastAt = new Map();
-  const inFlight = new Set();
+  const inFlight = new Map(); // id -> { timer, corr }
   const backoffUntil = new Map();
   const failCount = new Map();
   let activeTimer = null;
@@ -54,6 +57,8 @@ export function createScreenshotPoller(options = {}) {
   let destroyed = false;
   let paused = false;
   let onVis = null;
+  let corrSeq = 0;
+  let timeoutCount = 0;
 
   function notePoll() {
     const now = Date.now();
@@ -65,8 +70,33 @@ export function createScreenshotPoller(options = {}) {
     metrics.activeTimers = (activeTimer ? 1 : 0) + (backgroundTimer ? 1 : 0) + (kickoff ? 1 : 0);
   }
 
+  function syncInFlightMetric() {
+    metrics.inFlight = inFlight.size;
+  }
+
+  function clearInFlight(id, correlationId = null) {
+    const entry = inFlight.get(id);
+    if (!entry) return false;
+    if (correlationId && entry.corr !== correlationId) return false;
+    if (entry.timer) clearTimeout(entry.timer);
+    inFlight.delete(id);
+    syncInFlightMetric();
+    return true;
+  }
+
+  function applyBackoff(id) {
+    const n = (failCount.get(id) || 0) + 1;
+    failCount.set(id, n);
+    const delay = Math.min(cfg.maxBackoffMs, cfg.minIntervalMs * (2 ** Math.min(n, 6)));
+    backoffUntil.set(id, Date.now() + delay);
+  }
+
   function canRequest(id, force) {
     if (!id || isRetired(id)) return false;
+    if (isOffline(id) && !force) {
+      metrics.duplicateSuppressed += 1;
+      return false;
+    }
     if (inFlight.has(id)) {
       metrics.duplicateSuppressed += 1;
       return false;
@@ -97,31 +127,29 @@ export function createScreenshotPoller(options = {}) {
     if (destroyed || paused || isDocHidden()) return;
     if (!canRequest(id, force)) return;
     lastAt.set(id, Date.now());
-    inFlight.add(id);
-    metrics.inFlight = inFlight.size;
+    const corr = `ss-${Date.now().toString(36)}-${(++corrSeq).toString(36)}`;
+    const timer = setTimeout(() => {
+      if (!inFlight.has(id)) return;
+      metrics.timeouts += 1;
+      timeoutCount += 1;
+      clearInFlight(id);
+      applyBackoff(id);
+    }, cfg.requestTimeoutMs);
+    inFlight.set(id, { timer, corr });
+    syncInFlightMetric();
     notePoll();
     try {
-      const result = requestFn(id);
-      Promise.resolve(result)
-        .then(() => {
-          failCount.set(id, 0);
-          backoffUntil.delete(id);
-        })
-        .catch(() => {
-          const n = (failCount.get(id) || 0) + 1;
-          failCount.set(id, n);
-          const delay = Math.min(cfg.maxBackoffMs, cfg.minIntervalMs * (2 ** Math.min(n, 6)));
-          backoffUntil.set(id, Date.now() + delay);
-        })
-        .finally(() => {
-          inFlight.delete(id);
-          metrics.inFlight = inFlight.size;
-        });
+      const result = requestFn(id, { correlationId: corr });
+      // Socket.IO emits are fire-and-forget: successful Promise resolution does
+      // not mean a screenshot arrived. A rejection is an explicit request
+      // failure, however, so release it into bounded backoff immediately.
+      Promise.resolve(result).catch(() => {
+        if (!clearInFlight(id, corr)) return;
+        applyBackoff(id);
+      });
     } catch {
-      const n = (failCount.get(id) || 0) + 1;
-      failCount.set(id, n);
-      inFlight.delete(id);
-      metrics.inFlight = inFlight.size;
+      clearInFlight(id);
+      applyBackoff(id);
     }
   }
 
@@ -158,6 +186,7 @@ export function createScreenshotPoller(options = {}) {
       } else {
         paused = false;
         tickActive();
+        tickBackground();
       }
     };
     try {
@@ -180,18 +209,41 @@ export function createScreenshotPoller(options = {}) {
       onVis = null;
       metrics.socketListeners = Math.max(0, metrics.socketListeners - 1);
     }
-    inFlight.clear();
-    metrics.inFlight = 0;
+    for (const id of [...inFlight.keys()]) clearInFlight(id);
     destroyed = true;
     bumpTimers();
   }
 
-  function markReady(id) {
+  function markReady(id, correlationId = null) {
     if (!id) return;
-    inFlight.delete(id);
+    if (!clearInFlight(id, correlationId)) return;
     failCount.set(id, 0);
     backoffUntil.delete(id);
-    metrics.inFlight = inFlight.size;
+  }
+
+  function markOffline(id) {
+    if (!id) return;
+    clearInFlight(id);
+    applyBackoff(id);
+  }
+
+  function markFailed(id, correlationId = null) {
+    if (!id || !clearInFlight(id, correlationId)) return;
+    applyBackoff(id);
+  }
+
+  function getState() {
+    return {
+      inFlightIds: [...inFlight.keys()],
+      correlations: Object.fromEntries(
+        [...inFlight.entries()].map(([id, entry]) => [id, entry.corr]),
+      ),
+      backoffUntil: Object.fromEntries(backoffUntil),
+      activeTimerCount: (activeTimer ? 1 : 0) + (backgroundTimer ? 1 : 0) + (kickoff ? 1 : 0),
+      timeouts: timeoutCount,
+      destroyed,
+      paused,
+    };
   }
 
   return {
@@ -199,6 +251,9 @@ export function createScreenshotPoller(options = {}) {
     stop,
     requestIds,
     markReady,
+    markOffline,
+    markFailed,
+    getState,
     getMetrics: getScreenshotPollMetrics,
   };
 }

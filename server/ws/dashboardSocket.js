@@ -322,10 +322,14 @@ function mirrorTransportToLiveStream(deviceNs, deviceId, command) {
     const onControl = makeOnControl(socket);
 
     onControl('dashboard:request-screenshot', (data) => {
-      const { device_id } = data;
+      const { device_id, correlation_id } = data;
       if (!canActOnDevice(socket, device_id, 'read')) return;
       const conn = heartbeat.getConnection(device_id);
-      if (conn) deviceNs.to(device_id).emit('device:screenshot-request', {});
+      if (conn) {
+        deviceNs.to(device_id).emit('device:screenshot-request', {
+          correlation_id: correlation_id || null,
+        });
+      }
     });
 
     onControl('dashboard:remote-touch', (data) => {

@@ -64,8 +64,13 @@ function playbackSeconds(nowPlaying) {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
 }
 
+// Modern iframe allow list. Bare "autoplay" alone triggers Firefox
+// "Feature Policy: Skipping unsupported feature name autoplay" warnings;
+// pair with encrypted-media + fullscreen which browsers accept.
+const IFRAME_ALLOW = 'accelerometer; autoplay; clipboard-write; encrypted-media; fullscreen; gyroscope; picture-in-picture; web-share';
+
 function presentationFrameHtml(src, klass, slide) {
-  return `<iframe class="${klass}" src="${esc(src)}" loading="eager" allow="autoplay; fullscreen" referrerpolicy="no-referrer" style="pointer-events:none" data-mc-presentation="1" data-mc-slide-index="${slide}"></iframe>`;
+  return `<iframe class="${klass}" src="${esc(src)}" loading="eager" allow="${IFRAME_ALLOW}" referrerpolicy="no-referrer" style="pointer-events:none" data-mc-presentation="1" data-mc-slide-index="${slide}"></iframe>`;
 }
 
 export function enableLivePreviewAudio(root = document) {
@@ -132,7 +137,7 @@ export function liveEmbedHtml(nowPlaying, cls = '', opts = {}) {
       if (np.remoteUrl) {
         const src = toRootRelative(np.remoteUrl);
         const previewSrc = src + (src.includes('?') ? '&' : '?') + 'operator_preview=1' + (audioPreview ? '&audio_preview=1' : '');
-        return `<iframe class="${klass}" src="${esc(previewSrc)}" loading="lazy" allow="autoplay; fullscreen" referrerpolicy="no-referrer" style="pointer-events:none"></iframe>`;
+        return `<iframe class="${klass}" src="${esc(previewSrc)}" loading="lazy" allow="${IFRAME_ALLOW}" referrerpolicy="no-referrer" style="pointer-events:none"></iframe>`;
       }
       return null;
     }
@@ -147,11 +152,11 @@ export function liveEmbedHtml(nowPlaying, cls = '', opts = {}) {
       if (!allowVideo) return null;
       if (np.remoteUrl && isOwnPlayer(np.remoteUrl)) {
         const src = esc(toRootRelative(np.remoteUrl));
-        return `<iframe class="${klass}" src="${src}" loading="lazy" allow="autoplay; fullscreen" referrerpolicy="no-referrer" style="pointer-events:none"></iframe>`;
+        return `<iframe class="${klass}" src="${src}" loading="lazy" allow="${IFRAME_ALLOW}" referrerpolicy="no-referrer" style="pointer-events:none"></iframe>`;
       }
       // External URL (wall.mbfdhub.com, etc.) — iframe it directly (CSP allows *.mbfdhub.com)
       if (np.remoteUrl) {
-        return `<iframe class="${klass}" src="${esc(np.remoteUrl)}" loading="lazy" allow="autoplay; fullscreen" referrerpolicy="no-referrer" style="pointer-events:none"></iframe>`;
+        return `<iframe class="${klass}" src="${esc(np.remoteUrl)}" loading="lazy" allow="${IFRAME_ALLOW}" referrerpolicy="no-referrer" style="pointer-events:none"></iframe>`;
       }
       return null;
     }

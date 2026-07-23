@@ -17,7 +17,7 @@
 import { esc } from '../../utils.js';
 import { t, tn } from '../../i18n.js';
 import { api } from '../../api.js';
-import { sendToDisplays, sentToast } from './send.js';
+import { sendToDisplays, sentToast, trackBroadcastDelivery } from './send.js';
 import { showToast } from '../../components/toast.js';
 import { confirmDialog } from '../../components/confirm.js';
 import { renderCameraFeedsTab } from './camera-feeds.js';
@@ -292,7 +292,8 @@ async function renderNextcloudTab(container, { selectedIds, onAfterSend, onRoute
     const restore = () => { btn.disabled = false; btn.textContent = t('mc.nc.broadcast'); };
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (!Array.isArray(selectedIds) || selectedIds.length === 0) {
+      if (typeof onRouteNextcloud !== 'function'
+        && (!Array.isArray(selectedIds) || selectedIds.length === 0)) {
         showToast(t('mc.nc.no_displays'), 'error');
         return;
       }
@@ -317,8 +318,13 @@ async function renderNextcloudTab(container, { selectedIds, onAfterSend, onRoute
           result = await api.files.broadcast(ncPath, selectedIds, { confirm_all: true });
         }
         if (result && result.success) {
-          sentToast(label, result.sent, result.total);
-          if (typeof onAfterSend === 'function') onAfterSend();
+          if (result.request_id) {
+            const delivery = await trackBroadcastDelivery(result.request_id, label, result.delivery || null);
+            if (delivery?.status === 'confirmed' && typeof onAfterSend === 'function') onAfterSend();
+          } else {
+            sentToast(label, Number(result.sent) || 0, Number(result.total) || 0);
+            if (typeof onAfterSend === 'function') onAfterSend();
+          }
         }
       } catch (err) {
         showToast(err?.message || t('mc.send.failed'), 'error');
@@ -358,9 +364,14 @@ async function renderScenesTab(container, { onAfterSend }) {
       const id = btn.dataset.sceneId;
       const name = btn.dataset.sceneName || t('mc.tile.scene_fallback');
       try {
-        await api.scenes.trigger(id);
-        showToast(t('mc.scenes.triggered', { name }), 'success');
-        if (typeof onAfterSend === 'function') onAfterSend();
+        const result = await api.scenes.trigger(id);
+        if (result?.request_id) {
+          const delivery = await trackBroadcastDelivery(result.request_id, name, result.delivery || null);
+          if (delivery?.status === 'confirmed' && typeof onAfterSend === 'function') onAfterSend();
+        } else {
+          showToast(t('mc.scenes.triggered', { name }), 'success');
+          if (typeof onAfterSend === 'function') onAfterSend();
+        }
       } catch (e) {
         showToast(e?.message || t('mc.scenes.trigger_failed'), 'error');
       }

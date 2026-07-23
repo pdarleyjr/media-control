@@ -62,9 +62,7 @@ async function requestBroadcast(payload, endpoint = '/broadcast') {
 }
 
 async function requestStatus(url) {
-  const token = localStorage.getItem('token');
-  const sep = url.includes('?') ? '&' : '?';
-  const res = await fetch(API_BASE + url + (token ? `${sep}token=${encodeURIComponent(token)}` : ''), {
+  const res = await fetch(API_BASE + url, {
     headers: { Accept: 'application/json', ...getAuthHeaders() },
     credentials: 'same-origin',
   });
@@ -365,16 +363,27 @@ export const api = {
   // { code:'CONFIRM_ALL_REQUIRED', count }; broadcast() resolves with that body
   // (instead of throwing) so the UI can prompt and retry with confirm_all:true.
   broadcast: (payload) => requestBroadcast(payload),
+  broadcastStatus: (requestId) => request(`/broadcast/${encodeURIComponent(requestId)}`, {
+    headers: { 'Cache-Control': 'no-store' },
+  }),
 
   // ==================== MBFD live stream orchestration ====================
   liveStream: {
     display: () => request('/live-stream/display'),
     status: () => request('/live-stream/status'),
+    // Fast operator poll (<500ms target). Uses director/state + cached deep probes.
+    operatorState: () => request('/live-stream/operator-state'),
     prepare: () => request('/live-stream/prepare', { method: 'POST' }),
+    productionPlan: (body) => request('/live-stream/production-plan', { method: 'POST', body: JSON.stringify(body || {}) }),
+    getProductionPlan: () => request('/live-stream/production-plan'),
     start: (options = {}) => request('/live-stream/start', { method: 'POST', body: JSON.stringify(options) }),
     stop: () => request('/live-stream/stop', { method: 'POST' }),
     clearContent: () => request('/live-stream/clear-content', { method: 'POST' }),
     refresh: () => request('/live-stream/refresh', { method: 'POST' }),
+    recordingStatus: () => request('/live-stream/recording/status'),
+    recordingPreflight: (body) => request('/live-stream/recording/preflight', { method: 'POST', body: JSON.stringify(body || {}) }),
+    recordingStart: (body) => request('/live-stream/recording/start', { method: 'POST', body: JSON.stringify(body || {}) }),
+    recordingStop: (body) => request('/live-stream/recording/stop', { method: 'POST', body: JSON.stringify(body || {}) }),
   },
 
   // ==================== MBFD Media Control Studio: Presentations ====================

@@ -476,6 +476,10 @@
     let currentMediaError = null;
     let lastPlaybackProgressAt = 0;
     let playbackGeneration = 0;
+    const rendererSessionId = (window.crypto && typeof window.crypto.randomUUID === 'function')
+      ? window.crypto.randomUUID()
+      : `renderer-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    let pendingBroadcastDelivery = null;
     let currentMediaAbortController = null;
     let activeSeekCancel = null;
     let transportSeekInProgress = false;
@@ -485,6 +489,7 @@
     let pendingWallStartAt = 0;
     let displayProfile = null;
     let lastScreenshotSentAt = 0;
+    const mcDiagnostics = new URLSearchParams(window.location.search).get('mc_diag') === '1';
     let lastTransportState = null;
     let lastTransportAck = null;
     let lastTransportCommand = null;
@@ -1632,6 +1637,144 @@
       return snapshot;
     }
 
+    function emitPendingBroadcastStatus(phase, failureReason = null) {
+      const pending = pendingBroadcastDelivery;
+      if (!pending || !socket?.connected) return false;
+      socket.emit('device:broadcast-status', {
+        request_id: pending.requestId,
+        command_id: pending.commandId,
+        phase,
+        playlist_revision: pending.playlistRevision,
+        renderer_session_id: rendererSessionId,
+        render_generation: pending.renderGeneration || playbackGeneration,
+        player_state: buildPlayerState(),
+        failure_reason: failureReason || null,
+      });
+      return true;
+    }
+
+    function acceptBroadcastDelivery(data) {
+      const delivery = data && data.broadcast_delivery;
+      if (!delivery || typeof delivery !== 'object') {
+        pendingBroadcastDelivery = null;
+        return;
+      }
+      const playlistRevision = typeof data.playlist_revision === 'string'
+        ? data.playlist_revision
+        : null;
+      if (
+        !delivery.request_id
+        || !delivery.command_id
+        || !playlistRevision
+        || delivery.expected_playlist_revision !== playlistRevision
+      ) {
+        pendingBroadcastDelivery = {
+          requestId: String(delivery.request_id || ''),
+          commandId: String(delivery.command_id || ''),
+          playlistRevision: playlistRevision || String(delivery.expected_playlist_revision || ''),
+          expectedSourceId: delivery.expected_source_id || null,
+          renderGeneration: playbackGeneration,
+          pendingZones: null,
+        };
+        emitPendingBroadcastStatus('failed', 'Playlist delivery metadata did not match the payload revision');
+        pendingBroadcastDelivery = null;
+        return;
+      }
+      pendingBroadcastDelivery = {
+        requestId: String(delivery.request_id),
+        commandId: String(delivery.command_id),
+        playlistRevision,
+        expectedSourceId: delivery.expected_source_id || null,
+        renderGeneration: null,
+        pendingZones: null,
+      };
+      emitPendingBroadcastStatus('acknowledged');
+    }
+
+    function bindPendingBroadcastToRender() {
+      if (!pendingBroadcastDelivery) return;
+      pendingBroadcastDelivery.renderGeneration = playbackGeneration;
+      pendingBroadcastDelivery.pendingZones = null;
+    }
+
+    function failPendingBroadcastRender(reason) {
+      if (!pendingBroadcastDelivery) return;
+      emitPendingBroadcastStatus('failed', reason || 'Player could not render the requested content');
+      pendingBroadcastDelivery = null;
+    }
+
+function confirmPendingBroadcastRender(reason = 'render-ready') {
+      const pending = pendingBroadcastDelivery;
+      if (!pending) return false;
+      // Bind generation if playlist application finished after accept but before paint.
+      if (!pending.renderGeneration) pending.renderGeneration = playbackGeneration;
+      if (pending.playlistRevision && appliedPlaylistRevision
+          && pending.playlistRevision !== appliedPlaylistRevision) {
+        return false;
+      }
+      if (pending.renderGeneration && pending.renderGeneration !== playbackGeneration) return false;
+      if (pending.pendingZones && pending.pendingZones.size > 0) return false;
+      const state = buildPlayerState();
+      if (
+        pending.expectedSourceId
+        && state.current_content_id
+        && String(pending.expectedSourceId) !== String(state.current_content_id)
+      ) {
+        failPendingBroadcastRender('Rendered source did not match the requested content');
+        return false;
+      }
+      if (state.render_state === 'error' || state.error_state) {
+        failPendingBroadcastRender('Player reported a render error');
+        return false;
+      }
+      // If image/video already painted, allow confirm even when generation bind lagged.
+      state.confirmation_reason = reason;
+      emitPendingBroadcastStatus('confirmed');
+      pendingBroadcastDelivery = null;
+      return true;
+    }
+
+    function markBroadcastElementReady(element, reason) {
+      if (element && element.dataset) element.dataset.mcRenderReady = '1';
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => confirmPendingBroadcastRender(reason));
+      });
+    }
+
+    function confirmCurrentRenderIfReady() {
+      const container = document.getElementById('playerContainer');
+      if (!container || !pendingBroadcastDelivery) return false;
+      const img = container.querySelector('img');
+      if (img && img.complete && img.naturalWidth > 0) {
+        return confirmPendingBroadcastRender('existing-image-ready');
+      }
+      const video = container.querySelector('video');
+      if (video && video.readyState >= 2 && !video.error) {
+        return confirmPendingBroadcastRender('existing-video-ready');
+      }
+      const iframe = container.querySelector('iframe[data-mc-render-ready="1"]');
+      if (iframe) return confirmPendingBroadcastRender('existing-frame-ready');
+      try {
+        const ytState = activeYtPlayer && activeYtPlayer.getPlayerState
+          ? activeYtPlayer.getPlayerState()
+          : null;
+        if (ytState === 1) return confirmPendingBroadcastRender('existing-youtube-playing');
+      } catch (_) {}
+      return false;
+    }
+
+    function beginBroadcastZoneBarrier(keys) {
+      if (!pendingBroadcastDelivery) return;
+      pendingBroadcastDelivery.pendingZones = new Set(keys);
+    }
+
+    function markBroadcastZoneReady(key, reason) {
+      const pending = pendingBroadcastDelivery;
+      if (!pending || !pending.pendingZones) return;
+      pending.pendingZones.delete(String(key));
+      if (pending.pendingZones.size === 0) confirmPendingBroadcastRender(reason || 'all-zones-ready');
+    }
+
     function publishPlayerState(options = {}) {
       if (!socket?.connected || !config.deviceId) return null;
       const state = buildPlayerState();
@@ -1652,6 +1795,9 @@
         device_id: config.deviceId,
         state,
       });
+      // Re-check pending broadcast confirmation on every state publish so wall
+      // followers / late paints do not sit in acknowledged until timed_out.
+      try { confirmCurrentRenderIfReady(); } catch (_) {}
       if (options.ack && options.ack.command_id) {
         socket.emit('device:ack', window.MbfdDeviceContract.createAck({
           device_id: config.deviceId,
@@ -1733,7 +1879,9 @@
             device_id: config.deviceId,
             image_b64: data.__mc_screenshot,
             captured_at: Number(data.captured_at) || Date.now(),
+            correlation_id: pendingScreenshotCorrelationId,
           });
+          pendingScreenshotCorrelationId = null;
         }
       }
       if (data.__mc_transport_state && typeof data.__mc_transport_state === 'object') {
@@ -2293,6 +2441,7 @@
 
       socket.on('device:playlist-update', (data) => {
         console.log('Playlist update:', data.assignments?.length, 'items');
+        acceptBroadcastDelivery(data);
         handlePlaylistUpdate(data);
         // Refresh the dashboard preview after the new media has painted. The
         // later pass covers document conversion/iframe startup without making
@@ -2392,7 +2541,10 @@
         emitWallSync();
       });
 
-      socket.on('device:screenshot-request', () => { console.log('Screenshot requested'); captureAndSend(); });
+      socket.on('device:screenshot-request', (data) => {
+        if (mcDiagnostics) console.log('Screenshot requested');
+        captureAndSend(data?.correlation_id || null);
+      });
       socket.on('device:remote-start', () => { console.log('Remote start received'); remoteStreaming = true; startStreaming(); });
       socket.on('device:remote-stop', () => { console.log('Remote stop received'); remoteStreaming = false; stopStreaming(); });
 
@@ -3391,6 +3543,7 @@
             <p style="color:#64748b;font-size:13px">Visit your dashboard to manage your subscription</p>
           </div>
         `;
+        failPendingBroadcastRender('Display access is suspended');
         return;
       }
 
@@ -3442,6 +3595,7 @@
       if (newFp === oldFp && playlist.length > 0 && !wallChanged) {
         console.log('Playlist unchanged');
         if (hasDisplayRestore) scheduleDisplayStateRestore('playlist-unchanged');
+        requestAnimationFrame(confirmCurrentRenderIfReady);
         return;
       }
 
@@ -3464,6 +3618,7 @@
         showStatus('Waiting for content...');
         isPlaying = false;
         publishPlayerState();
+        failPendingBroadcastRender('Broadcast produced an empty playlist');
         return;
       }
 
@@ -3480,6 +3635,7 @@
           if (!wallChanged && oldAnchorRenderKey === renderKeyOf(playlist[stillThereIdx])) {
             isPlaying = true;
             if (hasDisplayRestore) scheduleDisplayStateRestore('playlist-continuity');
+            requestAnimationFrame(confirmCurrentRenderIfReady);
             return;
           }
           isPlaying = true;
@@ -3548,6 +3704,11 @@
     }
 
     function nextItem() {
+      // Single-item playlists must never "advance". nextItem() tears down the
+      // stage (black) then re-mounts the same asset — classic blink every
+      // duration_sec on a sticky image/wallpaper. Multi-item rotation only.
+      if (!Array.isArray(playlist) || playlist.length <= 1) return;
+
       // Send play_end for current
       if (playlist[currentIndex] && socket?.connected) {
         socket.emit('device:play-event', {
@@ -3642,13 +3803,21 @@
       }
     }
 
-    function createYoutubeEmbed(src, item, container) {
+    function createYoutubeEmbed(src, item, container, onRendered = null) {
       const videoId = extractVideoId(src);
       if (!videoId) {
         console.error('Could not extract YouTube video ID from:', src);
+        failPendingBroadcastRender('YouTube video ID could not be resolved');
         if (playlist.length > 1) setTimeout(nextItem, 2000);
         return null;
       }
+      let broadcastRenderReported = false;
+      const reportBroadcastRender = () => {
+        if (broadcastRenderReported) return;
+        broadcastRenderReported = true;
+        if (typeof onRendered === 'function') onRendered();
+        else confirmPendingBroadcastRender('youtube-playing');
+      };
 
       // Invalidate any previous player's callbacks
       const myGeneration = ++ytGeneration;
@@ -3747,6 +3916,7 @@
             onError: (event) => {
               if (myGeneration !== ytGeneration) return;
               console.error('YouTube error', event.data, 'for:', item.filename);
+              failPendingBroadcastRender(`YouTube render failed (${event.data})`);
               if (playlist.length > 1) {
                 console.log('Skipping unplayable YouTube video');
                 setTimeout(nextItem, 2000);
@@ -3755,7 +3925,10 @@
             onStateChange: (event) => {
               if (myGeneration !== ytGeneration) return;
               // Track when video actually starts playing
-              if (event.data === 1) playStartTime = Date.now();
+              if (event.data === 1) {
+                playStartTime = Date.now();
+                reportBroadcastRender();
+              }
               // Followers paused unexpectedly (e.g. OS audio-focus loss on
               // Fire TV) should resume — the leader is the source of truth
               // and a wall:sync may not arrive fast enough to recover the
@@ -3852,6 +4025,7 @@
     function renderContent(item) {
       teardownCurrentMedia();
       currentMediaAbortController = new AbortController();
+      bindPendingBroadcastToRender();
 
       const localPlayableAsset = usesClassroomLocalAsset(item);
       currentLocalAssetReady = localPlayableAsset ? false : null;
@@ -3897,6 +4071,7 @@
         showStatus('Waiting for content...');
         isPlaying = false;
         publishPlayerState();
+        failPendingBroadcastRender('Requested content has no supported renderer');
         return;
       }
 
@@ -4011,6 +4186,8 @@
           frame.src = webSrc;
           frame.style.cssText = 'width:100%;height:100%;border:none;background:#000';
           frame.allow = 'autoplay; fullscreen';
+          frame.addEventListener('load', () => markBroadcastElementReady(frame, 'web-frame-ready'), { once: true });
+          frame.addEventListener('error', () => failPendingBroadcastRender('Web frame failed to load'), { once: true });
           // Multiview audio: once the page has user activation (the one-time "tap to
           // enable audio"), (re)enable the grid's chosen audio cell on EVERY mount —
           // so SWITCHING the audio frame by re-sending the layout takes effect live
@@ -4033,17 +4210,22 @@
           const myGeneration = playbackGeneration;
           let videoHasStarted = false;
           video.src = src;
-          const wallStartDelayMs = wallConfig && currentItemStartedAt > Date.now() + 40
-            ? Math.min(2000, currentItemStartedAt - Date.now())
-            : 0;
-          video.autoplay = wallStartDelayMs <= 0;
-          // Followers stay muted unconditionally (leader-only audio); leaders
-          // start muted only if the user hasn't gestured yet (autoplay policy).
-          video.muted = !audioOutputAllowed() || !userHasInteracted;
-          // Explicit max volume on the leader so audio is at full level when
-          // unmute happens (default is 1.0 but make it visible in logs).
+          video.preload = 'auto';
+          // Wall span must not delay local decode waiting on leader clock —
+          // followers previously sat on LOCKED "loading"/poster until wall:sync.
+          // Start immediately (muted) so every tile paints frames; wall:sync only
+          // nudges currentTime/playbackRate after play begins.
+          const wallStartDelayMs = 0;
+          video.autoplay = true;
+          // Wall tiles ALWAYS start muted so Chromium autoplay policy cannot
+          // block paint. Leader may unmute after first playing event if audio
+          // is allowed and the user has activated audio.
+          const mayUnmuteLater = audioOutputAllowed() && userHasInteracted && !isFollower;
+          video.muted = true;
           if (audioOutputAllowed()) video.volume = 1.0;
           video.playsInline = true;
+          video.setAttribute('playsinline', '');
+          video.setAttribute('webkit-playsinline', '');
           video.crossOrigin = 'anonymous';
           // object-fit is driven by cssFit, which defaults to 'fill' on a wall
           // (edge-to-edge wallpaper stretch) and 'contain' solo (no crop).
@@ -4095,6 +4277,15 @@
             videoHasStarted = true;
             currentMediaEnded = false;
             currentMediaError = null;
+            if (typeof video.requestVideoFrameCallback === 'function') {
+              video.requestVideoFrameCallback(() => {
+                if (playbackGeneration === myGeneration) {
+                  markBroadcastElementReady(video, 'video-frame-presented');
+                }
+              });
+            } else {
+              markBroadcastElementReady(video, 'video-playing');
+            }
           });
           // Local-cache safety: swap to the server origin once if a local asset_url
           // fails, else (origin also failed / non-local) skip to the next item.
@@ -4105,6 +4296,7 @@
               ? { code: video.error.code, message: video.error.message || 'Video playback failed' }
               : { code: 'video_error', message: 'Video playback failed' };
             publishPlayerState();
+            failPendingBroadcastRender(currentMediaError.message);
             if (!isFollower) advanceTimer = setTimeout(nextItem, 3000);
           });
           video.onloadeddata = () => {
@@ -4135,17 +4327,28 @@
           );
           const startVideo = () => {
             if (!videoStartIsCurrent()) return;
+            // Clear sticky operator-pause leftover that can trap wall tiles on
+            // the loading frame after a prior pause command.
+            try { delete video.__mcOperatorPaused; } catch (_) {}
+            video.muted = true;
             video.play().then(() => {
               if (!videoStartIsCurrent()) { try { video.pause(); video.muted = true; } catch (_) {} return; }
-              console.log('[wall/audio] play() ok muted=' + video.muted + ' volume=' + video.volume);
+              videoHasStarted = true;
+              console.log('[wall/audio] play() ok muted=' + video.muted + ' volume=' + video.volume + ' wall=' + !!(wallConfig) + ' leader=' + !!(wallConfig && wallConfig.is_leader));
+              if (mayUnmuteLater) {
+                try { video.muted = false; } catch (_) {}
+              }
+              markBroadcastElementReady(video, 'video-playing');
             }).catch((err) => {
               if (!videoStartIsCurrent()) return;
-              console.warn('[wall/audio] play() rejected, falling back to muted: ' + (err?.name || err?.message || err));
+              console.warn('[wall/audio] play() rejected, muted retry: ' + (err?.name || err?.message || err));
               video.muted = true;
               video.play()
                 .then(() => {
                   if (!videoStartIsCurrent()) { try { video.pause(); } catch (_) {} return; }
+                  videoHasStarted = true;
                   console.log('[wall/audio] muted-fallback play() ok');
+                  markBroadcastElementReady(video, 'video-playing-muted-fallback');
                 })
                 .catch((e2) => {
                   if (!videoStartIsCurrent()) return;
@@ -4153,18 +4356,26 @@
                 });
             });
           };
+          // Kick decode as soon as enough data is buffered.
+          video.addEventListener('loadeddata', () => {
+            if (playbackGeneration === myGeneration && video.paused && !video.__mcOperatorPaused) startVideo();
+          });
+          video.addEventListener('canplay', () => {
+            if (playbackGeneration === myGeneration && video.paused && !video.__mcOperatorPaused) startVideo();
+          });
           if (wallStartDelayMs > 0) setTimeout(() => { if (playbackGeneration === myGeneration) startVideo(); }, wallStartDelayMs);
           else startVideo();
-          // Fallback only covers an autoplay that never started. Once playback
-          // has begun, a paused element reflects an operator transport command
-          // and must not be restarted by this startup timer.
-          setTimeout(() => {
-            if (playbackGeneration !== myGeneration) return;
-            if (!videoHasStarted && !video.__mcOperatorPaused && video.paused) {
-              video.muted = true;
-              video.play().catch(() => {});
-            }
-          }, wallStartDelayMs + 2000);
+          // Aggressive retries: previews confirm with tiny ranges while the TVs
+          // were left paused on first-frame / autoplay rejection.
+          [500, 1500, 3000, 6000, 10000].forEach((ms) => {
+            setTimeout(() => {
+              if (playbackGeneration !== myGeneration) return;
+              if (!videoHasStarted && !video.__mcOperatorPaused && video.paused) {
+                video.muted = true;
+                video.play().then(() => { videoHasStarted = true; }).catch(() => {});
+              }
+            }, wallStartDelayMs + ms);
+          });
         } else if (isImage) {
           const img = document.createElement('img');
           // Classroom displays normally read images from the P3 cache, which is
@@ -4180,17 +4391,24 @@
               publishPlayerState();
             }
             requestAnimationFrame(() => {
-              if (img.isConnected && container.contains(img)) captureAndSend();
+              if (img.isConnected && container.contains(img)) {
+                captureAndSend();
+                markBroadcastElementReady(img, 'image-painted');
+              }
             });
           }, { once: true });
           attachOriginFallback(img, item, () => {
             console.error('Image error');
+            failPendingBroadcastRender('Image failed to load');
             if (!isFollower) advanceTimer = setTimeout(nextItem, 3000);
           });
           img.src = src;
           mount.appendChild(img);
-          // Leader / single screen drives image advance; follower waits for sync
-          if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 10) * 1000);
+          // Leader/solo rotates multi-item slide shows. A single sticky image
+          // must NOT timer-advance (would black-flash every duration_sec).
+          if (!isFollower && playlist.length > 1) {
+            advanceTimer = setTimeout(nextItem, (item.duration_sec || 10) * 1000);
+          }
         } else if (isPdf) {
           // Controllable PDF player: renders cached Poppler page images and
           // listens for Command Center transport messages. This avoids native
@@ -4199,6 +4417,8 @@
           pdfFrame.src = docPlayerSrc(item, cssFit) || (src + '#toolbar=0&navpanes=0&scrollbar=0&view=FitH');
           pdfFrame.style.cssText = `width:100%;height:100%;border:none;background:#fff;object-fit:${cssFit}`;
           pdfFrame.allow = 'autoplay; fullscreen';
+          pdfFrame.addEventListener('load', () => markBroadcastElementReady(pdfFrame, 'pdf-frame-ready'), { once: true });
+          pdfFrame.addEventListener('error', () => failPendingBroadcastRender('PDF frame failed to load'), { once: true });
           mount.appendChild(pdfFrame);
           if (!isFollower && playlist.length > 1) advanceTimer = setTimeout(nextItem, (item.duration_sec || 30) * 1000);
         } else if (isOffice) {
@@ -4210,6 +4430,8 @@
           docFrame.src = docSrc;
           docFrame.style.cssText = `width:100%;height:100%;border:none;background:#fff;object-fit:${cssFit}`;
           docFrame.allow = 'autoplay; fullscreen';
+          docFrame.addEventListener('load', () => markBroadcastElementReady(docFrame, 'document-frame-ready'), { once: true });
+          docFrame.addEventListener('error', () => failPendingBroadcastRender('Document frame failed to load'), { once: true });
           mount.appendChild(docFrame);
           if (!isFollower && playlist.length > 1) advanceTimer = setTimeout(nextItem, (item.duration_sec || 60) * 1000);
         } else if (item.widget_id) {
@@ -4217,18 +4439,35 @@
           iframe.src = `${serverUrl}/api/widgets/${item.widget_id}/render`;
           iframe.style.cssText = 'width:100%;height:100%;border:none;background:#000';
           iframe.allow = 'autoplay; fullscreen';
+          iframe.addEventListener('load', () => markBroadcastElementReady(iframe, 'widget-frame-ready'), { once: true });
+          iframe.addEventListener('error', () => failPendingBroadcastRender('Widget frame failed to load'), { once: true });
           mount.appendChild(iframe);
-          if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 30) * 1000);
+          if (!isFollower && playlist.length > 1) {
+            advanceTimer = setTimeout(nextItem, (item.duration_sec || 30) * 1000);
+          }
         }
       }
     }
 
     function renderZones(container, defaultItem) {
       const zoneGeneration = playbackGeneration;
+      const zoneAssignments = new Map();
+      (layout.zones || []).forEach((zone, index) => {
+        const assignment = playlist.find(a => a.zone_id === zone.id) || defaultItem;
+        if (!assignment) return;
+        const key = String(zone.id ?? zone.cell_id ?? index);
+        zoneAssignments.set(key, assignment);
+      });
+      if (zoneAssignments.size === 0) {
+        failPendingBroadcastRender('Split layout had no renderable zones');
+        return;
+      }
+      beginBroadcastZoneBarrier([...zoneAssignments.keys()]);
       // Multi-zone layout — zones are percentage-based (x_percent/width_percent…)
       // and rendered as CSS %, so a split-screen template auto-scales and snaps to
       // ANY target geometry (a 1080p TV or the ultra-wide wall) with no overrides.
-      layout.zones.forEach(zone => {
+      layout.zones.forEach((zone, zoneIndex) => {
+        const zoneKey = String(zone.id ?? zone.cell_id ?? zoneIndex);
         const div = document.createElement('div');
         div.className = 'zone';
         div.dataset.zoneId = zone.id != null ? String(zone.id) : '';
@@ -4236,7 +4475,7 @@
         div.style.cssText = `left:${zone.x_percent}%;top:${zone.y_percent}%;width:${zone.width_percent}%;height:${zone.height_percent}%;z-index:${zone.z_index || 0}`;
 
         // Find assignment for this zone
-        const assignment = playlist.find(a => a.zone_id === zone.id) || defaultItem;
+        const assignment = zoneAssignments.get(zoneKey);
         if (!assignment) return;
         if (assignment.id != null) div.dataset.contentInstanceId = String(assignment.id);
         if (assignment.content_id != null) div.dataset.contentId = String(assignment.content_id);
@@ -4253,9 +4492,11 @@
         if (zone.zone_type === 'widget' && assignment.widget_id) {
           const iframe = document.createElement('iframe');
           iframe.src = `${config.serverUrl}/api/widgets/${assignment.widget_id}/render`;
+          iframe.addEventListener('load', () => markBroadcastZoneReady(zoneKey, 'all-zones-ready'), { once: true });
+          iframe.addEventListener('error', () => failPendingBroadcastRender(`Zone ${zoneKey} widget failed to load`), { once: true });
           div.appendChild(iframe);
         } else if (isYoutubeZone) {
-          createYoutubeEmbed(src, assignment, div);
+          createYoutubeEmbed(src, assignment, div, () => markBroadcastZoneReady(zoneKey, 'all-zones-ready'));
         } else if (isVideo) {
           const video = document.createElement('video');
           video.src = src;
@@ -4264,7 +4505,21 @@
           video.loop = (playlist.length === 1);
           video.playsInline = true;
           video.style.cssText = `width:100%;height:100%;object-fit:${zone.fit_mode || 'cover'}`;
-          attachOriginFallback(video, assignment);
+          attachOriginFallback(video, assignment, () => {
+            failPendingBroadcastRender(`Zone ${zoneKey} video failed to load`);
+          });
+          video.addEventListener('playing', () => {
+            if (playbackGeneration !== zoneGeneration) return;
+            if (typeof video.requestVideoFrameCallback === 'function') {
+              video.requestVideoFrameCallback(() => {
+                if (playbackGeneration === zoneGeneration) {
+                  markBroadcastZoneReady(zoneKey, 'all-zones-ready');
+                }
+              });
+            } else {
+              markBroadcastZoneReady(zoneKey, 'all-zones-ready');
+            }
+          }, { once: true });
           if (!video.loop) video.onended = () => {
             if (playbackGeneration !== zoneGeneration) return;
             nextItem();
@@ -4275,6 +4530,8 @@
           iframe.src = docPlayerSrc(assignment, zone.fit_mode || 'contain') || src;
           iframe.style.cssText = 'width:100%;height:100%;border:none;background:#000';
           iframe.allow = 'autoplay; fullscreen';
+          iframe.addEventListener('load', () => markBroadcastZoneReady(zoneKey, 'all-zones-ready'), { once: true });
+          iframe.addEventListener('error', () => failPendingBroadcastRender(`Zone ${zoneKey} document failed to load`), { once: true });
           div.appendChild(iframe);
           if (playlist.length > 1) advanceTimer = setTimeout(() => {
             if (playbackGeneration !== zoneGeneration) return;
@@ -4282,9 +4539,16 @@
           }, (assignment.duration_sec || 30) * 1000);
         } else if (isImage) {
           const img = document.createElement('img');
-          img.src = src;
           img.style.cssText = `width:100%;height:100%;object-fit:${zone.fit_mode || 'cover'}`;
-          attachOriginFallback(img, assignment);
+          img.addEventListener('load', () => {
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => markBroadcastZoneReady(zoneKey, 'all-zones-ready'));
+            });
+          }, { once: true });
+          attachOriginFallback(img, assignment, () => {
+            failPendingBroadcastRender(`Zone ${zoneKey} image failed to load`);
+          });
+          img.src = src;
           div.appendChild(img);
           if (playlist.length > 1) advanceTimer = setTimeout(() => {
             if (playbackGeneration !== zoneGeneration) return;
@@ -4295,6 +4559,8 @@
           iframe.src = src;
           iframe.style.cssText = 'width:100%;height:100%;border:none;background:#000';
           iframe.allow = 'autoplay; fullscreen';
+          iframe.addEventListener('load', () => markBroadcastZoneReady(zoneKey, 'all-zones-ready'), { once: true });
+          iframe.addEventListener('error', () => failPendingBroadcastRender(`Zone ${zoneKey} frame failed to load`), { once: true });
           div.appendChild(iframe);
           if (playlist.length > 1) advanceTimer = setTimeout(() => {
             if (playbackGeneration !== zoneGeneration) return;
@@ -4307,15 +4573,21 @@
     }
 
     // ==================== Screenshots ====================
-    function requestIframeScreenshot() {
+    let pendingScreenshotCorrelationId = null;
+
+    function requestIframeScreenshot(correlationId = null) {
       const iframe = document.querySelector('#playerContainer iframe, .wall-stage iframe, .zone iframe');
       if (!iframe) return false;
+      pendingScreenshotCorrelationId = correlationId || null;
       try {
         const childWindow = iframe.contentWindow;
         if (childWindow && typeof childWindow.publishScreenshot === 'function') {
           childWindow.publishScreenshot();
         } else if (childWindow) {
-          childWindow.postMessage({ __mc_screenshot_request: true }, location.origin);
+          childWindow.postMessage({
+            __mc_screenshot_request: true,
+            correlation_id: pendingScreenshotCorrelationId,
+          }, location.origin);
         }
       } catch (error) {
         console.warn('Child screenshot request failed:', error && error.message ? error.message : error);
@@ -4325,9 +4597,9 @@
       return true;
     }
 
-    function captureAndSend() {
+    function captureAndSend(correlationId = null) {
       if (!socket?.connected) return;
-      if (requestIframeScreenshot()) return;
+      if (requestIframeScreenshot(correlationId)) return;
       const canvas = document.createElement('canvas');
       canvas.width = 960;
       canvas.height = 540;
@@ -4388,8 +4660,14 @@
         const base64 = dataUrl.split(',')[1];
         if (base64 && base64.length > 100 && socket?.connected) {
           lastScreenshotSentAt = Date.now();
-          socket.emit('device:screenshot', { device_id: config.deviceId, image_b64: base64 });
-          console.log('Screenshot sent:', base64.length, 'chars', captured ? '(content)' : '(fallback)');
+          socket.emit('device:screenshot', {
+            device_id: config.deviceId,
+            image_b64: base64,
+            correlation_id: correlationId,
+          });
+          if (mcDiagnostics) {
+            console.log('Screenshot sent:', base64.length, 'chars', captured ? '(content)' : '(fallback)');
+          }
         }
       } catch (e) {
         console.error('Screenshot encode/send failed:', e);
