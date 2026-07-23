@@ -88,6 +88,7 @@ router.post('/register', (req, res) => {
   const workspaceId = ensureDefaultOrgForUser(user);
   const token = generateToken(user, workspaceId);
 
+  res.setHeader('Set-Cookie', `mc_token=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400`);
   res.status(201).json({ token, user, current_workspace_id: workspaceId });
 });
 
@@ -117,6 +118,9 @@ router.post('/login', (req, res) => {
   const workspaceId = ensureDefaultOrgForUser(user);
   const token = generateToken(user, workspaceId);
   const { password_hash, ...safeUser } = user;
+  // Set httpOnly cookie so <img> screenshot tags can authenticate without
+  // putting the JWT in the URL (which exposes it in logs/history/Referer).
+  res.setHeader('Set-Cookie', `mc_token=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400`);
   res.json({ token, user: safeUser, current_workspace_id: workspaceId });
 });
 
