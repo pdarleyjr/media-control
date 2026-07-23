@@ -62,7 +62,10 @@
       if (!Number.isInteger(slide) || slide < 1) return error('invalid_slide', 'go_to_slide requires a positive integer slide');
     }
     if (action === 'seek') {
-      const secondsValue = envelope.payload.position_seconds ?? envelope.payload.position ?? envelope.payload.time;
+      const secondsValue = envelope.payload.position_seconds
+        ?? envelope.payload.seconds
+        ?? envelope.payload.position
+        ?? envelope.payload.time;
       const normalizedValue = envelope.payload.position_normalized ?? envelope.payload.normalized_position ?? envelope.payload.progress;
       const percentValue = envelope.payload.position_percent ?? envelope.payload.percent;
       const secondsValid = secondsValue != null && Number.isFinite(Number(secondsValue)) && Number(secondsValue) >= 0;
@@ -77,6 +80,24 @@
       if (!secondsValid && !normalizedValid && !percentValid) {
         return error('invalid_seek', 'seek requires non-negative seconds, a normalized position from 0 to 1, or a percent from 0 to 100');
       }
+    }
+    if (action === 'volume') {
+      const level = envelope.payload.volume ?? envelope.payload.level ?? envelope.payload.value;
+      if (level == null || !Number.isFinite(Number(level)) || Number(level) < 0 || Number(level) > 1) {
+        return error('invalid_volume', 'volume requires a level from 0 to 1');
+      }
+    }
+    // Targeting must be explicit when zone/cell fields are present — reject
+    // contradictory envelopes rather than guessing which media to control.
+    const zoneId = text(envelope.payload.zone_id || envelope.payload.zoneId);
+    const cellId = text(envelope.payload.cell_id || envelope.payload.cellId);
+    const contentInstance = text(
+      envelope.payload.content_instance_id
+      || envelope.payload.contentInstanceId
+      || envelope.payload.instance_id
+    );
+    if ((zoneId || cellId || contentInstance) && envelope.target_scope === 'wall' && !text(envelope.wall_id) && !text(envelope.device_id)) {
+      return error('ambiguous_target', 'zone/cell commands require an explicit wall_id or device_id');
     }
     return { ok: true, value: envelope };
   }

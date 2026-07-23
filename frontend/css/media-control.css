@@ -2665,3 +2665,27 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
 @media (pointer: coarse) {
   .mc-tile[data-drag-source] { touch-action: none; }
 }
+
+/* Live-stream ladder (Agent 4 capability strip) */
+.mc-live-ladder {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.15rem;
+  min-width: 9rem;
+  max-width: 14rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--mc-border-light, #ddd);
+  background: var(--mc-surface-alt, #f6f6f4);
+  font-size: 0.75rem;
+  line-height: 1.2;
+}
+.mc-live-ladder-state { font-weight: 700; }
+.mc-live-ladder-reason { color: var(--mc-text-secondary, #666); }
+.mc-live-ladder[data-state="on-air"] { border-color: #16a34a; background: #dcfce7; }
+.mc-live-ladder[data-state="failed"],
+.mc-live-ladder[data-state="receiver-offline"],
+.mc-live-ladder[data-state="obs-unavailable"] { border-color: #dc2626; background: #fee2e2; }
+.mc-live-ladder[data-state="ready"] { border-color: #2563eb; background: #dbeafe; }
+.mc-dock-btn:disabled { opacity: 0.55; cursor: not-allowed; }

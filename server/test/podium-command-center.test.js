@@ -134,7 +134,10 @@ test('hybrid wall previews render both subgroup regions with independent control
 test('live podium preview does not duplicate work with one-second screenshots', () => {
   const view = read('frontend/js/views/media-control.js');
 
-  assert.match(view, /if \(!LIVE_EMBED_PREVIEWS\) \{[\s\S]*?setInterval\(requestActivePreview, ACTIVE_PREVIEW_INTERVAL_MS\)/);
+  // Screenshot polling is routed through the instrumented poller; the active
+  // tile cadence drops to the low-frequency background interval whenever the
+  // live embedded preview is active (no per-second duplicate capture).
+  assert.match(view, /activeIntervalMs: LIVE_EMBED_PREVIEWS \? BACKGROUND_PREVIEW_INTERVAL_MS : ACTIVE_PREVIEW_INTERVAL_MS/);
   assert.match(view, /BACKGROUND_PREVIEW_INTERVAL_MS = 60000/);
 });
 

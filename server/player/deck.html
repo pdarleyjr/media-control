@@ -253,10 +253,13 @@
     }
     return { action: String(action || '').trim(), payload: payload || {}, command_id: commandId };
   }
+  var appliedCommandIds = Object.create(null);
   function goToSlide(value) {
     var parsed = parseInt(value, 10);
     if (!Number.isFinite(parsed)) throw new Error('Missing slide number');
-    show(Math.max(0, parsed > 0 ? parsed - 1 : parsed));
+    var zeroBased = parsed > 0 ? parsed - 1 : parsed;
+    if (zeroBased < 0 || zeroBased >= els.length) throw new Error('Slide out of range');
+    show(zeroBased);
   }
   // Remote transport from the Broadcast Center. The parent player forwards
   // a command envelope ({action, payload, command_id}) as __mc_transport, and
@@ -266,6 +269,11 @@
     var action = cmd.action;
     var ack = { command_id: cmd.command_id || null, action: action || null, ok: true, status: 'acked', type: 'transport' };
     try {
+      if (cmd.command_id && appliedCommandIds[cmd.command_id]) {
+        ack.idempotent = true;
+        ack.state = publishState(ack);
+        return ack;
+      }
       if (action === 'next' || action === 'next_slide') next();
       else if (action === 'prev' || action === 'previous' || action === 'previous_slide') prev();
       else if (action === 'play_pause' || action === 'toggle_play_pause') togglePause();
@@ -273,10 +281,11 @@
       else if (action === 'pause' || action === 'pause_deck') { if (!paused) togglePause(); }
       else if (action === 'play' || action === 'resume' || action === 'resume_deck') { if (paused) togglePause(); }
       else if (action === 'go_to_slide' || action === 'slide' || action === 'goto') {
-        goToSlide(cmd.payload.page || cmd.payload.slide || cmd.payload.index || cmd.payload.slide_number);
+        goToSlide(cmd.payload.page || cmd.payload.slide || cmd.payload.index || cmd.payload.slide_number || cmd.payload.slide_index);
       } else {
         throw new Error('Unsupported action: ' + action);
       }
+      if (cmd.command_id) appliedCommandIds[cmd.command_id] = true;
     } catch (err) {
       ack.ok = false;
       ack.status = 'failed';

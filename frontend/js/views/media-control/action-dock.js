@@ -1,29 +1,21 @@
-// action-dock.js — the Command Center bottom action dock. Large touch-friendly
-// round-rect buttons, each routing to EXISTING functionality via callbacks the
-// host view supplies (multiview toggle, blank-selected, blank-all, share,
-// add-display). The LIVE-control buttons (start / remove / stop) ARE handled
-// here directly against api.liveStream.* so the dock reflects the real PeerTube
-// + AI-camera-orchestrator state with confirm dialogs + toasts. Live-control
-// visibility syncs from api.liveStream.status() on mount so the Start / Remove /
-// Stop buttons show the right one for the current broadcast state. Color classes
-// (mc-dock-primary / -default / -live / -danger / -add) are styled in
-// media-control.css.
-//
-// `isLiveActive()` is the module-scoped read of the live-stream-active flag shared
-// with the broadcast funnel (send.js FIX2) and the chips so a send can prompt
-// "include this content in the live stream?" only while a stream is on-air.
+// action-dock.js — Command Center bottom action dock + live-stream ladder.
 
 import { esc } from '../../utils.js';
 import { t } from '../../i18n.js';
 import { api } from '../../api.js';
 import { showToast } from '../../components/toast.js';
 import { confirmDialog } from '../../components/confirm.js';
+import {
+  deriveLiveLadder,
+  formatLiveFailure,
+  LIVE_LADDER,
+} from '../../state/live-stream-ui.js';
 
-// Live-stream-active flag, initialized from api.liveStream.status() on mount and
-// refreshed after every start/stop. Read by the broadcast funnel (send.js) and
-// the Command Center chips.
 let liveActive = false;
 let liveStateKnown = false;
+let livePhase = null;
+let lastLadder = { state: LIVE_LADDER.UNKNOWN, canStart: false, reason: null };
+let startInFlight = false;
 
 export function isLiveActive() {
   return liveActive;
@@ -33,18 +25,12 @@ export function isLiveStateKnown() {
   return liveStateKnown;
 }
 
-/**
- * @param {HTMLElement} hostEl
- * @param {object} opts callback providers from the host view
- *   ({ onMultiview, onBlankSelected, onBlankAll, onShare, onAddDisplay,
- *      onLiveChanged } — host-chosen repaint, e.g. paintChips)
- * @returns {{ syncLive: ()=>Promise<void> }}
- */
+export function getLiveLadder() {
+  return lastLadder;
+}
+
 export function mountActionDock(hostEl, opts = {}) {
   if (!hostEl) return { syncLive() { return Promise.resolve(); }, repaintBlank() {}, destroy() {} };
-  // The mounted dock is the owner of live state. Its initial visible state is
-  // inactive while the background refresh runs, so display routing must not
-  // issue a second blocking Director status request on every send.
   liveStateKnown = true;
   const cb = opts || {};
   hostEl.innerHTML = `
@@ -60,6 +46,10 @@ export function mountActionDock(hostEl, opts = {}) {
         <span class="mc-dock-add-text">${esc(t('mc.cc.dock.add_display'))}</span>
         <span class="mc-dock-add-plus" aria-hidden="true">+</span>
       </button>
+      <div class="mc-live-ladder" id="mc-live-ladder" role="status" aria-live="polite">
+        <span class="mc-live-ladder-state" data-live-state>—</span>
+        <span class="mc-live-ladder-reason" data-live-reason hidden></span>
+      </div>
       <div class="mc-cam-health-wrap">
         <button type="button" class="mc-cam-health mc-cam-unknown" id="mc-cam-health"
                 title="${esc(t('mc.cc.camera.details'))}" aria-live="polite" aria-expanded="false">
@@ -74,9 +64,8 @@ export function mountActionDock(hostEl, opts = {}) {
   const removeBtn = hostEl.querySelector('[data-dock="remove-live"]');
   const stopBtn = hostEl.querySelector('[data-dock="stop-live"]');
   const blankBtn = hostEl.querySelector('[data-dock="blank-toggle"]');
+  const ladderEl = hostEl.querySelector('#mc-live-ladder');
 
-  // Repaint the Blank button label based on whether the active target is currently
-  // blanked (any member screen_on===false → show "Unblank"; all on → "Blank").
   function repaintBlank() {
     if (!blankBtn) return;
     const getIds = typeof cb.getActiveTargetDeviceIds === 'function' ? cb.getActiveTargetDeviceIds : () => [];
@@ -97,21 +86,49 @@ export function mountActionDock(hostEl, opts = {}) {
   }
 
   let programPrepared = false;
+
+  function paintLadder(ladder) {
+    lastLadder = ladder || lastLadder;
+    if (!ladderEl) return;
+    const st = ladderEl.querySelector('[data-live-state]');
+    const rs = ladderEl.querySelector('[data-live-reason]');
+    if (st) st.textContent = lastLadder.state || LIVE_LADDER.UNKNOWN;
+    if (rs) {
+      if (lastLadder.reason) {
+        rs.hidden = false;
+        rs.textContent = lastLadder.reason;
+      } else {
+        rs.hidden = true;
+        rs.textContent = '';
+      }
+    }
+    ladderEl.dataset.state = (lastLadder.state || '').toLowerCase().replace(/\s+/g, '-');
+  }
+
   function repaintLive() {
+    const onAir = liveActive || lastLadder.state === LIVE_LADDER.ON_AIR;
     if (prepareBtn) {
-      prepareBtn.hidden = liveActive;
+      prepareBtn.hidden = onAir;
+      prepareBtn.disabled = livePhase === 'preparing' || livePhase === 'starting' || livePhase === 'stopping';
       prepareBtn.classList.toggle('is-prepared', programPrepared);
       prepareBtn.setAttribute('aria-pressed', programPrepared ? 'true' : 'false');
       prepareBtn.textContent = t(programPrepared ? 'mc.cc.dock.program_ready' : 'mc.cc.dock.prepare_live');
     }
-    if (startBtn) startBtn.hidden = liveActive;
-    if (removeBtn) removeBtn.hidden = !liveActive;
-    if (stopBtn) stopBtn.hidden = !liveActive;
+    if (startBtn) {
+      startBtn.hidden = onAir;
+      const block = onAir || startInFlight || livePhase === 'starting' || livePhase === 'stopping' || lastLadder.canStart === false;
+      startBtn.disabled = block;
+      startBtn.title = lastLadder.reason || (block ? (lastLadder.state || '') : t('mc.cc.dock.start_live'));
+      startBtn.setAttribute('aria-disabled', block ? 'true' : 'false');
+    }
+    if (removeBtn) removeBtn.hidden = !onAir;
+    if (stopBtn) {
+      stopBtn.hidden = !onAir;
+      stopBtn.disabled = livePhase === 'stopping' || startInFlight;
+    }
+    paintLadder(lastLadder);
   }
 
-  // Camera source health is independent from whether PeerTube is on-air. Show
-  // the director-selected camera and live source count at all times, then poll
-  // so the badge is operational telemetry rather than a static "cams idle" label.
   function repaintCamHealth(director) {
     const badge = hostEl.querySelector('#mc-cam-health');
     const detail = hostEl.querySelector('#mc-cam-health-detail');
@@ -131,20 +148,25 @@ export function mountActionDock(hostEl, opts = {}) {
     ];
     const up = cams.filter((cam) => cam.online).length;
     const active = Number(data.director && data.director.active_camera) || null;
-    let cls = up === cams.length ? 'mc-cam-green' : (up > 0 ? 'mc-cam-yellow' : 'mc-cam-red');
-    let txt = active && cams.some((cam) => cam.n === active && cam.online)
+    const cls = up === cams.length ? 'mc-cam-green' : (up > 0 ? 'mc-cam-yellow' : 'mc-cam-red');
+    const txt = active && cams.some((cam) => cam.n === active && cam.online)
       ? t('mc.cc.camera.active', { n: active, count: up })
       : t('mc.cc.camera.online', { count: up });
     badge.className = 'mc-cam-health ' + cls;
     if (lbl) lbl.textContent = txt;
     if (detail) {
+      const audioMode = data.audio_mode || data.effective_audio_mode || null;
+      const modeLine = audioMode
+        ? `<span class="mc-cam-detail-row"><b>Audio</b><em>${esc(String(audioMode))}</em></span>`
+        : '';
+      const aiLine = `<span class="mc-cam-detail-row"><b>AI</b><em>${esc(String(data.director_mode || data.mode || 'manual'))}${data.autoswitch_enabled ? ' · autoswitch' : ''}</em></span>`;
       detail.innerHTML = cams.map((cam) => {
         const selected = active === cam.n;
-        const state = selected && cam.online
+        const state = selected && cam.online         
           ? t('mc.cc.camera.selected')
           : (cam.online ? t('mc.cc.camera.ready') : t('mc.cc.camera.offline'));
         return `<span class="mc-cam-detail-row${selected ? ' is-active' : ''}"><b>${esc(cam.name)}</b><em>${esc(state)}</em></span>`;
-      }).join('');
+      }).join('') + modeLine + aiLine;
     }
   }
 
@@ -153,13 +175,30 @@ export function mountActionDock(hostEl, opts = {}) {
     if (syncingLive) return;
     syncingLive = true;
     let director = null;
+    let status = null;
     try {
-      const status = await api.liveStream.status();
+      status = await api.liveStream.status();
       director = status && status.ai_director;
       const data = director && director.data;
-      liveActive = !!(data && data.stream_active === true);
+      const onAir = !!(data && data.stream_active === true)
+        || status?.stream_state === 'on_air'
+        || status?.stream_active === true
+        || status?.capabilities?.stream_state === 'on_air';
+      // Never optimistic-set On Air outside of confirmed status.
+      if (!startInFlight && livePhase !== 'starting') {
+        liveActive = onAir;
+      } else if (onAir) {
+        liveActive = true;
+        livePhase = null;
+        startInFlight = false;
+      }
+      if (status?.program_prepared === true || status?.capabilities?.program_prepared === true) {
+        programPrepared = true;
+      }
+      lastLadder = deriveLiveLadder(status, { phase: livePhase });
     } catch {
-      liveActive = false;
+      if (!startInFlight) liveActive = false;
+      lastLadder = { state: LIVE_LADDER.UNKNOWN, canStart: false, reason: 'Status unavailable' };
     } finally {
       liveStateKnown = true;
       syncingLive = false;
@@ -180,21 +219,34 @@ export function mountActionDock(hostEl, opts = {}) {
   async function onPrepareLive() {
     if (!prepareBtn || prepareBtn.disabled) return;
     prepareBtn.disabled = true;
+    livePhase = 'preparing';
+    lastLadder = deriveLiveLadder(null, { phase: 'preparing' });
+    repaintLive();
     try {
       await api.liveStream.prepare();
       programPrepared = true;
-      repaintLive();
+      livePhase = null;
       showToast(t('mc.cc.live.prepared'), 'success');
     } catch (e) {
       programPrepared = false;
-      repaintLive();
-      showToast((e && e.message) ? e.message : t('mc.cc.live.prepare_failed'), 'error');
+      livePhase = null;
+      showToast(formatLiveFailure(e), 'error');
     } finally {
       prepareBtn.disabled = false;
+      await syncLive();
     }
   }
 
   async function onStartLive() {
+    if (startInFlight || (startBtn && startBtn.disabled)) {
+      if (lastLadder.reason) showToast(lastLadder.reason, 'error');
+      return;
+    }
+    await syncLive();
+    if (lastLadder.canStart === false) {
+      showToast(lastLadder.reason || 'Start is disabled', 'error');
+      return;
+    }
     const ok = await confirmDialog({
       title: t('mc.cc.confirm.start_live_title'),
       message: t('mc.cc.confirm.start_live'),
@@ -202,17 +254,23 @@ export function mountActionDock(hostEl, opts = {}) {
       tone: 'default',
     });
     if (!ok) return;
+    startInFlight = true;
+    livePhase = 'starting';
+    // Do not set liveActive optimistically.
+    lastLadder = deriveLiveLadder(null, { phase: 'starting' });
+    repaintLive();
     try {
-      await api.liveStream.start({ director_mode: 'manual' });
+      await api.liveStream.start({ director_mode: 'manual', initiator: 'operator' });
       programPrepared = true;
-      liveActive = true;
-      repaintLive();
       showToast(t('mc.cc.live.started'), 'success');
       if (typeof cb.onLiveChanged === 'function') cb.onLiveChanged();
     } catch (e) {
-      showToast((e && e.message) ? e.message : t('mc.cc.live.start_failed'), 'error');
-      // Keep current dock state; re-sync to be safe.
-      syncLive().catch(() => {});
+      liveActive = false;
+      showToast(formatLiveFailure(e), 'error');
+    } finally {
+      startInFlight = false;
+      livePhase = null;
+      await syncLive();
     }
   }
 
@@ -224,15 +282,19 @@ export function mountActionDock(hostEl, opts = {}) {
       tone: 'danger',
     });
     if (!ok) return;
+    livePhase = 'stopping';
+    lastLadder = deriveLiveLadder(null, { phase: 'stopping' });
+    repaintLive();
     try {
       await api.liveStream.stop();
       liveActive = false;
-      repaintLive();
       showToast(t('mc.cc.live.stopped'), 'success');
       if (typeof cb.onLiveChanged === 'function') cb.onLiveChanged();
     } catch (e) {
-      showToast((e && e.message) ? e.message : t('mc.cc.live.stop_failed'), 'error');
-      syncLive().catch(() => {});
+      showToast(formatLiveFailure(e), 'error');
+    } finally {
+      livePhase = null;
+      await syncLive();
     }
   }
 
@@ -246,7 +308,7 @@ export function mountActionDock(hostEl, opts = {}) {
       showToast(t('mc.cc.live.cleared'), 'success');
       if (typeof cb.onLiveChanged === 'function') cb.onLiveChanged();
     } catch (e) {
-      showToast((e && e.message) ? e.message : t('mc.cc.live.clear_failed'), 'error');
+      showToast(formatLiveFailure(e), 'error');
     }
   }
 
@@ -263,8 +325,8 @@ export function mountActionDock(hostEl, opts = {}) {
         case 'blank-all': if (typeof cb.onBlankAll === 'function') await cb.onBlankAll(); break;
         case 'share': if (typeof cb.onShare === 'function') cb.onShare(); break;
         case 'prepare-live': await onPrepareLive(); break;
-        case 'start-live': await onStartLive(); await syncLive(); break;
-        case 'stop-live': await onStopLive(); await syncLive(); break;
+        case 'start-live': await onStartLive(); break;
+        case 'stop-live': await onStopLive(); break;
         case 'remove-live': await onRemoveLive(); await syncLive(); break;
         case 'add-display': if (typeof cb.onAddDisplay === 'function') cb.onAddDisplay(); break;
       }

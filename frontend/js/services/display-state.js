@@ -98,8 +98,14 @@ function ensureWired() {
       npPatch.contentId = d.content_id;
       npPatch.content_id = d.content_id;
     }
-    npPatch.paused = false;
     // Preserve existing kind — never override it with a generic fallback.
+    // Do not force paused=false when the operator just paused (now_playing.paused
+    // already true) and this progress event is only a content-label refresh.
+    if (cur.now_playing && cur.now_playing.paused === true && d.paused !== false && !d.force_playing) {
+      npPatch.paused = true;
+    } else {
+      npPatch.paused = false;
+    }
     merge(id, { progress: d, now_playing: npPatch }, true);
     scheduleProgressNotify();
   });

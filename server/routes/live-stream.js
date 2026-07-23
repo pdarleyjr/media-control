@@ -4,12 +4,32 @@ const express = require('express');
 const router = express.Router();
 const config = require('../config');
 const { db } = require('../db/database');
-const { buildLiveStreamPlayerUrl, ensureLiveStreamDisplay, liveStreamProgramState, markLiveContentChanged } = require('../lib/live-stream-display');
-const { updateLiveProductionState, getLiveProductionState } = require('../lib/live-production-state');
+const {
+  buildLiveStreamPlayerUrl,
+  ensureLiveStreamDisplay,
+  liveStreamProgramState,
+  markLiveContentChanged,
+} = require('../lib/live-stream-display');
+const {
+  updateLiveProductionState,
+  getLiveProductionState,
+  setLiveStreamLastError,
+  clearLiveStreamLastError,
+  getLiveStreamLastError,
+} = require('../lib/live-production-state');
 const { publishRoomSnapshot } = require('../lib/room-state-broadcaster');
 const { logActivity, getClientIp } = require('../services/activity');
 const { audit } = require('../lib/audit');
 const { sceneIsSafeToStream } = require('../lib/live-stream-safety');
+const {
+  ERROR_CODES,
+  buildLivestreamCapabilities,
+  classifyDirectorFailure,
+  createRequestId,
+  errorEnvelope,
+  redactDirectorResult,
+  startGateFailure,
+} = require('../lib/live-stream-capabilities');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -26,17 +46,9 @@ async function waitForDirector(predicate, timeoutMs = 12000) {
   return latest;
 }
 
-function requestBaseUrl(req) {
-  // The live-stream player URL is loaded by OBS's browser source on the SAME
-  // machine as the media-control server. Always use localhost (127.0.0.1:8096)
-  // for the OBS browser source so the player's WebSocket + content URLs bypass
-  // the Cloudflare tunnel entirely — the tunnel adds latency and can fail the
-  // WebSocket upgrade, leaving the PIP stuck in "connecting". Direct localhost
-  // is instant and reliable for same-machine OBS.
+function requestBaseUrl() {
   const configured = config.liveStream.playerBaseUrl;
   if (configured) return configured;
-  // Default to localhost for OBS (same machine). Fall back to the request URL
-  // only if explicitly unset AND no localhost port is available.
   return 'http://127.0.0.1:8096';
 }
 
@@ -73,10 +85,25 @@ async function callDirector(method, path, body) {
     });
     const text = await response.text();
     let data = null;
-    try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+    let parseError = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch (err) {
+      parseError = err;
+      data = text;
+    }
+    if (parseError && text && text.trim() && !text.trim().startsWith('{') && !text.trim().startsWith('[')) {
+      return {
+        ok: false,
+        status: response.status,
+        message: 'AI Director returned a non-JSON response',
+        data: text.slice(0, 200),
+        nonJson: true,
+      };
+    }
     if (!response.ok) {
       const message = data && typeof data === 'object'
-        ? (data.detail || data.error || response.statusText)
+        ? (data.detail || data.error || data.message || response.statusText)
         : (text || response.statusText);
       return { ok: false, status: response.status, message, data };
     }
@@ -130,6 +157,75 @@ function observeDirectorResult(req, result, reason) {
   return observation.state;
 }
 
+function rememberFailure(req, classified, requestId) {
+  setLiveStreamLastError(req.workspaceId, {
+    code: classified.code,
+    message: classified.error,
+    requestId,
+  });
+}
+
+function fail(res, req, {
+  httpStatus = 400,
+  code,
+  error,
+  requestId,
+  payload = {},
+  details,
+  capabilities,
+  productionState,
+}) {
+  const classified = { code, error };
+  if (req && req.workspaceId && code) rememberFailure(req, classified, requestId);
+  const envelope = errorEnvelope({ code, error, requestId, details, httpStatus });
+  return res.status(httpStatus).json({
+    ...payload,
+    ...envelope.body,
+    capabilities: capabilities || undefined,
+    production_state: productionState || undefined,
+  });
+}
+
+function workspaceGuard(req, res, requestId) {
+  if (!req.workspaceId) {
+    fail(res, null, {
+      httpStatus: 400,
+      code: ERROR_CODES.WORKSPACE_REQUIRED,
+      error: 'No active workspace',
+      requestId,
+    });
+    return false;
+  }
+  return true;
+}
+
+async function buildStatusContract(req, directorResult, requestId) {
+  const payload = displayPayload(req);
+  const programState = liveStreamProgramState(req.workspaceId);
+  const productionState = observeDirectorResult(req, directorResult, 'status:checked');
+  const lastError = getLiveStreamLastError(req.workspaceId);
+  const capabilities = buildLivestreamCapabilities({
+    workspaceId: req.workspaceId,
+    display: payload.display,
+    programState,
+    directorResult,
+    productionState,
+    peerTubeWatchUrl: config.liveStream.peerTubeWatchUrl,
+    lastError,
+    requestId,
+  });
+  if (lastError && lastError.code === ERROR_CODES.OPERATOR_STREAM_START_DISABLED) {
+    capabilities.operator_start_allowed = false;
+  }
+  return {
+    payload,
+    programState,
+    productionState,
+    capabilities,
+    aiDirector: redactDirectorResult(directorResult),
+  };
+}
+
 async function prepareLiveProgram(req) {
   const payload = displayPayload(req);
   const programState = liveStreamProgramState(req.workspaceId);
@@ -138,129 +234,194 @@ async function prepareLiveProgram(req) {
     return {
       ok: false,
       status: 409,
-      code: 'STREAM_ALREADY_ACTIVE',
+      code: ERROR_CODES.STREAM_ALREADY_ACTIVE,
       payload,
       programState,
       currentStatus,
       error: 'The live stream is already active; program-source refresh is locked while on air',
     };
   }
+  if (!currentStatus.ok) {
+    const classified = classifyDirectorFailure(currentStatus, ERROR_CODES.AI_DIRECTOR_UNREACHABLE);
+    return {
+      ok: false,
+      status: classified.code === ERROR_CODES.AI_DIRECTOR_TIMEOUT ? 504 : 502,
+      code: classified.code,
+      payload,
+      programState,
+      currentStatus,
+      error: classified.error,
+    };
+  }
   const playerUrl = freshProgramUrl(payload.player_url);
   const programUrl = await callDirector('POST', '/media-control/program-url', { url: playerUrl });
   if (!programUrl.ok || (programUrl.data && programUrl.data.ok === false)) {
+    const classified = classifyDirectorFailure(programUrl, ERROR_CODES.OBS_UNAVAILABLE);
     return {
       ok: false,
       status: 502,
+      code: classified.code,
       payload,
       programState,
       programUrl,
-      error: programUrl.data && programUrl.data.message || programUrl.message || 'AI Director could not update OBS Media Control source',
+      error: classified.error || 'AI Director could not update OBS Media Control source',
     };
   }
 
-  // A unique URL plus refreshnocache forces OBS's browser source to discard a
-  // stale setup/pairing frame. Preparing never selects a scene, changes the
-  // director mode, or starts a stream.
   const programRefresh = await callDirector('POST', '/media-control/refresh');
   if (!programRefresh.ok || (programRefresh.data && programRefresh.data.ok === false)) {
+    const classified = classifyDirectorFailure(programRefresh, ERROR_CODES.OBS_UNAVAILABLE);
     return {
       ok: false,
       status: 502,
+      code: classified.code,
       payload,
       programState,
       programUrl,
       programRefresh,
-      error: programRefresh.data && programRefresh.data.message || programRefresh.message || 'AI Director could not refresh the OBS Media Control source',
+      error: classified.error || 'AI Director could not refresh the OBS Media Control source',
     };
   }
-  return { ok: true, payload, programState, programUrl, programRefresh };
+  return { ok: true, payload, programState, programUrl, programRefresh, currentStatus };
 }
 
 router.get('/status', async (req, res) => {
-  if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
-  const payload = displayPayload(req);
+  const requestId = createRequestId();
+  if (!workspaceGuard(req, res, requestId)) return;
   const director = await callDirector('GET', '/status');
-  const productionState = observeDirectorResult(req, director, 'status:checked');
+  const contract = await buildStatusContract(req, director, requestId);
   res.json({
-    ...payload,
-    ai_director: director,
-    production_state: productionState,
+    success: true,
+    request_id: requestId,
+    ...contract.payload,
+    program_state: contract.programState,
+    ai_director: contract.aiDirector,
+    production_state: contract.productionState,
+    capabilities: contract.capabilities,
     peertube_watch_url: config.liveStream.peerTubeWatchUrl || null,
+    // Flat capability fields for Agent 4 consumers
+    ...contract.capabilities,
   });
 });
 
 router.get('/display', (req, res) => {
-  if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
-  res.json(displayPayload(req));
+  const requestId = createRequestId();
+  if (!workspaceGuard(req, res, requestId)) return;
+  res.json({ success: true, request_id: requestId, ...displayPayload(req) });
 });
 
 router.get('/program-state', (req, res) => {
-  if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
-  res.json(liveStreamProgramState(req.workspaceId));
+  const requestId = createRequestId();
+  if (!workspaceGuard(req, res, requestId)) return;
+  res.json({ success: true, request_id: requestId, ...liveStreamProgramState(req.workspaceId) });
 });
 
 router.post('/prepare', async (req, res) => {
-  if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
+  const requestId = createRequestId();
+  if (!workspaceGuard(req, res, requestId)) return;
   const prepared = await prepareLiveProgram(req);
   if (!prepared.ok) {
-    return res.status(prepared.status).json({
-      ...prepared.payload,
-      success: false,
-      prepared: false,
-      code: prepared.code,
+    return fail(res, req, {
+      httpStatus: prepared.status,
+      code: prepared.code || ERROR_CODES.STREAM_START_REJECTED,
       error: prepared.error,
-      program_state: prepared.programState,
-      program_url: prepared.programUrl,
-      program_refresh: prepared.programRefresh,
+      requestId,
+      payload: {
+        ...prepared.payload,
+        prepared: false,
+        program_state: prepared.programState,
+        program_url: redactDirectorResult(prepared.programUrl || { ok: false }),
+        program_refresh: redactDirectorResult(prepared.programRefresh || { ok: false }),
+      },
     });
   }
-  logLiveStreamAction(req, 'prepare', { display_id: prepared.payload.display.id });
+  logLiveStreamAction(req, 'prepare', { display_id: prepared.payload.display.id, request_id: requestId });
   res.json({
     ...prepared.payload,
     success: true,
     prepared: true,
+    request_id: requestId,
     program_state: prepared.programState,
-    program_url: prepared.programUrl,
-    program_refresh: prepared.programRefresh,
+    program_url: redactDirectorResult(prepared.programUrl),
+    program_refresh: redactDirectorResult(prepared.programRefresh),
   });
 });
 
 router.post('/start', async (req, res) => {
-  if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
+  const requestId = createRequestId();
+  if (!workspaceGuard(req, res, requestId)) return;
+
   const requestedDirectorMode = String(req.body && req.body.director_mode || 'manual').toLowerCase();
   const directorMode = requestedDirectorMode === 'auto' ? 'auto' : 'manual';
-  if (directorMode === 'auto' && (!req.body || req.body.confirm_auto_canary !== true)) {
-    return res.status(409).json({
-      success: false,
-      code: 'AUTO_CANARY_CONFIRMATION_REQUIRED',
+  const confirmAutoCanary = !!(req.body && req.body.confirm_auto_canary === true);
+
+  // Background/autonomous callers must mark initiator explicitly.
+  const initiator = String(req.body && req.body.initiator || 'operator').toLowerCase();
+  if (initiator !== 'operator' && initiator !== 'user') {
+    return fail(res, req, {
+      httpStatus: 409,
+      code: ERROR_CODES.AUTOMATIC_STREAM_START_DISABLED,
+      error: 'Background or autonomous stream start is disabled',
+      requestId,
+    });
+  }
+
+  const preflightDirector = await callDirector('GET', '/status');
+  const preflight = await buildStatusContract(req, preflightDirector, requestId);
+  const gate = startGateFailure(preflight.capabilities, { directorMode, confirmAutoCanary });
+  if (gate) {
+    return fail(res, req, {
+      httpStatus: gate.httpStatus,
+      code: gate.code,
+      error: gate.error,
+      requestId,
+      payload: {
+        ...preflight.payload,
+        program_state: preflight.programState,
+      },
+      capabilities: preflight.capabilities,
+      productionState: preflight.productionState,
+    });
+  }
+
+  if (directorMode === 'auto' && !confirmAutoCanary) {
+    return fail(res, req, {
+      httpStatus: 409,
+      code: ERROR_CODES.AUTO_CANARY_CONFIRMATION_REQUIRED,
       error: 'Automatic direction requires an explicit completed-canary confirmation',
+      requestId,
+      capabilities: preflight.capabilities,
     });
   }
 
   const prepared = await prepareLiveProgram(req);
-  const payload = prepared.payload;
-  const programState = prepared.programState;
-  const programUrl = prepared.programUrl;
-  const programRefresh = prepared.programRefresh;
+  const payload = prepared.payload || preflight.payload;
+  const programState = prepared.programState || preflight.programState;
   if (!prepared.ok) {
-    return res.status(prepared.status).json({
-      ...payload,
-      success: false,
-      code: prepared.code,
+    return fail(res, req, {
+      httpStatus: prepared.status,
+      code: prepared.code || ERROR_CODES.STREAM_START_REJECTED,
       error: prepared.error,
-      program_state: programState,
-      program_url: programUrl,
-      program_refresh: programRefresh,
+      requestId,
+      payload: {
+        ...payload,
+        program_state: programState,
+        program_url: redactDirectorResult(prepared.programUrl || { ok: false }),
+        program_refresh: redactDirectorResult(prepared.programRefresh || { ok: false }),
+      },
+      capabilities: preflight.capabilities,
     });
   }
 
   const mode = await callDirector('POST', `/mode/${directorMode}`);
   if (!mode.ok) {
-    return res.status(502).json({
-      ...payload,
-      success: false,
-      error: mode.message || `AI Director could not enter ${directorMode} mode`,
-      mode,
+    const classified = classifyDirectorFailure(mode, ERROR_CODES.STREAM_START_REJECTED);
+    return fail(res, req, {
+      httpStatus: 502,
+      code: classified.code,
+      error: classified.error || `AI Director could not enter ${directorMode} mode`,
+      requestId,
+      payload: { ...payload, mode: redactDirectorResult(mode), program_state: programState },
     });
   }
 
@@ -270,77 +431,103 @@ router.post('/start', async (req, res) => {
   const preparedProductionState = observeDirectorResult(req, statusAfterMode, 'stream:prepared');
   if (!statusAfterMode || !statusAfterMode.ok
       || !sceneIsSafeToStream(statusAfterMode.data, directorMode, programState.content_active)) {
-    return res.status(503).json({
-      ...payload,
-      success: false,
+    return fail(res, req, {
+      httpStatus: 503,
+      code: ERROR_CODES.PROGRAM_SCENE_UNSAFE,
       error: 'OBS program scene is not safe to stream; select an approved program scene and retry',
-      program_state: programState,
-      selected_scene: statusAfterMode,
-      production_state: preparedProductionState,
+      requestId,
+      payload: {
+        ...payload,
+        program_state: programState,
+        selected_scene: redactDirectorResult(statusAfterMode || { ok: false }),
+      },
+      productionState: preparedProductionState,
     });
   }
 
   const stream = await callDirector('POST', '/stream/start');
-  const streamStarted = !!(stream.ok && stream.data && stream.data.ok !== false);
-  if (!streamStarted) {
-    return res.status(502).json({
-      ...payload,
-      success: false,
-      error: stream.data && stream.data.message || stream.message || 'OBS could not start the live stream',
-      program_state: programState,
-      selected_scene: statusAfterMode,
-      stream_start: stream,
-      production_state: preparedProductionState,
+  const streamRejected = !stream.ok
+    || (stream.data && typeof stream.data === 'object' && stream.data.ok === false);
+  if (streamRejected) {
+    const classified = classifyDirectorFailure(stream, ERROR_CODES.STREAM_START_REJECTED);
+    return fail(res, req, {
+      httpStatus: 502,
+      code: classified.code,
+      error: classified.error || 'OBS could not start the live stream',
+      requestId,
+      payload: {
+        ...payload,
+        program_state: programState,
+        selected_scene: redactDirectorResult(statusAfterMode),
+        stream_start: redactDirectorResult(stream),
+      },
+      productionState: preparedProductionState,
     });
   }
+
   const status = await waitForDirector(data => data.stream_active === true, 8000);
   const productionState = observeDirectorResult(req, status, 'stream:start-verified');
   const streamVerified = !!(status && status.ok && status.data && status.data.stream_active === true);
   if (!streamVerified) {
     await callDirector('POST', '/stream/stop');
-    return res.status(502).json({
-      ...payload,
-      success: false,
+    return fail(res, req, {
+      httpStatus: 502,
+      code: ERROR_CODES.STREAM_START_NOT_CONFIRMED,
       error: 'OBS did not confirm that the live stream became active',
-      program_state: programState,
-      selected_scene: statusAfterMode,
-      stream_start: stream,
-      ai_director_status: status,
-      production_state: productionState,
+      requestId,
+      payload: {
+        ...payload,
+        program_state: programState,
+        selected_scene: redactDirectorResult(statusAfterMode),
+        stream_start: redactDirectorResult(stream),
+        ai_director_status: redactDirectorResult(status || { ok: false }),
+      },
+      productionState,
     });
   }
+
+  clearLiveStreamLastError(req.workspaceId);
   logLiveStreamAction(req, 'start', {
     mode: directorMode,
     selected_scene: statusAfterMode.data && statusAfterMode.data.current_scene || null,
-    stream_started: streamStarted,
-    stream_message: stream.data && stream.data.message || stream.message || null,
+    stream_started: true,
+    request_id: requestId,
+  });
+
+  const successCapabilities = buildLivestreamCapabilities({
+    workspaceId: req.workspaceId,
+    display: payload.display,
+    programState,
+    directorResult: status,
+    productionState,
+    peerTubeWatchUrl: config.liveStream.peerTubeWatchUrl,
+    requestId,
   });
 
   res.json({
     ...payload,
     success: true,
+    request_id: requestId,
     program_state: programState,
-    program_url: programUrl,
-    program_refresh: programRefresh,
-    mode,
-    selected_scene: statusAfterMode,
-    stream_start: stream,
-    stream_started: streamStarted,
-    ai_director_status: status,
+    program_url: redactDirectorResult(prepared.programUrl),
+    program_refresh: redactDirectorResult(prepared.programRefresh),
+    mode: redactDirectorResult(mode),
+    selected_scene: redactDirectorResult(statusAfterMode),
+    stream_start: redactDirectorResult(stream),
+    stream_started: true,
+    ai_director_status: redactDirectorResult(status),
     production_state: productionState,
+    capabilities: successCapabilities,
     peertube_watch_url: config.liveStream.peerTubeWatchUrl || null,
   });
 });
 
 router.post('/stop', async (req, res) => {
-  if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
+  const requestId = createRequestId();
+  if (!workspaceGuard(req, res, requestId)) return;
   const payload = displayPayload(req);
   const stream = await callDirector('POST', '/stream/stop');
 
-  // Verify the stream actually stopped. The AI Director stop call can return
-  // ok while OBS is still winding down (or silently fail to tear down the
-  // PeerTube/OBS output). Poll /status every 2s for up to 10s; if
-  // stream_active is still true, send a second stop command.
   let verifiedActive = null;
   let secondStop = null;
   let productionState = getLiveProductionState(req.workspaceId);
@@ -369,25 +556,53 @@ router.post('/stop', async (req, res) => {
     }
   } catch (_) { /* verification is best-effort; the primary stop already ran */ }
 
+  const stopped = stream.ok && verifiedActive === false;
+  if (!stopped) {
+    const classified = !stream.ok
+      ? classifyDirectorFailure(stream, ERROR_CODES.STREAM_STOP_NOT_CONFIRMED)
+      : {
+        code: ERROR_CODES.STREAM_STOP_NOT_CONFIRMED,
+        error: 'OBS did not confirm that the live stream stopped',
+      };
+    return fail(res, req, {
+      httpStatus: 502,
+      code: classified.code,
+      error: classified.error,
+      requestId,
+      payload: {
+        ...payload,
+        stream_stop: redactDirectorResult(stream),
+        classroom_composition_preserved: true,
+        stream_active_after: verifiedActive,
+        second_stop: secondStop ? redactDirectorResult(secondStop) : null,
+      },
+      productionState,
+    });
+  }
+
+  clearLiveStreamLastError(req.workspaceId);
   logLiveStreamAction(req, 'stop', {
     stream_message: stream.data && stream.data.message || stream.message || null,
     classroom_composition_preserved: true,
     stream_active_after: verifiedActive,
     second_stop_sent: !!secondStop,
+    request_id: requestId,
   });
   res.json({
     ...payload,
-    success: stream.ok && verifiedActive === false,
-    stream_stop: stream,
+    success: true,
+    request_id: requestId,
+    stream_stop: redactDirectorResult(stream),
     classroom_composition_preserved: true,
     stream_active_after: verifiedActive,
-    second_stop: secondStop,
+    second_stop: secondStop ? redactDirectorResult(secondStop) : null,
     production_state: productionState,
   });
 });
 
 router.post('/clear-content', async (req, res) => {
-  if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
+  const requestId = createRequestId();
+  if (!workspaceGuard(req, res, requestId)) return;
   const display = ensureLiveStreamDisplay({ workspaceId: req.workspaceId, userId: req.user.id });
   let cleared = false;
   try {
@@ -407,18 +622,34 @@ router.post('/clear-content', async (req, res) => {
       }
     } catch (_) {}
   } catch (e) {
-    return res.status(500).json({ success: false, error: e.message || 'Failed to clear live content' });
+    return fail(res, req, {
+      httpStatus: 500,
+      code: ERROR_CODES.STREAM_START_REJECTED,
+      error: e.message || 'Failed to clear live content',
+      requestId,
+    });
   }
   markLiveContentChanged(display.id);
   const refresh = await callDirector('POST', '/media-control/refresh');
-  logLiveStreamAction(req, 'clear-content', { cleared });
-  res.json({ success: true, cleared, refresh, program_state: liveStreamProgramState(req.workspaceId) });
+  logLiveStreamAction(req, 'clear-content', { cleared, request_id: requestId });
+  res.json({
+    success: true,
+    request_id: requestId,
+    cleared,
+    refresh: redactDirectorResult(refresh),
+    program_state: liveStreamProgramState(req.workspaceId),
+  });
 });
 
 router.post('/refresh', async (req, res) => {
-  if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
+  const requestId = createRequestId();
+  if (!workspaceGuard(req, res, requestId)) return;
   const refresh = await callDirector('POST', '/media-control/refresh');
-  res.json({ success: !!refresh.ok, refresh });
+  res.json({
+    success: !!refresh.ok,
+    request_id: requestId,
+    refresh: redactDirectorResult(refresh),
+  });
 });
 
 module.exports = router;

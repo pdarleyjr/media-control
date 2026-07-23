@@ -1,98 +1,72 @@
-const test = require('node:test');
+'use strict';
+
+const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const crypto = require('node:crypto');
-const { db } = require('../db/database');
-const { mergeDisplayState } = require('../lib/command-model');
+const {
+  resolveClassroomAudioAuthority,
+  classroomAudioMutePlan,
+} = require('../lib/command-model');
 
-const AUTH_KEY = 'CLASSROOM_AUDIO_AUTHORITY_DEVICE_ID';
+const DEVICES = [
+  { id: 'fc', name: 'Classroom 1 - Front Center' },
+  { id: 'fl', name: 'Classroom 1 - Front Left' },
+  { id: 'fr', name: 'Classroom 1 - Front Right' },
+  { id: 'sl', name: 'Classroom 1 - Side Left' },
+  { id: 'sr', name: 'Classroom 1 - Side Right' },
+];
 
-function rowFor(id) {
-  return db.prepare(
-    'SELECT muted, volume FROM display_states WHERE target_type = ? AND target_id = ?'
-  ).get('display', id);
-}
+describe('classroom single audio authority', () => {
+  it('selects Front Center as sole authority', () => {
+    const r = resolveClassroomAudioAuthority(DEVICES);
+    assert.equal(r.valid, true);
+    assert.equal(r.authority_device_id, 'fc');
+    assert.equal(r.followers.length, 4);
+  });
 
-test('audio authority: unset env does not rewrite follower unmute', () => {
-  const prev = process.env[AUTH_KEY];
-  delete process.env[AUTH_KEY];
-  const id = `aa-follower-${crypto.randomUUID()}`;
-  try {
-    mergeDisplayState('display', id, { muted: false, volume: 80 });
-    const row = rowFor(id);
-    assert.equal(row.muted, 0);
-    assert.equal(row.volume, 80);
-  } finally {
-    if (prev === undefined) delete process.env[AUTH_KEY];
-    else process.env[AUTH_KEY] = prev;
-    db.prepare('DELETE FROM display_states WHERE target_id = ?').run(id);
-  }
-});
+  it('unmutes authority and mutes followers', () => {
+    const plan = classroomAudioMutePlan(DEVICES, {
+      onlineDeviceIds: DEVICES.map((d) => d.id),
+    });
+    const byId = Object.fromEntries(plan.plan.map((p) => [p.device_id, p]));
+    assert.equal(byId.fc.muted, false);
+    assert.equal(byId.fc.reason, 'single_audio_authority');
+    for (const id of ['fl', 'fr', 'sl', 'sr']) {
+      assert.equal(byId[id].muted, true);
+      assert.equal(byId[id].role, 'follower');
+    }
+  });
 
-test('audio authority: follower unmute heartbeat is forced muted with volume 0', () => {
-  const authority = `aa-auth-${crypto.randomUUID()}`;
-  const follower = `aa-fol-${crypto.randomUUID()}`;
-  const prev = process.env[AUTH_KEY];
-  process.env[AUTH_KEY] = authority;
-  try {
-    mergeDisplayState('display', follower, { muted: false, volume: 100 });
-    const row = rowFor(follower);
-    assert.equal(row.muted, 1);
-    assert.equal(row.volume, 0);
-  } finally {
-    if (prev === undefined) delete process.env[AUTH_KEY];
-    else process.env[AUTH_KEY] = prev;
-    db.prepare('DELETE FROM display_states WHERE target_id IN (?, ?)').run(authority, follower);
-  }
-});
+  it('mutes everyone when authority is offline', () => {
+    const plan = classroomAudioMutePlan(DEVICES, {
+      onlineDeviceIds: ['fl', 'fr', 'sl', 'sr'],
+    });
+    assert.equal(plan.authority_online, false);
+    assert.ok(plan.plan.every((p) => p.muted === true));
+    assert.equal(
+      plan.plan.find((p) => p.device_id === 'fc').reason,
+      'authority_offline',
+    );
+  });
 
-test('audio authority: authority device may remain unmuted', () => {
-  const authority = `aa-auth-${crypto.randomUUID()}`;
-  const prev = process.env[AUTH_KEY];
-  process.env[AUTH_KEY] = authority;
-  try {
-    mergeDisplayState('display', authority, { muted: false, volume: 80 });
-    const row = rowFor(authority);
-    assert.equal(row.muted, 0);
-    assert.equal(row.volume, 80);
-  } finally {
-    if (prev === undefined) delete process.env[AUTH_KEY];
-    else process.env[AUTH_KEY] = prev;
-    db.prepare('DELETE FROM display_states WHERE target_id = ?').run(authority);
-  }
-});
+  it('reports invalid authority when Front Center missing', () => {
+    const r = resolveClassroomAudioAuthority(DEVICES.filter((d) => d.id !== 'fc'));
+    assert.equal(r.valid, false);
+    assert.equal(r.error, 'audio_authority_offline_or_unconfigured');
+    const plan = classroomAudioMutePlan(DEVICES.filter((d) => d.id !== 'fc'), {
+      onlineDeviceIds: ['fl', 'fr'],
+    });
+    assert.ok(plan.plan.every((p) => p.muted === true));
+  });
 
-test('audio authority: duplicate audio prevention across multiple followers', () => {
-  const authority = `aa-auth-${crypto.randomUUID()}`;
-  const f1 = `aa-f1-${crypto.randomUUID()}`;
-  const f2 = `aa-f2-${crypto.randomUUID()}`;
-  const prev = process.env[AUTH_KEY];
-  process.env[AUTH_KEY] = authority;
-  try {
-    mergeDisplayState('display', authority, { muted: false, volume: 75 });
-    mergeDisplayState('display', f1, { muted: false, volume: 90 });
-    mergeDisplayState('display', f2, { muted: false, volume: 90 });
-    assert.equal(rowFor(authority).muted, 0);
-    assert.equal(rowFor(f1).muted, 1);
-    assert.equal(rowFor(f2).muted, 1);
-    assert.equal(rowFor(f1).volume, 0);
-    assert.equal(rowFor(f2).volume, 0);
-  } finally {
-    if (prev === undefined) delete process.env[AUTH_KEY];
-    else process.env[AUTH_KEY] = prev;
-    db.prepare('DELETE FROM display_states WHERE target_id IN (?, ?, ?)').run(authority, f1, f2);
-  }
-});
-
-test('audio authority: empty env string disables pin', () => {
-  const id = `aa-empty-${crypto.randomUUID()}`;
-  const prev = process.env[AUTH_KEY];
-  process.env[AUTH_KEY] = '   ';
-  try {
-    mergeDisplayState('display', id, { muted: false, volume: 50 });
-    assert.equal(rowFor(id).muted, 0);
-  } finally {
-    if (prev === undefined) delete process.env[AUTH_KEY];
-    else process.env[AUTH_KEY] = prev;
-    db.prepare('DELETE FROM display_states WHERE target_id = ?').run(id);
-  }
+  it('keeps followers muted after authority reconnect planning', () => {
+    const offline = classroomAudioMutePlan(DEVICES, { onlineDeviceIds: [] });
+    assert.ok(offline.plan.every((p) => p.muted === true));
+    const back = classroomAudioMutePlan(DEVICES, {
+      onlineDeviceIds: DEVICES.map((d) => d.id),
+    });
+    assert.equal(back.plan.find((p) => p.device_id === 'fc').muted, false);
+    assert.ok(
+      back.plan.filter((p) => p.role === 'follower').every((p) => p.muted === true),
+    );
+  });
 });

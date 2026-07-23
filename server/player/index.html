@@ -625,6 +625,95 @@
       }
       return current && typeof current === 'object' && !Array.isArray(current) ? current : {};
     }
+    // Recent command IDs that already finished successfully. Protects against
+    // reconnect flushes replaying expired next/seek and against dual delivery.
+    const appliedCommandIds = new Map();
+    const MAX_APPLIED_COMMAND_IDS = 64;
+    let transportSerialQueue = Promise.resolve();
+
+    function rememberAppliedCommand(commandId, ok) {
+      if (!commandId) return;
+      appliedCommandIds.set(String(commandId), { ok: ok !== false, at: Date.now() });
+      while (appliedCommandIds.size > MAX_APPLIED_COMMAND_IDS) {
+        const oldest = appliedCommandIds.keys().next().value;
+        appliedCommandIds.delete(oldest);
+      }
+    }
+
+    function alreadyAppliedCommand(commandId) {
+      if (!commandId) return null;
+      return appliedCommandIds.get(String(commandId)) || null;
+    }
+
+    function transportTargetFromPayload(payload) {
+      const p = payload && typeof payload === 'object' ? payload : {};
+      return {
+        zone_id: p.zone_id || p.zoneId || null,
+        cell_id: p.cell_id || p.cellId || null,
+        content_instance_id: p.content_instance_id || p.contentInstanceId || p.instance_id || null,
+        content_id: p.content_id || p.contentId || null,
+        expected_revision: p.expected_revision != null ? Number(p.expected_revision) : null,
+      };
+    }
+
+    function zoneElements() {
+      return Array.from(document.querySelectorAll('.zone[data-zone-id], .zone'));
+    }
+
+    function resolveTargetRoot(payload) {
+      const target = transportTargetFromPayload(payload);
+      const zones = zoneElements();
+      if (target.zone_id) {
+        const match = zones.find((z) => String(z.dataset.zoneId || '') === String(target.zone_id));
+        if (!match) return { ok: false, error: 'Unknown zone_id: ' + target.zone_id };
+        return { ok: true, root: match, target, multi: false };
+      }
+      if (target.cell_id) {
+        const match = zones.find((z) => String(z.dataset.cellId || z.dataset.zoneId || '') === String(target.cell_id));
+        if (!match) return { ok: false, error: 'Unknown cell_id: ' + target.cell_id };
+        return { ok: true, root: match, target, multi: false };
+      }
+      if (target.content_instance_id || target.content_id) {
+        const needle = String(target.content_instance_id || target.content_id);
+        const match = zones.find((z) =>
+          String(z.dataset.contentInstanceId || '') === needle
+          || String(z.dataset.contentId || '') === needle
+        );
+        if (match) return { ok: true, root: match, target, multi: false };
+      }
+      if (zones.length > 1) {
+        const active = zones.find((z) => z.classList.contains('is-active') || z.dataset.primary === '1');
+        if (active) return { ok: true, root: active, target, multi: false, inferred: true };
+        // Defer final ambiguity decision to the caller so transport can pick the
+        // sole zone that has matching media for the requested action.
+        return { ok: true, root: null, target, multi: true, zones };
+      }
+      const root = zones[0]
+        || document.getElementById('playerContainer')
+        || document.querySelector('.wall-stage')
+        || document.body;
+      return { ok: true, root, target, multi: false };
+    }
+
+    function pickZoneRootForAction(action, zones) {
+      const list = Array.isArray(zones) ? zones : [];
+      if (!list.length) return null;
+      const deckish = action === 'next' || action === 'prev' || action === 'next_slide' || action === 'previous_slide'
+        || action === 'previous' || action === 'go_to_slide' || action === 'slide' || action === 'goto'
+        || action === 'restart_deck' || action === 'restart';
+      const videoish = action === 'play' || action === 'pause' || action === 'play_pause' || action === 'resume'
+        || action === 'seek' || action === 'seek_forward' || action === 'seek_backward'
+        || action === 'stop' || action === 'mute' || action === 'unmute' || action === 'volume';
+      const matches = list.filter((z) => {
+        if (deckish && z.querySelector('iframe')) return true;
+        if (videoish && z.querySelector('video')) return true;
+        return false;
+      });
+      if (matches.length === 1) return matches[0];
+      if (!deckish && !videoish && list.length === 1) return list[0];
+      return null;
+    }
+
     function normalizeTransportCommand(input) {
       if (window.MbfdDeviceContract && typeof window.MbfdDeviceContract.normalizeCommand === 'function') {
         const normalized = window.MbfdDeviceContract.normalizeCommand(input, {
@@ -644,9 +733,6 @@
       }
       const command = (input && typeof input === 'object' && !Array.isArray(input)) ? input : { action: input };
       const rawPayload = command && typeof command.payload === 'object' && !Array.isArray(command.payload) ? command.payload : {};
-      // `device:command` wraps transport as { type:'transport', payload:{action} }.
-      // Prefer the payload action so a transport envelope does not get treated as
-      // the literal string "transport" (which makes next/prev/restart fail).
       const action = String(
         rawPayload.action ||
         rawPayload.command ||
@@ -663,15 +749,21 @@
         payload,
         command_id: command.command_id || command.commandId || command.id || null,
         type: command.type || 'transport',
+        issued_at: command.issued_at || null,
       };
     }
-    function postTransportToFrames(command) {
+
+    function framesInRoot(root) {
+      const scope = root && root.querySelectorAll ? root : document;
+      if (root && root.matches && root.matches('iframe')) return [root];
+      return Array.from(scope.querySelectorAll('iframe'));
+    }
+
+    function postTransportToFrames(command, root) {
       const envelope = normalizeTransportCommand(command);
       let posted = false;
-      // Post to every iframe on the page (controllable deck/doc/pdf/grid players
-      // live in #playerContainer, .zone, .wall-stage, or a PIP host). Querying
-      // all iframes is safe: non-controllable frames simply ignore the message.
-      document.querySelectorAll('iframe').forEach((f) => {
+      const frames = root ? framesInRoot(root) : Array.from(document.querySelectorAll('iframe'));
+      frames.forEach((f) => {
         try {
           if (f.contentWindow) {
             if (typeof f.contentWindow.handleAction === 'function') {
@@ -685,14 +777,13 @@
           }
         } catch (e) { /* cross-origin/none */ }
       });
-      // Retry: the doc/deck iframe may have a contentWindow (about:blank) before
-      // its message listener is registered (the page's <script> hasn't run yet).
       if (!posted) {
         let attempts = 0;
         const retry = setInterval(() => {
           attempts++;
           let found = false;
-          document.querySelectorAll('iframe').forEach((f) => {
+          const retryFrames = root ? framesInRoot(root) : Array.from(document.querySelectorAll('iframe'));
+          retryFrames.forEach((f) => {
             try {
               if (f.contentWindow) {
                 const w = f.contentWindow;
@@ -706,11 +797,17 @@
               }
             } catch (e) { /* cross-origin/none */ }
           });
-          if (found || attempts >= 5) clearInterval(retry);
+          if (found || attempts >= 5) {
+            clearInterval(retry);
+            if (!found) {
+              finishTransportCommand(command, false, 'Child player frame not ready for transport', buildPlayerState());
+            }
+          }
         }, 300);
       }
       return posted;
     }
+
     function tryApplyDisplayStateRestore(reason) {
       const restore = pendingDisplayStateRestore;
       if (!restore) return true;
@@ -1619,6 +1716,7 @@
       // lastTransportState because that would override the live media clock on
       // every later report. Child callers explicitly accept their state before
       // finishing the command.
+      rememberAppliedCommand(command.command_id || (lastTransportAck && lastTransportAck.command_id), ok !== false);
       publishPlayerState({ ack: lastTransportAck });
     }
 
@@ -2411,13 +2509,23 @@
       // route for doc/deck players because it bypasses postMessage timing and
       // lands directly on the visible child document. If that fails, callers
       // can still fall back to postMessage or other transport logic.
-      function tryDirectIframeTransport(command) {
+      function tryDirectIframeTransport(command, rootHint) {
         const envelope = normalizeTransportCommand(command);
         const action = envelope.action;
         const payload = envelope.payload || {};
         const len = playlist.length || 0;
-        const iframe = document.querySelector('#playerContainer iframe, .wall-stage iframe, .zone iframe');
-        if (!iframe) return false;
+        const scope = rootHint || document;
+        const iframe = scope.querySelector
+          ? scope.querySelector('iframe') || (scope.matches && scope.matches('iframe') ? scope : null)
+          : document.querySelector('#playerContainer iframe, .wall-stage iframe, .zone iframe');
+        if (!iframe) {
+          if (!rootHint) {
+            const fallback = document.querySelector('#playerContainer iframe, .wall-stage iframe, .zone iframe');
+            if (!fallback) return false;
+            return tryDirectIframeTransport(command, fallback.parentElement || document);
+          }
+          return false;
+        }
 
         try {
           const childWindow = iframe.contentWindow;
@@ -2550,7 +2658,7 @@
         const payload = command && command.payload && typeof command.payload === 'object'
           ? command.payload
           : {};
-        const secondsRaw = payload.position_seconds ?? payload.position ?? payload.time;
+        const secondsRaw = payload.position_seconds ?? payload.seconds ?? payload.position ?? payload.time;
         if (secondsRaw !== undefined && secondsRaw !== null) {
           const seconds = Number(secondsRaw);
           return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
@@ -2645,9 +2753,18 @@
         }
       }
 
-      function findControllableVideo() {
+      function findControllableVideo(root) {
+        if (root) {
+          const scoped = root.querySelector ? root.querySelector('video') : null;
+          if (scoped && scoped.isConnected) {
+            // Do not promote zone-scoped media to global currentVideoEl — that
+            // would let a later wall-level command hijack another zone's player.
+            return scoped;
+          }
+          return null;
+        }
         if (currentVideoEl && currentVideoEl.isConnected) return currentVideoEl;
-        const video = document.querySelector('#playerContainer video, .wall-stage video');
+        const video = document.querySelector('#playerContainer video, .wall-stage video, .zone video');
         if (video) currentVideoEl = video;
         return video;
       }
@@ -2656,10 +2773,51 @@
         const command = normalizeTransportCommand(input);
         const action = command.action;
         if (!action) return;
+        // Serialize transport so rapid next/prev clicks do not race and double-advance
+        // slides or fight concurrent seeks.
+        transportSerialQueue = transportSerialQueue.catch(() => {}).then(() => doTransportNow(command));
+        return transportSerialQueue;
+      }
+
+      function doTransportNow(command) {
+        const action = command.action;
+        if (!action) return;
         try {
+          const prior = alreadyAppliedCommand(command.command_id);
+          if (prior) {
+            // Exact command_id already applied — idempotent no-op ack.
+            finishTransportCommand(command, prior.ok !== false, prior.ok === false ? 'duplicate_command' : null, buildPlayerState());
+            return;
+          }
+          // Drop very stale reconnect replays (>45s) unless they are pure stateful seeks/go_to.
+          if (command.issued_at) {
+            const issuedMs = Date.parse(command.issued_at);
+            if (Number.isFinite(issuedMs) && (Date.now() - issuedMs) > 45000) {
+              const durable = action === 'go_to_slide' || action === 'seek' || action === 'pause' || action === 'stop' || action === 'mute' || action === 'unmute' || action === 'volume';
+              if (!durable) {
+                finishTransportCommand(command, false, 'stale_command', buildPlayerState());
+                return;
+              }
+            }
+          }
+
           const item = playlist[currentIndex] || {};
           markTransportCommand(command, 'pending');
           publishPlayerState();
+
+          const targetRes = resolveTargetRoot(command.payload || {});
+          if (!targetRes.ok) {
+            finishTransportCommand(command, false, targetRes.error || 'Ambiguous target', buildPlayerState());
+            return;
+          }
+          let targetRoot = targetRes.root;
+          if (targetRes.multi && !targetRoot) {
+            targetRoot = pickZoneRootForAction(action, targetRes.zones);
+            if (!targetRoot) {
+              finishTransportCommand(command, false, 'Ambiguous multi-zone target; provide zone_id or cell_id', buildPlayerState());
+              return;
+            }
+          }
 
           // A play/pause toggle is non-idempotent. In a spanned subgroup only
           // the leader executes it; followers acknowledge and consume the
@@ -2699,8 +2857,27 @@
                 activeYtPlayer.seekTo(position, true);
               } else if (action === 'pause') {
                 if (typeof activeYtPlayer.pauseVideo === 'function') activeYtPlayer.pauseVideo();
-              } else if (action === 'play') {
+              } else if (action === 'play' || action === 'resume') {
                 if (typeof activeYtPlayer.playVideo === 'function') activeYtPlayer.playVideo();
+              } else if (action === 'stop') {
+                if (typeof activeYtPlayer.stopVideo === 'function') activeYtPlayer.stopVideo();
+                else if (typeof activeYtPlayer.pauseVideo === 'function') {
+                  activeYtPlayer.pauseVideo();
+                  if (typeof activeYtPlayer.seekTo === 'function') activeYtPlayer.seekTo(0, true);
+                }
+              } else if (action === 'mute') {
+                if (typeof activeYtPlayer.mute === 'function') activeYtPlayer.mute();
+              } else if (action === 'unmute') {
+                if (typeof activeYtPlayer.unMute === 'function') activeYtPlayer.unMute();
+              } else if (action === 'volume') {
+                const level = Number((command.payload || {}).volume ?? (command.payload || {}).level ?? (command.payload || {}).value);
+                if (!Number.isFinite(level) || level < 0 || level > 1) throw new Error('Invalid volume level');
+                if (typeof activeYtPlayer.setVolume === 'function') activeYtPlayer.setVolume(Math.round(level * 100));
+              } else if (action === 'seek_forward' || action === 'seek_backward') {
+                const delta = Number((command.payload || {}).delta_seconds ?? (command.payload || {}).seconds ?? 10);
+                const cur = typeof activeYtPlayer.getCurrentTime === 'function' ? Number(activeYtPlayer.getCurrentTime()) || 0 : 0;
+                const nextPos = action === 'seek_forward' ? cur + (Number.isFinite(delta) ? delta : 10) : cur - (Number.isFinite(delta) ? delta : 10);
+                if (typeof activeYtPlayer.seekTo === 'function') activeYtPlayer.seekTo(Math.max(0, nextPos), true);
               }
             } catch (e) {
               finishTransportCommand(command, false, 'YT: ' + e.message, buildPlayerState());
@@ -2711,12 +2888,14 @@
             return;
           }
 
-          const frameTransportable = !!(item && (isDocumentMime(item.mime_type) || item.mime_type === 'text/html'));
+          const zoneScoped = !!(command.payload && (command.payload.zone_id || command.payload.cell_id || command.payload.content_instance_id));
+          const frameInTarget = targetRoot && framesInRoot(targetRoot).length > 0;
+          const frameTransportable = frameInTarget || !!(item && (isDocumentMime(item.mime_type) || item.mime_type === 'text/html'));
           if (frameTransportable) {
-            if (tryDirectIframeTransport(command)) {
+            if (tryDirectIframeTransport(command, targetRoot)) {
               return;
             }
-            const posted = postTransportToFrames(command);
+            const posted = postTransportToFrames(command, targetRoot);
             if (posted) {
               _showTransportDebug('frame transport: ' + action + (command.command_id ? ' #' + String(command.command_id).slice(0, 8) : ''));
               return;
@@ -2725,10 +2904,23 @@
 
           // ── No controllable iframe — drive the playlist/video directly ────
           const len = playlist.length || 0;
-          const video = findControllableVideo();
+          const video = findControllableVideo(zoneScoped ? targetRoot : null) || findControllableVideo(targetRoot) || (!zoneScoped ? findControllableVideo() : null);
           let handled = false;
-          if (action === 'next') { nextItem(); handled = true; _showTransportDebug('nextItem'); }
-          else if (action === 'prev') { if (len) { currentIndex = (currentIndex - 2 + len) % len; nextItem(); } handled = true; _showTransportDebug('prevItem'); }
+          if (action === 'next' || action === 'next_slide') {
+            if (zoneScoped && frameInTarget) {
+              finishTransportCommand(command, false, 'Zone deck transport unavailable', buildPlayerState());
+              return;
+            }
+            nextItem(); handled = true; _showTransportDebug('nextItem');
+          }
+          else if (action === 'prev' || action === 'previous' || action === 'previous_slide') {
+            if (zoneScoped && frameInTarget) {
+              finishTransportCommand(command, false, 'Zone deck transport unavailable', buildPlayerState());
+              return;
+            }
+            if (len) { currentIndex = (currentIndex - 2 + len) % len; nextItem(); }
+            handled = true; _showTransportDebug('prevItem');
+          }
           else if (action === 'play_pause') {
             if (video) {
               if (video.paused) {
@@ -2737,7 +2929,10 @@
                 Promise.resolve(video.play()).then(() => {
                   finishTransportCommand(command, true, null, buildPlayerState());
                 }).catch((error) => {
-                  finishTransportCommand(command, false, error && error.message ? error.message : 'Video play failed', buildPlayerState());
+                  const msg = error && error.name === 'NotAllowedError'
+                    ? 'Autoplay rejected by browser'
+                    : (error && error.message ? error.message : 'Video play failed');
+                  finishTransportCommand(command, false, msg, buildPlayerState());
                 });
                 return;
               }
@@ -2747,31 +2942,99 @@
             }
             _showTransportDebug('play_pause');
           }
-          else if (action === 'restart') { currentIndex = -1; nextItem(); handled = true; _showTransportDebug('restart'); }
+          else if (action === 'restart' || action === 'restart_deck' || action === 'reset') {
+            if (video) {
+              try { video.currentTime = 0; } catch (_) {}
+              video.__mcOperatorPaused = false;
+              unlockAudio();
+              Promise.resolve(video.play()).then(() => {
+                finishTransportCommand(command, true, null, buildPlayerState());
+              }).catch((error) => {
+                finishTransportCommand(command, false, error && error.message ? error.message : 'Video restart failed', buildPlayerState());
+              });
+              return;
+            }
+            currentIndex = -1; nextItem(); handled = true; _showTransportDebug('restart');
+          }
+          else if (action === 'stop') {
+            if (video) {
+              video.__mcOperatorPaused = true;
+              try { video.pause(); } catch (_) {}
+              try { video.currentTime = 0; } catch (_) {}
+              handled = true;
+            } else {
+              // Stop deck auto-advance by pausing iframe if present
+              if (tryDirectIframeTransport({ ...command, action: 'pause', payload: { ...(command.payload || {}), action: 'pause' } }, targetRoot)) {
+                return;
+              }
+              handled = false;
+            }
+            _showTransportDebug('stop');
+          }
           else if (action === 'pause') {
             if (video) video.__mcOperatorPaused = true;
             if (video && !video.paused) video.pause();
             handled = !!video;
             _showTransportDebug('pause');
           }
-          else if (action === 'play') {
+          else if (action === 'play' || action === 'resume') {
             if (video) video.__mcOperatorPaused = false;
             if (video && video.paused) {
               unlockAudio();
               Promise.resolve(video.play()).then(() => {
                 finishTransportCommand(command, true, null, buildPlayerState());
               }).catch((error) => {
-                finishTransportCommand(command, false, error && error.message ? error.message : 'Video play failed', buildPlayerState());
+                const msg = error && error.name === 'NotAllowedError'
+                  ? 'Autoplay rejected by browser'
+                  : (error && error.message ? error.message : 'Video play failed');
+                finishTransportCommand(command, false, msg, buildPlayerState());
               });
               return;
             }
             handled = !!video;
             _showTransportDebug('play');
           }
-          else if (action === 'seek') {
+          else if (action === 'mute') {
+            if (video) { video.muted = true; handled = true; }
+            _showTransportDebug('mute');
+          }
+          else if (action === 'unmute') {
             if (video) {
+              unlockAudio();
+              video.muted = false;
+              handled = true;
+            }
+            _showTransportDebug('unmute');
+          }
+          else if (action === 'volume') {
+            if (video) {
+              const level = Number((command.payload || {}).volume ?? (command.payload || {}).level ?? (command.payload || {}).value);
+              if (!Number.isFinite(level) || level < 0 || level > 1) {
+                finishTransportCommand(command, false, 'Invalid volume level', buildPlayerState());
+                return;
+              }
+              unlockAudio();
+              video.volume = level;
+              if (level > 0) video.muted = false;
+              handled = true;
+            }
+            _showTransportDebug('volume');
+          }
+          else if (action === 'seek' || action === 'seek_forward' || action === 'seek_backward') {
+            if (video) {
+              let seekCommand = command;
+              if (action === 'seek_forward' || action === 'seek_backward') {
+                const delta = Number((command.payload || {}).delta_seconds ?? (command.payload || {}).seconds ?? 10);
+                const base = Number(video.currentTime) || 0;
+                const nextPos = action === 'seek_forward' ? base + (Number.isFinite(delta) ? delta : 10) : base - (Number.isFinite(delta) ? delta : 10);
+                seekCommand = {
+                  ...command,
+                  action: 'seek',
+                  payload: { ...(command.payload || {}), action: 'seek', position_seconds: Math.max(0, nextPos) },
+                };
+              }
               if (video.readyState >= 1) {
-                const position = readSeekPosition(command, video.duration);
+                const position = readSeekPosition(seekCommand, video.duration);
                 if (position === null) {
                   finishTransportCommand(command, false, 'Invalid or unsupported seek target', buildPlayerState());
                   return;
@@ -2785,7 +3048,7 @@
                   settled = true;
                   clearTimeout(timeout);
                   try {
-                    const position = readSeekPosition(command, video.duration);
+                    const position = readSeekPosition(seekCommand, video.duration);
                     if (position === null) throw new Error('Invalid or unsupported seek target');
                     finishVideoSeek(video, command, position);
                   } catch (e) {
@@ -3968,11 +4231,16 @@
       layout.zones.forEach(zone => {
         const div = document.createElement('div');
         div.className = 'zone';
+        div.dataset.zoneId = zone.id != null ? String(zone.id) : '';
+        div.dataset.cellId = zone.cell_id != null ? String(zone.cell_id) : (zone.id != null ? String(zone.id) : '');
         div.style.cssText = `left:${zone.x_percent}%;top:${zone.y_percent}%;width:${zone.width_percent}%;height:${zone.height_percent}%;z-index:${zone.z_index || 0}`;
 
         // Find assignment for this zone
         const assignment = playlist.find(a => a.zone_id === zone.id) || defaultItem;
         if (!assignment) return;
+        if (assignment.id != null) div.dataset.contentInstanceId = String(assignment.id);
+        if (assignment.content_id != null) div.dataset.contentId = String(assignment.content_id);
+        if (assignment.zone_id != null) div.dataset.zoneId = String(assignment.zone_id);
 
         const isVideo = assignment.mime_type?.startsWith('video/');
         const isImage = assignment.mime_type?.startsWith('image/');

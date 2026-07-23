@@ -848,6 +848,7 @@ app.use('/api/downloads', requireAuth, resolveTenancy, require('./routes/downloa
 app.use('/api/scenes', requireAuth, resolveTenancy, require('./routes/scenes'));
 app.use('/api/broadcast', requireAuth, resolveTenancy, require('./routes/broadcast'));
 app.use('/api/live-stream', requireAuth, resolveTenancy, requireWorkspaceWrite, require('./routes/live-stream'));
+app.use('/api/peertube-replays', requireAuth, resolveTenancy, require('./routes/peertube-replays'));
 app.use('/api/activity', requireAuth, resolveTenancy, require('./routes/activity'));
 app.use('/api/white-label', requireAuth, resolveTenancy, require('./routes/white-label'));
 // Kiosk render is public (accessed by devices), CRUD is protected
@@ -1204,6 +1205,9 @@ server.listen(listenPort, '0.0.0.0', () => {
 ║  Listening on all interfaces (0.0.0.0)           ║
 ╚══════════════════════════════════════════════════╝
   `);
+  // PeerTube replay → Media Control discovery worker. Inert unless
+  // PEERTUBE_REPLAY_ENABLED + API credentials are set in env.
+  try { require('./services/peertube-replay').start(); } catch (e) { console.warn('[peertube-replay] start failed:', e.message); }
   // Self-heal any video that isn't yet a browser-safe MP4 (e.g. a transcode that
   // a previous deploy/restart killed mid-flight). Deferred + single-flight so it
   // never blocks startup or stacks ffmpeg processes. Non-fatal.

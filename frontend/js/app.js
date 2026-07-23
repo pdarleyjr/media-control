@@ -621,8 +621,11 @@ async function route() {
   if (CONSOLE_MODE) {
     const ready = await ensureConsoleSession();
     if (!ready || signal.aborted || generation !== routeGeneration) return;
+    // Podium default: enterprise operator console when authorized.
+    // Emergency fallback remains #/control (never unlocked by query/localStorage).
     if (hash === '#/login' || hash === '#/' || hash === '#') {
-      window.location.hash = '#/control';
+      const enterpriseOk = await isEnterpriseUiEnabled();
+      window.location.hash = enterpriseOk ? '#/operator-console' : '#/control';
       return;
     }
   }
@@ -656,16 +659,17 @@ async function route() {
   // workspace_viewer can't broadcast). #/home and #/present stay reachable by hash.
   if (isAuthenticated() && hash === '#/login') {
     if (!localStorage.getItem('rd_onboarded')) { window.location.hash = '#/onboarding'; return; }
-    window.location.hash = '#/control';
+    const enterpriseOk = await isEnterpriseUiEnabled();
+    window.location.hash = enterpriseOk ? '#/operator-console' : '#/control';
     return;
   }
 
   // Authenticated and opening the BARE domain (no route yet) -> land on the
-  // unified Media Control dashboard (the documented home for everyone). An
-  // explicit '#/' or '#/displays' still opens the Displays grid, so the
-  // sidebar's Displays link (href="#/") is unaffected.
+  // enterprise operator console when authorized; else unified Command Center.
+  // Explicit '#/' or '#/displays' still opens the Displays grid.
   if (isAuthenticated() && (hash === '' || hash === '#')) {
-    window.location.hash = '#/control';
+    const enterpriseOk = await isEnterpriseUiEnabled();
+    window.location.hash = enterpriseOk ? '#/operator-console' : '#/control';
     return;
   }
 

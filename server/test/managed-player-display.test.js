@@ -1,5 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const { installIsolatedTestDatabase } = require('./live-stream-test-db');
+installIsolatedTestDatabase('managed-player-display');
 const { db } = require('../db/database');
 const {
   buildManagedPlayerUrl,
