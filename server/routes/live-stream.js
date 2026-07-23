@@ -30,6 +30,12 @@ const {
   redactDirectorResult,
   startGateFailure,
 } = require('../lib/live-stream-capabilities');
+const {
+  putPlan,
+  getPlan,
+  consumePlanForStart,
+  cameraScene,
+} = require('../lib/production-plan');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -347,16 +353,165 @@ router.post('/prepare', async (req, res) => {
   });
 });
 
+router.post('/production-plan', async (req, res) => {
+  const requestId = createRequestId();
+  if (!workspaceGuard(req, res, requestId)) return;
+  const director = await callDirector('GET', '/status');
+  const data = director && director.ok ? (director.data || {}) : {};
+  const cams = {
+    1: !!data.kamrui_camera_1_stream,
+    2: !!data.kamrui_camera_2_stream,
+    3: !!data.annke_camera_3_stream,
+  };
+  try {
+    const mode = String(req.body && req.body.production_mode || '').toLowerCase();
+    if (mode === 'fixed_camera') {
+      const cam = Number(req.body.camera_id);
+      if (!cams[cam]) {
+        return fail(res, req, {
+          httpStatus: 409,
+          code: 'CAMERA_UNHEALTHY',
+          error: `Camera ${cam} does not have a fresh stream and cannot be selected`,
+          requestId,
+        });
+      }
+    }
+    if (mode === 'ai_director') {
+      const healthy = Object.values(cams).filter(Boolean).length;
+      if (healthy < 2) {
+        return fail(res, req, {
+          httpStatus: 409,
+          code: 'AI_DIRECTOR_PREREQ',
+          error: 'AI Director requires at least two cameras with fresh decoded frames',
+          requestId,
+        });
+      }
+    }
+    const plan = putPlan(req.workspaceId, req.body || {}, { camera_health: cams });
+    await prepareLiveProgram(req);
+    logLiveStreamAction(req, 'production-plan', {
+      production_plan_id: plan.production_plan_id,
+      production_mode: plan.production_mode,
+      request_id: requestId,
+    });
+    res.json({
+      success: true,
+      request_id: requestId,
+      production_plan: plan,
+      camera_health: cams,
+      director_status: redactDirectorResult(director),
+    });
+  } catch (e) {
+    return fail(res, req, {
+      httpStatus: 400,
+      code: e.code || 'INVALID_PRODUCTION_PLAN',
+      error: e.message || 'Invalid production plan',
+      requestId,
+    });
+  }
+});
+
+router.get('/production-plan', (req, res) => {
+  const requestId = createRequestId();
+  if (!workspaceGuard(req, res, requestId)) return;
+  const plan = getPlan(req.workspaceId);
+  res.json({
+    success: true,
+    request_id: requestId,
+    production_plan: plan,
+  });
+});
+
+async function proxyRecording(method, path, body) {
+  return callDirector(method, path, body);
+}
+
+router.get('/recording/status', async (req, res) => {
+  const requestId = createRequestId();
+  if (!workspaceGuard(req, res, requestId)) return;
+  const result = await proxyRecording('GET', '/v1/recording/status');
+  res.status(result.ok ? 200 : (result.status || 502)).json({
+    success: !!result.ok,
+    request_id: requestId,
+    ...(result.data && typeof result.data === 'object' ? result.data : { error: result.message }),
+  });
+});
+
+router.post('/recording/preflight', async (req, res) => {
+  const requestId = createRequestId();
+  if (!workspaceGuard(req, res, requestId)) return;
+  const result = await proxyRecording('POST', '/v1/recording/preflight', req.body || {});
+  res.status(result.ok ? 200 : (result.status || 502)).json({
+    success: !!result.ok,
+    request_id: requestId,
+    ...(result.data && typeof result.data === 'object' ? result.data : { error: result.message }),
+  });
+});
+
+router.post('/recording/start', async (req, res) => {
+  const requestId = createRequestId();
+  if (!workspaceGuard(req, res, requestId)) return;
+  const body = {
+    session_id: (req.body && req.body.session_id) || `mc-${req.workspaceId}-${Date.now()}`,
+    ...(req.body || {}),
+  };
+  const result = await proxyRecording('POST', '/v1/recording/start', body);
+  logLiveStreamAction(req, 'recording-start', { session_id: body.session_id, request_id: requestId });
+  res.status(result.ok ? 200 : (result.status || 502)).json({
+    success: !!result.ok,
+    request_id: requestId,
+    ...(result.data && typeof result.data === 'object' ? result.data : { error: result.message }),
+  });
+});
+
+router.post('/recording/stop', async (req, res) => {
+  const requestId = createRequestId();
+  if (!workspaceGuard(req, res, requestId)) return;
+  const result = await proxyRecording('POST', '/v1/recording/stop', req.body || {});
+  logLiveStreamAction(req, 'recording-stop', { request_id: requestId });
+  res.status(result.ok ? 200 : (result.status || 502)).json({
+    success: !!result.ok,
+    request_id: requestId,
+    ...(result.data && typeof result.data === 'object' ? result.data : { error: result.message }),
+  });
+});
+
 router.post('/start', async (req, res) => {
   const requestId = createRequestId();
   if (!workspaceGuard(req, res, requestId)) return;
 
-  const requestedDirectorMode = String(req.body && req.body.director_mode || 'manual').toLowerCase();
-  const directorMode = requestedDirectorMode === 'auto' ? 'auto' : 'manual';
-  const confirmAutoCanary = !!(req.body && req.body.confirm_auto_canary === true);
+  let plan;
+  try {
+    plan = consumePlanForStart(req.workspaceId, req.body || {});
+  } catch (e) {
+    // Backward-compat: allow explicit director_mode body without a plan when
+    // production_plan_id was never used (legacy desks), but never invent auto.
+    if ((req.body && req.body.director_mode) || (req.body && req.body.production_mode)) {
+      return fail(res, req, {
+        httpStatus: 409,
+        code: e.code || 'PRODUCTION_PLAN_REQUIRED',
+        error: e.message,
+        requestId,
+      });
+    }
+    plan = {
+      production_mode: 'fixed_camera',
+      director_mode: 'manual',
+      camera_id: 1,
+      scene_name: cameraScene(1),
+      audio_mode: 'speech',
+      recording_requested: false,
+      confirm_auto_canary: false,
+      production_plan_id: null,
+    };
+  }
+
+  const directorMode = plan.director_mode === 'auto' ? 'auto' : 'manual';
+  const confirmAutoCanary = plan.confirm_auto_canary === true
+    || !!(req.body && req.body.confirm_auto_canary === true);
 
   // Background/autonomous callers must mark initiator explicitly.
-  const initiator = String(req.body && req.body.initiator || 'operator').toLowerCase();
+  const initiator = String((req.body && req.body.initiator) || plan.initiator || 'operator').toLowerCase();
   if (initiator !== 'operator' && initiator !== 'user') {
     return fail(res, req, {
       httpStatus: 409,
@@ -378,6 +533,7 @@ router.post('/start', async (req, res) => {
       payload: {
         ...preflight.payload,
         program_state: preflight.programState,
+        production_plan: plan,
       },
       capabilities: preflight.capabilities,
       productionState: preflight.productionState,
@@ -408,13 +564,68 @@ router.post('/start', async (req, res) => {
         program_state: programState,
         program_url: redactDirectorResult(prepared.programUrl || { ok: false }),
         program_refresh: redactDirectorResult(prepared.programRefresh || { ok: false }),
+        production_plan: plan,
       },
       capabilities: preflight.capabilities,
     });
   }
 
-  const mode = await callDirector('POST', `/mode/${directorMode}`);
+  // Apply audio mode from plan (best-effort).
+  if (plan.audio_mode) {
+    await callDirector('POST', `/audio-mode/${encodeURIComponent(plan.audio_mode)}`);
+  }
+
+  // Fixed camera / manual multicamera: set scene + disable autoswitch.
+  let fixedCameraResult = null;
+  if (plan.production_mode === 'fixed_camera' && plan.camera_id) {
+    fixedCameraResult = await callDirector('POST', '/fixed-camera', {
+      camera_id: plan.camera_id,
+      scene_name: plan.scene_name || cameraScene(plan.camera_id),
+    });
+    if (!fixedCameraResult.ok) {
+      // Fall back to mode/manual + scene
+      await callDirector('POST', '/mode/manual');
+      if (plan.scene_name) await callDirector('POST', `/scene/${encodeURIComponent(plan.scene_name)}`);
+    }
+  } else if (plan.production_mode === 'manual_multicamera') {
+    await callDirector('POST', '/mode/manual');
+    if (plan.scene_name) await callDirector('POST', `/scene/${encodeURIComponent(plan.scene_name)}`);
+  }
+
+  // Recording before stream when requested.
+  let recordingStart = null;
+  if (plan.recording_requested) {
+    const sessionId = `mc-${req.workspaceId}-${Date.now()}`;
+    const pre = await callDirector('POST', '/v1/recording/preflight', { session_id: sessionId });
+    if (!pre.ok || (pre.data && pre.data.ok === false)) {
+      return fail(res, req, {
+        httpStatus: 409,
+        code: 'RECORDING_PREFLIGHT_FAILED',
+        error: (pre.data && (pre.data.message || pre.data.error)) || pre.message || 'Recording preflight failed; livestream not started',
+        requestId,
+        payload: { production_plan: plan, recording_preflight: redactDirectorResult(pre) },
+      });
+    }
+    recordingStart = await callDirector('POST', '/v1/recording/start', { session_id: sessionId });
+    if (!recordingStart.ok || (recordingStart.data && recordingStart.data.ok === false)) {
+      return fail(res, req, {
+        httpStatus: 502,
+        code: 'RECORDING_START_FAILED',
+        error: (recordingStart.data && (recordingStart.data.message || recordingStart.data.error))
+          || recordingStart.message || 'Recording could not start; livestream not started',
+        requestId,
+        payload: { production_plan: plan, recording_start: redactDirectorResult(recordingStart) },
+      });
+    }
+  }
+
+  const mode = directorMode === 'auto'
+    ? await callDirector('POST', '/mode/auto')
+    : (fixedCameraResult && fixedCameraResult.ok
+      ? fixedCameraResult
+      : await callDirector('POST', `/mode/${directorMode}`));
   if (!mode.ok) {
+    if (plan.recording_requested) await callDirector('POST', '/v1/recording/stop', {});
     const classified = classifyDirectorFailure(mode, ERROR_CODES.STREAM_START_REJECTED);
     return fail(res, req, {
       httpStatus: 502,
@@ -449,6 +660,7 @@ router.post('/start', async (req, res) => {
   const streamRejected = !stream.ok
     || (stream.data && typeof stream.data === 'object' && stream.data.ok === false);
   if (streamRejected) {
+    if (plan.recording_requested) await callDirector('POST', '/v1/recording/stop', {});
     const classified = classifyDirectorFailure(stream, ERROR_CODES.STREAM_START_REJECTED);
     return fail(res, req, {
       httpStatus: 502,
@@ -460,6 +672,7 @@ router.post('/start', async (req, res) => {
         program_state: programState,
         selected_scene: redactDirectorResult(statusAfterMode),
         stream_start: redactDirectorResult(stream),
+        production_plan: plan,
       },
       productionState: preparedProductionState,
     });
@@ -470,6 +683,7 @@ router.post('/start', async (req, res) => {
   const streamVerified = !!(status && status.ok && status.data && status.data.stream_active === true);
   if (!streamVerified) {
     await callDirector('POST', '/stream/stop');
+    if (plan.recording_requested) await callDirector('POST', '/v1/recording/stop', {});
     return fail(res, req, {
       httpStatus: 502,
       code: ERROR_CODES.STREAM_START_NOT_CONFIRMED,
@@ -481,6 +695,7 @@ router.post('/start', async (req, res) => {
         selected_scene: redactDirectorResult(statusAfterMode),
         stream_start: redactDirectorResult(stream),
         ai_director_status: redactDirectorResult(status || { ok: false }),
+        production_plan: plan,
       },
       productionState,
     });
@@ -489,8 +704,11 @@ router.post('/start', async (req, res) => {
   clearLiveStreamLastError(req.workspaceId);
   logLiveStreamAction(req, 'start', {
     mode: directorMode,
+    production_mode: plan.production_mode,
+    production_plan_id: plan.production_plan_id,
     selected_scene: statusAfterMode.data && statusAfterMode.data.current_scene || null,
     stream_started: true,
+    recording_requested: !!plan.recording_requested,
     request_id: requestId,
   });
 
@@ -508,6 +726,8 @@ router.post('/start', async (req, res) => {
     ...payload,
     success: true,
     request_id: requestId,
+    production_plan: plan,
+    recording_start: recordingStart ? redactDirectorResult(recordingStart) : null,
     program_state: programState,
     program_url: redactDirectorResult(prepared.programUrl),
     program_refresh: redactDirectorResult(prepared.programRefresh),

@@ -210,7 +210,7 @@ export function renderTransportBar(container, {
 
   const ppLabel = paused === true ? '▶' : paused === false ? '⏸' : '⏯';
   const ppTitle = paused === true ? t('mc.tp.play') : paused === false ? t('mc.tp.pause') : t('mc.tp.play_pause');
-  const ppHtml = `<button type="button" class="mc-tp-btn mc-tp-playpause" data-tp-action="${esc(TRANSPORT_ACTIONS[2])}" title="${esc(ppTitle)}" aria-label="${esc(ppTitle)}"><span class="mc-tp-ico" aria-hidden="true">${ppLabel}</span><span class="mc-tp-text">${esc(ppTitle)}</span></button>`;
+  const ppHtml = `<button type="button" class="mc-tp-btn mc-tp-playpause" data-tp-action="${esc(TRANSPORT_ACTIONS[2])}" data-paused="${paused === true ? '1' : paused === false ? '0' : 'u'}" title="${esc(ppTitle)}" aria-label="${esc(ppTitle)}"><span class="mc-tp-ico" aria-hidden="true">${ppLabel}</span><span class="mc-tp-text">${esc(ppTitle)}</span></button>`;
 
   const allBtns = [...staticHtml.slice(0, 2), ppHtml, ...staticHtml.slice(2)];
   // Direct slide jump when the display has reported a slide deck.
@@ -302,8 +302,22 @@ export function renderTransportBar(container, {
     btn.addEventListener('click', () => {
       const action = btn.dataset.tpAction;
       if (!TRANSPORT_ACTIONS.includes(action) && !isTransportAction(action)) return;
-      const resolvedAction = action === 'play_pause' && paused !== undefined
-        ? (paused ? 'play' : 'pause')
+      // Authoritative paused flag is on the button (refreshed each rewrite).
+      // Never use a stale render-time closure over `paused`.
+      let livePaused = paused;
+      if (btn.dataset.paused === '1') livePaused = true;
+      else if (btn.dataset.paused === '0') livePaused = false;
+      else {
+        try {
+          const ds = typeof window !== 'undefined' && window.__mcDisplayState;
+          const device = ds && typeof ds.get === 'function' ? ds.get(deviceId) : null;
+          if (device && device.now_playing && typeof device.now_playing.paused === 'boolean') {
+            livePaused = device.now_playing.paused;
+          }
+        } catch { /* optional */ }
+      }
+      const resolvedAction = action === 'play_pause' && livePaused !== undefined
+        ? (livePaused ? 'play' : 'pause')
         : action;
       btn.disabled = true;
       dispatchTransport(resolvedAction).finally(() => { btn.disabled = false; });

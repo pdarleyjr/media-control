@@ -2689,3 +2689,17 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
 .mc-live-ladder[data-state="obs-unavailable"] { border-color: #dc2626; background: #fee2e2; }
 .mc-live-ladder[data-state="ready"] { border-color: #2563eb; background: #dbeafe; }
 .mc-dock-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.mc-prepare-prod-dialog { border: none; border-radius: 12px; padding: 0; max-width: 520px; width: calc(100vw - 2rem); background: #0f172a; color: #e2e8f0; box-shadow: 0 24px 64px rgba(0,0,0,.55); }
+.mc-prepare-prod { padding: 1.25rem 1.5rem 1.5rem; display: grid; gap: 1rem; }
+.mc-prepare-prod header h2 { margin: 0 0 .35rem; font-size: 1.25rem; }
+.mc-prepare-sub { margin: 0; color: #94a3b8; font-size: .9rem; }
+.mc-prepare-prod fieldset { border: 1px solid #334155; border-radius: 8px; padding: .75rem 1rem; margin: 0; display: grid; gap: .4rem; }
+.mc-prepare-prod legend { padding: 0 .35rem; color: #cbd5e1; font-weight: 600; }
+.mc-prep-opt { display: flex; gap: .5rem; align-items: center; font-size: .92rem; }
+.mc-prep-opt.is-disabled { opacity: .45; }
+.mc-prep-summary { background: #1e293b; border-radius: 8px; padding: .75rem 1rem; font-size: .85rem; line-height: 1.45; }
+.mc-prep-actions { display: flex; justify-content: flex-end; gap: .75rem; }
+.mc-btn-primary { background: #b91c1c; color: #fff; border: 0; border-radius: 8px; padding: .55rem 1.1rem; font-weight: 600; cursor: pointer; }
+.mc-btn-ghost { background: transparent; color: #cbd5e1; border: 1px solid #475569; border-radius: 8px; padding: .55rem 1.1rem; cursor: pointer; }
+.mc-dock-btn.is-recording, #mc-dock-record-btn.is-recording { background: #7f1d1d; color: #fecaca; }

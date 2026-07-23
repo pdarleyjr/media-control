@@ -371,10 +371,16 @@ export const api = {
     display: () => request('/live-stream/display'),
     status: () => request('/live-stream/status'),
     prepare: () => request('/live-stream/prepare', { method: 'POST' }),
+    productionPlan: (body) => request('/live-stream/production-plan', { method: 'POST', body: JSON.stringify(body || {}) }),
+    getProductionPlan: () => request('/live-stream/production-plan'),
     start: (options = {}) => request('/live-stream/start', { method: 'POST', body: JSON.stringify(options) }),
     stop: () => request('/live-stream/stop', { method: 'POST' }),
     clearContent: () => request('/live-stream/clear-content', { method: 'POST' }),
     refresh: () => request('/live-stream/refresh', { method: 'POST' }),
+    recordingStatus: () => request('/live-stream/recording/status'),
+    recordingPreflight: (body) => request('/live-stream/recording/preflight', { method: 'POST', body: JSON.stringify(body || {}) }),
+    recordingStart: (body) => request('/live-stream/recording/start', { method: 'POST', body: JSON.stringify(body || {}) }),
+    recordingStop: (body) => request('/live-stream/recording/stop', { method: 'POST', body: JSON.stringify(body || {}) }),
   },
 
   // ==================== MBFD Media Control Studio: Presentations ====================

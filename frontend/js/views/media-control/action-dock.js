@@ -10,12 +10,15 @@ import {
   formatLiveFailure,
   LIVE_LADDER,
 } from '../../state/live-stream-ui.js';
+import { openPrepareLiveProductionModal } from './prepare-live-production.js';
 
 let liveActive = false;
 let liveStateKnown = false;
 let livePhase = null;
 let lastLadder = { state: LIVE_LADDER.UNKNOWN, canStart: false, reason: null };
 let startInFlight = false;
+let activeProductionPlan = null;
+let recordingActive = false;
 
 export function isLiveActive() {
   return liveActive;
@@ -39,6 +42,7 @@ export function mountActionDock(hostEl, opts = {}) {
       <button type="button" class="mc-dock-btn mc-dock-default" data-dock="blank-toggle" id="mc-dock-blank-btn">${esc(t('mc.cc.dock.blank_all'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-default" data-dock="share">${esc(t('mc.cc.dock.share'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-prepare" data-dock="prepare-live" aria-pressed="false">${esc(t('mc.cc.dock.prepare_live'))}</button>
+      <button type="button" class="mc-dock-btn mc-dock-default" data-dock="record-toggle" id="mc-dock-record-btn">${esc('Start Recording')}</button>
       <button type="button" class="mc-dock-btn mc-dock-live" data-dock="start-live">${esc(t('mc.cc.dock.start_live'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-default" data-dock="remove-live" hidden>${esc(t('mc.cc.dock.remove_live'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-danger" data-dock="stop-live" hidden>${esc(t('mc.cc.dock.stop_live'))}</button>
@@ -60,6 +64,7 @@ export function mountActionDock(hostEl, opts = {}) {
     </div>`;
 
   const prepareBtn = hostEl.querySelector('[data-dock="prepare-live"]');
+  const recordBtn = hostEl.querySelector('[data-dock="record-toggle"]');
   const startBtn = hostEl.querySelector('[data-dock="start-live"]');
   const removeBtn = hostEl.querySelector('[data-dock="remove-live"]');
   const stopBtn = hostEl.querySelector('[data-dock="stop-live"]');
@@ -127,6 +132,11 @@ export function mountActionDock(hostEl, opts = {}) {
       stopBtn.disabled = livePhase === 'stopping' || startInFlight;
     }
     paintLadder(lastLadder);
+    if (recordBtn) {
+      recordBtn.textContent = recordingActive ? 'Stop Recording' : 'Start Recording';
+      recordBtn.classList.toggle('is-recording', recordingActive);
+      recordBtn.disabled = livePhase === 'starting' || livePhase === 'stopping';
+    }
   }
 
   function repaintCamHealth(director) {
@@ -195,6 +205,10 @@ export function mountActionDock(hostEl, opts = {}) {
       if (status?.program_prepared === true || status?.capabilities?.program_prepared === true) {
         programPrepared = true;
       }
+      if (status?.production_plan) activeProductionPlan = status.production_plan;
+      recordingActive = !!(data && data.recording_active === true)
+        || status?.recording_state === 'active'
+        || status?.recording_active === true;
       lastLadder = deriveLiveLadder(status, { phase: livePhase });
     } catch {
       if (!startInFlight) liveActive = false;
@@ -223,7 +237,12 @@ export function mountActionDock(hostEl, opts = {}) {
     lastLadder = deriveLiveLadder(null, { phase: 'preparing' });
     repaintLive();
     try {
-      await api.liveStream.prepare();
+      const plan = await openPrepareLiveProductionModal();
+      if (!plan) {
+        livePhase = null;
+        return;
+      }
+      activeProductionPlan = plan;
       programPrepared = true;
       livePhase = null;
       showToast(t('mc.cc.live.prepared'), 'success');
@@ -233,6 +252,28 @@ export function mountActionDock(hostEl, opts = {}) {
       showToast(formatLiveFailure(e), 'error');
     } finally {
       prepareBtn.disabled = false;
+      await syncLive();
+    }
+  }
+
+  async function onRecordToggle() {
+    if (!recordBtn || recordBtn.disabled) return;
+    recordBtn.disabled = true;
+    try {
+      if (recordingActive) {
+        await api.liveStream.recordingStop({});
+        recordingActive = false;
+        showToast('Recording stopped', 'success');
+      } else {
+        await api.liveStream.recordingStart({});
+        recordingActive = true;
+        showToast('Recording started', 'success');
+      }
+    } catch (e) {
+      showToast(formatLiveFailure(e) || e?.message || 'Recording failed', 'error');
+    } finally {
+      recordBtn.disabled = false;
+      repaintLive();
       await syncLive();
     }
   }
@@ -247,20 +288,43 @@ export function mountActionDock(hostEl, opts = {}) {
       showToast(lastLadder.reason || 'Start is disabled', 'error');
       return;
     }
+    if (!activeProductionPlan || !activeProductionPlan.production_plan_id) {
+      const plan = await openPrepareLiveProductionModal();
+      if (!plan) return;
+      activeProductionPlan = plan;
+      programPrepared = true;
+    }
+    const plan = activeProductionPlan;
+    const summary = [
+      `Mode: ${plan.production_mode}`,
+      `Director: ${plan.director_mode}`,
+      plan.camera_id ? `Camera: ${plan.camera_id}` : null,
+      `Audio: ${plan.audio_mode}`,
+      `Recording: ${plan.recording_requested ? 'yes' : 'no'}`,
+    ].filter(Boolean).join('\n');
     const ok = await confirmDialog({
       title: t('mc.cc.confirm.start_live_title'),
-      message: t('mc.cc.confirm.start_live'),
+      message: `${t('mc.cc.confirm.start_live')}\n\n${summary}`,
       confirmLabel: t('mc.cc.dock.start_live'),
       tone: 'default',
     });
     if (!ok) return;
     startInFlight = true;
     livePhase = 'starting';
-    // Do not set liveActive optimistically.
     lastLadder = deriveLiveLadder(null, { phase: 'starting' });
     repaintLive();
     try {
-      await api.liveStream.start({ director_mode: 'manual', initiator: 'operator' });
+      await api.liveStream.start({
+        production_plan_id: plan.production_plan_id,
+        production_mode: plan.production_mode,
+        director_mode: plan.director_mode,
+        camera_id: plan.camera_id,
+        scene_name: plan.scene_name,
+        audio_mode: plan.audio_mode,
+        recording_requested: !!plan.recording_requested,
+        confirm_auto_canary: plan.production_mode === 'ai_director' || !!plan.confirm_auto_canary,
+        initiator: 'operator',
+      });
       programPrepared = true;
       showToast(t('mc.cc.live.started'), 'success');
       if (typeof cb.onLiveChanged === 'function') cb.onLiveChanged();
@@ -325,6 +389,7 @@ export function mountActionDock(hostEl, opts = {}) {
         case 'blank-all': if (typeof cb.onBlankAll === 'function') await cb.onBlankAll(); break;
         case 'share': if (typeof cb.onShare === 'function') cb.onShare(); break;
         case 'prepare-live': await onPrepareLive(); break;
+        case 'record-toggle': await onRecordToggle(); break;
         case 'start-live': await onStartLive(); break;
         case 'stop-live': await onStopLive(); break;
         case 'remove-live': await onRemoveLive(); await syncLive(); break;
