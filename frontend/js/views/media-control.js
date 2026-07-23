@@ -451,8 +451,8 @@ function stageSignature() {
 }
 
 // Patch the preview <img>s already on the stage to the latest screenshot URL,
-// without rebuilding the DOM. Setting img.src keeps the current frame visible
-// until the new one decodes (no blank flash), which is the whole point.
+// without rebuilding the DOM. Authenticated fetch → blob URL (never bare API
+// paths that 401 without a cookie, and never JWT-in-URL).
 function refreshPreviewsInPlace() {
   const el = stageEl();
   if (!el) return;
@@ -462,9 +462,33 @@ function refreshPreviewsInPlace() {
     const id = host && host.dataset.deviceId;
     const d = id && byId.get(id);
     const preview = d && previewSource(d);
-    if (!preview || preview.poster) return;
+    // Prefer fresh store URL; fall back to data-mc-shot-api stamped at render.
+    let apiSrc = (preview && !preview.poster && preview.src) || img.dataset.mcShotApi || '';
+    if (preview && preview.poster) {
+      if (img.getAttribute('src') !== preview.src) {
+        img.classList.add('mc-shot-poster');
+        img.setAttribute('src', preview.src);
+      }
+      return;
+    }
+    if (!apiSrc) return;
     img.classList.remove('mc-shot-poster');
-    if (img.getAttribute('src') !== preview.src) img.setAttribute('src', preview.src);
+    if (apiSrc.startsWith('blob:') || apiSrc.startsWith('data:') || apiSrc.startsWith('/api/content/')) {
+      if (img.getAttribute('src') !== apiSrc) img.setAttribute('src', apiSrc);
+      return;
+    }
+    if (img.dataset.mcShotApi === apiSrc && img.getAttribute('src')?.startsWith('blob:')) return;
+    img.dataset.mcShotApi = apiSrc;
+    displayState.secureScreenshotUrl(apiSrc).then((blobUrl) => {
+      if (!blobUrl) return;
+      if (!img.isConnected) return;
+      if (img.dataset.mcShotApi !== apiSrc) return;
+      const prev = img.getAttribute('src');
+      img.setAttribute('src', blobUrl);
+      if (prev && prev.startsWith('blob:') && prev !== blobUrl) {
+        try { URL.revokeObjectURL(prev); } catch { /* ignore */ }
+      }
+    }).catch(() => {});
   });
   el.querySelectorAll('iframe.mc-live-embed[data-mc-presentation="1"]').forEach((frame) => {
     const host = frame.closest('[data-device-id]');

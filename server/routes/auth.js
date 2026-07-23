@@ -92,6 +92,12 @@ router.post('/register', (req, res) => {
   res.status(201).json({ token, user, current_workspace_id: workspaceId });
 });
 
+// Clear browser mechanism(s) at logout. Cookie Max-Age=0 deletes mc_token.
+router.post('/logout', (req, res) => {
+  res.setHeader('Set-Cookie', 'mc_token=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0');
+  res.json({ success: true });
+});
+
 // Login
 router.post('/login', (req, res) => {
   const identifier = loginIdentifier(req.body);

@@ -1539,32 +1539,12 @@ body.sidebar-collapsed { --sidebar-current-width: var(--sidebar-collapsed-width,
   text-overflow: ellipsis;
 }
 
-/* Scrollbar — standard properties for Firefox + webkit-prefixed for Chrome/Safari.
-   The @supports block hides webkit-only selectors from Firefox to avoid
-   "Ruleset ignored due to bad selector" console warnings. */
+/* Scrollbar — standard properties only. WebKit pseudo-elements intentionally
+   omitted: Firefox still parses them inside @supports selector() and logs
+   "Ruleset ignored due to bad selector". Chromium uses scrollbar-width/color. */
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
-}
-
-@supports selector(::-webkit-scrollbar) {
-  ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-  }
-
-  ::-webkit-scrollbar-track {
-    background: transparent;
-  }
-
-  ::-webkit-scrollbar-thumb {
-    background: var(--border);
-    border-radius: 4px;
-  }
-
-  ::-webkit-scrollbar-thumb:hover {
-    background: var(--border-light);
-  }
 }
 
 /* Upload progress */

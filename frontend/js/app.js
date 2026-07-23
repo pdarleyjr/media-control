@@ -944,7 +944,15 @@ function updateSidebarUser() {
     </button>
   `;
 
-  document.getElementById('logoutBtn')?.addEventListener('click', () => {
+  document.getElementById('logoutBtn')?.addEventListener('click', async () => {
+    try {
+      const token = localStorage.getItem('token');
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        credentials: 'same-origin',
+      });
+    } catch { /* best-effort cookie clear */ }
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     window.location.hash = '#/login';

@@ -118,10 +118,19 @@ function wallOrderKey(w) {
 // stage; cards are sized to cols x --mc-tile in CSS.
 const TILE_MIN_PX = 160, TILE_MAX_PX = 520;
 function applyTileSize(container, maxCols) {
-  const w = container.clientWidth || 0;
-  if (w <= 0) return; // not laid out yet; ResizeObserver will fire when it is
-  const tile = Math.max(TILE_MIN_PX, Math.min(TILE_MAX_PX, Math.floor(w / Math.max(1, maxCols))));
-  container.style.setProperty('--mc-tile', tile + 'px');
+  // Defer the first layout measure until after stylesheets/layout settle so we
+  // do not force layout before CSS is ready (and avoid FOUC sizing jumps).
+  const run = () => {
+    const w = container.clientWidth || 0;
+    if (w <= 0) return; // not laid out yet; ResizeObserver will fire when it is
+    const tile = Math.max(TILE_MIN_PX, Math.min(TILE_MAX_PX, Math.floor(w / Math.max(1, maxCols))));
+    container.style.setProperty('--mc-tile', tile + 'px');
+  };
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => requestAnimationFrame(run));
+  } else {
+    setTimeout(run, 0);
+  }
 }
 
 // Pick the preview image for a display / wall screen. Video/web/YouTube captures
@@ -139,6 +148,16 @@ function shouldPreferPoster(obj) {
     return age > STALE_AFTER_S;
   }
   return !!(obj && obj.now_playing && obj.now_playing.poster_url);
+}
+
+function shotImg(cls, apiSrc, alt, extra = '') {
+  // Always load screenshots via authenticated fetch → blob URL (see refreshPreviewsInPlace).
+  // Never put the bare authenticated API path in src — that 401s without Authorization.
+  if (!apiSrc) return '';
+  if (apiSrc.startsWith('blob:') || apiSrc.startsWith('data:') || apiSrc.startsWith('/api/content/')) {
+    return `<img class="${cls}" src="${esc(apiSrc)}" alt="${esc(alt || '')}" loading="lazy"${extra}>`;
+  }
+  return `<img class="${cls}" src="" data-mc-shot-api="${esc(apiSrc)}" alt="${esc(alt || '')}" loading="lazy"${extra}>`;
 }
 
 export function previewSource(obj) {
@@ -175,7 +194,7 @@ function displayCard(display, { livePreview = false } = {}) {
   const preview = live
     ? live
     : (pv
-      ? `<img class="mc-card-shot${staleCls}${pv.poster ? ' mc-shot-poster' : ''}" src="${esc(pv.src)}" alt="${esc(t('mc.card.preview_alt', { name: display.name }))}" loading="lazy">`
+      ? shotImg(`mc-card-shot${staleCls}${pv.poster ? ' mc-shot-poster' : ''}`, pv.src, t('mc.card.preview_alt', { name: display.name }))
       : `<div class="mc-card-shot mc-card-shot-empty">${esc(t('mc.card.no_preview'))}</div>`);
   // A poster is always current (it IS what's playing), so show a neutral caption
   // rather than a misleading "Updated Ns ago" about a screenshot we aren't using.
@@ -258,7 +277,7 @@ function wallCell(member, screenNo, { showPreview = true, livePreview = false } 
     : (live
       ? live
       : (pv
-        ? `<img class="mc-wall-cell-shot${staleCls}${pv.poster ? ' mc-shot-poster' : ''}" src="${esc(pv.src)}" alt="" loading="lazy">`
+        ? shotImg(`mc-wall-cell-shot${staleCls}${pv.poster ? ' mc-shot-poster' : ''}`, pv.src, '')
         : `<span class="mc-wall-cell-empty">${esc(t('mc.card.no_preview'))}</span>`));
   const np = member.now_playing && member.now_playing.label ? member.now_playing.label : '';
   // The visible cell label is the screen position; the device name + now-playing
@@ -299,7 +318,7 @@ function wallSpanPreview(leader, livePreview = false) {
     ? `<div class="mc-wall-span-np-label">${esc(leader.now_playing.label)}</div>`
     : '';
   return `<div class="mc-wall-span-layer" data-device-id="${esc(leader.id)}">
-    <img class="mc-wall-span-shot${staleCls}${pv.poster ? ' mc-shot-poster' : ''}" src="${esc(pv.src)}" alt="${esc(t('mc.card.preview_alt', { name: leader.name }))}" loading="lazy">
+    ${shotImg(`mc-wall-span-shot${staleCls}${pv.poster ? ' mc-shot-poster' : ''}`, pv.src, t('mc.card.preview_alt', { name: leader.name }))}
     ${npLabel}
   </div>`;
 }

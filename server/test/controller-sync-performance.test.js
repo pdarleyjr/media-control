@@ -58,7 +58,7 @@ test('span wall transport controls fan out to every wall member', () => {
   assert.match(transport, /sendTransportCommand/);
   assert.match(transport, /for \(const id of transportIds\)/);
   assert.match(stage, /layoutMode === 'span'/);
-  assert.match(transport, /action === 'play_pause' && paused !== undefined/);
+  assert.match(transport, /action === 'play_pause' && (paused|authoritativePaused) !== undefined/);
   assert.match(main, /action === 'play_pause' && paused !== undefined/);
   assert.match(main, /paused \? 'play' : 'pause'/);
 });

@@ -326,7 +326,7 @@ export function renderCommandBar(container, {
 
   const syncLiveControls = async () => {
     try {
-      const status = await api.liveStream.status();
+      const status = await api.liveStream.operatorState();
       const active = status?.ai_director?.data?.stream_active === true;
       if (livePrepareBtn) livePrepareBtn.hidden = active;
       if (liveStartBtn) liveStartBtn.hidden = active;

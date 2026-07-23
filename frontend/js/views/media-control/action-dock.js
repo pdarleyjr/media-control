@@ -188,7 +188,7 @@ export function mountActionDock(hostEl, opts = {}) {
     let director = null;
     let status = null;
     try {
-      status = await api.liveStream.status();
+      status = await api.liveStream.operatorState();
       director = status && status.ai_director;
       const data = director && director.data;
       const onAir = !!(data && data.stream_active === true)

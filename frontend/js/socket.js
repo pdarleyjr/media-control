@@ -219,7 +219,9 @@ function emit(event, data) {
 }
 
 export function requestScreenshot(deviceId) {
-  console.log('requestScreenshot:', deviceId, 'socket connected:', dashboardSocket?.connected);
+  if (typeof localStorage !== 'undefined' && localStorage.getItem('mc_diag') === '1') {
+    console.log('requestScreenshot:', deviceId, 'socket connected:', dashboardSocket?.connected);
+  }
   if (dashboardSocket) dashboardSocket.emit('dashboard:request-screenshot', { device_id: deviceId });
 }
 

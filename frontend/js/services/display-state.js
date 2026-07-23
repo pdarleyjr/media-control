@@ -26,28 +26,100 @@ function notify() {
 // NOT via ?token= in the URL which exposes the JWT in browser history, access
 // logs, and Referer headers. We fetch the blob and create a blob: URL that the
 // <img> can use safely.
-const blobUrlCache = new Map();
+const blobUrlCache = new Map(); // apiPathKey -> { url, controllers, inFlight }
+const blobDebug = { loads: 0, revokes: 0, inflight: 0, fails: 0 };
 
-export async function secureScreenshotUrl(baseUrl) {
+function apiPathKey(baseUrl) {
+  if (!baseUrl) return '';
+  try {
+    const u = new URL(baseUrl, typeof location !== 'undefined' ? location.origin : 'http://local');
+    // Collapse cache-busters so the same screenshot path reuses one blob slot.
+    u.searchParams.delete('t');
+    u.searchParams.delete('wb');
+    u.searchParams.delete('token');
+    return u.pathname + (u.searchParams.toString() ? `?${u.searchParams}` : '');
+  } catch {
+    return String(baseUrl).replace(/[?&](t|wb|token)=[^&]*/g, '').replace(/[?&]$/, '');
+  }
+}
+
+export function getScreenshotBlobMetrics() {
+  return {
+    cachedObjectUrls: blobUrlCache.size,
+    loads: blobDebug.loads,
+    revokes: blobDebug.revokes,
+    inflight: blobDebug.inflight,
+    fails: blobDebug.fails,
+  };
+}
+
+export function revokeAllScreenshotObjectUrls() {
+  for (const entry of blobUrlCache.values()) {
+    if (entry.controller) {
+      try { entry.controller.abort(); } catch { /* ignore */ }
+    }
+    if (entry.url) {
+      try { URL.revokeObjectURL(entry.url); blobDebug.revokes += 1; } catch { /* ignore */ }
+    }
+  }
+  blobUrlCache.clear();
+}
+
+export async function secureScreenshotUrl(baseUrl, { signal } = {}) {
   if (!baseUrl) return null;
   if (baseUrl.startsWith('blob:') || baseUrl.startsWith('data:')) return baseUrl;
-  if (blobUrlCache.has(baseUrl)) return blobUrlCache.get(baseUrl);
-  const token = localStorage.getItem('token');
-  try {
-    const res = await fetch(baseUrl, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-      credentials: 'same-origin',
-    });
-    if (!res.ok) return null;
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const prev = blobUrlCache.get(baseUrl);
-    if (prev) URL.revokeObjectURL(prev);
-    blobUrlCache.set(baseUrl, url);
-    return url;
-  } catch {
-    return null;
+  const key = apiPathKey(baseUrl);
+  const cached = blobUrlCache.get(key);
+  if (cached && cached.url && !cached.inFlight) return cached.url;
+  if (cached && cached.inFlight) {
+    try { return await cached.inFlight; } catch { return cached.url || null; }
   }
+
+  const token = typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null;
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  if (signal && controller) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+  const entry = { url: cached?.url || null, controller, inFlight: null };
+  blobUrlCache.set(key, entry);
+  blobDebug.inflight += 1;
+
+  entry.inFlight = (async () => {
+    try {
+      const res = await fetch(baseUrl, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        credentials: 'same-origin',
+        signal: controller ? controller.signal : signal,
+      });
+      if (!res.ok) {
+        blobDebug.fails += 1;
+        if (res.status === 401 && typeof localStorage !== 'undefined') {
+          // Force next attempt after the session is refreshed.
+          return null;
+        }
+        return entry.url;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      if (entry.url && entry.url !== url) {
+        try { URL.revokeObjectURL(entry.url); blobDebug.revokes += 1; } catch { /* ignore */ }
+      }
+      entry.url = url;
+      blobDebug.loads += 1;
+      return url;
+    } catch (err) {
+      if (err && err.name === 'AbortError') return entry.url;
+      blobDebug.fails += 1;
+      return entry.url;
+    } finally {
+      entry.inFlight = null;
+      entry.controller = null;
+      blobDebug.inflight = Math.max(0, blobDebug.inflight - 1);
+    }
+  })();
+
+  return entry.inFlight;
 }
 
 // Keep withToken for backward-compat but it no longer puts JWT in URL.

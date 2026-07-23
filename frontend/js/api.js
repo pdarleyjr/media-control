@@ -368,6 +368,8 @@ export const api = {
   liveStream: {
     display: () => request('/live-stream/display'),
     status: () => request('/live-stream/status'),
+    // Fast operator poll (<500ms target). Uses director/state + cached deep probes.
+    operatorState: () => request('/live-stream/operator-state'),
     prepare: () => request('/live-stream/prepare', { method: 'POST' }),
     productionPlan: (body) => request('/live-stream/production-plan', { method: 'POST', body: JSON.stringify(body || {}) }),
     getProductionPlan: () => request('/live-stream/production-plan'),
