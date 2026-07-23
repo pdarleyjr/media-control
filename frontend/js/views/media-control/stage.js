@@ -380,7 +380,7 @@ function wallCard(wall, byId, livePreviewDeviceId = null) {
         ${spanLayer}
         ${cells.join('')}
       </div>
-      ${transportId ? `<div class="mc-wall-transport" data-tp-host data-device-id="${esc(transportId)}" data-transport-ids="${esc(ids)}" data-blank-ids="${esc(ids)}"></div>` : ''}
+      ${transportId ? `<div class="mc-wall-transport" data-tp-host data-device-id="${esc(transportId)}" data-transport-ids="${esc(ids)}" data-blank-ids="${esc(ids)}" data-wall-id="${esc(wall.id)}" data-layout-mode="${esc(mode)}"></div>` : ''}
       <div class="mc-wall-all" data-wall-ids="${esc(ids)}">
         <span class="mc-wall-all-ico" aria-hidden="true">${ICON_WALL_ALL}</span>
         <span>${esc(fillLabel)}</span>
@@ -496,7 +496,7 @@ function wallSplitGroup(wall, byId, livePreviewDeviceId = null) {
       <div class="mc-wall-grid" style="grid-template-columns:repeat(${cols}, 1fr)">
         ${halves.join('')}
       </div>
-      ${transportId ? `<div class="mc-wall-transport" data-tp-host data-device-id="${esc(transportId)}" data-transport-ids="${esc(ids)}" data-blank-ids="${esc(ids)}"></div>` : ''}
+      ${transportId ? `<div class="mc-wall-transport" data-tp-host data-device-id="${esc(transportId)}" data-transport-ids="${esc(ids)}" data-blank-ids="${esc(ids)}" data-wall-id="${esc(wall.id)}" data-layout-mode="${esc(mode)}"></div>` : ''}
     </section>`;
   }
 
@@ -666,32 +666,42 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
 
   // Mount transport bars into each card's [data-tp-host] container. Standalone
   // display cards resolve from displayMap; wall card state uses the leader, then
-  // fans transport to every member listed in data-transport-ids.
+  // fans transport to every member listed in data-transport-ids — but only for
+  // span lockstep modes. Split walls render per-member cards with single ids.
   container.querySelectorAll('[data-tp-host]').forEach(host => {
     const deviceId = host.dataset.deviceId;
     const display  = displayMap.get(deviceId) || byId.get(deviceId);
     if (!deviceId || !display) return;
-    // A wall transport host carries data-transport-ids/data-blank-ids="id1,id2,…".
-    // Transport fans out to every span-wall member so doc/deck slides stay in
-    // lockstep across independent player windows. Blank also darkens every wall
-    // screen because screen on/off is a per-physical-device command.
-    const transportIds = String(host.dataset.transportIds || '').split(',').filter(Boolean);
+    const wallCard = host.closest('[data-layout-mode]');
+    const layoutMode = wallCard?.dataset?.layoutMode || host.dataset.layoutMode || '';
+    // Span walls may list every member so doc/deck slides stay in lockstep.
+    // Split / single / zone-targeted hosts must NEVER fan-out.
+    const rawTransportIds = String(host.dataset.transportIds || '').split(',').filter(Boolean);
     const blankIds = String(host.dataset.blankIds || '').split(',').filter(Boolean);
-    // Pass the current paused state (from now_playing.paused, kept live by
-    // dashboard:playback-state events) so the Play/Pause button shows the
-    // correct label. undefined = no state report yet → shows "Play / Pause".
+    const zoneId = host.dataset.zoneId || host.dataset.cellId || '';
+    const cellId = host.dataset.cellId || '';
+    const wallId = host.dataset.wallId || wallCard?.dataset?.wallId || '';
+    const transportIds = (layoutMode === 'span' && !zoneId && rawTransportIds.length)
+      ? rawTransportIds
+      : [deviceId];
     const paused = display.now_playing ? display.now_playing.paused : undefined;
     renderTransportBar(host, {
       deviceId,
-      transportDeviceIds: transportIds.length ? transportIds : undefined,
+      transportDeviceIds: transportIds,
       blankDeviceIds: blankIds.length ? blankIds : undefined,
       screenOn: display.screen_on !== false,
       paused,
+      target: display,
+      zoneId: zoneId || undefined,
+      cellId: cellId || undefined,
+      wallId: wallId || undefined,
+      contentInstanceId: display.now_playing?.content_id || display.now_playing?.contentId || undefined,
+      requireSingleTarget: layoutMode === 'split' || !!zoneId,
       onScreenOnChange: (newValue) => {
         if (typeof onScreenOnChange === 'function') onScreenOnChange(deviceId, newValue);
       },
       onTransportAction: (ids, action) => {
-        if (typeof onTransportAction === 'function') onTransportAction(transportIds.length ? transportIds : [deviceId], action);
+        if (typeof onTransportAction === 'function') onTransportAction(ids && ids.length ? ids : [deviceId], action);
       },
     });
   });

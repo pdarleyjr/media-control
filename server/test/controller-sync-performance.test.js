@@ -49,7 +49,10 @@ test('span wall transport controls fan out to every wall member', () => {
   assert.match(main, /ids\.forEach\(id => sendCommand\(id, COMMAND_TYPES\.TRANSPORT/);
   assert.match(stage, /data-transport-ids="\$\{esc\(ids\)\}"/);
   assert.match(transport, /transportDeviceIds/);
-  assert.match(transport, /transportIds\.forEach\(id => sendCommand\(id, COMMAND_TYPES\.TRANSPORT/);
+  // Transport now serializes per-id through sendTransportCommand (delivery + player ack).
+  assert.match(transport, /sendTransportCommand/);
+  assert.match(transport, /for \(const id of transportIds\)/);
+  assert.match(stage, /layoutMode === 'span'/);
   assert.match(transport, /action === 'play_pause' && paused !== undefined/);
   assert.match(main, /action === 'play_pause' && paused !== undefined/);
   assert.match(main, /paused \? 'play' : 'pause'/);
@@ -70,9 +73,10 @@ test('transport actions refresh state and force previews so dashboard mirrors sl
   assert.match(main, /onTransportAction: \(ids\) => refreshAfterSend\(ids\)/);
   assert.match(main, /refreshAfterSend\(ids\)/);
   assert.match(stage, /onTransportAction/);
-  assert.match(stage, /onTransportAction\(transportIds\.length \? transportIds : \[deviceId\], action\)/);
+  assert.match(stage, /onTransportAction\(ids && ids\.length \? ids : \[deviceId\], action\)/);
   assert.match(transport, /onTransportAction/);
-  assert.match(transport, /if \(typeof onTransportAction === 'function'\) onTransportAction\(transportIds, resolvedAction\)/);
+  assert.match(transport, /if \(typeof onTransportAction === 'function'\) onTransportAction\(transportIds, resolvedAction/);
+  assert.match(transport, /COMMAND_LIFECYCLE/);
 });
 
 test('presentation previews follow the authoritative physical slide state', () => {
