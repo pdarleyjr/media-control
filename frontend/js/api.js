@@ -62,9 +62,7 @@ async function requestBroadcast(payload, endpoint = '/broadcast') {
 }
 
 async function requestStatus(url) {
-  const token = localStorage.getItem('token');
-  const sep = url.includes('?') ? '&' : '?';
-  const res = await fetch(API_BASE + url + (token ? `${sep}token=${encodeURIComponent(token)}` : ''), {
+  const res = await fetch(API_BASE + url, {
     headers: { Accept: 'application/json', ...getAuthHeaders() },
     credentials: 'same-origin',
   });

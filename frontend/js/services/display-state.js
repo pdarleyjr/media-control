@@ -22,15 +22,40 @@ function notify() {
   else setTimeout(run, 0);
 }
 
-// The screenshot endpoint accepts the JWT via Authorization header OR ?token=.
-// Browser <img src> sends neither header, so it needs ?token= in the URL
-// (same convention as dashboard.js). We append it HERE, centrally, so every
-// consumer (stage, inspector) can use display.screenshot_url verbatim and the
-// SERVER never has to bake the token into its response.
+// Screenshots must be loaded via authenticated fetch (Authorization header),
+// NOT via ?token= in the URL which exposes the JWT in browser history, access
+// logs, and Referer headers. We fetch the blob and create a blob: URL that the
+// <img> can use safely.
+const blobUrlCache = new Map();
+
+export async function secureScreenshotUrl(baseUrl) {
+  if (!baseUrl) return null;
+  if (baseUrl.startsWith('blob:') || baseUrl.startsWith('data:')) return baseUrl;
+  if (blobUrlCache.has(baseUrl)) return blobUrlCache.get(baseUrl);
+  const token = localStorage.getItem('token');
+  try {
+    const res = await fetch(baseUrl, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      credentials: 'same-origin',
+    });
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const prev = blobUrlCache.get(baseUrl);
+    if (prev) URL.revokeObjectURL(prev);
+    blobUrlCache.set(baseUrl, url);
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+// Keep withToken for backward-compat but it no longer puts JWT in URL.
+// Instead it strips any existing token param and relies on the secure fetch.
 function withToken(url) {
   if (!url) return url;
-  const tok = localStorage.getItem('token') || '';
-  return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(tok);
+  // Strip any existing token= param — never expose JWT in URL.
+  return url.replace(/[?&]token=[^&]*/g, '').replace(/[?&]$/, '');
 }
 
 export async function refresh() {

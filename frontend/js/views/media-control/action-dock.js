@@ -19,6 +19,7 @@ let lastLadder = { state: LIVE_LADDER.UNKNOWN, canStart: false, reason: null };
 let startInFlight = false;
 let activeProductionPlan = null;
 let recordingActive = false;
+let recordingSessionId = null;
 
 export function isLiveActive() {
   return liveActive;
@@ -261,12 +262,14 @@ export function mountActionDock(hostEl, opts = {}) {
     recordBtn.disabled = true;
     try {
       if (recordingActive) {
-        await api.liveStream.recordingStop({});
+        await api.liveStream.recordingStop({ session_id: recordingSessionId });
         recordingActive = false;
+        recordingSessionId = null;
         showToast('Recording stopped', 'success');
       } else {
-        await api.liveStream.recordingStart({});
+        const res = await api.liveStream.recordingStart({});
         recordingActive = true;
+        recordingSessionId = res?.session_id || null;
         showToast('Recording started', 'success');
       }
     } catch (e) {

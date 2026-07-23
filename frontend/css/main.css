@@ -1539,23 +1539,32 @@ body.sidebar-collapsed { --sidebar-current-width: var(--sidebar-collapsed-width,
   text-overflow: ellipsis;
 }
 
-/* Scrollbar */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+/* Scrollbar — standard properties for Firefox + webkit-prefixed for Chrome/Safari.
+   The @supports block hides webkit-only selectors from Firefox to avoid
+   "Ruleset ignored due to bad selector" console warnings. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }
 
-::-webkit-scrollbar-track {
-  background: transparent;
-}
+@supports selector(::-webkit-scrollbar) {
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
 
-::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 4px;
-}
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
 
-::-webkit-scrollbar-thumb:hover {
-  background: var(--border-light);
+  ::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--border-light);
+  }
 }
 
 /* Upload progress */

@@ -99,9 +99,8 @@ function renderProgressFor(deviceId) {
 }
 
 function renderDeviceCard(device) {
-  const token = localStorage.getItem('token');
   const screenshotUrl = device.screenshot_path
-    ? `/api/devices/${device.id}/screenshot?t=${device.screenshot_at || ''}&token=${token}`
+    ? `/api/devices/${device.id}/screenshot?t=${device.screenshot_at || ''}`
     : null;
 
   const checked = selectedDeviceIds.has(device.id);
@@ -428,7 +427,9 @@ export function render(container) {
 
   screenshotHandler = (data) => {
     document.querySelectorAll(`#preview-${data.device_id}`).forEach(preview => {
-      const imgSrc = data.image_data || (data.url + '&token=' + localStorage.getItem('token'));
+      // Use image_data (base64) if available, otherwise the raw URL without
+      // the JWT — the server sends image_data via socket for this reason.
+      const imgSrc = data.image_data || data.url;
       const img = preview.querySelector('img');
       if (img) {
         img.src = imgSrc;
