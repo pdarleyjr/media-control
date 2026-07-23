@@ -238,6 +238,14 @@ module.exports = {
     videoWallStudio: process.env.ENABLE_VIDEO_WALL_STUDIO !== 'false',
     broadcastCenter: process.env.ENABLE_BROADCAST_CENTER !== 'false',
     enterpriseOperatorUi: buildEnterpriseOperatorUiFlag(process.env),
+    // Classroom Mode (task §7): a runtime flag that disables livestream, AI
+    // Director, autoswitch, PTZ, and deep camera analysis while preserving
+    // five-display control, PowerPoint, images, documents, video, audio, and
+    // wall targeting. Toggled by env CLASSROOM_MODE_ENABLED=true. The frontend
+    // reads it via GET /api/features and hides the affected nav + shows a banner
+    // without requiring a browser refresh; restrictions are ALSO enforced by
+    // stopping the backing services server-side.
+    classroomMode: ['true', '1'].includes(String(process.env.CLASSROOM_MODE_ENABLED || '').toLowerCase()),
   },
   // Live stream orchestration. Media Control only talks to the local AI Director
   // API; OBS websocket remains local-only behind that service.

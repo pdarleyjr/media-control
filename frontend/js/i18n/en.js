@@ -93,6 +93,8 @@ export default {
   'common.days_ago': '{n}d ago',
   'common.unknown': 'Unknown',
   'app.update_available': 'Dashboard updated.',
+  'app.update_success': 'Media Control updated successfully.',
+  'app.classroom_mode_banner': 'CLASSROOM MODE — STREAMING AND AI FUNCTIONS TEMPORARILY DISABLED',
   'app.reload_now': 'Reload now',
   'app.session_expires': 'Session expires in {minutes} minutes.',
   'app.relogin': 'Re-login',
