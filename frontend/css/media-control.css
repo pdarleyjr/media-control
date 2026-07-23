@@ -514,6 +514,37 @@
 }
 .mc-scene-tile { width: 120px; }
 
+/* Media tab toolbar: folder chips + type/search/sort + download affordance */
+.mc-tb-media-toolbar { display: flex; flex-direction: column; gap: var(--mc-space-sm, 8px); margin-bottom: var(--mc-space-sm, 8px); }
+.mc-tb-media-controls { display: flex; flex-wrap: wrap; gap: var(--mc-space-sm, 8px); align-items: center; }
+.mc-tb-search, .mc-tb-type, .mc-tb-sort {
+  font-size: var(--mc-font-size-sm, 13px); padding: 5px 8px;
+  background: var(--mc-surface); border: 1px solid var(--mc-border-light, #E8E5E0);
+  border-radius: var(--mc-radius-sm, 8px); color: var(--mc-text-primary); min-width: 0;
+}
+.mc-tb-search { flex: 1 1 140px; }
+.mc-tb-type, .mc-tb-sort { flex: 0 0 auto; }
+.mc-tb-media-status { display: flex; align-items: center; gap: 6px; font-size: var(--mc-font-size-xs, 11px); color: var(--mc-text-secondary); min-height: 18px; margin-bottom: 4px; }
+.mc-tb-error-text { color: var(--mc-danger, #dc2626); }
+.mc-tb-loadmore-wrap { display: flex; justify-content: center; padding: var(--mc-space-sm, 8px) 0; }
+.mc-tb-loadmore { font-size: var(--mc-font-size-sm, 13px); padding: 6px 18px; }
+.mc-tb-end { font-size: var(--mc-font-size-xs, 11px); color: var(--mc-text-tertiary); }
+/* Tile cell wraps a send button + a download button (siblings, never nested) */
+.mc-tile-cell { position: relative; width: 104px; flex-shrink: 0; }
+.mc-tile-cell .mc-tile { width: 100%; }
+.mc-tile-dl {
+  position: absolute; top: 4px; right: 4px; z-index: 2;
+  width: 26px; height: 26px; min-width: 26px; padding: 0;
+  display: grid; place-items: center; font-size: 13px; line-height: 1;
+  border: 0; border-radius: 8px; cursor: pointer;
+  background: rgba(15, 23, 42, 0.72); color: #fff;
+  opacity: 0; transition: opacity .15s;
+}
+.mc-tile-cell:hover .mc-tile-dl, .mc-tile-dl:focus-visible { opacity: 1; }
+.mc-tile-dl:hover { background: var(--accent, #2563EB); }
+.mc-tile-dl:focus-visible { outline: 3px solid var(--accent, #2563EB); outline-offset: 1px; }
+
+
 /* ---- Camera Feeds tab: collapsible folders of live-camera source tiles ---- */
 .mc-cf-hint {
   margin: 0 0 var(--mc-space-sm, 8px); font-size: var(--mc-font-size-sm, 13px);

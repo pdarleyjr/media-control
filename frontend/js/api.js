@@ -130,6 +130,8 @@ export const api = {
     if (filters.search) query.set('search', filters.search);
     if (filters.mine) query.set('owner', 'me');
     if (filters.archived) query.set('archived', filters.archived);
+    if (filters.limit) query.set('limit', String(filters.limit));
+    if (filters.offset) query.set('offset', String(filters.offset));
     const suffix = query.toString();
     return request(`/content${suffix ? `?${suffix}` : ''}`);
   },
@@ -140,6 +142,35 @@ export const api = {
     method: 'PUT',
     body: JSON.stringify({ folder_id: folderId })
   }),
+  // Authenticated content download. Fetches the file as a Blob with the bearer
+  // token in the Authorization header (NEVER in the URL) and resolves with the
+  // blob + a sanitized filename parsed from Content-Disposition. The caller
+  // triggers the save-to-disk via a temporary object URL.
+  downloadContent: async (id) => {
+    const res = await fetch(API_BASE + `/content/${id}/download`, {
+      headers: getAuthHeaders(),
+    });
+    if (res.status === 401) {
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      window.location.hash = '#/login';
+      window.location.reload();
+      throw new Error('Session expired');
+    }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      const error = new Error(err.error || 'Download failed');
+      error.status = res.status;
+      error.code = err.code;
+      throw error;
+    }
+    const blob = await res.blob();
+    let filename = '';
+    const cd = res.headers.get('content-disposition') || '';
+    const m = cd.match(/filename\*?=(?:UTF-8'')?["']?([^"';]+)/i);
+    if (m) filename = decodeURIComponent(m[1]);
+    return { blob, filename };
+  },
   requestContentPublication: (id) => request(`/content/${id}/publication-request`, { method: 'POST' }),
   duplicateContent: (id) => request(`/content/${id}/duplicate`, { method: 'POST' }),
   archiveContent: (id, archived = true, confirmRevoke = false) => request(`/content/${id}/archive`, {

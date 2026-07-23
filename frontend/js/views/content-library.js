@@ -51,6 +51,7 @@ function governedActions(content) {
   const permissions = content.permissions || {};
   const pending = content.visibility?.publication_request_status === 'pending';
   return `
+    ${content.filepath ? `<button class="btn btn-secondary btn-sm" data-download-content="${content.id}" data-download-name="${esc(content.original_filename || content.filename || '')}">${t('content.btn_download')}</button>` : ''}
     ${permissions?.can_edit ? `<button class="btn btn-secondary btn-sm" data-edit-content="${content.id}">${t('content.btn_edit')}</button>` : ''}
     ${permissions?.can_request_organization && !pending ? `<button class="btn btn-secondary btn-sm" data-request-publication="${content.id}">${t('content.btn_request_org')}</button>` : ''}
     ${pending ? `<span class="content-request-status">${t('content.request_pending')}</span>` : ''}
@@ -248,6 +249,14 @@ const state = {
   currentFolderId: null, // null = root
   folders: [],           // all folders for this user (flat tree)
   filters: { search: '', visibility: '', type: '', mine: false, archived: false },
+  // Real pagination (task §10): a single 500-item request silently hid items
+  // beyond the first page. Load in pages and accumulate so every authorized
+  // item is reachable. Reset on filter/folder/search change (handled by the
+  // append=false reset at the top of loadContent).
+  contentOffset: 0,
+  contentItems: [],
+  contentHasMore: true,
+  contentLoading: false,
 };
 
 async function handleFiles(files) {
@@ -280,11 +289,16 @@ async function handleFiles(files) {
   loadContent();
 }
 
-async function loadContent() {
+const CONTENT_PAGE_SIZE = 60;
+async function loadContent({ append = false } = {}) {
+  if (state.contentLoading) return;
+  state.contentLoading = true;
   const grid = document.getElementById('contentGrid');
   const folderGrid = document.getElementById('folderGrid');
   const breadcrumb = document.getElementById('folderBreadcrumb');
-  if (!grid || !folderGrid || !breadcrumb) return;
+  if (!grid || !folderGrid || !breadcrumb) { state.contentLoading = false; return; }
+  // Reset the accumulated list on any fresh view (filter/folder/search/initial).
+  if (!append) { state.contentOffset = 0; state.contentItems = []; state.contentHasMore = true; }
 
   try {
     const [content, folders] = await Promise.all([
@@ -297,10 +311,20 @@ async function loadContent() {
         search: state.filters.search,
         mine: state.filters.mine,
         archived: state.filters.archived ? 'include' : '',
+        // Real pagination (task §10): fetch one page at a time; the accumulated
+        // state.contentItems holds every authorized item loaded so far.
+        limit: CONTENT_PAGE_SIZE,
+        offset: state.contentOffset,
       }),
       api.getFolders(),
     ]);
     state.folders = folders;
+
+    // Accumulate the page into the full list (task §10). Dedupe by id in case the
+    // server returns overlapping rows across pages.
+    const seen = new Set(state.contentItems.map((c) => c.id));
+    for (const c of content) if (c && !seen.has(c.id)) { state.contentItems.push(c); seen.add(c.id); }
+    state.contentHasMore = content.length >= CONTENT_PAGE_SIZE;
 
     // Breadcrumb path: walk parent_id chain from current folder up to root.
     const folderById = new Map(folders.map(f => [f.id, f]));
@@ -414,7 +438,7 @@ async function loadContent() {
       });
     });
 
-    if (!content.length) {
+    if (!state.contentItems.length) {
       grid.innerHTML = subfolders.length ? '' : `
         <div class="empty-state" style="grid-column:1/-1">
           <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -428,7 +452,7 @@ async function loadContent() {
       return;
     }
 
-    grid.innerHTML = content.map(c => `
+    grid.innerHTML = state.contentItems.map(c => `
       <div class="content-item ${c.visibility?.archived_at ? 'is-archived' : ''}" draggable="${c.permissions?.can_edit ? 'true' : 'false'}" data-content-id="${c.id}" data-folder="${c.folder || ''}">
         <div class="content-item-preview">
           ${c.mime_type === 'video/youtube'
@@ -508,6 +532,27 @@ async function loadContent() {
           const c = content.find(x => x.id === id);
           if (c) showPreview(c);
         }
+        return;
+      }
+
+      // Download button — authenticated blob save (never broadcasts/plays/selects)
+      const dlBtn = e.target.closest('[data-download-content]');
+      if (dlBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const id = dlBtn.dataset.downloadContent;
+        const name = dlBtn.dataset.downloadName || '';
+        dlBtn.disabled = true;
+        try {
+          const { blob, filename } = await api.downloadContent(id);
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = filename || name || 'download';
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 10000);
+        } catch (err) {
+          showToast(err?.message || t('content.toast.download_failed'), 'error');
+        } finally { dlBtn.disabled = false; }
         return;
       }
 
@@ -613,9 +658,29 @@ async function loadContent() {
         }
       }, 3000);
     };
+    // 316b8e8c9c3c Real pagination (task §10): a Load More affordance after the
+    // grid. Fetching the next page does NOT reset the accumulated list.
+    const existingMore = grid.querySelector('#contentLoadMore');
+    if (existingMore) existingMore.remove();
+    if (state.contentHasMore) {
+      const moreBtn = document.createElement('button');
+      moreBtn.id = 'contentLoadMore';
+      moreBtn.className = 'btn btn-secondary';
+      moreBtn.style.gridColumn = '1/-1';
+      moreBtn.style.marginTop = '12px';
+      moreBtn.textContent = t('content.load_more') || 'Load more';
+      moreBtn.addEventListener('click', () => {
+        moreBtn.disabled = true;
+        state.contentOffset += CONTENT_PAGE_SIZE;
+        loadContent({ append: true }).finally(() => { if (moreBtn.isConnected) moreBtn.disabled = false; });
+      });
+      grid.appendChild(moreBtn);
+    }
 
   } catch (err) {
     grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1"><h3>${t('content.failed_to_load')}</h3><p>${esc(err.message)}</p></div>`;
+  } finally {
+    state.contentLoading = false;
   }
 }
 

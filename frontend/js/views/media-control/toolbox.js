@@ -72,59 +72,191 @@ function mediaTileThumb(item) {
 
 // ---- tab content renderers ----
 
-async function renderMediaTab(container, { selectedIds, onAfterSend, onRouteSource }) {
-  container.innerHTML = loadingState(t('mc.tb.loading_media'));
-  let items = [];
+// Secure content download (task §13). Fetches the file as an authenticated
+// Blob (token in the Authorization header, NEVER in the URL) and triggers a
+// save-to-disk via a temporary object URL. Never broadcasts, never changes
+// playback, never selects a display target.
+async function downloadContentItem(id, name) {
   try {
-    const result = await api.getContent();
-    // api.getContent returns an object with a 'content' array or an array directly
-    items = Array.isArray(result) ? result : (result && Array.isArray(result.content) ? result.content : []);
+    const { blob, filename } = await api.downloadContent(id);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || name || 'download';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    showToast(t('mc.media.download_started'), 'success');
   } catch (e) {
-    container.innerHTML = errorState(t('mc.media.error', { error: e?.message || '' }));
-    return;
+    const msg = e?.status === 403 ? t('mc.media.download_forbidden')
+      : e?.status === 404 ? t('mc.media.download_missing')
+      : (e?.message || t('mc.media.download_failed'));
+    showToast(msg, 'error');
   }
-  if (items.length === 0) {
-    container.innerHTML = emptyState(t('mc.media.empty'));
-    return;
-  }
-  // Folder "directory" view: chips built from each item's own folder field. The
-  // operator can browse into a folder (e.g. Wallpaper) or see All. Filtering is
-  // client-side over the already-fetched list (no extra request).
-  const folders = [...new Set(items.map(i => i.folder).filter(Boolean))].sort((a, b) => a.localeCompare(b));
-  const chipBar = folders.length
-    ? `<div class="mc-tb-folders" role="group" aria-label="${esc(t('mc.media.folders'))}">
-         <button type="button" class="mc-tb-folder is-active" data-folder="">${esc(t('mc.media.all'))}</button>
-         ${folders.map(f => `<button type="button" class="mc-tb-folder" data-folder="${esc(f)}">${esc(f)}</button>`).join('')}
-       </div>`
-    : '';
-  container.innerHTML = chipBar + `<div class="mc-tile-grid" id="mc-media-grid"></div>`;
-  const grid = container.querySelector('#mc-media-grid');
+}
 
-  const paint = (folderFilter) => {
-    const shown = folderFilter ? items.filter(i => i.folder === folderFilter) : items;
-    grid.innerHTML = shown.slice(0, 48).map(item => {
-      const src = JSON.stringify({ content_id: item.id });
-      const name = item.filename || item.name || t('mc.tile.content_fallback');
-      const thumb = mediaTileThumb(item);
-      return `<button type="button" class="mc-tile" draggable="true"
+const MEDIA_TYPES = [
+  { id: '',            key: 'mc.media.all' },
+  { id: 'video',       key: 'mc.media.videos' },
+  { id: 'image',       key: 'mc.media.images' },
+  { id: 'application', key: 'mc.media.documents' },
+];
+const MEDIA_SORTS = [
+  { id: 'newest', key: 'mc.media.sort_newest' },
+  { id: 'name',   key: 'mc.media.sort_name' },
+  { id: 'type',   key: 'mc.media.sort_type' },
+];
+
+async function renderMediaTab(container, { selectedIds, onAfterSend, onRouteSource }) {
+  const PAGE = 60;
+  const state = { folderId: undefined, type: '', search: '', sort: 'newest', items: [], offset: 0, hasMore: true, loading: false };
+
+  container.innerHTML = `
+    <div class="mc-tb-media-toolbar">
+      <div class="mc-tb-folders" role="group" aria-label="${esc(t('mc.media.folders'))}" id="mc-media-folders"></div>
+      <div class="mc-tb-media-controls">
+        <input class="mc-tb-search" id="mc-media-search" type="search" placeholder="${esc(t('mc.media.search_placeholder'))}" autocomplete="off">
+        <select class="mc-tb-type" id="mc-media-type" aria-label="${esc(t('mc.media.type_label'))}">
+          ${MEDIA_TYPES.map(o => `<option value="${esc(o.id)}"${o.id === state.type ? ' selected' : ''}>${esc(t(o.key))}</option>`).join('')}
+        </select>
+        <select class="mc-tb-sort" id="mc-media-sort" aria-label="${esc(t('mc.media.sort_label'))}">
+          ${MEDIA_SORTS.map(o => `<option value="${esc(o.id)}"${o.id === state.sort ? ' selected' : ''}>${esc(t(o.key))}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div class="mc-tb-media-status" id="mc-media-status"></div>
+    <div class="mc-tile-grid" id="mc-media-grid"></div>
+    <div class="mc-tb-loadmore-wrap" id="mc-media-loadmore-wrap"></div>`;
+
+  const grid = container.querySelector('#mc-media-grid');
+  const statusEl = container.querySelector('#mc-media-status');
+  const foldersEl = container.querySelector('#mc-media-folders');
+  const loadmoreWrap = container.querySelector('#mc-media-loadmore-wrap');
+
+  // Real folder list from the content_folders table (task §12). Falls back to
+  // inferring from item.folder strings only if the folders API is unavailable.
+  let folders = [];
+  try { folders = await api.getFolders() || []; } catch { folders = []; }
+
+  function renderFolderChips() {
+    const chips = [`<button type="button" class="mc-tb-folder${state.folderId === undefined ? ' is-active' : ''}" data-folder="">${esc(t('mc.media.all'))}</button>`];
+    for (const f of folders) {
+      const fid = f.id || f.folder_id;
+      const active = state.folderId === fid ? ' is-active' : '';
+      chips.push(`<button type="button" class="mc-tb-folder${active}" data-folder="${esc(fid)}" data-folder-name="${esc(f.name)}">${esc(f.name)}</button>`);
+    }
+    foldersEl.innerHTML = chips.join('');
+    foldersEl.style.display = folders.length ? '' : 'none';
+    foldersEl.querySelectorAll('.mc-tb-folder[data-folder]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        state.folderId = btn.dataset.folder ? btn.dataset.folder : undefined;
+        state.offset = 0; state.items = []; state.hasMore = true;
+        renderFolderChips();
+        loadPage();
+      });
+    });
+  }
+
+  function sortItems(items) {
+    const s = state.sort;
+    const arr = items.slice();
+    if (s === 'name') arr.sort((a, b) => String(a.filename || a.name || '').localeCompare(String(b.filename || b.name || '')));
+    else if (s === 'type') arr.sort((a, b) => String(a.mime_type || '').localeCompare(String(b.mime_type || '')));
+    else arr.sort((a, b) => Number(b.created_at || 0) - Number(a.created_at || 0));
+    return arr;
+  }
+
+  function tileHtml(item) {
+    const src = JSON.stringify({ content_id: item.id });
+    const name = item.filename || item.name || t('mc.tile.content_fallback');
+    const thumb = mediaTileThumb(item);
+    const downloadable = !!item.filepath;
+    return `<div class="mc-tile-cell">
+      <button type="button" class="mc-tile" draggable="true"
         data-drag-source='${esc(src)}'
         data-label="${esc(name)}"
         title="${esc(name)}">
         ${thumb}
         <span class="mc-tile-label">${esc(name)}</span>
-      </button>`;
-    }).join('');
-    // Re-bind tile click/drag handlers to the freshly-rendered tiles.
-    attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource);
-  };
+      </button>
+      ${downloadable ? `<button type="button" class="mc-tile-dl" data-download-id="${esc(item.id)}" data-download-name="${esc(name)}" title="${esc(t('mc.media.download'))}" aria-label="${esc(t('mc.media.download'))} ${esc(name)}">⬇</button>` : ''}
+    </div>`;
+  }
 
-  container.querySelectorAll('.mc-tb-folder[data-folder]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      container.querySelectorAll('.mc-tb-folder').forEach(b => b.classList.toggle('is-active', b === btn));
-      paint(btn.dataset.folder || '');
+  function renderGrid() {
+    grid.innerHTML = state.items.length ? state.items.map(tileHtml).join('') : '';
+    attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource);
+    grid.querySelectorAll('[data-download-id]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        downloadContentItem(btn.dataset.downloadId, btn.dataset.downloadName);
+      });
     });
+  }
+
+  function renderLoadMore() {
+    loadmoreWrap.innerHTML = state.hasMore
+      ? `<button type="button" class="mc-btn mc-tb-loadmore" id="mc-media-loadmore">${esc(t('mc.media.load_more'))}</button>`
+      : (state.items.length ? `<div class="mc-tb-end">${esc(t('mc.media.end_of_list'))}</div>` : '');
+    const lm = loadmoreWrap.querySelector('#mc-media-loadmore');
+    if (lm) lm.addEventListener('click', () => { state.offset += PAGE; loadPage(); });
+  }
+
+  function renderStatus() {
+    if (state.loading) { statusEl.innerHTML = `<span class="mc-tb-spin" aria-hidden="true"></span><span>${esc(t('mc.tb.loading_media'))}</span>`; return; }
+    if (!state.items.length && state.search) { statusEl.innerHTML = `<span>${esc(t('mc.media.no_search_results'))}</span>`; return; }
+    if (!state.items.length) { statusEl.innerHTML = `<span>${esc(t('mc.media.empty'))}</span>`; return; }
+    statusEl.innerHTML = `<span>${esc(t('mc.media.count', { n: state.items.length }))}</span>`;
+  }
+
+  async function loadPage() {
+    if (state.loading) return;
+    state.loading = true;
+    renderStatus();
+    try {
+      const result = await api.getGovernedContent({
+        folderId: state.folderId,
+        type: state.type || undefined,
+        search: state.search || undefined,
+        limit: PAGE,
+        offset: state.offset,
+      });
+      const page = Array.isArray(result) ? result : (result && Array.isArray(result.content) ? result.content : []);
+      const sorted = sortItems(page);
+      state.items = state.offset === 0 ? sorted : state.items.concat(sorted);
+      state.hasMore = page.length === PAGE;
+      if (!state.items.length) { grid.innerHTML = ''; renderStatus(); renderLoadMore(); return; }
+      renderGrid(); renderStatus(); renderLoadMore();
+    } catch (e) {
+      statusEl.innerHTML = `<span class="mc-tb-error-text">${esc(t('mc.media.error', { error: e?.message || '' }))}</span>`;
+      grid.innerHTML = '';
+    } finally {
+      state.loading = false;
+    }
+  }
+
+  renderFolderChips();
+
+  // Debounced search + filter/sort change resets to page 1.
+  let searchTimer = null;
+  container.querySelector('#mc-media-search').addEventListener('input', (e) => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      state.search = (e.target.value || '').trim();
+      state.offset = 0; state.items = []; state.hasMore = true;
+      loadPage();
+    }, 300);
   });
-  paint('');
+  container.querySelector('#mc-media-type').addEventListener('change', (e) => {
+    state.type = e.target.value; state.offset = 0; state.items = []; state.hasMore = true; loadPage();
+  });
+  container.querySelector('#mc-media-sort').addEventListener('change', (e) => {
+    state.sort = e.target.value; state.items = sortItems(state.items); renderGrid();
+  });
+
+  await loadPage();
 }
 
 // Playlists tab — every playlist is a drag-or-tap source ({ playlist_id }); the
@@ -146,7 +278,7 @@ async function renderPlaylistsTab(container, { selectedIds, onAfterSend, onRoute
     container.innerHTML = manage + emptyState(t('mc.playlists.empty'));
     return;
   }
-  const tiles = items.slice(0, 48).map(item => {
+  const tiles = items.map(item => {
     const src = JSON.stringify({ playlist_id: item.id });
     const name = item.name || t('mc.tile.playlist_fallback');
     const count = tn('mc.playlists.items', item.item_count || 0);
@@ -180,7 +312,7 @@ async function renderPresentationsTab(container, { selectedIds, onAfterSend, onR
     container.innerHTML = emptyState(t('mc.presentations.empty'));
     return;
   }
-  const tiles = items.slice(0, 48).map(item => {
+  const tiles = items.map(item => {
     const src = JSON.stringify({ presentation_id: item.id });
     const name = item.title || t('mc.tile.presentation_fallback');
     return `<button type="button" class="mc-tile" draggable="true"
@@ -349,7 +481,7 @@ async function renderScenesTab(container, { onAfterSend }) {
     container.innerHTML = emptyState(t('mc.scenes.empty'));
     return;
   }
-  const tiles = scenes.slice(0, 48).map(sc => {
+  const tiles = scenes.map(sc => {
     const name = sc.name || t('mc.tile.scene_fallback');
     return `
     <button type="button" class="mc-tile mc-scene-tile" data-scene-id="${esc(sc.id)}"
