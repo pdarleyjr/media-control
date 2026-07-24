@@ -72,3 +72,23 @@ test('startup telemetry uses a filter-safe runtime asset path', () => {
     assert.doesNotMatch(source, /runtime-metrics/);
   }
 });
+
+// Automated cleanup assertion (task §5): the browser-console acceptance harness
+// must not persist tokens or browser storage to disk. It must use a test JWT
+// secret (never the production one), must not mint superadmin tokens, must not
+// publish Playwright storageState files as artifacts, and must tear down its
+// temp browser profile + DB after each run.
+test('browser-console acceptance harness does not persist tokens or browser storage', () => {
+  const spec = fs.readFileSync(path.join(root, 'server', 'e2e', 'real-app', 'browser-console.spec.js'), 'utf8');
+  const cfg = fs.readFileSync(path.join(root, 'server', 'e2e', 'real-app', 'playwright.browser-console.config.js'), 'utf8');
+  // No persistent storageState file (tokens must not be published as artifacts).
+  assert.doesNotMatch(cfg, /storageState\s*:/);
+  // Uses a dedicated test JWT secret, never the production secret.
+  assert.match(spec, /JWT_SECRET\s*=\s*'/);
+  assert.doesNotMatch(spec, /superadmin|platform_admin/);
+  // Must register a test user via the API (not bypass the DB layer to mint).
+  assert.match(spec, /api\/auth\/register/);
+  // Must tear down: kill the server and remove the temp dir after the run.
+  assert.match(spec, /afterAll/);
+  assert.match(spec, /killServer|rmSync.*recursive/);
+});
