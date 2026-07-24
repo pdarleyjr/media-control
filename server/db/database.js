@@ -222,6 +222,9 @@ const migrations = [
     PRIMARY KEY (workspace_id, device_id)
   )`,
   "CREATE INDEX IF NOT EXISTS idx_whiteboard_sessions_device ON whiteboard_sessions(device_id)",
+  // 2026-07-24: display retirement. Retired displays are hidden from target
+  // selectors and screenshot polling but preserved for historical data.
+  "ALTER TABLE devices ADD COLUMN retired INTEGER NOT NULL DEFAULT 0",
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (e) { /* already exists */ }

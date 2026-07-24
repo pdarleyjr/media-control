@@ -249,30 +249,155 @@ router.post('/:id/identify', (req, res) => {
   res.json({ success: true, device_id: req.params.id, ...payload });
 });
 
-// Delete device
+// Retire/disable display — hides from target selectors, stops screenshot polling,
+// preserves logs and historical data. The recommended default action.
+router.post('/:id/retire', (req, res) => {
+  const device = checkDeviceOwnership(req, res);
+  if (!device) return;
+  if (device.retired === 1) return res.json({ success: true, already_retired: true });
+  db.prepare("UPDATE devices SET retired = 1, updated_at = strftime('%s','now') WHERE id = ?").run(req.params.id);
+  const io = req.app.get('io');
+  if (io) {
+    const { workspaceRoom, emitToWorkspace } = require('../lib/socket-rooms');
+    emitToWorkspace(io.of('/dashboard'), workspaceRoom(device.workspace_id), 'dashboard:device-retired', { device_id: req.params.id });
+  }
+  publishDeviceMutation(req, device.workspace_id, 'device:retired');
+  res.json({ success: true, device_id: req.params.id, retired: true });
+});
+
+// Restore a retired display — makes it visible in target selectors again.
+router.post('/:id/restore', (req, res) => {
+  const device = checkDeviceOwnership(req, res);
+  if (!device) return;
+  if (device.retired !== 1) return res.json({ success: true, already_active: true });
+  db.prepare("UPDATE devices SET retired = 0, updated_at = strftime('%s','now') WHERE id = ?").run(req.params.id);
+  const io = req.app.get('io');
+  if (io) {
+    const { workspaceRoom, emitToWorkspace } = require('../lib/socket-rooms');
+    emitToWorkspace(io.of('/dashboard'), workspaceRoom(device.workspace_id), 'dashboard:device-restored', { device_id: req.params.id });
+  }
+  publishDeviceMutation(req, device.workspace_id, 'device:restored');
+  res.json({ success: true, device_id: req.params.id, retired: false });
+});
+
+// Deletion impact preflight — read-only endpoint that returns everything an
+// operator needs to know before permanently removing a display.
+router.get('/:id/deletion-impact', (req, res) => {
+  const device = db.prepare('SELECT * FROM devices WHERE id = ?').get(req.params.id);
+  if (!device) return res.status(404).json({ error: 'Device not found' });
+  if (!device.workspace_id) return res.status(403).json({ error: 'Device not assigned to a workspace' });
+  const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(device.workspace_id);
+  const ctx = ws && accessContext(req.user.id, req.user.role, ws);
+  if (!ctx) return res.status(403).json({ error: 'Access denied' });
+
+  const wallMemberships = db.prepare(`
+    SELECT vwd.wall_id, vw.name AS wall_name, vw.leader_device_id, vwd.grid_col, vwd.grid_row
+    FROM video_wall_devices vwd
+    JOIN video_walls vw ON vw.id = vwd.wall_id
+    WHERE vwd.device_id = ?
+  `).all(req.params.id);
+
+  const isWallLeader = wallMemberships.some((m) => m.leader_device_id === req.params.id);
+  const wallMemberCount = wallMemberships.length;
+
+  const schedules = db.prepare('SELECT COUNT(*) AS count FROM schedules WHERE device_id = ?').get(req.params.id);
+  const screenshots = db.prepare('SELECT COUNT(*) AS count FROM screenshots WHERE device_id = ?').get(req.params.id);
+  const telemetry = db.prepare('SELECT COUNT(*) AS count FROM device_telemetry WHERE device_id = ?').get(req.params.id);
+  const whiteboardSessions = db.prepare('SELECT COUNT(*) AS count FROM whiteboard_sessions WHERE device_id = ?').get(req.params.id);
+  const groupMemberships = db.prepare(`
+    SELECT dg.id, dg.name FROM device_group_members dgm
+    JOIN device_groups dg ON dg.id = dgm.group_id
+    WHERE dgm.device_id = ?
+  `).all(req.params.id);
+
+  const defaultContent = device.default_content_id
+    ? db.prepare('SELECT id, filename FROM content WHERE id = ?').get(device.default_content_id)
+    : null;
+
+  const isAudioAuthority = String(process.env.CLASSROOM_AUDIO_AUTHORITY_DEVICE_ID || '') === req.params.id;
+
+  const io = req.app.get('io');
+  const socketNs = io ? io.of('/device') : null;
+  const isOnline = !!(socketNs && socketNs.sockets && socketNs.sockets.has(req.params.id));
+
+  res.json({
+    device_id: req.params.id,
+    device_name: device.name,
+    status: device.status,
+    retired: device.retired === 1,
+    last_heartbeat: device.last_heartbeat,
+    workspace_id: device.workspace_id,
+    wall_memberships: wallMemberships,
+    wall_member_count: wallMemberCount,
+    is_wall_leader: isWallLeader,
+    group_memberships: groupMemberships,
+    schedule_count: schedules.count,
+    screenshot_count: screenshots.count,
+    telemetry_count: telemetry.count,
+    whiteboard_session_count: whiteboardSessions.count,
+    default_content: defaultContent,
+    is_audio_authority: isAudioAuthority,
+    is_online: isOnline,
+    impact_revision: Date.now(),
+  });
+});
+
+// Delete device — transactional with preflight validation.
 router.delete('/:id', (req, res) => {
   const device = checkDeviceOwnership(req, res);
   if (!device) return;
 
-  // Clean up related data (playlist is NOT deleted — may be shared with other devices)
-  db.prepare('DELETE FROM schedules WHERE device_id = ?').run(req.params.id);
-  db.prepare('DELETE FROM screenshots WHERE device_id = ?').run(req.params.id);
-  db.prepare('DELETE FROM device_telemetry WHERE device_id = ?').run(req.params.id);
-  db.prepare('DELETE FROM whiteboard_sessions WHERE device_id = ?').run(req.params.id);
-  db.prepare('DELETE FROM video_wall_devices WHERE device_id = ?').run(req.params.id);
-  db.prepare('DELETE FROM devices WHERE id = ?').run(req.params.id);
+  const expectedRevision = req.body && req.body.impact_revision;
+  if (expectedRevision) {
+    const io = req.app.get('io');
+    const socketNs = io ? io.of('/device') : null;
+    const isOnline = !!(socketNs && socketNs.sockets && socketNs.sockets.has(req.params.id));
+    const wallMemberships = db.prepare('SELECT wall_id FROM video_wall_devices WHERE device_id = ?').all(req.params.id);
+    const isWallLeader = db.prepare("SELECT 1 FROM video_walls WHERE leader_device_id = ? LIMIT 1").get(req.params.id);
+    const isAudioAuthority = String(process.env.CLASSROOM_AUDIO_AUTHORITY_DEVICE_ID || '') === req.params.id;
 
-  // Notify dashboard in real-time. Phase 2.3: scope to the device's
-  // (now-deleted but still-known) workspace room. `device.workspace_id`
-  // came from checkDeviceOwnership() above.
+    if (isWallLeader) {
+      return res.status(409).json({
+        code: 'WALL_LEADER_BLOCKED',
+        error: 'This display is a wall leader. Assign a replacement leader before removing it.',
+      });
+    }
+    if (isAudioAuthority) {
+      return res.status(409).json({
+        code: 'AUDIO_AUTHORITY_BLOCKED',
+        error: 'This display is the classroom audio authority. Select a new authority before removing it.',
+      });
+    }
+  }
+
+  const result = db.transaction(() => {
+    db.prepare('DELETE FROM schedules WHERE device_id = ?').run(req.params.id);
+    db.prepare('DELETE FROM screenshots WHERE device_id = ?').run(req.params.id);
+    db.prepare('DELETE FROM device_telemetry WHERE device_id = ?').run(req.params.id);
+    db.prepare('DELETE FROM whiteboard_sessions WHERE device_id = ?').run(req.params.id);
+    db.prepare('DELETE FROM video_wall_devices WHERE device_id = ?').run(req.params.id);
+    db.prepare('DELETE FROM device_group_members WHERE device_id = ?').run(req.params.id);
+    db.prepare('DELETE FROM display_states WHERE target_id = ?').run(req.params.id);
+    db.prepare('DELETE FROM devices WHERE id = ?').run(req.params.id);
+    return true;
+  })();
+
+  if (!result) return res.status(500).json({ error: 'Transaction failed' });
+
   const io = req.app.get('io');
   if (io) {
     const { workspaceRoom, emitToWorkspace } = require('../lib/socket-rooms');
     emitToWorkspace(io.of('/dashboard'), workspaceRoom(device.workspace_id), 'dashboard:device-removed', { device_id: req.params.id });
+    try {
+      const deviceNs = io.of('/device');
+      if (deviceNs && deviceNs.sockets && deviceNs.sockets.has(req.params.id)) {
+        deviceNs.to(req.params.id).emit('device:disconnect', { reason: 'removed' });
+      }
+    } catch {}
   }
   publishDeviceMutation(req, device.workspace_id, 'device:removed');
 
-  res.json({ success: true });
+  res.json({ success: true, device_id: req.params.id, removed: true });
 });
 
 module.exports = router;
