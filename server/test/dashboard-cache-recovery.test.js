@@ -5,13 +5,27 @@ const path = require('node:path');
 
 const root = path.join(__dirname, '..', '..');
 
-test('dashboard shell clears stale browser caches without clearing login storage', () => {
+test('dashboard shell is no-store and does NOT emit Clear-Site-Data on every load', () => {
   const server = fs.readFileSync(path.join(root, 'server', 'server.js'), 'utf8');
   const route = server.slice(server.indexOf("app.get('/app'"), server.indexOf('// Serve frontend static files'));
 
   assert.match(route, /Cache-Control', 'no-store'/);
-  assert.match(route, /Clear-Site-Data', '"cache"'/);
+  // Clear-Site-Data must NOT be set on the routine /app load — it destroyed
+  // service-worker/versioned-asset caching and forced re-downloads on every visit.
+  assert.doesNotMatch(route, /setHeader\('Clear-Site-Data/);
   assert.doesNotMatch(route, /"storage"/);
+});
+
+test('controlled cache recovery is admin-only and emits Clear-Site-Data exactly once', () => {
+  const server = fs.readFileSync(path.join(root, 'server', 'server.js'), 'utf8');
+  const route = server.slice(server.indexOf("app.get('/api/admin/cache-recovery'"), server.indexOf("app.use('/api/devices'"));
+  // Authenticated + admin-gated so a normal instructor cannot trigger it.
+  assert.match(route, /requireAuth, requireAdmin/);
+  // It emits Clear-Site-Data: "cache" for a deliberate recovery only.
+  assert.match(route, /Clear-Site-Data', '"cache"'/);
+  // Only the cache datatype is cleared — login/preferences (storage) survive.
+  assert.doesNotMatch(route, /"storage"/);
+  assert.doesNotMatch(route, /"cookies"/);
 });
 
 test('dashboard service worker activates without a fragile precache batch', () => {

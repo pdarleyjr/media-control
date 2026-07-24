@@ -168,12 +168,14 @@ app.get('/', (req, res) => res.redirect(302, '/app'));
 
 // Dashboard app
 app.get('/app', (req, res) => {
-  // Stable asset names were previously cached for 30 days and an older
-  // service worker could keep an incompatible module graph alive. Clear only
-  // browser caches when the dashboard shell is requested; keep storage so the
-  // operator's login and preferences survive the recovery.
+  // The shell is always served no-store so a stale service worker can't pin an
+  // incompatible module graph. We do NOT emit Clear-Site-Data here: clearing the
+  // browser cache on every /app load destroyed service-worker/versioned-asset
+  // caching, forced every JS/CSS/thumbnail to re-download on each visit, and
+  // added startup latency. Build changes are instead handled by the /api/version
+  // poll + service-worker skipWaiting + seamless reload (app.js), and a deliberate
+  // one-time recovery is available at GET /api/admin/cache-recovery (admin-only).
   res.setHeader('Cache-Control', 'no-store');
-  res.setHeader('Clear-Site-Data', '"cache"');
   res.sendFile(path.join(config.frontendDir, 'index.html'));
 });
 
@@ -794,7 +796,7 @@ app.get('/api/content/:id/thumbnail', (req, res) => {
 // route. It attaches req.workspaceId, req.workspaceRole, req.orgRole,
 // req.isPlatformAdmin, req.actingAs. Route handlers in 2.1 don't read these
 // yet (they still filter by user_id); 2.2 will migrate them one route at a time.
-const { requireAuth } = require('./middleware/auth');
+const { requireAuth, requireAdmin } = require('./middleware/auth');
 const { resolveTenancy } = require('./lib/tenancy');
 const { requireWorkspaceWrite } = require('./lib/permissions');
 
@@ -820,6 +822,19 @@ app.get('/api/features', requireAuth, resolveTenancy, (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Pragma', 'no-cache');
   res.json({ features: resolveFeatureFlags(config.features, req.user.id) });
+});
+
+// Deliberate, admin-only, one-time cache recovery. Normal /app loads never emit
+// Clear-Site-Data; an operator who needs to force the browser to drop stale
+// application caches (e.g. after a corrupt update) calls this endpoint, which
+// returns the Clear-Site-Data: "cache" header exactly once. It is authenticated
+// + admin-gated so a normal instructor can't trigger it, and it never runs on
+// the routine shell load. Storage (login/preferences) is preserved — only the
+// "cache" datatype is cleared, matching the safe subset of Clear-Site-Data.
+app.get('/api/admin/cache-recovery', requireAuth, requireAdmin, (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Clear-Site-Data', '"cache"');
+  res.json({ ok: true, recovered: 'cache', at: new Date().toISOString() });
 });
 
 app.use('/api/devices', requireAuth, resolveTenancy, require('./routes/devices'));

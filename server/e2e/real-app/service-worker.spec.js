@@ -178,13 +178,17 @@ test.describe('Part A — Service-Worker / Cache-Busting Transition', () => {
     if (tmpDir) { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {} }
   });
 
-  test('A1. /app carries cache-busting headers (no-store + Clear-Site-Data cache)', async () => {
+  test('A1. /app is no-store and does NOT carry Clear-Site-Data on normal loads', async () => {
     const res = await fetch(`${BASE_URL}/app`, { redirect: 'manual' });
     expect(res.status, `/app should be 200, got ${res.status}`).toBe(200);
     const cc = res.headers.get('cache-control') || '';
-    const csd = res.headers.get('clear-site-data') || '';
+    const csd = res.headers.get('clear-site-data');
     expect(cc.toLowerCase(), `Cache-Control should be no-store, got "${cc}"`).toContain('no-store');
-    expect(csd, `Clear-Site-Data should clear cache, got "${csd}"`).toContain('cache');
+    // Clear-Site-Data must NOT be sent on the routine shell load — it forced a
+    // full browser-cache wipe on every visit (Firefox: "Clear-Site-Data header
+    // forced the clean up of cache data"), undermining service-worker/versioned
+    // assets. A deliberate admin-only recovery endpoint carries it instead.
+    expect(csd, `Clear-Site-Data must be absent on /app, got "${csd}"`).toBeNull();
   });
 
   test('A2. JS/CSS/HTML are served no-cache (revalidate via ETag/304)', async () => {
@@ -376,18 +380,19 @@ test.describe('Part A — Service-Worker / Cache-Busting Transition', () => {
     assertNoErrors(errors, 'no reload loop');
   });
 
-  test('A9. Cache-busting new→old transition: /app clears cache and re-fetches fresh assets', async () => {
-    // The /app response carries Clear-Site-Data: "cache". This test verifies
-    // that a second /app request still returns no-store + clear-site-data
-    // (the bootstrap is idempotent across transitions) and that assets
-    // revalidate rather than serving stale content.
+  test('A9. /app is no-store across transitions and never emits Clear-Site-Data; admin recovery is gated', async () => {
+    // /app no longer carries Clear-Site-Data on any normal load (it wiped the
+    // browser cache on every visit). This verifies a second /app request still
+    // returns no-store with NO clear-site-data (the bootstrap is idempotent
+    // across transitions) and that assets revalidate rather than serving stale
+    // content. The deliberate recovery lives behind an admin-only endpoint.
 
     // First load (simulates "new" version present on server).
     const r1 = await fetch(`${BASE_URL}/app`);
     const r1Body = await r1.text();
     expect(r1.status).toBe(200);
     expect(r1.headers.get('cache-control').toLowerCase()).toContain('no-store');
-    expect(r1.headers.get('clear-site-data')).toContain('cache');
+    expect(r1.headers.get('clear-site-data'), 'no Clear-Site-Data on /app').toBeNull();
     expect(r1Body).toContain('dashboard-bootstrap-v2.js');
 
     // Second load (simulates after a transition/rollback — bootstrap still revalidates).
@@ -395,8 +400,13 @@ test.describe('Part A — Service-Worker / Cache-Busting Transition', () => {
     const r2Body = await r2.text();
     expect(r2.status).toBe(200);
     expect(r2.headers.get('cache-control').toLowerCase()).toContain('no-store');
-    expect(r2.headers.get('clear-site-data')).toContain('cache');
+    expect(r2.headers.get('clear-site-data'), 'no Clear-Site-Data on /app').toBeNull();
     expect(r2Body).toContain('dashboard-bootstrap-v2.js');
+
+    // The recovery endpoint requires authentication (no token → 401), proving it
+    // is admin-gated and not reachable by an anonymous instructor.
+    const rec = await fetch(`${BASE_URL}/api/admin/cache-recovery`);
+    expect(rec.status, 'recovery endpoint must require auth').toBe(401);
 
     // Asset revalidation: ETag present; http returns 304 when unchanged.
     const http = require('http');
