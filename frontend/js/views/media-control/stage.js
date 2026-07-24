@@ -579,6 +579,104 @@ function emptyState() {
     </div>`;
 }
 
+// ── Stable keyed render (task §4) ─────────────────────────────────────────
+// Routine state updates (screenshots, heartbeats, playback progress, now-playing
+// label drift) must NOT destroy and recreate the stage DOM. Every recreated
+// preview iframe re-emits Feature-Policy load chatter, reloads its document,
+// drops playback state, and burns CPU/network. So renderStage computes a
+// STRUCTURAL signature of what it is about to paint; when that signature is
+// unchanged since the last paint it skips the container.innerHTML rebuild and
+// only patches mutable labels/badges/captions/selects in place. The screenshot
+// + slide-index + video-seek sync themselves are handled by refreshPreviewsInPlace
+// in media-control.js (already keyed off this same signature), so a stable
+// signature means zero iframe recreation.
+//
+// The signature deliberately includes the fields whose change REQUIRES a rebuild:
+// card identity (which displays/walls are shown), wall grid/leader/layout,
+// live-preview target, overview mode, active control target, and per-card
+// online/screen_on/now-playing-identity. It deliberately EXCLUDES the
+// fast-moving fields (screenshot URL, screenshot_at, label text, playback time,
+// freshness caption) — those are patched incrementally below / by
+// refreshPreviewsInPlace. This mirrors the stageSignature() guard already used
+// by the media-control subscriber, but is computed here from the exact render
+// inputs as a defense-in-depth against any caller that bypasses that guard.
+function playingIdentity(d) {
+  const np = d && d.now_playing;
+  if (!np) return '';
+  return [np.kind || '', np.contentId || '', np.poster_url || ''].join('~');
+}
+function stageRenderSignature({ displays = [], walls = [], byId = new Map(), selectedIds = [], livePreviewDeviceId = null, activeControlTargetId = null, overviewMode = false }) {
+  const parts = [];
+  parts.push('sel:' + selectedIds.join(','));
+  parts.push('lp:' + (livePreviewDeviceId || ''));
+  parts.push('tgt:' + (activeControlTargetId || ''));
+  parts.push('ov:' + (overviewMode ? 1 : 0));
+  for (const d of displays) {
+    parts.push('d:' + d.id + ':' + (d.online ? 1 : 0) + ':' + (d.screen_on === false ? 0 : 1) + ':' + playingIdentity(d));
+  }
+  for (const w of (walls || [])) {
+    parts.push('w:' + w.id + ':' + (w.grid_cols || 0) + 'x' + (w.grid_rows || 0) + ':' + (w.leader_device_id || '') + ':' + (w.layout_mode || 'span') + ':' + (w.is_locked ? 1 : 0));
+    for (const m of (w.devices || [])) {
+      const d = byId.get(m.device_id) || {};
+      parts.push('m:' + m.device_id + ':' + (d.online ? 1 : 0) + ':' + (d.screen_on === false ? 0 : 1) + ':' + playingIdentity(d));
+    }
+  }
+  return parts.join('|');
+}
+
+// Lightweight in-place patch for the cards already on the stage when the
+// structural signature is unchanged. Updates mutable text/classes only — never
+// touches the preview media (img/iframe/video), which are owned by
+// refreshPreviewsInPlace so paused video stays paused and presentation frames
+// keep their scroll/zoom state.
+function updateStageInPlace(container, { byId = new Map(), displays = [], walls = [] } = {}) {
+  const all = new Map();
+  for (const d of displays) all.set(d.id, d);
+  for (const d of byId.values()) if (!all.has(d.id)) all.set(d.id, d);
+  container.querySelectorAll('.mc-display-card[data-device-id]').forEach((card) => {
+    const id = card.dataset.deviceId;
+    const d = all.get(id);
+    if (!d) return;
+    const s = statusOf(d);
+    const badge = card.querySelector('.mc-badge');
+    if (badge) badge.outerHTML = statusBadge(s);
+    const f = freshness(d.screenshot_at);
+    const caption = card.querySelector('.mc-card-caption');
+    if (caption) {
+      const pv = previewSource(d);
+      const showingPoster = !!(pv && pv.poster);
+      const text = showingPoster ? t('mc.card.now_showing') : f.text;
+      const stale = (!showingPoster && f.stale) ? ' mc-stale' : '';
+      caption.textContent = text;
+      caption.className = 'mc-card-caption' + stale;
+    }
+    const npEl = card.querySelector('.mc-card-nowplaying');
+    if (npEl) {
+      const label = d.now_playing && d.now_playing.label ? d.now_playing.label : t('mc.card.nothing_playing');
+      npEl.textContent = label;
+      npEl.setAttribute('title', label);
+    }
+  });
+  // Wall span now-playing label chip.
+  container.querySelectorAll('.mc-wall-span-np-label').forEach((el) => {
+    const host = el.closest('[data-device-id]');
+    const id = host && host.dataset.deviceId;
+    const d = id && all.get(id);
+    const label = d && d.now_playing && d.now_playing.label && d.now_playing.kind !== 'idle' ? d.now_playing.label : '';
+    if (!label) { el.remove(); }
+    else if (el.textContent !== label) el.textContent = label;
+  });
+}
+
+// Instrumentation for soak/verification (task §4): counts are kept on the
+// container so a browser console can read window.__mcStageMetrics after a run.
+function bumpStageMetric(container, key, n = 1) {
+  if (!container) return;
+  container._mcMetrics = container._mcMetrics || { renders: 0, iframeCreates: 0, iframeRemoves: 0, inPlacePatches: 0 };
+  container._mcMetrics[key] = (container._mcMetrics[key] || 0) + n;
+  try { window.__mcStageMetrics = container._mcMetrics; } catch { /* SSR / no window */ }
+}
+
 /**
  * Render the stage into `container`.
  * @param {HTMLElement} container
@@ -639,10 +737,31 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
       : wallCard(w, byId, livePreviewDeviceId, overviewMode)))).join('');
 
   const isEmpty = !cards && !wallCards;
+
+  // Stable keyed render (task §4): when the structural signature is unchanged
+  // since the last paint, do NOT replace container.innerHTML — rebuilding would
+  // destroy and recreate every preview iframe (re-emitting Feature-Policy load
+  // chatter, reloading documents, dropping playback state). Instead patch the
+  // mutable labels/badges/captions in place; screenshot/slide/video sync is left
+  // to refreshPreviewsInPlace (media-control.js), which keys off the same data.
+  const sig = stageRenderSignature({ displays: displays.filter(d => selected.has(d.id)), walls: wallList, byId, selectedIds, livePreviewDeviceId, activeControlTargetId, overviewMode });
+  if (!isEmpty && sig && sig === container._mcRenderSig && container.querySelector('.mc-card, .mc-stage-empty')) {
+    updateStageInPlace(container, { byId, displays, walls: wallList });
+    bumpStageMetric(container, 'inPlacePatches');
+    return;
+  }
+  container._mcRenderSig = sig;
+  bumpStageMetric(container, 'renders');
+  const beforeIframes = container.querySelectorAll('iframe').length;
+
   container.classList.toggle('mc-stage-is-empty', isEmpty);
   container.innerHTML = isEmpty
     ? emptyState()
     : `${wallCards}${cards}${addTile()}`;
+
+  const afterIframes = container.querySelectorAll('iframe').length;
+  if (afterIframes > beforeIframes) bumpStageMetric(container, 'iframeCreates', afterIframes - beforeIframes);
+  if (beforeIframes > afterIframes) bumpStageMetric(container, 'iframeRemoves', beforeIframes - afterIframes);
 
   // Display cards are <article> with a dedicated <button class="mc-card-select">
   // (the preview media) as the sole inspect/select affordance; wall screen cells

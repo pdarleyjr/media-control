@@ -1336,6 +1336,8 @@ function attachStageDrop(stageContainer) {
   // Per-card drop → that ONE display. stopPropagation so the stage-level handler
   // below does not also fire and fan the source out to everyone.
   stageContainer.querySelectorAll('.mc-display-card[data-device-id], .mc-wall-cell[data-device-id]').forEach(card => {
+    if (card.__mcDropWired) return;
+    card.__mcDropWired = true;
     const isSplitWallCell = card.classList.contains('mc-wall-cell') && card.closest('.mc-wall')?.dataset.layoutMode === 'split';
     const isStandaloneCard = card.classList.contains('mc-display-card');
     if (!isStandaloneCard && !isSplitWallCell) return;
@@ -1364,6 +1366,8 @@ function attachStageDrop(stageContainer) {
   // driven by one Mosaic window. Each half pushes its own source into a composite
   // grid on that single device (merge-and-resend; the other column is untouched).
   stageContainer.querySelectorAll('.mc-wall-split-half[data-device-id][data-split-half]').forEach(half => {
+    if (half.__mcDropWired) return;
+    half.__mcDropWired = true;
     half.addEventListener('dragover', (e) => {
       if (!dragHasSource(e)) return;
       e.preventDefault();
@@ -1389,6 +1393,8 @@ function attachStageDrop(stageContainer) {
   // at once. The strip carries data-wall-ids="id1,id2,…"; stopPropagation so the
   // stage-background handler does not also fire. Re-wired each paint (fresh nodes).
   stageContainer.querySelectorAll('.mc-wall-all[data-wall-ids]').forEach(zone => {
+    if (zone.__mcDropWired) return;
+    zone.__mcDropWired = true;
     zone.addEventListener('dragover', (e) => {
       if (!dragHasSource(e)) return;
       e.preventDefault();
