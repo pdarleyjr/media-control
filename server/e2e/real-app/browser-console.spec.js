@@ -219,8 +219,8 @@ test.describe('Browser-console acceptance', () => {
       await page.setViewportSize(vp);
       await setupAuth(page);
       await page.goto(`${BASE_URL}/app`, { waitUntil: 'domcontentloaded' });
-      // Wait for the dashboard shell to mount and the socket to connect.
-      await expect(page.locator('.mc-cc-shell, #app, [data-view="control"]')).toBeVisible({ timeout: 30000 });
+      // Wait for the dashboard shell to mount and the router to render its nav.
+      await expect(page.locator('a[data-view="control"]')).toBeVisible({ timeout: 30000 });
       await page.waitForTimeout(3000);
       assertCleanConsole(collected, `${vp.width}x${vp.height}`);
       // installHook.js.map is extension-owned: a clean headless profile has no
