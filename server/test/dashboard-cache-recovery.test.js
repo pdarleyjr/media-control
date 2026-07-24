@@ -16,13 +16,27 @@ test('dashboard shell is no-store and does NOT emit Clear-Site-Data on every loa
   assert.doesNotMatch(route, /"storage"/);
 });
 
-test('controlled cache recovery is admin-only and emits Clear-Site-Data exactly once', () => {
+test('controlled cache recovery is a POST (not GET), admin + same-origin + rate-limited + audited, and emits Clear-Site-Data', () => {
   const server = fs.readFileSync(path.join(root, 'server', 'server.js'), 'utf8');
-  const route = server.slice(server.indexOf("app.get('/api/admin/cache-recovery'"), server.indexOf("app.use('/api/devices'"));
+  const route = server.slice(server.indexOf("app.post('/api/admin/cache-recovery'"), server.indexOf("app.use('/api/devices'"));
+  // Must be a POST — a state-changing GET is prefetchable by browsers/scanners.
+  assert.match(route, /app\.post\('\/api\/admin\/cache-recovery'/);
+  assert.doesNotMatch(route, /app\.get\('\/api\/admin\/cache-recovery'/);
   // Authenticated + admin-gated so a normal instructor cannot trigger it.
   assert.match(route, /requireAuth, requireAdmin/);
+  // Same-origin guard prevents cross-site (CSRF) requests.
+  assert.match(route, /requireSameOrigin/);
+  // Rate-limited so the endpoint cannot be hammered.
+  assert.match(route, /rateLimit\(/);
+  // Never cached — a stale recovery response must not be replayed.
+  assert.match(route, /Cache-Control', 'no-store/);
   // It emits Clear-Site-Data: "cache" for a deliberate recovery only.
   assert.match(route, /Clear-Site-Data', '"cache"'/);
+  // Security audit trail: actor + action + request ID.
+  assert.match(route, /admin\.cache-recovery/);
+  assert.match(route, /requestId/);
+  // Idempotency: a retried request within the window is a no-op.
+  assert.match(route, /idempotent/);
   // Only the cache datatype is cleared — login/preferences (storage) survive.
   assert.doesNotMatch(route, /"storage"/);
   assert.doesNotMatch(route, /"cookies"/);

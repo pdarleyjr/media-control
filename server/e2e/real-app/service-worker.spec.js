@@ -404,8 +404,9 @@ test.describe('Part A — Service-Worker / Cache-Busting Transition', () => {
     expect(r2Body).toContain('dashboard-bootstrap-v2.js');
 
     // The recovery endpoint requires authentication (no token → 401), proving it
-    // is admin-gated and not reachable by an anonymous instructor.
-    const rec = await fetch(`${BASE_URL}/api/admin/cache-recovery`);
+    // is admin-gated and not reachable by an anonymous instructor. It is a POST
+    // so browser prefetch / link scanners cannot trigger the state change.
+    const rec = await fetch(`${BASE_URL}/api/admin/cache-recovery`, { method: 'POST' });
     expect(rec.status, 'recovery endpoint must require auth').toBe(401);
 
     // Asset revalidation: ETag present; http returns 304 when unchanged.

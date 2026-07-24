@@ -174,7 +174,7 @@ app.get('/app', (req, res) => {
   // caching, forced every JS/CSS/thumbnail to re-download on each visit, and
   // added startup latency. Build changes are instead handled by the /api/version
   // poll + service-worker skipWaiting + seamless reload (app.js), and a deliberate
-  // one-time recovery is available at GET /api/admin/cache-recovery (admin-only).
+  // one-time recovery is available at POST /api/admin/cache-recovery (admin-only).
   res.setHeader('Cache-Control', 'no-store');
   res.sendFile(path.join(config.frontendDir, 'index.html'));
 });
@@ -824,17 +824,89 @@ app.get('/api/features', requireAuth, resolveTenancy, (req, res) => {
   res.json({ features: resolveFeatureFlags(config.features, req.user.id) });
 });
 
+// Same-origin guard for state-changing admin POST endpoints. A browser
+// cross-site POST always carries an Origin (Referer as fallback); a request
+// whose origin does not match the server's own host is rejected as CSRF. No
+// Origin/Referer = server-to-server / same-origin non-browser, allowed
+// (matching the CORS policy's treatment of an absent origin). This does NOT
+// defer to config.selfHosted: even a self-hosted deployment must reject a
+// cross-site state-changing POST. Behind a reverse proxy (Cloudflare), the
+// Host header reflects the public hostname the browser used, so a legitimate
+// same-origin request still matches.
+function requireSameOrigin(req, res, next) {
+  const source = req.headers.origin || req.headers.referer;
+  if (!source) return next(); // server-to-server / same-origin non-browser
+  let srcHost, srcHostname;
+  try { const u = new URL(source); srcHost = u.host; srcHostname = u.hostname; } catch { return res.status(403).json({ error: 'Invalid origin' }); }
+  const ownHost = req.headers.host || '';
+  const ownHostname = req.hostname || ownHost.split(':')[0] || '';
+  // Same-origin: the origin host (with or without port) matches the request host.
+  if (srcHost === ownHost || srcHostname === ownHostname) return next();
+  if (!isProd && (srcHostname === 'localhost' || srcHostname === '127.0.0.1')) return next();
+  const allowed = allowedHostsProd.some(h => srcHostname === h || srcHostname.endsWith('.' + h));
+  if (allowed) return next();
+  return res.status(403).json({ error: 'Cross-site request rejected' });
+}
+
+// Idempotency window for cache recovery: a retried POST within the window
+// returns the original result without re-emitting Clear-Site-Data, so a
+// network retry never double-clears or confuses the browser.
+const cacheRecoveryWindow = new Map(); // actorId -> { at, requestId }
+const CACHE_RECOVERY_WINDOW_MS = 60000;
+
 // Deliberate, admin-only, one-time cache recovery. Normal /app loads never emit
 // Clear-Site-Data; an operator who needs to force the browser to drop stale
-// application caches (e.g. after a corrupt update) calls this endpoint, which
-// returns the Clear-Site-Data: "cache" header exactly once. It is authenticated
-// + admin-gated so a normal instructor can't trigger it, and it never runs on
-// the routine shell load. Storage (login/preferences) is preserved — only the
-// "cache" datatype is cleared, matching the safe subset of Clear-Site-Data.
-app.get('/api/admin/cache-recovery', requireAuth, requireAdmin, (req, res) => {
+// application caches (e.g. after a corrupt update) POSTs to this endpoint,
+// which returns the Clear-Site-Data: "cache" header. It is a POST (not GET)
+// so browser prefetching, link scanners, navigation, and bookmarks cannot
+// trigger the state change incidentally. It is authenticated + admin-gated +
+// same-origin + rate-limited + audited, and it never runs on the routine shell
+// load. Storage (login/preferences) is preserved — only the "cache" datatype is
+// cleared, matching the safe subset of Clear-Site-Data.
+app.post('/api/admin/cache-recovery', requireAuth, requireAdmin, requireSameOrigin, rateLimit(60000, 5), (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
+  // Content-Type validation: accept application/json or an empty body.
+  const ct = (req.headers['content-type'] || '').toLowerCase();
+  if (ct && !ct.includes('application/json')) {
+    return res.status(415).json({ error: 'Content-Type must be application/json' });
+  }
+  const requestId = req.headers['x-request-id'] || `cr-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const now = Date.now();
+  const actorId = req.user.id;
+  // Idempotency: a retry within the window returns the original result without
+  // re-emitting the header (clearing an already-cleared cache is a no-op).
+  const prior = cacheRecoveryWindow.get(actorId);
+  if (prior && (now - prior.at) < CACHE_RECOVERY_WINDOW_MS) {
+    try {
+      const { audit } = require('./lib/audit');
+      const { getClientIp } = require('./services/activity');
+      audit({
+        actorType: 'user', actorId, action: 'admin.cache-recovery',
+        targetType: 'system', sourceIp: getClientIp(req),
+        details: { requestId, idempotent: true, message: 'duplicate within window' },
+      });
+    } catch (_) { /* audit best-effort */ }
+    return res.json({ ok: true, recovered: 'cache', at: new Date(prior.at).toISOString(), requestId: prior.requestId, idempotent: true });
+  }
+  cacheRecoveryWindow.set(actorId, { at: now, requestId });
+  // Prune stale entries to bound memory.
+  if (cacheRecoveryWindow.size > 1000) {
+    for (const [k, v] of cacheRecoveryWindow) { if (now - v.at >= CACHE_RECOVERY_WINDOW_MS) cacheRecoveryWindow.delete(k); }
+  }
+  // Security audit trail: actor, timestamp, build, and request ID.
+  let buildCommit = null;
+  try { buildCommit = require('./lib/system-version').buildSystemVersion({ db: null, frontendHash, playerHash }).git_commit; } catch (_) {}
+  try {
+    const { audit } = require('./lib/audit');
+    const { getClientIp } = require('./services/activity');
+    audit({
+      actorType: 'user', actorId, action: 'admin.cache-recovery',
+      targetType: 'system', sourceIp: getClientIp(req),
+      details: { requestId, build: buildCommit, idempotent: false },
+    });
+  } catch (_) { /* audit best-effort */ }
   res.setHeader('Clear-Site-Data', '"cache"');
-  res.json({ ok: true, recovered: 'cache', at: new Date().toISOString() });
+  res.json({ ok: true, recovered: 'cache', at: new Date(now).toISOString(), requestId });
 });
 
 app.use('/api/devices', requireAuth, resolveTenancy, require('./routes/devices'));
