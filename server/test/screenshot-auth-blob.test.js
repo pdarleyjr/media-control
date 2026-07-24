@@ -50,12 +50,19 @@ test('Firefox shared stylesheet has no webkit-scrollbar selectors', () => {
   assert.match(css, /scrollbar-color:/);
 });
 
-test('live-preview iframe allow list is modern and not bare autoplay', () => {
+test('live-preview iframes use least-privilege (no Feature-Policy allow on passive previews)', () => {
   const live = read('frontend', 'js', 'views', 'media-control', 'live-preview.js');
-  assert.match(live, /const IFRAME_ALLOW/);
-  assert.match(live, /encrypted-media/);
-  assert.match(live, /picture-in-picture/);
+  // Passive, muted, same-origin dashboard previews must NOT request an overbroad
+  // Feature-Policy allow list — that produced Firefox "Skipping unsupported
+  // feature name" warnings on every preview iframe. The overbroad constant is
+  // gone entirely; presentation/grid/web/youtube frames carry no `allow` attr.
+  assert.doesNotMatch(live, /IFRAME_ALLOW/);
+  assert.doesNotMatch(live, /allow="accelerometer/);
   assert.doesNotMatch(live, /allow="autoplay; fullscreen"/);
+  // Same-origin presentation frames still carry the slide-sync data attr and
+  // no permissions; the YouTube/content-library minimal allow lives elsewhere.
+  assert.match(live, /data-mc-presentation="1"/);
+  assert.match(live, /referrerpolicy="no-referrer"/);
 });
 
 test('operator fast state endpoint and UI poll contract', () => {
@@ -86,4 +93,26 @@ test('applyTileSize defers layout measurement', () => {
   const stage = read('frontend', 'js', 'views', 'media-control', 'stage.js');
   assert.match(stage, /requestAnimationFrame/);
   assert.match(stage, /function applyTileSize/);
+});
+
+test('action-dock suspends live-production polling in Classroom Mode', () => {
+  const dock = read('frontend', 'js', 'views', 'media-control', 'action-dock.js');
+  // Imports the classroom-mode flag and short-circuits operator-state polling.
+  assert.match(dock, /isClassroomModeEnabled/);
+  assert.match(dock, /if \(classroomModeActive\) \{ syncingLive = false; return; \}/);
+  // The periodic health timer is only started when classroom mode is OFF.
+  assert.match(dock, /if \(classroomModeActive\)[\s\S]*?return;[\s\S]*?healthTimer = setInterval/);
+});
+
+test('stage uses a stable keyed render to avoid iframe recreation storms', () => {
+  const stage = read('frontend', 'js', 'views', 'media-control', 'stage.js');
+  // A structural signature is computed and the innerHTML rebuild is skipped when
+  // it is unchanged, patching labels in place instead.
+  assert.match(stage, /function stageRenderSignature/);
+  assert.match(stage, /sig === container\._mcRenderSig/);
+  assert.match(stage, /function updateStageInPlace/);
+  // Instrumentation for soak verification is exposed.
+  assert.match(stage, /bumpStageMetric/);
+  assert.match(stage, /iframeCreates/);
+  assert.match(stage, /iframeRemoves/);
 });

@@ -64,13 +64,17 @@ function playbackSeconds(nowPlaying) {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
 }
 
-// Modern iframe allow list. Bare "autoplay" alone triggers Firefox
-// "Feature Policy: Skipping unsupported feature name autoplay" warnings;
-// pair with encrypted-media + fullscreen which browsers accept.
-const IFRAME_ALLOW = 'accelerometer; autoplay; clipboard-write; encrypted-media; fullscreen; gyroscope; picture-in-picture; web-share';
-
+// Dashboard previews are PASSIVE, muted, same-origin document/deck mirrors
+// (task §3, least privilege). They request NO Feature-Policy permissions:
+//   • Same-origin /player/doc and /player/deck pages need no `allow` attribute
+//     — they are our own passive viewers and never use accelerometer, gyroscope,
+//     clipboard-write, encrypted-media, picture-in-picture, or web-share.
+//   • Requesting those unsupported features produced Firefox
+//     "Feature Policy: Skipping unsupported feature name" warnings on every
+//     preview iframe, so we omit `allow` entirely rather than mask the noise.
+//   • allowfullscreen is not set — these are non-interactive passive previews.
 function presentationFrameHtml(src, klass, slide) {
-  return `<iframe class="${klass}" src="${esc(src)}" loading="eager" allow="${IFRAME_ALLOW}" referrerpolicy="no-referrer" style="pointer-events:none" data-mc-presentation="1" data-mc-slide-index="${slide}"></iframe>`;
+  return `<iframe class="${klass}" src="${esc(src)}" loading="eager" referrerpolicy="no-referrer" style="pointer-events:none" data-mc-presentation="1" data-mc-slide-index="${slide}"></iframe>`;
 }
 
 // Dashboard previews are PASSIVE (task §9): they must NEVER produce classroom
@@ -131,7 +135,7 @@ export function liveEmbedHtml(nowPlaying, cls = '', opts = {}) {
       if (np.remoteUrl) {
         const src = toRootRelative(np.remoteUrl);
         const previewSrc = src + (src.includes('?') ? '&' : '?') + 'operator_preview=1';
-        return `<iframe class="${klass}" src="${esc(previewSrc)}" loading="lazy" allow="${IFRAME_ALLOW}" referrerpolicy="no-referrer" style="pointer-events:none"></iframe>`;
+        return `<iframe class="${klass}" src="${esc(previewSrc)}" loading="lazy" referrerpolicy="no-referrer" style="pointer-events:none"></iframe>`;
       }
       return null;
     }
@@ -146,11 +150,11 @@ export function liveEmbedHtml(nowPlaying, cls = '', opts = {}) {
       if (!allowVideo) return null;
       if (np.remoteUrl && isOwnPlayer(np.remoteUrl)) {
         const src = esc(toRootRelative(np.remoteUrl));
-        return `<iframe class="${klass}" src="${src}" loading="lazy" allow="${IFRAME_ALLOW}" referrerpolicy="no-referrer" style="pointer-events:none"></iframe>`;
+        return `<iframe class="${klass}" src="${src}" loading="lazy" referrerpolicy="no-referrer" style="pointer-events:none"></iframe>`;
       }
       // External URL (wall.mbfdhub.com, etc.) — iframe it directly (CSP allows *.mbfdhub.com)
       if (np.remoteUrl) {
-        return `<iframe class="${klass}" src="${esc(np.remoteUrl)}" loading="lazy" allow="${IFRAME_ALLOW}" referrerpolicy="no-referrer" style="pointer-events:none"></iframe>`;
+        return `<iframe class="${klass}" src="${esc(np.remoteUrl)}" loading="lazy" referrerpolicy="no-referrer" style="pointer-events:none"></iframe>`;
       }
       return null;
     }
