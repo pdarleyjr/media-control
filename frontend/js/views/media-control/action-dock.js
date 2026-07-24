@@ -11,6 +11,7 @@ import {
   LIVE_LADDER,
 } from '../../state/live-stream-ui.js';
 import { openPrepareLiveProductionModal } from './prepare-live-production.js';
+import { isClassroomModeEnabled } from '../../state/feature-flags.js';
 
 let liveActive = false;
 let liveStateKnown = false;
@@ -20,6 +21,13 @@ let startInFlight = false;
 let activeProductionPlan = null;
 let recordingActive = false;
 let recordingSessionId = null;
+// Classroom Mode (task §5): when the server reports classroom mode active,
+// live-production services are stopped server-side and the dashboard must NOT
+// poll them. operator-state / recording / camera-health polling is suspended so
+// the classroom surface does not generate disabled-workload traffic. An admin
+// who explicitly opens a live-production diagnostic re-enables on-demand calls;
+// the periodic 5s health timer stays cancelled while classroom mode is on.
+let classroomModeActive = false;
 
 export function isLiveActive() {
   return liveActive;
@@ -183,6 +191,10 @@ export function mountActionDock(hostEl, opts = {}) {
 
   let syncingLive = false;
   async function syncLive() {
+    // Classroom Mode: live-production services are disabled — never poll
+    // operator-state. This is the source of the repeated /api/live-stream/
+    // operator-state traffic the classroom was emitting while streaming was off.
+    if (classroomModeActive) { syncingLive = false; return; }
     if (syncingLive) return;
     syncingLive = true;
     let director = null;
@@ -401,11 +413,30 @@ export function mountActionDock(hostEl, opts = {}) {
     });
   });
 
-  syncLive();
-  const healthTimer = setInterval(() => syncLive(), 5000);
+  // Classroom Mode gates the live-production health timer. Resolve the flag
+  // first (cached after the boot /api/features fetch, so usually synchronous),
+  // then either suspend polling (classroom on) or start the 5s health timer
+  // (classroom off). A failed flag fetch is fail-closed to OFF (feature-flags.js),
+  // so the catch path polls normally — preserving the existing behavior.
+  let healthTimer = null;
+  isClassroomModeEnabled().then((on) => {
+    classroomModeActive = !!on;
+    if (classroomModeActive) {
+      liveActive = false;
+      liveStateKnown = true;
+      lastLadder = { state: LIVE_LADDER.UNKNOWN, canStart: false, reason: null };
+      repaintLive();
+      return;
+    }
+    syncLive();
+    healthTimer = setInterval(() => syncLive(), 5000);
+  }).catch(() => {
+    syncLive();
+    healthTimer = setInterval(() => syncLive(), 5000);
+  });
   return {
     syncLive,
     repaintBlank,
-    destroy() { clearInterval(healthTimer); },
+    destroy() { if (healthTimer) { clearInterval(healthTimer); healthTimer = null; } },
   };
 }

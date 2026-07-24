@@ -168,7 +168,12 @@ test('camera status reports active sources continuously instead of a static idle
   assert.match(dock, /data\.director && data\.director\.active_camera/);
   assert.match(dock, /mc\.cc\.camera\.active/);
   assert.match(dock, /setInterval\(\(\) => syncLive\(\), 5000\)/);
-  assert.match(dock, /destroy\(\) \{ clearInterval\(healthTimer\); \}/);
+  // The health timer is null-guarded (only started when Classroom Mode is off)
+  // and destroyed on teardown.
+  assert.match(dock, /destroy\(\) \{ if \(healthTimer\) \{ clearInterval\(healthTimer\); healthTimer = null; \} \}/);
+  // Classroom Mode suspends operator-state polling (no disabled-workload traffic).
+  assert.match(dock, /isClassroomModeEnabled\(\)\.then/);
+  assert.match(dock, /if \(classroomModeActive\) \{ syncingLive = false; return; \}/);
 });
 
 test('known inactive live state never delays a normal content broadcast with a director status fetch', () => {
