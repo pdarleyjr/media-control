@@ -50,14 +50,20 @@ jobs:
         working-directory: server/e2e/real-app
         run: |
           npm ci
-          npx playwright install --with-deps chromium
+          # The browser-console acceptance suite (playwright.browser-console.config.js)
+          # runs projects in BOTH chromium AND firefox, so both browsers must be
+          # present on the clean runner. Chromium alone made the Firefox project
+          # fail with "Executable doesn't exist at .../firefox/firefox".
+          npx playwright install --with-deps chromium firefox
 
       - name: Verify release gate scripts exist
         run: |
-          node -e "const p=require('./package.json'); for (const k of ['test:node','test:ui-contract','test:playwright','test:real-app','test:feature-flag-rollback','test:service-worker','test:release']) { if (!p.scripts[k]) { console.error('missing script', k); process.exit(1);} } console.log('scripts ok')"
+          node -e "const p=require('./package.json'); for (const k of ['test:node','test:ui-contract','test:playwright','test:real-app','test:feature-flag-rollback','test:service-worker','test:browser-console','test:release']) { if (!p.scripts[k]) { console.error('missing script', k); process.exit(1);} } console.log('scripts ok')"
           test -f e2e/real-app/feature-flag-rollback.spec.js
           test -f e2e/real-app/service-worker.spec.js
           test -f e2e/real-app/real-app.spec.js
+          test -f e2e/real-app/browser-console.spec.js
+          test -f e2e/real-app/playwright.browser-console.config.js
 
       - name: Run release test gate
         run: npm run test:release
