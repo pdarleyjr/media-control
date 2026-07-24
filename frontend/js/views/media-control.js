@@ -48,6 +48,8 @@ import {
   setControlTarget,
   showRoomOverview,
 } from '../services/command-center-state.js';
+import { mountRoomOverview } from '../components/room-state/room-overview.js';
+import { OPERATOR_STATE } from '../state/operator-state.js';
 // transport.js is used by stage.js internally — no direct import needed here.
 
 // Rail "Room setup" launcher icons (stroke icons, dashboard SVG vocabulary).
@@ -1595,6 +1597,7 @@ function handleTargetChange(tgt) {
     commandCenterState = setControlTarget(commandCenterState, activeControlTarget);
   }
   commandCenterState = enterFocusView(commandCenterState, activeTarget);
+  setViewModeSurfaces(VIEW_MODE.FOCUS);
   try {
     // Migrate the legacy preference that automatically reopened the first wall
     // in Focus View. Focus is now explicit for each mounted Command Center view.
@@ -1612,18 +1615,178 @@ function handleTargetChange(tgt) {
   if (previewId) queuePreviewRequests([previewId], 50, true);
 }
 
+let roomOverviewCleanup = null;
+
+function setViewModeSurfaces(viewMode) {
+  const mainEl = document.querySelector('.mc-cc-main');
+  const overviewSurface = document.getElementById('mc-room-overview-surface');
+  const focusSurface = document.getElementById('mc-focus-control-surface');
+  if (!mainEl || !overviewSurface || !focusSurface) return;
+
+  mainEl.setAttribute('data-view-mode', viewMode);
+
+  if (viewMode === VIEW_MODE.OVERVIEW) {
+    overviewSurface.removeAttribute('hidden');
+    overviewSurface.removeAttribute('inert');
+    overviewSurface.removeAttribute('aria-hidden');
+    focusSurface.setAttribute('hidden', '');
+    focusSurface.setAttribute('inert', '');
+    focusSurface.setAttribute('aria-hidden', 'true');
+  } else {
+    focusSurface.removeAttribute('hidden');
+    focusSurface.removeAttribute('inert');
+    focusSurface.removeAttribute('aria-hidden');
+    overviewSurface.setAttribute('hidden', '');
+    overviewSurface.setAttribute('inert', '');
+    overviewSurface.setAttribute('aria-hidden', 'true');
+  }
+}
+
+function mountRoomOverviewSurface() {
+  const host = document.getElementById('mc-room-overview-host');
+  if (!host) return;
+  if (roomOverviewCleanup) { try { roomOverviewCleanup(); } catch {} roomOverviewCleanup = null; }
+
+  const store = {
+    _state: null,
+    _subs: new Set(),
+    subscribe(fn) {
+      this._subs.add(fn);
+      return () => this._subs.delete(fn);
+    },
+    get() { return this._state; },
+    push(state) {
+      this._state = state;
+      for (const fn of this._subs) { try { fn(state); } catch {} }
+    },
+  };
+
+  function buildOverviewState() {
+    const all = displayState.getAll();
+    const active = all.filter((d) => !isLiveStreamTargetId(d.id) && !isRetiredDisplay(d.id) && !isNonDisplaySource(d));
+    const online = active.filter((d) => d.online);
+    const offline = active.filter((d) => !d.online);
+    const byId = new Map(all.map((d) => [d.id, d]));
+
+    const wallDisplays = [];
+    const wallGroups = {};
+    for (const wall of (walls || [])) {
+      for (const member of (wall.devices || [])) {
+        const d = byId.get(member.device_id);
+        if (d) {
+          wallDisplays.push({
+            ...d,
+            wallId: wall.id,
+            wallName: wall.name,
+            gridCol: member.grid_col,
+            gridRow: member.grid_row,
+          });
+        }
+      }
+      wallGroups[wall.id] = wall;
+    }
+
+    const standaloneDisplays = active.filter((d) => !wallMemberIds.has(d.id));
+
+    return {
+      displays: active.map((d) => ({
+        ...d,
+        wallId: wallMemberIds.has(d.id) ? (wallDisplays.find((wd) => wd.id === d.id)?.wallId || null) : null,
+        wallName: wallMemberIds.has(d.id) ? (wallDisplays.find((wd) => wd.id === d.id)?.wallName || null) : null,
+        mediaTitle: d.now_playing?.label || d.now_playing?.kind || null,
+        contentType: d.content_type || null,
+        opState: !d.online ? OPERATOR_STATE.OFFLINE
+          : d.screen_on === false ? OPERATOR_STATE.STANDBY
+          : (d.now_playing?.kind && d.now_playing.kind !== 'idle') ? OPERATOR_STATE.CONFIRMED
+          : OPERATOR_STATE.STANDBY,
+      })),
+      walls: (walls || []).map((wall) => ({
+        id: wall.id,
+        name: wall.name,
+        layoutMode: wall.layout_mode || 'span',
+        leaderDeviceId: wall.leader_device_id,
+        memberCount: (wall.devices || []).length,
+        gridCols: wall.grid_cols,
+        gridRows: wall.grid_rows,
+        members: (wall.devices || []).map((m) => {
+          const d = byId.get(m.device_id);
+          return {
+            ...m,
+            ...(d || {}),
+            mediaTitle: d?.now_playing?.label || d?.now_playing?.kind || null,
+            opState: !d?.online ? OPERATOR_STATE.OFFLINE
+              : d.screen_on === false ? OPERATOR_STATE.STANDBY
+              : (d.now_playing?.kind && d.now_playing.kind !== 'idle') ? OPERATOR_STATE.CONFIRMED
+              : OPERATOR_STATE.STANDBY,
+          };
+        }),
+      })),
+      standaloneDisplays: standaloneDisplays.map((d) => ({
+        ...d,
+        mediaTitle: d.now_playing?.label || d.now_playing?.kind || null,
+        contentType: d.content_type || null,
+        opState: !d.online ? OPERATOR_STATE.OFFLINE
+          : d.screen_on === false ? OPERATOR_STATE.STANDBY
+          : (d.now_playing?.kind && d.now_playing.kind !== 'idle') ? OPERATOR_STATE.CONFIRMED
+          : OPERATOR_STATE.STANDBY,
+      })),
+      deviceHealth: {
+        total: active.length,
+        online: online.length,
+        offline: offline.length,
+        failed: 0,
+      },
+      aggregateState: offline.length > 0 ? OPERATOR_STATE.OFFLINE
+        : online.length > 0 ? OPERATOR_STATE.CONFIRMED
+        : OPERATOR_STATE.STANDBY,
+      stale: false,
+      pendingCommands: [],
+      classroomProgram: null,
+      recording: null,
+      stream: null,
+      livestream: null,
+    };
+  }
+
+  roomOverviewCleanup = mountRoomOverview(host, {
+    store,
+    i18n: (key, fallback) => { try { return t(key); } catch { return fallback || key; } },
+    onFocusView: (target) => {
+      if (!target) return;
+      if (target.type === 'wall') {
+        const wallTarget = { type: 'wall', id: target.id, wall_id: target.id, supportsModes: true };
+        targetApi?.setActive?.(wallTarget);
+        handleTargetChange(wallTarget);
+      } else if (target.type === 'display') {
+        const displayTarget = { type: 'display', id: target.id, supportsModes: false };
+        targetApi?.setActive?.(displayTarget);
+        handleTargetChange(displayTarget);
+      }
+    },
+  });
+
+  store.push(buildOverviewState());
+
+  const unsubDisplayState = displayState.subscribe(() => {
+    if (commandCenterState.viewMode !== VIEW_MODE.OVERVIEW) return;
+    store.push(buildOverviewState());
+  });
+
+  const originalCleanup = roomOverviewCleanup;
+  roomOverviewCleanup = () => {
+    try { unsubDisplayState(); } catch {}
+    try { originalCleanup(); } catch {}
+  };
+}
+
 function activateRoomOverview() {
   activeTarget = null;
   commandCenterState = showRoomOverview(commandCenterState);
   try { sessionStorage.removeItem(LAST_TARGET_KEY); } catch { /* best effort */ }
   activePreviewCursor = 0;
-  syncSocketTarget(activeControlTarget);
-  paintStage();
-  paintSummary();
-  paintChips();
-  transportApi?.repaint?.();
-  spanSplitApi?.repaint?.();
-  screensaverApi?.repaint?.();
+  setViewModeSurfaces(VIEW_MODE.OVERVIEW);
+  mountRoomOverviewSurface();
+  paintViewModeControls();
 }
 
 function activateFocusView() {
@@ -1633,6 +1796,7 @@ function activateFocusView() {
   if (!target) return;
   targetApi?.setActive?.(target);
   handleTargetChange(target);
+  setViewModeSurfaces(VIEW_MODE.FOCUS);
 }
 
 // Pick the initial canvas target so the canvas opens on ONE large preview (per
@@ -2223,21 +2387,27 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
           <button type="button" class="mc-cc-rail-btn" data-mc-rail="settings" title="${esc(t('mc.cc.rail.settings'))}" aria-label="${esc(t('mc.cc.rail.settings'))}">${ICON_SETTINGS}</button>
         </nav>
 
-        <main class="mc-cc-main">
-          <section class="mc-cc-canvas-area">
-            <div id="mc-cc-chips" class="mc-cc-chips" aria-live="polite"></div>
-            <div id="mc-multiview" class="mc-multiview-host" role="dialog"
-                 aria-modal="true" aria-label="${esc(t('mc.cmd.multiview'))}" tabindex="-1" hidden></div>
-            <section id="mc-stage" class="mc-stage mc-cc-canvas" aria-label="${esc(t('mc.section.displays'))}"></section>
+        <main class="mc-cc-main" data-view-mode="overview">
+          <section id="mc-room-overview-surface" class="mc-room-overview-surface" aria-label="${esc(t('mc.e.overview.region_label', 'Room overview'))}">
+            <div id="mc-room-overview-host" class="mc-room-overview-host"></div>
           </section>
 
-          <section class="mc-cc-controls">
-            <div id="mc-transport-host" class="mc-transport-row-host"></div>
-            <div class="mc-cc-sub-row">
-              <div id="mc-span-split-host" class="mc-span-split-host"></div>
-              <div id="mc-screensaver-host" class="mc-screensaver-row-host"></div>
-            </div>
-            <div id="mc-action-dock-host" class="mc-action-dock-host"></div>
+          <section id="mc-focus-control-surface" class="mc-focus-control-surface" hidden inert aria-hidden="true">
+            <section class="mc-cc-canvas-area">
+              <div id="mc-cc-chips" class="mc-cc-chips" aria-live="polite"></div>
+              <div id="mc-multiview" class="mc-multiview-host" role="dialog"
+                   aria-modal="true" aria-label="${esc(t('mc.cmd.multiview'))}" tabindex="-1" hidden></div>
+              <section id="mc-stage" class="mc-stage mc-cc-canvas" aria-label="${esc(t('mc.section.displays'))}"></section>
+            </section>
+
+            <section class="mc-cc-controls">
+              <div id="mc-transport-host" class="mc-transport-row-host"></div>
+              <div class="mc-cc-sub-row">
+                <div id="mc-span-split-host" class="mc-span-split-host"></div>
+                <div id="mc-screensaver-host" class="mc-screensaver-row-host"></div>
+              </div>
+              <div id="mc-action-dock-host" class="mc-action-dock-host"></div>
+            </section>
           </section>
         </main>
 
@@ -2605,6 +2775,8 @@ pruneSelection();
 window.mcGetNavigationContext = () => ({ selected_target: activeTarget });
 
 export function unmount() {
+  // Clean up Room Overview surface
+  if (roomOverviewCleanup) { try { roomOverviewCleanup(); } catch {} roomOverviewCleanup = null; }
   // The view owns NO live broadcast resource (that's the engine singleton),
   // so unmount only detaches this view's subscriptions. Broadcasts persist.
   // Tear down any open whiteboard overlay so it doesn't outlive this view
