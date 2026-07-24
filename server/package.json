@@ -13,7 +13,8 @@
     "test:real-app": "npm --prefix e2e/real-app test",
     "test:service-worker": "node e2e/real-app/run-playwright-config.js playwright.service-worker.config.js",
     "test:feature-flag-rollback": "node e2e/real-app/run-playwright-config.js playwright.feature-flag.config.js",
-    "test:release": "npm run test:node && npm run test:ui-contract && npm run test:playwright && npm run test:real-app && npm run test:feature-flag-rollback && npm run test:service-worker",
+    "test:browser-console": "node e2e/real-app/run-playwright-config.js playwright.browser-console.config.js",
+    "test:release": "npm run test:node && npm run test:ui-contract && npm run test:playwright && npm run test:real-app && npm run test:feature-flag-rollback && npm run test:service-worker && npm run test:browser-console",
     "test:all": "npm run test:release",
     "topology:report": "node scripts/repair-display-topology.js"
   },
