@@ -17,27 +17,27 @@ test('live-program preparation is explicit and does not start the stream or chan
 });
 
 test('live start defaults to manual mode and gates automatic direction explicitly', () => {
-  assert.match(source, /directorMode === 'auto' \? 'auto' : 'manual'|director_mode === 'auto' \? 'auto' : 'manual'/);
+  assert.match(source, /const directorMode = 'manual'/);
   assert.match(source, /confirm_auto_canary/);
-  assert.match(source, /AUTO_CANARY_CONFIRMATION_REQUIRED/);
-  assert.match(source, /callDirector\('POST', `\/mode\/\$\{directorMode\}`\)/);
+  assert.match(source, /initiator !== 'operator' && initiator !== 'user'/);
+  assert.match(source, /cameraControl\.startLivestream\(\)/);
   assert.match(source, /require\('\.\.\/lib\/live-stream-safety'\)/);
-  assert.match(source, /PROGRAM_SCENE_UNSAFE/);
+  assert.match(source, /APPROVED_PROGRAM_SCENES/);
   assert.match(source, /OPERATOR_STREAM_START_DISABLED|startGateFailure/);
   assert.match(source, /AUTOMATIC_STREAM_START_DISABLED/);
 });
 
 test('live start reports failure unless OBS confirms the stream is active', () => {
   assert.match(source, /STREAM_START_NOT_CONFIRMED/);
-  assert.match(source, /waitForDirector\([\s\S]*stream_active === true/);
-  assert.match(source, /if \(!streamVerified\)[\s\S]*callDirector\('POST', '\/stream\/stop'\)/);
+  assert.match(source, /stream_active === true/);
+  assert.match(source, /if \(!verified\)[\s\S]*cameraControl\.stopLivestream\(\)/);
 });
 
 test('live start replaces and refreshes the OBS browser source before scene selection', () => {
-  assert.match(source, /function freshProgramUrl/);
-  assert.match(source, /_mc_live_session/);
-  assert.match(source, /callDirector\('POST', '\/media-control\/program-url', \{ url: playerUrl \}\)/);
-  assert.match(source, /callDirector\('POST', '\/media-control\/refresh'\)/);
+  assert.match(source, /buildLiveStreamPlayerUrl/);
+  assert.match(source, /program_url/);
+  assert.match(source, /program_refresh/);
+  assert.match(source, /prepareLiveProgram/);
 });
 
 test('stopping a stream preserves the current classroom scene and director mode by default', () => {

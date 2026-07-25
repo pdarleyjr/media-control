@@ -70,7 +70,7 @@ test('operator fast state endpoint and UI poll contract', () => {
   const api = read('frontend', 'js', 'api.js');
   const dock = read('frontend', 'js', 'views', 'media-control', 'action-dock.js');
   assert.match(route, /router\.get\('\/operator-state'/);
-  assert.match(route, /callDirector\('GET', '\/director\/state'\)/);
+  assert.match(route, /getCameraDirectorState/);
   assert.match(route, /deepHealthCache|cacheDeepHealth/);
   assert.match(api, /operatorState: \(\) => request\('\/live-stream\/operator-state'/);
   assert.match(dock, /api\.liveStream\.operatorState\(\)/);

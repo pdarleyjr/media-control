@@ -53,8 +53,7 @@ test('live stream status, start verification, and stop verification update the a
 
   assert.match(source, /updateLiveProductionState/);
   assert.match(source, /observeDirectorResult\(req, directorResult, 'status:checked'\)/);
-  assert.match(source, /observeDirectorResult\(req, statusAfterMode, 'stream:prepared'\)/);
-  assert.match(source, /observeDirectorResult\(req, status, 'stream:start-verified'\)/);
+  assert.match(source, /observeDirectorResult\([\s\S]*?'stream:start-verified'\)/);
   assert.match(source, /observeDirectorResult\(req, check, 'stream:stop-verification'\)/);
   assert.match(source, /publishRoomSnapshot/);
   assert.match(source, /buildLivestreamCapabilities/);

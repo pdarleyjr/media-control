@@ -5,27 +5,23 @@ const assert = require('node:assert/strict');
 
 const player = fs.readFileSync(path.join(__dirname, '..', 'player', 'classroom-camera.html'), 'utf8');
 
-test('classroom camera player reconnects when video timestamps stop advancing', () => {
-  assert.match(player, /lastProgressAt/);
-  assert.match(player, /Date\.now\(\) - lastProgressAt > 10000/);
-  assert.match(player, /freshSource = source \+ '\?fresh='/);
-  assert.match(player, /liveMaxLatencyDurationCount: 3/);
+test('classroom camera player reconnects when video stalls', () => {
+  assert.match(player, /lastOk/);
+  assert.match(player, /Date\.now\(\)-lastOk\)>8000/);
+  assert.match(player, /stallTO/);
+  assert.match(player, /networkError.*setTimeout\(connect/);
 });
 
-test('Focus 210 top-level player exposes real digital PTZ controls and presets', () => {
-  assert.match(player, /data-eptz="zoom-in"/);
-  assert.match(player, /data-eptz="wall-1"/);
-  assert.match(player, /data-eptz="wall-2"/);
-  assert.match(player, /window\.top === window\.self/);
-  assert.match(player, /video\.style\.transform/);
-  assert.match(player, /params\.get\('preset'\)/);
-  assert.match(player, /history\.replaceState/);
-  assert.match(player, /preset-change/);
+test('classroom camera player has retry button and error display', () => {
+  assert.match(player, /id="retry"/);
+  assert.match(player, /addEventListener\('click',connect\)/);
+  assert.match(player, /showErr/);
+  assert.match(player, /clearErr/);
 });
 
-test('classroom camera player exposes the live ANNKE wall overview', () => {
-  assert.match(player, /cameraParam === '3'/);
-  assert.match(player, /camera === '1'/);
+test('classroom camera player exposes the live ANNKE camera', () => {
+  assert.match(player, /camera=params\.get\('camera'\)\|\|'3'/);
+  assert.match(player, /\/player\/classroom-camera\/.*index\.m3u8/);
 });
 
 test('camera feed drawer exposes a same-origin Focus 210 control surface', () => {
@@ -34,9 +30,6 @@ test('camera feed drawer exposes a same-origin Focus 210 control surface', () =>
 
   assert.match(feeds, /mc-cf-control-open/);
   assert.match(feeds, /openViewModal/);
-  assert.match(feeds, /camera=1&controls=1&preset=wide/);
   assert.match(catalog, /url: `\/player\/classroom-camera\.html/);
   assert.doesNotMatch(catalog, /media-control\.mbfdhub\.com\/player\/classroom-camera/);
-  assert.match(catalog, /ANNKE · Primary Wall/);
-  assert.match(catalog, /Focus 210 · Secondary Wall/);
 });

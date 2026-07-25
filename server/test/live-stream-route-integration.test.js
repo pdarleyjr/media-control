@@ -26,52 +26,64 @@ function closeQuiet(server) {
 }
 
 test('prepare, manual start, auto gate, disabled start, and stop preserve safety boundaries', async () => {
-  const directorCalls = [];
+  const cameraCalls = [];
+  // The Kamrui camera-control edge status. `livestreaming` flips on/off as the
+  // route drives /api/stream/start and /api/stream/stop.
+  const cameraState = {
+    camera_online: true,
+    preview_online: true,
+    recording: false,
+    livestreaming: false,
+    session_id: null,
+    recording_started_at: null,
+    stream_started_at: null,
+    disk_free_bytes: 0,
+    last_recording: null,
+    errors: [],
+  };
+  // Vestigial director-scene/mode snapshot kept for the stop-preservation
+  // assertions below (the synthetic camera director always reports the fixed
+  // ANNKE full-frame scene in manual mode).
   const directorState = {
+    current_scene: 'KAMRUI_CAMERA_3_FULL',
     mode: 'manual',
-    current_scene: 'KAMRUI_CAMERA_1_FULL',
-    stream_active: false,
-    recording_active: false,
-    kamrui_camera_1_stream: true,
-    kamrui_camera_2_stream: false,
-    annke_camera_3_stream: true,
-    obs: true,
-    peertube_configured: true,
-    operator_stream_start_allowed: true,
-    automatic_stream_start_allowed: false,
-    director: { active_camera: 1, content_active: false },
   };
   let rejectStart = false;
 
-  const director = express();
-  director.use(express.json());
-  director.use((req, _res, next) => {
-    directorCalls.push(`${req.method} ${req.path}`);
+  const camera = express();
+  camera.use(express.json());
+  camera.use((req, _res, next) => {
+    cameraCalls.push(`${req.method} ${req.path}`);
     next();
   });
-  director.get('/status', (_req, res) => res.json(directorState));
-  director.post('/media-control/program-url', (_req, res) => res.json({ ok: true }));
-  director.post('/media-control/refresh', (_req, res) => res.json({ ok: true }));
-  director.post('/mode/:mode', (req, res) => {
-    directorState.mode = req.params.mode;
-    res.json({ ok: true, mode: req.params.mode });
+  camera.get('/api/status', (_req, res) => res.json(cameraState));
+  camera.get('/api/recordings', (_req, res) => res.json({ recordings: [] }));
+  camera.post('/api/record/start', (_req, res) => {
+    cameraState.recording = true;
+    cameraState.session_id = 'test-session';
+    res.json({ ok: true, session_id: 'test-session' });
   });
-  director.post('/stream/start', (_req, res) => {
+  camera.post('/api/record/stop', (_req, res) => {
+    cameraState.recording = false;
+    res.json({ ok: true });
+  });
+  camera.post('/api/stream/start', (_req, res) => {
     if (rejectStart) {
-      return res.json({ ok: false, message: 'stream start disabled by ENABLE_STREAM_START=false' });
+      return res.status(503).json({ ok: false, message: 'stream start disabled by ENABLE_STREAM_START=false' });
     }
-    directorState.stream_active = true;
+    cameraState.livestreaming = true;
     res.json({ ok: true });
   });
-  director.post('/stream/stop', (_req, res) => {
-    directorState.stream_active = false;
+  camera.post('/api/stream/stop', (_req, res) => {
+    cameraState.livestreaming = false;
     res.json({ ok: true });
   });
+  camera.post('/api/emergency-stop', (_req, res) => res.json({ ok: true }));
 
-  const directorServer = await listen(director);
-  const directorAddress = directorServer.address();
-  process.env.AI_DIRECTOR_URL = `http://127.0.0.1:${directorAddress.port}`;
-  process.env.AI_DIRECTOR_TIMEOUT_MS = '1000';
+  const cameraServer = await listen(camera);
+  const cameraAddress = cameraServer.address();
+  process.env.CAMERA_CONTROL_BASE_URL = `http://127.0.0.1:${cameraAddress.port}`;
+  process.env.CAMERA_CONTROL_TOKEN = 'test-token';
   process.env.PEERTUBE_LIVE_WATCH_URL = 'https://videos.example.test/watch/demo';
   process.env.LIVE_STREAM_OPERATOR_START_ALLOWED = 'true';
   process.env.LIVE_STREAM_AUTOMATIC_START_ALLOWED = 'false';
@@ -81,6 +93,7 @@ test('prepare, manual start, auto gate, disabled start, and stop preserve safety
   delete require.cache[require.resolve('../routes/live-stream')];
   delete require.cache[require.resolve('../lib/live-stream-capabilities')];
   delete require.cache[require.resolve('../lib/live-production-state')];
+  delete require.cache[require.resolve('../lib/camera-control-client')];
 
   const { db } = require('../db/database');
   const { resetLiveProductionStateForTests } = require('../lib/live-production-state');
@@ -124,7 +137,7 @@ test('prepare, manual start, auto gate, disabled start, and stop preserve safety
   const base = `http://127.0.0.1:${appAddress.port}/api/live-stream`;
 
   try {
-    directorCalls.length = 0;
+    cameraCalls.length = 0;
     const statusResponse = await fetch(`${base}/status`);
     const statusBody = await statusResponse.json();
     assert.equal(statusResponse.status, 200);
@@ -140,7 +153,7 @@ test('prepare, manual start, auto gate, disabled start, and stop preserve safety
     db.prepare("UPDATE devices SET status = 'online' WHERE workspace_id = ? AND id LIKE 'live-stream-program-%'")
       .run(workspaceId);
 
-    directorCalls.length = 0;
+    cameraCalls.length = 0;
     const prepareResponse = await fetch(`${base}/prepare`, { method: 'POST' });
     const prepared = await prepareResponse.json();
     assert.equal(prepareResponse.status, 200);
@@ -148,33 +161,25 @@ test('prepare, manual start, auto gate, disabled start, and stop preserve safety
     assert.equal(new URL(prepared.player_url).pathname, '/player/live-stream');
     assert.equal(new URL(prepared.player_url).search, '');
     assert.equal(prepared.player_url.includes('token'), false);
-    assert.ok(directorCalls.includes('GET /status'));
-    assert.ok(directorCalls.includes('POST /media-control/program-url'));
-    assert.ok(directorCalls.includes('POST /media-control/refresh'));
+    assert.ok(cameraCalls.includes('GET /api/status'));
 
-    directorCalls.length = 0;
+    cameraCalls.length = 0;
+    // Auto mode is retired in the fixed-camera publisher; director_mode is
+    // always 'manual'. A system-initiated auto request is blocked by the
+    // automatic-start gate.
     const rejectedAutoResponse = await fetch(`${base}/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ director_mode: 'auto' }),
+      body: JSON.stringify({ director_mode: 'auto', initiator: 'system' }),
     });
     const rejectedAuto = await rejectedAutoResponse.json();
     assert.equal(rejectedAutoResponse.status, 409);
-    assert.equal(rejectedAuto.code, 'AUTO_CANARY_CONFIRMATION_REQUIRED');
+    assert.equal(rejectedAuto.code, 'AUTOMATIC_STREAM_START_DISABLED');
     assert.equal(rejectedAuto.success, false);
     assert.equal(typeof rejectedAuto.request_id, 'string');
     assert.ok(rejectedAuto.error);
 
-    const autonomous = await fetch(`${base}/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ director_mode: 'manual', initiator: 'system' }),
-    });
-    const autonomousBody = await autonomous.json();
-    assert.equal(autonomous.status, 409);
-    assert.equal(autonomousBody.code, 'AUTOMATIC_STREAM_START_DISABLED');
-
-    // Simulate production ENABLE_STREAM_START=false rejection
+    // Camera API rejects the stream start (e.g. ENABLE_STREAM_START=false on edge)
     rejectStart = true;
     const disabledStartResponse = await fetch(`${base}/start`, {
       method: 'POST',
@@ -183,22 +188,21 @@ test('prepare, manual start, auto gate, disabled start, and stop preserve safety
     });
     const disabledStart = await disabledStartResponse.json();
     assert.equal(disabledStartResponse.status, 502);
-    assert.equal(disabledStart.code, 'OPERATOR_STREAM_START_DISABLED');
-    assert.match(disabledStart.error, /Operator stream start is disabled/i);
+    assert.equal(disabledStart.code, 'STREAM_START_REJECTED');
     assert.equal(disabledStart.success, false);
     assert.ok(disabledStart.request_id);
+    assert.ok(disabledStart.error);
 
-    // After disabled failure, status should report operator_start_allowed false
+    // After rejected start, status should report the last error
     const statusAfterFail = await (await fetch(`${base}/status`)).json();
-    assert.equal(statusAfterFail.operator_start_allowed, false);
-    assert.equal(statusAfterFail.last_error_code, 'OPERATOR_STREAM_START_DISABLED');
+    assert.equal(statusAfterFail.last_error_code, 'STREAM_START_REJECTED');
 
     rejectStart = false;
     // Clear last error by forcing allow via env still true and new request once director allows
     const { clearLiveStreamLastError } = require('../lib/live-production-state');
     clearLiveStreamLastError(workspaceId);
 
-    directorCalls.length = 0;
+    cameraCalls.length = 0;
     const startResponse = await fetch(`${base}/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -209,17 +213,15 @@ test('prepare, manual start, auto gate, disabled start, and stop preserve safety
     assert.equal(started.success, true);
     assert.equal(started.stream_started, true);
     assert.ok(started.request_id);
-    assert.ok(directorCalls.includes('POST /mode/manual'));
-    assert.ok(!directorCalls.includes('POST /mode/auto'));
-    assert.ok(directorCalls.includes('POST /stream/start'));
+    assert.ok(cameraCalls.includes('POST /api/stream/start'));
 
-    directorCalls.length = 0;
+    cameraCalls.length = 0;
     const activePrepareResponse = await fetch(`${base}/prepare`, { method: 'POST' });
     const activePrepare = await activePrepareResponse.json();
     assert.equal(activePrepareResponse.status, 409);
     assert.equal(activePrepare.code, 'STREAM_ALREADY_ACTIVE');
 
-    directorCalls.length = 0;
+    cameraCalls.length = 0;
     const sceneBeforeStop = directorState.current_scene;
     const modeBeforeStop = directorState.mode;
     const stopResponse = await fetch(`${base}/stop`, { method: 'POST' });
@@ -229,52 +231,55 @@ test('prepare, manual start, auto gate, disabled start, and stop preserve safety
     assert.equal(stopped.classroom_composition_preserved, true);
     assert.equal(directorState.current_scene, sceneBeforeStop);
     assert.equal(directorState.mode, modeBeforeStop);
-    assert.ok(!directorCalls.some((call) => call.includes('/mode/')));
-    assert.ok(!directorCalls.some((call) => call.includes('/scene/')));
+    assert.ok(!cameraCalls.some((call) => call.includes('/mode/')));
+    assert.ok(!cameraCalls.some((call) => call.includes('/scene/')));
   } finally {
     cleanup();
     resetLiveProductionStateForTests();
     await closeQuiet(appServer);
-    await closeQuiet(directorServer);
+    await closeQuiet(cameraServer);
   }
 });
 
 test('start accepted but not confirmed issues STREAM_START_NOT_CONFIRMED and safe stop', async () => {
-  const directorState = {
-    mode: 'manual',
-    current_scene: 'KAMRUI_CAMERA_1_FULL',
-    stream_active: false,
-    recording_active: false,
-    kamrui_camera_1_stream: true,
-    obs: true,
-    peertube_configured: true,
-    operator_stream_start_allowed: true,
-    director: { active_camera: 1, content_active: false },
+  const cameraState = {
+    camera_online: true,
+    preview_online: true,
+    recording: false,
+    livestreaming: false,
+    session_id: null,
+    recording_started_at: null,
+    stream_started_at: null,
+    disk_free_bytes: 0,
+    last_recording: null,
+    errors: [],
   };
   let stopCalls = 0;
-  const director = express();
-  director.use(express.json());
-  director.get('/status', (_req, res) => res.json(directorState));
-  director.post('/media-control/program-url', (_req, res) => res.json({ ok: true }));
-  director.post('/media-control/refresh', (_req, res) => res.json({ ok: true }));
-  director.post('/mode/:mode', (req, res) => {
-    directorState.mode = req.params.mode;
-    res.json({ ok: true });
-  });
-  director.post('/stream/start', (_req, res) => res.json({ ok: true }));
-  director.post('/stream/stop', (_req, res) => {
+  const camera = express();
+  camera.use(express.json());
+  camera.get('/api/status', (_req, res) => res.json(cameraState));
+  camera.get('/api/recordings', (_req, res) => res.json({ recordings: [] }));
+  camera.post('/api/record/start', (_req, res) => res.json({ ok: true, session_id: 'test-session' }));
+  camera.post('/api/record/stop', (_req, res) => res.json({ ok: true }));
+  // /api/stream/start acknowledges the request but never flips `livestreaming`,
+  // so the route's authoritative status verification never observes an active
+  // stream and must roll back with STREAM_START_NOT_CONFIRMED.
+  camera.post('/api/stream/start', (_req, res) => res.json({ ok: true }));
+  camera.post('/api/stream/stop', (_req, res) => {
     stopCalls += 1;
     res.json({ ok: true });
   });
+  camera.post('/api/emergency-stop', (_req, res) => res.json({ ok: true }));
 
-  const directorServer = await listen(director);
-  process.env.AI_DIRECTOR_URL = `http://127.0.0.1:${directorServer.address().port}`;
-  process.env.AI_DIRECTOR_TIMEOUT_MS = '500';
+  const cameraServer = await listen(camera);
+  process.env.CAMERA_CONTROL_BASE_URL = `http://127.0.0.1:${cameraServer.address().port}`;
+  process.env.CAMERA_CONTROL_TOKEN = 'test-token';
   process.env.PEERTUBE_LIVE_WATCH_URL = 'https://videos.example.test/watch/demo';
   delete require.cache[require.resolve('../config')];
   delete require.cache[require.resolve('../routes/live-stream')];
   delete require.cache[require.resolve('../lib/live-stream-capabilities')];
   delete require.cache[require.resolve('../lib/live-production-state')];
+  delete require.cache[require.resolve('../lib/camera-control-client')];
   const { db } = require('../db/database');
   const { resetLiveProductionStateForTests } = require('../lib/live-production-state');
   resetLiveProductionStateForTests();
@@ -330,6 +335,6 @@ test('start accepted but not confirmed issues STREAM_START_NOT_CONFIRMED and saf
     cleanup();
     resetLiveProductionStateForTests();
     await closeQuiet(appServer);
-    await closeQuiet(directorServer);
+    await closeQuiet(cameraServer);
   }
 });

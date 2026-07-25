@@ -10,11 +10,11 @@ const {
 test('cameraUpstreamUrl only permits the three fixed classroom cameras', () => {
   assert.equal(
     cameraUpstreamUrl('1', 'index.m3u8'),
-    'http://host.docker.internal:8766/camera-hls/1/index.m3u8'
+    'http://192.168.1.122:8888/kamrui-camera-1/index.m3u8'
   );
   assert.equal(
     cameraUpstreamUrl('3', 'index.m3u8'),
-    'http://host.docker.internal:8766/camera-hls/3/index.m3u8'
+    'http://192.168.1.122:8888/annke-preview/index.m3u8'
   );
   assert.throws(() => cameraUpstreamUrl('4', 'index.m3u8'), /camera/);
   assert.throws(() => cameraUpstreamUrl('1', '../config.yml'), /asset/);
@@ -38,11 +38,11 @@ test('rewriteCameraManifest keeps ANNKE camera 3 assets on the same-origin proxy
   const manifest = [
     '#EXTM3U',
     '#EXT-X-STREAM-INF:BANDWIDTH=2000000',
-    'http://100.81.154.123:8888/annke-camera-3/video1_stream.m3u8',
+    'http://192.168.1.122:8888/annke-preview/video1_stream.m3u8',
   ].join('\n');
 
   const rewritten = rewriteCameraManifest(manifest, '3');
 
   assert.match(rewritten, /\/player\/classroom-camera\/3\/video1_stream\.m3u8/);
-  assert.doesNotMatch(rewritten, /100\.81\.154\.123/);
+  assert.doesNotMatch(rewritten, /192\.168\.1\.122/);
 });
