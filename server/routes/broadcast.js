@@ -25,26 +25,8 @@ const { resolveBroadcastTargets } = require('../lib/broadcast-targets');
 const nodeRegistry = require('../lib/node-registry');
 
 async function callDirector(path, body) {
-  const base = String(process.env.AI_DIRECTOR_URL || 'http://host.docker.internal:8766').replace(/\/+$/, '');
-  if (!base) return { ok: false, message: 'AI Director URL not configured' };
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), Number(process.env.AI_DIRECTOR_TIMEOUT_MS) || 8000);
-  try {
-    const response = await fetch(`${base}${path}`, {
-      method: 'POST',
-      headers: body ? { 'Content-Type': 'application/json' } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
-      signal: controller.signal,
-    });
-    const text = await response.text();
-    let data = null;
-    try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-    return { ok: response.ok, status: response.status, data };
-  } catch (e) {
-    return { ok: false, message: e && e.message || 'AI Director request failed' };
-  } finally {
-    clearTimeout(timeout);
-  }
+  // AI Director retired - use camera-control-client for camera operations
+  return { ok: false, message: 'AI Director retired - use camera-control-client' };
 }
 
 router.post('/', async (req, res) => {

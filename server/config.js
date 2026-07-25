@@ -241,4 +241,9 @@ module.exports = {
     playerBaseUrl: process.env.LIVE_STREAM_PLAYER_BASE_URL || process.env.APP_URL || '',
     peerTubeWatchUrl: process.env.PEERTUBE_LIVE_WATCH_URL || '',
   },
+  cameraControl: {
+    baseUrl: process.env.CAMERA_CONTROL_BASE_URL || '',
+    token: process.env.CAMERA_CONTROL_TOKEN || '',
+    previewUrl: process.env.CAMERA_PREVIEW_URL || '',
+  },
 };

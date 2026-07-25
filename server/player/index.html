@@ -270,6 +270,10 @@
 </script>
 
   <script>
+    if (window.__MBFD_PLAYER_INITIALIZED__) {
+      console.warn('[player] duplicate initialization prevented');
+    } else {
+    window.__MBFD_PLAYER_INITIALIZED__ = true;
     // ==================== i18n ====================
     // Lightweight inline i18n for the player. The player is a standalone page
     // on display devices — it doesn't import the dashboard's i18n module.
@@ -445,6 +449,7 @@
     let currentMediaEnded = false;
     let currentMediaError = null;
     let lastPlaybackProgressAt = 0;
+    let playbackGeneration = 0;
     let transportSeekInProgress = false;
     let currentLocalAssetReady = null;
     let currentCacheStatus = 'direct';
@@ -495,6 +500,12 @@
     }
     function normalizeDisplayStateRestore(state) {
       if (!state || typeof state !== 'object') return null;
+      // Rebase every persisted state, including media without slide metadata,
+      // so the first report after reconnect cannot be rejected as stale.
+      const revision = parseInt(state.state_revision, 10);
+      if (Number.isInteger(revision) && revision >= 0) {
+        playerStateRevision = Math.max(playerStateRevision, revision);
+      }
       const rawSlide = state.slide_index ?? state.slideIndex ?? state.page ?? state.page_index ?? state.slide;
       const slide = parseInt(rawSlide, 10);
       if (!Number.isFinite(slide) || slide < 1) return null;
@@ -510,10 +521,8 @@
         restore_source_device_id: state.restore_source_device_id || null,
         updated_at: state.updated_at || null,
       };
-      const revision = parseInt(state.state_revision, 10);
       if (Number.isInteger(revision) && revision >= 0) {
         restore.state_revision = revision;
-        playerStateRevision = Math.max(playerStateRevision, revision);
       }
       return restore;
     }
@@ -1592,12 +1601,14 @@
       const data = event && event.data;
       if (!data || (data.__mc_transport_state == null && data.__mc_transport_ack == null && data.__mc_screenshot == null)) return;
       if (typeof data.__mc_screenshot === 'string' && data.__mc_screenshot.length > 100 && data.__mc_screenshot.length <= 2 * 1024 * 1024) {
-        lastScreenshotSentAt = Date.now();
-        socket.emit('device:screenshot', {
-          device_id: config.deviceId,
-          image_b64: data.__mc_screenshot,
-          captured_at: Number(data.captured_at) || Date.now(),
-        });
+        if (socket?.connected) {
+          lastScreenshotSentAt = Date.now();
+          socket.emit('device:screenshot', {
+            device_id: config.deviceId,
+            image_b64: data.__mc_screenshot,
+            captured_at: Number(data.captured_at) || Date.now(),
+          });
+        }
       }
       if (data.__mc_transport_state && typeof data.__mc_transport_state === 'object') {
         acceptChildTransportState(data.__mc_transport_state);
@@ -2858,21 +2869,28 @@
     // ==================== Auto-reload on code update ====================
     let knownServerHash = null;
     let versionCheckTimer = null;
+    function acceptServerVersion(data) {
+      const nextHash = String(data?.hash || '').trim();
+      if (!nextHash) return;
+      if (!knownServerHash) {
+        knownServerHash = nextHash;
+        console.log('Server version:', data.version, 'hash:', nextHash);
+        return;
+      }
+      if (nextHash !== knownServerHash) {
+        console.log('Server code updated, reloading...', knownServerHash, '->', nextHash);
+        location.reload();
+      }
+    }
+
     function startVersionCheck() {
       if (versionCheckTimer) clearInterval(versionCheckTimer);
-      // Initial fetch to learn current hash
-      fetch(config.serverUrl + '/api/version').then(r => r.json()).then(data => {
-        knownServerHash = data.hash;
-        console.log('Server version:', data.version, 'hash:', data.hash);
-      }).catch(() => {});
+      // Learn the initial hash once. On a socket reconnect, preserve the
+      // renderer's original hash so a newly deployed server forces a reload.
+      fetch(config.serverUrl + '/api/version').then(r => r.json()).then(acceptServerVersion).catch(() => {});
       // Poll every 30s
       versionCheckTimer = setInterval(() => {
-        fetch(config.serverUrl + '/api/version').then(r => r.json()).then(data => {
-          if (knownServerHash && data.hash !== knownServerHash) {
-            console.log('Server code updated, reloading...', knownServerHash, '->', data.hash);
-            location.reload();
-          }
-        }).catch(() => {});
+        fetch(config.serverUrl + '/api/version').then(r => r.json()).then(acceptServerVersion).catch(() => {});
       }, 30000);
     }
 
@@ -3405,11 +3423,8 @@
     // can't fire into a stale playlist state. Queries all <video> elements so
     // zone-mode (multi-region) videos get cleaned up too, not just currentVideoEl.
     function teardownCurrentMedia() {
+      ++playbackGeneration;
       if (advanceTimer) { clearTimeout(advanceTimer); advanceTimer = null; }
-      // A detached YouTube player must never remain transport-authoritative.
-      // Without this reset, commands for the next local MP4 are acknowledged
-      // through the stale IFrame API object instead of controlling the visible
-      // HTML5 video.
       ++ytGeneration;
       if (activeYtPlayer) {
         try { activeYtPlayer.destroy(); } catch (_) {}
@@ -3417,10 +3432,14 @@
       }
       const container = document.getElementById('playerContainer');
       if (container) {
-        container.querySelectorAll('video').forEach(v => {
+        container.querySelectorAll('video, audio').forEach(v => {
           try {
             v.onended = null; v.onerror = null; v.onloadeddata = null;
+            v.onplay = null; v.onpause = null; v.onplaying = null;
+            v.oncanplay = null; v.ontimeupdate = null; v.onvolumechange = null;
+            v.muted = true;
             v.pause();
+            try { if (v.srcObject) v.srcObject = null; } catch (_) {}
             v.removeAttribute('src');
             v.load();
           } catch (e) { /* element may already be detached */ }
@@ -3630,6 +3649,7 @@
           }
         } else if (isVideo) {
           const video = document.createElement('video');
+          const myGeneration = playbackGeneration;
           let videoHasStarted = false;
           video.src = src;
           const wallStartDelayMs = wallConfig && currentItemStartedAt > Date.now() + 40
@@ -3653,13 +3673,13 @@
           video.style.cssText = `width:100%;height:100%;object-fit:${cssFit};background:#000`;
           video.loop = (playlist.length === 1);
           video.onended = () => {
+            if (playbackGeneration !== myGeneration) return;
             currentMediaEnded = true;
             publishPlayerState();
             if (!video.loop && !isFollower) nextItem();
           };
-          // Emit playback-state so the dashboard transport bar label (Play/Pause)
-          // stays in sync with the physical wall's actual play/pause state.
           const emitPlaybackState = (paused) => {
+            if (playbackGeneration !== myGeneration) return;
             if (transportSeekInProgress) return;
             if (socket?.connected) {
               socket.emit('device:playback-state', {
@@ -3671,9 +3691,10 @@
             }
             publishPlayerState();
           };
-          video.addEventListener('play',  () => emitPlaybackState(false));
-          video.addEventListener('pause', () => emitPlaybackState(true));
+          video.addEventListener('play',  () => { if (playbackGeneration === myGeneration) emitPlaybackState(false); });
+          video.addEventListener('pause', () => { if (playbackGeneration === myGeneration) emitPlaybackState(true); });
           video.addEventListener('timeupdate', () => {
+            if (playbackGeneration !== myGeneration) return;
             const now = Date.now();
             if (transportSeekInProgress || now - lastPlaybackProgressAt < 1000 || !socket?.connected) return;
             lastPlaybackProgressAt = now;
@@ -3687,6 +3708,7 @@
             });
           });
           video.addEventListener('playing', () => {
+            if (playbackGeneration !== myGeneration) return;
             videoHasStarted = true;
             currentMediaEnded = false;
             currentMediaError = null;
@@ -3694,6 +3716,7 @@
           // Local-cache safety: swap to the server origin once if a local asset_url
           // fails, else (origin also failed / non-local) skip to the next item.
           attachOriginFallback(video, item, () => {
+            if (playbackGeneration !== myGeneration) return;
             console.error('Video error:', src);
             currentMediaError = video.error
               ? { code: video.error.code, message: video.error.message || 'Video playback failed' }
@@ -3702,6 +3725,7 @@
             if (!isFollower) advanceTimer = setTimeout(nextItem, 3000);
           });
           video.onloadeddata = () => {
+            if (playbackGeneration !== myGeneration) return;
             if (currentCacheStatus === 'staging') {
               currentLocalAssetReady = true;
               currentCacheStatus = 'local';
@@ -3709,33 +3733,42 @@
             console.log('[wall/audio] video loaded file=' + item.filename + ' role=' + (wallConfig ? (wallConfig.is_leader ? 'leader' : 'follower') : 'solo') + ' muted=' + video.muted + ' volume=' + video.volume);
             publishPlayerState();
           };
-          // If anything (browser, scripts, the user) tries to unmute a
-          // follower, snap it back. This is the safety net for the audio
-          // bug — without it, a single stray unmute call causes echo.
           if (!audioOutputAllowed()) {
             video.addEventListener('volumechange', () => {
+              if (playbackGeneration !== myGeneration) return;
               if (!video.muted) { video.muted = true; }
             });
           }
           mount.appendChild(video);
           currentVideoEl = video;
-          // Try playing as we set muted above. If the browser blocks
-          // unmuted autoplay (e.g. no user gesture yet), retry muted.
-          const startVideo = () => video.play().then(() => {
-            console.log('[wall/audio] play() ok muted=' + video.muted + ' volume=' + video.volume);
-          }).catch((err) => {
-            console.warn('[wall/audio] play() rejected, falling back to muted: ' + (err?.name || err?.message || err));
-            video.muted = true;
-            video.play()
-              .then(() => console.log('[wall/audio] muted-fallback play() ok'))
-              .catch((e2) => console.error('[wall/audio] muted-fallback play() also failed: ' + (e2?.name || e2?.message || e2)));
-          });
-          if (wallStartDelayMs > 0) setTimeout(startVideo, wallStartDelayMs);
+          const videoStartIsCurrent = () => (
+            playbackGeneration === myGeneration &&
+            !video.__mcOperatorPaused && video.isConnected && currentVideoEl === video
+          );
+          const startVideo = () => {
+            if (!videoStartIsCurrent()) return;
+            video.play().then(() => {
+              if (!videoStartIsCurrent()) { try { video.pause(); video.muted = true; } catch (_) {} return; }
+              console.log('[wall/audio] play() ok muted=' + video.muted + ' volume=' + video.volume);
+            }).catch((err) => {
+              if (!videoStartIsCurrent()) return;
+              console.warn('[wall/audio] play() rejected, falling back to muted: ' + (err?.name || err?.message || err));
+              video.muted = true;
+              video.play()
+                .then(() => {
+                  if (!videoStartIsCurrent()) { try { video.pause(); } catch (_) {} return; }
+                  console.log('[wall/audio] muted-fallback play() ok');
+                })
+                .catch((e2) => {
+                  if (!videoStartIsCurrent()) return;
+                  console.error('[wall/audio] muted-fallback play() also failed: ' + (e2?.name || e2?.message || e2));
+                });
+            });
+          };
+          if (wallStartDelayMs > 0) setTimeout(() => { if (playbackGeneration === myGeneration) startVideo(); }, wallStartDelayMs);
           else startVideo();
-          // Fallback only covers an autoplay that never started. Once playback
-          // has begun, a paused element reflects an operator transport command
-          // and must not be restarted by this startup timer.
           setTimeout(() => {
+            if (playbackGeneration !== myGeneration) return;
             if (!videoHasStarted && !video.__mcOperatorPaused && video.paused) {
               video.muted = true;
               video.play().catch(() => {});
@@ -3944,7 +3977,7 @@
       try {
         const dataUrl = canvas.toDataURL('image/jpeg', 0.4);
         const base64 = dataUrl.split(',')[1];
-        if (base64 && base64.length > 100) {
+        if (base64 && base64.length > 100 && socket?.connected) {
           lastScreenshotSentAt = Date.now();
           socket.emit('device:screenshot', { device_id: config.deviceId, image_b64: base64 });
           console.log('Screenshot sent:', base64.length, 'chars', captured ? '(content)' : '(fallback)');
@@ -4079,6 +4112,7 @@
         else document.documentElement.requestFullscreen();
       }
     });
+    }
   </script>
   <script src="/player/screen-share-receiver.js" defer></script>
 </body>

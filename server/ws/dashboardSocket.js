@@ -10,6 +10,7 @@ const { createLimiter } = require('../lib/socket-rate-limit');
 const { audit } = require('../lib/audit');
 const { getSocketIp } = require('../services/activity');
 const { liveStreamDeviceId, liveStreamProgramState, markLiveContentChanged } = require('../lib/live-stream-display');
+const { syncLiveStreamToConfirmedSlide } = require('../lib/live-slide-sync');
 const commandModel = require('../lib/command-model');
 const deviceContract = require('../player/device-contract');
 
@@ -118,7 +119,7 @@ module.exports = function setupDashboardSocket(io) {
 function mirrorTransportToLiveStream(deviceNs, deviceId, command) {
     const envelope = command && command.type === 'device:command' ? command : null;
     if (!envelope || !envelope.payload || !envelope.payload.action) return;
-    if (!new Set(['next', 'prev', 'go_to_slide', 'play', 'pause', 'play_pause', 'seek', 'restart', 'stop']).has(envelope.payload.action)) return;
+    if (!new Set(['play', 'pause', 'play_pause', 'seek', 'restart', 'stop']).has(envelope.payload.action)) return;
     const device = db.prepare('SELECT workspace_id FROM devices WHERE id = ?').get(deviceId);
     if (!device || !device.workspace_id) return;
     const state = liveStreamProgramState(device.workspace_id);
@@ -359,7 +360,15 @@ function mirrorTransportToLiveStream(deviceNs, deviceId, command) {
         if (!canActOnDevice(socket, device_id, 'write')) return;
         const safeStroke = whiteboardState.appendStroke(null, device_id, stroke);
         if (!safeStroke) return;
-        relayToTargets('device:wb-stroke', { stroke: safeStroke }, wbTargets(data, device_id));
+        const memberStrokes = data && typeof data.member_strokes === 'object' ? data.member_strokes : {};
+        for (const id of wbTargets(data, device_id)) {
+          const hasMemberStrokes = Object.keys(memberStrokes).length > 0;
+          const localStroke = hasMemberStrokes
+            ? whiteboardState.normalizeStroke(memberStrokes[id])
+            : safeStroke;
+          if (!localStroke) continue;
+          relayToTargets('device:wb-stroke', { stroke: localStroke }, [id]);
+        }
       } catch (e) {
         console.warn(`dashboard:wb-stroke relay error: ${e.message}`);
       }

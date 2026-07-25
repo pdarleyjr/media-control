@@ -1,4 +1,5 @@
 const Database = require('better-sqlite3');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const config = require('../config');
@@ -1094,6 +1095,235 @@ function healYoutubeMimeTypes() {
   try { db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(YOUTUBE_MIME_HEAL_ID); } catch { /* ignore */ }
 }
 healYoutubeMimeTypes();
+
+const LIVE_PRODUCTION_MIGRATION_ID = 'phase2_live_production_v1';
+const LIVE_PRODUCTION_MIGRATION_SQL = `
+CREATE TABLE IF NOT EXISTS live_sessions (
+  id                  TEXT PRIMARY KEY,
+  workspace_id        TEXT NOT NULL REFERENCES workspaces(id),
+  room_id             TEXT NOT NULL,
+  operator_id         TEXT NOT NULL REFERENCES users(id),
+  state               TEXT NOT NULL DEFAULT 'idle' CHECK (state IN ('idle','starting','live','stopping','stopped','failed')),
+  requested_state     TEXT,
+  confirmed_state     TEXT,
+  state_revision      INTEGER NOT NULL DEFAULT 0,
+  stream_active       INTEGER NOT NULL DEFAULT 0,
+  recording_active    INTEGER NOT NULL DEFAULT 0,
+  current_scene       TEXT,
+  ai_director_session_id TEXT,
+  started_at          INTEGER,
+  ended_at            INTEGER,
+  failure_count       INTEGER NOT NULL DEFAULT 0,
+  last_failure_at     INTEGER,
+  last_failure_reason TEXT,
+  created_at          INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  updated_at          INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_live_sessions_workspace ON live_sessions(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_live_sessions_state ON live_sessions(state);
+CREATE INDEX IF NOT EXISTS idx_live_sessions_room ON live_sessions(room_id);
+CREATE TABLE IF NOT EXISTS live_session_commands (
+  id                  TEXT PRIMARY KEY,
+  session_id          TEXT NOT NULL REFERENCES live_sessions(id) ON DELETE CASCADE,
+  idempotency_key     TEXT NOT NULL UNIQUE,
+  command_type        TEXT NOT NULL,
+  payload_json        TEXT,
+  state               TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','completed','failed')),
+  revision            INTEGER NOT NULL DEFAULT 0,
+  requested_at        INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  acknowledged_at     INTEGER,
+  completed_at        INTEGER,
+  failure_reason      TEXT,
+  retry_count         INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_live_session_commands_session ON live_session_commands(session_id);
+CREATE INDEX IF NOT EXISTS idx_live_session_commands_state ON live_session_commands(state);
+CREATE TABLE IF NOT EXISTS live_session_recordings (
+  id                  TEXT PRIMARY KEY,
+  session_id          TEXT NOT NULL REFERENCES live_sessions(id) ON DELETE CASCADE,
+  state               TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','recording','stopped','finalizing','finalized','failed')),
+  obs_output_path     TEXT,
+  remux_path          TEXT,
+  remux_state         TEXT NOT NULL DEFAULT 'pending',
+  retention_state     TEXT NOT NULL DEFAULT 'retained',
+  file_size_bytes     INTEGER,
+  duration_seconds    REAL,
+  started_at          INTEGER,
+  stopped_at          INTEGER,
+  finalized_at        INTEGER,
+  metadata_json       TEXT,
+  retry_count         INTEGER NOT NULL DEFAULT 0,
+  created_at          INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  updated_at          INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_live_session_recordings_session ON live_session_recordings(session_id);
+CREATE TABLE IF NOT EXISTS live_session_failure_observations (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id          TEXT NOT NULL REFERENCES live_sessions(id) ON DELETE CASCADE,
+  failure_code        TEXT NOT NULL,
+  correlation_id      TEXT,
+  operation           TEXT,
+  reason              TEXT,
+  actor_id            TEXT NOT NULL,
+  created_at          INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  UNIQUE(session_id, failure_code, correlation_id, operation)
+);
+CREATE INDEX IF NOT EXISTS idx_failure_obs_session ON live_session_failure_observations(session_id);
+CREATE TABLE IF NOT EXISTS live_session_audit (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id          TEXT NOT NULL REFERENCES live_sessions(id) ON DELETE CASCADE,
+  actor_id            TEXT NOT NULL,
+  action              TEXT NOT NULL,
+  details_json        TEXT,
+  created_at          INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_live_session_audit_session ON live_session_audit(session_id);
+CREATE TABLE IF NOT EXISTS live_room_operations (
+  lock_key            TEXT PRIMARY KEY,
+  workspace_id        TEXT NOT NULL,
+  room_id             TEXT NOT NULL,
+  worker_id           TEXT NOT NULL,
+  operation           TEXT NOT NULL,
+  correlation_id      TEXT,
+  acquired_at         INTEGER NOT NULL,
+  lease_expires_at    INTEGER NOT NULL
+);
+`;
+
+const LIVE_PRODUCTION_TABLES = [
+  'live_sessions',
+  'live_session_commands',
+  'live_session_recordings',
+  'live_session_failure_observations',
+  'live_session_audit',
+  'live_room_operations',
+];
+
+function computeChecksum(sql) {
+  return crypto.createHash('sha256').update(sql).digest('hex');
+}
+
+function ensureMigrationLedgerSchema() {
+  const cols = db.prepare("PRAGMA table_info('schema_migrations')").all();
+  const hasChecksum = cols.some(c => c.name === 'checksum');
+  if (!hasChecksum) {
+    db.exec("ALTER TABLE schema_migrations ADD COLUMN checksum TEXT");
+  }
+}
+
+function validateSchemaAfterMigration() {
+  for (const tableName of LIVE_PRODUCTION_TABLES) {
+    const exists = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name=?"
+    ).get(tableName);
+    if (!exists) {
+      throw new Error(`Migration validation failed: required table '${tableName}' does not exist`);
+    }
+  }
+
+  for (const tableName of LIVE_PRODUCTION_TABLES) {
+    const fkList = db.prepare(`PRAGMA foreign_key_list('${tableName}')`).all();
+    for (const fk of fkList) {
+      const parentTable = fk.table;
+      const parentExists = db.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?"
+      ).get(parentTable);
+      if (!parentExists) {
+        throw new Error(
+          `Migration validation failed: table '${tableName}' references '${parentTable}' via FK '${fk.from}' -> '${fk.to}', but '${parentTable}' does not exist`
+        );
+      }
+      const parentCol = db.prepare(`PRAGMA table_info('${parentTable}')`).all();
+      const colExists = parentCol.some(c => c.name === fk.to);
+      if (!colExists) {
+        throw new Error(
+          `Migration validation failed: table '${tableName}' FK references column '${fk.to}' in '${parentTable}', but that column does not exist`
+        );
+      }
+    }
+  }
+
+  const integrity = db.prepare('PRAGMA integrity_check').get();
+  if (integrity.integrity_check !== 'ok') {
+    throw new Error(`Migration validation failed: integrity_check returned '${integrity.integrity_check}'`);
+  }
+}
+
+function migrateLiveProduction() {
+  ensureMigrationLedgerSchema();
+
+  const expectedChecksum = computeChecksum(LIVE_PRODUCTION_MIGRATION_SQL);
+  const existing = db.prepare('SELECT id, checksum FROM schema_migrations WHERE id = ?').get(LIVE_PRODUCTION_MIGRATION_ID);
+
+  if (existing) {
+    if (existing.checksum && existing.checksum !== expectedChecksum) {
+      throw new Error(
+        `Migration checksum mismatch for '${LIVE_PRODUCTION_MIGRATION_ID}': ` +
+        `stored='${existing.checksum.slice(0, 16)}...' current='${expectedChecksum.slice(0, 16)}...'`
+      );
+    }
+    return;
+  }
+
+  console.log('[boot] Applying Phase 2 Live Production migration...');
+
+  const migrate = db.transaction(() => {
+    db.exec(LIVE_PRODUCTION_MIGRATION_SQL);
+    validateSchemaAfterMigration();
+    db.prepare('INSERT INTO schema_migrations (id, checksum) VALUES (?, ?)').run(LIVE_PRODUCTION_MIGRATION_ID, expectedChecksum);
+  });
+
+  try {
+    migrate();
+    console.log('[boot] Phase 2 Live Production migration complete');
+  } catch (e) {
+    console.error('[boot] Phase 2 Live Production migration FAILED:', e.message);
+    throw e;
+  }
+}
+migrateLiveProduction();
+
+const PEERTUBE_TRACKING_MIGRATION_ID = 'peertube_tracking_v1';
+function migratePeerTubeTracking() {
+  const existing = db.prepare('SELECT id FROM schema_migrations WHERE id = ?').get(PEERTUBE_TRACKING_MIGRATION_ID);
+  if (existing) return;
+
+  console.log('[boot] Applying PeerTube tracking migration...');
+  const migrate = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS live_session_peertube (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id          TEXT NOT NULL REFERENCES live_sessions(id) ON DELETE CASCADE,
+        peertube_live_uuid  TEXT,
+        peertube_live_session_id INTEGER,
+        peertube_replay_uuid TEXT,
+        peertube_replay_status TEXT NOT NULL DEFAULT 'pending' CHECK (peertube_replay_status IN ('pending','processing','available','failed','fallback_uploading','fallback_available','fallback_failed')),
+        peertube_watch_url  TEXT,
+        peertube_channel_id INTEGER,
+        peertube_privacy    TEXT,
+        peertube_processing_started_at INTEGER,
+        peertube_processing_completed_at INTEGER,
+        peertube_last_error_code TEXT,
+        peertube_upload_fallback_status TEXT,
+        created_at          INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        updated_at          INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        UNIQUE(session_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_live_session_peertube_session ON live_session_peertube(session_id);
+      CREATE INDEX IF NOT EXISTS idx_live_session_peertube_status ON live_session_peertube(peertube_replay_status);
+    `);
+    db.prepare('INSERT INTO schema_migrations (id) VALUES (?)').run(PEERTUBE_TRACKING_MIGRATION_ID);
+  });
+
+  try {
+    migrate();
+    console.log('[boot] PeerTube tracking migration complete');
+  } catch (e) {
+    console.error('[boot] PeerTube tracking migration FAILED:', e.message);
+    throw e;
+  }
+}
+migratePeerTubeTracking();
 
 // Prune old telemetry (keep last 24h worth at 15s intervals = ~5760, cap at 6000)
 function pruneTelemetry(deviceId) {

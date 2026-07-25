@@ -10,6 +10,8 @@ const commandQueue = require('../lib/command-queue');
 const { withLocalAssetUrls, withClassroomCacheUrls, withPublicContentAssetUrls } = require('../lib/local-asset-url');
 const { profileForDevice, isClassroom1Smartboard } = require('../lib/display-profiles');
 const whiteboardState = require('../services/whiteboard-state');
+const { liveStreamDeviceId, liveStreamProgramState } = require('../lib/live-stream-display');
+const { syncLiveStreamToConfirmedSlide } = require('../lib/live-slide-sync');
 
 // Debounce window for marking a device offline on socket disconnect. Brief
 // flap (Wi-Fi blip, Engine.IO ping miss, server-side eviction-then-reconnect)
@@ -935,6 +937,14 @@ module.exports = function setupDeviceSocket(io) {
           version: 1, type: 'device:state-report', target_type: 'display', target_id: currentDeviceId,
           state: { ...(state || {}), state_revision: result.state_revision },
         });
+        if (state && state.slide_index != null) {
+          try {
+            syncLiveStreamToConfirmedSlide(deviceNs, currentDeviceId, {
+              slide_index: state.slide_index,
+              state_revision: result.state_revision,
+            });
+          } catch (_) {}
+        }
       } catch (e) {
         console.warn(`device:state-report handler error: ${e.message}`);
       }
