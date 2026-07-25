@@ -933,33 +933,20 @@ function updateSidebarUser() {
     if (nav) nav.style.display = ok ? '' : 'none';
   }).catch(() => {});
 
-  // Classroom Mode (task §7): hide livestream/AI/camera nav items and show a
-  // banner so the instructor sees a clean control surface with no dead buttons.
-  // This is purely a UI affordance — the restrictions are enforced server-side
-  // by stopping the backing services, so it degrades safely if the flag fetch
-  // fails (the nav stays visible but the buttons simply no-op downstream).
+  // Classroom Mode was a blanket flag that hid livestream/AI/camera nav items
+  // and showed a "STREAMING AND AI FUNCTIONS TEMPORARILY DISABLED" banner.
+  // The fixed-camera livestream is now independent of the AI Director, so the
+  // broad disable is obsolete. We retain only the AI Deck nav hiding (since
+  // AI Director is an optional advanced mode), and show capability-specific
+  // unavailable messages in the action dock instead of a full-width banner.
   isClassroomModeEnabled().then((on) => {
     if (!on) return;
-    const hidden = ['cameras', 'multiview', 'ai-deck'];
-    document.querySelectorAll('a.nav-link[data-view]').forEach((link) => {
-      if (hidden.includes(link.getAttribute('data-view'))) {
-        const li = link.closest('li');
-        if (li) li.style.display = 'none';
-      }
+    // Only hide the AI Deck (optional advanced mode); cameras and multiview
+    // remain available because fixed-camera streaming does not depend on AI.
+    document.querySelectorAll('a.nav-link[data-view="ai-deck"]').forEach((link) => {
+      const li = link.closest('li');
+      if (li) li.style.display = 'none';
     });
-    let banner = document.getElementById('classroomModeBanner');
-    if (!banner) {
-      banner = document.createElement('div');
-      banner.id = 'classroomModeBanner';
-      banner.setAttribute('role', 'status');
-      // Fixed full-width thin top strip. Must NOT participate in the body flex
-      // row (the old position:sticky insertBefore(#app) made it a 500px+ flex
-      // block that ate half the viewport — the "giant blue area" regression).
-      banner.className = 'mc-classroom-banner';
-      document.body.classList.add('has-classroom-banner');
-      document.body.appendChild(banner);
-    }
-    banner.textContent = t('app.classroom_mode_banner') || 'CLASSROOM MODE — STREAMING AND AI FUNCTIONS TEMPORARILY DISABLED';
   }).catch(() => {});
 
   let userEl = document.getElementById('sidebarUser');

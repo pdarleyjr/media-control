@@ -191,10 +191,8 @@ export function mountActionDock(hostEl, opts = {}) {
 
   let syncingLive = false;
   async function syncLive() {
-    // Classroom Mode: live-production services are disabled — never poll
-    // operator-state. This is the source of the repeated /api/live-stream/
-    // operator-state traffic the classroom was emitting while streaming was off.
-    if (classroomModeActive) { syncingLive = false; return; }
+    // Fixed-camera livestream is always polled — Start Livestream is
+    // capability-driven, not gated by a blanket classroom-mode flag.
     if (syncingLive) return;
     syncingLive = true;
     let director = null;
@@ -413,21 +411,14 @@ export function mountActionDock(hostEl, opts = {}) {
     });
   });
 
-  // Classroom Mode gates the live-production health timer. Resolve the flag
-  // first (cached after the boot /api/features fetch, so usually synchronous),
-  // then either suspend polling (classroom on) or start the 5s health timer
-  // (classroom off). A failed flag fetch is fail-closed to OFF (feature-flags.js),
-  // so the catch path polls normally — preserving the existing behavior.
+  // Live-production health timer. The fixed-camera livestream is independent
+  // of the AI Director, so we always poll — Start Livestream is enabled or
+  // disabled based on actual camera-edge capabilities, not a blanket flag.
   let healthTimer = null;
   isClassroomModeEnabled().then((on) => {
     classroomModeActive = !!on;
-    if (classroomModeActive) {
-      liveActive = false;
-      liveStateKnown = true;
-      lastLadder = { state: LIVE_LADDER.UNKNOWN, canStart: false, reason: null };
-      repaintLive();
-      return;
-    }
+    // Always poll regardless of classroom mode — the capability ladder
+    // (deriveLiveLadder) handles precise disabled reasons.
     syncLive();
     healthTimer = setInterval(() => syncLive(), 5000);
   }).catch(() => {

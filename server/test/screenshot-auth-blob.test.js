@@ -95,13 +95,14 @@ test('applyTileSize defers layout measurement', () => {
   assert.match(stage, /function applyTileSize/);
 });
 
-test('action-dock suspends live-production polling in Classroom Mode', () => {
+test('action-dock always polls live-production status (classroom mode no longer suppresses polling)', () => {
   const dock = read('frontend', 'js', 'views', 'media-control', 'action-dock.js');
-  // Imports the classroom-mode flag and short-circuits operator-state polling.
+  // Still imports the classroom-mode flag for AI-Deck-only nav hiding.
   assert.match(dock, /isClassroomModeEnabled/);
-  assert.match(dock, /if \(classroomModeActive\) \{ syncingLive = false; return; \}/);
-  // The periodic health timer is only started when classroom mode is OFF.
-  assert.match(dock, /if \(classroomModeActive\)[\s\S]*?return;[\s\S]*?healthTimer = setInterval/);
+  // The syncLive function does NOT short-circuit on classroomModeActive.
+  assert.doesNotMatch(dock, /if \(classroomModeActive\) \{ syncingLive = false; return; \}/);
+  // The periodic health timer always starts (capability-driven, not flag-gated).
+  assert.match(dock, /syncLive\(\);[\s\S]*?healthTimer = setInterval/);
 });
 
 test('stage uses a stable keyed render to avoid iframe recreation storms', () => {
