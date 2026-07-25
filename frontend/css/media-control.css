@@ -2423,7 +2423,10 @@ img.mc-cc-logo { background: transparent; box-shadow: none; padding: 0; }
   }
   .mc-cc-title { font-size: var(--mc-font-size-lg, 18px) !important; }
   .mc-cc-brand-text { display: none; }       /* keep logo + dropdown on tight bars */
-  .mc-cc-target { display: none; }
+  /* Target nav host stays VISIBLE on phones — it holds the quick-target strip.
+     Hiding it (display:none) was the root mobile defect: children were styled
+     but inert. Keep flex so wall tabs + dropdown render as a scrollable row. */
+  .mc-cc-target { display: flex; flex: 1 1 auto; min-width: 0; overflow: hidden; }
   .mc-cc-view-switch { justify-self: center; }
   .mc-cc-view-btn { min-height: 44px; padding: 0 8px; font-size: 11px; }
   .mc-target-control { gap: 4px; }
@@ -2737,7 +2740,9 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
    scrolling dashboard. */
 @media (max-width: 720px) {
   .mc-cc-body { grid-template-columns: 56px 1fr; }
-  .mc-cc-body .mc-library-drawer { display: none; }
+  /* Content Library must be REACHABLE on mobile — not display:none.
+     It becomes a full-screen overlay sheet (positioned fixed in the
+     Phase 3 block below). Keeping it in the DOM lets the toggle open it. */
   .mc-cc-main .mc-stage.mc-cc-canvas { width: auto; max-width: 94vw; max-height: 100%; }
   .mc-cc-controls .mc-cc-sub-row { gap: 6px; }
 }
@@ -3333,11 +3338,11 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
     inset: 0; width: 100vw; height: 100dvh; border-radius: 0;
   }
 
-  /* ── No horizontal page overflow ─────────────────────────────────────── */
+  /* ── No horizontal page overflow (targeted, not html/body band-aid) ────── */
   .mc-cc-main, .mc-cc-canvas, .mc-stage, .mc-wall, .mc-wall-region, .mc-target-wall-tabs, .mc-cc-rail {
-    max-width: 100%; overflow-x: hidden;
+    max-width: 100%; overflow-x: auto; overflow-y: hidden;
   }
-  html, body { overflow-x: hidden; }
+  .mc-cc-shell, .mc-cc-body { overflow-x: hidden; }
 
   /* ── Touch targets: ensure 44px minimum for all interactive elements ─── */
   .mc-cc-view-btn, .mc-ss-btn, .mc-cc-saver-select, .mc-target-choice, .mc-route-row-main {
