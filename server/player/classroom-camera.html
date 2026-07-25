@@ -1,146 +1,100 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Classroom Camera</title>
-  <style>
-    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #000; }
-    #viewport { position: fixed; inset: 0; overflow: hidden; background: #000; }
-    video { width: 100%; height: 100%; display: block; object-fit: cover; background: #000; transform-origin: 50% 50%; transition: transform 180ms ease-out; }
-    #state { position: fixed; inset: 0; display: grid; place-items: center; color: #d6e2ee; background: #05070b; font: 600 18px "Segoe UI", sans-serif; }
-    #state[hidden] { display: none; }
-    #eptz { position: fixed; right: 16px; bottom: 16px; z-index: 2; display: none; grid-template-columns: repeat(3, 48px); gap: 6px; padding: 10px; border-radius: 12px; background: rgba(5,7,11,.82); }
-    #eptz.is-visible { display: grid; }
-    #eptz button { min-width: 48px; min-height: 48px; border: 1px solid #526173; border-radius: 8px; background: #16202d; color: #f8fafc; font: 700 15px "Segoe UI", sans-serif; cursor: pointer; }
-    #eptz button:hover, #eptz button:focus-visible, #eptz button.is-active { background: #2563eb; outline: none; }
-    #eptz [data-eptz="wide"] { grid-column: 1 / -1; }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>MBFD Classroom Camera</title>
+<style>
+  :root { --bg:#0b1220; --txt:#e6edf7; --muted:#8aa0c6; --bad:#ef4444; --ok:#22c55e; --warn:#f59e0b; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html,body { background:var(--bg); color:var(--txt); font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; height:100%; }
+  body { display:flex; flex-direction:column; min-height:100vh; }
+  .bar { display:flex; align-items:center; gap:10px; padding:6px 12px; background:linear-gradient(90deg,#0f2748,#0b1220); border-bottom:1px solid #1f2c47; font-size:13px; }
+  .bar .name { font-weight:600; }
+  .bar .dot { width:9px; height:9px; border-radius:50%; background:var(--muted); }
+  .bar .dot.on { background:var(--ok); }
+  .bar .dot.bad { background:var(--bad); }
+  .stage { flex:1; position:relative; background:#000; overflow:hidden; display:flex; align-items:center; justify-content:center; }
+  video { width:100%; height:100%; object-fit:contain; background:#000; }
+  .err { position:absolute; inset:0; display:none; flex-direction:column; align-items:center; justify-content:center; gap:10px; text-align:center; padding:20px; }
+  .err.show { display:flex; }
+  .err .code { color:var(--bad); font-weight:700; }
+  .err .msg { color:var(--muted); font-size:13px; max-width:80%; word-break:break-word; }
+  .err button { margin-top:6px; padding:7px 16px; background:#2563eb; color:#fff; border:none; border-radius:6px; font-size:13px; cursor:pointer; }
+  .meta { position:absolute; right:8px; bottom:6px; font-size:11px; color:var(--muted); background:rgba(0,0,0,.5); padding:2px 6px; border-radius:4px; }
+</style>
 </head>
 <body>
-  <div id="viewport"><video id="video" autoplay playsinline muted></video></div>
-  <div id="state">Connecting to classroom camera...</div>
-  <div id="eptz" aria-label="Digital camera controls">
-    <button type="button" data-eptz="zoom-in" aria-label="Zoom in">+</button>
-    <button type="button" data-eptz="up" aria-label="Pan up">&#8593;</button>
-    <button type="button" data-eptz="zoom-out" aria-label="Zoom out">-</button>
-    <button type="button" data-eptz="left" aria-label="Pan left">&#8592;</button>
-    <button type="button" data-eptz="wide">Wide</button>
-    <button type="button" data-eptz="right" aria-label="Pan right">&#8594;</button>
-    <button type="button" data-eptz="wall-1">Wall 1</button>
-    <button type="button" data-eptz="down" aria-label="Pan down">&#8595;</button>
-    <button type="button" data-eptz="wall-2">Wall 2</button>
+  <div class="bar"><span class="dot" id="dot"></span><span class="name" id="name">ANNKE</span><span style="color:var(--muted)" id="stat">connecting…</span></div>
+  <div class="stage">
+    <video id="v" muted playsinline webkit-playsinline autoplay></video>
+    <div class="err" id="err">
+      <div class="code" id="ecode">STREAM ERROR</div>
+      <div class="msg" id="emsg"></div>
+      <button id="retry">Reconnect</button>
+    </div>
+    <div class="meta" id="meta"></div>
   </div>
-  <script src="vendor/hls.light.min.js"></script>
-  <script>
-    (function () {
-      var params = new URLSearchParams(location.search);
-      var cameraParam = params.get('camera');
-      var camera = cameraParam === '2' || cameraParam === '3' ? cameraParam : '1';
-      var fit = params.get('fit') === 'contain' ? 'contain' : 'cover';
-      var audio = params.get('audio') === '1';
-      var source = '/player/classroom-camera/' + camera + '/index.m3u8';
-      var video = document.getElementById('video');
-      var state = document.getElementById('state');
-      var controls = document.getElementById('eptz');
-      var hls = null;
-      var reconnectTimer = null;
-      var lastVideoTime = -1;
-      var lastProgressAt = Date.now();
-      var eptz = { zoom: 1, x: 0, y: 0 };
-      video.style.objectFit = fit;
-      video.muted = !audio;
-      window.__mcEnableAudio = function () { video.muted = false; video.volume = 1; video.play().catch(function () {}); };
-      function ready() { state.hidden = true; lastProgressAt = Date.now(); video.play().catch(function () {}); }
-      function scheduleReconnect() {
-        if (reconnectTimer) return;
-        reconnectTimer = setTimeout(function () { reconnectTimer = null; start(); }, 2000);
+<script src="/vendor/hls.min.js"></script>
+<script>
+(function(){
+  var params=new URLSearchParams(location.search);
+  var camera=params.get('camera')||'3';
+  var v=document.getElementById('v');
+  var dot=document.getElementById('dot');
+  var stat=document.getElementById('stat');
+  var err=document.getElementById('err');
+  var ecode=document.getElementById('ecode');
+  var emsg=document.getElementById('emsg');
+  var meta=document.getElementById('meta');
+  var lastOk=null;
+  var hls=null;
+  var stallTO=null;
+  function srcUrl(){ return '/player/classroom-camera/'+encodeURIComponent(camera)+'/index.m3u8'; }
+  function showErr(type,details,fatal,url,code,ct){
+    err.classList.add('show');
+    ecode.textContent=fatal?'FATAL '+type:type;
+    emsg.textContent=(details||'')+(url?(' — '+url):'')+(code?(' ('+code+')'):'')+(ct?(' ['+ct+']'):'');
+    dot.className='dot bad'; stat.textContent='error';
+    console.error('[camera-hls]',{type:type,details:details,fatal:fatal,url:url,code:code,contentType:ct});
+  }
+  function clearErr(){ err.classList.remove('show'); dot.className='dot on'; stat.textContent='live'; lastOk=Date.now(); }
+  function startStallWatch(){
+    clearInterval(stallTO);
+    stallTO=setInterval(function(){
+      if(v.readyState>=2 && v.currentTime>0){
+        if(lastOk && (Date.now()-lastOk)>8000){ stat.textContent='stalled?'; dot.className='dot'; }
       }
-      function failed() { state.hidden = false; state.textContent = 'Camera reconnecting...'; scheduleReconnect(); }
-      function start() {
-        if (hls) { try { hls.destroy(); } catch (_error) {} hls = null; }
-        video.removeAttribute('src');
-        video.load();
-        state.hidden = false;
-        lastVideoTime = -1;
-        lastProgressAt = Date.now();
-        var freshSource = source + '?fresh=' + Date.now();
-        if (window.Hls && window.Hls.isSupported()) {
-          hls = new window.Hls({ lowLatencyMode: true, liveSyncDurationCount: 1, liveMaxLatencyDurationCount: 3, maxLiveSyncPlaybackRate: 1.5 });
-          hls.loadSource(freshSource);
-          hls.attachMedia(video);
-          hls.on(window.Hls.Events.MANIFEST_PARSED, ready);
-          hls.on(window.Hls.Events.ERROR, function (_event, data) { if (data && data.fatal) { hls.destroy(); failed(); } });
-        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-          video.src = freshSource;
-          video.addEventListener('loadedmetadata', ready, { once: true });
-          video.addEventListener('error', failed, { once: true });
-        } else {
-          state.textContent = 'HLS playback is not supported.';
-        }
-      }
-      function applyEptz() {
-        video.style.transform = 'translate(' + eptz.x + '%, ' + eptz.y + '%) scale(' + eptz.zoom + ')';
-      }
-      function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
-      function publishEptz(name) {
-        try {
-          window.parent.postMessage({
-            __mc_camera: true,
-            type: 'preset-change',
-            camera: Number(camera),
-            preset: name,
-            eptz: { zoom: eptz.zoom, x: eptz.x, y: eptz.y }
-          }, location.origin);
-        } catch (_error) {}
-      }
-      function markPreset(name) {
-        controls.querySelectorAll('[data-eptz]').forEach(function (button) {
-          button.classList.toggle('is-active', button.getAttribute('data-eptz') === name);
-        });
-      }
-      function persistPreset(name) {
-        try {
-          var next = new URL(location.href);
-          next.searchParams.set('preset', name);
-          history.replaceState(null, '', next.pathname + next.search + next.hash);
-        } catch (_error) {}
-      }
-      function setPreset(name, persist) {
-        if (name === 'wall-1') eptz = { zoom: 1.7, x: -8, y: 12 };
-        // The Focus 210 faces the side two-panel wall, which is on the left
-        // edge of its wide source. Positive X reveals that source region.
-        else if (name === 'wall-2') eptz = { zoom: 2.15, x: 22, y: 0 };
-        else { name = 'wide'; eptz = { zoom: 1, x: 0, y: 0 }; }
-        applyEptz();
-        markPreset(name);
-        if (persist !== false) persistPreset(name);
-        publishEptz(name);
-      }
-      controls.addEventListener('click', function (event) {
-        var action = event.target && event.target.getAttribute('data-eptz');
-        if (!action) return;
-        if (action === 'wide' || action === 'wall-1' || action === 'wall-2') return setPreset(action, true);
-        if (action === 'zoom-in') eptz.zoom = clamp(eptz.zoom + 0.2, 1, 3);
-        if (action === 'zoom-out') eptz.zoom = clamp(eptz.zoom - 0.2, 1, 3);
-        if (action === 'left') eptz.x = clamp(eptz.x + 5, -35, 35);
-        if (action === 'right') eptz.x = clamp(eptz.x - 5, -35, 35);
-        if (action === 'up') eptz.y = clamp(eptz.y + 5, -35, 35);
-        if (action === 'down') eptz.y = clamp(eptz.y - 5, -35, 35);
-        applyEptz();
-        markPreset('');
-        publishEptz('custom');
+    },2000);
+  }
+  function connect(){
+    stop();
+    stat.textContent='connecting…'; dot.className='dot';
+    if(window.Hls && Hls.isSupported()){
+      hls=new Hls({enableWorker:true, lowLatencyMode:true, backBuffer:2, manifestLoadingTimeOut:8000, manifestLoadingMaxRetry:3, levelLoadingTimeOut:10000, fragLoadingTimeOut:20000});
+      window.__hls=hls;
+      hls.on(Hls.Events.MANIFEST_PARSED,function(){ clearErr(); stat.textContent='live'; v.play().catch(function(){}); });
+      hls.on(Hls.Events.FRAG_PARSED,function(){ clearErr(); });
+      hls.on(Hls.Events.ERROR,function(e,data){
+        var url=data.url||''; var code=data.response?data.response.code:null; var ct=data.response?data.response.text:'';
+        if(data.fatal){ showErr(data.type,data.details,true,url,code,ct); switch(data.type){
+          case 'networkError': setTimeout(connect,2000); break;
+          case 'mediaError': if(hls) hls.recoverMediaError(); break;
+          default: if(hls){ hls.destroy(); hls=null; } break;
+        } } else { console.warn('[camera-hls] non-fatal',data.type,data.details); }
       });
-      if (camera === '1' && (params.get('controls') === '1' || window.top === window.self)) controls.classList.add('is-visible');
-      video.addEventListener('timeupdate', function () {
-        if (video.currentTime !== lastVideoTime) { lastVideoTime = video.currentTime; lastProgressAt = Date.now(); }
-      });
-      setInterval(function () {
-        if (!document.hidden && !video.paused && Date.now() - lastProgressAt > 10000) failed();
-      }, 2000);
-      if (camera === '1') setPreset(params.get('preset') || 'wide', false);
-      start();
-    })();
-  </script>
+      hls.loadSource(srcUrl()); hls.attachMedia(v);
+    } else if(v.canPlayType('application/vnd.apple.mpegurl')){
+      v.src=srcUrl(); v.addEventListener('loadedmetadata',clearErr); v.addEventListener('error',function(){ showErr('native','video error',true,srcUrl()); });
+      v.play().catch(function(){});
+    } else { showErr('unsupported','HLS not supported by this browser',true); }
+    startStallWatch();
+  }
+  function stop(){ if(hls){ try{hls.destroy();}catch(e){} hls=null; } clearInterval(stallTO); }
+  setInterval(function(){ meta.textContent=v.videoWidth?(v.videoWidth+'x'+v.videoHeight+' • rt='+v.currentTime.toFixed(1)+'s • rs='+v.readyState):''; },1000);
+  document.getElementById('retry').addEventListener('click',connect);
+  connect();
+})();
+</script>
 </body>
 </html>

@@ -266,6 +266,15 @@ module.exports = {
     peerTubeWatchUrl: process.env.PEERTUBE_LIVE_WATCH_URL || '',
   },
 
+  // Kamrui ANNKE camera-control edge. Media Control proxies every camera record
+  // / livestream / status operation to this edge over LAN; the token is stored
+  // in the compose env (never committed) and never reaches the browser.
+  cameraControl: {
+    baseUrl: (process.env.CAMERA_CONTROL_BASE_URL || '').replace(/\/+$/, ''),
+    token: process.env.CAMERA_CONTROL_TOKEN || '',
+    previewUrl: process.env.CAMERA_PREVIEW_URL || '',
+  },
+
   // PeerTube replay → Media Control integration. The worker polls PeerTube for
   // VOD replays of classroom live streams, tracks their transcoding state, and
   // surfaces them for operator review before adding a (default-private) content

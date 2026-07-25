@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# MBFD Kamrui media-edge installer. Idempotent. Run as a user with sudo.
+# Provisions MediaMTX (Docker), FFmpeg relays, camera-control API, least-privilege
+# sudo helper, and firewall rules from this committed source tree.
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+ENV_FILE=/etc/mbfd/media-stack/camera.env
+STACK=/opt/mbfd/media-stack
+
+echo "==> prerequisites"
+sudo apt-get update -qq
+sudo apt-get install -y -qq ffmpeg rsync curl ca-certificates
+curl -fsSL https://get.docker.com | sudo sh
+
+echo "==> stack directory"
+sudo mkdir -p "$STACK/camera-api" /etc/mbfd/media-stack /mnt/data/recordings/{active,completed,failed,metadata}
+sudo chown -R "$USER:$USER" "$STACK" /mnt/data/recordings
+
+echo "==> camera-api source"
+cp "$HERE/camera-api/server.js" "$HERE/camera-api/peertube-upload.js" "$HERE/camera-api/package.json" "$STACK/camera-api/"
+( cd "$STACK/camera-api" && npm ci --omit=dev --no-audit --no-fund )
+
+echo "==> MediaMTX config (template -> live, creds from env, mode 0600)"
+cp "$HERE/mediamtx.yml.tpl" "$STACK/mediamtx.yml.tpl"
+cp "$HERE/docker-compose.mediamtx.yml" "$STACK/docker-compose.mediamtx.yml"
+# shellcheck disable=SC1090
+set -a; . "$ENV_FILE"; set +a
+sed -e "s|__ANNKE_MAIN_RTSP_URL__|${ANNKE_MAIN_RTSP_URL}|g" \
+    -e "s|__ANNKE_PREVIEW_RTSP_URL__|${ANNKE_PREVIEW_RTSP_URL}|g" \
+    "$STACK/mediamtx.yml.tpl" > "$STACK/mediamtx.yml"
+chmod 600 "$STACK/mediamtx.yml"
+
+echo "==> relay scripts (credential-free)"
+cp "$HERE/annke-main-relay.sh" "$HERE/annke-preview-relay.sh" "$STACK/"
+chmod +x "$STACK/annke-main-relay.sh" "$STACK/annke-preview-relay.sh"
+
+echo "==> systemd units"
+for u in mbfd-annke-main-relay mbfd-annke-preview-relay mbfd-camera-api; do
+  sudo cp "$HERE/systemd/$u.service" /etc/systemd/system/
+done
+sudo systemctl daemon-reload
+
+echo "==> least-privilege admin helper"
+sudo install -o root -g root -m 0755 "$HERE/mbfd-media-admin" /usr/local/sbin/mbfd-media-admin
+echo "peter ALL=(root) NOPASSWD: /usr/local/sbin/mbfd-media-admin" | sudo tee /etc/sudoers.d/mbfd-media-admin >/dev/null
+sudo chmod 0440 /etc/sudoers.d/mbfd-media-admin
+sudo visudo -cf /etc/sudoers.d/mbfd-media-admin
+
+echo "==> firewall (deny default; SSH from Tailscale+LAN; media ports GMKtec-only)"
+sudo /usr/local/sbin/mbfd-media-admin ufw-apply
+
+echo "==> enable + start"
+sudo systemctl enable --now mbfd-camera-api mbfd-annke-main-relay mbfd-annke-preview-relay
+( cd "$STACK" && docker compose -f docker-compose.mediamtx.yml up -d )
+
+echo "==> install complete. Verify with: scripts/upgrade.sh status"

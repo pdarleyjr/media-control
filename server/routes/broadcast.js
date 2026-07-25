@@ -32,6 +32,7 @@ const {
 } = require('../lib/broadcast-targets');
 const nodeRegistry = require('../lib/node-registry');
 const { contentUseDecision, contextFromRequest } = require('../lib/content-visibility');
+const cameraControl = require('../lib/camera-control-client');
 
 function sourceIdentity({ contentId, playlistId, presentationId, remoteUrl }) {
   if (contentId) return { type: 'content', id: String(contentId) };
@@ -39,29 +40,6 @@ function sourceIdentity({ contentId, playlistId, presentationId, remoteUrl }) {
   if (presentationId) return { type: 'presentation', id: String(presentationId) };
   const digest = crypto.createHash('sha256').update(String(remoteUrl || '')).digest('hex').slice(0, 32);
   return { type: 'remote_url', id: `sha256:${digest}` };
-}
-
-async function callDirector(path, body) {
-  const base = String(process.env.AI_DIRECTOR_URL || 'http://host.docker.internal:8766').replace(/\/+$/, '');
-  if (!base) return { ok: false, message: 'AI Director URL not configured' };
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), Number(process.env.AI_DIRECTOR_TIMEOUT_MS) || 8000);
-  try {
-    const response = await fetch(`${base}${path}`, {
-      method: 'POST',
-      headers: body ? { 'Content-Type': 'application/json' } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
-      signal: controller.signal,
-    });
-    const text = await response.text();
-    let data = null;
-    try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-    return { ok: response.ok, status: response.status, data };
-  } catch (e) {
-    return { ok: false, message: e && e.message || 'AI Director request failed' };
-  } finally {
-    clearTimeout(timeout);
-  }
 }
 
 router.get('/:requestId', (req, res) => {
@@ -303,7 +281,12 @@ router.post('/', async (req, res) => {
   let liveProgram = null;
   if (include_live_stream === true) {
     liveProgram = liveStreamProgramState(req.workspaceId);
-    liveProgram.program_refresh = await callDirector('/media-control/refresh');
+    // AI Director retired: the program source is the ANNKE camera edge. Surface
+    // its live status instead of an OBS media-control refresh.
+    const cameraStatus = await cameraControl.getStatus();
+    liveProgram.program_refresh = cameraStatus.ok
+      ? { ok: true, data: { camera_online: !!(cameraStatus.data && cameraStatus.data.camera_online), message: 'ANNKE program source live' } }
+      : { ok: false, message: cameraStatus.message || 'Camera control edge is unreachable' };
   }
   const deliveryStatus = broadcastDelivery.getRequest(deliveryRequest.id, req.workspaceId);
   res.status(202).json({

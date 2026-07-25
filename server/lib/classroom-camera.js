@@ -1,6 +1,18 @@
 'use strict';
 
-const CAMERA_HOST = 'http://host.docker.internal:8766/camera-hls';
+// Same-origin classroom camera HLS proxy. Routes
+//   /player/classroom-camera/:camera/*
+// to the upstream HLS edge and rewrites manifest segment URIs to same-origin
+// so the browser never cross-origin loads from the camera edge directly.
+//
+// Camera 3 = ANNKE ceiling camera, served by the Kamrui MediaMTX HLS edge
+// (http://192.168.1.122:8888/annke-preview). Cameras 1/2 remain routed to the
+// AI-Director-hosted camera-hls path when that edge is present; with AI
+// Director retired only camera 3 is live.
+//
+// Upstream base is env-overridable (CLASSROOM_CAMERA_UPSTREAM) for deployment
+// flexibility; the default is the Kamrui MediaMTX HLS edge.
+const CAMERA_HOST = (process.env.CLASSROOM_CAMERA_UPSTREAM || 'http://192.168.1.122:8888').replace(/\/+$/, '');
 
 function normalizeCamera(camera) {
   const value = String(camera || '');
@@ -8,9 +20,10 @@ function normalizeCamera(camera) {
   return value;
 }
 
+// Upstream MediaMTX path per camera. Camera 3 (ANNKE) -> annke-preview.
 function cameraPath(camera) {
   const id = normalizeCamera(camera);
-  return id === '3' ? 'annke-camera-3' : `kamrui-camera-${id}`;
+  return id === '3' ? 'annke-preview' : `kamrui-camera-${id}`;
 }
 
 function normalizeAsset(asset) {
@@ -23,7 +36,7 @@ function normalizeAsset(asset) {
 
 function cameraUpstreamUrl(camera, asset) {
   const id = normalizeCamera(camera);
-  return `${CAMERA_HOST}/${id}/${normalizeAsset(asset)}`;
+  return `${CAMERA_HOST}/${cameraPath(id)}/${normalizeAsset(asset)}`;
 }
 
 function proxyCameraUri(uri, camera) {
