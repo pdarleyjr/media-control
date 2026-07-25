@@ -67,9 +67,9 @@ function classroomCatalog() {
 }
 
 describe('Command Center state separation', () => {
-  it('defaults to Room Overview without a focused or control target', () => {
+  it('defaults to Focus View without a focused or control target (overview removed)', () => {
     const state = createCommandCenterState();
-    assert.equal(state.viewMode, VIEW_MODE.OVERVIEW);
+    assert.equal(state.viewMode, VIEW_MODE.FOCUS);
     assert.equal(state.focusedViewTarget, null);
     assert.equal(state.controlTarget, null);
     assert.deepEqual(state.broadcastTargets, []);

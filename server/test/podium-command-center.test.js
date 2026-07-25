@@ -7,13 +7,19 @@ function read(relativePath) {
   return fs.readFileSync(path.resolve(__dirname, '../..', relativePath), 'utf8');
 }
 
-test('target selector exposes direct touch controls for every video wall', () => {
+test('target selector exposes direct touch controls for pinned walls and a dropdown for the rest', () => {
   const selector = read('frontend/js/views/media-control/target-selector.js');
 
+  // Quick-focus tabs render wall buttons with tab semantics (aria-selected).
   assert.match(selector, /class="mc-target-wall-tabs"/);
-  assert.match(selector, /data-target-value="wall:/);
-  assert.match(selector, /aria-pressed=/);
+  assert.match(selector, /role="tab"/);
+  assert.match(selector, /data-target-value="\$\{esc\(ref\)\}"/);
+  assert.match(selector, /aria-selected=/);
   assert.match(selector, /activateValue\(button\.dataset\.targetValue/);
+  // The dropdown carries every remaining authorized target (unpinned walls +
+  // groups + displays), so no wall is unreachable.
+  assert.match(selector, /mc-target-select/);
+  assert.match(selector, /remainingWalls/);
 });
 
 test('podium command center occupies only the viewport below the appliance header', () => {
