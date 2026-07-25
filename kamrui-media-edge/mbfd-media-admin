@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# /usr/local/sbin/mbfd-media-admin
+# Least-privilege media administration helper for the `peter` user.
+#
+# Owned by root:root, NOT writable by peter. Allows only a fixed allowlist of
+# subcommands. Never executes a shell supplied by the caller and never passes
+# arbitrary arguments to privileged operations. Intended to be invoked via a
+# narrow sudoers entry:
+#   peter ALL=(root) NOPASSWD: /usr/local/sbin/mbfd-media-admin
+#
+# Allowlisted subcommands:
+#   restart-annke-main        systemctl restart mbfd-annke-main-relay
+#   restart-annke-preview     systemctl restart mbfd-annke-preview-relay
+#   restart-camera-api        systemctl restart mbfd-camera-api
+#   restart-mediamtx          docker restart mbfd-mediamtx
+#   reload-mediamtx-config    docker exec mbfd-mediamtx kill -HUP 1
+#   status                    systemctl status of all media services + docker
+#   ufw-apply                 re-apply the approved fixed Kamrui firewall rules
+#   ufw-show                  ufw status numbered
+set -euo pipefail
+
+ALLOWED="restart-annke-main restart-annke-preview restart-camera-api restart-mediamtx reload-mediamtx-config status ufw-apply ufw-show"
+
+if [ $# -ne 1 ]; then
+  echo "usage: mbfd-media-admin <subcommand>" >&2
+  echo "allowed: $ALLOWED" >&2
+  exit 2
+fi
+cmd="$1"
+case "$cmd" in
+  restart-annke-main)        exec systemctl restart mbfd-annke-main-relay ;;
+  restart-annke-preview)     exec systemctl restart mbfd-annke-preview-relay ;;
+  restart-camera-api)        exec systemctl restart mbfd-camera-api ;;
+  restart-mediamtx)          exec docker restart mbfd-mediamtx ;;
+  reload-mediamtx-config)    exec docker exec mbfd-mediamtx sh -c 'kill -HUP 1' ;;
+  status)
+    for s in mbfd-annke-main-relay mbfd-annke-preview-relay mbfd-camera-api; do
+      echo "=== $s ==="
+      systemctl is-active "$s" || true
+      systemctl is-enabled "$s" 2>/dev/null || true
+    done
+    echo "=== mediamtx container ==="
+    docker ps --filter name=mbfd-mediamtx --format '{{.Names}} {{.Status}}' || true
+    ;;
+  ufw-apply)
+    # Approved fixed rules: deny by default; allow SSH from LAN+Tailscale;
+    # allow media ports 8200/8888 only from the GMKtec LAN address.
+    ufw --force reset >/dev/null 2>&1
+    ufw default deny incoming
+    ufw default allow outgoing
+    ufw allow in on tailscale0 to any port 22 proto tcp
+    ufw allow in from 192.168.1.0/24 to any port 22 proto tcp
+    ufw allow in from 100.82.185.48 to any port 22 proto tcp
+    ufw allow in from 192.168.1.116 to any port 8200 proto tcp
+    ufw allow in from 192.168.1.116 to any port 8888 proto tcp
+    ufw --force enable
+    ufw status verbose
+    ;;
+  ufw-show)
+    exec ufw status numbered
+    ;;
+  *)
+    echo "unknown subcommand: $cmd" >&2
+    echo "allowed: $ALLOWED" >&2
+    exit 2
+    ;;
+esac

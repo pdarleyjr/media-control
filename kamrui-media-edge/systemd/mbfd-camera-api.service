@@ -1,0 +1,19 @@
+[Unit]
+Description=MBFD Camera Control API
+After=network-online.target docker.service mbfd-mediamtx.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=peter
+Group=peter
+WorkingDirectory=/opt/mbfd/media-stack/camera-api
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=5s
+Environment=NODE_ENV=production
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

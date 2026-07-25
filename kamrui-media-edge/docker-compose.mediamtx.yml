@@ -1,0 +1,10 @@
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: mbfd-mediamtx
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+    environment:
+      - MTX_CONFIG=/mediamtx.yml
