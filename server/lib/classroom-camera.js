@@ -36,7 +36,7 @@ function normalizeAsset(asset) {
 
 function cameraUpstreamUrl(camera, asset) {
   const id = normalizeCamera(camera);
-  return `${CAMERA_HOST}/${id}/${normalizeAsset(asset)}`;
+  return `${CAMERA_HOST}/${cameraPath(id)}/${normalizeAsset(asset)}`;
 }
 
 function proxyCameraUri(uri, camera) {
