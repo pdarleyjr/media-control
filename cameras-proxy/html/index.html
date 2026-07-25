@@ -387,7 +387,10 @@ async function loadRecordings() {
           <a class="rbtn" href="${dlUrl}" download style="text-decoration:none">⬇ Download</a>
           ${r.synced && r.syncVerified ? '' : `<button class="rbtn" onclick="retrySync('${sid}')">↻ Sync</button>`}
           ${r.peertubeVideoUuid ? `<a class="rbtn" href="${ptUrl}" target="_blank" style="text-decoration:none">▶ PeerTube</a>` : `<button class="rbtn" onclick="uploadPrivately('${sid}')">⬆ Upload Private</button>`}
+          ${r.archived ? `<button class="rbtn" onclick="restoreRecording('${sid}')">↩ Restore</button>` : `<button class="rbtn" onclick="archiveRecording('${sid}')">📦 Archive</button>`}
+          <button class="rbtn" style="border-color:var(--bad);color:var(--bad)" onclick="showDeleteDialog('${sid}','${escape(dt)}')">🗑 Delete</button>
         </div>
+        ${r.archived ? '<div style="color:var(--warn);font-size:11px;margin-top:2px">📦 Archived</div>' : ''}
       </div>`;
     }).join('');
   } catch (e) { document.getElementById('recordings-list').innerHTML = '<div style="color:var(--bad);padding:8px">Failed to load recordings</div>'; }
@@ -440,6 +443,70 @@ async function changePrivacy(sid, privacy) {
     addLog(`Privacy changed to ${labels[privacy]}: ${r.ok ? 'ok' : r.error}`);
     loadRecordings();
   } catch (e) { addLog(`Privacy error: ${e.message}`); }
+}
+
+async function archiveRecording(sid) {
+  try {
+    addLog(`Archiving ${sid.slice(0,20)}…`);
+    const r = await api('POST', `/recordings/${sid}/archive`);
+    addLog(r.ok || r.archived ? 'Archived ✓' : `Archive failed: ${r.error}`);
+    loadRecordings();
+  } catch (e) { addLog(`Archive error: ${e.message}`); }
+}
+
+async function restoreRecording(sid) {
+  try {
+    addLog(`Restoring ${sid.slice(0,20)}…`);
+    const r = await api('POST', `/recordings/${sid}/restore`);
+    addLog(r.ok || r.restored ? 'Restored ✓' : `Restore failed: ${r.error}`);
+    loadRecordings();
+  } catch (e) { addLog(`Restore error: ${e.message}`); }
+}
+
+async function showDeleteDialog(sid, title) {
+  // Fetch impact preview first.
+  let impact = null;
+  try {
+    impact = await api('GET', `/recordings/${sid}/deletion-impact`);
+  } catch (e) { addLog(`Impact error: ${e.message}`); return; }
+  if (!impact || impact.can_delete === false) {
+    alert(`Cannot delete: ${impact?.blocks?.join(', ') || 'unknown reason'}`);
+    return;
+  }
+  const dt = new Date(impact.date).toLocaleString();
+  const sz = formatBytes(parseInt(impact.size_bytes) || 0);
+  const dur = formatDuration(parseFloat(impact.duration) || 0);
+  const ptInfo = impact.peertube_uploaded ? `\nPeerTube: ${impact.peertube_video_uuid}` : '\nPeerTube: not uploaded';
+  const syncInfo = impact.gmktec_copy_synced ? `\nGMKtec copy: synced (${impact.gmktec_copy_verified ? 'verified' : 'unverified'})` : '\nGMKtec copy: not synced';
+  const msg = `PERMANENT DELETE — this cannot be undone.\n\nRecording: ${dt}\nDuration: ${dur}  Size: ${sz}\nKamrui file: ${impact.kamrui_copy_exists ? 'exists' : 'missing'}${syncInfo}${ptInfo}\n\nType the session ID to confirm:\n${sid}`;
+  const typed = prompt(msg);
+  if (typed !== sid) { addLog('Delete cancelled (confirmation mismatch)'); return; }
+  try {
+    addLog(`Deleting ${sid.slice(0,20)}…`);
+    const r = await fetch(`${API}/recordings/${sid}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', 'If-Match': impact.revision },
+      body: JSON.stringify({ confirm: sid }),
+    });
+    const result = await r.json();
+    if (r.ok) {
+      addLog(`Deleted ✓ steps: ${(result.steps||[]).join(', ')}`);
+      // Offer PeerTube deletion separately if the recording was uploaded.
+      if (impact.peertube_uploaded && impact.peertube_video_uuid) {
+        if (confirm(`Also delete the PeerTube copy (${impact.peertube_video_uuid})?\nThis is a separate action.`)) {
+          const ptRes = await fetch(`${API}/recordings/${sid}/peertube`, {
+            method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ confirm: sid }),
+          });
+          const ptResult = await ptRes.json();
+          addLog(ptRes.ok ? 'PeerTube copy deleted ✓' : `PeerTube delete failed: ${ptResult.error}`);
+        }
+      }
+    } else {
+      addLog(`Delete failed: ${result.error}`);
+    }
+    loadRecordings();
+  } catch (e) { addLog(`Delete error: ${e.message}`); }
 }
 
 document.getElementById('btn-record').addEventListener('click', async () => {

@@ -1071,6 +1071,275 @@ app.get('/api/recordings/:id/peertube-status', authMiddleware, async (req, res) 
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Recording deletion: impact preview, archive, restore, permanent delete.
+// PeerTube deletion is a separate explicit endpoint.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const deletionLocks = new Map(); // sessionId -> { acquiredAt, operatorId }
+
+function acquireDeletionLock(sessionId, operatorId) {
+  if (deletionLocks.has(sessionId)) return false;
+  deletionLocks.set(sessionId, { acquiredAt: Date.now(), operatorId: operatorId || 'system' });
+  return true;
+}
+
+function releaseDeletionLock(sessionId) {
+  deletionLocks.delete(sessionId);
+}
+
+// Impact preview: return everything the operator needs to confirm deletion.
+app.get('/api/recordings/:id/deletion-impact', authMiddleware, (req, res) => {
+  if (!validateSessionId(req.params.id)) return res.status(400).json({ error: 'Invalid session ID' });
+  const sessionId = req.params.id;
+  const metadataPath = path.join(CONFIG.recordingDir, 'metadata', `${sessionId}.json`);
+  try {
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    const activeDir = path.join(CONFIG.recordingDir, 'active', sessionId);
+    const isActive = state.recording && state.currentSessionId === sessionId;
+    const isFinalizing = state.finalizing === true;
+    const isSyncing = metadata.synced === true && !metadata.syncVerified;
+    const isUploading = metadata.uploaded === true && !metadata.peertubeVideoUuid;
+    const fileExists = metadata.filePath && fs.existsSync(metadata.filePath);
+    const revision = metadata.sha256 || metadata.finalizedAt || sessionId;
+    const impact = {
+      recording_id: sessionId,
+      title: `Recording ${new Date(metadata.finalizedAt || Date.now()).toLocaleString()}`,
+      date: metadata.finalizedAt || null,
+      duration: metadata.duration || null,
+      size_bytes: metadata.sizeBytes || null,
+      active: isActive,
+      finalizing: isFinalizing,
+      syncing: isSyncing,
+      uploading: isUploading,
+      kamrui_copy_exists: fileExists,
+      kamrui_copy_path: fileExists ? metadata.filePath : null,
+      gmktec_copy_synced: metadata.synced || false,
+      gmktec_copy_verified: metadata.syncVerified || false,
+      gmktec_sync_destination: metadata.syncDestination || null,
+      checksum: metadata.sha256 || null,
+      peertube_uploaded: !!metadata.peertubeVideoUuid,
+      peertube_video_uuid: metadata.peertubeVideoUuid || null,
+      peertube_watch_url: metadata.peertubeWatchUrl || null,
+      peertube_privacy: metadata.peertubePrivacy || null,
+      validated: metadata.validated || false,
+      revision,
+      can_delete: !isActive && !isFinalizing && !isSyncing && !isUploading,
+      blocks: [
+        ...(isActive ? ['Recording is active'] : []),
+        ...(isFinalizing ? ['Finalization in progress'] : []),
+        ...(isSyncing ? ['Synchronization in progress'] : []),
+        ...(isUploading ? ['PeerTube upload in progress'] : []),
+      ],
+    };
+    res.json(impact);
+  } catch {
+    res.status(404).json({ error: 'Recording not found' });
+  }
+});
+
+// Archive (soft delete): mark as archived, keep files, create tombstone.
+app.post('/api/recordings/:id/archive', authMiddleware, commandRateLimit, async (req, res) => {
+  if (!validateSessionId(req.params.id)) return res.status(400).json({ error: 'Invalid session ID' });
+  const sessionId = req.params.id;
+  if (!acquireDeletionLock(sessionId, req.operatorId)) {
+    return res.status(409).json({ error: 'Recording is locked by another operation' });
+  }
+  try {
+    const metadataPath = path.join(CONFIG.recordingDir, 'metadata', `${sessionId}.json`);
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    if (state.recording && state.currentSessionId === sessionId) {
+      return res.status(409).json({ error: 'Cannot archive an active recording' });
+    }
+    metadata.archived = true;
+    metadata.archivedAt = new Date().toISOString();
+    metadata.archivedBy = req.operatorId;
+    fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
+    audit('recording.archive', { sessionId, operatorId: req.operatorId }, req.operatorId);
+    res.json({ ok: true, archived: true, sessionId });
+  } catch {
+    res.status(404).json({ error: 'Recording not found' });
+  } finally {
+    releaseDeletionLock(sessionId);
+  }
+});
+
+// Restore from archive.
+app.post('/api/recordings/:id/restore', authMiddleware, commandRateLimit, async (req, res) => {
+  if (!validateSessionId(req.params.id)) return res.status(400).json({ error: 'Invalid session ID' });
+  const sessionId = req.params.id;
+  try {
+    const metadataPath = path.join(CONFIG.recordingDir, 'metadata', `${sessionId}.json`);
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    if (!metadata.archived) {
+      return res.status(409).json({ error: 'Recording is not archived' });
+    }
+    metadata.archived = false;
+    metadata.archivedAt = null;
+    metadata.archivedBy = null;
+    metadata.restoredAt = new Date().toISOString();
+    fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
+    audit('recording.restore', { sessionId, operatorId: req.operatorId }, req.operatorId);
+    res.json({ ok: true, restored: true, sessionId });
+  } catch {
+    res.status(404).json({ error: 'Recording not found' });
+  }
+});
+
+// Permanent delete: remove Kamrui file + GMKtec synced copy + metadata.
+// Requires If-Match revision check for optimistic concurrency.
+app.delete('/api/recordings/:id', authMiddleware, commandRateLimit, async (req, res) => {
+  if (!validateSessionId(req.params.id)) return res.status(400).json({ error: 'Invalid session ID' });
+  const sessionId = req.params.id;
+  const ifMatch = req.headers['if-match'];
+  const confirmTyped = req.body?.confirm;
+  const requestId = crypto.randomUUID();
+
+  if (!acquireDeletionLock(sessionId, req.operatorId)) {
+    return res.status(409).json({ error: 'Recording is locked by another operation', request_id: requestId });
+  }
+
+  const results = { request_id: requestId, sessionId, steps: [], errors: [] };
+  try {
+    const metadataPath = path.join(CONFIG.recordingDir, 'metadata', `${sessionId}.json`);
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+
+    // Revalidate state.
+    const isActive = state.recording && state.currentSessionId === sessionId;
+    const isFinalizing = state.finalizing === true;
+    const isSyncing = metadata.synced === true && !metadata.syncVerified;
+    const isUploading = metadata.uploaded === true && !metadata.peertubeVideoUuid;
+    if (isActive || isFinalizing || isSyncing || isUploading) {
+      return res.status(409).json({
+        error: 'Cannot delete: recording is active or undergoing an operation',
+        blocks: [
+          ...(isActive ? ['active recording'] : []),
+          ...(isFinalizing ? ['finalizing'] : []),
+          ...(isSyncing ? ['syncing'] : []),
+          ...(isUploading ? ['uploading'] : []),
+        ],
+        request_id: requestId,
+      });
+    }
+
+    // Revision check (If-Match).
+    const revision = metadata.sha256 || metadata.finalizedAt || sessionId;
+    if (ifMatch && ifMatch !== revision && ifMatch !== `"${revision}"`) {
+      return res.status(412).json({ error: 'Revision mismatch (stale request)', request_id: requestId, expected: revision, provided: ifMatch });
+    }
+
+    // Typed confirmation (must include the session ID to prevent accidental delete).
+    if (confirmTyped !== sessionId) {
+      return res.status(400).json({ error: 'Typed confirmation required: { "confirm": "<sessionId>" }', request_id: requestId });
+    }
+
+    // Tombstone audit record (before deletion).
+    const tombstone = {
+      sessionId,
+      finalizedAt: metadata.finalizedAt,
+      duration: metadata.duration,
+      sizeBytes: metadata.sizeBytes,
+      sha256: metadata.sha256,
+      deletedAt: new Date().toISOString(),
+      deletedBy: req.operatorId,
+      requestId,
+      peertubeVideoUuid: metadata.peertubeVideoUuid || null,
+      syncDestination: metadata.syncDestination || null,
+    };
+    const tombstonePath = path.join(CONFIG.recordingDir, 'metadata', `${sessionId}.tombstone.json`);
+    fs.writeFileSync(tombstonePath, JSON.stringify(tombstone, null, 2));
+    audit('recording.delete.tombstone', tombstone, req.operatorId);
+    results.steps.push('tombstone_created');
+
+    // Delete Kamrui file.
+    if (metadata.filePath && fs.existsSync(metadata.filePath)) {
+      try {
+        const resolved = path.resolve(metadata.filePath);
+        const completedDir = path.join(CONFIG.recordingDir, 'completed');
+        if (resolved.startsWith(completedDir + path.sep)) {
+          fs.rmSync(resolved, { force: true });
+          results.steps.push('kamrui_file_deleted');
+        } else {
+          results.errors.push('kamrui_file_path_traversal_blocked');
+        }
+      } catch (e) {
+        results.errors.push(`kamrui_file_delete_failed: ${e.message}`);
+      }
+    }
+
+    // Delete GMKtec synced copy (if configured).
+    if (metadata.synced && metadata.syncDestination && CONFIG.gmktecSyncDest) {
+      try {
+        const m = CONFIG.gmktecSyncDest.match(/^([^@]+)@([^:]+):(.+)$/);
+        if (m) {
+          const remotePath = `${m[3]}/${sessionId}.mp4`;
+          const { execFileSync } = require('child_process');
+          execFileSync('ssh', ['-o', 'ConnectTimeout=10', '-o', 'BatchMode=yes', `${m[1]}@${m[2]}`, `rm -f ${remotePath}`], { timeout: 30000 });
+          results.steps.push('gmktec_copy_deleted');
+        }
+      } catch (e) {
+        results.errors.push(`gmktec_copy_delete_failed: ${e.message}`);
+      }
+    }
+
+    // Verify files no longer exist.
+    const kamruiGone = !metadata.filePath || !fs.existsSync(metadata.filePath);
+    results.kamrui_copy_exists = !kamruiGone;
+
+    // Update catalog: remove metadata JSON (tombstone remains).
+    fs.rmSync(metadataPath, { force: true });
+    results.steps.push('metadata_removed');
+
+    audit('recording.delete.complete', { sessionId, results, requestId }, req.operatorId);
+    results.ok = results.errors.length === 0;
+    res.json(results);
+  } catch {
+    res.status(404).json({ error: 'Recording not found', request_id: requestId });
+  } finally {
+    releaseDeletionLock(sessionId);
+  }
+});
+
+// Separate PeerTube deletion: does NOT touch local files.
+app.delete('/api/recordings/:id/peertube', authMiddleware, commandRateLimit, async (req, res) => {
+  if (!validateSessionId(req.params.id)) return res.status(400).json({ error: 'Invalid session ID' });
+  const sessionId = req.params.id;
+  const requestId = crypto.randomUUID();
+  try {
+    const metadataPath = path.join(CONFIG.recordingDir, 'metadata', `${sessionId}.json`);
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    if (!metadata.peertubeVideoUuid) {
+      return res.status(404).json({ error: 'Recording not uploaded to PeerTube', request_id: requestId });
+    }
+    if (req.body?.confirm !== sessionId) {
+      return res.status(400).json({ error: 'Typed confirmation required: { "confirm": "<sessionId>" }', request_id: requestId });
+    }
+    if (!CONFIG.peertubeAccessToken) {
+      return res.status(503).json({ error: 'PeerTube access token not configured', request_id: requestId });
+    }
+    process.env.PEERTUBE_BASE_URL = CONFIG.peertubeBaseUrl;
+    process.env.PEERTUBE_ACCESS_TOKEN = CONFIG.peertubeAccessToken;
+    try {
+      const del = await peertube.deleteVideo(metadata.peertubeVideoUuid);
+      // Update local metadata only after PeerTube confirms.
+      metadata.peertubeVideoId = null;
+      metadata.peertubeVideoUuid = null;
+      metadata.peertubeWatchUrl = null;
+      metadata.peertubePrivacy = null;
+      metadata.peertubeDeletedAt = new Date().toISOString();
+      fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
+      audit('recording.peertube.delete', { sessionId, uuid: metadata.peertubeVideoUuid, result: del, requestId }, req.operatorId);
+      res.json({ ok: true, sessionId, peertube_deleted: true, request_id: requestId });
+    } catch (e) {
+      // Do NOT update local metadata if PeerTube fails.
+      audit('recording.peertube.delete.failed', { sessionId, error: e.message, requestId }, req.operatorId);
+      res.status(502).json({ error: `PeerTube deletion failed: ${e.message}`, request_id: requestId });
+    }
+  } catch {
+    res.status(404).json({ error: 'Recording not found', request_id: requestId });
+  }
+});
+
 app.use((err, req, res, _next) => {
   console.error('Unhandled error:', err);
   addError(`Unhandled: ${err.message}`);

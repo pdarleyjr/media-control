@@ -414,11 +414,44 @@ async function checkProcessingStatus(videoIdOrUuid) {
   };
 }
 
+/**
+ * Deletes a video from PeerTube. Does NOT touch local files.
+ * @param {number|string} videoIdOrUuid - Video ID or UUID
+ * @returns {Promise<{ok: boolean, deleted: boolean}>}
+ */
+async function deleteVideo(videoIdOrUuid) {
+  const config = getConfig();
+  const { token, baseUrl } = config;
+
+  if (!videoIdOrUuid) {
+    throw new Error('videoIdOrUuid is required');
+  }
+
+  const url = `${baseUrl}/api/v1/videos/${videoIdOrUuid}`;
+
+  const response = await fetchWithTimeout(
+    url,
+    { method: 'DELETE', headers: buildAuthHeaders(token) },
+    METADATA_TIMEOUT_MS,
+    token,
+  );
+
+  if (response.status === 204 || response.status === 200) {
+    return { ok: true, deleted: true };
+  }
+  if (response.status === 404) {
+    return { ok: true, deleted: false, message: 'Video already absent' };
+  }
+  const errorBody = await parseResponse(response, token);
+  throw new Error(`PeerTube delete failed (${response.status}): ${errorBody?.detail || errorBody?.error || 'unknown'}`);
+}
+
 module.exports = {
   uploadRecording,
   updatePrivacy,
   getVideoInfo,
   checkProcessingStatus,
+  deleteVideo,
   PRIVACY,
   PRIVACY_LABELS,
 };

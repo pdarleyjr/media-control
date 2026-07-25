@@ -82,6 +82,28 @@ async function getRecordings() {
   return callCameraApi('GET', '/api/recordings');
 }
 
+async function getDeletionImpact(sessionId) {
+  return callCameraApi('GET', `/api/recordings/${sessionId}/deletion-impact`);
+}
+
+async function archiveRecording(sessionId) {
+  return callCameraApi('POST', `/api/recordings/${sessionId}/archive`);
+}
+
+async function restoreRecording(sessionId) {
+  return callCameraApi('POST', `/api/recordings/${sessionId}/restore`);
+}
+
+async function deleteRecording(sessionId, { ifMatch, confirmTyped } = {}) {
+  const headers = { 'X-Api-Token': getToken(), 'Content-Type': 'application/json' };
+  if (ifMatch) headers['If-Match'] = ifMatch;
+  return callCameraApi('DELETE', `/api/recordings/${sessionId}`, { confirm: confirmTyped }, 30000);
+}
+
+async function deletePeerTubeVideo(sessionId, { confirmTyped } = {}) {
+  return callCameraApi('DELETE', `/api/recordings/${sessionId}/peertube`, { confirm: confirmTyped }, 30000);
+}
+
 module.exports = {
   callCameraApi,
   getStatus,
@@ -91,6 +113,11 @@ module.exports = {
   stopLivestream,
   emergencyStop,
   getRecordings,
+  getDeletionImpact,
+  archiveRecording,
+  restoreRecording,
+  deleteRecording,
+  deletePeerTubeVideo,
   getBaseUrl,
   getToken,
 };

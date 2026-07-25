@@ -834,6 +834,53 @@ router.get('/recordings', async (req, res) => {
   res.json(result.ok ? { success: true, request_id: requestId, ...(result.data && typeof result.data === 'object' ? result.data : { recordings: [] }) } : { success: false, request_id: requestId, recordings: [], error: result.message });
 });
 
+// Recording deletion: impact preview, archive, restore, permanent delete.
+// PeerTube deletion is a separate explicit route.
+router.get('/recordings/:id/deletion-impact', async (req, res) => {
+  const requestId = createRequestId();
+  if (!workspaceGuard(req, res, requestId)) return;
+  const result = await cameraControl.getDeletionImpact(req.params.id);
+  if (result.ok) {
+    res.json({ success: true, request_id: requestId, ...(result.data || {}) });
+  } else {
+    res.status(result.status || 404).json({ success: false, request_id: requestId, error: result.message });
+  }
+});
+
+router.post('/recordings/:id/archive', async (req, res) => {
+  const requestId = createRequestId();
+  if (!workspaceGuard(req, res, requestId)) return;
+  const result = await cameraControl.archiveRecording(req.params.id);
+  res.status(result.ok ? 200 : (result.status || 409)).json({ success: result.ok, request_id: requestId, ...(result.data || {}), error: result.message });
+});
+
+router.post('/recordings/:id/restore', async (req, res) => {
+  const requestId = createRequestId();
+  if (!workspaceGuard(req, res, requestId)) return;
+  const result = await cameraControl.restoreRecording(req.params.id);
+  res.status(result.ok ? 200 : (result.status || 409)).json({ success: result.ok, request_id: requestId, ...(result.data || {}), error: result.message });
+});
+
+router.delete('/recordings/:id', async (req, res) => {
+  const requestId = createRequestId();
+  if (!workspaceGuard(req, res, requestId)) return;
+  const ifMatch = req.headers['if-match'];
+  const result = await cameraControl.deleteRecording(req.params.id, {
+    ifMatch,
+    confirmTyped: req.body?.confirm,
+  });
+  res.status(result.ok ? 200 : (result.status || 409)).json({ success: result.ok, request_id: requestId, ...(result.data || {}), error: result.message });
+});
+
+router.delete('/recordings/:id/peertube', async (req, res) => {
+  const requestId = createRequestId();
+  if (!workspaceGuard(req, res, requestId)) return;
+  const result = await cameraControl.deletePeerTubeVideo(req.params.id, {
+    confirmTyped: req.body?.confirm,
+  });
+  res.status(result.ok ? 200 : (result.status || 502)).json({ success: result.ok, request_id: requestId, ...(result.data || {}), error: result.message });
+});
+
 router.post('/clear-content', async (req, res) => {
   const requestId = createRequestId();
   if (!workspaceGuard(req, res, requestId)) return;
