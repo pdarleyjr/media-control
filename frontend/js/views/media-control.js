@@ -1668,72 +1668,51 @@ function mountRoomOverviewSurface() {
     const offline = active.filter((d) => !d.online);
     const byId = new Map(all.map((d) => [d.id, d]));
 
-    const wallDisplays = [];
-    const wallGroups = {};
+    const wallMemberIdSet = new Set();
     for (const wall of (walls || [])) {
       for (const member of (wall.devices || [])) {
-        const d = byId.get(member.device_id);
-        if (d) {
-          wallDisplays.push({
-            ...d,
-            wallId: wall.id,
-            wallName: wall.name,
-            gridCol: member.grid_col,
-            gridRow: member.grid_row,
-          });
-        }
+        wallMemberIdSet.add(member.device_id);
       }
-      wallGroups[wall.id] = wall;
     }
 
-    const standaloneDisplays = active.filter((d) => !wallMemberIds.has(d.id));
+    const displays = active.map((d) => {
+      const wallId = wallMemberIdSet.has(d.id)
+        ? (walls || []).find((w) => (w.devices || []).some((m) => m.device_id === d.id))?.id || null
+        : null;
+      return {
+        id: d.id,
+        name: d.name || d.id,
+        online: !!d.online,
+        screenOn: d.screen_on !== false,
+        wallId,
+        contentId: d.now_playing?.content_id || null,
+        contentType: d.content_type || null,
+        mediaTitle: d.now_playing?.label || d.now_playing?.kind || null,
+        opState: !d.online ? OPERATOR_STATE.OFFLINE
+          : d.screen_on === false ? OPERATOR_STATE.STANDBY
+          : (d.now_playing?.kind && d.now_playing.kind !== 'idle') ? OPERATOR_STATE.CONFIRMED
+          : OPERATOR_STATE.STANDBY,
+        pending: [],
+      };
+    });
+
+    const topology = (walls || []).map((wall) => ({
+      id: wall.id,
+      name: wall.name,
+      mode: wall.layout_mode || 'span',
+      leaderId: wall.leader_device_id,
+      memberIds: (wall.devices || []).map((m) => m.device_id),
+      members: (wall.devices || []).map((m) => m.device_id),
+    }));
 
     return {
-      displays: active.map((d) => ({
-        ...d,
-        wallId: wallMemberIds.has(d.id) ? (wallDisplays.find((wd) => wd.id === d.id)?.wallId || null) : null,
-        wallName: wallMemberIds.has(d.id) ? (wallDisplays.find((wd) => wd.id === d.id)?.wallName || null) : null,
-        mediaTitle: d.now_playing?.label || d.now_playing?.kind || null,
-        contentType: d.content_type || null,
-        opState: !d.online ? OPERATOR_STATE.OFFLINE
-          : d.screen_on === false ? OPERATOR_STATE.STANDBY
-          : (d.now_playing?.kind && d.now_playing.kind !== 'idle') ? OPERATOR_STATE.CONFIRMED
-          : OPERATOR_STATE.STANDBY,
-      })),
-      walls: (walls || []).map((wall) => ({
-        id: wall.id,
-        name: wall.name,
-        layoutMode: wall.layout_mode || 'span',
-        leaderDeviceId: wall.leader_device_id,
-        memberCount: (wall.devices || []).length,
-        gridCols: wall.grid_cols,
-        gridRows: wall.grid_rows,
-        members: (wall.devices || []).map((m) => {
-          const d = byId.get(m.device_id);
-          return {
-            ...m,
-            ...(d || {}),
-            mediaTitle: d?.now_playing?.label || d?.now_playing?.kind || null,
-            opState: !d?.online ? OPERATOR_STATE.OFFLINE
-              : d.screen_on === false ? OPERATOR_STATE.STANDBY
-              : (d.now_playing?.kind && d.now_playing.kind !== 'idle') ? OPERATOR_STATE.CONFIRMED
-              : OPERATOR_STATE.STANDBY,
-          };
-        }),
-      })),
-      standaloneDisplays: standaloneDisplays.map((d) => ({
-        ...d,
-        mediaTitle: d.now_playing?.label || d.now_playing?.kind || null,
-        contentType: d.content_type || null,
-        opState: !d.online ? OPERATOR_STATE.OFFLINE
-          : d.screen_on === false ? OPERATOR_STATE.STANDBY
-          : (d.now_playing?.kind && d.now_playing.kind !== 'idle') ? OPERATOR_STATE.CONFIRMED
-          : OPERATOR_STATE.STANDBY,
-      })),
+      displays,
+      topology,
       deviceHealth: {
         total: active.length,
         online: online.length,
         offline: offline.length,
+        stale: 0,
         failed: 0,
       },
       aggregateState: offline.length > 0 ? OPERATOR_STATE.OFFLINE

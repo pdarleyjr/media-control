@@ -21,7 +21,7 @@ function displayPreviewHtml(display) {
   if (src) {
     return `<img src="${esc(src)}" alt="${esc(display.name || '')}" loading="lazy">`;
   }
-  return `<span class="mc-e-ro-display-preview-empty">${esc(display.now_playing?.kind || 'No preview')}</span>`;
+  return `<span class="mc-e-ro-display-preview-empty">${esc(display.contentType || display.mediaTitle || 'No preview')}</span>`;
 }
 
 function displayCardHtml(display, i18n, wallContext) {
@@ -32,7 +32,7 @@ function displayCardHtml(display, i18n, wallContext) {
     ? `<span class="mc-e-ro-wall">${esc(wallContext.name || wallContext.id || '')}</span>`
     : '';
   const deviceId = esc(display.id || '');
-  const wallId = esc(display.wallId || '');
+  const wallId = esc(display.wallId || wallContext?.id || '');
 
   return `<li class="mc-e-ro-display ${offline ? 'is-offline' : ''}" data-display-id="${deviceId}" data-wall-id="${wallId}" data-op-state="${state}">
     <div class="mc-e-ro-display-preview">
@@ -50,16 +50,18 @@ function displayCardHtml(display, i18n, wallContext) {
   </li>`;
 }
 
-function wallSectionHtml(wall, i18n) {
-  const members = wall.members || [];
-  const leader = members.find((m) => m.id === wall.leaderDeviceId) || members[0];
+function wallSectionHtml(wall, memberDisplays, i18n) {
+  const members = memberDisplays || [];
+  const leaderId = wall.leaderId || wall.leader_device_id || (wall.memberIds?.[0]);
+  const leader = members.find((m) => m.id === leaderId) || members[0];
   const leaderName = leader ? esc(leader.name || leader.id || '') : '—';
-  const layoutLabel = wall.layoutMode === 'split' ? 'Split' : wall.layoutMode === 'groups' ? 'Groups' : 'Span';
+  const mode = wall.mode || wall.layoutMode || 'span';
+  const layoutLabel = mode === 'split' ? 'Split' : mode === 'groups' ? 'Groups' : 'Span';
 
   return `<section class="mc-e-ro-wall-section" data-wall-id="${esc(wall.id || '')}">
     <header class="mc-e-ro-wall-header">
       <h3 class="mc-e-ro-wall-name">${esc(wall.name || wall.id || 'Wall')}</h3>
-      <span class="mc-e-ro-wall-meta">${esc(wall.memberCount || members.length)} displays · ${esc(layoutLabel)} · Leader: ${leaderName}</span>
+      <span class="mc-e-ro-wall-meta">${esc(members.length)} displays · ${esc(layoutLabel)} · Leader: ${leaderName}</span>
     </header>
     <ul class="mc-e-ro-map" aria-label="${esc(wall.name || 'Wall displays')}">
       ${members.map((m) => displayCardHtml(m, i18n, { name: wall.name, id: wall.id })).join('') || `<li class="mc-e-ro-empty">${esc(i18n ? i18n('mc.e.overview.no_displays', 'No displays') : 'No displays')}</li>`}
@@ -137,9 +139,33 @@ export function mountRoomOverview(host, { store, i18n, onFocusView } = {}) {
       host.innerHTML = `<div class="mc-e-ro-loading" role="status">${esc(i18n ? i18n('mc.e.overview.loading', 'Loading room state…') : 'Loading room state…')}</div>`;
       return;
     }
-    const walls = state.walls || [];
-    const standaloneDisplays = state.standaloneDisplays || [];
+
+    // The operator store provides:
+    //   state.displays — array of {id, name, online, opState, wallId, contentId, contentType, mediaTitle, ...}
+    //   state.topology — array of {id, name, mode, memberIds, members}
+    //   state.deviceHealth — {total, online, offline, stale, failed}
+    //   state.pendingCommands, state.recording, state.stream, state.livestream
+    //   state.classroomProgram — {targets, audioState}
+    //   state.stale, state.aggregateState
+    const displays = state.displays || [];
+    const topology = state.topology || state.walls || [];
     const dh = state.deviceHealth || {};
+    const displayById = new Map(displays.map((d) => [d.id, d]));
+
+    // Build wall sections: for each topology wall, look up member displays
+    const wallMemberIds = new Set();
+    const wallSections = topology.map((wall) => {
+      const memberIds = wall.memberIds || (wall.members || []).map((m) => m.id || m.deviceId || m.device_id);
+      memberIds.forEach((id) => wallMemberIds.add(id));
+      const memberDisplays = memberIds
+        .map((id) => displayById.get(id))
+        .filter(Boolean);
+      return wallSectionHtml(wall, memberDisplays, i18n);
+    }).join('');
+
+    // Standalone displays: those not in any wall
+    const standaloneDisplays = displays.filter((d) => !wallMemberIds.has(d.id));
+
     const recording = state.recording ? stateChip(state.recording.opState, i18n) : '';
     const stream = state.stream ? stateChip(state.stream.opState, i18n) : '';
     const live = state.livestream
@@ -153,8 +179,6 @@ export function mountRoomOverview(host, { store, i18n, onFocusView } = {}) {
       dh.failed ? `${dh.failed} ${esc(i18n ? i18n('mc.e.overview.failed', 'failed') : 'failed')}` : '',
       state.pendingCommands?.length ? `${state.pendingCommands.length} ${esc(i18n ? i18n('mc.e.overview.pending', 'pending') : 'pending')}` : '',
     ].filter(Boolean).join(' · ');
-
-    const wallSections = walls.map((wall) => wallSectionHtml(wall, i18n)).join('');
 
     const standaloneSection = standaloneDisplays.length > 0
       ? `<section class="mc-e-ro-standalone-section">
