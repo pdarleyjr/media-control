@@ -42,10 +42,10 @@ db.exec(`
   VALUES
     ('cp-ws', 'cp-editor', 'workspace_editor'),
     ('cp-ws', 'cp-viewer', 'workspace_viewer');
-  INSERT INTO video_walls (id, workspace_id, name)
-  VALUES ('wall-primary', 'cp-ws', 'Classroom 1 Primary Wall');
-  INSERT INTO devices (id, workspace_id, name)
-  VALUES ('display-1', 'cp-ws', 'Front Center');
+  INSERT INTO video_walls (id, workspace_id, user_id, name)
+  VALUES ('wall-primary', 'cp-ws', 'cp-editor', 'Classroom 1 Primary Wall');
+  INSERT INTO devices (id, workspace_id, user_id, name)
+  VALUES ('display-1', 'cp-ws', 'cp-editor', 'Front Center');
 `);
 db.pragma('foreign_keys = ON');
 
