@@ -21,6 +21,17 @@
   .preview .state.hidden { opacity:0; pointer-events:none; }
   .spin { width:28px; height:28px; border:3px solid #1f2c47; border-top-color:var(--accent); border-radius:50%; animation:sp .8s linear infinite; }
   @keyframes sp { to { transform:rotate(360deg); } }
+  /* Audio controls overlay */
+  .audio-bar { position:absolute; bottom:0; left:0; right:0; display:flex; align-items:center; gap:10px; padding:8px 12px; background:linear-gradient(transparent,rgba(0,0,0,.8)); z-index:10; }
+  .audio-bar .audio-btn { background:rgba(255,255,255,.15); border:1px solid rgba(255,255,255,.3); color:#fff; border-radius:8px; padding:8px 16px; font-size:13px; font-weight:600; cursor:pointer; min-height:44px; display:flex; align-items:center; gap:6px; transition:all .2s; }
+  .audio-bar .audio-btn:hover { background:var(--accent); border-color:var(--accent); }
+  .audio-bar .audio-btn.active { background:var(--accent); border-color:var(--accent); }
+  .audio-bar .vol-wrap { display:flex; align-items:center; gap:6px; }
+  .audio-bar input[type=range] { width:100px; height:44px; accent-color:var(--accent); }
+  .audio-bar .audio-state { color:var(--muted); font-size:11px; margin-left:auto; }
+  .audio-bar .audio-state.unavail { color:var(--bad); }
+  .audio-bar .audio-state.muted { color:var(--warn); }
+  .audio-bar .audio-state.on { color:var(--ok); }
   .sidebar { display:flex; flex-direction:column; gap:10px; overflow-y:auto; }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
   .card h2 { font-size:13px; font-weight:600; color:var(--muted); margin-bottom:10px; text-transform:uppercase; letter-spacing:.5px; }
@@ -62,6 +73,14 @@
       <div class="spin"></div>
       <div>Connecting...</div>
     </div>
+    <div class="audio-bar" id="audio-bar">
+      <button class="audio-btn" id="btn-audio" title="Enable camera audio">🔊 Enable Audio</button>
+      <div class="vol-wrap" id="vol-wrap" style="display:none">
+        <button class="audio-btn" id="btn-mute" style="padding:8px 12px;min-height:44px;min-width:44px">🔇</button>
+        <input type="range" id="vol-slider" min="0" max="100" value="100">
+      </div>
+      <span class="audio-state" id="audio-state">Audio: muted</span>
+    </div>
   </div>
   <div class="sidebar">
     <div class="card">
@@ -70,6 +89,7 @@
       <div class="status-row"><span><span class="dot off" id="dot-preview"></span>Preview</span><span id="val-preview">--</span></div>
       <div class="status-row"><span><span class="dot off" id="dot-recording"></span>Recording</span><span id="val-recording">--</span></div>
       <div class="status-row"><span><span class="dot off" id="dot-stream"></span>Livestream</span><span id="val-stream">--</span></div>
+      <div class="status-row"><span><span class="dot off" id="dot-audio"></span>Camera Audio</span><span id="val-audio">--</span></div>
       <div class="status-row"><span>Disk Free</span><span id="val-disk">--</span></div>
     </div>
     <div class="card">
@@ -107,6 +127,73 @@ let hls = null;
 let statusInterval = null;
 let recordingActive = false;
 let streamActive = false;
+let audioEnabled = false;
+let audioTracks = 0;
+const AUDIO_PREF_KEY = 'mbfd-camera-audio-pref';
+
+function getAudioPref() { try { return JSON.parse(localStorage.getItem(AUDIO_PREF_KEY) || '{}'); } catch { return {}; } }
+function setAudioPref(pref) { try { localStorage.setItem(AUDIO_PREF_KEY, JSON.stringify({ ...getAudioPref(), ...pref })); } catch {} }
+
+function updateAudioState() {
+  const video = document.getElementById('preview-video');
+  const btn = document.getElementById('btn-audio');
+  const muteBtn = document.getElementById('btn-mute');
+  const volWrap = document.getElementById('vol-wrap');
+  const stateEl = document.getElementById('audio-state');
+  const slider = document.getElementById('vol-slider');
+
+  if (audioTracks === 0) {
+    btn.style.display = 'none';
+    volWrap.style.display = 'none';
+    stateEl.textContent = 'Audio unavailable (no audio track in stream)';
+    stateEl.className = 'audio-state unavail';
+    return;
+  }
+
+  if (!audioEnabled) {
+    btn.style.display = '';
+    btn.textContent = '🔊 Enable Audio';
+    btn.classList.remove('active');
+    volWrap.style.display = 'none';
+    stateEl.textContent = 'Audio: muted (click to enable)';
+    stateEl.className = 'audio-state muted';
+    return;
+  }
+
+  btn.style.display = 'none';
+  volWrap.style.display = '';
+  muteBtn.textContent = video.muted ? '🔇' : '🔊';
+  slider.value = Math.round((video.volume || 1) * 100);
+  stateEl.textContent = video.muted ? 'Audio: muted' : `Audio: on (${Math.round((video.volume||1)*100)}%)`;
+  stateEl.className = video.muted ? 'audio-state muted' : 'audio-state on';
+}
+
+function enableAudio() {
+  const video = document.getElementById('preview-video');
+  if (audioTracks === 0) return;
+  // User gesture: unmute and play with audio.
+  video.muted = false;
+  video.volume = getAudioPref().volume ?? 1;
+  audioEnabled = true;
+  setAudioPref({ enabled: true, volume: video.volume });
+  video.play().catch(() => {});
+  updateAudioState();
+}
+
+document.getElementById('btn-audio').addEventListener('click', enableAudio);
+document.getElementById('btn-mute').addEventListener('click', () => {
+  const video = document.getElementById('preview-video');
+  video.muted = !video.muted;
+  setAudioPref({ muted: video.muted });
+  updateAudioState();
+});
+document.getElementById('vol-slider').addEventListener('input', (e) => {
+  const video = document.getElementById('preview-video');
+  video.volume = parseInt(e.target.value) / 100;
+  if (video.volume > 0 && video.muted) { video.muted = false; }
+  setAudioPref({ volume: video.volume, muted: video.muted });
+  updateAudioState();
+});
 
 // API authentication is enforced server-side: nginx injects the camera API
 // token into proxied /api/ requests from a protected config. The browser never
@@ -159,14 +246,54 @@ function loadPreview() {
     hls = new Hls({ lowLatencyMode: true, liveSyncDurationCount: 3, maxBufferLength: 6, manifestLoadingTimeOut: 12000, manifestLoadingMaxRetry: 1 });
     hls.loadSource(src);
     hls.attachMedia(video);
-    hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
+    hls.on(Hls.Events.MANIFEST_PARSED, (e, data) => {
+      // Count audio renditions in the manifest (avoid duplicate audio tracks).
+      audioTracks = (data.levels || []).reduce((n, lvl) => n + (lvl.audioGroups?.length || (lvl.audioCodec ? 1 : 0)), 0);
+      if (audioTracks === 0) audioTracks = video.audioTracks?.length || 0;
+      // Restore user audio preference after (re)connection.
+      const pref = getAudioPref();
+      if (pref.enabled && audioTracks > 0) {
+        video.muted = !!pref.muted;
+        video.volume = pref.volume ?? 1;
+        // Autoplay with audio requires a prior gesture; if the browser blocks,
+        // fall back to muted and let the user re-enable.
+        video.play().then(() => { audioEnabled = true; updateAudioState(); }).catch(() => {
+          video.muted = true; audioEnabled = false; updateAudioState();
+        });
+      } else {
+        video.play().catch(() => {});
+      }
+      updateAudioState();
+    });
+    hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
+      audioTracks = hls.audioTracks?.length || audioTracks;
+      updateAudioState();
+    });
     hls.on(Hls.Events.FRAG_BUFFERED, () => { stateEl.classList.add('hidden'); });
     hls.on(Hls.Events.ERROR, (_, data) => {
-      if (data?.fatal) { stateEl.classList.remove('hidden'); stateEl.querySelector('div:last-child').textContent = 'Stream offline'; retry(); }
+      if (data?.fatal) {
+        stateEl.classList.remove('hidden');
+        stateEl.querySelector('div:last-child').textContent = 'Stream offline';
+        // On fatal error recovery, audio preference is restored in MANIFEST_PARSED.
+        retry();
+      }
     });
   } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
     video.src = src;
-    video.addEventListener('loadeddata', () => stateEl.classList.add('hidden'), { once: true });
+    video.addEventListener('loadeddata', () => {
+      stateEl.classList.add('hidden');
+      audioTracks = video.audioTracks?.length || (video.mozHasAudio || video.webkitAudioDecodedByteCount > 0 ? 1 : 0);
+      // Safari native HLS: restore preference.
+      const pref = getAudioPref();
+      if (pref.enabled && audioTracks > 0) {
+        video.muted = !!pref.muted;
+        video.volume = pref.volume ?? 1;
+        video.play().then(() => { audioEnabled = true; updateAudioState(); }).catch(() => {
+          video.muted = true; audioEnabled = false; updateAudioState();
+        });
+      }
+      updateAudioState();
+    }, { once: true });
     video.addEventListener('error', () => { stateEl.classList.remove('hidden'); retry(); }, { once: true });
   }
 }
@@ -186,6 +313,11 @@ async function refreshStatus() {
     streamActive = s.livestreaming;
     setDot('stream', s.livestreaming ? 'ok' : 'off');
     document.getElementById('val-stream').textContent = s.livestreaming ? 'Live' : 'Idle';
+
+    // Camera audio status from the edge (ANNKE AAC 48kHz mono).
+    const audioOk = s.camera_audio_online !== false && s.camera_online;
+    setDot('audio', audioOk ? 'ok' : 'bad');
+    document.getElementById('val-audio').textContent = audioOk ? 'AAC 48kHz' : 'Unavailable';
 
     document.getElementById('val-disk').textContent = formatBytes(s.disk_free_bytes);
 
