@@ -46,10 +46,7 @@ import {
   enterFocusView,
   setBroadcastTargets,
   setControlTarget,
-  showRoomOverview,
 } from '../services/command-center-state.js';
-import { mountRoomOverview } from '../components/room-state/room-overview.js';
-import { OPERATOR_STATE } from '../state/operator-state.js';
 // transport.js is used by stage.js internally — no direct import needed here.
 
 // Rail "Room setup" launcher icons (stroke icons, dashboard SVG vocabulary).
@@ -138,6 +135,7 @@ function openContentDrawerFiltered(folderName) {
 let activeTarget = null;
 let activeControlTarget = null;
 const LAST_TARGET_KEY = 'mc_control_last_target';
+let restoringTarget = false; // suppresses preference writes during startup restore
 let commandCenterState = createCommandCenterState();
 let targetApi = null;       // target-selector module API
 let transportApi = null;    // canvas-level transport row
@@ -483,7 +481,6 @@ function paintStage() {
   const isCinemaTarget = !!(activeTarget &&
     (activeTarget.type === 'wall' || activeTarget.type === 'group' || activeTarget.type === 'display'));
   el.classList.toggle('mc-cc-cinema', isCinemaTarget);
-  paintViewModeControls();
   // Re-attach drop handlers on the freshly-rendered cards.
   attachStageDrop(el);
   // Record what we just rendered so screenshot-only updates can patch in place
@@ -494,14 +491,6 @@ function paintStage() {
   setTimeout(() => {
     refreshPreviewsInPlace();
   }, 0);
-}
-
-function paintViewModeControls() {
-  document.querySelectorAll('[data-mc-view-mode]').forEach((button) => {
-    const active = button.dataset.mcViewMode === commandCenterState.viewMode;
-    button.classList.toggle('is-active', active);
-    button.setAttribute('aria-pressed', active ? 'true' : 'false');
-  });
 }
 
 function selectLayoutGroupTarget(groupId) {
@@ -1766,7 +1755,11 @@ function syncSocketTarget(tgt) {
 // ack/state stream for the web/Electron controller.
 function handleTargetChange(tgt) {
   if (!tgt) {
-    activateRoomOverview();
+    // Room Overview is removed (task §5). A null target falls back to the
+    // default focused target (Primary Wall → Secondary Wall → first wall →
+    // first display) instead of opening an overview. Emits NO playback command.
+    const fallback = chooseDefaultFocusTarget();
+    if (fallback) { handleTargetChange(fallback); }
     return;
   }
   if (tgt?.type === 'group') {
@@ -1791,7 +1784,6 @@ function handleTargetChange(tgt) {
     commandCenterState = setControlTarget(commandCenterState, activeControlTarget);
   }
   commandCenterState = enterFocusView(commandCenterState, activeTarget);
-  setViewModeSurfaces(VIEW_MODE.FOCUS);
   try {
     // Migrate the legacy preference that automatically reopened the first wall
     // in Focus View. Focus is now explicit for each mounted Command Center view.
@@ -1807,169 +1799,13 @@ function handleTargetChange(tgt) {
   if (screensaverApi && screensaverApi.repaint) screensaverApi.repaint();
   const previewId = activePreviewDeviceId();
   if (previewId) queuePreviewRequests([previewId], 50, true);
-}
-
-let roomOverviewCleanup = null;
-
-function setViewModeSurfaces(viewMode) {
-  const mainEl = document.querySelector('.mc-cc-main');
-  const overviewSurface = document.getElementById('mc-room-overview-surface');
-  const focusSurface = document.getElementById('mc-focus-control-surface');
-  if (!mainEl || !overviewSurface || !focusSurface) return;
-
-  mainEl.setAttribute('data-view-mode', viewMode);
-
-  if (viewMode === VIEW_MODE.OVERVIEW) {
-    overviewSurface.removeAttribute('hidden');
-    overviewSurface.removeAttribute('inert');
-    overviewSurface.removeAttribute('aria-hidden');
-    focusSurface.setAttribute('hidden', '');
-    focusSurface.setAttribute('inert', '');
-    focusSurface.setAttribute('aria-hidden', 'true');
-  } else {
-    focusSurface.removeAttribute('hidden');
-    focusSurface.removeAttribute('inert');
-    focusSurface.removeAttribute('aria-hidden');
-    overviewSurface.setAttribute('hidden', '');
-    overviewSurface.setAttribute('inert', '');
-    overviewSurface.setAttribute('aria-hidden', 'true');
+  // Persist the last focused target after an INTENTIONAL operator selection.
+  // Skipped during startup restore (restoringTarget flag) so view restoration
+  // never writes a preference or emits a command.
+  if (!restoringTarget && activeTarget) {
+    try { localStorage.setItem('mc_control_last_focused', `${activeTarget.type || 'display'}:${activeTarget.id}`); } catch { /* ignore */ }
+    persistLastFocusedTarget(activeTarget);
   }
-}
-
-function mountRoomOverviewSurface() {
-  const host = document.getElementById('mc-room-overview-host');
-  if (!host) return;
-  if (roomOverviewCleanup) { try { roomOverviewCleanup(); } catch {} roomOverviewCleanup = null; }
-
-  const store = {
-    _state: null,
-    _subs: new Set(),
-    subscribe(fn) {
-      this._subs.add(fn);
-      return () => this._subs.delete(fn);
-    },
-    get() { return this._state; },
-    push(state) {
-      this._state = state;
-      for (const fn of this._subs) { try { fn(state); } catch {} }
-    },
-  };
-
-  function buildOverviewState() {
-    const all = displayState.getAll();
-    const active = all.filter((d) => !isLiveStreamTargetId(d.id) && !isRetiredDisplay(d.id) && !isNonDisplaySource(d));
-    const online = active.filter((d) => d.online);
-    const offline = active.filter((d) => !d.online);
-    const byId = new Map(all.map((d) => [d.id, d]));
-
-    const wallMemberIdSet = new Set();
-    for (const wall of (walls || [])) {
-      for (const member of (wall.devices || [])) {
-        wallMemberIdSet.add(member.device_id);
-      }
-    }
-
-    const displays = active.map((d) => {
-      const wallId = wallMemberIdSet.has(d.id)
-        ? (walls || []).find((w) => (w.devices || []).some((m) => m.device_id === d.id))?.id || null
-        : null;
-      return {
-        id: d.id,
-        name: d.name || d.id,
-        online: !!d.online,
-        screenOn: d.screen_on !== false,
-        wallId,
-        contentId: d.now_playing?.content_id || null,
-        contentType: d.content_type || null,
-        mediaTitle: d.now_playing?.label || d.now_playing?.kind || null,
-        opState: !d.online ? OPERATOR_STATE.OFFLINE
-          : d.screen_on === false ? OPERATOR_STATE.STANDBY
-          : (d.now_playing?.kind && d.now_playing.kind !== 'idle') ? OPERATOR_STATE.CONFIRMED
-          : OPERATOR_STATE.STANDBY,
-        pending: [],
-      };
-    });
-
-    const topology = (walls || []).map((wall) => ({
-      id: wall.id,
-      name: wall.name,
-      mode: wall.layout_mode || 'span',
-      leaderId: wall.leader_device_id,
-      memberIds: (wall.devices || []).map((m) => m.device_id),
-      members: (wall.devices || []).map((m) => m.device_id),
-    }));
-
-    return {
-      displays,
-      topology,
-      deviceHealth: {
-        total: active.length,
-        online: online.length,
-        offline: offline.length,
-        stale: 0,
-        failed: 0,
-      },
-      aggregateState: offline.length > 0 ? OPERATOR_STATE.OFFLINE
-        : online.length > 0 ? OPERATOR_STATE.CONFIRMED
-        : OPERATOR_STATE.STANDBY,
-      stale: false,
-      pendingCommands: [],
-      classroomProgram: null,
-      recording: null,
-      stream: null,
-      livestream: null,
-    };
-  }
-
-  roomOverviewCleanup = mountRoomOverview(host, {
-    store,
-    i18n: (key, fallback) => { try { return t(key); } catch { return fallback || key; } },
-    onFocusView: (target) => {
-      if (!target) return;
-      if (target.type === 'wall') {
-        const wallTarget = { type: 'wall', id: target.id, wall_id: target.id, supportsModes: true };
-        targetApi?.setActive?.(wallTarget);
-        handleTargetChange(wallTarget);
-      } else if (target.type === 'display') {
-        const displayTarget = { type: 'display', id: target.id, supportsModes: false };
-        targetApi?.setActive?.(displayTarget);
-        handleTargetChange(displayTarget);
-      }
-    },
-  });
-
-  store.push(buildOverviewState());
-
-  const unsubDisplayState = displayState.subscribe(() => {
-    if (commandCenterState.viewMode !== VIEW_MODE.OVERVIEW) return;
-    store.push(buildOverviewState());
-  });
-
-  const originalCleanup = roomOverviewCleanup;
-  roomOverviewCleanup = () => {
-    try { unsubDisplayState(); } catch {}
-    try { originalCleanup(); } catch {}
-  };
-}
-
-function activateRoomOverview() {
-  activeTarget = null;
-  commandCenterState = showRoomOverview(commandCenterState);
-  try { sessionStorage.removeItem(LAST_TARGET_KEY); } catch { /* best effort */ }
-  activePreviewCursor = 0;
-  setViewModeSurfaces(VIEW_MODE.OVERVIEW);
-  mountRoomOverviewSurface();
-  paintViewModeControls();
-}
-
-function activateFocusView() {
-  const target = activeControlTarget?.type === 'group'
-    ? { type: 'wall', id: activeControlTarget.wall_id, wall_id: activeControlTarget.wall_id, supportsModes: true }
-    : (activeControlTarget || chooseInitialTarget());
-  if (!target) return;
-  targetApi?.setActive?.(target);
-  handleTargetChange(target);
-  setViewModeSurfaces(VIEW_MODE.FOCUS);
 }
 
 // Pick the initial canvas target so the canvas opens on ONE large preview (per
@@ -1983,6 +1819,126 @@ function chooseInitialTarget() {
   const all = displayState.getAll().filter((d) => !wallMemberIds.has(d.id) && !isLiveStreamTargetId(d.id));
   const d = all.find((x) => x.online) || all[0];
   return d ? { type: 'display', id: d.id, supportsModes: false } : null;
+}
+
+// Locate a wall by display name (case-insensitive substring). Used to pin the
+// Classroom 1 Primary / Secondary Walls as the always-present quick tabs.
+function findWallByName(nameFrag) {
+  if (!nameFrag || !Array.isArray(walls)) return null;
+  const needle = String(nameFrag).toLowerCase();
+  return walls.find((w) => String(w.name || '').toLowerCase().includes(needle)) || null;
+}
+
+// Build a wall target object from a wall row, skipping retired/disabled walls.
+function wallTargetFromWall(wall) {
+  if (!wall || !wall.id) return null;
+  return { type: 'wall', id: wall.id, wall_id: wall.id, supportsModes: true };
+}
+
+// The canonical default focused-target fallback chain (task §6):
+//   1. Classroom 1 Primary Wall
+//   2. Classroom 1 Secondary Wall
+//   3. first authorized video wall
+//   4. first online non-wall display
+//   5. first non-wall display
+//   6. null (precise empty state handled by caller)
+// Never emits a command — only returns a target reference for view restoration.
+function chooseDefaultFocusTarget() {
+  if (Array.isArray(walls) && walls.length) {
+    const primary = wallTargetFromWall(findWallByName('Primary Wall'));
+    if (primary) return primary;
+    const secondary = wallTargetFromWall(findWallByName('Secondary Wall'));
+    if (secondary) return secondary;
+    const sorted = walls.slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+    const firstWall = wallTargetFromWall(sorted[0]);
+    if (firstWall) return firstWall;
+  }
+  return chooseInitialTarget();
+}
+
+// Validate a persisted target reference ("wall:<id>" | "display:<id>" | "group:<id>")
+// against the live catalog. Rejects retired, removed, livestream, foreign, or
+// non-display targets. Returns a target object or null.
+function validatePersistedTarget(ref) {
+  if (typeof ref !== 'string' || !ref) return null;
+  const sep = ref.indexOf(':');
+  const type = sep > 0 ? ref.slice(0, sep) : '';
+  const id = sep > 0 ? ref.slice(sep + 1) : '';
+  if (!type || !id) return null;
+  if (type === 'wall') {
+    const wall = Array.isArray(walls) ? walls.find((w) => w.id === id) : null;
+    if (!wall) return null;
+    return wallTargetFromWall(wall);
+  }
+  if (type === 'display') {
+    if (isLiveStreamTargetId(id) || isRetiredDisplay(id)) return null;
+    const d = displayState.get?.(id);
+    if (!d) return null; // removed/foreign
+    if (isNonDisplaySource(d)) return null;
+    return { type: 'display', id, supportsModes: false };
+  }
+  // group targets are wall sub-regions; validate via the wall they belong to.
+  return null;
+}
+
+// Debounced persistence of the last focused target. Best-effort: never blocks
+// the UI and never throws on failure. Only persisted after an intentional
+// operator selection (called from handleTargetChange), never on view restore.
+let persistLastFocusedTimer = null;
+let controlPrefsRevision = 0;
+function persistLastFocusedTarget(target) {
+  if (persistLastFocusedTimer) clearTimeout(persistLastFocusedTimer);
+  const ref = target && target.id ? `${target.type || 'display'}:${target.id}` : null;
+  persistLastFocusedTimer = setTimeout(() => {
+    api.putControlPreferences({ last_focused_target: ref }, controlPrefsRevision)
+      .then((saved) => { if (saved && typeof saved.revision === 'number') controlPrefsRevision = saved.revision; })
+      .catch(() => { /* best-effort; ignore conflict/网络 errors */ });
+  }, 400);
+}
+
+// Restore the last valid focused target on startup (task §6). Loads
+// server-authoritative preferences, validates last_focused_target against the
+// live catalog, and falls back through the default chain. A local cached copy
+// is read first for fast first paint. Emits NO playback command.
+async function restoreLastFocusedTarget() {
+  // Fast local cache for first paint (best-effort, may be stale). The server
+  // remains authoritative; the cache only avoids an empty-stage flash while
+  // the preferences request is in flight.
+  let cachedRef = null;
+  try { cachedRef = localStorage.getItem('mc_control_last_focused'); } catch { /* ignore */ }
+
+  // 1. Synchronous first paint from the local cache (or default fallback).
+  //    Suppressed so it writes no preference and emits no command.
+  let initialTarget = validatePersistedTarget(cachedRef) || chooseDefaultFocusTarget();
+  if (initialTarget) {
+    targetApi?.setActive?.(initialTarget);
+    restoringTarget = true;
+    try { handleTargetChange(initialTarget); } finally { restoringTarget = false; }
+  } else {
+    paintStage();
+    paintSummary();
+  }
+
+  // 2. Reconcile with the authoritative server preference. Only switch if the
+  //    server value differs from what we just painted and is still valid.
+  let prefs = null;
+  try { prefs = await api.getControlPreferences(); } catch { /* unauthenticated/offline */ }
+  if (prefs && typeof prefs.revision === 'number') controlPrefsRevision = prefs.revision;
+  if (prefs && Array.isArray(prefs.pinned_targets)) targetApi?.setPinned?.(prefs.pinned_targets);
+
+  const serverRef = prefs && prefs.last_focused_target ? prefs.last_focused_target : null;
+  if (serverRef) {
+    try { localStorage.setItem('mc_control_last_focused', serverRef); } catch { /* ignore */ }
+    const currentRef = activeTarget ? `${activeTarget.type || 'display'}:${activeTarget.id}` : null;
+    if (serverRef !== currentRef) {
+      const serverTarget = validatePersistedTarget(serverRef);
+      if (serverTarget) {
+        targetApi?.setActive?.(serverTarget);
+        restoringTarget = true;
+        try { handleTargetChange(serverTarget); } finally { restoringTarget = false; }
+      }
+    }
+  }
 }
 
 // Canvas-level transport row (Prev · Restart · Play/Pause · Next) bound to the
@@ -2530,10 +2486,6 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
             <div id="mc-summary" class="mc-control-summary" aria-live="polite"></div>
           </div>
         </div>
-        <div class="mc-cc-view-switch" role="group" aria-label="Command Center view">
-          <button type="button" class="mc-cc-view-btn is-active" data-mc-view-mode="overview" aria-pressed="true">Room Overview</button>
-          <button type="button" class="mc-cc-view-btn" data-mc-view-mode="focus" aria-pressed="false">Focus View</button>
-        </div>
         <div class="mc-cc-target" id="mc-target-host"></div>
         <div class="mc-cc-tools">
           <div id="mc-broadcast-chip" class="mc-chip mc-chip-live" hidden></div>
@@ -2560,27 +2512,21 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
           <button type="button" class="mc-cc-rail-btn" data-mc-rail="settings" title="${esc(t('mc.cc.rail.settings'))}" aria-label="${esc(t('mc.cc.rail.settings'))}">${ICON_SETTINGS}</button>
         </nav>
 
-        <main class="mc-cc-main" data-view-mode="overview">
-          <section id="mc-room-overview-surface" class="mc-room-overview-surface" aria-label="${esc(t('mc.e.overview.region_label', 'Room overview'))}">
-            <div id="mc-room-overview-host" class="mc-room-overview-host"></div>
+        <main class="mc-cc-main" data-view-mode="focus">
+          <section class="mc-cc-canvas-area">
+            <div id="mc-cc-chips" class="mc-cc-chips" aria-live="polite"></div>
+            <div id="mc-multiview" class="mc-multiview-host" role="dialog"
+                 aria-modal="true" aria-label="${esc(t('mc.cmd.multiview'))}" tabindex="-1" hidden></div>
+            <section id="mc-stage" class="mc-stage mc-cc-canvas" aria-label="${esc(t('mc.section.displays'))}"></section>
           </section>
 
-          <section id="mc-focus-control-surface" class="mc-focus-control-surface" hidden inert aria-hidden="true">
-            <section class="mc-cc-canvas-area">
-              <div id="mc-cc-chips" class="mc-cc-chips" aria-live="polite"></div>
-              <div id="mc-multiview" class="mc-multiview-host" role="dialog"
-                   aria-modal="true" aria-label="${esc(t('mc.cmd.multiview'))}" tabindex="-1" hidden></div>
-              <section id="mc-stage" class="mc-stage mc-cc-canvas" aria-label="${esc(t('mc.section.displays'))}"></section>
-            </section>
-
-            <section class="mc-cc-controls">
-              <div id="mc-transport-host" class="mc-transport-row-host"></div>
-              <div class="mc-cc-sub-row">
-                <div id="mc-span-split-host" class="mc-span-split-host"></div>
-                <div id="mc-screensaver-host" class="mc-screensaver-row-host"></div>
-              </div>
-              <div id="mc-action-dock-host" class="mc-action-dock-host"></div>
-            </section>
+          <section class="mc-cc-controls">
+            <div id="mc-transport-host" class="mc-transport-row-host"></div>
+            <div class="mc-cc-sub-row">
+              <div id="mc-span-split-host" class="mc-span-split-host"></div>
+              <div id="mc-screensaver-host" class="mc-screensaver-row-host"></div>
+            </div>
+            <div id="mc-action-dock-host" class="mc-action-dock-host"></div>
           </section>
         </main>
 
@@ -2614,12 +2560,9 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
   activeTarget = null;
   activeControlTarget = null;
   try { sessionStorage.removeItem(LAST_TARGET_KEY); } catch { /* migrate legacy focus preference */ }
-  document.querySelectorAll('[data-mc-view-mode]').forEach((button) => {
-    button.addEventListener('click', () => {
-      if (button.dataset.mcViewMode === VIEW_MODE.OVERVIEW) activateRoomOverview();
-      else activateFocusView();
-    });
-  });
+  // Room Overview / Focus View mode toggle is removed (task §5). The operator
+  // UI always opens in a focused wall/display view; the last focused target is
+  // restored server-side below. No view-mode buttons exist to wire here.
 
   // Previews are passive (task §9): no global gesture listener is installed. The
   // old capture-phase pointerdown/keydown handler unmuted and played every preview
@@ -2680,6 +2623,12 @@ pruneSelection();
     groups: layoutGroupTargets(),
     displays: routeableDisplays(),
     onTargetChange: handleTargetChange,
+    onPinsChange: (pinnedRefs) => {
+      // Persist the user's customized quick-tab pins (best-effort, no command).
+      api.putControlPreferences({ pinned_targets: pinnedRefs, pinned_order: pinnedRefs }, controlPrefsRevision)
+        .then((saved) => { if (saved && typeof saved.revision === 'number') controlPrefsRevision = saved.revision; })
+        .catch(() => {});
+    },
   });
   transportApi = mountTransportRow(document.getElementById('mc-transport-host'));
   spanSplitApi = mountSpanSplit(document.getElementById('mc-span-split-host'), {
@@ -2707,9 +2656,10 @@ pruneSelection();
     getActiveTargetDeviceIds: activeTargetDeviceIds,
     getDisplayState: () => displayState,
   });
-  // Room Overview is the safe enterprise default. Focus View is entered only
-  // after the operator presses Focus View or chooses a target explicitly.
-  activateRoomOverview();
+  // Always open in a focused wall/display view (task §5/§6). Restore the last
+  // valid focused target the operator used, validated against the catalog, with
+  // safe fallbacks. Restoring the view emits NO playback command.
+  restoreLastFocusedTarget();
   paintToolbox();
 
   // Phase-2 non-silent ack: surface command:ack ok:false as a toast + chip flip,
@@ -2948,8 +2898,6 @@ pruneSelection();
 window.mcGetNavigationContext = () => ({ selected_target: activeTarget });
 
 export function unmount() {
-  // Clean up Room Overview surface
-  if (roomOverviewCleanup) { try { roomOverviewCleanup(); } catch {} roomOverviewCleanup = null; }
   // The view owns NO live broadcast resource (that's the engine singleton),
   // so unmount only detaches this view's subscriptions. Broadcasts persist.
   // Tear down any open whiteboard overlay so it doesn't outlive this view

@@ -627,6 +627,21 @@ CREATE TABLE IF NOT EXISTS dashboard_state (
     PRIMARY KEY (user_id, workspace_id)
 );
 
+-- Per-user operator navigation preferences: last focused target + customizable
+-- quick-tab pins. Server-authoritative (a local cached copy may drive fast first
+-- paint). Keyed by user + workspace (the room is fixed per workspace, matching
+-- dashboard_state). revision supports optimistic concurrency (If-Match).
+CREATE TABLE IF NOT EXISTS control_preferences (
+    user_id               TEXT NOT NULL,
+    workspace_id          TEXT NOT NULL,
+    last_focused_target   TEXT,
+    pinned_targets_json   TEXT NOT NULL DEFAULT '[]',
+    pinned_order_json     TEXT NOT NULL DEFAULT '[]',
+    revision              INTEGER NOT NULL DEFAULT 1,
+    updated_at            INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    PRIMARY KEY (user_id, workspace_id)
+);
+
 -- Persistent remote whiteboard state per display. Stop/hide does not delete this;
 -- clear and media broadcasts do.
 CREATE TABLE IF NOT EXISTS whiteboard_sessions (

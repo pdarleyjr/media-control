@@ -186,4 +186,81 @@ router.put('/selection', (req, res) => {
   res.json({ device_ids: ids });
 });
 
+// GET /api/displays/control-preferences — server-authoritative operator focus
+// target + customizable quick-tab pins. Keyed by user + workspace (the room is
+// fixed per workspace). A local cached copy may drive fast first paint, but
+// this endpoint is authoritative so preferences follow the authenticated user.
+router.get('/control-preferences', (req, res) => {
+  if (!req.workspaceId) return res.json(defaultControlPreferences());
+  const row = db.prepare(
+    'SELECT last_focused_target, pinned_targets_json, pinned_order_json, revision FROM control_preferences WHERE user_id = ? AND workspace_id = ?'
+  ).get(req.user.id, req.workspaceId);
+  res.json(row ? parseControlPreferences(row) : defaultControlPreferences());
+});
+
+// PUT /api/displays/control-preferences — persist last focused target and/or
+// pinned quick-tab order. Supports optimistic concurrency via If-Match: revision.
+// State-changing and idempotent. Never emits a player command.
+router.put('/control-preferences', (req, res) => {
+  if (!requireWorkspaceWrite(req, res)) return;
+  const body = req.body || {};
+  const ifMatch = req.headers['if-match'];
+  const existing = db.prepare(
+    'SELECT revision FROM control_preferences WHERE user_id = ? AND workspace_id = ?'
+  ).get(req.user.id, req.workspaceId);
+  const currentRevision = existing ? existing.revision : 0;
+  if (ifMatch !== undefined && String(ifMatch) !== String(currentRevision)) {
+    res.status(412).json({ error: 'preference_revision_conflict', revision: currentRevision });
+    return;
+  }
+  const next = { ...defaultControlPreferences(), ...(existing ? parseControlPreferences(existing) : {}) };
+  if (body.last_focused_target !== undefined) {
+    next.last_focused_target = (typeof body.last_focused_target === 'string' && body.last_focused_target) || null;
+  }
+  if (Array.isArray(body.pinned_targets)) {
+    next.pinned_targets = body.pinned_targets
+      .filter((t) => t && typeof t === 'string').slice(0, 32);
+  }
+  if (Array.isArray(body.pinned_order)) {
+    next.pinned_order = body.pinned_order
+      .filter((t) => t && typeof t === 'string').slice(0, 32);
+  }
+  const nextRevision = currentRevision + 1;
+  db.prepare(`
+    INSERT INTO control_preferences
+      (user_id, workspace_id, last_focused_target, pinned_targets_json, pinned_order_json, revision, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, strftime('%s','now'))
+    ON CONFLICT(user_id, workspace_id) DO UPDATE SET
+      last_focused_target  = excluded.last_focused_target,
+      pinned_targets_json  = excluded.pinned_targets_json,
+      pinned_order_json    = excluded.pinned_order_json,
+      revision             = excluded.revision,
+      updated_at           = excluded.updated_at
+  `).run(
+    req.user.id, req.workspaceId,
+    next.last_focused_target,
+    JSON.stringify(next.pinned_targets),
+    JSON.stringify(next.pinned_order),
+    nextRevision
+  );
+  res.json({ ...next, revision: nextRevision });
+});
+
+function defaultControlPreferences() {
+  return { last_focused_target: null, pinned_targets: [], pinned_order: [], revision: 0 };
+}
+
+function parseControlPreferences(row) {
+  let pinned_targets = [];
+  let pinned_order = [];
+  try { pinned_targets = JSON.parse(row.pinned_targets_json) || []; } catch { pinned_targets = []; }
+  try { pinned_order = JSON.parse(row.pinned_order_json) || []; } catch { pinned_order = []; }
+  return {
+    last_focused_target: row.last_focused_target || null,
+    pinned_targets: Array.isArray(pinned_targets) ? pinned_targets : [],
+    pinned_order: Array.isArray(pinned_order) ? pinned_order : [],
+    revision: row.revision || 0,
+  };
+}
+
 module.exports = router;

@@ -1,12 +1,14 @@
-// target-selector.js — Command Center header target dropdown. Drives the active
-// target rendered large on the central canvas. The host decides which displays
-// are routable, so split-wall member screens can be listed individually while
-// span walls still remain a single composite target.
+// target-selector.js — Command Center header quick-focus tabs + target dropdown.
 //
-// Selecting a target is a VIEW-ONLY action: it re-points the canvas at one
-// target and never issues a stop / blank / transport command to any other
-// target (per the Command Center spec). The host view decides what to render
-// in the stage; this module only reports the selection via onTargetChange.
+// The operator UI always opens in a focused wall/display view (task §5/§6).
+// The top navigation shows quick-focus tabs:
+//   • Classroom 1 Primary Wall  (always present, default pin)
+//   • Classroom 1 Secondary Wall (always present, default pin)
+//   • any user-pinned additional targets (per-user, server-authoritative)
+// plus a "Customize quick views" action and a dropdown containing every OTHER
+// authorized focus target. Selecting any tab or dropdown option is a VIEW-ONLY
+// action: it re-points the canvas and never issues a stop/blank/transport
+// command (per the Command Center spec). Dropdown selections do NOT auto-pin.
 
 import { esc } from '../../utils.js';
 import { t } from '../../i18n.js';
@@ -19,35 +21,103 @@ function wallLabel(wall) {
   return name || ((wall && wall.id) || '');
 }
 
-function optionTag(value, label) {
-  return `<option value="${esc(value)}">${esc(label)}</option>`;
+function refForTarget(target) {
+  if (!target || !target.id) return '';
+  if (target.type === 'wall') return `wall:${target.id}`;
+  if (target.type === 'group') return `group:${target.id}`;
+  return `display:${target.id}`;
+}
+
+function targetForRef(ref, walls, groups, displays) {
+  if (typeof ref !== 'string' || !ref) return null;
+  const sep = ref.indexOf(':');
+  const type = sep > 0 ? ref.slice(0, sep) : '';
+  const id = sep > 0 ? ref.slice(sep + 1) : '';
+  if (type === 'wall') {
+    const wall = (walls || []).find((w) => w.id === id);
+    if (!wall) return null;
+    return { type: 'wall', id, wall_id: id, supportsModes: true, name: wall.name };
+  }
+  if (type === 'display') {
+    const d = (displays || []).find((x) => x.id === id);
+    if (!d) return null;
+    return { type: 'display', id, supportsModes: false, name: d.name || d.id };
+  }
+  if (type === 'group') {
+    const group = (groups || []).find((c) => c.id === id);
+    if (!group) return null;
+    return { type: 'group', ...group, id, supportsModes: false, name: group.label || group.name || id };
+  }
+  return null;
+}
+
+// The two always-present default quick tabs (task §7). Identified by wall name
+// so they survive reprovisioning of wall ids. Primary before Secondary.
+function defaultPinRefs(walls) {
+  if (!Array.isArray(walls)) return [];
+  const find = (frag) => {
+    const n = String(frag).toLowerCase();
+    const w = walls.find((x) => String(x.name || '').toLowerCase().includes(n));
+    return w ? `wall:${w.id}` : null;
+  };
+  const primary = find('Primary Wall');
+  const secondary = find('Secondary Wall');
+  const out = [];
+  if (primary) out.push(primary);
+  if (secondary) out.push(secondary);
+  return out;
+}
+
+function labelForRef(ref, walls, groups, displays) {
+  const tgt = targetForRef(ref, walls, groups, displays);
+  if (!tgt) return ref;
+  if (tgt.type === 'wall') {
+    const w = (walls || []).find((x) => x.id === tgt.id);
+    return wallLabel(w) || tgt.id;
+  }
+  return tgt.name || tgt.id || ref;
 }
 
 /**
- * Mount the Command Center target dropdown into `hostEl`.
+ * Mount the Command Center quick-focus tabs + target dropdown into `hostEl`.
  *
  * @param {HTMLElement} hostEl
  * @param {object} opts
  * @param {Array} opts.walls     every video wall (each is a selectable target)
+ * @param {Array} opts.groups    layout-group targets
  * @param {Array} opts.displays  routable display targets (may include split-wall members)
+ * @param {string[]} [opts.pinnedTargets] user-pinned refs (excluding defaults)
  * @param {(target:object|null)=>void} [opts.onTargetChange] fired on a real change
- * @returns {{ el: HTMLSelectElement, getActiveTarget: () => (object|null),
- *            setActive: (target:object|null)=>void, setOptions: (walls:boolean|Array, displays?:Array)=>void }|null}
+ * @param {(pinnedRefs:string[])=>void} [opts.onPinsChange] fired when pins change
+ * @returns {object|null} selector API
  */
-export function mountTargetSelector(hostEl, { walls = [], groups = [], displays = [], onTargetChange } = {}) {
+export function mountTargetSelector(hostEl, { walls = [], groups = [], displays = [], pinnedTargets = [], onTargetChange, onPinsChange } = {}) {
   if (!hostEl) return null;
   hostEl.innerHTML = `
     <div class="mc-target-control">
-      <div class="mc-target-wall-tabs" role="group" aria-label="Video walls"></div>
+      <div class="mc-target-wall-tabs" role="tablist" aria-label="Quick focus targets"></div>
+      <button type="button" class="mc-target-customize" data-customize title="${esc(t('mc.cc.target.customize') || 'Customize quick views')}" aria-label="${esc(t('mc.cc.target.customize') || 'Customize quick views')}">＋</button>
       <select class="mc-target-select" aria-label="${esc(t('mc.cc.target.placeholder'))}"></select>
+      <div class="mc-target-customize-panel" hidden inert></div>
     </div>`;
+
   const sel = hostEl.querySelector('select.mc-target-select');
   const wallTabs = hostEl.querySelector('.mc-target-wall-tabs');
+  const customizeBtn = hostEl.querySelector('[data-customize]');
+  const customizePanel = hostEl.querySelector('.mc-target-customize-panel');
 
   let active = null;
   let currentWalls = Array.isArray(walls) ? walls : [];
   let currentGroups = Array.isArray(groups) ? groups : [];
   let currentDisplays = Array.isArray(displays) ? displays : [];
+  let userPins = Array.isArray(pinnedTargets) ? [...pinnedTargets] : [];
+
+  function defaultRefs() { return defaultPinRefs(currentWalls); }
+  function allPins() {
+    const out = [...defaultRefs()];
+    for (const r of userPins) if (!out.includes(r)) out.push(r);
+    return out;
+  }
 
   function validValues() {
     const set = new Set();
@@ -57,25 +127,7 @@ export function mountTargetSelector(hostEl, { walls = [], groups = [], displays 
     return set;
   }
 
-  function valueForTarget(target) {
-    if (!target || !target.id) return '';
-    if (target.type === 'wall') return `wall:${target.id}`;
-    if (target.type === 'group') return `group:${target.id}`;
-    return `display:${target.id}`;
-  }
-
-  function targetForValue(value) {
-    const sep = value.indexOf(':');
-    const type = sep > 0 ? value.slice(0, sep) : '';
-    const id = sep > 0 ? value.slice(sep + 1) : '';
-    if (type === 'wall') return { type: 'wall', id, wall_id: id, supportsModes: true };
-    if (type === 'group') {
-      const group = currentGroups.find((candidate) => candidate.id === id);
-      return group ? { type: 'group', ...group, id, supportsModes: false } : null;
-    }
-    if (type === 'display') return { type: 'display', id, supportsModes: false };
-    return null;
-  }
+  function valueForTarget(target) { return refForTarget(target); }
 
   function paintActiveControls() {
     const value = valueForTarget(active);
@@ -83,33 +135,68 @@ export function mountTargetSelector(hostEl, { walls = [], groups = [], displays 
     wallTabs.querySelectorAll('[data-target-value]').forEach((button) => {
       const pressed = button.dataset.targetValue === value;
       button.classList.toggle('is-active', pressed);
-      button.setAttribute('aria-pressed', pressed ? 'true' : 'false');
+      button.setAttribute('aria-selected', pressed ? 'true' : 'false');
     });
   }
 
   function activateValue(value, notify = true) {
-    active = targetForValue(value);
+    active = targetForRef(value, currentWalls, currentGroups, currentDisplays);
     paintActiveControls();
     if (notify && typeof onTargetChange === 'function') onTargetChange(active);
   }
 
+  function dropdownOptions() {
+    // Dropdown contains every authorized target NOT already pinned to a tab.
+    const pinned = new Set(allPins());
+    const opts = [optionTag('', t('mc.cc.target.placeholder'))];
+    const remainingWalls = currentWalls.filter((w) => !pinned.has(`wall:${w.id}`));
+    if (remainingWalls.length) {
+      opts.push('<optgroup label="Walls">');
+      for (const w of remainingWalls) opts.push(optionTag(`wall:${w.id}`, wallLabel(w)));
+      opts.push('</optgroup>');
+    }
+    if (currentGroups.length) {
+      const remainingGroups = currentGroups.filter((g) => !pinned.has(`group:${g.id}`));
+      if (remainingGroups.length) {
+        opts.push('<optgroup label="Layout groups">');
+        for (const g of remainingGroups) opts.push(optionTag(`group:${g.id}`, g.label || g.name || g.id));
+        opts.push('</optgroup>');
+      }
+    }
+    const remainingDisplays = currentDisplays.filter((d) => !pinned.has(`display:${d.id}`));
+    if (remainingDisplays.length) {
+      opts.push('<optgroup label="Individual displays">');
+      for (const d of remainingDisplays) opts.push(optionTag(`display:${d.id}`, d.name || d.id));
+      opts.push('</optgroup>');
+    }
+    return opts.join('');
+  }
+
+  function optionTag(value, label) {
+    return `<option value="${esc(value)}">${esc(label)}</option>`;
+  }
+
+  function rebuildTabs() {
+    const pins = allPins();
+    wallTabs.innerHTML = pins.map((ref) => {
+      const tgt = targetForRef(ref, currentWalls, currentGroups, currentDisplays);
+      if (!tgt) return ''; // retired/removed pin: drop silently
+      const label = labelForRef(ref, currentWalls, currentGroups, currentDisplays);
+      const isDefault = defaultRefs().includes(ref);
+      return `<button type="button" class="mc-target-wall-btn${isDefault ? ' mc-target-pin-default' : ''}" role="tab" data-target-value="${esc(ref)}" aria-selected="false" title="${esc(label)}">${esc(label)}</button>`;
+    }).join('');
+    wallTabs.hidden = pins.every((r) => !targetForRef(r, currentWalls, currentGroups, currentDisplays));
+  }
+
   function rebuild() {
     const prev = valueForTarget(active) || sel.value;
-    const opts = [optionTag('', t('mc.cc.target.placeholder'))];
-    if (currentGroups.length) {
-      opts.push(`<optgroup label="Layout groups">${currentGroups.map((group) => optionTag(`group:${group.id}`, group.label || group.name || group.id)).join('')}</optgroup>`);
-    }
-    if (currentDisplays.length) opts.push('<optgroup label="Individual displays">');
-    for (const d of currentDisplays) opts.push(optionTag(`display:${d.id}`, d.name || d.id));
-    if (currentDisplays.length) opts.push('</optgroup>');
-    sel.innerHTML = opts.join('');
-    sel.hidden = currentDisplays.length === 0;
-    wallTabs.innerHTML = currentWalls.map((wall) => `
-      <button type="button" class="mc-target-wall-btn" data-target-value="wall:${esc(wall.id)}" aria-pressed="false">
-        ${esc(wallLabel(wall))}
-      </button>`).join('');
-    wallTabs.hidden = currentWalls.length === 0;
-    if (!validValues().has(prev)) active = null;
+    // Prune user pins whose targets no longer exist (retired/removed/unauthorized).
+    const valid = validValues();
+    userPins = userPins.filter((r) => valid.has(r));
+    rebuildTabs();
+    sel.innerHTML = dropdownOptions();
+    sel.hidden = currentDisplays.length === 0 && currentWalls.length === 0;
+    if (!valid.has(prev)) active = null;
     paintActiveControls();
   }
   rebuild();
@@ -121,13 +208,109 @@ export function mountTargetSelector(hostEl, { walls = [], groups = [], displays 
   });
   sel.addEventListener('change', () => activateValue(sel.value));
 
+  // ── Customize quick views panel ─────────────────────────────────────────
+  customizeBtn.addEventListener('click', () => toggleCustomizePanel());
+
+  function allAuthorizedRefs() {
+    const refs = [];
+    for (const w of currentWalls) refs.push(`wall:${w.id}`);
+    for (const g of currentGroups) refs.push(`group:${g.id}`);
+    for (const d of currentDisplays) refs.push(`display:${d.id}`);
+    return refs;
+  }
+
+  function renderCustomizePanel() {
+    const defaultSet = new Set(defaultRefs());
+    const defaultArr = [...defaultRefs()];
+    const pinned = new Set(allPins());
+    const rows = allAuthorizedRefs().map((ref) => {
+      const tgt = targetForRef(ref, currentWalls, currentGroups, currentDisplays);
+      if (!tgt) return '';
+      const label = labelForRef(ref, currentWalls, currentGroups, currentDisplays);
+      const isPinned = pinned.has(ref);
+      const isDefaultPin = defaultSet.has(ref);
+      const disabled = isDefaultPin ? 'disabled' : '';
+      const checked = isPinned ? 'checked' : '';
+      return `<li class="mc-target-cust-row" data-ref="${esc(ref)}">
+        <label class="mc-target-cust-label"><input type="checkbox" data-pin ${checked} ${disabled}/> ${esc(label)}${isDefaultPin ? ' <span class="mc-target-cust-default">(default)</span>' : ''}</label>
+        <span class="mc-target-cust-order" ${isPinned && !isDefaultPin ? '' : 'hidden'}>
+          <button type="button" data-up aria-label="Move up">▲</button>
+          <button type="button" data-down aria-label="Move down">▼</button>
+        </span>
+      </li>`;
+    }).join('');
+    customizePanel.innerHTML = `
+      <div class="mc-target-cust-head">
+        <h3>${esc(t('mc.cc.target.customize') || 'Customize quick views')}</h3>
+        <button type="button" data-close aria-label="Close">✕</button>
+      </div>
+      <p class="mc-target-cust-hint">Primary Wall and Secondary Wall are always included.</p>
+      <ul class="mc-target-cust-list">${rows}</ul>
+      <div class="mc-target-cust-actions">
+        <button type="button" data-reset>Reset to defaults</button>
+        <span class="mc-target-cust-spacer"></span>
+        <button type="button" data-cancel>Cancel</button>
+        <button type="button" class="mc-target-cust-save" data-save>Save</button>
+      </div>`;
+
+    let working = [...userPins];
+
+    const refreshOrderControls = () => {
+      customizePanel.querySelectorAll('.mc-target-cust-row').forEach((li) => {
+        const ref = li.dataset.ref;
+        const isDefault = defaultSet.has(ref);
+        const isPinned = isDefault || working.includes(ref);
+        const orderSpan = li.querySelector('.mc-target-cust-order');
+        orderSpan.hidden = !(isPinned && !isDefault);
+        const cb = li.querySelector('[data-pin]');
+        if (!isDefault) cb.checked = isPinned;
+      });
+    };
+    refreshOrderControls();
+
+    customizePanel.querySelector('[data-close]').addEventListener('click', () => closeCustomizePanel());
+    customizePanel.querySelector('[data-cancel]').addEventListener('click', () => closeCustomizePanel());
+    customizePanel.querySelector('[data-reset]').addEventListener('click', () => { working = []; refreshOrderControls(); });
+    customizePanel.querySelector('[data-save]').addEventListener('click', () => {
+      userPins = working;
+      rebuild();
+      if (typeof onPinsChange === 'function') onPinsChange(userPins);
+      closeCustomizePanel();
+    });
+
+    customizePanel.querySelectorAll('.mc-target-cust-row').forEach((li) => {
+      const ref = li.dataset.ref;
+      const cb = li.querySelector('[data-pin]');
+      cb.addEventListener('change', () => {
+        if (cb.checked && !working.includes(ref)) working.push(ref);
+        if (!cb.checked) working = working.filter((r) => r !== ref);
+        refreshOrderControls();
+      });
+      const move = (dir) => {
+        const idx = working.indexOf(ref);
+        if (idx < 0) return;
+        const swap = dir === 'up' ? idx - 1 : idx + 1;
+        if (swap < 0 || swap >= working.length) return;
+        [working[idx], working[swap]] = [working[swap], working[idx]];
+        refreshOrderControls();
+      };
+      li.querySelector('[data-up]').addEventListener('click', () => move('up'));
+      li.querySelector('[data-down]').addEventListener('click', () => move('down'));
+    });
+  }
+
+  function toggleCustomizePanel() {
+    if (customizePanel.hidden) { renderCustomizePanel(); customizePanel.hidden = false; customizePanel.removeAttribute('inert'); }
+    else closeCustomizePanel();
+  }
+  function closeCustomizePanel() { customizePanel.hidden = true; customizePanel.setAttribute('inert', ''); }
+
   return {
     el: sel,
     getActiveTarget: () => active,
-    setActive: (tgt) => {
-      active = tgt || null;
-      paintActiveControls();
-    },
+    setActive: (tgt) => { active = tgt || null; paintActiveControls(); },
+    setPinned: (refs) => { userPins = Array.isArray(refs) ? [...refs] : []; rebuild(); },
+    getPinned: () => [...userPins],
     setOptions: (nextWalls, nextGroups, nextDisplays) => {
       currentWalls = Array.isArray(nextWalls) ? nextWalls : [];
       currentGroups = Array.isArray(nextGroups) ? nextGroups : [];

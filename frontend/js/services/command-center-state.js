@@ -74,7 +74,9 @@ export function buildRoomBroadcastSelection(catalog) {
 
 export function createCommandCenterState(initial = {}) {
   return {
-    viewMode: VIEW_MODE.OVERVIEW,
+    // Room Overview is removed from the operator workflow (task §5). The
+    // command center always operates in a focused wall/display view.
+    viewMode: VIEW_MODE.FOCUS,
     focusedViewTarget: null,
     controlTarget: null,
     broadcastTargets: Array.isArray(initial.broadcastTargets)

@@ -1885,6 +1885,7 @@ export default {
   'mc.cc.rail.logs': 'Logs / Diagnostics',
   'mc.cc.rail.settings': 'Settings',
   'mc.cc.target.placeholder': 'Select target…',
+  'mc.cc.target.customize': 'Customize quick views',
   'mc.cc.transport.prev': 'Previous',
   'mc.cc.transport.restart': 'Restart',
   'mc.cc.transport.play': 'Play',

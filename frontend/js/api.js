@@ -99,6 +99,12 @@ export const api = {
   getDisplaysState: () => request('/displays/state'),
   getDisplaysSelection: () => request('/displays/selection'),
   putDisplaysSelection: (device_ids) => request('/displays/selection', { method: 'PUT', body: JSON.stringify({ device_ids }) }),
+  getControlPreferences: () => request('/displays/control-preferences'),
+  putControlPreferences: (prefs, revision) => request('/displays/control-preferences', {
+    method: 'PUT',
+    headers: revision !== undefined ? { 'If-Match': String(revision) } : {},
+    body: JSON.stringify(prefs),
+  }),
 
   // High-performance coordinate canvases. Legacy displays remain on /devices.
   canvas: {

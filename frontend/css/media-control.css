@@ -2139,6 +2139,54 @@ img.mc-cc-logo { background: transparent; box-shadow: none; padding: 0; }
 .mc-target-select:focus-visible { outline: 3px solid #ffffff; outline-offset: 2px; }
 .mc-target-select option { color: #1c2536; background: #fff; }
 
+/* Customize quick views button + panel (task §7) */
+.mc-target-customize {
+  min-height: 40px; min-width: 40px; padding: 0 10px;
+  border: 1px solid rgba(255,255,255,0.18); border-radius: var(--mc-radius-md, 12px);
+  background: rgba(10, 24, 48, 0.55); color: rgba(255,255,255,0.82);
+  font: inherit; font-size: 18px; font-weight: 700; cursor: pointer; touch-action: manipulation;
+}
+.mc-target-customize:hover { background: rgba(255,255,255,0.12); color: #fff; }
+.mc-target-customize:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+.mc-target-pin-default { position: relative; }
+.mc-target-pin-default::after { content: ""; }
+.mc-target-customize-panel {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 60;
+  width: min(420px, 92vw); max-height: min(70vh, 560px); overflow: auto;
+  background: #0f1c30; color: #e8eef7;
+  border: 1px solid rgba(255,255,255,0.18); border-radius: 14px;
+  box-shadow: 0 18px 48px rgba(0,0,0,0.45); padding: 14px 16px;
+}
+.mc-target-cust-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.mc-target-cust-head h3 { margin: 0; font-size: 15px; font-weight: 800; }
+.mc-target-cust-head [data-close] {
+  border: 0; background: transparent; color: rgba(255,255,255,0.7); font-size: 18px; cursor: pointer;
+  min-width: 36px; min-height: 36px; border-radius: 8px;
+}
+.mc-target-cust-head [data-close]:hover { background: rgba(255,255,255,0.12); }
+.mc-target-cust-hint { margin: 6px 0 10px; font-size: 12px; color: rgba(255,255,255,0.6); }
+.mc-target-cust-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.mc-target-cust-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; border-radius: 9px; background: rgba(255,255,255,0.04); }
+.mc-target-cust-label { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; min-height: 36px; }
+.mc-target-cust-label input[type="checkbox"] { width: 18px; height: 18px; }
+.mc-target-cust-default { color: rgba(255,255,255,0.5); font-size: 11px; }
+.mc-target-cust-order { display: inline-flex; gap: 4px; }
+.mc-target-cust-order button {
+  min-width: 36px; min-height: 36px; border: 1px solid rgba(255,255,255,0.18); border-radius: 8px;
+  background: rgba(255,255,255,0.06); color: #fff; font-size: 12px; cursor: pointer; touch-action: manipulation;
+}
+.mc-target-cust-order button:hover { background: rgba(255,255,255,0.16); }
+.mc-target-cust-actions { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.mc-target-cust-spacer { flex: 1; }
+.mc-target-cust-actions button {
+  min-height: 40px; padding: 0 14px; border: 1px solid rgba(255,255,255,0.2); border-radius: 10px;
+  background: transparent; color: #fff; font: inherit; font-weight: 700; cursor: pointer; touch-action: manipulation;
+}
+.mc-target-cust-actions button:hover { background: rgba(255,255,255,0.1); }
+.mc-target-cust-actions .mc-target-cust-save { background: #fff; color: #12324a; border-color: #fff; }
+.mc-target-cust-actions .mc-target-cust-save:hover { background: #e8eef7; }
+.mc-target-control { position: relative; }
+
 /* right cluster: bell + avatar (flush right). Needs display:flex — without it
    justify-content is inert and the children pile up at the left of the column. */
 .mc-cc-tools { display: flex; align-items: center; justify-content: flex-end; gap: var(--mc-space-sm, 8px); }

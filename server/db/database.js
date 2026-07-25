@@ -1191,6 +1191,38 @@ function migratePeerTubeReplay() {
 migratePeerTubeReplay();
 
 
+// ── Per-user operator navigation preferences ──────────────────────────────
+// Server-authoritative focus target + customizable quick-tab pins, keyed by
+// user + workspace (the app is single-room per workspace; room_id is fixed by
+// the LIVE_STREAM_ROOM_ID server env so user+workspace is the durable boundary,
+// matching the existing dashboard_state pattern). A local cached copy may be
+// used for fast first paint, but this table is authoritative so preferences
+// follow the authenticated user across machines. revision supports optimistic
+// concurrency (If-Match) so two open sessions converge without clobbering.
+const CONTROL_PREFS_ID = 'control_preferences_v1';
+function migrateControlPreferences() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS control_preferences (
+        user_id               TEXT NOT NULL,
+        workspace_id          TEXT NOT NULL,
+        last_focused_target   TEXT,
+        pinned_targets_json   TEXT NOT NULL DEFAULT '[]',
+        pinned_order_json     TEXT NOT NULL DEFAULT '[]',
+        revision              INTEGER NOT NULL DEFAULT 1,
+        updated_at            INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        PRIMARY KEY (user_id, workspace_id)
+      );
+    `);
+  } catch (e) {
+    console.error('[control_preferences_v1] migration failed:', e.message);
+  }
+  try { db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(CONTROL_PREFS_ID); }
+  catch (e) { /* best-effort stamp */ }
+}
+migrateControlPreferences();
+
+
 // Prune old telemetry (keep last 24h worth at 15s intervals = ~5760, cap at 6000)
 function pruneTelemetry(deviceId) {
   db.prepare(`
