@@ -96,9 +96,9 @@ export function mountTargetSelector(hostEl, { walls = [], groups = [], displays 
   hostEl.innerHTML = `
     <div class="mc-target-control">
       <div class="mc-target-wall-tabs" role="tablist" aria-label="Quick focus targets"></div>
-      <button type="button" class="mc-target-customize" data-customize title="${esc(t('mc.cc.target.customize') || 'Customize quick views')}" aria-label="${esc(t('mc.cc.target.customize') || 'Customize quick views')}">＋</button>
+      <button type="button" class="mc-target-customize" data-customize aria-expanded="false" aria-controls="mc-target-cust-panel" title="${esc(t('mc.cc.target.customize') || 'Customize quick views')}" aria-label="${esc(t('mc.cc.target.customize') || 'Customize quick views')}">＋</button>
       <select class="mc-target-select" aria-label="${esc(t('mc.cc.target.placeholder'))}"></select>
-      <div class="mc-target-customize-panel" hidden inert></div>
+      <div class="mc-target-customize-panel" id="mc-target-cust-panel" role="dialog" aria-modal="false" aria-label="${esc(t('mc.cc.target.customize') || 'Customize quick views')}" hidden inert></div>
     </div>`;
 
   const sel = hostEl.querySelector('select.mc-target-select');
@@ -223,29 +223,34 @@ export function mountTargetSelector(hostEl, { walls = [], groups = [], displays 
     const defaultSet = new Set(defaultRefs());
     const defaultArr = [...defaultRefs()];
     const pinned = new Set(allPins());
-    const rows = allAuthorizedRefs().map((ref) => {
-      const tgt = targetForRef(ref, currentWalls, currentGroups, currentDisplays);
-      if (!tgt) return '';
-      const label = labelForRef(ref, currentWalls, currentGroups, currentDisplays);
-      const isPinned = pinned.has(ref);
-      const isDefaultPin = defaultSet.has(ref);
-      const disabled = isDefaultPin ? 'disabled' : '';
-      const checked = isPinned ? 'checked' : '';
-      return `<li class="mc-target-cust-row" data-ref="${esc(ref)}">
-        <label class="mc-target-cust-label"><input type="checkbox" data-pin ${checked} ${disabled}/> ${esc(label)}${isDefaultPin ? ' <span class="mc-target-cust-default">(default)</span>' : ''}</label>
-        <span class="mc-target-cust-order" ${isPinned && !isDefaultPin ? '' : 'hidden'}>
-          <button type="button" data-up aria-label="Move up">▲</button>
-          <button type="button" data-down aria-label="Move down">▼</button>
-        </span>
-      </li>`;
-    }).join('');
+
+    function buildRows() {
+      return allAuthorizedRefs().map((ref) => {
+        const tgt = targetForRef(ref, currentWalls, currentGroups, currentDisplays);
+        if (!tgt) return '';
+        const label = labelForRef(ref, currentWalls, currentGroups, currentDisplays);
+        const isPinned = pinned.has(ref);
+        const isDefaultPin = defaultSet.has(ref);
+        const disabled = isDefaultPin ? 'disabled' : '';
+        const checked = isPinned ? 'checked' : '';
+        return `<li class="mc-target-cust-row" data-ref="${esc(ref)}">
+          <label class="mc-target-cust-label"><input type="checkbox" data-pin ${checked} ${disabled}/> ${esc(label)}${isDefaultPin ? ' <span class="mc-target-cust-default">(default)</span>' : ''}</label>
+          <span class="mc-target-cust-order" ${isPinned && !isDefaultPin ? '' : 'hidden'}>
+            <button type="button" data-up aria-label="Move ${esc(label)} up">▲</button>
+            <button type="button" data-down aria-label="Move ${esc(label)} down">▼</button>
+          </span>
+        </li>`;
+      }).join('');
+    }
+
     customizePanel.innerHTML = `
       <div class="mc-target-cust-head">
         <h3>${esc(t('mc.cc.target.customize') || 'Customize quick views')}</h3>
         <button type="button" data-close aria-label="Close">✕</button>
       </div>
       <p class="mc-target-cust-hint">Primary Wall and Secondary Wall are always included.</p>
-      <ul class="mc-target-cust-list">${rows}</ul>
+      <span class="mc-target-cust-status" role="status" aria-live="polite"></span>
+      <ul class="mc-target-cust-list">${buildRows()}</ul>
       <div class="mc-target-cust-actions">
         <button type="button" data-reset>Reset to defaults</button>
         <span class="mc-target-cust-spacer"></span>
@@ -253,7 +258,35 @@ export function mountTargetSelector(hostEl, { walls = [], groups = [], displays 
         <button type="button" class="mc-target-cust-save" data-save>Save</button>
       </div>`;
 
+    const statusRegion = customizePanel.querySelector('.mc-target-cust-status');
+    const listEl = customizePanel.querySelector('.mc-target-cust-list');
     let working = [...userPins];
+
+    // Announce position changes via the aria-live region.
+    function announcePosition(ref) {
+      const ordered = [...defaultArr, ...working];
+      const pos = ordered.indexOf(ref) + 1;
+      const label = labelForRef(ref, currentWalls, currentGroups, currentDisplays);
+      if (statusRegion) statusRegion.textContent = `${label} moved to position ${pos}`;
+    }
+
+    // Reorder the visible DOM immediately: move the <li> for the moved ref
+    // to its new position in the pinned sequence.
+    function visuallyReorder() {
+      const ordered = [...defaultArr, ...working];
+      const rows = Array.from(listEl.querySelectorAll('.mc-target-cust-row'));
+      // Sort rows by their position in the ordered list; unpinned rows stay at the end.
+      rows.sort((a, b) => {
+        const aPos = ordered.indexOf(a.dataset.ref);
+        const bPos = ordered.indexOf(b.dataset.ref);
+        if (aPos < 0 && bPos < 0) return 0;
+        if (aPos < 0) return 1;
+        if (bPos < 0) return -1;
+        return aPos - bPos;
+      });
+      // Re-append in sorted order (moves DOM nodes without recreating them).
+      for (const row of rows) listEl.appendChild(row);
+    }
 
     const refreshOrderControls = () => {
       customizePanel.querySelectorAll('.mc-target-cust-row').forEach((li) => {
@@ -265,12 +298,17 @@ export function mountTargetSelector(hostEl, { walls = [], groups = [], displays 
         const cb = li.querySelector('[data-pin]');
         if (!isDefault) cb.checked = isPinned;
       });
+      visuallyReorder();
     };
     refreshOrderControls();
 
     customizePanel.querySelector('[data-close]').addEventListener('click', () => closeCustomizePanel());
     customizePanel.querySelector('[data-cancel]').addEventListener('click', () => closeCustomizePanel());
-    customizePanel.querySelector('[data-reset]').addEventListener('click', () => { working = []; refreshOrderControls(); });
+    customizePanel.querySelector('[data-reset]').addEventListener('click', () => {
+      working = [];
+      refreshOrderControls();
+      if (statusRegion) statusRegion.textContent = 'Reset to defaults';
+    });
     customizePanel.querySelector('[data-save]').addEventListener('click', () => {
       userPins = working;
       rebuild();
@@ -286,24 +324,63 @@ export function mountTargetSelector(hostEl, { walls = [], groups = [], displays 
         if (!cb.checked) working = working.filter((r) => r !== ref);
         refreshOrderControls();
       });
-      const move = (dir) => {
+      const move = (dir, btn) => {
         const idx = working.indexOf(ref);
         if (idx < 0) return;
         const swap = dir === 'up' ? idx - 1 : idx + 1;
         if (swap < 0 || swap >= working.length) return;
         [working[idx], working[swap]] = [working[swap], working[idx]];
         refreshOrderControls();
+        announcePosition(ref);
+        // Keep focus on the button that was pressed (it moved with its <li>).
+        if (btn && typeof btn.focus === 'function') { try { btn.focus({ preventScroll: false }); } catch { /* */ } }
       };
-      li.querySelector('[data-up]').addEventListener('click', () => move('up'));
-      li.querySelector('[data-down]').addEventListener('click', () => move('down'));
+      li.querySelector('[data-up]').addEventListener('click', (e) => move('up', e.currentTarget));
+      li.querySelector('[data-down]').addEventListener('click', (e) => move('down', e.currentTarget));
     });
+
+    // Escape closes the panel and returns focus to the opener.
+    const escHandler = (event) => {
+      if (event.key === 'Escape' && !customizePanel.hidden) {
+        event.preventDefault();
+        closeCustomizePanel();
+      }
+    };
+    customizePanel._escHandler = escHandler;
+    document.addEventListener('keydown', escHandler);
+
+    // Outside click closes the panel (but not when clicking inside it or the opener).
+    const outsideHandler = (event) => {
+      if (customizePanel.hidden) return;
+      if (customizePanel.contains(event.target) || customizeBtn.contains(event.target)) return;
+      closeCustomizePanel();
+    };
+    customizePanel._outsideHandler = outsideHandler;
+    setTimeout(() => document.addEventListener('click', outsideHandler), 0);
   }
 
   function toggleCustomizePanel() {
-    if (customizePanel.hidden) { renderCustomizePanel(); customizePanel.hidden = false; customizePanel.removeAttribute('inert'); }
-    else closeCustomizePanel();
+    if (customizePanel.hidden) {
+      renderCustomizePanel();
+      customizePanel.hidden = false;
+      customizePanel.removeAttribute('inert');
+      customizeBtn.setAttribute('aria-expanded', 'true');
+      // Move focus into the panel (to the close button or heading).
+      try { (customizePanel.querySelector('[data-close]') || customizePanel).focus({ preventScroll: true }); } catch { /* */ }
+    } else {
+      closeCustomizePanel();
+    }
   }
-  function closeCustomizePanel() { customizePanel.hidden = true; customizePanel.setAttribute('inert', ''); }
+  function closeCustomizePanel() {
+    // Clean up event listeners.
+    if (customizePanel._escHandler) { document.removeEventListener('keydown', customizePanel._escHandler); customizePanel._escHandler = null; }
+    if (customizePanel._outsideHandler) { document.removeEventListener('click', customizePanel._outsideHandler); customizePanel._outsideHandler = null; }
+    customizePanel.hidden = true;
+    customizePanel.setAttribute('inert', '');
+    customizeBtn.setAttribute('aria-expanded', 'false');
+    // Return focus to the opener button.
+    try { customizeBtn.focus({ preventScroll: true }); } catch { /* */ }
+  }
 
   return {
     el: sel,

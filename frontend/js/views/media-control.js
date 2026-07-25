@@ -1878,7 +1878,12 @@ function validatePersistedTarget(ref) {
     if (isNonDisplaySource(d)) return null;
     return { type: 'display', id, supportsModes: false };
   }
-  // group targets are wall sub-regions; validate via the wall they belong to.
+  if (type === 'group') {
+    // Group targets are wall sub-regions. Validate via the wall they belong to.
+    const group = layoutGroupById(id);
+    if (!group) return null; // removed/renamed
+    return { type: 'group', ...group, id, supportsModes: false, wall_id: group.wall_id };
+  }
   return null;
 }
 
