@@ -3247,3 +3247,108 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
     grid-template-columns: 1fr;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PHASE 3 — Mobile / iPhone operator interface (task §9)
+   All rules are scoped to @media (max-width: 768px) so desktop geometry
+   (≥769px) is NEVER altered. Safe-area insets + 100dvh + 44px touch targets.
+   ═══════════════════════════════════════════════════════════════════════════ */
+@media (max-width: 768px) {
+  /* ── Shell: full-height dynamic viewport + safe-area ─────────────────── */
+  body { min-height: 100dvh; }
+  .mc-cc-shell { height: 100dvh; padding-top: env(safe-area-inset-top); }
+
+  /* ── Header: compact, scrollable quick tabs ──────────────────────────── */
+  .mc-cc-header { flex-wrap: wrap; gap: 4px; padding: 4px max(8px, env(safe-area-inset-right)) 4px max(8px, env(safe-area-inset-left)); min-height: 48px; }
+  .mc-cc-title { font-size: 14px; }
+  .mc-cc-title .mc-cc-sub { display: none; } /* hide subtitle on mobile */
+  .mc-target-control { width: 100%; order: 2; justify-content: flex-start; }
+  .mc-target-wall-tabs {
+    flex: 1; overflow-x: auto; overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+    gap: 2px; padding: 2px;
+  }
+  .mc-target-wall-tabs::-webkit-scrollbar { display: none; }
+  .mc-target-wall-btn {
+    scroll-snap-align: start;
+    min-height: 40px; padding: 0 12px; font-size: 12px; white-space: nowrap;
+    flex: 0 0 auto;
+  }
+  .mc-target-select { min-width: 120px; max-width: 40vw; min-height: 40px; font-size: 12px; padding: 0 28px 0 10px; }
+  .mc-target-customize { min-height: 40px; min-width: 40px; }
+  .mc-target-customize-panel { right: 8px; left: 8px; width: auto; max-height: 60vh; }
+  .mc-cc-tools { gap: 4px; order: 3; }
+  .mc-cc-tools .mc-cc-bell, .mc-cc-tools .mc-cc-avatar { min-width: 40px; min-height: 40px; }
+
+  /* ── Focus stage: one large preview, preserve aspect ratio ───────────── */
+  .mc-cc-canvas-area { flex: 1; min-height: 0; }
+  .mc-cc-canvas { height: calc(100dvh - 200px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); }
+  .mc-stage { gap: 4px; }
+  .mc-wall { max-width: 100%; }
+  .mc-wall-region { flex: 1 1 100%; }
+
+  /* ── Transport: sticky bottom dock with 44px touch targets ────────────── */
+  .mc-cc-controls {
+    position: sticky; bottom: 0; z-index: 50;
+    padding-bottom: env(safe-area-inset-bottom);
+    background: rgba(11, 18, 32, 0.95);
+    backdrop-filter: blur(8px);
+  }
+  .mc-transport-row-host { padding: 8px max(8px, env(safe-area-inset-left)) 8px max(8px, env(safe-area-inset-right)); }
+  .mc-cc-tp-btn { min-height: 44px; min-width: 44px; padding: 8px 14px; font-size: 12px; }
+  .mc-cc-tp-ico { font-size: 18px; }
+  .mc-cc-tp-text { display: none; } /* icons-only on mobile, titles via aria-label */
+  .mc-cc-tp-play { flex: 1; }
+  .mc-cc-sub-row { flex-wrap: wrap; gap: 4px; }
+  .mc-dock-btn { min-height: 44px; min-width: 44px; }
+  .mc-action-dock-host { flex-wrap: wrap; gap: 4px; }
+
+  /* ── Content Library: full-screen sheet on mobile ─────────────────────── */
+  .mc-library-drawer {
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    z-index: 100;
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .mc-library-inner { height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+
+  /* ── Rail: compact vertical icons ─────────────────────────────────────── */
+  .mc-cc-rail { flex-direction: row; overflow-x: auto; scrollbar-width: none; gap: 2px; padding: 0 max(4px, env(safe-area-inset-left)); }
+  .mc-cc-rail::-webkit-scrollbar { display: none; }
+  .mc-cc-rail-btn { min-width: 44px; min-height: 44px; flex: 0 0 auto; }
+  .mc-cc-rail-btn span { display: none; } /* icon-only on mobile */
+
+  /* ── Body: column layout (rail → content → controls) ─────────────────── */
+  .mc-cc-body { flex-direction: column; }
+
+  /* ── Multiview: full-screen on mobile ────────────────────────────────── */
+  .mc-multiview-host:not([hidden]) {
+    inset: 0; width: 100vw; height: 100dvh; border-radius: 0;
+  }
+
+  /* ── No horizontal page overflow ─────────────────────────────────────── */
+  .mc-cc-main, .mc-cc-canvas, .mc-stage, .mc-wall, .mc-wall-region, .mc-target-wall-tabs, .mc-cc-rail {
+    max-width: 100%; overflow-x: hidden;
+  }
+  html, body { overflow-x: hidden; }
+
+  /* ── Touch targets: ensure 44px minimum for all interactive elements ─── */
+  .mc-cc-view-btn, .mc-ss-btn, .mc-cc-saver-select, .mc-target-choice, .mc-route-row-main {
+    min-height: 44px;
+  }
+}
+
+/* ── Landscape phones (844×390 etc.) ─────────────────────────────────── */
+@media (max-width: 932px) and (orientation: landscape) and (max-height: 500px) {
+  .mc-cc-shell { height: 100dvh; }
+  .mc-cc-canvas { height: calc(100dvh - 120px); }
+  .mc-cc-tp-text { display: inline; font-size: 11px; }
+  .mc-library-drawer { height: 100dvh !important; }
+}
