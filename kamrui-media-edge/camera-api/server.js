@@ -877,6 +877,14 @@ app.post('/api/emergency-stop', authMiddleware, async (req, res) => {
   });
 });
 
+// Rewrite /api/camera-recordings/* -> /api/recordings/* (suggested API surface alias)
+app.use((req, res, next) => {
+  if (req.url.startsWith('/api/camera-recordings')) {
+    req.url = req.url.replace('/api/camera-recordings', '/api/recordings');
+  }
+  next();
+});
+
 app.get('/api/recordings', authMiddleware, (req, res) => {
   const metadataDir = path.join(CONFIG.recordingDir, 'metadata');
   try {
@@ -921,6 +929,146 @@ app.post('/api/recordings/:id/publish', authMiddleware, commandRateLimit, async 
   const result = await publishRecording(req.params.id, privacy);
   audit('recording.publish', { sessionId: req.params.id, privacy, result }, req.operatorId);
   res.json(result);
+});
+
+// Alias: /api/recordings/:id/privacy (same as /publish)
+app.post('/api/recordings/:id/privacy', authMiddleware, commandRateLimit, async (req, res) => {
+  const privacy = req.body?.privacy || 3;
+  if (![1, 2, 3].includes(privacy)) {
+    return res.status(400).json({ error: 'Invalid privacy value. Use 1=Public, 2=Unlisted, 3=Private' });
+  }
+  if (privacy === 1 && req.body?.confirmPublic !== true) {
+    return res.status(400).json({ error: 'Setting to Public requires confirmPublic: true' });
+  }
+  const result = await publishRecording(req.params.id, privacy);
+  audit('recording.privacy', { sessionId: req.params.id, privacy, result }, req.operatorId);
+  res.json(result);
+});
+
+// Helper: validate session ID (reject path traversal, allow only alnum + underscore)
+function validateSessionId(id) {
+  return /^[a-zA-Z0-9_]+$/.test(id);
+}
+
+// Helper: find recording file path from metadata
+function getRecordingFile(sessionId) {
+  if (!validateSessionId(sessionId)) return null;
+  const metadataPath = path.join(CONFIG.recordingDir, 'metadata', `${sessionId}.json`);
+  try {
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    if (!metadata.filePath || !fs.existsSync(metadata.filePath)) return null;
+    // Ensure the file path is inside the completed dir (no traversal)
+    const completedDir = path.join(CONFIG.recordingDir, 'completed');
+    const resolved = path.resolve(metadata.filePath);
+    if (!resolved.startsWith(completedDir + path.sep)) return null;
+    return metadata;
+  } catch {
+    return null;
+  }
+}
+
+// Playback: stream the MP4 with HTTP Range support
+app.get('/api/recordings/:id/play', authMiddleware, (req, res) => {
+  const meta = getRecordingFile(req.params.id);
+  if (!meta) return res.status(404).json({ error: 'Recording not found' });
+  const filePath = meta.filePath;
+  try {
+    const stat = fs.statSync(filePath);
+    const fileSize = stat.size;
+    const range = req.headers.range;
+    if (range) {
+      const parts = /bytes=(\d*)-(\d*)/.exec(range);
+      if (parts) {
+        const start = parts[1] ? parseInt(parts[1], 10) : 0;
+        const end = parts[2] ? parseInt(parts[2], 10) : fileSize - 1;
+        if (start >= fileSize || end >= fileSize || start > end) {
+          res.status(416).set('Content-Range', `bytes */${fileSize}`);
+          return res.end();
+        }
+        const chunkSize = end - start + 1;
+        const stream = fs.createReadStream(filePath, { start, end });
+        res.status(206).set({
+          'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+          'Accept-Ranges': 'bytes',
+          'Content-Length': chunkSize,
+          'Content-Type': 'video/mp4',
+          'Content-Disposition': 'inline',
+        });
+        stream.pipe(res);
+        stream.on('error', () => { if (!res.headersSent) res.status(500).json({ error: 'Stream error' }); });
+        return;
+      }
+    }
+    // No range: send entire file
+    res.set({
+      'Content-Type': 'video/mp4',
+      'Content-Length': fileSize,
+      'Accept-Ranges': 'bytes',
+      'Content-Disposition': 'inline',
+    });
+    fs.createReadStream(filePath).pipe(res);
+  } catch (e) {
+    res.status(500).json({ error: 'Cannot read recording file' });
+  }
+});
+
+// Download: serve the MP4 as an attachment (no RAM buffering)
+app.get('/api/recordings/:id/download', authMiddleware, (req, res) => {
+  const meta = getRecordingFile(req.params.id);
+  if (!meta) return res.status(404).json({ error: 'Recording not found' });
+  const filePath = meta.filePath;
+  try {
+    const stat = fs.statSync(filePath);
+    const safeName = `${req.params.id}.mp4`;
+    res.set({
+      'Content-Type': 'video/mp4',
+      'Content-Length': stat.size,
+      'Content-Disposition': `attachment; filename="${safeName}"`,
+      'Accept-Ranges': 'bytes',
+    });
+    fs.createReadStream(filePath).pipe(res);
+  } catch (e) {
+    res.status(500).json({ error: 'Cannot read recording file' });
+  }
+});
+
+// PeerTube status: check processing state of an uploaded recording
+app.get('/api/recordings/:id/peertube-status', authMiddleware, async (req, res) => {
+  if (!validateSessionId(req.params.id)) return res.status(400).json({ error: 'Invalid session ID' });
+  const metadataPath = path.join(CONFIG.recordingDir, 'metadata', `${req.params.id}.json`);
+  try {
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    if (!metadata.peertubeVideoUuid) {
+      return res.json({ uploaded: false, peertubeVideoUuid: null, message: 'Not uploaded to PeerTube' });
+    }
+    if (!CONFIG.peertubeBaseUrl || !CONFIG.peertubeAccessToken) {
+      return res.json({ uploaded: true, peertubeVideoUuid: metadata.peertubeVideoUuid, peertubeVideoId: metadata.peertubeVideoId, watchUrl: metadata.peertubeWatchUrl, privacy: metadata.peertubePrivacy, message: 'PeerTube token not configured for status check' });
+    }
+    process.env.PEERTUBE_BASE_URL = CONFIG.peertubeBaseUrl;
+    process.env.PEERTUBE_ACCESS_TOKEN = CONFIG.peertubeAccessToken;
+    try {
+      const status = await peertube.checkProcessingStatus(metadata.peertubeVideoUuid);
+      res.json({
+        uploaded: true,
+        peertubeVideoUuid: metadata.peertubeVideoUuid,
+        peertubeVideoId: metadata.peertubeVideoId,
+        watchUrl: metadata.peertubeWatchUrl,
+        privacy: metadata.peertubePrivacy,
+        ...status,
+      });
+    } catch (e) {
+      res.json({
+        uploaded: true,
+        peertubeVideoUuid: metadata.peertubeVideoUuid,
+        peertubeVideoId: metadata.peertubeVideoId,
+        watchUrl: metadata.peertubeWatchUrl,
+        privacy: metadata.peertubePrivacy,
+        error: e.message,
+      });
+    }
+  } catch {
+    res.status(404).json({ error: 'Recording not found' });
+  }
 });
 
 app.use((err, req, res, _next) => {
