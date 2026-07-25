@@ -23,7 +23,7 @@ function scopedCacheKey(userId, workspaceId, roomId) {
   return `mc:control-prefs:${SCHEMA_VERSION}:${userId || 'anon'}:${workspaceId || 'none'}:${roomId || 'none'}`;
 }
 
-export function createControlPrefsStore({ userId, workspaceId, roomId, onPinsChange } = {}) {
+export function createControlPrefsStore({ userId, workspaceId, roomId, onPinsChange, onRemoteUpdate } = {}) {
   let canonical = { room_id: roomId, last_focused_target_ref: null, pinned_target_refs: [], revision: 0 };
   let pending = null; // { last_focused_target_ref?, pinned_target_refs? }
   let writing = false;
@@ -169,6 +169,21 @@ export function createControlPrefsStore({ userId, workspaceId, roomId, onPinsCha
     pending = null;
   }
 
+  // Cross-session convergence (task §11): called when a control-preferences-updated
+  // socket event arrives from another session. Reconciles pins and last-focused
+  // target without issuing a physical display command. Ignores older revisions.
+  function reconcileFromRemote(remotePrefs) {
+    if (aborted) return;
+    if (!remotePrefs || typeof remotePrefs.revision !== 'number') return;
+    if (remotePrefs.revision <= canonical.revision) return; // ignore older
+    canonical = { ...remotePrefs };
+    writeCache(canonical);
+    if (Array.isArray(canonical.pinned_target_refs) && typeof onPinsChange === 'function') {
+      onPinsChange(canonical.pinned_target_refs);
+    }
+    if (typeof onRemoteUpdate === 'function') onRemoteUpdate(canonical);
+  }
+
   return {
     load,
     mutate,
@@ -177,5 +192,6 @@ export function createControlPrefsStore({ userId, workspaceId, roomId, onPinsCha
     getCached,
     getSaveStatus,
     abort,
+    reconcileFromRemote,
   };
 }

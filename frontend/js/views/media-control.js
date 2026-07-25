@@ -150,6 +150,7 @@ let cmdAckHandler = null;   // Phase-2 command:ack (toast on timeout/failure)
 let stateSyncHandler = null;
 let playbackStateHandler = null;  // playback-state listener (bridged from dashboard socket)
 let screenshotReadyHandler = null;
+let prefSyncHandler = null;  // cross-session preference convergence (task §11)
 let multiviewEscapeHandler = null;
 let selectedIds = [];   // ids on the stage; re-hydrated from the server, persisted on change
 let wallMemberIds = new Set();   // device ids owned by a video wall (never their own card)
@@ -2644,7 +2645,19 @@ pruneSelection();
     workspaceId: currentUser?.current_workspace_id || null,
     roomId: 'classroom-1', // matches config.console.roomId server-side
     onPinsChange: (pinnedRefs) => { targetApi?.setPinned?.(pinnedRefs); },
+    onRemoteUpdate: (prefs) => {
+      // Cross-session convergence (task §11): a pin/order change from another
+      // session updates our quick tabs. Last-focused target is NOT forcibly
+      // stolen — the policy is that a focus change in another session updates
+      // the stored preference but does not take over the current canvas.
+    },
   });
+
+  // Listen for cross-session preference updates (task §11).
+  if (!prefSyncHandler) {
+    prefSyncHandler = (prefs) => { if (prefsStore) prefsStore.reconcileFromRemote(prefs); };
+    socketOn('control-preferences-updated', prefSyncHandler);
+  }
 
   targetApi = mountTargetSelector(document.getElementById('mc-target-host'), {
     walls,
@@ -2948,6 +2961,7 @@ export function unmount() {
     screenshotReadyHandler = null;
   }
   try { if (playbackStateHandler) socketOff('playback-state', playbackStateHandler); } catch (_) {}
+  if (prefSyncHandler) { try { socketOff('control-preferences-updated', prefSyncHandler); } catch (_) {} prefSyncHandler = null; }
   teardownMultiview();    // stop any local audio monitor so it can't keep playing
   closeViewModal();       // dismiss any open room-setup overlay (e.g. Schedules)
   stopPreviewRefresh();   // stop poking players once we leave the control surface

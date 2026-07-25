@@ -3,7 +3,14 @@ const router = express.Router();
 const { db } = require('../db/database');
 const { nowPlayingFromSnapshot } = require('../lib/display-state');
 const { mapDisplayRow } = require('../lib/display-row');
+const { userPrefRoom } = require('../lib/socket-rooms');
 const config = require('../config');
+
+// The io instance is set by server.js after Socket.IO initializes (task §11
+// cross-session convergence). Routes require it lazily so the module load
+// order doesn't break (routes are required before io is created).
+let ioInstance = null;
+function setIo(io) { ioInstance = io; }
 
 function boolOrNull(value) {
   return value == null ? null : !!value;
@@ -298,6 +305,18 @@ function handleControlPreferencesUpdate(req, res) {
     nextRevision
   );
   res.json({ ...next, revision: nextRevision });
+
+  // Cross-session convergence (task §11): emit the updated preference to the
+  // user's other open sessions so they can reconcile their quick tabs and
+  // last-focused target. Scoped to the user only (not other users). Never
+  // issues a physical display command.
+  try {
+    if (ioInstance) {
+      const dashboardNs = ioInstance.of('/dashboard');
+      const room = userPrefRoom(req.user.id);
+      if (room) dashboardNs.to(room).emit('control-preferences-updated', { ...next, revision: nextRevision });
+    }
+  } catch { /* best-effort: socket sync must never break a preference save */ }
 }
 
 // Register the same handler for both PATCH (preferred) and PUT (backward-compat
@@ -394,3 +413,4 @@ function parseControlPreferencesV2(row, roomId) {
 }
 
 module.exports = router;
+module.exports.setIo = setIo;

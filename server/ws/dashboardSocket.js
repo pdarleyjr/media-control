@@ -2,7 +2,7 @@ const heartbeat = require('../services/heartbeat');
 const { verifyToken } = require('../middleware/auth');
 const { db } = require('../db/database');
 const { accessContext, accessibleWorkspaceIds } = require('../lib/tenancy');
-const { workspaceRoom, displayRoom, wallTargetRoom, groupRoom, nodeRoom, liveProgramRoom, roomStateRoom } = require('../lib/socket-rooms');
+const { workspaceRoom, displayRoom, wallTargetRoom, groupRoom, nodeRoom, liveProgramRoom, roomStateRoom, userPrefRoom } = require('../lib/socket-rooms');
 const whiteboardState = require('../services/whiteboard-state');
 const { profileForDevice } = require('../lib/display-profiles');
 const config = require('../config');
@@ -210,6 +210,8 @@ function mirrorTransportToLiveStream(deviceNs, deviceId, command) {
     socket.roomWorkspaceId = roomWorkspaceId;
     socket.roomId = roomId;
     if (roomWorkspaceId) socket.join(roomStateRoom(roomWorkspaceId, roomId));
+    // Join the per-user preference room for cross-session convergence (task §11).
+    socket.join(userPrefRoom(socket.userId));
     console.log(`Dashboard client connected: ${socket.id} (user: ${socket.userId}, rooms: ${wsIds.length})`);
 
     function sendAuthoritativeRoomSnapshot(minimumTimestamp = 0) {

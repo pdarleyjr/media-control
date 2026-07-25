@@ -6,9 +6,17 @@
 const { db } = require('../db/database');
 
 const ROOM_PREFIX = 'workspace:';
+const USER_PREF_PREFIX = 'user-prefs:';
 
 function workspaceRoom(workspaceId) {
   return workspaceId ? ROOM_PREFIX + workspaceId : null;
+}
+
+// Per-user room for cross-session preference convergence (task §11). A user's
+// open dashboard sockets join this room so a preference update in one session
+// emits a control-preferences-updated event to the user's other sessions.
+function userPrefRoom(userId) {
+  return userId ? USER_PREF_PREFIX + userId : null;
 }
 
 function deviceRoom(deviceId) {
@@ -102,6 +110,6 @@ function targetRoomsForDevice(deviceId) {
 }
 
 module.exports = {
-  workspaceRoom, deviceRoom, wallRoom, emitToWorkspace,
+  workspaceRoom, deviceRoom, wallRoom, emitToWorkspace, userPrefRoom,
   displayRoom, wallTargetRoom, groupRoom, nodeRoom, liveProgramRoom, roomStateRoom, targetRoomsForDevice,
 };

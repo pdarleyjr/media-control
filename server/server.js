@@ -1160,6 +1160,8 @@ app.use('/uploads/content', (req, res, next) => {
 const setupWebSockets = require('./ws');
 const { deviceNs, dashboardNs } = setupWebSockets(io);
 app.set('io', io);
+// Wire io into the displays route for cross-session preference convergence (task §11).
+require('./routes/displays').setIo(io);
 
 // Start heartbeat checker
 const { startHeartbeatChecker } = require('./services/heartbeat');
