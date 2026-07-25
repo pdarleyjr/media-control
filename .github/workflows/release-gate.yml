@@ -54,7 +54,8 @@ jobs:
           # runs projects in BOTH chromium AND firefox, so both browsers must be
           # present on the clean runner. Chromium alone made the Firefox project
           # fail with "Executable doesn't exist at .../firefox/firefox".
-          npx playwright install --with-deps chromium firefox
+          # WebKit is required for the mobile-defect acceptance suite (iPhone emulation).
+          npx playwright install --with-deps chromium firefox webkit
 
       - name: Verify release gate scripts exist
         run: |
@@ -64,6 +65,14 @@ jobs:
           test -f e2e/real-app/real-app.spec.js
           test -f e2e/real-app/browser-console.spec.js
           test -f e2e/real-app/playwright.browser-console.config.js
+          test -f e2e/real-app/mobile-defect.spec.js
+          test -f e2e/real-app/playwright.mobile.config.js
+
+      - name: Run mobile acceptance tests (Chromium + WebKit)
+        working-directory: server/e2e/real-app
+        run: npx playwright test --config=playwright.mobile.config.js
+        env:
+          CI: true
 
       - name: Run release test gate
         run: npm run test:release
