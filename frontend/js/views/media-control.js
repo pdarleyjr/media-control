@@ -1293,6 +1293,200 @@ async function openAddPicker() {
   paintSummary();
 }
 
+// ---- Manage Displays modal ----
+// Shows all active and retired displays with retire/restore/permanent-remove
+// actions. Permanent removal requires admin role + typed confirmation + ETag.
+async function openManageDisplays() {
+  const dlg = document.createElement('dialog');
+  dlg.className = 'mc-dialog mc-manage-displays';
+  dlg.setAttribute('aria-labelledby', 'mcManageDisplaysTitle');
+  document.body.appendChild(dlg);
+
+  async function loadAndRender() {
+    dlg.innerHTML = `<div class="mc-dialog-card mc-manage-displays-card">
+      <h3 id="mcManageDisplaysTitle" class="mc-dialog-title">Manage Displays</h3>
+      <div class="mc-manage-displays-body" role="region" aria-label="Display list">
+        <div class="mc-manage-loading">Loading displays…</div>
+      </div>
+      <div class="mc-dialog-actions">
+        <button type="button" class="mc-btn mc-btn-ghost" data-md-close>Close</button>
+      </div>
+    </div>`;
+
+    let devices;
+    try {
+      devices = await api.getDevices();
+    } catch (err) {
+      dlg.querySelector('.mc-manage-loading').textContent = 'Failed to load displays: ' + (err.message || err);
+      return;
+    }
+
+    const active = devices.filter((d) => !d.retired);
+    const retired = devices.filter((d) => d.retired);
+
+    function deviceRowHtml(d) {
+      const wallInfo = d.wall_id ? ` · Wall: ${esc(d.wall_name || d.wall_id)}` : '';
+      const status = d.status === 'online' ? 'Online' : 'Offline';
+      return `<div class="mc-md-row" data-device-id="${esc(d.id)}">
+        <div class="mc-md-info">
+          <div class="mc-md-name" title="${esc(d.name)}">${esc(d.name)}</div>
+          <div class="mc-md-meta">${esc(status)}${wallInfo}${d.retired ? ' · RETIRED' : ''}</div>
+        </div>
+        <div class="mc-md-actions">
+          ${d.retired
+            ? `<button type="button" class="mc-btn mc-btn-sm mc-btn-primary" data-md-restore="${esc(d.id)}">Restore</button>`
+            : `<button type="button" class="mc-btn mc-btn-sm mc-btn-ghost" data-md-retire="${esc(d.id)}">Retire</button>
+               <button type="button" class="mc-btn mc-btn-sm mc-btn-danger-outline" data-md-impact="${esc(d.id)}">View Impact</button>`
+          }
+        </div>
+      </div>`;
+    }
+
+    const body = dlg.querySelector('.mc-manage-displays-body');
+    body.innerHTML = `
+      ${active.length ? `<h4 class="mc-md-section-header">Active Displays (${active.length})</h4>
+        <div class="mc-md-list">${active.map(deviceRowHtml).join('')}</div>` : '<p class="mc-md-empty">No active displays</p>'}
+      ${retired.length ? `<h4 class="mc-md-section-header">Retired Displays (${retired.length})</h4>
+        <div class="mc-md-list">${retired.map(deviceRowHtml).join('')}</div>` : ''}
+    `;
+
+    // Wire actions
+    body.querySelectorAll('[data-md-retire]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        try {
+          await api.retireDevice(btn.dataset.mdRetire);
+          showToast('Display retired', 'success');
+          await loadAndRender();
+        } catch (err) {
+          showToast(err.message || 'Failed to retire', 'error');
+          btn.disabled = false;
+        }
+      });
+    });
+
+    body.querySelectorAll('[data-md-restore]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        try {
+          await api.restoreDevice(btn.dataset.mdRestore);
+          showToast('Display restored', 'success');
+          await loadAndRender();
+        } catch (err) {
+          showToast(err.message || 'Failed to restore', 'error');
+          btn.disabled = false;
+        }
+      });
+    });
+
+    body.querySelectorAll('[data-md-impact]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        await showDeletionImpactDialog(btn.dataset.mdImpact, loadAndRender);
+      });
+    });
+  }
+
+  dlg.querySelector('[data-md-close]')?.addEventListener('click', () => { dlg.close(); dlg.remove(); });
+  dlg.addEventListener('cancel', () => { dlg.remove(); });
+  dlg.showModal();
+  await loadAndRender();
+}
+
+// Deletion impact + permanent removal confirmation dialog
+async function showDeletionImpactDialog(deviceId, onRemoved) {
+  const impactDlg = document.createElement('dialog');
+  impactDlg.className = 'mc-dialog mc-deletion-impact';
+  impactDlg.setAttribute('aria-labelledby', 'mcImpactTitle');
+  impactDlg.innerHTML = `<div class="mc-dialog-card">
+    <h3 id="mcImpactTitle" class="mc-dialog-title">Permanently remove display?</h3>
+    <div class="mc-impact-body"><div class="mc-manage-loading">Loading impact…</div></div>
+    <div class="mc-dialog-actions">
+      <button type="button" class="mc-btn mc-btn-ghost" data-impact-cancel>Cancel</button>
+    </div>
+  </div>`;
+  document.body.appendChild(impactDlg);
+
+  let impact;
+  try {
+    impact = await api.getDeviceDeletionImpact(deviceId);
+  } catch (err) {
+    impactDlg.querySelector('.mc-manage-loading').textContent = 'Failed to load impact: ' + (err.message || err);
+    impactDlg.querySelector('[data-impact-cancel]').addEventListener('click', () => { impactDlg.close(); impactDlg.remove(); });
+    impactDlg.showModal();
+    return;
+  }
+
+  const etag = impactDlg.querySelector('[data-impact-cancel]') && impact.etag;
+  const canDelete = !impact.is_wall_leader && !impact.is_audio_authority;
+  const warnings = [];
+  if (impact.is_wall_leader) warnings.push('⚠ This display is a wall leader — cannot remove without reassigning leadership.');
+  if (impact.is_audio_authority) warnings.push('⚠ This display is the classroom audio authority — cannot remove without selecting a new authority.');
+  if (impact.is_online) warnings.push('⚠ This display is currently online — its player may reconnect after removal.');
+  impact.wall_memberships?.forEach((m) => {
+    if (m.wall_would_be_empty) warnings.push(`⚠ Wall "${esc(m.wall_name)}" would become empty after removal.`);
+  });
+
+  impactDlg.querySelector('.mc-impact-body').innerHTML = `
+    <div class="mc-impact-device">
+      <strong>${esc(impact.device_name)}</strong>
+      <span class="mc-impact-status">${esc(impact.status)}${impact.retired ? ' · Retired' : ''}${impact.is_online ? ' · Online' : ''}</span>
+    </div>
+    <div class="mc-impact-details">
+      ${impact.wall_memberships?.length ? `<div>Wall memberships: ${impact.wall_memberships.map((m) => esc(m.wall_name)).join(', ')}</div>` : '<div>No wall memberships</div>'}
+      <div>Schedules: ${impact.schedule_count}</div>
+      <div>Screenshots: ${impact.screenshot_count}</div>
+      <div>Telemetry records: ${impact.telemetry_count}</div>
+      <div>Whiteboard sessions: ${impact.whiteboard_session_count}</div>
+      <div>Play logs (preserved): ${impact.play_log_count || 0}</div>
+      ${impact.default_content ? `<div>Default content: ${esc(impact.default_content.filename)}</div>` : ''}
+    </div>
+    ${warnings.length ? `<div class="mc-impact-warnings">${warnings.map((w) => `<div>${w}</div>`).join('')}</div>` : ''}
+    <div class="mc-impact-policy">
+      Historical play logs will be preserved with a null device reference. Screenshots, telemetry, and whiteboard data will be deleted.
+    </div>
+    ${canDelete ? `
+      <div class="mc-impact-confirm">
+        <label class="mc-pair-field"><span>Type REMOVE to confirm:</span>
+          <input class="input mc-impact-confirm-input" type="text" autocomplete="off" placeholder="REMOVE" data-impact-input></label>
+      </div>
+      <div class="mc-dialog-actions">
+        <button type="button" class="mc-btn mc-btn-ghost" data-impact-cancel>Cancel</button>
+        <button type="button" class="mc-btn mc-btn-danger" data-impact-delete disabled>Permanently Remove</button>
+      </div>
+    ` : '<div class="mc-impact-blocked">Permanent removal is blocked. Resolve the warnings above first.</div>'}
+  `;
+
+  const deleteBtn = impactDlg.querySelector('[data-impact-delete]');
+  const confirmInput = impactDlg.querySelector('[data-impact-input]');
+
+  if (confirmInput) {
+    confirmInput.addEventListener('input', () => {
+      deleteBtn.disabled = confirmInput.value.trim().toUpperCase() !== 'REMOVE';
+    });
+  }
+
+  impactDlg.querySelector('[data-impact-cancel]').addEventListener('click', () => { impactDlg.close(); impactDlg.remove(); });
+  if (deleteBtn) {
+    deleteBtn.addEventListener('click', async () => {
+      deleteBtn.disabled = true;
+      deleteBtn.textContent = 'Removing…';
+      try {
+        await api.deleteDevice(deviceId, impact.etag);
+        showToast('Display permanently removed', 'success');
+        impactDlg.close();
+        impactDlg.remove();
+        if (onRemoved) await onRemoved();
+      } catch (err) {
+        showToast(err.message || 'Failed to remove display', 'error');
+        deleteBtn.disabled = false;
+        deleteBtn.textContent = 'Permanently Remove';
+      }
+    });
+  }
+
+  impactDlg.showModal();
+}
+
 // ---- Drag-drop: toolbox tiles → stage cards ----
 //
 // Each toolbox tile sets DataTransfer text with the source JSON payload on
@@ -2270,7 +2464,7 @@ function wireCommandRail(actions = {}) {
           closeViewModal();
           break;
         case 'displays':
-          openTargetPickerModal();
+          openManageDisplays();
           break;
         case 'whiteboard':
           if (typeof window.mcOpenWhiteboard === 'function') window.mcOpenWhiteboard();

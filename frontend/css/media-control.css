@@ -2837,6 +2837,39 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
 .mc-btn-ghost { background: transparent; color: #cbd5e1; border: 1px solid #475569; border-radius: 8px; padding: .55rem 1.1rem; cursor: pointer; }
 .mc-dock-btn.is-recording, #mc-dock-record-btn.is-recording { background: #7f1d1d; color: #fecaca; }
 
+/* ═══ Manage Displays modal ═══ */
+.mc-manage-displays-card { max-width: 640px; width: 90vw; max-height: 80vh; display: flex; flex-direction: column; }
+.mc-manage-displays-body { flex: 1; overflow-y: auto; padding: var(--mc-space-sm, 8px) 0; }
+.mc-manage-loading { text-align: center; padding: 2rem; color: var(--mc-text-secondary); }
+.mc-md-section-header { font-size: var(--font-4, 15px); font-weight: 600; margin: 1rem 0 0.5rem; color: var(--mc-text-primary); }
+.mc-md-section-header:first-child { margin-top: 0; }
+.mc-md-list { display: flex; flex-direction: column; gap: 0.5rem; }
+.mc-md-row { display: flex; align-items: center; gap: 0.75rem; padding: 0.625rem 0.75rem; border: 1px solid var(--mc-border-light); border-radius: var(--mc-radius-sm, 6px); background: var(--mc-surface); }
+.mc-md-info { flex: 1; min-width: 0; }
+.mc-md-name { font-weight: 600; font-size: var(--mc-font-size-base, 14px); color: var(--mc-text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-md-meta { font-size: var(--font-2, 12px); color: var(--mc-text-secondary); margin-top: 2px; }
+.mc-md-actions { display: flex; gap: 0.375rem; flex-shrink: 0; }
+.mc-md-empty { color: var(--mc-text-tertiary, #94a3b8); padding: 0.75rem; font-size: var(--font-3, 13px); }
+.mc-btn-sm { padding: 0.25rem 0.625rem; font-size: var(--font-2, 12px); min-height: 32px; border-radius: var(--radius, 6px); border: 1px solid var(--mc-border); background: var(--mc-surface); color: var(--mc-text-primary); cursor: pointer; }
+.mc-btn-sm:hover { border-color: var(--accent); }
+.mc-btn-danger-outline { border-color: var(--danger, #ef4444); color: var(--danger, #ef4444); }
+.mc-btn-danger-outline:hover { background: var(--danger, #ef4444); color: #fff; }
+.mc-btn-danger { background: var(--danger, #ef4444); color: #fff; border: 1px solid var(--danger, #ef4444); }
+.mc-btn-danger:hover { background: #dc2626; }
+.mc-btn-danger:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Deletion impact dialog */
+.mc-impact-body { margin: 0.5rem 0; }
+.mc-impact-device { display: flex; flex-direction: column; gap: 2px; padding: 0.5rem; background: var(--mc-surface); border-radius: var(--mc-radius-sm, 6px); margin-bottom: 0.75rem; }
+.mc-impact-device strong { font-size: var(--mc-font-size-lg, 16px); color: var(--mc-text-primary); }
+.mc-impact-status { font-size: var(--font-2, 12px); color: var(--mc-text-secondary); }
+.mc-impact-details { font-size: var(--font-3, 13px); color: var(--mc-text-secondary); display: flex; flex-direction: column; gap: 3px; margin-bottom: 0.75rem; }
+.mc-impact-warnings { padding: 0.5rem 0.75rem; background: rgba(239, 68, 68, 0.1); border-left: 3px solid var(--danger, #ef4444); border-radius: var(--mc-radius-sm, 6px); margin-bottom: 0.75rem; font-size: var(--font-3, 13px); color: var(--mc-text-primary); }
+.mc-impact-warnings div { margin: 2px 0; }
+.mc-impact-policy { font-size: var(--font-2, 12px); color: var(--mc-text-tertiary, #94a3b8); padding: 0.5rem; border: 1px dashed var(--mc-border-light); border-radius: var(--mc-radius-sm, 6px); margin-bottom: 0.75rem; }
+.mc-impact-confirm { margin-bottom: 0.75rem; }
+.mc-impact-blocked { padding: 0.75rem; background: rgba(239, 68, 68, 0.1); border-radius: var(--mc-radius-sm, 6px); color: var(--danger, #ef4444); font-weight: 600; text-align: center; }
+
 /* ════════════════════════════════════════════════════════════════════════
    Room Overview / Focus View surface isolation (2026-07-24)
    ─────────────────────────────────────────────────────────────────────────

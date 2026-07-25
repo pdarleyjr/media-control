@@ -86,7 +86,13 @@ export const api = {
   getDevices: () => request('/devices'),
   getDevice: (id) => request(`/devices/${id}`),
   updateDevice: (id, data) => request(`/devices/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-  deleteDevice: (id) => request(`/devices/${id}`, { method: 'DELETE' }),
+  deleteDevice: (id, etag) => request(`/devices/${id}`, {
+    method: 'DELETE',
+    headers: etag ? { 'If-Match': etag } : {},
+  }),
+  retireDevice: (id) => request(`/devices/${id}/retire`, { method: 'POST' }),
+  restoreDevice: (id) => request(`/devices/${id}/restore`, { method: 'POST' }),
+  getDeviceDeletionImpact: (id) => request(`/devices/${id}/deletion-impact`),
   identify: (deviceId) => request(`/devices/${deviceId}/identify`, { method: 'POST' }),
 
   // Displays
