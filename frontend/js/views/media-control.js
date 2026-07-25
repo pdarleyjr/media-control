@@ -40,7 +40,6 @@ import { getCurrentTargetCatalog, waitForTargetCatalog } from '../services/targe
 import { buildWhiteboardTargets, findWhiteboardTargetForActive } from '../services/whiteboard-targets.js';
 import { createControlPrefsStore } from '../services/control-prefs-store.js';
 import {
-  VIEW_MODE,
   buildBroadcastSelection,
   buildRoomBroadcastSelection,
   createCommandCenterState,
@@ -466,7 +465,7 @@ function paintStage() {
     selectedIds: renderSelectedIds,
     livePreviewDeviceId: LIVE_EMBED_PREVIEWS ? activePreviewDeviceId() : null,
     activeControlTargetId: activeControlTarget?.id || null,
-    overviewMode: commandCenterState.viewMode === VIEW_MODE.OVERVIEW,
+    overviewMode: false, // Room Overview removed (task §8) — always focused view
     onSelect: selectStageDisplayTarget,
     onSelectGroup: selectLayoutGroupTarget,
     onCalibrateWall: showWallCalibration,
@@ -2531,7 +2530,7 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
           <button type="button" class="mc-cc-rail-btn" data-mc-rail="settings" title="${esc(t('mc.cc.rail.settings'))}" aria-label="${esc(t('mc.cc.rail.settings'))}">${ICON_SETTINGS}</button>
         </nav>
 
-        <main class="mc-cc-main" data-view-mode="focus">
+        <main class="mc-cc-main">
           <section class="mc-cc-canvas-area">
             <div id="mc-cc-chips" class="mc-cc-chips" aria-live="polite"></div>
             <div id="mc-multiview" class="mc-multiview-host" role="dialog"

@@ -5,14 +5,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  VIEW_MODE,
   buildBroadcastSelection,
   buildRoomBroadcastSelection,
   createCommandCenterState,
   enterFocusView,
   setBroadcastTargets,
   setControlTarget,
-  showRoomOverview,
 } from '../../frontend/js/services/command-center-state.js';
 import { createScreenshotPoller } from '../../frontend/js/services/screenshot-poll.js';
 
@@ -67,20 +65,20 @@ function classroomCatalog() {
 }
 
 describe('Command Center state separation', () => {
-  it('defaults to Focus View without a focused or control target (overview removed)', () => {
+  it('defaults to focused view with null target (overview mode removed)', () => {
     const state = createCommandCenterState();
-    assert.equal(state.viewMode, VIEW_MODE.FOCUS);
     assert.equal(state.focusedViewTarget, null);
     assert.equal(state.controlTarget, null);
     assert.deepEqual(state.broadcastTargets, []);
     assert.deepEqual(state.physicalResolvedTargets, []);
+    assert.equal(state.viewMode, undefined, 'viewMode must not exist (mode architecture removed)');
   });
 
-  it('changing Focus View never changes broadcast targets', () => {
+  it('entering focus view never changes broadcast targets', () => {
     const roomSelection = buildRoomBroadcastSelection(classroomCatalog());
     const initial = setBroadcastTargets(createCommandCenterState(), roomSelection);
     const focused = enterFocusView(initial, { type: 'wall', id: 'front-wall' });
-    assert.equal(focused.viewMode, VIEW_MODE.FOCUS);
+    assert.deepEqual(focused.focusedViewTarget, { type: 'wall', id: 'front-wall' });
     assert.deepEqual(focused.broadcastTargets, initial.broadcastTargets);
     assert.deepEqual(focused.physicalResolvedTargets, initial.physicalResolvedTargets);
   });
@@ -93,18 +91,17 @@ describe('Command Center state separation', () => {
     assert.deepEqual(controlled.physicalResolvedTargets, initial.physicalResolvedTargets);
   });
 
-  it('returning to Room Overview clears only view focus', () => {
+  it('clearing focus target nulls only the focused view target', () => {
     const roomSelection = buildRoomBroadcastSelection(classroomCatalog());
     const initial = setControlTarget(
       setBroadcastTargets(createCommandCenterState(), roomSelection),
       { type: 'display', id: 'front-center' },
     );
     const focused = enterFocusView(initial, { type: 'wall', id: 'front-wall' });
-    const overview = showRoomOverview(focused);
-    assert.equal(overview.viewMode, VIEW_MODE.OVERVIEW);
-    assert.equal(overview.focusedViewTarget, null);
-    assert.deepEqual(overview.controlTarget, initial.controlTarget);
-    assert.deepEqual(overview.broadcastTargets, initial.broadcastTargets);
+    const cleared = enterFocusView(focused, null); // null target clears focus
+    assert.equal(cleared.focusedViewTarget, null);
+    assert.deepEqual(cleared.controlTarget, initial.controlTarget);
+    assert.deepEqual(cleared.broadcastTargets, initial.broadcastTargets);
   });
 });
 
@@ -246,7 +243,7 @@ it('propagates screenshot correlation IDs through dashboard, player, and ready e
   assert.match(deviceSocket, /correlation_id/);
 });
 
-it('Room Overview renders each physical wall member and split-wall markup has a defined mode', () => {
+it('Stage renders wall members and split-wall markup with a defined mode (overview param retained but always false)', () => {
   const stage = read('frontend', 'js', 'views', 'media-control', 'stage.js');
   assert.match(stage, /overviewMode/);
   assert.match(stage, /showPreview:\s*overviewMode\s*\|\|\s*mode === 'split'/);

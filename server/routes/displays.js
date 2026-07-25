@@ -351,13 +351,12 @@ function validateTargetRef(ref, req) {
   }
   if (type === 'display') {
     const dev = db.prepare(
-      'SELECT id, retired, device_type FROM devices WHERE id = ? AND workspace_id = ?'
+      'SELECT id, retired, name FROM devices WHERE id = ? AND workspace_id = ?'
     ).get(id, req.workspaceId);
     if (!dev) return false;
     if (dev.retired) return false;
-    // Reject camera / non-display sources.
-    const dtype = String(dev.device_type || '').toLowerCase();
-    if (dtype === 'camera') return false;
+    // Reject camera / non-display sources by name convention.
+    if (/camera/i.test(dev.name || '')) return false;
     return true;
   }
   if (type === 'group') {

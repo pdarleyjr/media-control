@@ -37,9 +37,16 @@ test('the app always opens in a focused view and restores the last target', () =
   assert.match(mcSource, /restoringTarget/);
 });
 
-test('command-center-state defaults to FOCUS (overview is not the default mode)', async () => {
+test('command-center-state has no viewMode and defaults to null focus (mode architecture removed)', async () => {
   const m = await importModule(COMMAND_CENTER_STATE);
-  assert.equal(m.createCommandCenterState().viewMode, m.VIEW_MODE.FOCUS);
+  assert.equal(typeof m.VIEW_MODE, 'undefined', 'VIEW_MODE enum must be removed');
+  assert.equal(typeof m.showRoomOverview, 'undefined', 'showRoomOverview must be removed');
+  const state = m.createCommandCenterState();
+  assert.equal(state.focusedViewTarget, null);
+  assert.equal(state.viewMode, undefined, 'viewMode must not exist in state');
+  // enterFocusView(null) clears focus (NOT an overview mode — just null target)
+  const cleared = m.enterFocusView(state, null);
+  assert.equal(cleared.focusedViewTarget, null);
 });
 
 test('quick-focus tabs always include Primary + Secondary Wall defaults', () => {

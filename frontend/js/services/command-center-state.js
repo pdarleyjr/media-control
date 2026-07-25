@@ -3,10 +3,10 @@ import {
   findCatalogTarget,
 } from './target-catalog.js';
 
-export const VIEW_MODE = Object.freeze({
-  OVERVIEW: 'overview',
-  FOCUS: 'focus',
-});
+// Room Overview / Focus View mode architecture is removed from operator state
+// (task §8). The command center always operates in a focused wall/display view.
+// A null focusedViewTarget is NOT an "overview mode" — it is an explicit empty
+// state that renders a "No authorized display target is available" message.
 
 function targetReference(target) {
   if (!target || typeof target !== 'object') return null;
@@ -74,9 +74,6 @@ export function buildRoomBroadcastSelection(catalog) {
 
 export function createCommandCenterState(initial = {}) {
   return {
-    // Room Overview is removed from the operator workflow (task §5). The
-    // command center always operates in a focused wall/display view.
-    viewMode: VIEW_MODE.FOCUS,
     focusedViewTarget: null,
     controlTarget: null,
     broadcastTargets: Array.isArray(initial.broadcastTargets)
@@ -89,19 +86,9 @@ export function createCommandCenterState(initial = {}) {
 }
 
 export function enterFocusView(state, target) {
-  if (!target) return showRoomOverview(state);
   return {
     ...state,
-    viewMode: VIEW_MODE.FOCUS,
-    focusedViewTarget: { ...target },
-  };
-}
-
-export function showRoomOverview(state) {
-  return {
-    ...state,
-    viewMode: VIEW_MODE.OVERVIEW,
-    focusedViewTarget: null,
+    focusedViewTarget: target ? { ...target } : null,
   };
 }
 
