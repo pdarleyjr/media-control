@@ -100,8 +100,8 @@ export const api = {
   getDisplaysSelection: () => request('/displays/selection'),
   putDisplaysSelection: (device_ids) => request('/displays/selection', { method: 'PUT', body: JSON.stringify({ device_ids }) }),
   getControlPreferences: () => request('/displays/control-preferences'),
-  putControlPreferences: (prefs, revision) => request('/displays/control-preferences', {
-    method: 'PUT',
+  patchControlPreferences: (prefs, revision) => request('/displays/control-preferences', {
+    method: 'PATCH',
     headers: revision !== undefined ? { 'If-Match': String(revision) } : {},
     body: JSON.stringify(prefs),
   }),

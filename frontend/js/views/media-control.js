@@ -38,6 +38,7 @@ import { mount as mountWhiteboardSurface } from './media-control/whiteboard.js';
 import { openTargetPicker as openAuthoritativeTargetPicker } from '../components/target-picker.js';
 import { getCurrentTargetCatalog, waitForTargetCatalog } from '../services/target-catalog-runtime.js';
 import { buildWhiteboardTargets, findWhiteboardTargetForActive } from '../services/whiteboard-targets.js';
+import { createControlPrefsStore } from '../services/control-prefs-store.js';
 import {
   VIEW_MODE,
   buildBroadcastSelection,
@@ -137,6 +138,7 @@ let activeControlTarget = null;
 const LAST_TARGET_KEY = 'mc_control_last_target';
 let restoringTarget = false; // suppresses preference writes during startup restore
 let commandCenterState = createCommandCenterState();
+let prefsStore = null;       // serialized control-preferences store (§6/§7)
 let targetApi = null;       // target-selector module API
 let transportApi = null;    // canvas-level transport row
 let spanSplitApi = null;    // Span | Split toggle
@@ -1881,34 +1883,34 @@ function validatePersistedTarget(ref) {
   return null;
 }
 
-// Debounced persistence of the last focused target. Best-effort: never blocks
-// the UI and never throws on failure. Only persisted after an intentional
-// operator selection (called from handleTargetChange), never on view restore.
+// Persist the last focused target via the serialized preference store (§6).
+// Only persisted after an intentional operator selection (called from
+// handleTargetChange), never on view restore. The store queues, serializes,
+// and resolves conflicts — never blocks the UI.
 let persistLastFocusedTimer = null;
-let controlPrefsRevision = 0;
 function persistLastFocusedTarget(target) {
   if (persistLastFocusedTimer) clearTimeout(persistLastFocusedTimer);
   const ref = target && target.id ? `${target.type || 'display'}:${target.id}` : null;
   persistLastFocusedTimer = setTimeout(() => {
-    api.putControlPreferences({ last_focused_target: ref }, controlPrefsRevision)
-      .then((saved) => { if (saved && typeof saved.revision === 'number') controlPrefsRevision = saved.revision; })
-      .catch(() => { /* best-effort; ignore conflict/网络 errors */ });
+    if (prefsStore) prefsStore.mutate({ last_focused_target_ref: ref });
   }, 400);
 }
 
 // Restore the last valid focused target on startup (task §6). Loads
-// server-authoritative preferences, validates last_focused_target against the
-// live catalog, and falls back through the default chain. A local cached copy
-// is read first for fast first paint. Emits NO playback command.
+// server-authoritative preferences via the serialized store, validates the
+// last focused target ref against the live catalog, and falls back through
+// the default chain. A scoped local cached copy is read first for fast first
+// paint. Emits NO playback command.
 async function restoreLastFocusedTarget() {
-  // Fast local cache for first paint (best-effort, may be stale). The server
-  // remains authoritative; the cache only avoids an empty-stage flash while
-  // the preferences request is in flight.
+  // 1. Synchronous first paint from the scoped local cache (best-effort, may
+  //    be stale). The server remains authoritative; the cache only avoids an
+  //    empty-stage flash while the preferences request is in flight.
   let cachedRef = null;
-  try { cachedRef = localStorage.getItem('mc_control_last_focused'); } catch { /* ignore */ }
+  if (prefsStore) {
+    const cached = prefsStore.getCached();
+    if (cached) cachedRef = cached.last_focused_target_ref || null;
+  }
 
-  // 1. Synchronous first paint from the local cache (or default fallback).
-  //    Suppressed so it writes no preference and emits no command.
   let initialTarget = validatePersistedTarget(cachedRef) || chooseDefaultFocusTarget();
   if (initialTarget) {
     targetApi?.setActive?.(initialTarget);
@@ -1919,16 +1921,15 @@ async function restoreLastFocusedTarget() {
     paintSummary();
   }
 
-  // 2. Reconcile with the authoritative server preference. Only switch if the
-  //    server value differs from what we just painted and is still valid.
+  // 2. Reconcile with the authoritative server preference via the store.
+  if (!prefsStore) return;
   let prefs = null;
-  try { prefs = await api.getControlPreferences(); } catch { /* unauthenticated/offline */ }
-  if (prefs && typeof prefs.revision === 'number') controlPrefsRevision = prefs.revision;
-  if (prefs && Array.isArray(prefs.pinned_targets)) targetApi?.setPinned?.(prefs.pinned_targets);
+  try { prefs = await prefsStore.load(); } catch { /* unauthenticated/offline */ }
+  if (!prefs) return;
+  if (Array.isArray(prefs.pinned_target_refs)) targetApi?.setPinned?.(prefs.pinned_target_refs);
 
-  const serverRef = prefs && prefs.last_focused_target ? prefs.last_focused_target : null;
+  const serverRef = prefs.last_focused_target_ref || null;
   if (serverRef) {
-    try { localStorage.setItem('mc_control_last_focused', serverRef); } catch { /* ignore */ }
     const currentRef = activeTarget ? `${activeTarget.type || 'display'}:${activeTarget.id}` : null;
     if (serverRef !== currentRef) {
       const serverTarget = validatePersistedTarget(serverRef);
@@ -1938,8 +1939,22 @@ async function restoreLastFocusedTarget() {
         try { handleTargetChange(serverTarget); } finally { restoringTarget = false; }
       }
     }
+  } else {
+    // Server returned null for last_focused_target_ref — do NOT leave a stale
+    // cached target active. Fall back to the default chain if the current
+    // target was only there because of a stale cache.
+    const currentRef = activeTarget ? `${activeTarget.type || 'display'}:${activeTarget.id}` : null;
+    if (cachedRef && currentRef === cachedRef) {
+      const fallback = chooseDefaultFocusTarget();
+      if (fallback && `${fallback.type || 'display'}:${fallback.id}` !== currentRef) {
+        targetApi?.setActive?.(fallback);
+        restoringTarget = true;
+        try { handleTargetChange(fallback); } finally { restoringTarget = false; }
+      }
+    }
   }
 }
+
 
 // Canvas-level transport row (Prev · Restart · Play/Pause · Next) bound to the
 // active target's transport. White rounded buttons styled in media-control.css.
@@ -2618,16 +2633,24 @@ pruneSelection();
   // stop/blank to whatever was showing before. The canvas-level controls
   // (transport row, Span|Split, screensaver, action dock) reuse existing
   // functions and route commands to the active target only.
+  // Initialize the serialized preference store (§6/§7) before mounting the
+  // target selector so onPinsChange can use it.
+  const currentUser = (() => { try { return JSON.parse(localStorage.getItem('user') || 'null'); } catch { return null; } })();
+  prefsStore = createControlPrefsStore({
+    userId: currentUser?.id || null,
+    workspaceId: currentUser?.current_workspace_id || null,
+    roomId: 'classroom-1', // matches config.console.roomId server-side
+    onPinsChange: (pinnedRefs) => { targetApi?.setPinned?.(pinnedRefs); },
+  });
+
   targetApi = mountTargetSelector(document.getElementById('mc-target-host'), {
     walls,
     groups: layoutGroupTargets(),
     displays: routeableDisplays(),
     onTargetChange: handleTargetChange,
     onPinsChange: (pinnedRefs) => {
-      // Persist the user's customized quick-tab pins (best-effort, no command).
-      api.putControlPreferences({ pinned_targets: pinnedRefs, pinned_order: pinnedRefs }, controlPrefsRevision)
-        .then((saved) => { if (saved && typeof saved.revision === 'number') controlPrefsRevision = saved.revision; })
-        .catch(() => {});
+      // Persist the user's customized quick-tab pins via the serialized store.
+      if (prefsStore) prefsStore.mutate({ pinned_target_refs: pinnedRefs });
     },
   });
   transportApi = mountTransportRow(document.getElementById('mc-transport-host'));
@@ -2898,6 +2921,8 @@ pruneSelection();
 window.mcGetNavigationContext = () => ({ selected_target: activeTarget });
 
 export function unmount() {
+  // Abort the preference store so a pending write can't mutate an unmounted view.
+  if (prefsStore) { try { prefsStore.abort(); } catch { /* */ } prefsStore = null; }
   // The view owns NO live broadcast resource (that's the engine singleton),
   // so unmount only detaches this view's subscriptions. Broadcasts persist.
   // Tear down any open whiteboard overlay so it doesn't outlive this view

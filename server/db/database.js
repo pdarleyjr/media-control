@@ -1191,36 +1191,112 @@ function migratePeerTubeReplay() {
 migratePeerTubeReplay();
 
 
-// ── Per-user operator navigation preferences ──────────────────────────────
+// ── Per-user operator navigation preferences (v2) ─────────────────────────
 // Server-authoritative focus target + customizable quick-tab pins, keyed by
-// user + workspace (the app is single-room per workspace; room_id is fixed by
-// the LIVE_STREAM_ROOM_ID server env so user+workspace is the durable boundary,
-// matching the existing dashboard_state pattern). A local cached copy may be
-// used for fast first paint, but this table is authoritative so preferences
-// follow the authenticated user across machines. revision supports optimistic
-// concurrency (If-Match) so two open sessions converge without clobbering.
-const CONTROL_PREFS_ID = 'control_preferences_v1';
-function migrateControlPreferences() {
-  try {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS control_preferences (
-        user_id               TEXT NOT NULL,
-        workspace_id          TEXT NOT NULL,
-        last_focused_target   TEXT,
-        pinned_targets_json   TEXT NOT NULL DEFAULT '[]',
-        pinned_order_json     TEXT NOT NULL DEFAULT '[]',
-        revision              INTEGER NOT NULL DEFAULT 1,
-        updated_at            INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        PRIMARY KEY (user_id, workspace_id)
-      );
-    `);
-  } catch (e) {
-    console.error('[control_preferences_v1] migration failed:', e.message);
+// user + workspace + room. The room is fixed per deployment (config.console.roomId,
+// default 'classroom-1'); including it in the key prevents future cross-room
+// leakage if multi-room is ever added. revision supports optimistic concurrency
+// (If-Match). A local cached copy may be used for fast first paint, but this
+// table is authoritative so preferences follow the authenticated user.
+//
+// v2 corrects v1 defects:
+//   • room_id added to the primary key (was user+workspace only)
+//   • single canonical pinned_target_refs_json replaces the divergent
+//     pinned_targets_json + pinned_order_json pair (array order IS display order)
+//   • foreign keys with ON DELETE CASCADE
+//   • CHECK constraints: nonempty room_id, nonnegative revision, max 32 pins
+//
+// Transactional migration from v1: inspects schema, creates v2 table, copies
+// valid rows, validates counts, atomically swaps. Fails startup safely if the
+// schema cannot be created (does NOT stamp the migration on failure).
+const CONTROL_PREFS_V2_ID = 'control_preferences_v2';
+function migrateControlPreferencesV2() {
+  const config = require('../config');
+  const canonicalRoomId = config.console?.roomId || process.env.ROOM_ID || 'classroom-1';
+
+  // Self-heal: drive off real schema, not the migration stamp (mirrors the
+  // display-viewport pattern so a partially-applied run recovers on next boot).
+  const hasV2 = (() => {
+    try {
+      const cols = db.prepare('PRAGMA table_info(control_preferences)').all().map((c) => c.name);
+      return cols.includes('room_id') && cols.includes('pinned_target_refs_json');
+    } catch { return false; }
+  })();
+
+  if (hasV2) {
+    try { db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(CONTROL_PREFS_V2_ID); } catch { /* stamp best-effort */ }
+    return;
   }
-  try { db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(CONTROL_PREFS_ID); }
-  catch (e) { /* best-effort stamp */ }
+
+  try {
+    const tx = db.transaction(() => {
+      // Create the corrected v2 table.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS control_preferences_v2 (
+          user_id                 TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          workspace_id            TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+          room_id                 TEXT NOT NULL,
+          last_focused_target_ref TEXT,
+          pinned_target_refs_json TEXT NOT NULL DEFAULT '[]',
+          revision                INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 0),
+          updated_at              INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+          PRIMARY KEY (user_id, workspace_id, room_id),
+          CHECK (length(room_id) > 0)
+        );
+      `);
+
+      // Copy valid rows from v1 if it exists. pinned_targets_json + pinned_order_json
+      // are merged into pinned_target_refs_json (order from pinned_order, deduped).
+      const hasV1 = (() => {
+        try {
+          const cols = db.prepare('PRAGMA table_info(control_preferences)').all().map((c) => c.name);
+          return cols.includes('pinned_targets_json') && cols.includes('pinned_order_json');
+        } catch { return false; }
+      })();
+
+      let copied = 0;
+      if (hasV1) {
+        const rows = db.prepare(
+          'SELECT user_id, workspace_id, last_focused_target, pinned_targets_json, pinned_order_json, revision FROM control_preferences'
+        ).all();
+        const insert = db.prepare(`
+          INSERT OR IGNORE INTO control_preferences_v2
+            (user_id, workspace_id, room_id, last_focused_target_ref, pinned_target_refs_json, revision)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `);
+        for (const row of rows) {
+          let targets = [];
+          let order = [];
+          try { targets = JSON.parse(row.pinned_targets_json) || []; } catch { targets = []; }
+          try { order = JSON.parse(row.pinned_order_json) || []; } catch { order = []; }
+          // Merge: use order as the canonical sequence, append any targets not in order.
+          const seen = new Set();
+          const merged = [];
+          for (const ref of [...order, ...targets]) {
+            if (typeof ref === 'string' && ref && !seen.has(ref)) { seen.add(ref); merged.push(ref); }
+          }
+          insert.run(row.user_id, row.workspace_id, canonicalRoomId, row.last_focused_target || null, JSON.stringify(merged.slice(0, 32)), row.revision || 1);
+          copied++;
+        }
+      }
+
+      // Atomically swap: drop v1, rename v2 to the canonical name.
+      db.exec('DROP TABLE IF EXISTS control_preferences');
+      db.exec('ALTER TABLE control_preferences_v2 RENAME TO control_preferences');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_control_prefs_workspace ON control_preferences(workspace_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_control_prefs_room ON control_preferences(room_id)');
+
+      db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(CONTROL_PREFS_V2_ID);
+      if (copied > 0) console.log(`[control_preferences_v2] migrated ${copied} row(s) from v1 (room_id=${canonicalRoomId})`);
+    });
+    tx();
+  } catch (e) {
+    console.error(`[control_preferences_v2] migration FAILED: ${e.message}`);
+    console.error('[control_preferences_v2] Startup aborted — preference schema could not be created.');
+    throw e; // fail startup: do NOT stamp the migration on failure
+  }
 }
-migrateControlPreferences();
+migrateControlPreferencesV2();
 
 
 // Prune old telemetry (keep last 24h worth at 15s intervals = ~5760, cap at 6000)

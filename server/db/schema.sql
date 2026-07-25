@@ -627,19 +627,23 @@ CREATE TABLE IF NOT EXISTS dashboard_state (
     PRIMARY KEY (user_id, workspace_id)
 );
 
--- Per-user operator navigation preferences: last focused target + customizable
--- quick-tab pins. Server-authoritative (a local cached copy may drive fast first
--- paint). Keyed by user + workspace (the room is fixed per workspace, matching
--- dashboard_state). revision supports optimistic concurrency (If-Match).
+-- Per-user operator navigation preferences (v2): last focused target +
+-- customizable quick-tab pins. Server-authoritative (a local cached copy may
+-- drive fast first paint). Keyed by user + workspace + room (the room is fixed
+-- per deployment, config.console.roomId, default 'classroom-1'; including it
+-- prevents future cross-room leakage). revision supports optimistic concurrency
+-- (If-Match). Single canonical pinned_target_refs_json: array order IS display
+-- order (no divergent pinned_order field). Foreign keys with ON DELETE CASCADE.
 CREATE TABLE IF NOT EXISTS control_preferences (
-    user_id               TEXT NOT NULL,
-    workspace_id          TEXT NOT NULL,
-    last_focused_target   TEXT,
-    pinned_targets_json   TEXT NOT NULL DEFAULT '[]',
-    pinned_order_json     TEXT NOT NULL DEFAULT '[]',
-    revision              INTEGER NOT NULL DEFAULT 1,
-    updated_at            INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-    PRIMARY KEY (user_id, workspace_id)
+    user_id                  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    workspace_id             TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    room_id                  TEXT NOT NULL,
+    last_focused_target_ref  TEXT,
+    pinned_target_refs_json  TEXT NOT NULL DEFAULT '[]',
+    revision                 INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 0),
+    updated_at               INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    PRIMARY KEY (user_id, workspace_id, room_id),
+    CHECK (length(room_id) > 0)
 );
 
 -- Persistent remote whiteboard state per display. Stop/hide does not delete this;

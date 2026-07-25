@@ -186,79 +186,213 @@ router.put('/selection', (req, res) => {
   res.json({ device_ids: ids });
 });
 
+// ── Per-user operator navigation preferences (v2) ─────────────────────────
 // GET /api/displays/control-preferences — server-authoritative operator focus
-// target + customizable quick-tab pins. Keyed by user + workspace (the room is
-// fixed per workspace). A local cached copy may drive fast first paint, but
-// this endpoint is authoritative so preferences follow the authenticated user.
+// target + customizable quick-tab pins. Keyed by user + workspace + room.
+// Any authenticated workspace MEMBER may read their own preferences (viewers
+// included). A local cached copy may drive fast first paint, but this endpoint
+// is authoritative so preferences follow the authenticated user.
 router.get('/control-preferences', (req, res) => {
-  if (!req.workspaceId) return res.json(defaultControlPreferences());
+  if (!req.workspaceId) return res.json(defaultControlPreferences(canonicalRoomId()));
+  const roomId = canonicalRoomId();
   const row = db.prepare(
-    'SELECT last_focused_target, pinned_targets_json, pinned_order_json, revision FROM control_preferences WHERE user_id = ? AND workspace_id = ?'
-  ).get(req.user.id, req.workspaceId);
-  res.json(row ? parseControlPreferences(row) : defaultControlPreferences());
+    'SELECT last_focused_target_ref, pinned_target_refs_json, revision FROM control_preferences WHERE user_id = ? AND workspace_id = ? AND room_id = ?'
+  ).get(req.user.id, req.workspaceId, roomId);
+  res.json(row ? parseControlPreferencesV2(row, roomId) : defaultControlPreferences(roomId));
 });
 
-// PUT /api/displays/control-preferences — persist last focused target and/or
-// pinned quick-tab order. Supports optimistic concurrency via If-Match: revision.
-// State-changing and idempotent. Never emits a player command.
-router.put('/control-preferences', (req, res) => {
-  if (!requireWorkspaceWrite(req, res)) return;
+// PATCH /api/displays/control-preferences — partial update of last focused
+// target and/or pinned quick-tab refs. Only fields PRESENT in the body are
+// updated (PATCH semantics — a field omitted from the body is never erased).
+// Any authenticated workspace MEMBER may write their OWN preferences (viewers
+// included — this is a personal UI setting, not operational display control).
+// Supports optimistic concurrency via If-Match: revision. Never emits a player
+// command. Server-side target validation rejects invalid/foreign/retired refs.
+router.patch('/control-preferences', (req, res) => {
+  if (!requireWorkspaceMembership(req, res)) return;
+  const roomId = canonicalRoomId();
   const body = req.body || {};
+
+  // Validate body types early (400 for invalid shapes, not silent truncation).
+  if (body.last_focused_target_ref !== undefined && body.last_focused_target_ref !== null) {
+    if (typeof body.last_focused_target_ref !== 'string') {
+      return res.status(400).json({ error: 'last_focused_target_ref must be a string or null' });
+    }
+  }
+  if (body.pinned_target_refs !== undefined) {
+    if (!Array.isArray(body.pinned_target_refs)) {
+      return res.status(400).json({ error: 'pinned_target_refs must be an array' });
+    }
+    for (const ref of body.pinned_target_refs) {
+      if (typeof ref !== 'string' || !ref) {
+        return res.status(400).json({ error: 'pinned_target_refs must contain only non-empty strings' });
+      }
+    }
+    if (body.pinned_target_refs.length > 32) {
+      return res.status(400).json({ error: 'pinned_target_refs must not exceed 32 entries' });
+    }
+  }
+
+  // Optimistic concurrency: If-Match revision.
   const ifMatch = req.headers['if-match'];
   const existing = db.prepare(
-    'SELECT revision FROM control_preferences WHERE user_id = ? AND workspace_id = ?'
-  ).get(req.user.id, req.workspaceId);
+    'SELECT last_focused_target_ref, pinned_target_refs_json, revision FROM control_preferences WHERE user_id = ? AND workspace_id = ? AND room_id = ?'
+  ).get(req.user.id, req.workspaceId, roomId);
   const currentRevision = existing ? existing.revision : 0;
   if (ifMatch !== undefined && String(ifMatch) !== String(currentRevision)) {
-    res.status(412).json({ error: 'preference_revision_conflict', revision: currentRevision });
-    return;
+    return res.status(412).json({
+      error: 'preference_revision_conflict',
+      revision: currentRevision,
+      current: existing ? parseControlPreferencesV2(existing, roomId) : defaultControlPreferences(roomId),
+    });
   }
-  const next = { ...defaultControlPreferences(), ...(existing ? parseControlPreferences(existing) : {}) };
-  if (body.last_focused_target !== undefined) {
-    next.last_focused_target = (typeof body.last_focused_target === 'string' && body.last_focused_target) || null;
+
+  // Load the complete current row (only update fields PRESENT in the body).
+  const current = existing ? parseControlPreferencesV2(existing, roomId) : defaultControlPreferences(roomId);
+  const next = { ...current };
+
+  if (body.last_focused_target_ref !== undefined) {
+    const ref = body.last_focused_target_ref;
+    if (ref === null) {
+      next.last_focused_target_ref = null;
+    } else {
+      // Server-side target validation: reject invalid/foreign/retired refs.
+      const validated = validateTargetRef(ref, req);
+      if (!validated) {
+        return res.status(400).json({ error: 'invalid_target_ref', ref });
+      }
+      next.last_focused_target_ref = ref;
+    }
   }
-  if (Array.isArray(body.pinned_targets)) {
-    next.pinned_targets = body.pinned_targets
-      .filter((t) => t && typeof t === 'string').slice(0, 32);
+
+  if (body.pinned_target_refs !== undefined) {
+    // Server-side target validation + dedup (preserve order).
+    const validated = [];
+    const seen = new Set();
+    for (const ref of body.pinned_target_refs) {
+      if (seen.has(ref)) continue; // dedup
+      if (validateTargetRef(ref, req)) {
+        seen.add(ref);
+        validated.push(ref);
+      }
+      // Invalid refs are silently pruned (not rejected — a retired target
+      // should disappear from pins, not block the whole save).
+    }
+    next.pinned_target_refs = validated;
   }
-  if (Array.isArray(body.pinned_order)) {
-    next.pinned_order = body.pinned_order
-      .filter((t) => t && typeof t === 'string').slice(0, 32);
-  }
+
   const nextRevision = currentRevision + 1;
   db.prepare(`
     INSERT INTO control_preferences
-      (user_id, workspace_id, last_focused_target, pinned_targets_json, pinned_order_json, revision, updated_at)
+      (user_id, workspace_id, room_id, last_focused_target_ref, pinned_target_refs_json, revision, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, strftime('%s','now'))
-    ON CONFLICT(user_id, workspace_id) DO UPDATE SET
-      last_focused_target  = excluded.last_focused_target,
-      pinned_targets_json  = excluded.pinned_targets_json,
-      pinned_order_json    = excluded.pinned_order_json,
-      revision             = excluded.revision,
-      updated_at           = excluded.updated_at
+    ON CONFLICT(user_id, workspace_id, room_id) DO UPDATE SET
+      last_focused_target_ref  = excluded.last_focused_target_ref,
+      pinned_target_refs_json  = excluded.pinned_target_refs_json,
+      revision                 = excluded.revision,
+      updated_at               = excluded.updated_at
   `).run(
-    req.user.id, req.workspaceId,
-    next.last_focused_target,
-    JSON.stringify(next.pinned_targets),
-    JSON.stringify(next.pinned_order),
+    req.user.id, req.workspaceId, roomId,
+    next.last_focused_target_ref,
+    JSON.stringify(next.pinned_target_refs),
     nextRevision
   );
   res.json({ ...next, revision: nextRevision });
 });
 
-function defaultControlPreferences() {
-  return { last_focused_target: null, pinned_targets: [], pinned_order: [], revision: 0 };
+// PUT is kept as a backward-compatible alias for PATCH (same partial-update
+// semantics — only fields present in the body are updated). New clients
+// should use PATCH.
+router.put('/control-preferences', (req, res) => {
+  // Delegate to the PATCH handler by re-dispatching.
+  router.handle({ ...req, method: 'PATCH' }, res);
+});
+
+// ── Preference-specific authorization ─────────────────────────────────────
+// Any authenticated workspace MEMBER (including viewers) may save their OWN
+// navigation preferences. This is NOT operational display control — it's a
+// personal UI setting. Only workspace membership is required (not write role).
+function requireWorkspaceMembership(req, res) {
+  if (!req.user || !req.user.id) { res.status(401).json({ error: 'Authentication required' }); return false; }
+  if (!req.workspaceId) { res.status(400).json({ error: 'No active workspace' }); return false; }
+  // req.workspaceRole is set by resolveTenancy for any workspace member (direct
+  // or via org). A null role means the user is not a member of this workspace.
+  if (!req.workspaceRole && !req.isPlatformAdmin) {
+    res.status(403).json({ error: 'Not a member of this workspace' });
+    return false;
+  }
+  return true;
 }
 
-function parseControlPreferences(row) {
-  let pinned_targets = [];
-  let pinned_order = [];
-  try { pinned_targets = JSON.parse(row.pinned_targets_json) || []; } catch { pinned_targets = []; }
-  try { pinned_order = JSON.parse(row.pinned_order_json) || []; } catch { pinned_order = []; }
+// The canonical room ID for this deployment. The room is fixed per installation
+// (config.console.roomId, default 'classroom-1'). Including it in the key
+// prevents future cross-room leakage if multi-room is ever added.
+function canonicalRoomId() {
+  return config.console?.roomId || process.env.ROOM_ID || 'classroom-1';
+}
+
+// Server-side target reference validation. Resolves the ref against the
+// requesting user's authorized workspace catalog and rejects:
+//   • malformed refs (not wall:/display:/group:)
+//   • nonexistent targets (not in the workspace's walls/displays/groups)
+//   • retired/disabled devices
+//   • livestream receiver pseudo-devices
+//   • camera / non-display sources
+// Returns true if the ref is valid and authorized, false otherwise.
+function validateTargetRef(ref, req) {
+  if (typeof ref !== 'string' || !ref) return false;
+  const sep = ref.indexOf(':');
+  const type = sep > 0 ? ref.slice(0, sep) : '';
+  const id = sep > 0 ? ref.slice(sep + 1) : '';
+  if (!type || !id) return false;
+
+  if (type === 'wall') {
+    const wall = db.prepare(
+      'SELECT id, is_locked FROM video_walls WHERE id = ? AND workspace_id = ?'
+    ).get(id, req.workspaceId);
+    return !!wall;
+  }
+  if (type === 'display') {
+    const dev = db.prepare(
+      'SELECT id, retired, device_type FROM devices WHERE id = ? AND workspace_id = ?'
+    ).get(id, req.workspaceId);
+    if (!dev) return false;
+    if (dev.retired) return false;
+    // Reject camera / non-display sources.
+    const dtype = String(dev.device_type || '').toLowerCase();
+    if (dtype === 'camera') return false;
+    return true;
+  }
+  if (type === 'group') {
+    // Layout groups are wall sub-regions. Validate the group exists in a wall
+    // belonging to this workspace via layout_json.
+    const walls = db.prepare(
+      'SELECT id, layout_json FROM video_walls WHERE workspace_id = ? AND layout_json IS NOT NULL'
+    ).all(req.workspaceId);
+    for (const wall of walls) {
+      try {
+        const layout = JSON.parse(wall.layout_json);
+        if (Array.isArray(layout?.groups)) {
+          if (layout.groups.some((g) => g.id === id)) return true;
+        }
+      } catch { /* ignore malformed layout */ }
+    }
+    return false;
+  }
+  return false;
+}
+
+function defaultControlPreferences(roomId) {
+  return { room_id: roomId, last_focused_target_ref: null, pinned_target_refs: [], revision: 0 };
+}
+
+function parseControlPreferencesV2(row, roomId) {
+  let pinned = [];
+  try { pinned = JSON.parse(row.pinned_target_refs_json) || []; } catch { pinned = []; }
   return {
-    last_focused_target: row.last_focused_target || null,
-    pinned_targets: Array.isArray(pinned_targets) ? pinned_targets : [],
-    pinned_order: Array.isArray(pinned_order) ? pinned_order : [],
+    room_id: roomId,
+    last_focused_target_ref: row.last_focused_target_ref || null,
+    pinned_target_refs: Array.isArray(pinned) ? pinned : [],
     revision: row.revision || 0,
   };
 }
