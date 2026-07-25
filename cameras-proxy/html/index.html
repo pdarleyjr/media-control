@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>MBFD Camera Control</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { --bg:#0b1220; --panel:#111a2e; --line:#1f2c47; --txt:#e6edf7; --muted:#8aa0c6; --accent:#2563eb; --ok:#22c55e; --bad:#ef4444; --warn:#f59e0b; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--txt); font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; min-height:100vh; }
+  .top { height:50px; display:flex; align-items:center; gap:12px; padding:0 16px; background:linear-gradient(90deg,#0f2748,#0b1220); border-bottom:1px solid var(--line); }
+  .top h1 { font-size:16px; font-weight:700; }
+  .top .sub { color:var(--muted); font-size:12px; }
+  .top .spacer { flex:1; }
+  .top .clock { color:var(--muted); font-variant-numeric:tabular-nums; font-size:13px; }
+  .main { display:grid; grid-template-columns:1fr 340px; gap:12px; padding:12px; height:calc(100vh - 50px); }
+  .preview { position:relative; background:#000; border:1px solid var(--line); border-radius:12px; overflow:hidden; display:flex; align-items:center; justify-content:center; }
+  .preview video { width:100%; height:100%; object-fit:contain; }
+  .preview .state { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; color:var(--muted); background:rgba(11,18,32,0.85); z-index:5; }
+  .preview .state.hidden { opacity:0; pointer-events:none; }
+  .spin { width:28px; height:28px; border:3px solid #1f2c47; border-top-color:var(--accent); border-radius:50%; animation:sp .8s linear infinite; }
+  @keyframes sp { to { transform:rotate(360deg); } }
+  .sidebar { display:flex; flex-direction:column; gap:10px; overflow-y:auto; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .card h2 { font-size:13px; font-weight:600; color:var(--muted); margin-bottom:10px; text-transform:uppercase; letter-spacing:.5px; }
+  .status-row { display:flex; justify-content:space-between; align-items:center; padding:4px 0; font-size:13px; }
+  .dot { width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:6px; }
+  .dot.ok { background:var(--ok); box-shadow:0 0 6px var(--ok); }
+  .dot.bad { background:var(--bad); box-shadow:0 0 6px var(--bad); }
+  .dot.warn { background:var(--warn); }
+  .dot.off { background:var(--muted); }
+  .btn { display:inline-flex; align-items:center; gap:6px; background:var(--panel); border:1px solid var(--line); color:var(--txt); border-radius:8px; padding:8px 14px; font-size:13px; font-weight:600; cursor:pointer; transition:all .2s; }
+  .rbtn { padding:3px 10px; border-radius:4px; border:1px solid var(--line); font-size:11px; cursor:pointer; background:var(--panel); color:var(--txt); text-decoration:none; display:inline-block; transition:all .15s; }
+  .rbtn:hover { background:var(--accent); color:#fff; }
+  .btn:hover { background:var(--accent); border-color:var(--accent); }
+  .btn:disabled { opacity:.4; cursor:not-allowed; }
+  .btn.danger { border-color:var(--bad); color:var(--bad); }
+  .btn.danger:hover { background:var(--bad); color:#fff; }
+  .btn.record { border-color:var(--bad); }
+  .btn.record.active { background:var(--bad); color:#fff; }
+  .btn.stream { border-color:var(--accent); }
+  .btn.stream.active { background:var(--accent); color:#fff; }
+  .controls { display:flex; gap:8px; flex-wrap:wrap; }
+  .log { font-size:11px; color:var(--muted); max-height:120px; overflow-y:auto; font-family:monospace; }
+  .log .entry { padding:2px 0; border-bottom:1px solid rgba(31,44,71,.3); }
+  .recording-info { font-size:12px; color:var(--muted); margin-top:6px; }
+  @media (max-width:800px) { .main { grid-template-columns:1fr; height:calc(100dvh - 50px); } .top { padding:0 max(16px,env(safe-area-inset-left)) 0 max(16px,env(safe-area-inset-right)); padding-top:env(safe-area-inset-top); } .main { padding:12px; padding-bottom:max(12px,env(safe-area-inset-bottom)); } .btn { min-height:44px; padding:10px 16px; } .sidebar { padding-bottom:env(safe-area-inset-bottom); } }
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>MBFD Camera Control</h1>
+  <span class="sub">ANNKE I51HP Ceiling Camera</span>
+  <span class="spacer"></span>
+  <span class="clock" id="clock"></span>
+</div>
+<div class="main">
+  <div class="preview">
+    <video id="preview-video" playsinline autoplay muted></video>
+    <div class="state" id="stream-state">
+      <div class="spin"></div>
+      <div>Connecting...</div>
+    </div>
+  </div>
+  <div class="sidebar">
+    <div class="card">
+      <h2>System Status</h2>
+      <div class="status-row"><span><span class="dot off" id="dot-camera"></span>Camera</span><span id="val-camera">--</span></div>
+      <div class="status-row"><span><span class="dot off" id="dot-preview"></span>Preview</span><span id="val-preview">--</span></div>
+      <div class="status-row"><span><span class="dot off" id="dot-recording"></span>Recording</span><span id="val-recording">--</span></div>
+      <div class="status-row"><span><span class="dot off" id="dot-stream"></span>Livestream</span><span id="val-stream">--</span></div>
+      <div class="status-row"><span>Disk Free</span><span id="val-disk">--</span></div>
+    </div>
+    <div class="card">
+      <h2>Controls</h2>
+      <div class="controls">
+        <button class="btn record" id="btn-record" disabled>Record</button>
+        <button class="btn stream" id="btn-stream" disabled>Livestream</button>
+        <button class="btn danger" id="btn-emergency" disabled>Emergency Stop</button>
+      </div>
+      <div class="recording-info" id="recording-info"></div>
+    </div>
+    <div class="card">
+      <h2>Recording Library</h2>
+      <div id="recordings-list" style="font-size:12px;color:var(--muted)">Loading...</div>
+    </div>
+    <div class="card">
+      <h2>Audit Log</h2>
+      <div class="log" id="audit-log"></div>
+    </div>
+    <div class="card" id="error-card" style="display:none">
+      <h2 style="color:var(--bad)">Errors</h2>
+      <div id="error-list" style="font-size:12px;color:var(--bad)"></div>
+    </div>
+  </div>
+</div>
+<div id="player-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:1000;align-items:center;justify-content:center;flex-direction:column;gap:8px">
+  <div style="color:#fff;font-weight:600" id="player-title"></div>
+  <video id="player-video" controls autoplay style="max-width:90vw;max-height:80vh;background:#000" oncontextmenu="return true"></video>
+  <button class="btn" onclick="closePlayer()" style="margin-top:4px">Close</button>
+</div>
+<script src="/vendor/hls.min.js"></script>
+<script>
+const API = '/api';
+let hls = null;
+let statusInterval = null;
+let recordingActive = false;
+let streamActive = false;
+
+// API authentication is enforced server-side: nginx injects the camera API
+// token into proxied /api/ requests from a protected config. The browser never
+// holds the token; access is gated by Cloudflare Access on cameras.mbfdhub.com.
+async function api(method, path, body) {
+  const headers = { 'Content-Type': 'application/json' };
+  const opts = { method, headers };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(`${API}${path}`, opts);
+  if (res.status === 401) throw new Error('Unauthorized (server-side token not configured)');
+  return res.json();
+}
+
+function formatBytes(b) {
+  if (b > 1e12) return (b/1e12).toFixed(1) + ' TB';
+  if (b > 1e9) return (b/1e9).toFixed(1) + ' GB';
+  if (b > 1e6) return (b/1e6).toFixed(1) + ' MB';
+  return b + ' B';
+}
+
+function formatDuration(sec) {
+  if (!sec) return '--';
+  const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60), s = Math.floor(sec%60);
+  return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+}
+
+function setDot(id, state) {
+  const el = document.getElementById(`dot-${id}`);
+  el.className = `dot ${state}`;
+}
+
+function addLog(msg) {
+  const log = document.getElementById('audit-log');
+  const entry = document.createElement('div');
+  entry.className = 'entry';
+  entry.textContent = `${new Date().toLocaleTimeString()} ${msg}`;
+  log.prepend(entry);
+  while (log.children.length > 50) log.lastChild.remove();
+}
+
+function loadPreview() {
+  const video = document.getElementById('preview-video');
+  const stateEl = document.getElementById('stream-state');
+  const src = '/hls/annke-preview/index.m3u8';
+
+  function retry() { setTimeout(loadPreview, 5000); }
+
+  if (window.Hls && Hls.isSupported()) {
+    if (hls) try { hls.destroy(); } catch(e) {}
+    hls = new Hls({ lowLatencyMode: true, liveSyncDurationCount: 3, maxBufferLength: 6, manifestLoadingTimeOut: 12000, manifestLoadingMaxRetry: 1 });
+    hls.loadSource(src);
+    hls.attachMedia(video);
+    hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
+    hls.on(Hls.Events.FRAG_BUFFERED, () => { stateEl.classList.add('hidden'); });
+    hls.on(Hls.Events.ERROR, (_, data) => {
+      if (data?.fatal) { stateEl.classList.remove('hidden'); stateEl.querySelector('div:last-child').textContent = 'Stream offline'; retry(); }
+    });
+  } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    video.src = src;
+    video.addEventListener('loadeddata', () => stateEl.classList.add('hidden'), { once: true });
+    video.addEventListener('error', () => { stateEl.classList.remove('hidden'); retry(); }, { once: true });
+  }
+}
+
+async function refreshStatus() {
+  try {
+    const s = await api('GET', '/status');
+    setDot('camera', s.camera_online ? 'ok' : 'bad');
+    document.getElementById('val-camera').textContent = s.camera_online ? 'Online' : 'Offline';
+    setDot('preview', s.preview_online ? 'ok' : 'bad');
+    document.getElementById('val-preview').textContent = s.preview_online ? 'Online' : 'Offline';
+
+    recordingActive = s.recording;
+    setDot('recording', s.recording ? 'ok' : 'off');
+    document.getElementById('val-recording').textContent = s.recording ? 'Active' : 'Idle';
+
+    streamActive = s.livestreaming;
+    setDot('stream', s.livestreaming ? 'ok' : 'off');
+    document.getElementById('val-stream').textContent = s.livestreaming ? 'Live' : 'Idle';
+
+    document.getElementById('val-disk').textContent = formatBytes(s.disk_free_bytes);
+
+    const btnRec = document.getElementById('btn-record');
+    btnRec.disabled = !s.camera_online;
+    btnRec.textContent = s.recording ? 'Stop Recording' : 'Record';
+    btnRec.classList.toggle('active', s.recording);
+
+    const btnStr = document.getElementById('btn-stream');
+    btnStr.disabled = !s.camera_online;
+    btnStr.textContent = s.livestreaming ? 'Stop Livestream' : 'Livestream';
+    btnStr.classList.toggle('active', s.livestreaming);
+
+    document.getElementById('btn-emergency').disabled = false;
+
+    const info = document.getElementById('recording-info');
+    if (s.recording && s.recording_started_at) {
+      const elapsed = (Date.now() - new Date(s.recording_started_at).getTime()) / 1000;
+      info.textContent = `Recording: ${formatDuration(elapsed)} | Session: ${s.session_id}`;
+    } else if (s.livestreaming && s.stream_started_at) {
+      const elapsed = (Date.now() - new Date(s.stream_started_at).getTime()) / 1000;
+      info.textContent = `Streaming: ${formatDuration(elapsed)}`;
+    } else if (s.last_recording) {
+      info.textContent = `Last: ${formatDuration(s.last_recording.duration)} | ${formatBytes(s.last_recording.sizeBytes)} | ${s.last_recording.synced ? 'Synced' : 'Local'}`;
+    } else {
+      info.textContent = '';
+    }
+
+    if (s.errors?.length > 0) {
+      document.getElementById('error-card').style.display = '';
+      document.getElementById('error-list').innerHTML = s.errors.map(e => `<div>${e.message}</div>`).join('');
+    } else {
+      document.getElementById('error-card').style.display = 'none';
+    }
+  } catch (e) {
+    console.error('Status error:', e);
+  }
+}
+
+async function loadRecordings() {
+  try {
+    const data = await api('GET', '/recordings');
+    const el = document.getElementById('recordings-list');
+    if (!data.recordings?.length) { el.innerHTML = '<div style="padding:8px;color:var(--muted)">No recordings yet</div>'; return; }
+    el.innerHTML = data.recordings.slice(0, 20).map(r => {
+      const dt = new Date(r.finalizedAt).toLocaleString();
+      const dur = formatDuration(parseFloat(r.duration) || 0);
+      const sz = formatBytes(parseInt(r.sizeBytes) || 0);
+      const res = r.resolution || '?';
+      const syncBadge = r.synced ? (r.syncVerified ? '<span style="color:var(--ok)">Synced✓</span>' : '<span style="color:var(--warn)">Synced?</span>') : '<span style="color:var(--muted)">Local</span>';
+      const ptBadge = r.peertubeVideoUuid ? `<span style="color:var(--ok)">PeerTube: ${r.peertubePrivacy === 1 ? 'Public' : r.peertubePrivacy === 2 ? 'Unlisted' : 'Private'}</span>` : '<span style="color:var(--muted)">Not uploaded</span>';
+      const diag = r.interrupted_diagnostic ? ' <span style="color:var(--warn)">[diag]</span>' : '';
+      const sid = r.sessionId || '';
+      const playUrl = `/api/recordings/${sid}/play`;
+      const dlUrl = `/api/recordings/${sid}/download`;
+      const ptUrl = r.peertubeWatchUrl || '';
+      return `<div style="padding:6px 8px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:4px">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-weight:600">${dt}${diag}</span>
+          <span style="color:var(--muted);font-size:11px">${sid.slice(0,20)}…</span>
+        </div>
+        <div style="display:flex;gap:12px;font-size:12px;color:var(--muted)">
+          <span>⏱ ${dur}</span><span>📦 ${sz}</span><span>📺 ${res}</span>${syncBadge} ${ptBadge}
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:2px">
+          <button class="rbtn" onclick="playRecording('${sid}','${escape(dt)}')">▶ Play</button>
+          <a class="rbtn" href="${dlUrl}" download style="text-decoration:none">⬇ Download</a>
+          ${r.synced && r.syncVerified ? '' : `<button class="rbtn" onclick="retrySync('${sid}')">↻ Sync</button>`}
+          ${r.peertubeVideoUuid ? `<a class="rbtn" href="${ptUrl}" target="_blank" style="text-decoration:none">▶ PeerTube</a>` : `<button class="rbtn" onclick="uploadPrivately('${sid}')">⬆ Upload Private</button>`}
+        </div>
+      </div>`;
+    }).join('');
+  } catch (e) { document.getElementById('recordings-list').innerHTML = '<div style="color:var(--bad);padding:8px">Failed to load recordings</div>'; }
+}
+
+function playRecording(sid, title) {
+  const modal = document.getElementById('player-modal');
+  const video = document.getElementById('player-video');
+  document.getElementById('player-title').textContent = title || sid;
+  video.src = `/api/recordings/${sid}/play`;
+  modal.style.display = 'flex';
+  video.play().catch(() => {});
+}
+
+function closePlayer() {
+  const modal = document.getElementById('player-modal');
+  const video = document.getElementById('player-video');
+  video.pause(); video.removeAttribute('src'); video.load();
+  modal.style.display = 'none';
+}
+
+async function retrySync(sid) {
+  addLog(`Retrying sync for ${sid}...`);
+  try {
+    const r = await api('POST', `/recordings/${sid}/sync`);
+    addLog(r.ok ? `Sync ${r.checksumVerified ? 'verified ✓' : 'done'}: ${r.destination || ''}` : `Sync failed: ${r.error}`);
+    loadRecordings();
+  } catch (e) { addLog(`Sync error: ${e.message}`); }
+}
+
+async function uploadPrivately(sid) {
+  if (!confirm(`Upload recording ${sid.slice(0,20)}… privately to PeerTube?`)) return;
+  addLog(`Uploading ${sid} to PeerTube (private)...`);
+  try {
+    const r = await api('POST', `/recordings/${sid}/upload`);
+    if (r.ok || r.peertubeVideoUuid) {
+      addLog(`Uploaded! UUID: ${r.peertubeVideoUuid || 'pending'}. Processing...`);
+    } else {
+      addLog(`Upload result: ${r.error || 'unknown'}`);
+    }
+    loadRecordings();
+  } catch (e) { addLog(`Upload error: ${e.message}`); }
+}
+
+async function changePrivacy(sid, privacy) {
+  const labels = { 1: 'Public', 2: 'Unlisted', 3: 'Private' };
+  if (privacy === 1 && !confirm('Are you sure you want to make this recording PUBLIC?')) return;
+  try {
+    const r = await api('POST', `/recordings/${sid}/privacy`, { privacy, confirmPublic: privacy === 1 });
+    addLog(`Privacy changed to ${labels[privacy]}: ${r.ok ? 'ok' : r.error}`);
+    loadRecordings();
+  } catch (e) { addLog(`Privacy error: ${e.message}`); }
+}
+
+document.getElementById('btn-record').addEventListener('click', async () => {
+  try {
+    if (recordingActive) {
+      addLog('Stopping recording...');
+      const r = await api('POST', '/record/stop');
+      addLog(`Recording stopped. ${r.recording ? `File: ${formatBytes(r.recording.sizeBytes)}` : ''}`);
+    } else {
+      addLog('Starting recording...');
+      const r = await api('POST', '/record/start');
+      addLog(`Recording started. Session: ${r.session_id}`);
+    }
+    refreshStatus();
+    loadRecordings();
+  } catch (e) { addLog(`Record error: ${e.message}`); }
+});
+
+document.getElementById('btn-stream').addEventListener('click', async () => {
+  try {
+    if (streamActive) {
+      addLog('Stopping livestream...');
+      await api('POST', '/stream/stop');
+      addLog('Livestream stopped.');
+    } else {
+      addLog('Starting livestream...');
+      const r = await api('POST', '/stream/start');
+      addLog(`Livestream started. Watch: ${r.peertube_watch_url}`);
+    }
+    refreshStatus();
+  } catch (e) { addLog(`Stream error: ${e.message}`); }
+});
+
+document.getElementById('btn-emergency').addEventListener('click', async () => {
+  if (!confirm('Emergency stop: this will stop ALL recording and livestreaming. Continue?')) return;
+  try {
+    addLog('EMERGENCY STOP triggered');
+    await api('POST', '/emergency-stop');
+    addLog('All processes stopped.');
+    refreshStatus();
+  } catch (e) { addLog(`Emergency stop error: ${e.message}`); }
+});
+
+loadPreview();
+refreshStatus();
+loadRecordings();
+statusInterval = setInterval(() => { refreshStatus(); }, 3000);
+setInterval(() => { loadRecordings(); }, 30000);
+setInterval(() => { document.getElementById('clock').textContent = new Date().toLocaleString(); }, 1000);
+document.getElementById('clock').textContent = new Date().toLocaleString();
+</script>
+</body>
+</html>
