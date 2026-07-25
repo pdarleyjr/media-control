@@ -227,7 +227,9 @@ function startRecordingProcess(rtspUrl, outputPattern) {
     '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
     outputPattern,
   ];
-  const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  // detached: true so the FFmpeg process survives camera-api restarts.
+  // The PID is persisted to a state file and re-adopted on next startup.
+  const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
   proc.stderr.on('data', d => {
     const msg = d.toString().trim();
     if (msg) console.error('[recording]', msg);
@@ -267,6 +269,93 @@ function stopProcess(proc) {
       if (!proc.killed) proc.kill('SIGKILL');
     }, 10000);
   });
+}
+
+// ── Durable recording state ──────────────────────────────────────────────
+// The recording session state is persisted to disk so the camera-api can
+// re-adopt a running FFmpeg process after a restart. This prevents the
+// 11-12 minute recording death caused by camera-api restarts killing the
+// FFmpeg child process.
+const RECORDING_STATE_FILE = path.join(CONFIG.recordingDir, '.recording-state.json');
+
+function saveRecordingState() {
+  try {
+    const stateData = {
+      recording: state.recording,
+      sessionId: state.sessionId,
+      recordingStartedAt: state.recordingStartedAt,
+      recordingPath: state.recordingPath,
+      recordingPid: state.recordingProcess ? state.recordingProcess.pid : null,
+      savedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(RECORDING_STATE_FILE, JSON.stringify(stateData, null, 2));
+  } catch (e) {
+    console.error('[recording-state] Failed to save:', e.message);
+  }
+}
+
+function clearRecordingState() {
+  try { fs.rmSync(RECORDING_STATE_FILE, { force: true }); } catch {}
+}
+
+function pidIsAlive(pid) {
+  if (!pid) return false;
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+// On startup, check for a recording that was running before the restart.
+// If the FFmpeg process is still alive, re-adopt it so it survives this
+// camera-api session. If it died, finalize the recording.
+function readoptRecording() {
+  try {
+    if (!fs.existsSync(RECORDING_STATE_FILE)) return;
+    const data = JSON.parse(fs.readFileSync(RECORDING_STATE_FILE, 'utf8'));
+    if (!data.recording || !data.sessionId) { clearRecordingState(); return; }
+
+    const alive = pidIsAlive(data.recordingPid);
+    if (alive) {
+      console.log(`[recording-state] Re-adopting recording session ${data.sessionId} (PID ${data.recordingPid})`);
+      // The process is detached and still running — we can't re-attach the
+      // stdio streams, but we can track its PID for stop/finalize.
+      // Create a minimal handle that lets us send signals.
+      state.recording = true;
+      state.sessionId = data.sessionId;
+      state.recordingStartedAt = data.recordingStartedAt;
+      state.recordingPath = data.recordingPath;
+      // Poll for the process exit so we can finalize when it stops.
+      const pid = data.recordingPid;
+      const exitPoll = setInterval(() => {
+        if (!pidIsAlive(pid)) {
+          clearInterval(exitPoll);
+          console.log(`[recording-state] Re-adopted recording PID ${pid} exited — finalizing`);
+          state.recording = false;
+          state.recordingProcess = null;
+          clearRecordingState();
+          finalizeRecording(data.sessionId).catch(e => {
+            addError(`Finalization of re-adopted session ${data.sessionId} failed: ${e.message}`);
+          });
+        }
+      }, 5000);
+      // Store the poll interval for cleanup
+      state.recordingExitPoll = exitPoll;
+      // Create a pseudo-process handle for stop()
+      state.recordingProcess = {
+        pid,
+        killed: false,
+        kill: (sig) => { try { process.kill(pid, sig); } catch {} },
+        on: () => {},
+      };
+    } else {
+      console.log(`[recording-state] Recording session ${data.sessionId} (PID ${data.recordingPid}) is no longer running — finalizing`);
+      clearRecordingState();
+      finalizeRecording(data.sessionId).catch(e => {
+        addError(`Finalization of orphaned session ${data.sessionId} failed: ${e.message}`);
+      });
+    }
+  } catch (e) {
+    console.error('[recording-state] Failed to readopt:', e.message);
+    clearRecordingState();
+  }
 }
 
 async function finalizeRecording(sessionId) {
@@ -688,13 +777,21 @@ app.post('/api/record/start', authMiddleware, commandRateLimit, async (req, res)
   state.recordingPath = dir;
   state.recordingProcess = proc;
 
+  // Persist state so the recording survives camera-api restarts.
+  saveRecordingState();
+
   proc.on('close', (code) => {
     if (state.recordingProcess === proc) {
       state.recording = false;
       state.recordingProcess = null;
+      clearRecordingState();
       if (code !== 0 && code !== null) {
         addError(`Recording process exited with code ${code}`);
       }
+      // Auto-finalize when the recording process exits unexpectedly.
+      finalizeRecording(sessionId).catch(e => {
+        addError(`Auto-finalization of session ${sessionId} failed: ${e.message}`);
+      });
     }
   });
 
@@ -732,6 +829,8 @@ app.post('/api/record/stop', authMiddleware, commandRateLimit, async (req, res) 
   state.recordingProcess = null;
   state.recordingStartedAt = null;
   state.recordingPath = null;
+  if (state.recordingExitPoll) { clearInterval(state.recordingExitPoll); state.recordingExitPoll = null; }
+  clearRecordingState();
 
   await stopProcess(proc);
 
@@ -1349,11 +1448,17 @@ app.use((err, req, res, _next) => {
 app.listen(CONFIG.port, '0.0.0.0', () => {
   console.log(`MBFD Camera API listening on 0.0.0.0:${CONFIG.port}`);
   console.log(`Recording directory: ${CONFIG.recordingDir}`);
+  // Re-adopt any recording that was running before this process started.
+  readoptRecording();
 });
 
 process.on('SIGTERM', async () => {
   console.log('Shutting down gracefully...');
-  if (state.recordingProcess) await stopProcess(state.recordingProcess);
+  // The recording FFmpeg process is detached and will survive this restart.
+  // State is persisted to disk so the next camera-api instance re-adopts it.
+  // Only stop the livestream (RTMP push) — recording must continue.
   if (state.streamProcess) await stopProcess(state.streamProcess);
+  if (state.recordingExitPoll) clearInterval(state.recordingExitPoll);
+  saveRecordingState();
   process.exit(0);
 });
