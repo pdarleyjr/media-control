@@ -1805,7 +1805,6 @@ function handleTargetChange(tgt) {
   // Skipped during startup restore (restoringTarget flag) so view restoration
   // never writes a preference or emits a command.
   if (!restoringTarget && activeTarget) {
-    try { localStorage.setItem('mc_control_last_focused', `${activeTarget.type || 'display'}:${activeTarget.id}`); } catch { /* ignore */ }
     persistLastFocusedTarget(activeTarget);
   }
 }
