@@ -208,7 +208,7 @@ router.get('/control-preferences', (req, res) => {
 // included — this is a personal UI setting, not operational display control).
 // Supports optimistic concurrency via If-Match: revision. Never emits a player
 // command. Server-side target validation rejects invalid/foreign/retired refs.
-router.patch('/control-preferences', (req, res) => {
+function handleControlPreferencesUpdate(req, res) {
   if (!requireWorkspaceMembership(req, res)) return;
   const roomId = canonicalRoomId();
   const body = req.body || {};
@@ -298,15 +298,12 @@ router.patch('/control-preferences', (req, res) => {
     nextRevision
   );
   res.json({ ...next, revision: nextRevision });
-});
+}
 
-// PUT is kept as a backward-compatible alias for PATCH (same partial-update
-// semantics — only fields present in the body are updated). New clients
-// should use PATCH.
-router.put('/control-preferences', (req, res) => {
-  // Delegate to the PATCH handler by re-dispatching.
-  router.handle({ ...req, method: 'PATCH' }, res);
-});
+// Register the same handler for both PATCH (preferred) and PUT (backward-compat
+// alias — same partial-update semantics).
+router.patch('/control-preferences', handleControlPreferencesUpdate);
+router.put('/control-preferences', handleControlPreferencesUpdate);
 
 // ── Preference-specific authorization ─────────────────────────────────────
 // Any authenticated workspace MEMBER (including viewers) may save their OWN
