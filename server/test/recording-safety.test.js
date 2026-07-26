@@ -372,7 +372,7 @@ test('global camera recordings are platform-admin-only and edge requests bind If
   assert.match(route, /post\('\/recordings\/:id\/restore', requireGlobalCameraAdmin/);
   assert.match(route, /delete\('\/recordings\/:id', requireGlobalCameraAdmin/);
   assert.match(route, /delete\('\/recordings\/:id\/peertube', requireGlobalCameraAdmin/);
-  assert.match(route, /plan\.recording_requested === true && req\.user\?\.role !== 'platform_admin'/);
+  assert.match(route, /plan\.recording_requested && req\.user\?\.role !== 'platform_admin'/);
   assert.match(client, /signServiceRequest/);
   assert.match(client, /serviceHeaders/);
   assert.match(client, /headerValue\(signedHeaders, 'if-match'\)/);
