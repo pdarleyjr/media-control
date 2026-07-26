@@ -1,0 +1,46 @@
+[Unit]
+Description=MBFD deterministic fixed livestream compositor
+After=network-online.target mbfd-obs-x.service
+Wants=network-online.target mbfd-obs-x.service
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=mbfd
+Group=mbfd
+Environment=DISPLAY=:20
+Environment=QT_QPA_PLATFORM=xcb
+Environment=HOME=/var/lib/mbfd-obs
+Environment=XDG_CONFIG_HOME=/var/lib/mbfd-obs/.config
+Environment=OBS_CONFIG_HOME=/var/lib/mbfd-obs/.config/obs-studio
+EnvironmentFile=/etc/mbfd/obs-fixed-compositor.env
+WorkingDirectory=/opt/mbfd/media-control
+UMask=0077
+ExecStartPre=/usr/bin/node /opt/mbfd/media-control/deploy/obs-fixed-compositor/generate-config.js
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 80); do xdpyinfo -display :20 >/dev/null 2>&1 && exit 0; sleep .25; done; exit 1'
+ExecStart=/usr/bin/obs --profile MBFD_FIXED_COMPOSITOR --collection MBFD_FIXED_COMPOSITOR --disable-shutdown-check --minimize-to-tray
+ExecStartPost=/usr/bin/node /opt/mbfd/media-control/deploy/obs-fixed-compositor/healthcheck.js --wait-ms 30000
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=60
+TimeoutStopSec=30
+KillSignal=SIGINT
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=read-only
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/mbfd-obs
+RestrictSUIDSGID=true
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=60s
+LogRateLimitBurst=100
+
+[Install]
+WantedBy=multi-user.target

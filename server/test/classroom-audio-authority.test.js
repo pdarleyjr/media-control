@@ -16,10 +16,11 @@ const DEVICES = [
 ];
 
 describe('classroom single audio authority', () => {
-  it('selects Front Center as sole authority', () => {
+  it('selects Front Left as sole eARC authority', () => {
     const r = resolveClassroomAudioAuthority(DEVICES);
     assert.equal(r.valid, true);
-    assert.equal(r.authority_device_id, 'fc');
+    assert.equal(r.configured_authority_name, 'Front Left');
+    assert.equal(r.authority_device_id, 'fl');
     assert.equal(r.followers.length, 4);
   });
 
@@ -28,9 +29,9 @@ describe('classroom single audio authority', () => {
       onlineDeviceIds: DEVICES.map((d) => d.id),
     });
     const byId = Object.fromEntries(plan.plan.map((p) => [p.device_id, p]));
-    assert.equal(byId.fc.muted, false);
-    assert.equal(byId.fc.reason, 'single_audio_authority');
-    for (const id of ['fl', 'fr', 'sl', 'sr']) {
+    assert.equal(byId.fl.muted, false);
+    assert.equal(byId.fl.reason, 'single_audio_authority');
+    for (const id of ['fc', 'fr', 'sl', 'sr']) {
       assert.equal(byId[id].muted, true);
       assert.equal(byId[id].role, 'follower');
     }
@@ -38,22 +39,22 @@ describe('classroom single audio authority', () => {
 
   it('mutes everyone when authority is offline', () => {
     const plan = classroomAudioMutePlan(DEVICES, {
-      onlineDeviceIds: ['fl', 'fr', 'sl', 'sr'],
+      onlineDeviceIds: ['fc', 'fr', 'sl', 'sr'],
     });
     assert.equal(plan.authority_online, false);
     assert.ok(plan.plan.every((p) => p.muted === true));
     assert.equal(
-      plan.plan.find((p) => p.device_id === 'fc').reason,
+      plan.plan.find((p) => p.device_id === 'fl').reason,
       'authority_offline',
     );
   });
 
-  it('reports invalid authority when Front Center missing', () => {
-    const r = resolveClassroomAudioAuthority(DEVICES.filter((d) => d.id !== 'fc'));
+  it('reports invalid authority when Front Left missing', () => {
+    const r = resolveClassroomAudioAuthority(DEVICES.filter((d) => d.id !== 'fl'));
     assert.equal(r.valid, false);
     assert.equal(r.error, 'audio_authority_offline_or_unconfigured');
-    const plan = classroomAudioMutePlan(DEVICES.filter((d) => d.id !== 'fc'), {
-      onlineDeviceIds: ['fl', 'fr'],
+    const plan = classroomAudioMutePlan(DEVICES.filter((d) => d.id !== 'fl'), {
+      onlineDeviceIds: ['fc', 'fr'],
     });
     assert.ok(plan.plan.every((p) => p.muted === true));
   });
@@ -64,7 +65,7 @@ describe('classroom single audio authority', () => {
     const back = classroomAudioMutePlan(DEVICES, {
       onlineDeviceIds: DEVICES.map((d) => d.id),
     });
-    assert.equal(back.plan.find((p) => p.device_id === 'fc').muted, false);
+    assert.equal(back.plan.find((p) => p.device_id === 'fl').muted, false);
     assert.ok(
       back.plan.filter((p) => p.role === 'follower').every((p) => p.muted === true),
     );

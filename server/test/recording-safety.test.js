@@ -200,25 +200,54 @@ test('service nonce replay cache survives process memory via the filesystem', (t
 });
 
 test('Media Control signs service identity, If-Match, one-time nonce and authenticated operator', (t) => {
-  const previous = serverConfig.cameraControl.signingSecret;
+  const previous = {
+    secret: serverConfig.cameraControl.signingSecret,
+    id: serverConfig.cameraControl.signingKeyId,
+    version: serverConfig.cameraControl.signingKeyVersion,
+  };
   serverConfig.cameraControl.signingSecret = 'fixture-signing-secret';
-  t.after(() => { serverConfig.cameraControl.signingSecret = previous; });
+  serverConfig.cameraControl.signingKeyId = 'media-control';
+  serverConfig.cameraControl.signingKeyVersion = 'fixture-v1';
+  t.after(() => {
+    serverConfig.cameraControl.signingSecret = previous.secret;
+    serverConfig.cameraControl.signingKeyId = previous.id;
+    serverConfig.cameraControl.signingKeyVersion = previous.version;
+  });
+  const rawBody = Buffer.from(JSON.stringify({ confirm: 'ses_fixture' }));
+  const timestampMs = 1785072600123;
+  const nonce = '12345678-1234-4234-8234-123456789abc';
   const headers = cameraControl.serviceHeaders(
     'DELETE',
     '/api/recordings/ses_fixture',
-    { confirm: 'ses_fixture' },
+    rawBody,
     'user-fixture',
-    { 'If-Match': '"rev-fixture"' }
+    { 'If-Match': '"rev-fixture"', 'Content-Type': 'application/json' },
+    timestampMs,
+    nonce
   );
-  assert.match(headers['X-Service-Timestamp'], /^\d{4}-/);
+  assert.equal(headers['X-Service-Timestamp'], String(timestampMs));
   assert.match(headers['X-Service-Signature'], /^[a-f0-9]{64}$/);
-  assert.match(headers['X-Service-Nonce'], /^[a-f0-9-]{36}$/);
+  assert.equal(headers['X-Service-Nonce'], nonce);
   assert.equal(headers['X-Operator-Id'], 'user-fixture');
+  assert.equal(headers['X-Service-Key-Id'], 'media-control');
+  assert.equal(headers['X-Service-Key-Version'], 'fixture-v1');
   const bodyHash = crypto.createHash('sha256')
-    .update(JSON.stringify({ confirm: 'ses_fixture' }))
+    .update(rawBody)
     .digest('hex');
   const expected = crypto.createHmac('sha256', 'fixture-signing-secret')
-    .update(`DELETE\n/api/recordings/ses_fixture\n${headers['X-Service-Timestamp']}\n${bodyHash}\nuser-fixture\n${headers['X-Service-Nonce']}\n"rev-fixture"`)
+    .update([
+      'MBFD-CAMERA-SERVICE-HMAC-SHA256-V1',
+      'DELETE',
+      '/api/recordings/ses_fixture',
+      bodyHash,
+      String(timestampMs),
+      nonce,
+      '"rev-fixture"',
+      'application/json',
+      'user-fixture',
+      'media-control',
+      'fixture-v1',
+    ].join('\n'))
     .digest('hex');
   assert.equal(headers['X-Service-Signature'], expected);
 });
@@ -328,8 +357,8 @@ test('camera edge source recovers finalization and serializes all recording meta
   assert.match(src, /uploadToPeerTube[\s\S]*acquireRecordingOperationLease/);
   assert.match(src, /\/restore[\s\S]*acquireRecordingOperationLease/);
   assert.match(src, /\/peertube[\s\S]*acquireRecordingOperationLease/);
-  assert.match(src, /x-service-nonce/);
-  assert.match(src, /replayed service nonce/i);
+  assert.match(src, /verifyServiceRequest/);
+  assert.match(src, /acceptFilesystemNonce/);
   assert.match(src, /res\.status\(finalizeResult\.ok \? 200 : 422\)\.json\(response\)/);
 });
 
@@ -343,9 +372,9 @@ test('global camera recordings are platform-admin-only and edge requests bind If
   assert.match(route, /post\('\/recordings\/:id\/restore', requireGlobalCameraAdmin/);
   assert.match(route, /delete\('\/recordings\/:id', requireGlobalCameraAdmin/);
   assert.match(route, /delete\('\/recordings\/:id\/peertube', requireGlobalCameraAdmin/);
-  assert.match(route, /plan\.recording_requested === true && req\.user\?\.role !== 'platform_admin'/);
-  assert.match(client, /X-Service-Signature/);
-  assert.match(client, /X-Service-Nonce/);
-  assert.match(client, /X-Operator-Id/);
-  assert.match(client, /If-Match/);
+  assert.match(route, /plan\.recording_requested && req\.user\?\.role !== 'platform_admin'/);
+  assert.match(client, /signServiceRequest/);
+  assert.match(client, /serviceHeaders/);
+  assert.match(client, /headerValue\(signedHeaders, 'if-match'\)/);
+  assert.match(client, /operatorId: String\(operatorId/);
 });

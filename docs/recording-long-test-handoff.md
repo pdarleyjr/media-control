@@ -27,7 +27,8 @@ export CAMERA_API_TOKEN_FILE="/run/user/$UID/mbfd-camera-api.token"
 
 Optionally set `RUN_SYNC_AFTER_TEST=true` to perform the normal verified sync
 after finalization. The harness continuously appends health samples, tolerates
-temporary API unavailability while the detached recording continues, and
+temporary API unavailability while the independently supervised systemd unit
+continues, and
 writes read-only JSON and Markdown reports containing the stop result, final
 metadata, `ffprobe`, SHA-256 comparison, samples, and sync result. It never
 starts a livestream, uploads, publishes, or deletes a recording.
@@ -38,6 +39,15 @@ as `CAMERA_CONTROL_SIGNING_SECRET` in Media Control and
 match and must not reuse the API bearer token. Until both sides are configured,
 archive, restore, permanent deletion, and explicit PeerTube deletion fail
 closed with 503/401.
+
+Also configure matching current key identity values:
+`CAMERA_CONTROL_SIGNING_KEY_ID` / `CAMERA_SERVICE_SIGNING_KEY_ID` and
+`CAMERA_CONTROL_SIGNING_KEY_VERSION` /
+`CAMERA_SERVICE_SIGNING_KEY_VERSION`. For rotation, first deploy the new
+current key to Kamrui while retaining the old key in its
+`CAMERA_SERVICE_PREVIOUS_SIGNING_*` variables, then switch Media Control to the
+new current key. Remove the previous edge key only after all callers use the
+new version.
 
 Acceptance still requires the user to play the resulting file and physically
 confirm continuous video, intelligible classroom audio, correct duration, and

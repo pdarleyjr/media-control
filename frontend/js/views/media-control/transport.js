@@ -33,6 +33,16 @@ const STATIC_TRANSPORT_BTNS = [
 // Pending transport commands awaiting player confirmation (task §8).
 // command_id -> { resolve, timer, deviceId, action, payload, contentInstanceId, acknowledged }
 const pendingApply = new Map();
+const EXPLICIT_SYNCHRONIZED_ACTIONS = new Set([
+  'next', 'prev', 'go_to_slide', 'play', 'pause', 'seek', 'restart', 'stop',
+]);
+
+function createTransportTransactionId() {
+  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+  return `transport-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
 
 // §8: ACKNOWLEDGED is only RECEIPT. CONFIRMED requires a matching physical
 // player-state report. Correlate by device + content instance + the action's
@@ -160,6 +170,41 @@ function ensureCommandAckBridge() {
   });
 }
 
+function awaitCommandConfirmation({
+  commandId,
+  deviceId,
+  action,
+  payload,
+  contentInstanceId,
+  regionId,
+  timeoutMs,
+  onInterim,
+}) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      if (!pendingApply.has(commandId)) return;
+      pendingApply.delete(commandId);
+      resolve({
+        ok: false,
+        lifecycle: COMMAND_LIFECYCLE.STALE,
+        command_id: commandId,
+        error: 'apply_timeout',
+      });
+    }, timeoutMs);
+    pendingApply.set(commandId, {
+      resolve,
+      timer,
+      deviceId,
+      action,
+      payload: payload || {},
+      contentInstanceId: contentInstanceId || null,
+      regionId: regionId || null,
+      acknowledged: false,
+      onInterim: typeof onInterim === 'function' ? onInterim : null,
+    });
+  });
+}
+
 /**
  * Send a transport action with explicit target metadata and full lifecycle.
  * Rejects multi-device fan-out when opts.requireSingleTarget is true.
@@ -204,6 +249,12 @@ export function sendTransportCommand(deviceId, action, payload = {}, opts = {}) 
     ...targetMeta,
     ...(payload || {}),
     action: resolvedAction,
+    ...(opts.transactionId ? {
+      transport_transaction_id: opts.transactionId,
+      idempotency_key: opts.transactionId,
+      transaction_target_count: opts.transactionTargetCount || 1,
+      mirror_to_live_program: opts.mirrorToLiveProgram === true,
+    } : {}),
   };
 
   const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : DEFAULT_COMMAND_TIMEOUT_MS;
@@ -251,30 +302,98 @@ export function sendTransportCommand(deviceId, action, payload = {}, opts = {}) 
         });
         return;
       }
-      const timer = setTimeout(() => {
-        if (!pendingApply.has(commandId)) return;
-        pendingApply.delete(commandId);
+      const liveProgram = ack.live_program;
+      if (liveProgram?.included && liveProgram.owner && !liveProgram.delivered) {
         finish({
           ok: false,
-          lifecycle: COMMAND_LIFECYCLE.STALE,
+          lifecycle: COMMAND_LIFECYCLE.OFFLINE,
           delivered: true,
           command_id: commandId,
-          error: 'apply_timeout',
+          live_program: liveProgram,
+          error: liveProgram.queued ? 'live_program_offline_queued' : 'live_program_offline',
         });
-      }, timeoutMs);
-      pendingApply.set(commandId, {
-        resolve: (result) => finish({ ...result, delivered: true }),
-        timer,
+        return;
+      }
+      const targetConfirmation = awaitCommandConfirmation({
+        commandId,
         deviceId,
         action: resolvedAction,
         payload: payload || {},
         contentInstanceId: opts.contentInstanceId || targetMeta.content_instance_id || null,
         regionId: opts.regionId || targetMeta.region_id || null,
-        acknowledged: false,
-        onInterim: typeof opts.onInterim === 'function' ? opts.onInterim : null,
+        timeoutMs,
+        onInterim: opts.onInterim,
+      });
+      const liveConfirmation = liveProgram?.included
+        && liveProgram.owner
+        && liveProgram.command_id
+        ? awaitCommandConfirmation({
+          commandId: liveProgram.command_id,
+          deviceId: liveProgram.device_id,
+          action: resolvedAction,
+          payload: payload || {},
+          contentInstanceId: opts.contentInstanceId || targetMeta.content_instance_id || null,
+          regionId: null,
+          timeoutMs,
+          onInterim: opts.onInterim,
+        })
+        : Promise.resolve(null);
+      Promise.all([targetConfirmation, liveConfirmation]).then(([targetResult, liveResult]) => {
+        const failure = [targetResult, liveResult].find(result => result && !result.ok);
+        if (failure) {
+          finish({
+            ...failure,
+            delivered: true,
+            target_result: targetResult,
+            live_program_result: liveResult,
+          });
+          return;
+        }
+        finish({
+          ...targetResult,
+          delivered: true,
+          live_program: liveProgram || null,
+          live_program_result: liveResult,
+        });
       });
     });
   });
+}
+
+/**
+ * Issue one synchronized classroom transaction. Every physical target receives
+ * the same idempotency key; the server mirrors that transaction to the managed
+ * Live Program receiver exactly once and the owning target waits for its ack.
+ */
+export async function dispatchTransportTransaction(deviceIds, action, payload = {}, opts = {}) {
+  const targetIds = [...new Set((Array.isArray(deviceIds) ? deviceIds : [deviceIds]).filter(Boolean))];
+  const resolvedAction = String(action || '').trim();
+  if (!targetIds.length) return [];
+  if (!EXPLICIT_SYNCHRONIZED_ACTIONS.has(resolvedAction)) {
+    return targetIds.map(id => ({
+      id,
+      result: {
+        ok: false,
+        lifecycle: COMMAND_LIFECYCLE.FAILED,
+        error: resolvedAction === 'play_pause' ? 'ambiguous_play_pause' : 'unsupported_synchronized_action',
+      },
+    }));
+  }
+  const transactionId = opts.transactionId || createTransportTransactionId();
+  const results = await Promise.all(targetIds.map(async (id) => ({
+    id,
+    result: await sendTransportCommand(id, resolvedAction, {
+      ...(payload || {}),
+      transport_transaction_id: transactionId,
+      idempotency_key: transactionId,
+    }, {
+      ...opts,
+      transactionId,
+      transactionTargetCount: targetIds.length,
+      mirrorToLiveProgram: true,
+    }),
+  })));
+  return results;
 }
 
 /**
@@ -376,28 +495,25 @@ export function renderTransportBar(container, {
     }
 
     setLifecycle(COMMAND_LIFECYCLE.REQUESTED, resolvedAction);
-    const results = [];
-    for (const id of transportIds) {
-      setLifecycle(COMMAND_LIFECYCLE.PENDING, id);
-      // eslint-disable-next-line no-await-in-loop
-      const result = await sendTransportCommand(id, resolvedAction, extraPayload, {
-        target,
-        zoneId,
-        regionId,
-        cellId,
-        wallId,
-        contentInstanceId,
-        timeoutMs: DEFAULT_COMMAND_TIMEOUT_MS,
-        onInterim: (lc) => setLifecycle(lc, 'awaiting player confirmation'),
-      });
-      results.push({ id, result });
+    setLifecycle(COMMAND_LIFECYCLE.PENDING, transportIds.join(','));
+    const results = await dispatchTransportTransaction(transportIds, resolvedAction, extraPayload, {
+      target,
+      zoneId,
+      regionId,
+      cellId,
+      wallId,
+      contentInstanceId,
+      timeoutMs: DEFAULT_COMMAND_TIMEOUT_MS,
+      onInterim: (lc) => setLifecycle(lc, 'awaiting player confirmation'),
+    });
+    for (const { result } of results) {
       setLifecycle(result.lifecycle, result.error || result.command_id);
       if (!result.ok) {
         const msg = result.lifecycle === COMMAND_LIFECYCLE.OFFLINE
           ? 'Display offline — command queued or dropped'
           : result.lifecycle === COMMAND_LIFECYCLE.STALE
             ? 'Playback command timed out waiting for player confirmation'
-            : (result.error && result.error.message) || result.error || 'Playback command failed';
+          : (result.error && result.error.message) || result.error || 'Playback command failed';
         showToast(typeof msg === 'string' ? msg : 'Playback command failed', 'error');
       }
     }
@@ -419,8 +535,8 @@ export function renderTransportBar(container, {
           authoritativePaused = d.now_playing.paused;
         }
       } catch { /* display-state optional */ }
-      const resolvedAction = action === 'play_pause' && authoritativePaused !== undefined
-        ? (authoritativePaused ? 'play' : 'pause')
+      const resolvedAction = action === 'play_pause'
+        ? (authoritativePaused === true ? 'play' : 'pause')
         : action;
       btn.disabled = true;
       dispatchTransport(resolvedAction).finally(() => { btn.disabled = false; });

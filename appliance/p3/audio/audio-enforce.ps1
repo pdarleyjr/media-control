@@ -8,8 +8,9 @@ param(
 
 # Idempotent audio enforcement for the classroom P3 (Windows 11).
 # Goal: keep the Ultimea/eARC audio endpoint as the Default + Communications
-# playback device so the Video Wall-1 / TV1 player window is the only one that
-# actually emits sound. Non-TV1 player windows are started muted by the
+# playback device so the Front Left player window is the only one that actually
+# emits sound through the soundbar/eARC path. All other player windows start
+# muted by the
 # kiosk-launcher (`--mute`), so this script only needs to fix the default device.
 #
 # DOES NOT depend on the optional `AudioDeviceCmdlets` PowerShell module — it

@@ -506,6 +506,32 @@
       const managedDisplay = window.__playerConfig?.managedDisplay;
       return !isWallFollower() && (!managedDisplay || managedDisplay.audioEnabled === true);
     }
+    function applyManagedProgramAudioPolicy(policy) {
+      if (!isManagedProgramReceiver()) return false;
+      const contentEnabled = policy === 'content_replace';
+      const managedDisplay = window.__playerConfig?.managedDisplay;
+      if (!managedDisplay) return false;
+      managedDisplay.audioEnabled = contentEnabled;
+      userHasInteracted = contentEnabled;
+      document.querySelectorAll('video, audio').forEach((media) => {
+        try { media.muted = !contentEnabled; } catch (_) {}
+      });
+      try {
+        if (activeYtPlayer) {
+          if (contentEnabled && typeof activeYtPlayer.unMute === 'function') activeYtPlayer.unMute();
+          if (!contentEnabled && typeof activeYtPlayer.mute === 'function') activeYtPlayer.mute();
+        }
+      } catch (_) {}
+      document.querySelectorAll('iframe').forEach((frame) => {
+        try {
+          frame.contentWindow?.postMessage({
+            type: 'mbfd-player-command',
+            action: contentEnabled ? 'unmute' : 'mute',
+          }, '*');
+        } catch (_) {}
+      });
+      return true;
+    }
     const DOC_OFFICE_MIMES = [
       'application/msword',
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -1489,6 +1515,7 @@
       const child = lastTransportState && typeof lastTransportState === 'object' ? lastTransportState : null;
       const snapshot = {
         current_content_id: item?.content_id || null,
+        content_instance_id: item?.content_instance_id || (item?.id != null ? String(item.id) : null),
         current_asset_id: item?.asset_id || item?.content_id || null,
         content_type: contentKindForItem(item),
         layout_mode: wallConfig
@@ -2493,6 +2520,27 @@
             });
           }
         } catch (e) { console.warn('Auto re-register after auth-error failed:', e?.message || e); }
+      });
+
+      socket.on('device:program-audio-policy', (data, acknowledge) => {
+        const policy = String(data?.policy || 'camera');
+        const revision = Number(data?.revision) || 0;
+        if (policy !== 'camera' && policy !== 'content_replace') {
+          if (typeof acknowledge === 'function') {
+            acknowledge({ ok: false, policy, revision, error: 'invalid_policy' });
+          }
+          return;
+        }
+        const applied = applyManagedProgramAudioPolicy(policy);
+        publishPlayerState({ force: true });
+        if (typeof acknowledge === 'function') {
+          acknowledge({
+            ok: applied === true,
+            policy,
+            revision,
+            error: applied === true ? null : 'not_managed_program_receiver',
+          });
+        }
       });
 
       socket.on('device:playlist-update', (data) => {
@@ -3652,6 +3700,7 @@
       if (newFp === oldFp && playlist.length > 0 && !wallChanged) {
         console.log('Playlist unchanged');
         if (hasDisplayRestore) scheduleDisplayStateRestore('playlist-unchanged');
+        bindPendingBroadcastToRender();
         requestAnimationFrame(confirmCurrentRenderIfReady);
         return;
       }
@@ -3692,6 +3741,7 @@
           if (!wallChanged && oldAnchorRenderKey === renderKeyOf(playlist[stillThereIdx])) {
             isPlaying = true;
             if (hasDisplayRestore) scheduleDisplayStateRestore('playlist-continuity');
+            bindPendingBroadcastToRender();
             requestAnimationFrame(confirmCurrentRenderIfReady);
             return;
           }

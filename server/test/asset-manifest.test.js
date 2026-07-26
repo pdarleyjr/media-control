@@ -28,7 +28,24 @@ test('node manifest contains only checksum-ready canonical assets', () => {
       return {
         all() {
           return [
-            { content_id: 'ready', size_bytes: 12, sha256: 'a'.repeat(64), asset_id: 'asset-ready' },
+            {
+              content_id: 'ready',
+              size_bytes: 12,
+              sha256: 'a'.repeat(64),
+              asset_id: 'asset-ready',
+              processing_status: 'ready',
+              generation: 4,
+              version: 4,
+            },
+            {
+              content_id: 'normalizing',
+              size_bytes: 8,
+              sha256: 'b'.repeat(64),
+              asset_id: 'asset-normalizing',
+              processing_status: 'processing',
+              generation: 3,
+              version: 4,
+            },
             { content_id: 'pending', size_bytes: 8, sha256: null, asset_id: null },
           ];
         },
@@ -39,6 +56,7 @@ test('node manifest contains only checksum-ready canonical assets', () => {
   assert.deepEqual(manifest, [{
     asset_id: 'asset-ready',
     content_id: 'ready',
+    generation: 4,
     sha256: 'a'.repeat(64),
     size: 12,
     size_bytes: 12,
@@ -52,9 +70,9 @@ test('node manifest stages videos first and newest content first within a media 
       return {
         all() {
           return [
-            { content_id: 'old-image', size_bytes: 1, sha256: 'a'.repeat(64), mime_type: 'image/png', created_at: 10 },
-            { content_id: 'new-image', size_bytes: 2, sha256: 'b'.repeat(64), mime_type: 'image/png', created_at: 30 },
-            { content_id: 'video', size_bytes: 3, sha256: 'c'.repeat(64), mime_type: 'video/mp4', created_at: 5 },
+            { content_id: 'old-image', size_bytes: 1, sha256: 'a'.repeat(64), mime_type: 'image/png', processing_status: 'ready', generation: 1, created_at: 10 },
+            { content_id: 'new-image', size_bytes: 2, sha256: 'b'.repeat(64), mime_type: 'image/png', processing_status: 'ready', generation: 1, created_at: 30 },
+            { content_id: 'video', size_bytes: 3, sha256: 'c'.repeat(64), mime_type: 'video/mp4', processing_status: 'ready', generation: 1, created_at: 5 },
           ];
         },
       };

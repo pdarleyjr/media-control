@@ -51,17 +51,18 @@ test('span wall transport controls fan out to every wall member', () => {
   const transport = read('frontend/js/views/media-control/transport.js');
 
   assert.match(main, /function activeTargetTransportIds\(\)/);
-  assert.match(main, /ids\.forEach\(id => sendCommand\(id, COMMAND_TYPES\.TRANSPORT/);
+  assert.match(main, /dispatchTransportTransaction\(/);
   // §8: stage cards are passive — they no longer carry transport ids. Fan-out to
   // every wall member is resolved centrally by activeTargetTransportIds() (which
-  // calls wallTransportDeviceIds for a span wall) and serialized per-id below.
+  // calls wallTransportDeviceIds for a span wall) and sent as one transaction.
   assert.match(transport, /transportDeviceIds/);
-  // Transport now serializes per-id through sendTransportCommand (delivery + player ack).
+  // Every member shares one idempotency key; all player acknowledgements are
+  // awaited together and Live Program is mirrored once by the server.
   assert.match(transport, /sendTransportCommand/);
-  assert.match(transport, /for \(const id of transportIds\)/);
-  assert.match(transport, /action === 'play_pause' && (paused|authoritativePaused) !== undefined/);
-  assert.match(main, /action === 'play_pause' && paused !== undefined/);
-  assert.match(main, /paused \? 'play' : 'pause'/);
+  assert.match(transport, /Promise\.all\(targetIds\.map/);
+  assert.match(transport, /idempotency_key: transactionId/);
+  assert.match(transport, /action === 'play_pause'[\s\S]*authoritativePaused === true \? 'play' : 'pause'/);
+  assert.match(main, /action === 'play_pause'[\s\S]*paused === true \? 'play' : 'pause'/);
 });
 
 test('an independently selected split-wall member remains renderable as a display target', () => {
@@ -165,7 +166,8 @@ test('camera status reports active sources continuously instead of a static idle
   const dock = read('frontend/js/views/media-control/action-dock.js');
 
   assert.doesNotMatch(dock, /textContent = ['"]cams idle['"]/);
-  assert.match(dock, /data\.director && data\.director\.active_camera/);
+  assert.match(dock, /Number\(data\.active_camera\)/);
+  assert.doesNotMatch(dock, /data\.director/);
   assert.match(dock, /mc\.cc\.camera\.active/);
   assert.match(dock, /setInterval\(\(\) => syncLive\(\), 5000\)/);
   // The health timer is null-guarded and destroyed on teardown.
@@ -182,8 +184,9 @@ test('known inactive live state never delays a normal content broadcast with a d
   assert.match(dock, /let liveStateKnown = false/);
   assert.match(dock, /export function isLiveStateKnown\(\)/);
   assert.match(dock, /liveStateKnown = true/);
-  assert.match(send, /import \{ isLiveActive, isLiveStateKnown \} from '\.\/action-dock\.js'/);
-  assert.match(send, /if \(isLiveStateKnown\(\)\) return isLiveActive\(\)/);
+  assert.match(send, /isLiveActive,[\s\S]*isLiveCompositionAvailable,[\s\S]*isLiveStateKnown/);
+  assert.match(send, /if \(isLiveStateKnown\(\)\) return isLiveActive\(\) && isLiveCompositionAvailable\(\)/);
+  assert.match(send, /return shouldOfferLiveStreamInclusion\(\)/);
 });
 
 test('camera catalog uses configured wall names while the canvas avoids ordinal camera presets', () => {

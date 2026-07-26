@@ -12,7 +12,12 @@ const sceneEngine = require('../services/scene-engine');
 const { logActivity, getClientIp } = require('../services/activity');
 const { resolveUploadMime } = require('../middleware/upload');
 const { isDocThumbnailMime, kickDocThumbnail } = require('../lib/doc-thumbnail');
-const { kickHevcTranscodeIfNeeded } = require('../lib/media-transcode');
+const {
+  classifyMedia,
+  kickHevcTranscodeIfNeeded,
+  probeMedia,
+} = require('../lib/media-transcode');
+const { prewarmUploadedContent } = require('../lib/node-registry');
 const {
   LIVE_STREAM_DEVICE_PREFIX,
   resolveBroadcastTargets,
@@ -233,8 +238,18 @@ router.post('/broadcast', async (req, res) => {
   if (isDocThumbnailMime(canonicalMime)) {
     kickDocThumbnail(id, localPath, canonicalMime);
   }
+  const io = req.app.get('io');
+  let videoCompletion = null;
+  let videoClassification = null;
   if (canonicalMime.startsWith('video/')) {
-    kickHevcTranscodeIfNeeded(id, localPath);
+    const mediaProbe = probeMedia(localPath);
+    videoClassification = mediaProbe ? classifyMedia(mediaProbe) : null;
+    videoCompletion = kickHevcTranscodeIfNeeded(id, localPath, { io });
+  } else {
+    prewarmUploadedContent(io, db, {
+      contentId: id,
+      absolutePath: localPath,
+    }).catch((error) => console.warn(`[nextcloud-prewarm] ${id} failed: ${error.message}`));
   }
 
   if (import_only === true) {
@@ -251,9 +266,33 @@ router.post('/broadcast', async (req, res) => {
     return res.json({ success: true, content_id: id, imported: true, sent: 0, failed: [], total: 0 });
   }
 
+  // A browser-incompatible or unreadable import must not be pushed while the
+  // row still references original bytes. Return the durable content id so the
+  // operator can broadcast the ready final generation after normalization.
+  if (videoCompletion && (!videoClassification || !videoClassification.webSafe)) {
+    return res.status(202).json({
+      accepted: true,
+      processing: true,
+      content_id: id,
+      sent: 0,
+      failed: [],
+      total: targets.length,
+    });
+  }
+  if (videoCompletion) {
+    const completion = await videoCompletion;
+    if (!completion || completion.status !== 'ready') {
+      return res.status(422).json({
+        code: 'CONTENT_NOT_READY',
+        error: 'Imported video could not be finalized for browser playback',
+        content_id: id,
+        processing_status: completion && completion.status || 'failed',
+      });
+    }
+  }
+
   // Push to each target via the UNMODIFIED shared push path (broadcast.js:62-73).
   const source = { content_id: id, fit_mode: typeof fit_mode === 'string' ? fit_mode : null };
-  const io = req.app.get('io');
   const totalRequested = targets.length + resolvedTargets.missing.length;
   const deliveryRequest = broadcastDelivery.createRequest({
     workspaceId: req.workspaceId,

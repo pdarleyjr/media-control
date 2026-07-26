@@ -68,6 +68,7 @@ deadline=$((start_epoch + LONG_TEST_DURATION_SECONDS))
 previous_size=0
 api_restart_observed=false
 api_outages=0
+supervisor_failures=0
 stop_requested=0
 stopped=0
 trap 'stop_requested=1' INT TERM
@@ -116,10 +117,22 @@ while (( $(date +%s) < deadline && stop_requested == 0 )); do
   previous_size=$file_size_bytes
   free_space_bytes="$(df -PB1 /mnt/data/recordings | awk 'NR==2 {print $4}')"
 
-  ffmpeg_pid="$(pgrep -f -- "/mnt/data/recordings/active/$session_id/" | head -1 || true)"
-  supervisor_state="$(systemctl show "mbfd-camera-recording@$session_id.service" \
-    --property=ActiveState,SubState,MainPID --value 2>/dev/null | paste -sd/ - || true)"
-  [[ -n "$supervisor_state" ]] || supervisor_state="node-detached"
+  supervisor_status="$(sudo -n /usr/local/sbin/mbfd-recording-admin status "$session_id" 2>/dev/null || true)"
+  supervisor_validated=false
+  ffmpeg_pid=''
+  if grep -Fqx 'Validated=yes' <<<"$supervisor_status"; then
+    supervisor_validated=true
+    ffmpeg_pid="$(awk -F= '$1=="MainPID" {print $2}' <<<"$supervisor_status")"
+  else
+    supervisor_failures=$((supervisor_failures + 1))
+  fi
+  supervisor_state="$(awk -F= '
+    $1=="ActiveState" {active=$2}
+    $1=="SubState" {sub=$2}
+    $1=="MainPID" {pid=$2}
+    END {printf "%s/%s/%s", active, sub, pid}
+  ' <<<"$supervisor_status")"
+  [[ -n "$supervisor_state" && "$supervisor_state" != "//" ]] || supervisor_state="unvalidated"
   cpu_percent=0
   ram_bytes=0
   if [[ "$ffmpeg_pid" =~ ^[0-9]+$ ]]; then
@@ -134,7 +147,8 @@ while (( $(date +%s) < deadline && stop_requested == 0 )); do
   fi
 
   SAMPLE_UTC="$sample_utc" SESSION_ID="$session_id" ELAPSED_SECONDS="$elapsed_seconds" \
-  CURRENT_SEGMENT="$current_segment" SUPERVISOR_STATE="$supervisor_state" FFMPEG_PID="$ffmpeg_pid" \
+  CURRENT_SEGMENT="$current_segment" SUPERVISOR_STATE="$supervisor_state" \
+  SUPERVISOR_VALIDATED="$supervisor_validated" FFMPEG_PID="$ffmpeg_pid" \
   VIDEO_TRACK_HEALTHY="$video_track_healthy" AUDIO_TRACK_HEALTHY="$audio_track_healthy" \
   FILE_SIZE_BYTES="$file_size_bytes" GROWTH_BYTES="$growth_bytes" FREE_SPACE_BYTES="$free_space_bytes" \
   CAMERA_SOURCE_HEALTHY="$camera_source_healthy" CPU_PERCENT="$cpu_percent" RAM_BYTES="$ram_bytes" \
@@ -145,7 +159,9 @@ while (( $(date +%s) < deadline && stop_requested == 0 )); do
       process.stdout.write(JSON.stringify({
         sampled_at:e.SAMPLE_UTC, session_id:e.SESSION_ID,
         elapsed_seconds:number(e.ELAPSED_SECONDS), current_segment:e.CURRENT_SEGMENT||null,
-        supervisor_state:e.SUPERVISOR_STATE, ffmpeg_pid:number(e.FFMPEG_PID),
+        supervisor_state:e.SUPERVISOR_STATE,
+        supervisor_validated:e.SUPERVISOR_VALIDATED==="true",
+        ffmpeg_pid:number(e.FFMPEG_PID),
         video_track_healthy:e.VIDEO_TRACK_HEALTHY==="true",
         audio_track_healthy:e.AUDIO_TRACK_HEALTHY==="true",
         file_size_bytes:number(e.FILE_SIZE_BYTES), growth_bytes:number(e.GROWTH_BYTES),
@@ -162,7 +178,9 @@ while (( $(date +%s) < deadline && stop_requested == 0 )); do
     "$elapsed_seconds" "${current_segment:-none}" "$supervisor_state" "$video_track_healthy" \
     "$audio_track_healthy" "$growth_bytes" "$free_space_bytes" "$camera_source_healthy" \
     "$cpu_percent" "$ram_bytes" "$temperature_c" "$api_available"
-  sleep "$sample_interval"
+  # SIGINT sets stop_requested; do not let an interrupted sleep bypass the
+  # normal stop/finalize/report path under set -e.
+  sleep "$sample_interval" || true
 done
 
 echo "Stopping $session_id safely and waiting for finalization..."
@@ -199,6 +217,9 @@ probe_healthy="$(json_field "const s=x.streams||[]; const ok=Number(x.format?.du
 if [[ "$probe_healthy" != "true" && -z "$failure_code" ]]; then
   failure_code='probe_invalid'
 fi
+if (( supervisor_failures > 0 )) && [[ -z "$failure_code" ]]; then
+  failure_code='supervisor_unvalidated'
+fi
 
 sync_json='{"not_run":true}'
 if [[ "${RUN_SYNC_AFTER_TEST:-false}" == "true" ]]; then
@@ -209,7 +230,8 @@ completed_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 REPORT_SESSION_ID="$session_id" REPORT_STARTED_UTC="$started_utc" REPORT_COMPLETED_UTC="$completed_utc" \
 REPORT_DURATION="$LONG_TEST_DURATION_SECONDS" REPORT_FILE_PATH="$file_path" REPORT_SHA="$actual_sha" \
 REPORT_METADATA_SHA="$metadata_sha" REPORT_FAILURE_CODE="$failure_code" REPORT_API_RESTART="$api_restart_observed" \
-REPORT_API_OUTAGES="$api_outages" REPORT_METADATA="$metadata" REPORT_PROBE="$probe_json" REPORT_STOP="$stop_json" \
+REPORT_API_OUTAGES="$api_outages" REPORT_SUPERVISOR_FAILURES="$supervisor_failures" \
+REPORT_METADATA="$metadata" REPORT_PROBE="$probe_json" REPORT_STOP="$stop_json" \
 REPORT_SYNC="$sync_json" REPORT_SAMPLES="$samples" REPORT_JSON="$json_report" REPORT_MD="$markdown_report" \
   node <<'NODE'
 const fs = require('fs');
@@ -228,6 +250,7 @@ const report = {
   failure_code: e.REPORT_FAILURE_CODE || null,
   api_restart_observed: e.REPORT_API_RESTART === 'true',
   api_outage_samples: Number(e.REPORT_API_OUTAGES),
+  supervisor_unvalidated_samples: Number(e.REPORT_SUPERVISOR_FAILURES),
   stop_response: JSON.parse(e.REPORT_STOP),
   metadata: JSON.parse(e.REPORT_METADATA),
   ffprobe: JSON.parse(e.REPORT_PROBE),

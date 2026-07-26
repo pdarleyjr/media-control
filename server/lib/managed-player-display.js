@@ -23,6 +23,21 @@ function loadManagedDisplay(deviceId, token) {
   return row;
 }
 
+function normalizeDisplayName(display) {
+  return String(display && display.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function isClassroomAudioAuthority(display) {
+  const name = normalizeDisplayName(display);
+  return name === 'front left'
+    || name === 'classroom 1 - front left'
+    || name === 'classroom1 - front left';
+}
+
+function authorizeManagedDisplayAudio(display, requested) {
+  return requested === true && isClassroomAudioAuthority(display);
+}
+
 function buildManagedPlayerUrl({ baseUrl, display }) {
   if (!baseUrl) throw new Error('baseUrl is required');
   if (!display || !display.id || !display.device_token) {
@@ -35,6 +50,8 @@ function buildManagedPlayerUrl({ baseUrl, display }) {
 }
 
 module.exports = {
+  authorizeManagedDisplayAudio,
   buildManagedPlayerUrl,
+  isClassroomAudioAuthority,
   loadManagedDisplay,
 };

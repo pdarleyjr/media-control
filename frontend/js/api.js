@@ -420,6 +420,23 @@ export const api = {
     status: () => request('/live-stream/status'),
     // Fast operator poll (<500ms target). Uses director/state + cached deep probes.
     operatorState: () => request('/live-stream/operator-state'),
+    composition: () => request('/live-stream/composition', {
+      headers: { 'Cache-Control': 'no-store' },
+    }),
+    compositionContent: (body) => request('/live-stream/composition/content', {
+      method: 'POST',
+      body: JSON.stringify(body || {}),
+    }),
+    compositionLayout: (body) => request('/live-stream/composition/layout', {
+      method: 'PUT',
+      body: JSON.stringify(body || {}),
+    }),
+    compositionClear: (body) => request('/live-stream/composition/content', {
+      method: 'DELETE',
+      body: JSON.stringify(body || {}),
+    }),
+    // Deprecated rolling-deployment compatibility. Active instructor UI does
+    // not expose Prepare Live or require a production plan before Start.
     prepare: () => request('/live-stream/prepare', { method: 'POST' }),
     productionPlan: (body) => request('/live-stream/production-plan', { method: 'POST', body: JSON.stringify(body || {}) }),
     getProductionPlan: () => request('/live-stream/production-plan'),

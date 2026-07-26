@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const config = require('../config');
+const { signServiceRequest } = require('./camera-service-signature');
 
 function getBaseUrl() {
   return String(config.cameraControl?.baseUrl || process.env.CAMERA_CONTROL_BASE_URL || '').replace(/\/+$/, '');
@@ -16,25 +17,29 @@ function headerValue(headers, name) {
   return match ? String(match[1] ?? '') : '';
 }
 
-function serviceHeaders(method, requestPath, body, operatorId, signedHeaders = {}) {
+function currentSigningKey() {
   const secret = config.cameraControl?.signingSecret || process.env.CAMERA_CONTROL_SIGNING_SECRET || '';
-  if (!secret) return {};
-  const timestamp = new Date().toISOString();
-  const nonce = crypto.randomUUID();
-  const signedOperatorId = String(operatorId || 'media-control-service');
-  const ifMatch = headerValue(signedHeaders, 'if-match');
-  const bodyHash = crypto.createHash('sha256')
-    .update(JSON.stringify(body == null ? null : body))
-    .digest('hex');
-  const signature = crypto.createHmac('sha256', secret)
-    .update(`${method}\n${requestPath}\n${timestamp}\n${bodyHash}\n${signedOperatorId}\n${nonce}\n${ifMatch}`)
-    .digest('hex');
   return {
-    'X-Service-Timestamp': timestamp,
-    'X-Service-Nonce': nonce,
-    'X-Service-Signature': signature,
-    'X-Operator-Id': signedOperatorId,
+    id: config.cameraControl?.signingKeyId || process.env.CAMERA_CONTROL_SIGNING_KEY_ID || 'media-control',
+    version: config.cameraControl?.signingKeyVersion || process.env.CAMERA_CONTROL_SIGNING_KEY_VERSION || 'v1',
+    secret,
   };
+}
+
+function serviceHeaders(method, requestPath, rawBody, operatorId, signedHeaders = {}, nowMs = Date.now(), nonce = crypto.randomUUID()) {
+  const key = currentSigningKey();
+  if (!key.secret) return {};
+  return signServiceRequest({
+    method,
+    target: requestPath,
+    rawBody,
+    timestampMs: nowMs,
+    nonce,
+    operatorId: String(operatorId || 'media-control-service'),
+    ifMatch: headerValue(signedHeaders, 'if-match'),
+    contentType: headerValue(signedHeaders, 'content-type'),
+    key,
+  }).headers;
 }
 
 async function callCameraApi(method, path, body, timeoutMs = 15000, { headers: extraHeaders = {}, operatorId } = {}) {
@@ -48,17 +53,28 @@ async function callCameraApi(method, path, body, timeoutMs = 15000, { headers: e
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
+    const normalizedMethod = String(method).toUpperCase();
+    const requestUrl = new URL(`${base}${path}`);
+    const signedTarget = `${requestUrl.pathname}${requestUrl.search}`;
+    const rawBody = body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body));
+    const contentType = headerValue(extraHeaders, 'content-type') || 'application/json';
+    const signedHeaders = {};
+    for (const [name, value] of Object.entries(extraHeaders)) {
+      const lowerName = name.toLowerCase();
+      if (lowerName === 'content-type' || lowerName === 'x-operator-id' || lowerName.startsWith('x-service-')) continue;
+      signedHeaders[name] = value;
+    }
+    signedHeaders['Content-Type'] = contentType;
     const headers = {
       'X-Api-Token': token,
-      'Content-Type': 'application/json',
-      ...extraHeaders,
-      ...serviceHeaders(method, path, body, operatorId, extraHeaders),
+      ...signedHeaders,
+      ...serviceHeaders(normalizedMethod, signedTarget, rawBody, operatorId, signedHeaders),
     };
 
-    const response = await fetch(`${base}${path}`, {
-      method,
+    const response = await fetch(requestUrl, {
+      method: normalizedMethod,
       headers,
-      body: body ? JSON.stringify(body) : undefined,
+      body: rawBody.length ? rawBody : undefined,
       signal: controller.signal,
     });
 
@@ -111,8 +127,8 @@ async function getRecordings() {
   return callCameraApi('GET', '/api/recordings');
 }
 
-async function getDeletionImpact(sessionId) {
-  return callCameraApi('GET', `/api/recordings/${sessionId}/deletion-impact`);
+async function getDeletionImpact(sessionId, { operatorId } = {}) {
+  return callCameraApi('GET', `/api/recordings/${sessionId}/deletion-impact`, undefined, 15000, { operatorId });
 }
 
 async function archiveRecording(sessionId, { operatorId } = {}) {

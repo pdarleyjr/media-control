@@ -61,7 +61,7 @@ test('adaptive transfer deadlines grow with file size and classify private origi
   assert.equal(classifyOrigin('https://media.mbfdhub.com'), 'internet');
 });
 
-test('concurrent cold video ranges wait for one cache fill instead of stampeding the origin', async () => {
+test('five concurrent displays wait for one final-file cache fill instead of stampeding the origin', async () => {
   const contentId = 'cold-video';
   const bytes = Buffer.alloc(256 * 1024, 0x5a);
   const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
@@ -108,6 +108,8 @@ test('concurrent cold video ranges wait for one cache fill instead of stampeding
       requestBytes(url, { Range: 'bytes=0-1023' }),
       requestBytes(url, { Range: 'bytes=1024-2047' }),
       requestBytes(url, { Range: 'bytes=2048-3071' }),
+      requestBytes(url, { Range: 'bytes=3072-4095' }),
+      requestBytes(url, { Range: 'bytes=4096-5119' }),
     ]);
     await fill;
 
@@ -119,8 +121,8 @@ test('concurrent cold video ranges wait for one cache fill instead of stampeding
       assert.equal(response.body.length, 1024);
     }
     const stats = cache.getStats();
-    assert.equal(stats.cache_hits, 3);
-    assert.equal(stats.cache_misses, 3);
+    assert.equal(stats.cache_hits, 5);
+    assert.equal(stats.cache_misses, 5);
     assert.equal(stats.fill_failures, 0);
     assert.ok(stats.last_successful_fill);
     assert.equal(stats.last_successful_fill.content_id, contentId);
@@ -237,7 +239,11 @@ test('a checksum mismatch fails the fill and never publishes corrupt cache bytes
   let cache;
   try {
     const originPort = await listen(origin);
-    cache = createCacheServer({ originBaseUrl: `http://127.0.0.1:${originPort}`, cacheDir });
+    cache = createCacheServer({
+      originBaseUrl: `http://127.0.0.1:${originPort}`,
+      cacheDir,
+      maxRetries: 0,
+    });
     const ok = await cache.prewarmPriority({
       content_id: 'bad-video',
       sha256: 'f'.repeat(64),
@@ -253,6 +259,121 @@ test('a checksum mismatch fails the fill and never publishes corrupt cache bytes
     assert.equal(cache.getStats().cached_manifest_count, 0);
     assert.equal(cache.getStats().missing_manifest_count, 1);
     assert.equal(cache.getStats().sync_status, 'degraded');
+  } finally {
+    if (cache) await close(cache.server);
+    await close(origin);
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test('a checksum failure is retried and publishes only the verified final generation', async () => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-checksum-retry-'));
+  const badBytes = Buffer.from('wrong-final-bytes!');
+  const finalBytes = Buffer.from('right-final-bytes!');
+  const sha256 = crypto.createHash('sha256').update(finalBytes).digest('hex');
+  let requests = 0;
+  const origin = http.createServer((req, res) => {
+    requests += 1;
+    const bytes = requests === 1 ? badBytes : finalBytes;
+    res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': bytes.length });
+    res.end(bytes);
+  });
+
+  let cache;
+  try {
+    const originPort = await listen(origin);
+    cache = createCacheServer({
+      originBaseUrl: `http://127.0.0.1:${originPort}`,
+      cacheDir,
+      maxRetries: 1,
+      retryDelayMs: 1,
+    });
+    const item = {
+      content_id: 'retry-video',
+      generation: 7,
+      sha256,
+      size: finalBytes.length,
+    };
+    assert.equal(await cache.prewarmPriority(item), true);
+    assert.equal(requests, 2);
+    assert.equal(fs.readFileSync(path.join(cacheDir, 'content', 'retry-video')).equals(finalBytes), true);
+    const meta = JSON.parse(fs.readFileSync(path.join(cacheDir, 'content', 'retry-video.meta'), 'utf8'));
+    assert.equal(meta.generation, 7);
+    assert.equal(meta.sha256, sha256);
+    assert.equal(cache.getStats().checksum_failures, 1);
+    assert.equal(cache.getStats().fill_failures, 0);
+  } finally {
+    if (cache) await close(cache.server);
+    await close(origin);
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test('failed replacement retains the prior cache generation until periodic recovery swaps final bytes', async () => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-cache-generation-'));
+  const oldBytes = Buffer.from('old-web-safe-generation');
+  const finalBytes = Buffer.from('new-web-safe-generation');
+  const oldSha = crypto.createHash('sha256').update(oldBytes).digest('hex');
+  const finalSha = crypto.createHash('sha256').update(finalBytes).digest('hex');
+  let phase = 'old';
+  const origin = http.createServer((req, res) => {
+    if (phase === 'offline') {
+      res.writeHead(503);
+      return res.end('temporarily offline');
+    }
+    const bytes = phase === 'old' ? oldBytes : finalBytes;
+    res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': bytes.length });
+    res.end(bytes);
+  });
+
+  let cache;
+  try {
+    const originPort = await listen(origin);
+    cache = createCacheServer({
+      originBaseUrl: `http://127.0.0.1:${originPort}`,
+      cacheDir,
+      maxRetries: 0,
+      retryDelayMs: 1,
+    });
+    const oldItem = {
+      content_id: 'generation-video',
+      generation: 1,
+      sha256: oldSha,
+      size: oldBytes.length,
+    };
+    assert.equal(await cache.prewarmPriority(oldItem), true);
+
+    phase = 'offline';
+    const finalItem = {
+      content_id: 'generation-video',
+      generation: 2,
+      sha256: finalSha,
+      size: finalBytes.length,
+    };
+    assert.equal(await cache.prewarmPriority(finalItem), false);
+    assert.equal(
+      fs.readFileSync(path.join(cacheDir, 'content', 'generation-video')).equals(oldBytes),
+      true,
+      'the prior verified generation remains until the replacement is verified',
+    );
+
+    phase = 'final';
+    await cache.prewarmManifest([finalItem]);
+    assert.equal(
+      fs.readFileSync(path.join(cacheDir, 'content', 'generation-video')).equals(finalBytes),
+      true,
+    );
+    const meta = JSON.parse(fs.readFileSync(path.join(cacheDir, 'content', 'generation-video.meta'), 'utf8'));
+    assert.equal(meta.generation, 2);
+    assert.equal(meta.sha256, finalSha);
+
+    const cachePort = await listen(cache.server);
+    const playback = await requestBytes(`http://127.0.0.1:${cachePort}/content/generation-video/file`, {
+      Range: 'bytes=0-2',
+    });
+    assert.equal(playback.status, 206);
+    assert.equal(playback.headers['x-mc-cache'], 'hit');
+    assert.equal(playback.body.equals(finalBytes.subarray(0, 3)), true);
   } finally {
     if (cache) await close(cache.server);
     await close(origin);

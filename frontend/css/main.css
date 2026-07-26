@@ -1245,6 +1245,77 @@ body.has-classroom-banner.cc-fullscreen .content { height: calc(100vh - var(--cl
   align-self: center;
 }
 
+.content-readiness {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 5px 7px;
+  min-height: 28px;
+  margin-top: 9px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.content-readiness-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+}
+
+.content-readiness.is-preparing .content-readiness-dot {
+  background: var(--warning);
+}
+
+.content-readiness.is-failed .content-readiness-dot {
+  background: var(--danger);
+}
+
+.content-readiness-progress,
+.content-readiness-reason {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+.content-readiness-progress {
+  height: 5px;
+  accent-color: var(--warning);
+}
+
+.content-readiness-reason {
+  color: var(--danger);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.content-send-control {
+  min-height: 44px;
+  min-width: 72px;
+}
+
+.content-auto-send {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.content-auto-send input {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+}
+
+.content-auto-send-queued {
+  align-self: center;
+  color: var(--success-text);
+  font-size: 10px;
+}
+
 .content-field-hint,
 .content-modal-subtitle {
   margin-top: 5px;

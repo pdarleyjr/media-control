@@ -17,6 +17,8 @@ test('user-run long recording harness is explicit, bounded by the user and produ
   assert.match(harness, /elapsed_seconds/);
   assert.match(harness, /current_segment/);
   assert.match(harness, /supervisor_state/);
+  assert.match(harness, /mbfd-recording-admin status/);
+  assert.match(harness, /supervisor_validated/);
   assert.match(harness, /video_track_healthy/);
   assert.match(harness, /audio_track_healthy/);
   assert.match(harness, /file_size_bytes/);
@@ -31,6 +33,7 @@ test('user-run long recording harness is explicit, bounded by the user and produ
   assert.match(harness, /checksum_mismatch/);
   assert.match(harness, /chmod 0444/);
   assert.doesNotMatch(harness, /LONG_TEST_DURATION_SECONDS:=/);
+  assert.doesNotMatch(harness, /node-detached/);
 });
 
 test('recording systemd template has constrained process-group stop semantics', () => {

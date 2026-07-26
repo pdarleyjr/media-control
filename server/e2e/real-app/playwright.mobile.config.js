@@ -10,7 +10,11 @@ module.exports = defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: 0,
-  reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report-mobile' }]],
+  reporter: [
+    ['list'],
+    ['html', { open: 'never', outputFolder: 'playwright-report-mobile' }],
+    ['../no-skips-reporter.js', { requiredProjects: ['chromium-mobile', 'webkit-mobile'] }],
+  ],
   use: {
     headless: true,
     actionTimeout: 20000,

@@ -4,7 +4,9 @@ const { installIsolatedTestDatabase } = require('./live-stream-test-db');
 installIsolatedTestDatabase('managed-player-display');
 const { db } = require('../db/database');
 const {
+  authorizeManagedDisplayAudio,
   buildManagedPlayerUrl,
+  isClassroomAudioAuthority,
   loadManagedDisplay,
 } = require('../lib/managed-player-display');
 const { normalizePlayerAccessQuery } = require('../lib/player-access');
@@ -85,4 +87,39 @@ test('normalizePlayerAccessQuery accepts canonical and legacy parameter names', 
     normalizePlayerAccessQuery({ deviceId: 'display-b', deviceToken: 'tok-b', audioEnabled: 1 }),
     { deviceId: 'display-b', token: 'tok-b', audioEnabled: true }
   );
+});
+
+test('managed-player audio is fail-muted except for the authenticated Front Left eARC display', () => {
+  const frontLeft = { id: 'fl', name: 'Classroom 1 - Front Left' };
+  const frontCenter = { id: 'fc', name: 'Classroom 1 - Front Center' };
+  assert.equal(isClassroomAudioAuthority(frontLeft), true);
+  assert.equal(isClassroomAudioAuthority(frontCenter), false);
+  assert.equal(authorizeManagedDisplayAudio(frontLeft, true), true);
+  assert.equal(authorizeManagedDisplayAudio(frontLeft, false), false);
+  assert.equal(authorizeManagedDisplayAudio(frontCenter, true), false);
+  assert.equal(authorizeManagedDisplayAudio(null, true), false);
+});
+
+test('managed-player route applies server-side audio authorization after token lookup', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', 'server.js'),
+    'utf8',
+  );
+  const start = source.indexOf("app.get('/player/managed'");
+  const end = source.indexOf("app.get('/api/live-stream/local/program-state'", start);
+  const route = source.slice(start, end);
+  assert.match(route, /authorizeManagedDisplayAudio\(display,\s*audioEnabled\)/);
+  assert.doesNotMatch(route, /\baudioEnabled,\s*\n\s*}/);
+});
+
+test('P3 launcher requests audio only for the named Front Left display and otherwise fails muted', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', '..', 'appliance', 'p3', 'kiosk-launcher.ps1'),
+    'utf8',
+  );
+  assert.match(source, /\$displayName\s*=\s*\[string\]\$d\.name/);
+  assert.match(source, /'classroom 1 - front left'/);
+  assert.match(source, /if \(\$isAudioAuthority\) \{ \$playerUrl \+= '&audio_enabled=1' \}/);
+  assert.match(source, /if \(-not \$isAudioAuthority\) \{ \$launchArgs \+= '--mute-audio' \}/);
+  assert.doesNotMatch(source, /\$isTv1|\$d\.wall\s*-eq\s*1\s*-and\s*\$d\.label\s*-eq\s*'TV1'/);
 });

@@ -12,16 +12,16 @@ Group=mbfd-recording
 WorkingDirectory=/mnt/data/recordings
 EnvironmentFile=/run/mbfd-camera-recording/%i.env
 ExecStart=/usr/local/libexec/mbfd-camera-recording-run %i
-# This template is installed dormant until the API owns its complete env-file
-# lifecycle. Automatic restart would reuse the %03d sequence; older runners
-# could overwrite segment 000 and the fail-closed runner cannot safely resume.
-# A failed session must therefore remain failed for explicit recovery.
+# Never restart automatically: the runner uses -n and a fixed per-session
+# pattern, so a failed unit remains preserved for explicit recovery rather than
+# risking segment reuse.
 Restart=no
 KillMode=control-group
 KillSignal=SIGINT
 FinalKillSignal=SIGKILL
 SendSIGKILL=yes
 TimeoutStopSec=20
+UMask=0007
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=mbfd-camera-recording-%i
@@ -29,9 +29,15 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
+ProtectProc=invisible
+ProcSubset=pid
 ReadWritePaths=/mnt/data/recordings /run/mbfd-camera-recording
 RestrictSUIDSGID=true
 LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
 
 [Install]
 WantedBy=multi-user.target

@@ -43,6 +43,27 @@ test('player distinguishes receipt from confirmed rendering', () => {
   assert.match(player, /confirmPendingBroadcastRender/);
 });
 
+test('re-sending already rendered content binds delivery proof to the visible generation', () => {
+  const player = source('player/index.html');
+  const unchanged = player.slice(
+    player.indexOf('if (newFp === oldFp'),
+    player.indexOf("console.log('Playlist changed, updating')"),
+  );
+  assert.match(
+    unchanged,
+    /bindPendingBroadcastToRender\(\);\s*requestAnimationFrame\(confirmCurrentRenderIfReady\)/,
+  );
+
+  const continuity = player.slice(
+    player.indexOf("scheduleDisplayStateRestore('playlist-continuity')"),
+    player.indexOf('isPlaying = true;\n          playCurrentItem();'),
+  );
+  assert.match(
+    continuity,
+    /bindPendingBroadcastToRender\(\);\s*requestAnimationFrame\(confirmCurrentRenderIfReady\)/,
+  );
+});
+
 test('frontend polls and renders every device state rather than treating HTTP acceptance as success', () => {
   const send = source('../frontend/js/views/media-control/send.js');
   assert.match(send, /trackBroadcastDelivery/);

@@ -14,6 +14,7 @@ const commandModel = require('../lib/command-model');
 const deviceContract = require('../player/device-contract');
 const { createRoomSnapshot, publishRoomSnapshot } = require('../lib/room-state-broadcaster');
 const { getRoomRevision } = require('../lib/room-snapshot');
+const { createLiveTransportMirror } = require('../lib/transport-transaction');
 
 // Phase 2.3: workspace-scoped socket rooms + per-command permission gates.
 // Replaces the previous flat dashboardNs.emit broadcast (which leaked every
@@ -125,37 +126,28 @@ module.exports = function setupDashboardSocket(io) {
     }
   }
 
-function mirrorTransportToLiveStream(deviceNs, deviceId, command) {
-    const envelope = command && command.type === 'device:command' ? command : null;
-    if (!envelope || !envelope.payload || !envelope.payload.action) return;
-    if (!new Set(['next', 'prev', 'go_to_slide', 'play', 'pause', 'play_pause', 'seek', 'restart', 'stop']).has(envelope.payload.action)) return;
-    const device = db.prepare('SELECT workspace_id FROM devices WHERE id = ?').get(deviceId);
-    if (!device || !device.workspace_id) return;
-    const state = liveStreamProgramState(device.workspace_id);
-    if (!state.content_active) return;
-    const liveDeviceId = liveStreamDeviceId(device.workspace_id);
-    if (liveDeviceId === deviceId) return;
-    markLiveContentChanged(liveDeviceId);
-    let cmd = null;
-    try { cmd = commandModel.ingestCommand({
-      target_type: 'display', target_id: liveDeviceId, command_type: envelope.payload.action,
-      payload: envelope.payload, issued_by: null, requires_ack: 1,
-    }); } catch (_) {}
-    const liveEnvelope = deviceContract.createCommand({
-      ...envelope,
-      command_id: cmd ? cmd.command_id : undefined,
-      device_id: liveDeviceId,
-    });
-    const room = deviceNs.adapter.rooms.get(liveDeviceId);
-    if (room && room.size > 0) {
-      deviceNs.to(liveDeviceId).emit('device:command', liveEnvelope);
-      return;
-    }
-    try {
-      const queue = require('../lib/command-queue');
-      queue.queueCommand(liveDeviceId, 'device:command', liveEnvelope);
-    } catch (_) {}
-  }
+  const liveTransportMirror = createLiveTransportMirror({
+    lookupWorkspace: (deviceId) => workspaceIdForDevice(deviceId),
+    getProgramState: (workspaceId) => liveStreamProgramState(workspaceId),
+    getLiveDeviceId: (workspaceId) => liveStreamDeviceId(workspaceId),
+    markContentChanged: (deviceId) => markLiveContentChanged(deviceId),
+    persistCommand: (input) => commandModel.ingestCommand(input),
+    isDeviceOnline: (deviceId) => {
+      const room = deviceNs.adapter.rooms.get(deviceId);
+      return !!(room && room.size > 0);
+    },
+    emitCommand: (deviceId, envelope) => {
+      deviceNs.to(deviceId).emit('device:command', envelope);
+    },
+    queueCommand: (deviceId, envelope) => {
+      try {
+        const queue = require('../lib/command-queue');
+        return queue.queueCommand(deviceId, 'device:command', envelope);
+      } catch (_) {
+        return false;
+      }
+    },
+  });
 
   // Build a per-socket registrar for rate-limited control events. Each accepted
   // event consumes a token + a depth slot (released when the handler returns).
@@ -554,9 +546,19 @@ function mirrorTransportToLiveStream(deviceNs, deviceId, command) {
           return;
         }
         deviceNs.to(device_id).emit('device:command', envelope);
-        mirrorTransportToLiveStream(deviceNs, device_id, envelope);
+        const liveProgramResult = liveTransportMirror.dispatch({
+          sourceDeviceId: device_id,
+          envelope,
+          userId: socket.userId,
+        });
         console.log(`[device-contract] delivered ${envelope.command_id} ${commandType} to ${device_id}`);
-        if (typeof ack === 'function') ack({ delivered: true, command_id: cmd ? cmd.command_id : null });
+        if (typeof ack === 'function') {
+          ack({
+            delivered: true,
+            command_id: cmd ? cmd.command_id : null,
+            live_program: liveProgramResult,
+          });
+        }
         auditDeviceControl(socket, 'display.command', device_id, { type: commandType, command_id: envelope.command_id, delivered: true });
         // Unified dashboard: record authoritative on/off ONLY when actually delivered
         // to a live display. Never write it for a merely-queued command — that would
@@ -592,14 +594,26 @@ function mirrorTransportToLiveStream(deviceNs, deviceId, command) {
         queued = queue.queueCommand(device_id, 'device:command', envelope);
       } catch (e) { /* command-queue module absent; fall through to lost */ }
       console.log(`Command for offline device ${device_id}: ${commandType} (queued=${queued})`);
-      mirrorTransportToLiveStream(deviceNs, device_id, envelope);
+      const liveProgramResult = liveTransportMirror.dispatch({
+        sourceDeviceId: device_id,
+        envelope,
+        userId: socket.userId,
+      });
       publishRoomSnapshot(io, {
         workspaceId: workspaceIdForDevice(device_id, socket.roomWorkspaceId),
         roomId: socket.roomId,
         reason: `command:${commandType}:queued`,
         bump: true,
       });
-      if (typeof ack === 'function') ack({ delivered: false, queued, reason: 'offline', command_id: envelope.command_id });
+      if (typeof ack === 'function') {
+        ack({
+          delivered: false,
+          queued,
+          reason: 'offline',
+          command_id: envelope.command_id,
+          live_program: liveProgramResult,
+        });
+      }
       auditDeviceControl(socket, 'display.command', device_id, { type: commandType, command_id: envelope.command_id, delivered: false, queued });
     });
 
