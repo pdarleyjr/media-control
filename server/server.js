@@ -1316,7 +1316,7 @@ server.listen(listenPort, '0.0.0.0', () => {
   // a previous deploy/restart killed mid-flight). Deferred + single-flight so it
   // never blocks startup or stacks ffmpeg processes. Non-fatal.
   setTimeout(() => {
-    try { require('./lib/media-transcode').resumePendingTranscodes(); }
+    try { require('./lib/media-transcode').resumePendingTranscodes({ io }); }
     catch (e) { console.warn('resumePendingTranscodes kick failed:', e && e.message); }
   }, 8000);
 });

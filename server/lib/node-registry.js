@@ -15,7 +15,10 @@
 const crypto = require('crypto');
 const config = require('../config');
 const { canonicalAssetPath, queueAssetManifest, writeAssetManifest } = require('./asset-manifest');
-const { canServeContentInWorkspace } = require('./public-content-access');
+const {
+  canServeContentInWorkspace,
+  visibilityAllowsWorkspace,
+} = require('./public-content-access');
 
 function nodeTokenMatches(givenValue, expectedValue) {
   const expected = String(expectedValue || '');
@@ -243,8 +246,8 @@ function buildContentManifest(db, options = {}) {
     if (!workspaces.length && options.allowUnscoped !== true) return [];
     const rows = db.prepare(`
       SELECT c.id AS content_id, c.file_size AS size_bytes, c.mime_type,
-             c.created_at, c.updated_at, a.computed_at,
-             a.asset_id, a.sha256, a.size_bytes AS canonical_size
+             c.processing_status, c.version, c.created_at, c.updated_at, a.computed_at,
+             a.asset_id, a.generation, a.sha256, a.size_bytes AS canonical_size
       FROM content c
       LEFT JOIN asset_checksums a ON a.content_id = c.id
       WHERE c.filepath IS NOT NULL AND c.filepath <> ''
@@ -260,11 +263,20 @@ function buildContentManifest(db, options = {}) {
     });
     const manifest = [];
     for (const row of rows) {
+      if (String(row.mime_type || '').startsWith('video/')
+        && String(row.processing_status || '') !== 'ready') continue;
       if (workspaces.length) {
         const content = db.prepare('SELECT * FROM content WHERE id = ?').get(row.content_id);
-        if (!content || !workspaces.some((workspaceId) => canServeContentInWorkspace(db, content, workspaceId))) continue;
+        if (!content || !workspaces.some((workspaceId) => (
+          visibilityAllowsWorkspace(db, content, workspaceId)
+          || canServeContentInWorkspace(db, content, workspaceId)
+        ))) continue;
       }
       if (!/^[0-9a-f]{64}$/i.test(String(row.sha256 || ''))) {
+        if (options.queueMissing !== false) queueAssetManifest(db, row.content_id);
+        continue;
+      }
+      if (Number(row.generation) !== Math.max(1, Number(row.version) || 1)) {
         if (options.queueMissing !== false) queueAssetManifest(db, row.content_id);
         continue;
       }
@@ -272,6 +284,7 @@ function buildContentManifest(db, options = {}) {
       manifest.push({
         asset_id: row.asset_id || row.content_id,
         content_id: row.content_id,
+        generation: Math.max(1, Number(row.generation) || 1),
         sha256: row.sha256,
         size,
         size_bytes: size,
@@ -283,6 +296,46 @@ function buildContentManifest(db, options = {}) {
     console.warn('[node-registry] manifest build failed:', e.message);
     return [];
   }
+}
+
+function emitContentPrewarm(io, db, options = {}) {
+  const item = options.item;
+  const contentId = String(options.contentId || item && item.content_id || '');
+  const cc = options.classroomCache || config.classroomCache || {};
+  if (!cc.enabled || !contentId || !item) {
+    return { requested: false, reason: 'cache_disabled' };
+  }
+  if (!/^[0-9a-f]{64}$/i.test(String(item.sha256 || ''))
+    || Number(item.size_bytes || item.size) <= 0
+    || Number(item.generation) < 1) {
+    return { requested: false, reason: 'manifest_unavailable' };
+  }
+  if (!io || typeof io.of !== 'function') {
+    return { requested: false, reason: 'socket_unavailable' };
+  }
+
+  const nodeId = String(cc.nodeId || 'classroom-1-p3');
+  if (options.allowUnscoped !== true) {
+    const content = db.prepare('SELECT * FROM content WHERE id = ?').get(contentId);
+    if (!content || (String(content.mime_type || '').startsWith('video/')
+      && String(content.processing_status || '') !== 'ready')) {
+      return { requested: false, reason: 'content_not_ready' };
+    }
+    const nodeScope = {
+      nodeId,
+      wallIds: cc.wallIds,
+      workspaceId: cc.workspaceId,
+    };
+    const workspaceOwned = options.allowWorkspaceOwned === true
+      && nodeWorkspaceIds(db, nodeScope)
+        .some((workspaceId) => visibilityAllowsWorkspace(db, content, workspaceId));
+    if (!workspaceOwned && !nodeCanAccessContent(db, content, nodeScope)) {
+      return { requested: false, reason: 'not_assigned_to_node' };
+    }
+  }
+
+  io.of('/device').to(`node:${nodeId}`).emit('node:prewarm-content', item);
+  return { requested: true, node_id: nodeId, content_id: contentId, item };
 }
 
 function requestContentPrewarm(io, db, options = {}) {
@@ -313,11 +366,11 @@ function requestContentPrewarm(io, db, options = {}) {
     })
       .find((entry) => entry.content_id === contentId);
     if (!item) return { requested: false, reason: 'manifest_pending' };
-    if (!io || typeof io.of !== 'function') return { requested: false, reason: 'socket_unavailable' };
-
-    const nodeId = String(cc.nodeId || 'classroom-1-p3');
-    io.of('/device').to(`node:${nodeId}`).emit('node:prewarm-content', item);
-    return { requested: true, node_id: nodeId, content_id: contentId };
+    return emitContentPrewarm(io, db, {
+      item,
+      classroomCache: cc,
+      allowUnscoped: options.allowUnscoped === true,
+    });
   } catch (error) {
     return { requested: false, reason: 'prewarm_error', error: error.message };
   }
@@ -335,28 +388,20 @@ async function prewarmUploadedContent(io, db, options = {}) {
   if (!cc.enabled || !contentId || !absolutePath) {
     return { requested: false, reason: 'cache_disabled' };
   }
-  if (!io || typeof io.of !== 'function') {
-    return { requested: false, reason: 'socket_unavailable' };
-  }
-
   const buildManifest = options.writeManifest || writeAssetManifest;
   const item = await buildManifest(db, contentId, absolutePath);
   if (!item) return { requested: false, reason: 'manifest_unavailable' };
-  const nodeId = String(cc.nodeId || 'classroom-1-p3');
-  if (options.allowUnscoped !== true) {
-    const content = db.prepare('SELECT * FROM content WHERE id = ?').get(contentId);
-    if (!nodeCanAccessContent(db, content, {
-      nodeId,
-      wallIds: cc.wallIds,
-      workspaceId: cc.workspaceId,
-    })) return { requested: false, reason: 'not_assigned_to_node' };
-  }
-  io.of('/device').to(`node:${nodeId}`).emit('node:prewarm-content', item);
-  return { requested: true, node_id: nodeId, content_id: contentId, item };
+  return emitContentPrewarm(io, db, {
+    item,
+    classroomCache: cc,
+    allowUnscoped: options.allowUnscoped === true,
+    allowWorkspaceOwned: options.allowWorkspaceOwned !== false,
+  });
 }
 
 module.exports = {
   buildContentManifest,
+  emitContentPrewarm,
   nodeAuthOk,
   nodeHttpAuthOk,
   nodeCanAccessContent,

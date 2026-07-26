@@ -26,7 +26,8 @@ const { execFile, execFileSync } = require('child_process');
 const { promisify } = require('util');
 const { v4: uuidv4 } = require('uuid');
 const config = require('../config');
-const { queueAssetManifest, sha256File } = require('./asset-manifest');
+const { sha256File } = require('./asset-manifest');
+const { finalizeContentAsset } = require('./content-finalization');
 
 const pexecFile = promisify(execFile);
 
@@ -181,160 +182,268 @@ function buildTranscodeArgs(inPath, outPath, cls) {
   return args;
 }
 
-// ---- single-flight transcode queue (one ffmpeg at a time → bounds memory) ----
-const _queue = [];
-let _running = false;
-let _activeId = null;
-function enqueueTranscode(job) {
-  if (!job || !job.contentId || !job.absPath) return;
-  if (_activeId === job.contentId) return;
-  if (_queue.some((j) => j.contentId === job.contentId)) return;
-  _queue.push(job);
-  pumpQueue();
-}
-function pumpQueue() {
-  if (_running || _queue.length === 0) return;
-  const job = _queue.shift();
-  _running = true; _activeId = job.contentId;
-  runOneTranscode(job, () => { _running = false; _activeId = null; setImmediate(pumpQueue); });
-}
 function transcodeTimeoutMs() {
   const v = parseInt(process.env.HEVC_TIMEOUT_MS, 10);
   return Number.isFinite(v) && v > 0 ? v : 60 * 60 * 1000;   // 1h ceiling (4K encodes are slow)
 }
 
-// Run ONE job: probe -> skip if web-safe -> transcode -> swap row + delete original.
-// Always calls done() exactly once. Non-fatal throughout (row keeps the original).
-function runOneTranscode(job, done) {
-  const { contentId, absPath } = job;
-  let cls;
-  let sourceProbe;
-  let db;
+function safeUnlink(filePath) {
+  try { if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch (_) {}
+}
+
+function setProcessingState(db, contentId, expectedFilepath, expectedVersion, status, error, probe) {
+  return db.prepare(`
+    UPDATE content
+    SET processing_status=?, processing_error=?, media_probe_json=COALESCE(?, media_probe_json),
+        original_filepath=COALESCE(original_filepath, filepath), updated_at=?
+    WHERE id=? AND filepath=? AND COALESCE(version, 1)=?
+  `).run(
+    status,
+    error ? String(error).slice(0, 2000) : null,
+    probe ? JSON.stringify(probe) : null,
+    Math.floor(Date.now() / 1000),
+    contentId,
+    expectedFilepath,
+    expectedVersion,
+  ).changes > 0;
+}
+
+let ffmpegTail = Promise.resolve();
+function defaultTranscode(inputPath, outputPath, classification) {
+  const run = ffmpegTail.then(() => pexecFile(
+    'ffmpeg',
+    buildTranscodeArgs(inputPath, outputPath, classification),
+    { timeout: transcodeTimeoutMs() },
+  ));
+  // Keep the global one-at-a-time lane usable after a failed encode while
+  // returning the real outcome to this normalization job.
+  ffmpegTail = run.catch(() => {});
+  return run;
+}
+
+async function defaultThumbnail(inputPath, outputName, contentDir) {
+  const thumbnailName = `thumb_${outputName.replace(/\.[^.]+$/, '.jpg')}`;
   try {
-    if (!fs.existsSync(absPath)) return done();
-    db = require('../db/database').db;
-    sourceProbe = probeMedia(absPath);
-    cls = classifyMedia(sourceProbe);
-    db.prepare(`
-      UPDATE content SET original_filepath=COALESCE(original_filepath, filepath),
-        processing_status='processing', processing_error=NULL, media_probe_json=?, updated_at=?
-      WHERE id=?
-    `).run(sourceProbe ? JSON.stringify(sourceProbe) : null, Math.floor(Date.now() / 1000), contentId);
-  } catch { return done(); }
-  sha256File(absPath).then((sha) => {
-    try { db.prepare('UPDATE content SET original_sha256=? WHERE id=?').run(sha, contentId); } catch (_) {}
-  }).catch(() => {});
-  if (!cls || cls.webSafe) {
-    try {
-      db.prepare("UPDATE content SET processing_status='ready', processing_error=NULL, updated_at=? WHERE id=?")
-        .run(Math.floor(Date.now() / 1000), contentId);
-      queueAssetManifest(db, contentId, absPath);
-    } catch (_) {}
-    return done();
+    await pexecFile('ffmpeg', [
+      '-y', '-ss', '5', '-i', inputPath, '-vframes', '1',
+      '-vf', `scale=${config.thumbnailWidth}:-1`,
+      path.join(contentDir, thumbnailName),
+    ], { timeout: 30000 });
+    return thumbnailName;
+  } catch (_) {
+    return null;
+  }
+}
+
+// Run one lifecycle: uploaded -> probing -> [processing] -> ready|failed.
+// The finalizer owns the one atomic DB/manifest generation swap and the one
+// priority P3 handoff. Unreadable video fails closed and is never prewarmed.
+async function normalizeVideoJob(job = {}) {
+  const contentId = String(job.contentId || '');
+  const absPath = job.absPath;
+  const db = job.db || require('../db/database').db;
+  const contentDir = job.contentDir || config.contentDir;
+  const probe = job.probeMedia || probeMedia;
+  const classify = job.classifyMedia || classifyMedia;
+  const hashFile = job.sha256File || sha256File;
+  const transcode = job.transcode || defaultTranscode;
+  const createThumbnail = job.createThumbnail || defaultThumbnail;
+  const finalize = job.finalizeContentAsset || finalizeContentAsset;
+  const makeUuid = job.uuid || uuidv4;
+  const expectedFilepath = String(job.expectedFilepath || path.basename(absPath || ''));
+  let stagedPath = null;
+  let thumbnailPath = null;
+
+  if (!contentId || !absPath || !fs.existsSync(absPath)) {
+    return { status: 'failed', content_id: contentId, error: 'source_missing' };
+  }
+  const initial = db.prepare('SELECT * FROM content WHERE id = ?').get(contentId);
+  if (!initial || initial.filepath !== expectedFilepath) {
+    return { status: 'stale', content_id: contentId };
+  }
+  const expectedVersion = Math.max(1, Number(initial.version) || 1);
+  if (!setProcessingState(db, contentId, expectedFilepath, expectedVersion, 'probing', null, null)) {
+    return { status: 'stale', content_id: contentId };
   }
 
-  const outName = `${uuidv4()}.mp4`;
-  const outPath = path.join(config.contentDir, outName);
-  const args = buildTranscodeArgs(absPath, outPath, cls);
-  console.log(`[transcode] ${contentId}: ${cls.needsReencode ? (cls.tonemap ? 're-encode+tonemap' : 're-encode') : 'remux'} -> ${outName}`);
-  execFile('ffmpeg', args, { timeout: transcodeTimeoutMs() }, (err) => {
-    if (err) {
-      console.warn(`[transcode] failed for ${contentId}: ${err.message}`);
-      try {
-        db.prepare("UPDATE content SET processing_status='failed', processing_error=?, updated_at=? WHERE id=?")
-          .run(String(err.message || 'transcode_failed').slice(0, 2000), Math.floor(Date.now() / 1000), contentId);
-      } catch (_) {}
-      try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch { /* ignore */ }
-      return done();
+  try {
+    const sourceProbe = await Promise.resolve(probe(absPath));
+    if (!sourceProbe) throw new Error('media_probe_failed');
+    const classification = classify(sourceProbe);
+    let originalSha = null;
+    try {
+      originalSha = await hashFile(absPath);
+      db.prepare(`
+        UPDATE content SET original_sha256=?
+        WHERE id=? AND filepath=? AND COALESCE(version, 1)=?
+      `).run(originalSha, contentId, expectedFilepath, expectedVersion);
+    } catch (_) {
+      originalSha = null;
     }
-    let durationSec = null, width = null, height = null, fileSize = 0, thumbName = null;
-    try {
-      fileSize = fs.statSync(outPath).size;
-      const probe = execFileSync('ffprobe', ['-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', outPath], { timeout: 15000 }).toString();
-      const info = JSON.parse(probe);
-      if (info.format && info.format.duration) durationSec = parseFloat(info.format.duration);
-      const vs = info.streams && info.streams.find((s) => s.codec_type === 'video');
-      if (vs) { width = vs.width; height = vs.height; }
-    } catch (e) { console.warn(`[transcode] ffprobe of output failed: ${e.message}`); }
-    try {
-      thumbName = `thumb_${outName.replace(/\.[^.]+$/, '.jpg')}`;
-      execFileSync('ffmpeg', ['-y', '-ss', '5', '-i', outPath, '-vframes', '1', '-vf', `scale=${config.thumbnailWidth}:-1`, path.join(config.contentDir, thumbName)], { timeout: 30000 });
-    } catch { thumbName = null; }
-    try {
-      const prev = db.prepare('SELECT filepath, thumbnail_path FROM content WHERE id = ?').get(contentId);
-      const outputProbe = probeMedia(outPath);
-      const sourceName = path.basename(absPath);
-      const changed = db.transaction(() => {
-        const result = db.prepare(`
-          UPDATE content SET filepath=?, mime_type='video/mp4', file_size=?, duration_sec=?,
-            width=?, height=?, thumbnail_path=COALESCE(?, thumbnail_path),
-            original_filepath=COALESCE(original_filepath, ?), processing_status='ready',
-            processing_error=NULL, media_probe_json=?, version=COALESCE(version, 1) + 1, updated_at=?
-          WHERE id=? AND filepath=?
-        `).run(
-          outName, fileSize, durationSec, width, height, thumbName,
-          prev && prev.filepath || sourceName,
-          outputProbe ? JSON.stringify(outputProbe) : null,
-          Math.floor(Date.now() / 1000), contentId, sourceName
-        );
-        if (result.changes) {
-          db.prepare(`UPDATE content_publication_requests
-            SET status='cancelled', decided_by=NULL,
-              decision_reason='Transcoded asset changed after review was requested',
-              decided_at=strftime('%s','now'), updated_at=strftime('%s','now')
-            WHERE content_id=? AND status='pending'`).run(contentId);
-        }
-        return result.changes;
-      })();
-      if (!changed) {
-        try { fs.unlinkSync(outPath); } catch { /* stale job */ }
-        try { if (thumbName) fs.unlinkSync(path.join(config.contentDir, thumbName)); } catch { /* stale job */ }
-        return done();
-      }
-      if (prev && prev.thumbnail_path && thumbName && prev.thumbnail_path !== thumbName) { try { fs.unlinkSync(path.join(config.contentDir, prev.thumbnail_path)); } catch { /* ignore */ } }
-      queueAssetManifest(db, contentId, outPath);
-      console.log(`[transcode] ${contentId} -> ${outName} (${width}x${height}, ${durationSec}s, ${Math.round(fileSize / 1e6)}MB)`);
-    } catch (e) {
-      console.error(`[transcode] failed to update row for ${contentId}: ${e.message}`);
-      try {
-        db.prepare("UPDATE content SET processing_status='failed', processing_error=?, updated_at=? WHERE id=?")
-          .run(String(e.message || 'database_update_failed').slice(0, 2000), Math.floor(Date.now() / 1000), contentId);
-      } catch (_) {}
-      try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch { /* ignore */ }
+
+    if (classification.webSafe) {
+      return await finalize({
+        db,
+        io: job.io,
+        contentId,
+        expectedFilepath,
+        expectedVersion,
+        candidatePath: absPath,
+        finalPath: absPath,
+        finalFilepath: expectedFilepath,
+        metadata: {
+          mimeType: initial.mime_type || 'video/mp4',
+          durationSec: sourceProbe.duration_seconds,
+          width: sourceProbe.width,
+          height: sourceProbe.height,
+          probe: sourceProbe,
+          originalFilepath: expectedFilepath,
+          originalSha256: originalSha,
+        },
+        staleAbsolutePaths: job.staleAbsolutePaths || [],
+        prewarmContent: job.prewarmContent,
+        sha256File: job.sha256File,
+      });
     }
-    done();
+
+    if (!setProcessingState(
+      db, contentId, expectedFilepath, expectedVersion, 'processing', null, sourceProbe,
+    )) return { status: 'stale', content_id: contentId };
+
+    const outputBase = String(makeUuid());
+    const outputName = `${outputBase}.mp4`;
+    stagedPath = path.join(contentDir, `${outputBase}.part.mp4`);
+    const finalPath = path.join(contentDir, outputName);
+    console.log(`[transcode] ${contentId}: ${classification.needsReencode
+      ? (classification.tonemap ? 're-encode+tonemap' : 're-encode')
+      : 'remux'} -> ${outputName}`);
+    await transcode(absPath, stagedPath, classification);
+
+    const outputProbe = await Promise.resolve(probe(stagedPath));
+    if (!outputProbe || !classify(outputProbe).webSafe) throw new Error('normalized_output_not_web_safe');
+    const thumbnailName = await createThumbnail(stagedPath, outputName, contentDir);
+    thumbnailPath = thumbnailName ? path.join(contentDir, thumbnailName) : null;
+    const stalePaths = [
+      absPath,
+      ...(job.staleAbsolutePaths || []),
+    ];
+    if (initial.thumbnail_path && (!thumbnailName || initial.thumbnail_path !== thumbnailName)) {
+      stalePaths.push(path.join(contentDir, initial.thumbnail_path));
+    }
+
+    const result = await finalize({
+      db,
+      io: job.io,
+      contentId,
+      expectedFilepath,
+      expectedVersion,
+      candidatePath: stagedPath,
+      finalPath,
+      finalFilepath: outputName,
+      metadata: {
+        mimeType: 'video/mp4',
+        durationSec: outputProbe.duration_seconds,
+        width: outputProbe.width,
+        height: outputProbe.height,
+        thumbnailPath: thumbnailName,
+        probe: outputProbe,
+        originalFilepath: expectedFilepath,
+        originalSha256: originalSha,
+      },
+      staleAbsolutePaths: stalePaths,
+      discardPathsOnStale: thumbnailPath ? [thumbnailPath] : [],
+      prewarmContent: job.prewarmContent,
+      sha256File: job.sha256File,
+    });
+    stagedPath = null;
+    if (result.status === 'ready') {
+      console.log(`[transcode] ${contentId} -> ${outputName} (${outputProbe.width}x${outputProbe.height}, ${outputProbe.duration_seconds}s)`);
+    }
+    return result;
+  } catch (error) {
+    safeUnlink(stagedPath);
+    safeUnlink(thumbnailPath);
+    setProcessingState(
+      db,
+      contentId,
+      expectedFilepath,
+      expectedVersion,
+      'failed',
+      error.message || 'normalization_failed',
+      null,
+    );
+    console.warn(`[transcode] failed for ${contentId}: ${error.message}`);
+    return { status: 'failed', content_id: contentId, error: error.message };
+  }
+}
+
+// Every upload can probe immediately; only the default ffmpeg function above is
+// serialized. This prevents a long 4K encode from delaying a web-safe upload's
+// immediate manifest/prewarm while still bounding encoder memory to one process.
+const _jobFlights = new Map();
+
+function jobKey(job) {
+  return `${String(job.contentId || '')}:${path.resolve(String(job.absPath || ''))}`;
+}
+
+function enqueueTranscode(job) {
+  if (!job || !job.contentId || !job.absPath) return Promise.resolve({ status: 'ignored' });
+  const key = jobKey(job);
+  if (_jobFlights.has(key)) return _jobFlights.get(key);
+  let resolveFlight;
+  const flight = new Promise((resolve) => { resolveFlight = resolve; });
+  _jobFlights.set(key, flight);
+  setImmediate(async () => {
+    let result;
+    try {
+      result = await normalizeVideoJob(job);
+    } catch (error) {
+      result = { status: 'failed', content_id: job.contentId, error: error.message };
+    }
+    _jobFlights.delete(key);
+    resolveFlight(result);
   });
+  return flight;
 }
 
 // Background normalize -> browser-safe MP4. Enqueued for EVERY video upload; the
 // runner probes and no-ops when the file already plays. Name kept for the existing
 // call sites (content.js / finalize-upload.js). Non-fatal.
-function kickHevcTranscodeIfNeeded(contentId, absPath) {
-  enqueueTranscode({ contentId, absPath });
+function kickHevcTranscodeIfNeeded(contentId, absPath, options = {}) {
+  return enqueueTranscode({ ...options, contentId, absPath });
 }
 
 // On boot, re-queue any video row that isn't already a web-safe MP4/WebM. A
 // transcode killed mid-flight by a deploy/restart leaves the row pointing at the
 // original (e.g. video/x-matroska); this self-heals it. The runner re-probes and
 // skips anything that is actually fine (e.g. an H.264 .mov reported as quicktime).
-function resumePendingTranscodes() {
+function resumePendingTranscodes(options = {}) {
   try {
     const { db } = require('../db/database');
     const rows = db.prepare(
-      "SELECT id, filepath FROM content WHERE mime_type LIKE 'video/%' AND mime_type NOT IN ('video/mp4', 'video/webm') AND filepath IS NOT NULL"
+      `SELECT id, filepath FROM content
+       WHERE mime_type LIKE 'video/%' AND filepath IS NOT NULL
+         AND (
+           processing_status IN ('uploaded', 'probing', 'processing')
+           OR processing_status IS NULL
+           OR (processing_status='ready' AND mime_type NOT IN ('video/mp4', 'video/webm'))
+         )`
     ).all();
     let queued = 0;
     for (const r of rows) {
       const abs = path.join(config.contentDir, r.filepath);
-      if (fs.existsSync(abs)) { enqueueTranscode({ contentId: r.id, absPath: abs }); queued++; }
+      if (fs.existsSync(abs)) {
+        enqueueTranscode({ ...options, db, contentId: r.id, absPath: abs });
+        queued++;
+      }
     }
-    if (queued) console.log(`[transcode] resume: queued ${queued} non-web-safe video(s) for normalization`);
+    if (queued) console.log(`[transcode] resume: queued ${queued} incomplete video(s) for normalization`);
   } catch (e) { console.warn(`[transcode] resume scan failed: ${e && e.message}`); }
 }
 
 module.exports = {
   isHeicMime, heicToJpeg, probeVideoCodec, needsHevcTranscode,
-  kickHevcTranscodeIfNeeded, resumePendingTranscodes,
+  kickHevcTranscodeIfNeeded, normalizeVideoJob, resumePendingTranscodes,
   probeMedia, classifyMedia, buildTranscodeArgs, is10bit, isHdr,
   HEIC_MIMES,
 };

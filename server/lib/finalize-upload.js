@@ -12,6 +12,7 @@ const { sanitizeString } = require('../middleware/sanitize');
 const { resolveUploadMime } = require('../middleware/upload');
 const { isDocThumbnailMime, kickDocThumbnail } = require('./doc-thumbnail');
 const { isHeicMime, heicToJpeg, kickHevcTranscodeIfNeeded } = require('./media-transcode');
+const { prewarmUploadedContent } = require('./node-registry');
 
 // Same filename hygiene as content.js: NFC-normalize (macOS sends NFD) then
 // HTML-escape & < > " ' so a hostile filename renders as text in every UI sink.
@@ -30,7 +31,7 @@ function safeFilename(name) {
  * @param {string} o.workspaceId  owning workspace (required — content is workspace-scoped)
  * @returns {Promise<object>} the inserted content row
  */
-async function finalizeUpload({ absPath, originalName, mimeType, size, userId, workspaceId }) {
+async function finalizeUpload({ absPath, originalName, mimeType, size, userId, workspaceId, io }) {
   if (!workspaceId) {
     try { fs.unlinkSync(absPath); } catch { /* ignore */ }
     const e = new Error('No workspace context. Switch to a workspace before uploading.');
@@ -118,7 +119,13 @@ async function finalizeUpload({ absPath, originalName, mimeType, size, userId, w
   }
   // iPhone HEVC video -> H.264 MP4 in the background; no-op for H.264.
   if (mt.startsWith('video/')) {
-    kickHevcTranscodeIfNeeded(id, destPath);
+    kickHevcTranscodeIfNeeded(id, destPath, { io })
+      .catch((error) => console.warn(`[video-normalize] ${id} failed: ${error.message}`));
+  } else {
+    prewarmUploadedContent(io, db, {
+      contentId: id,
+      absolutePath: destPath,
+    }).catch((error) => console.warn(`[upload-prewarm] ${id} failed: ${error.message}`));
   }
 
   return db.prepare('SELECT * FROM content WHERE id = ?').get(id);

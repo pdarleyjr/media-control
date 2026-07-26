@@ -25,6 +25,9 @@ function fakeDb({ member = true } = {}) {
             sha256: 'a'.repeat(64),
             asset_id: 'video-id',
             mime_type: 'video/mp4',
+            processing_status: 'ready',
+            generation: 3,
+            version: 3,
             created_at: 1,
           }],
         };
@@ -70,6 +73,7 @@ test('classroom content broadcast sends a priority prewarm to the configured P3 
     payload: {
       asset_id: 'video-id',
       content_id: 'video-id',
+      generation: 3,
       sha256: 'a'.repeat(64),
       size: 123,
       size_bytes: 123,
@@ -83,6 +87,7 @@ test('new uploads are checksummed on GMKtec and immediately prewarmed on the P3'
   const item = {
     asset_id: 'upload-id',
     content_id: 'upload-id',
+    generation: 1,
     sha256: 'b'.repeat(64),
     size_bytes: 456,
     canonical_url: '/api/content/upload-id/file',

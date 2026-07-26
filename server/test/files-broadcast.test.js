@@ -279,6 +279,29 @@ test('imports an image and broadcasts it to the selected display', async () => {
   assert.ok(se._pushes[0].opts.delivery.commandId);
 });
 
+test('an unready Nextcloud video is imported for normalization but never broadcasts original bytes', async () => {
+  mockFetch(() => binaryResp(200, Buffer.from('incompatible-video'), 'video/quicktime'));
+  patchFs();
+  const db = makeDb({ devices: DEVS, total: 5 });
+  const se = makeSceneEngine();
+  const router = loadRouter({ db, sceneEngine: se });
+  const handler = getHandler(router, 'POST', '/broadcast');
+  const req = makeReq({
+    body: { path: 'Video/camera.mov', device_ids: ['d1'], fit_mode: 'contain' },
+  });
+  const res = makeRes();
+
+  await handler(req, res);
+
+  assert.equal(res._status, 202);
+  assert.equal(res._json.accepted, true);
+  assert.equal(res._json.processing, true);
+  assert.ok(res._json.content_id);
+  assert.equal(res._json.sent, 0);
+  assert.deepEqual(se._pushes, []);
+  assert.equal(db._inserts.length, 1);
+});
+
 test('typed file targets are authoritative and legacy expanded ids are not unioned', async () => {
   mockFetch(() => binaryResp(200, Buffer.from([0x89, 0x50, 0x4e, 0x47]), 'image/png'));
   patchFs();

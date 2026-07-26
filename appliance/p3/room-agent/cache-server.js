@@ -103,8 +103,10 @@ function createCacheServer(opts = {}) {
     if (Number(meta.size) !== st.size) return false;
     const expectedSha = String(expected && expected.sha256 || '').toLowerCase();
     const expectedSize = Number(expected && (expected.size || expected.size_bytes)) || null;
+    const expectedGeneration = Number(expected && expected.generation) || null;
     if (expectedSha && meta.sha256 !== expectedSha) return false;
     if (expectedSize && st.size !== expectedSize) return false;
+    if (expectedGeneration && Number(meta.generation) !== expectedGeneration) return false;
     return true;
   }
 
@@ -112,6 +114,46 @@ function createCacheServer(opts = {}) {
     try { fs.unlinkSync(fileFor(id)); } catch (_) {}
     try { fs.unlinkSync(metaFor(id)); } catch (_) {}
     try { fs.unlinkSync(fileFor(id) + '.part'); } catch (_) {}
+    try { fs.unlinkSync(metaFor(id) + '.part'); } catch (_) {}
+    try { fs.unlinkSync(fileFor(id) + '.previous'); } catch (_) {}
+    try { fs.unlinkSync(metaFor(id) + '.previous'); } catch (_) {}
+  }
+
+  function publishVerifiedEntry(id, partPath, metaPartPath) {
+    const targets = [
+      { source: partPath, target: fileFor(id), backup: `${fileFor(id)}.previous` },
+      { source: metaPartPath, target: metaFor(id), backup: `${metaFor(id)}.previous` },
+    ];
+    const backedUp = [];
+    const published = [];
+    try {
+      for (const entry of targets) {
+        try { fs.unlinkSync(entry.backup); } catch (_) {}
+        if (fs.existsSync(entry.target)) {
+          fs.renameSync(entry.target, entry.backup);
+          backedUp.push(entry);
+        }
+      }
+      for (const entry of targets) {
+        fs.renameSync(entry.source, entry.target);
+        published.push(entry);
+      }
+      for (const entry of backedUp) {
+        try { fs.unlinkSync(entry.backup); } catch (_) {}
+      }
+    } catch (error) {
+      for (const entry of published.reverse()) {
+        try { fs.unlinkSync(entry.target); } catch (_) {}
+      }
+      for (const entry of backedUp.reverse()) {
+        try {
+          if (!fs.existsSync(entry.target) && fs.existsSync(entry.backup)) {
+            fs.renameSync(entry.backup, entry.target);
+          }
+        } catch (_) {}
+      }
+      throw error;
+    }
   }
 
   // The player loads <video crossOrigin="anonymous"> (so screenshots don't taint
@@ -215,19 +257,30 @@ function createCacheServer(opts = {}) {
     if (manifestItem) manifestById.set(normalizedId, manifestItem);
     const expected = manifestItem || manifestById.get(normalizedId) || null;
     if (cacheEntryMatches(normalizedId, expected)) return Promise.resolve(true);
-    if (downloads.has(normalizedId)) return downloads.get(normalizedId);
-    if (fs.existsSync(fileFor(normalizedId)) || fs.existsSync(metaFor(normalizedId))) removeCacheEntry(normalizedId);
+    if (downloads.has(normalizedId)) {
+      return downloads.get(normalizedId).then(() => {
+        const latest = manifestById.get(normalizedId) || expected;
+        if (cacheEntryMatches(normalizedId, latest)) return true;
+        return prewarm(normalizedId, latest);
+      });
+    }
 
     const expectedSha = String(expected && expected.sha256 || '').toLowerCase();
     const expectedSize = Number(expected && (expected.size || expected.size_bytes)) || null;
+    const expectedGeneration = Math.max(1, Number(expected && expected.generation) || 1);
     const originUrl = `${originBaseUrl}/api/content/${encodeURIComponent(normalizedId)}/file`;
     let u;
     try { u = new URL(originUrl); } catch { return Promise.resolve(false); }
 
     const task = new Promise((resolve) => {
       const partPath = fileFor(normalizedId) + '.part';
+      const metaPartPath = metaFor(normalizedId) + '.part';
       const lib = pickLib(u);
-      const maxRetries = Math.max(0, Math.min(2, Number(opts.maxRetries) || 2));
+      const configuredRetries = Number(opts.maxRetries);
+      const maxRetries = Math.max(
+        0,
+        Math.min(2, Number.isFinite(configuredRetries) ? configuredRetries : 2),
+      );
       const connectionTimeoutMs = Math.max(1_000, Number(opts.connectionTimeoutMs) || 10_000);
       const idleTimeoutMs = Math.max(1_000, Number(opts.idleTimeoutMs) || 30_000);
       const overallDeadlineMs = calculateTransferDeadlineMs(expectedSize, opts);
@@ -263,6 +316,7 @@ function createCacheServer(opts = {}) {
           };
         } else {
           try { fs.unlinkSync(partPath); } catch (_) {}
+          try { fs.unlinkSync(metaPartPath); } catch (_) {}
           failureCount += 1;
           fillFailures += 1;
           lastFailure = {
@@ -305,15 +359,20 @@ function createCacheServer(opts = {}) {
           try { if (response) response.destroy(); } catch (_) {}
           try { if (output) output.destroy(); } catch (_) {}
           try { fs.unlinkSync(partPath); } catch (_) {}
+          try { fs.unlinkSync(metaPartPath); } catch (_) {}
           if (String(type).includes('timeout') || type === 'minimum_throughput') timeoutCount += 1;
           if (type === 'checksum_failure') checksumFailures += 1;
           if (type === 'disk_write_failure') diskWriteFailures += 1;
           const retryable = [
             'connection_timeout', 'idle_timeout', 'overall_deadline',
             'minimum_throughput', 'connection_failure', 'response_failure',
+            'http_response_failure', 'checksum_failure',
           ].includes(type);
           if (retryable && attempt < maxRetries) {
-            const delay = Math.min(10_000, 500 * 2 ** attempt) + Math.floor(Math.random() * 250);
+            const configuredDelay = Number(opts.retryDelayMs);
+            const delay = Number.isFinite(configuredDelay)
+              ? Math.max(0, configuredDelay)
+              : Math.min(10_000, 500 * 2 ** attempt) + Math.floor(Math.random() * 250);
             return setTimeout(() => runAttempt(attempt + 1), delay);
           }
           finish(false, type, error && error.message || error || type);
@@ -324,6 +383,7 @@ function createCacheServer(opts = {}) {
         };
 
         try { fs.unlinkSync(partPath); } catch (_) {}
+        try { fs.unlinkSync(metaPartPath); } catch (_) {}
         const headers = addOriginNodeAuth({}, u);
         connectionTimer = setTimeout(() => failAttempt('connection_timeout', transferError('connection_timeout')), connectionTimeoutMs);
         overallTimer = setTimeout(() => failAttempt('overall_deadline', transferError('overall_deadline')), overallDeadlineMs);
@@ -377,14 +437,15 @@ function createCacheServer(opts = {}) {
               if (expectedSize && actualSize !== expectedSize) {
                 return failAttempt('checksum_failure', transferError('checksum_failure', 'size_mismatch'));
               }
-              fs.renameSync(partPath, fileFor(normalizedId));
-              fs.writeFileSync(metaFor(normalizedId), JSON.stringify({
+              fs.writeFileSync(metaPartPath, JSON.stringify({
                 content_type: ores.headers['content-type'] || 'application/octet-stream',
                 size: actualSize,
                 sha256: actualSha,
+                generation: expectedGeneration,
                 checksum_verified: true,
                 cached_at: Math.floor(Date.now() / 1000),
               }));
+              publishVerifiedEntry(normalizedId, partPath, metaPartPath);
               attemptDone = true;
               clearTimers();
               log(`[cache] prewarmed ${normalizedId}`);

@@ -901,6 +901,7 @@ CREATE TABLE IF NOT EXISTS node_assets (
 CREATE TABLE IF NOT EXISTS asset_checksums (
     asset_id             TEXT PRIMARY KEY,
     content_id           TEXT UNIQUE REFERENCES content(id) ON DELETE CASCADE,
+    generation           INTEGER NOT NULL DEFAULT 1,
     sha256               TEXT,
     size_bytes           INTEGER,
     canonical_path       TEXT,

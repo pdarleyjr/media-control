@@ -425,15 +425,18 @@ router.post('/', requireContentWriteRole, checkStorageLimit, upload.single('file
     // iPhone HEVC (H.265) video -> H.264 MP4 in the background so it plays on the
     // display browsers; no-op for H.264. Row is swapped in place when done.
     if (req.file.mimetype.startsWith('video/')) {
-      kickHevcTranscodeIfNeeded(id, req.file.path);
+      kickHevcTranscodeIfNeeded(id, req.file.path, {
+        io: req.app.get('io'),
+      }).catch((error) => console.warn(`[video-normalize] ${id} failed: ${error.message}`));
+    } else {
+      prewarmUploadedContent(req.app.get('io'), db, {
+        contentId: id,
+        absolutePath: req.file.path,
+      }).catch((error) => console.warn(`[upload-prewarm] ${id} failed: ${error.message}`));
     }
 
     const content = db.prepare('SELECT * FROM content WHERE id = ?').get(id);
     res.status(201).json(content);
-    prewarmUploadedContent(req.app.get('io'), db, {
-      contentId: id,
-      absolutePath: req.file.path,
-    }).catch((error) => console.warn(`[upload-prewarm] ${id} failed: ${error.message}`));
   } catch (err) {
     console.error('Upload error:', err);
     res.status(500).json({ error: 'Upload failed' });
@@ -1087,11 +1090,8 @@ router.put('/:id/replace', requireContentWriteRole, upload.single('file'), async
     return res.status(409).json({ code: 'CONTENT_VERSION_CONFLICT', error: 'Content changed; reload before replacing the file.' });
   }
 
-  // The database now points at the complete replacement, so old bytes can be
-  // removed without creating a crash window where the row references no file.
-  for (const oldPath of new Set([content.filepath, content.original_filepath, content.thumbnail_path])) {
-    if (oldPath && oldPath !== filepath && oldPath !== thumbnailPath) removeLocalContentFile(oldPath);
-  }
+  const oldPaths = [...new Set([content.filepath, content.original_filepath, content.thumbnail_path])]
+    .filter((oldPath) => oldPath && oldPath !== filepath && oldPath !== thumbnailPath);
 
   // Regenerate a document thumbnail in the background when a file is replaced
   // with a PDF/Office/ODF document (the inline branch above only covers images).
@@ -1099,7 +1099,18 @@ router.put('/:id/replace', requireContentWriteRole, upload.single('file'), async
     kickDocThumbnail(req.params.id, req.file.path, req.file.mimetype);
   }
   if (req.file.mimetype.startsWith('video/')) {
-    kickHevcTranscodeIfNeeded(req.params.id, req.file.path);
+    // Keep prior source/thumbnail bytes until the immutable final generation is
+    // committed and handed to the P3. The normalizer retires them afterward.
+    kickHevcTranscodeIfNeeded(req.params.id, req.file.path, {
+      io: req.app.get('io'),
+      staleAbsolutePaths: oldPaths.map((oldPath) => path.join(config.contentDir, path.basename(oldPath))),
+    }).catch((error) => console.warn(`[video-normalize] ${req.params.id} failed: ${error.message}`));
+  } else {
+    for (const oldPath of oldPaths) removeLocalContentFile(oldPath);
+    prewarmUploadedContent(req.app.get('io'), db, {
+      contentId: req.params.id,
+      absolutePath: req.file.path,
+    }).catch((error) => console.warn(`[replace-prewarm] ${req.params.id} failed: ${error.message}`));
   }
 
   const updated = getContentRow(req, req.params.id);

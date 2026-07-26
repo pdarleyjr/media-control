@@ -818,6 +818,21 @@ function migrateContentLifecycle() {
     try { db.exec(sql); }
     catch (e) { console.error(`[content_asset_lifecycle] ${name} failed:`, e.message); }
   }
+  try {
+    const assetColumns = db.prepare('PRAGMA table_info(asset_checksums)').all().map((column) => column.name);
+    if (!assetColumns.includes('generation')) {
+      db.exec('ALTER TABLE asset_checksums ADD COLUMN generation INTEGER NOT NULL DEFAULT 1');
+    }
+    db.exec(`
+      UPDATE asset_checksums
+      SET generation=COALESCE(
+        (SELECT MAX(1, COALESCE(content.version, 1)) FROM content WHERE content.id=asset_checksums.content_id),
+        1
+      )
+    `);
+  } catch (e) {
+    console.error('[content_asset_lifecycle] asset generation failed:', e.message);
+  }
   try { db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(CONTENT_LIFECYCLE_ID); }
   catch (e) { console.warn('[content_asset_lifecycle] stamp failed:', e.message); }
 }

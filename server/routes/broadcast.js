@@ -32,6 +32,7 @@ const {
 } = require('../lib/broadcast-targets');
 const nodeRegistry = require('../lib/node-registry');
 const { contentUseDecision, contextFromRequest } = require('../lib/content-visibility');
+const { contentBroadcastReadiness } = require('../lib/content-readiness');
 const cameraControl = require('../lib/camera-control-client');
 
 function sourceIdentity({ contentId, playlistId, presentationId, remoteUrl }) {
@@ -83,6 +84,8 @@ router.post('/', async (req, res) => {
     const decision = contentUseDecision(db, String(content_id), req.workspaceId, contextFromRequest(req));
     if (!decision.content) return res.status(404).json({ error: 'Content not found' });
     if (!decision.allowed) return res.status(403).json({ error: decision.reason });
+    const readiness = contentBroadcastReadiness(db, decision.content);
+    if (!readiness.ready) return res.status(readiness.status).json(readiness);
   }
 
   // SSRF gate: a hand-typed remote_url is broadcast straight to displays. Run
@@ -351,9 +354,8 @@ router.post('/', async (req, res) => {
     });
     if (result.ok) sent++; else failed.push(targetKey);
   }
-  // The device playlist assignment above is the authorization event that makes
-  // the asset eligible for the room node. Prewarm only after that transaction;
-  // upload-time library scans must never expose unassigned private content.
+  // Reinforce the upload/finalization prewarm after routing. Node delivery stays
+  // workspace-scoped, and this event makes the selected asset priority.
   const cachePrewarm = content_id
     ? nodeRegistry.requestContentPrewarm(io, db, { deviceIds: targets, contentId: content_id })
     : { requested: false, reason: 'not_local_content' };
