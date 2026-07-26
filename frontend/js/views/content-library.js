@@ -1297,4 +1297,3 @@ function folderPath(folder, all) {
   return parts.join(' / ');
 }
 
-export function cleanup() {}
