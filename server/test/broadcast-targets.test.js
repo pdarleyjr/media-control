@@ -82,7 +82,14 @@ test('managed live-program targets require the explicit include-live-stream gate
   assert.deepEqual(allowed.targets, ['d1', liveId]);
 });
 
-function makeTopologyDb({ devices = {}, walls = {}, wallMembers = {}, groups = {}, groupMembers = {} }) {
+function makeTopologyDb({
+  devices = {},
+  walls = {},
+  wallMembers = {},
+  groups = {},
+  groupMembers = {},
+  layoutZones = {},
+}) {
   return {
     prepare(sql) {
       if (/FROM video_walls WHERE id = \?/.test(sql)) {
@@ -99,6 +106,14 @@ function makeTopologyDb({ devices = {}, walls = {}, wallMembers = {}, groups = {
       }
       if (/SELECT id, workspace_id FROM devices WHERE id = \?/.test(sql)) {
         return { get: (id) => devices[id] || null };
+      }
+      if (/FROM layout_zones lz/.test(sql)) {
+        return {
+          get: (zoneId, deviceId) => {
+            const zone = layoutZones[zoneId];
+            return zone && zone.device_id === deviceId ? zone : null;
+          },
+        };
       }
       throw new Error(`Unexpected SQL: ${sql}`);
     },
@@ -250,7 +265,7 @@ test('typed wall-group targets reject a stored layout that omits a current wall 
 
   assert.equal(result.ok, false);
   assert.equal(result.status, 409);
-  assert.equal(result.body.code, 'LAYOUT_REVISION_CONFLICT');
+  assert.equal(result.body.code, 'INVALID_STORED_WALL_LAYOUT');
   assert.deepEqual(result.targets, []);
 });
 
@@ -303,4 +318,332 @@ test('typed empty device groups reject as incomplete topology before broadcast',
   assert.equal(result.status, 409);
   assert.equal(result.body.code, 'TOPOLOGY_CONFLICT');
   assert.deepEqual(result.targets, []);
+});
+
+test('typed wall-member targets resolve only current members of a physical multi-player split wall', () => {
+  const db = makeTopologyDb({
+    devices: {
+      tv1: { id: 'tv1', workspace_id: 'ws1' },
+      tv2: { id: 'tv2', workspace_id: 'ws1' },
+    },
+    walls: {
+      wall1: {
+        id: 'wall1',
+        workspace_id: 'ws1',
+        layout_mode: 'split',
+        layout_revision: 12,
+        layout_json: JSON.stringify({ revision: 12, groups: [] }),
+      },
+    },
+    wallMembers: { wall1: ['tv1', 'tv2'] },
+  });
+
+  const result = resolveTypedBroadcastTargets({
+    db,
+    workspaceId: 'ws1',
+    refs: [{
+      type: 'wall-member',
+      wall_id: 'wall1',
+      device_id: 'tv2',
+      layout_revision: 12,
+    }],
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.targets, ['tv2']);
+  assert.deepEqual(result.routes, [{
+    type: 'wall-member',
+    device_id: 'tv2',
+    wall_id: 'wall1',
+    layout_revision: 12,
+  }]);
+});
+
+test('typed wall-member targets fail closed for span walls and removed members', () => {
+  const spanDb = makeTopologyDb({
+    devices: {
+      tv1: { id: 'tv1', workspace_id: 'ws1' },
+      tv2: { id: 'tv2', workspace_id: 'ws1' },
+    },
+    walls: {
+      wall1: {
+        id: 'wall1',
+        workspace_id: 'ws1',
+        layout_mode: 'span',
+        layout_revision: 12,
+        layout_json: JSON.stringify({ revision: 12, groups: [] }),
+      },
+    },
+    wallMembers: { wall1: ['tv1', 'tv2'] },
+  });
+  const blocked = resolveTypedBroadcastTargets({
+    db: spanDb,
+    workspaceId: 'ws1',
+    refs: [{
+      type: 'wall-member',
+      wall_id: 'wall1',
+      device_id: 'tv1',
+      layout_revision: 12,
+    }],
+  });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.status, 409);
+  assert.equal(blocked.body.code, 'TOPOLOGY_CONFLICT');
+
+  const removed = resolveTypedBroadcastTargets({
+    db: makeTopologyDb({
+      devices: {
+        tv1: { id: 'tv1', workspace_id: 'ws1' },
+        removedTv: { id: 'removedTv', workspace_id: 'ws1' },
+      },
+      walls: {
+        wall1: {
+          id: 'wall1',
+          workspace_id: 'ws1',
+          layout_mode: 'split',
+          layout_revision: 12,
+          layout_json: JSON.stringify({ revision: 12, groups: [] }),
+        },
+      },
+      wallMembers: { wall1: ['tv1'] },
+    }),
+    workspaceId: 'ws1',
+    refs: [{
+      type: 'wall-member',
+      wall_id: 'wall1',
+      device_id: 'removedTv',
+      layout_revision: 12,
+    }],
+  });
+  assert.equal(removed.ok, false);
+  assert.equal(removed.status, 404);
+  assert.equal(removed.body.code, 'TARGET_NOT_FOUND');
+});
+
+test('typed wall-region targets resolve a stable enabled Mosaic region and preserve region identity', () => {
+  const regions = [
+    {
+      id: 'front-left',
+      name: 'Front Left',
+      x: 0,
+      y: 0,
+      width: 33.3333,
+      height: 100,
+      player_device_id: 'mosaic-player',
+      zone_id: 'zone-front-left',
+      z_index: 0,
+      fit_mode: 'contain',
+      enabled: true,
+      revision: 44,
+    },
+    {
+      id: 'front-center',
+      name: 'Front Center',
+      x: 33.3333,
+      y: 0,
+      width: 33.3334,
+      height: 100,
+      player_device_id: 'mosaic-player',
+      zone_id: 'zone-front-center',
+      z_index: 0,
+      fit_mode: 'contain',
+      enabled: true,
+      revision: 44,
+    },
+  ];
+  const db = makeTopologyDb({
+    devices: {
+      'mosaic-player': { id: 'mosaic-player', workspace_id: 'ws1' },
+    },
+    walls: {
+      mosaic: {
+        id: 'mosaic',
+        workspace_id: 'ws1',
+        layout_mode: 'split',
+        layout_revision: 44,
+        layout_json: JSON.stringify({ revision: 44, groups: [], regions }),
+      },
+    },
+    wallMembers: { mosaic: ['mosaic-player'] },
+    layoutZones: {
+      'zone-front-left': {
+        id: 'zone-front-left',
+        device_id: 'mosaic-player',
+        layout_id: 'mosaic-layout',
+      },
+      'zone-front-center': {
+        id: 'zone-front-center',
+        device_id: 'mosaic-player',
+        layout_id: 'mosaic-layout',
+      },
+    },
+  });
+
+  const result = resolveTypedBroadcastTargets({
+    db,
+    workspaceId: 'ws1',
+    refs: [{
+      type: 'wall-region',
+      wall_id: 'mosaic',
+      region_id: 'front-center',
+      layout_revision: 44,
+    }],
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.targets, ['mosaic-player']);
+  assert.deepEqual(result.routes, [{
+    type: 'wall-region',
+    device_id: 'mosaic-player',
+    wall_id: 'mosaic',
+    region_id: 'front-center',
+    zone_id: 'zone-front-center',
+    layout_revision: 44,
+    fit_mode: 'contain',
+  }]);
+});
+
+test('a whole one-player Mosaic wall expands to every authoritative region route on that player', () => {
+  const regions = [
+    {
+      id: 'left',
+      name: 'Left',
+      x: 0,
+      y: 0,
+      width: 50,
+      height: 100,
+      player_device_id: 'mosaic-player',
+      zone_id: 'zone-left',
+      revision: 44,
+    },
+    {
+      id: 'right',
+      name: 'Right',
+      x: 50,
+      y: 0,
+      width: 50,
+      height: 100,
+      player_device_id: 'mosaic-player',
+      zone_id: 'zone-right',
+      revision: 44,
+    },
+  ];
+  const result = resolveTypedBroadcastTargets({
+    db: makeTopologyDb({
+      devices: {
+        'mosaic-player': { id: 'mosaic-player', workspace_id: 'ws1' },
+      },
+      walls: {
+        mosaic: {
+          id: 'mosaic',
+          workspace_id: 'ws1',
+          layout_mode: 'split',
+          layout_revision: 44,
+          layout_json: JSON.stringify({ revision: 44, groups: [], regions }),
+        },
+      },
+      wallMembers: { mosaic: ['mosaic-player'] },
+      layoutZones: {
+        'zone-left': { id: 'zone-left', device_id: 'mosaic-player', layout_id: 'mosaic-layout' },
+        'zone-right': { id: 'zone-right', device_id: 'mosaic-player', layout_id: 'mosaic-layout' },
+      },
+    }),
+    workspaceId: 'ws1',
+    refs: [{ type: 'wall', id: 'mosaic', layout_revision: 44 }],
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.targets, ['mosaic-player']);
+  assert.deepEqual(result.routes.map((route) => ({
+    device_id: route.device_id,
+    region_id: route.region_id,
+    zone_id: route.zone_id,
+    wall_replace: route.wall_replace,
+  })), [
+    {
+      device_id: 'mosaic-player',
+      region_id: 'left',
+      zone_id: 'zone-left',
+      wall_replace: true,
+    },
+    {
+      device_id: 'mosaic-player',
+      region_id: 'right',
+      zone_id: 'zone-right',
+      wall_replace: true,
+    },
+  ]);
+});
+
+test('typed wall-region targets reject foreign workspaces, stale revisions, removed regions and multi-player walls', () => {
+  const base = {
+    id: 'mosaic',
+    workspace_id: 'ws1',
+    layout_mode: 'split',
+    layout_revision: 44,
+    layout_json: JSON.stringify({
+      revision: 44,
+      groups: [],
+      regions: [{
+        id: 'front-left',
+        name: 'Front Left',
+        x: 0,
+        y: 0,
+        width: 50,
+        height: 100,
+        player_device_id: 'mosaic-player',
+        zone_id: 'zone-front-left',
+        z_index: 0,
+        fit_mode: 'contain',
+        enabled: true,
+        revision: 44,
+      }],
+    }),
+  };
+  const common = {
+    devices: {
+      'mosaic-player': { id: 'mosaic-player', workspace_id: 'ws1' },
+      other: { id: 'other', workspace_id: 'ws1' },
+    },
+    walls: { mosaic: base },
+    wallMembers: { mosaic: ['mosaic-player'] },
+    layoutZones: {
+      'zone-front-left': {
+        id: 'zone-front-left',
+        device_id: 'mosaic-player',
+        layout_id: 'mosaic-layout',
+      },
+    },
+  };
+
+  const foreign = resolveTypedBroadcastTargets({
+    db: makeTopologyDb(common),
+    workspaceId: 'other-workspace',
+    refs: [{ type: 'wall-region', wall_id: 'mosaic', region_id: 'front-left', layout_revision: 44 }],
+  });
+  assert.equal(foreign.status, 403);
+
+  const stale = resolveTypedBroadcastTargets({
+    db: makeTopologyDb(common),
+    workspaceId: 'ws1',
+    refs: [{ type: 'wall-region', wall_id: 'mosaic', region_id: 'front-left', layout_revision: 43 }],
+  });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.body.code, 'LAYOUT_REVISION_CONFLICT');
+
+  const removed = resolveTypedBroadcastTargets({
+    db: makeTopologyDb(common),
+    workspaceId: 'ws1',
+    refs: [{ type: 'wall-region', wall_id: 'mosaic', region_id: 'removed', layout_revision: 44 }],
+  });
+  assert.equal(removed.status, 404);
+  assert.equal(removed.body.code, 'TARGET_NOT_FOUND');
+
+  const multi = resolveTypedBroadcastTargets({
+    db: makeTopologyDb({ ...common, wallMembers: { mosaic: ['mosaic-player', 'other'] } }),
+    workspaceId: 'ws1',
+    refs: [{ type: 'wall-region', wall_id: 'mosaic', region_id: 'front-left', layout_revision: 44 }],
+  });
+  assert.equal(multi.status, 409);
+  assert.equal(multi.body.code, 'TOPOLOGY_CONFLICT');
 });

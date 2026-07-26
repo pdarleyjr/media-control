@@ -236,3 +236,97 @@ test('component contract uses semantic dialog controls, localization, and touch-
   assert.match(css, /@media \(max-width:\s*640px\)/);
   assert.match(english, /'mc\.target_picker\.title'/);
 });
+
+test('split routing picker exposes revision-bound physical members but never span-wall members', async () => {
+  const { createTargetPickerModel, buildTargetSelectionResult } = await loadPickerModule();
+  const splitSnapshot = snapshot();
+  splitSnapshot.layoutState.walls[0].layoutMode = 'split';
+  const split = createTargetPickerModel({
+    snapshot: splitSnapshot,
+    allowSplitWallTargets: true,
+    allowOffline: true,
+  });
+  const members = split.sections.find((section) => section.kind === 'wall-members').targets;
+  assert.deepEqual(members.map((item) => item.target.name), [
+    'Primary Wall · Primary Left',
+    'Primary Wall · Primary Center',
+    'Primary Wall · Primary Right',
+  ]);
+  const selection = buildTargetSelectionResult(
+    split.catalog,
+    ['wall-member:primary-wall:tv-2'],
+  );
+  assert.deepEqual(selection.references, [{
+    type: 'wall-member',
+    id: 'primary-wall:tv-2',
+    wall_id: 'primary-wall',
+    device_id: 'tv-2',
+    layout_revision: 88,
+  }]);
+
+  const span = createTargetPickerModel({
+    snapshot: snapshot(),
+    allowSplitWallTargets: true,
+    allowOffline: true,
+  });
+  assert.equal(span.sections.some((section) => section.kind === 'wall-members'), false);
+});
+
+test('split routing picker exposes a one-player Mosaic region as a stable typed target', async () => {
+  const { createTargetPickerModel, buildTargetSelectionResult, renderTargetPickerContent } = await loadPickerModule();
+  const mosaic = snapshot();
+  mosaic.layoutState.walls = [{
+    id: 'mosaic-wall',
+    name: 'Front Mosaic',
+    layoutMode: 'split',
+    layoutRevision: 31,
+    members: [{
+      deviceId: 'tv-1',
+      viewport: { x: 0, y: 0, width: 5760, height: 1080 },
+    }],
+    layout: {
+      revision: 31,
+      regions: [{
+        id: 'left',
+        name: 'Left TV',
+        x: 0,
+        y: 0,
+        width: 50,
+        height: 100,
+        player_device_id: 'tv-1',
+        zone_id: 'mosaic-left',
+        z_index: 0,
+        fit_mode: 'contain',
+        enabled: true,
+        revision: 31,
+      }],
+    },
+  }];
+
+  const model = createTargetPickerModel({
+    snapshot: mosaic,
+    allowSplitWallTargets: true,
+    allowOffline: true,
+  });
+  const regions = model.sections.find((section) => section.kind === 'wall-regions').targets;
+  assert.equal(regions[0].target.name, 'Front Mosaic · Left TV');
+  assert.match(renderTargetPickerContent(model), /mc\.target_picker\.region_meta/);
+  const result = buildTargetSelectionResult(model.catalog, ['wall-region:mosaic-wall:left']);
+  assert.deepEqual(result.references, [{
+    type: 'wall-region',
+    id: 'mosaic-wall:left',
+    wall_id: 'mosaic-wall',
+    region_id: 'left',
+    layout_revision: 31,
+  }]);
+  assert.deepEqual(result.deviceIds, ['tv-1']);
+});
+
+test('split target choices remain practical 48px touch targets at mobile and desktop widths', () => {
+  const css = fs.readFileSync(path.join(root, 'frontend/css/media-control.css'), 'utf8');
+  assert.match(
+    css,
+    /\.mc-target-picker-choice\s*\{[\s\S]*?min-height:\s*max\(48px,\s*var\(--tap-min,\s*48px\)\)/,
+  );
+  assert.match(css, /@media \(max-width:\s*640px\)[\s\S]*?\.mc-target-picker-grid\s*\{\s*grid-template-columns:\s*1fr/);
+});

@@ -25,6 +25,7 @@ function refForTarget(target) {
   if (!target || !target.id) return '';
   if (target.type === 'wall') return `wall:${target.id}`;
   if (target.type === 'group') return `group:${target.id}`;
+  if (target.type === 'region') return `region:${target.id}`;
   return `display:${target.id}`;
 }
 
@@ -47,6 +48,17 @@ function targetForRef(ref, walls, groups, displays) {
     const group = (groups || []).find((c) => c.id === id);
     if (!group) return null;
     return { type: 'group', ...group, id, supportsModes: false, name: group.label || group.name || id };
+  }
+  if (type === 'region') {
+    const region = (groups || []).find((candidate) => candidate.type === 'region' && candidate.id === id);
+    if (!region) return null;
+    return {
+      ...region,
+      type: 'region',
+      id,
+      supportsModes: false,
+      name: region.label || region.name || id,
+    };
   }
   return null;
 }
@@ -122,7 +134,7 @@ export function mountTargetSelector(hostEl, { walls = [], groups = [], displays 
   function validValues() {
     const set = new Set();
     for (const w of currentWalls) set.add(`wall:${w.id}`);
-    for (const g of currentGroups) set.add(`group:${g.id}`);
+    for (const g of currentGroups) set.add(`${g.type === 'region' ? 'region' : 'group'}:${g.id}`);
     for (const d of currentDisplays) set.add(`display:${d.id}`);
     return set;
   }
@@ -156,10 +168,16 @@ export function mountTargetSelector(hostEl, { walls = [], groups = [], displays 
       opts.push('</optgroup>');
     }
     if (currentGroups.length) {
-      const remainingGroups = currentGroups.filter((g) => !pinned.has(`group:${g.id}`));
+      const remainingGroups = currentGroups.filter((g) => g.type !== 'region' && !pinned.has(`group:${g.id}`));
       if (remainingGroups.length) {
         opts.push('<optgroup label="Layout groups">');
         for (const g of remainingGroups) opts.push(optionTag(`group:${g.id}`, g.label || g.name || g.id));
+        opts.push('</optgroup>');
+      }
+      const remainingRegions = currentGroups.filter((g) => g.type === 'region' && !pinned.has(`region:${g.id}`));
+      if (remainingRegions.length) {
+        opts.push(`<optgroup label="${esc(t('mc.cc.target.mosaic_regions'))}">`);
+        for (const region of remainingRegions) opts.push(optionTag(`region:${region.id}`, region.label || region.name || region.id));
         opts.push('</optgroup>');
       }
     }
@@ -214,7 +232,7 @@ export function mountTargetSelector(hostEl, { walls = [], groups = [], displays 
   function allAuthorizedRefs() {
     const refs = [];
     for (const w of currentWalls) refs.push(`wall:${w.id}`);
-    for (const g of currentGroups) refs.push(`group:${g.id}`);
+    for (const g of currentGroups) refs.push(`${g.type === 'region' ? 'region' : 'group'}:${g.id}`);
     for (const d of currentDisplays) refs.push(`display:${d.id}`);
     return refs;
   }

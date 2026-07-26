@@ -16,6 +16,16 @@ function targetReference(target) {
     reference.group_id = String(target.groupId || '');
     reference.layout_revision = Number(target.layoutRevision) || 0;
   }
+  if (target?.type === 'wall-member') {
+    reference.wall_id = String(target.wallId || '');
+    reference.device_id = String(target.deviceId || '');
+    reference.layout_revision = Number(target.layoutRevision) || 0;
+  }
+  if (target?.type === 'wall-region') {
+    reference.wall_id = String(target.wallId || '');
+    reference.region_id = String(target.regionId || '');
+    reference.layout_revision = Number(target.layoutRevision) || 0;
+  }
   return reference;
 }
 
@@ -81,14 +91,16 @@ function supportsCapability(target, capability) {
   if (Array.isArray(capability)) {
     return capability.every((entry) => supportsCapability(target, entry));
   }
-  if (target?.type === 'wall' || target?.type === 'wall-group' || target?.type === 'group') {
+  if (target?.type === 'wall' || target?.type === 'wall-group' || target?.type === 'group'
+      || target?.type === 'wall-region') {
     return (target.members || []).every((member) => declaredCapability(member, capability) !== false);
   }
   return declaredCapability(target, capability) !== false;
 }
 
 function targetHasOnlineMember(target) {
-  if (target?.type === 'wall' || target?.type === 'wall-group' || target?.type === 'group') return Number(target.onlineCount) > 0;
+  if (target?.type === 'wall' || target?.type === 'wall-group' || target?.type === 'group'
+      || target?.type === 'wall-region') return Number(target.onlineCount) > 0;
   return target?.online === true;
 }
 
@@ -135,6 +147,8 @@ export function createTargetPickerModel(options = {}) {
     ...sourceCatalog,
     walls: Array.isArray(sourceCatalog.walls) ? sourceCatalog.walls : [],
     wallGroups: Array.isArray(sourceCatalog.wallGroups) ? sourceCatalog.wallGroups : [],
+    wallMembers: Array.isArray(sourceCatalog.wallMembers) ? sourceCatalog.wallMembers : [],
+    wallRegions: Array.isArray(sourceCatalog.wallRegions) ? sourceCatalog.wallRegions : [],
     groups: Array.isArray(sourceCatalog.groups) ? sourceCatalog.groups : [],
     displays: Array.isArray(sourceCatalog.displays) ? sourceCatalog.displays : [],
     standaloneDisplays: Array.isArray(sourceCatalog.standaloneDisplays)
@@ -172,6 +186,18 @@ export function createTargetPickerModel(options = {}) {
       targets: decorateTargets(catalog.physicalMembers, decoratorOptions),
     });
   }
+  if (options.allowSplitWallTargets === true && catalog.wallMembers.length) {
+    sections.push({
+      kind: 'wall-members',
+      targets: decorateTargets(catalog.wallMembers, decoratorOptions),
+    });
+  }
+  if (options.allowSplitWallTargets === true && catalog.wallRegions.length) {
+    sections.push({
+      kind: 'wall-regions',
+      targets: decorateTargets(catalog.wallRegions, decoratorOptions),
+    });
+  }
 
   const liveProgram = options.allowLiveProgram === true && catalog.liveProgram
     ? decorateTarget(catalog.liveProgram, decoratorOptions)
@@ -183,6 +209,7 @@ export function createTargetPickerModel(options = {}) {
     allowOffline: decoratorOptions.allowOffline,
     availability: decoratorOptions.availability,
     allowIndividualWallMembers: options.allowIndividualWallMembers === true,
+    allowSplitWallTargets: options.allowSplitWallTargets === true,
     allowLiveProgram: options.allowLiveProgram === true,
     sections,
     liveProgram,
@@ -239,6 +266,21 @@ function targetMeta(target) {
       online: target.onlineCount,
       total: target.memberCount,
       dimensions: target.dimensionsLabel,
+    });
+  }
+  if (target.type === 'wall-member') {
+    return t('mc.target_picker.wall_member_meta', {
+      status: statusLabel(target),
+      dimensions: target.dimensionsLabel,
+      revision: target.layoutRevision,
+    });
+  }
+  if (target.type === 'wall-region') {
+    return t('mc.target_picker.region_meta', {
+      status: statusLabel(target),
+      dimensions: target.dimensionsLabel,
+      fit: target.fitMode,
+      revision: target.layoutRevision,
     });
   }
   return t('mc.target_picker.display_meta', {

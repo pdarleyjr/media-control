@@ -12,6 +12,7 @@ const { assertCanJoinWall, TopologyConflictError } = require('../lib/topology-me
 const {
   parseStoredLayout,
   presetGroups,
+  regionsFromLayoutZones,
   validateLayout,
 } = require('../lib/wall-layout');
 const { contentUseDecision, contextFromRequest } = require('../lib/content-visibility');
@@ -59,7 +60,7 @@ router.get('/', (req, res) => {
   `);
   walls.forEach(w => {
     w.devices = devStmt.all(w.id);
-    w.layout = parseStoredLayout(w, w.devices);
+    w.layout = parseStoredLayout(w, w.devices, { onInvalid: 'return' });
   });
 
   res.json(walls);
@@ -92,7 +93,7 @@ function loadWallWithDevices(id) {
     FROM video_wall_devices vwd JOIN devices d ON vwd.device_id = d.id
     WHERE vwd.wall_id = ? ORDER BY vwd.grid_row, vwd.grid_col
   `).all(id);
-  wall.layout = parseStoredLayout(wall, wall.devices);
+  wall.layout = parseStoredLayout(wall, wall.devices, { onInvalid: 'return' });
   return wall;
 }
 
@@ -157,6 +158,7 @@ router.post('/', (req, res) => {
 // were accepted without any cross-tenant check.
 router.put('/:id', requireWallWrite, (req, res) => {
   const wall = req.wall;
+  const currentRevision = Number(wall.layout_revision) || 0;
 
   if (req.body.playlist_id) {
     const pl = db.prepare('SELECT workspace_id FROM playlists WHERE id = ?').get(req.body.playlist_id);
@@ -199,6 +201,20 @@ router.put('/:id', requireWallWrite, (req, res) => {
     'leader_device_id', 'player_x', 'player_y', 'player_width', 'player_height', 'layout_mode',
   ]);
   const topologyChanged = fields.some((field) => topologyFields.has(field) && req.body[field] !== undefined);
+  if (topologyChanged && req.body.expected_revision == null) {
+    return res.status(428).json({
+      error: 'expected_revision is required for wall topology changes',
+      code: 'EXPECTED_REVISION_REQUIRED',
+      current_revision: currentRevision,
+    });
+  }
+  if (topologyChanged && Number(req.body.expected_revision) !== currentRevision) {
+    return res.status(409).json({
+      error: 'Wall layout changed in another session',
+      code: 'LAYOUT_REVISION_CONFLICT',
+      current_revision: currentRevision,
+    });
+  }
 
   if (updates.length > 0) {
     if (topologyChanged) {
@@ -259,21 +275,38 @@ router.put('/:id/layout', requireWallWrite, (req, res) => {
     ORDER BY vwd.grid_row, vwd.grid_col
   `).all(wall.id);
   const currentRevision = Number(wall.layout_revision) || 0;
-  if (req.body.expected_revision != null && Number(req.body.expected_revision) !== currentRevision) {
+  if (req.body.expected_revision == null) {
+    return res.status(428).json({
+      error: 'expected_revision is required for wall layout changes',
+      code: 'EXPECTED_REVISION_REQUIRED',
+      current_revision: currentRevision,
+    });
+  }
+  if (Number(req.body.expected_revision) !== currentRevision) {
     return res.status(409).json({
       error: 'Wall layout changed in another session',
       code: 'LAYOUT_REVISION_CONFLICT',
-      current: parseStoredLayout(wall, members),
+      current: parseStoredLayout(wall, members, { onInvalid: 'return' }),
     });
   }
 
   let groups;
+  let regions;
   try {
     groups = req.body.preset
       ? presetGroups(wall, members, String(req.body.preset))
       : req.body.groups;
-    const validated = validateLayout(wall, members, { groups }, { revision: currentRevision + 1 });
+    const currentLayout = parseStoredLayout(wall, members);
+    regions = (req.body.regions !== undefined ? req.body.regions : currentLayout.regions)
+      ?.map((region) => ({ ...region, revision: currentRevision + 1 }));
+    const validated = validateLayout(
+      wall,
+      members,
+      { groups, regions },
+      { revision: currentRevision + 1 },
+    );
     groups = validated.groups;
+    regions = validated.regions;
   } catch (error) {
     return res.status(400).json({ error: error.message, code: 'INVALID_WALL_LAYOUT' });
   }
@@ -308,6 +341,7 @@ router.put('/:id/layout', requireWallWrite, (req, res) => {
       revision: nextRevision,
       preset: validateLayout(wall, members, { groups }, { revision: nextRevision }).preset,
       groups,
+      regions,
     };
     db.prepare(`
       UPDATE video_walls
@@ -359,7 +393,14 @@ router.put('/:id/devices', requireWallWrite, (req, res) => {
 
   const wall = req.wall;
   const currentRevision = Number(wall.layout_revision) || 0;
-  if (req.body.expected_revision != null && Number(req.body.expected_revision) !== currentRevision) {
+  if (req.body.expected_revision == null) {
+    return res.status(428).json({
+      error: 'expected_revision is required for wall membership changes',
+      code: 'EXPECTED_REVISION_REQUIRED',
+      current_revision: currentRevision,
+    });
+  }
+  if (Number(req.body.expected_revision) !== currentRevision) {
     return res.status(409).json({
       error: 'Wall layout changed in another session',
       code: 'LAYOUT_REVISION_CONFLICT',
@@ -467,6 +508,99 @@ router.put('/:id/devices', requireWallWrite, (req, res) => {
   notifyDashboards(req, req.wall.workspace_id);
 
   res.json(loadWallWithDevices(req.params.id));
+});
+
+// Synchronize the one-player Mosaic's authoritative logical destinations from
+// the layout zones assigned to its player. This is the only automatic authoring
+// path: zone ids become stable routing identities and revision checks prevent a
+// stale editor from replacing a newer topology.
+router.put('/:id/regions/sync', requireWallWrite, (req, res) => {
+  const wall = req.wall;
+  const currentRevision = Number(wall.layout_revision) || 0;
+  if (req.body.expected_revision == null) {
+    return res.status(428).json({
+      error: 'expected_revision is required to synchronize Mosaic regions',
+      code: 'EXPECTED_REVISION_REQUIRED',
+      current_revision: currentRevision,
+    });
+  }
+  if (Number(req.body.expected_revision) !== currentRevision) {
+    return res.status(409).json({
+      error: 'Wall layout changed in another session',
+      code: 'LAYOUT_REVISION_CONFLICT',
+      current_revision: currentRevision,
+    });
+  }
+
+  const members = db.prepare(`
+    SELECT vwd.*, d.name AS device_name, d.status AS device_status,
+           d.playlist_id, d.layout_id, d.screen_width, d.screen_height
+    FROM video_wall_devices vwd
+    JOIN devices d ON d.id = vwd.device_id
+    WHERE vwd.wall_id = ?
+    ORDER BY vwd.grid_row, vwd.grid_col
+  `).all(wall.id);
+  if (String(wall.layout_mode || '') !== 'split' || members.length !== 1) {
+    return res.status(409).json({
+      error: 'Mosaic regions require a split wall with exactly one player',
+      code: 'TOPOLOGY_CONFLICT',
+    });
+  }
+  const layoutId = members[0].layout_id;
+  if (!layoutId) {
+    return res.status(409).json({
+      error: 'The Mosaic player does not have a layout assigned',
+      code: 'MOSAIC_LAYOUT_REQUIRED',
+    });
+  }
+  const zones = db.prepare(`
+    SELECT id, name, x_percent, y_percent, width_percent, height_percent,
+           z_index, fit_mode, sort_order
+    FROM layout_zones
+    WHERE layout_id = ?
+    ORDER BY sort_order, id
+  `).all(layoutId);
+  const nextRevision = currentRevision + 1;
+  let regions;
+  let groups;
+  try {
+    regions = regionsFromLayoutZones(wall, members, zones, { revision: nextRevision });
+    groups = presetGroups(wall, members, 'split-all');
+    const validated = validateLayout(
+      wall,
+      members,
+      { groups, regions },
+      { revision: nextRevision },
+    );
+    groups = validated.groups;
+    regions = validated.regions;
+  } catch (error) {
+    return res.status(400).json({
+      error: error.message,
+      code: 'INVALID_MOSAIC_LAYOUT',
+    });
+  }
+
+  const layout = {
+    version: 1,
+    id: `${wall.id}:layout:${nextRevision}`,
+    wall_id: wall.id,
+    mode: 'groups',
+    revision: nextRevision,
+    preset: 'split-all',
+    source: 'layout-zones',
+    groups,
+    regions,
+  };
+  db.prepare(`
+    UPDATE video_walls
+    SET layout_json = ?, layout_revision = ?, updated_at = strftime('%s','now')
+    WHERE id = ?
+  `).run(JSON.stringify(layout), nextRevision, wall.id);
+
+  pushToWallMembers(req, wall.id);
+  notifyDashboards(req, wall.workspace_id);
+  return res.json(loadWallWithDevices(wall.id));
 });
 
 // Set wall content (legacy single-video path — kept for back-compat).

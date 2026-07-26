@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Install root:root mode 0755 and authorize only this helper in sudoers.
+set -euo pipefail
+
+action="${1:-}"
+session_id="${2:-}"
+if [[ ! "$session_id" =~ ^ses_[A-Za-z0-9_-]+$ ]]; then
+  echo "usage: mbfd-recording-admin start|stop|status <ses_id>" >&2
+  exit 2
+fi
+
+unit="mbfd-camera-recording@${session_id}.service"
+case "$action" in
+  start)  exec /usr/bin/systemctl start "$unit" ;;
+  stop)   exec /usr/bin/systemctl stop "$unit" ;;
+  status) exec /usr/bin/systemctl show "$unit" --no-pager \
+    --property=Id,ActiveState,SubState,MainPID,ExecMainStartTimestampMonotonic,Result ;;
+  *)
+    echo "usage: mbfd-recording-admin start|stop|status <ses_id>" >&2
+    exit 2
+    ;;
+esac

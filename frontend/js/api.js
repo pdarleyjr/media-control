@@ -320,9 +320,13 @@ export const api = {
   // Video walls
   getWalls: () => request('/walls'),
   createWall: (data) => request('/walls', { method: 'POST', body: JSON.stringify(data) }),
-  setWallDevices: (id, devices) => request(`/walls/${id}/devices`, { method: 'PUT', body: JSON.stringify({ devices }) }),
+  setWallDevices: (id, devices, expected_revision) => request(`/walls/${id}/devices`, { method: 'PUT', body: JSON.stringify({ devices, expected_revision }) }),
   updateWall: (id, data) => request(`/walls/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   updateWallLayout: (id, data) => request(`/walls/${id}/layout`, { method: 'PUT', body: JSON.stringify(data) }),
+  syncWallRegions: (id, expected_revision) => request(`/walls/${id}/regions/sync`, {
+    method: 'PUT',
+    body: JSON.stringify({ expected_revision }),
+  }),
   deleteWall: (id) => request(`/walls/${id}`, { method: 'DELETE' }),
 
   // Admin status snapshots

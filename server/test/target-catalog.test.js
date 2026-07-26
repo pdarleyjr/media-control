@@ -216,3 +216,111 @@ test('invalid snapshots and unknown targets fail closed', async () => {
   assert.equal(catalog.liveProgram, null);
   assert.deepEqual(expandTargetToDeviceIds('wall:not-real', catalog), []);
 });
+
+test('catalog exposes typed wall members only for physical multi-player split walls', async () => {
+  const { buildTargetCatalog } = await loadCatalogModule();
+  const snapshot = roomSnapshot();
+  snapshot.layoutState.walls[0].layoutMode = 'split';
+  snapshot.layoutState.walls[1].layoutMode = 'span';
+
+  const catalog = buildTargetCatalog(snapshot);
+
+  assert.deepEqual(catalog.wallMembers.map((target) => target.id), [
+    'primary-wall:primary-left',
+    'primary-wall:primary-center',
+    'primary-wall:primary-right',
+  ]);
+  assert.equal(catalog.wallMembers.every((target) => target.type === 'wall-member'), true);
+  assert.equal(catalog.wallMembers.every((target) => target.layoutRevision === 9), true);
+  assert.equal(catalog.wallMembers.some((target) => target.wallId === 'secondary-wall'), false);
+});
+
+test('catalog exposes stable enabled wall-region targets for a one-player Mosaic wall', async () => {
+  const { buildTargetCatalog, expandTargetToDeviceIds } = await loadCatalogModule();
+  const snapshot = roomSnapshot();
+  snapshot.deviceStates.displays.push({
+    id: 'mosaic-player',
+    name: 'P3 Mosaic Player',
+    status: 'online',
+    width: 11520,
+    height: 2160,
+  });
+  snapshot.layoutState.walls.push({
+    id: 'mosaic-wall',
+    name: 'Front Mosaic',
+    layoutMode: 'split',
+    layoutRevision: 22,
+    members: [{
+      deviceId: 'mosaic-player',
+      gridColumn: 0,
+      gridRow: 0,
+      viewport: { x: 0, y: 0, width: 11520, height: 2160 },
+    }],
+    layout: {
+      revision: 22,
+      regions: [
+        {
+          id: 'front-left',
+          name: 'Front Left TV',
+          x: 0,
+          y: 0,
+          width: 33.3333,
+          height: 100,
+          player_device_id: 'mosaic-player',
+          zone_id: 'zone-front-left',
+          z_index: 0,
+          fit_mode: 'contain',
+          enabled: true,
+          revision: 22,
+        },
+        {
+          id: 'front-center',
+          name: 'Front Center TV',
+          x: 33.3333,
+          y: 0,
+          width: 33.3334,
+          height: 100,
+          player_device_id: 'mosaic-player',
+          zone_id: 'zone-front-center',
+          z_index: 0,
+          fit_mode: 'cover',
+          enabled: true,
+          revision: 22,
+        },
+        {
+          id: 'disabled-service-area',
+          name: 'Service Area',
+          x: 66.6667,
+          y: 0,
+          width: 33.3333,
+          height: 100,
+          player_device_id: 'mosaic-player',
+          zone_id: 'zone-service',
+          z_index: 0,
+          fit_mode: 'contain',
+          enabled: false,
+          revision: 22,
+        },
+      ],
+    },
+  });
+
+  const catalog = buildTargetCatalog(snapshot);
+
+  assert.deepEqual(catalog.wallRegions.map((target) => target.id), [
+    'mosaic-wall:front-left',
+    'mosaic-wall:front-center',
+  ]);
+  assert.deepEqual(catalog.wallRegions[1].geometry, {
+    x: 33.3333,
+    y: 0,
+    width: 33.3334,
+    height: 100,
+  });
+  assert.equal(catalog.wallRegions[1].zoneId, 'zone-front-center');
+  assert.equal(catalog.wallRegions[1].layoutRevision, 22);
+  assert.deepEqual(
+    expandTargetToDeviceIds('wall-region:mosaic-wall:front-center', catalog),
+    ['mosaic-player'],
+  );
+});

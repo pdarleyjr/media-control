@@ -740,15 +740,20 @@ CREATE TABLE IF NOT EXISTS broadcast_requests (
                              CHECK (status IN ('requested','in_progress','confirmed','partial','failed','timed_out')),
     created_at               INTEGER NOT NULL,
     expires_at               INTEGER NOT NULL,
-    completed_at             INTEGER
+    completed_at             INTEGER,
+    idempotency_key          TEXT,
+    request_fingerprint      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS broadcast_device_results (
     request_id                  TEXT NOT NULL REFERENCES broadcast_requests(id) ON DELETE CASCADE,
+    target_key                  TEXT NOT NULL,
     device_id                   TEXT NOT NULL,
     device_name                 TEXT NOT NULL,
     ordinal                     INTEGER NOT NULL DEFAULT 0,
     command_id                  TEXT NOT NULL UNIQUE,
+    region_id                   TEXT,
+    zone_id                     TEXT,
     expected_source_id          TEXT,
     expected_playlist_revision  TEXT,
     state                       TEXT NOT NULL DEFAULT 'requested'
@@ -766,7 +771,7 @@ CREATE TABLE IF NOT EXISTS broadcast_device_results (
     acknowledged_at             INTEGER,
     confirmed_at                INTEGER,
     updated_at                  INTEGER NOT NULL,
-    PRIMARY KEY (request_id, device_id)
+    PRIMARY KEY (request_id, target_key)
 );
 
 CREATE INDEX IF NOT EXISTS idx_broadcast_requests_workspace_created

@@ -36,20 +36,20 @@ ARG GIT_BRANCH=unknown
 ARG BUILD_TIMESTAMP=unknown
 ARG BUILD_ID=unknown
 ARG IMAGE_TAG=unknown
-ENV GIT_COMMIT=$GIT_COMMIT \
-    GIT_TREE=$GIT_TREE \
-    GIT_BRANCH=$GIT_BRANCH \
-    BUILD_TIMESTAMP=$BUILD_TIMESTAMP \
-    BUILD_ID=$BUILD_ID \
-    IMAGE_TAG=$IMAGE_TAG
 LABEL org.opencontainers.image.revision=$GIT_COMMIT \
       org.opencontainers.image.source="https://github.com/pdarleyjr/media-control" \
-      org.opencontainers.image.title="media-control"
+      org.opencontainers.image.title="media-control" \
+      org.opencontainers.image.created=$BUILD_TIMESTAMP \
+      org.opencontainers.image.ref.name=$IMAGE_TAG \
+      com.mbfd.media-control.git-tree=$GIT_TREE \
+      com.mbfd.media-control.build-id=$BUILD_ID
+RUN node -e 'const fs=require("fs"); const value={schema_version:1,git_commit:process.env.GIT_COMMIT,git_tree:process.env.GIT_TREE,branch:process.env.GIT_BRANCH,build_id:process.env.BUILD_ID,build_timestamp:process.env.BUILD_TIMESTAMP,image_tag:process.env.IMAGE_TAG}; const missing=Object.entries(value).filter(([key,item])=>key!=="schema_version"&&(!item||item==="unknown")).map(([key])=>key); if(missing.length){throw new Error(`Missing build provenance: ${missing.join(", ")}`)} fs.writeFileSync("/app/build-provenance.json",`${JSON.stringify(value,null,2)}\n`,{mode:0o444});'
 COPY server ./server
 COPY frontend ./frontend
 COPY scripts ./scripts
 COPY VERSION ./VERSION
 ENV NODE_ENV=production
+ENV REQUIRE_EMBEDDED_PROVENANCE=true
 ENV PORT=3001
 EXPOSE 3001
 ENTRYPOINT ["/sbin/tini","--"]

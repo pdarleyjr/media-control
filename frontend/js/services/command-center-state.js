@@ -20,6 +20,12 @@ function targetReference(target) {
     reference.wall_id = String(target.wallId ?? target.wall_id ?? '');
     reference.group_id = String(target.groupId ?? target.group_id ?? '');
     reference.layout_revision = Number(target.layoutRevision ?? target.layout_revision) || 0;
+  } else if (type === 'wall-region' || type === 'region') {
+    reference.type = 'wall-region';
+    reference.id = String(target.id ?? '');
+    reference.wall_id = String(target.wallId ?? target.wall_id ?? '');
+    reference.region_id = String(target.regionId ?? target.region_id ?? target.id ?? '');
+    reference.layout_revision = Number(target.layoutRevision ?? target.layout_revision) || 0;
   }
   return reference;
 }

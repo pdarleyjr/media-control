@@ -6,6 +6,8 @@ const {
   presetGroups,
   validateLayout,
   groupForDevice,
+  normalizeWallRegions,
+  regionsFromLayoutZones,
 } = require('../lib/wall-layout');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -54,6 +56,167 @@ test('stored layout parsing is versioned and resolves subgroup authority', () =>
   assert.equal(layout.preset, 'span-left');
   assert.equal(groupForDevice(layout, 'tv2').leader_device_id, 'tv1');
   assert.equal(groupForDevice(layout, 'tv3').layout, 'solo');
+});
+
+test('Mosaic wall regions normalize stable geometry and fail closed on stale or invalid topology', () => {
+  const mosaicWall = { ...wall, layout_mode: 'split', layout_revision: 12 };
+  const mosaicMembers = [{ ...members[0], device_id: 'mosaic-player' }];
+  const input = {
+    revision: 12,
+    regions: [{
+      id: 'front-left',
+      name: 'Front Left',
+      x: 0,
+      y: 0,
+      width: 50,
+      height: 100,
+      player_device_id: 'mosaic-player',
+      zone_id: 'zone-front-left',
+      fit_mode: 'cover',
+      revision: 12,
+    }],
+  };
+
+  assert.deepEqual(normalizeWallRegions(mosaicWall, mosaicMembers, input), [{
+    id: 'front-left',
+    name: 'Front Left',
+    x: 0,
+    y: 0,
+    width: 50,
+    height: 100,
+    coordinate_system: 'normalized-percent',
+    player_device_id: 'mosaic-player',
+    zone_id: 'zone-front-left',
+    z_index: 0,
+    fit_mode: 'cover',
+    enabled: true,
+    revision: 12,
+  }]);
+
+  assert.throws(
+    () => normalizeWallRegions(mosaicWall, mosaicMembers, {
+      ...input,
+      regions: [{ ...input.regions[0], revision: 11 }],
+    }),
+    /revision must match/,
+  );
+  assert.throws(
+    () => normalizeWallRegions(mosaicWall, mosaicMembers, {
+      ...input,
+      regions: [{ ...input.regions[0], x: 75, width: 50 }],
+    }),
+    /exceeds the normalized canvas/,
+  );
+  assert.throws(
+    () => normalizeWallRegions(mosaicWall, mosaicMembers, {
+      ...input,
+      regions: [{ ...input.regions[0], player_device_id: 'removed-player' }],
+    }),
+    /current wall member/,
+  );
+  assert.throws(
+    () => normalizeWallRegions(mosaicWall, mosaicMembers, {
+      ...input,
+      regions: [
+        input.regions[0],
+        { ...input.regions[0], id: 'front-right', name: 'Front Right' },
+      ],
+    }),
+    /zone .* appears more than once/i,
+  );
+});
+
+test('stored authoritative layouts fail closed instead of falling back to legacy topology', () => {
+  assert.throws(
+    () => parseStoredLayout({ ...wall, layout_json: '{not-json' }, members),
+    (error) => error && error.code === 'INVALID_STORED_WALL_LAYOUT',
+  );
+  assert.throws(
+    () => parseStoredLayout({
+      ...wall,
+      layout_json: JSON.stringify({
+        groups: [{ id: 'bad', member_ids: ['removed-device'], layout: 'solo' }],
+      }),
+    }, members),
+    (error) => error && error.code === 'INVALID_STORED_WALL_LAYOUT',
+  );
+});
+
+test('Mosaic zone synchronization authors stable authoritative regions from the player layout', () => {
+  const mosaicWall = {
+    id: 'mosaic',
+    layout_mode: 'split',
+    layout_revision: 20,
+  };
+  const mosaicMembers = [{
+    device_id: 'front-center',
+    grid_col: 0,
+    grid_row: 0,
+    device_name: 'Mosaic Player',
+  }];
+  const regions = regionsFromLayoutZones(mosaicWall, mosaicMembers, [
+    {
+      id: 'zone-left',
+      name: 'Front Left',
+      x_percent: 0,
+      y_percent: 0,
+      width_percent: 50,
+      height_percent: 100,
+      z_index: 0,
+      fit_mode: 'cover',
+    },
+    {
+      id: 'zone-right',
+      name: 'Front Right',
+      x_percent: 50,
+      y_percent: 0,
+      width_percent: 50,
+      height_percent: 100,
+      z_index: 1,
+      fit_mode: 'contain',
+    },
+  ], { revision: 21 });
+
+  assert.deepEqual(regions.map((region) => ({
+    id: region.id,
+    player: region.player_device_id,
+    zone: region.zone_id,
+    x: region.x,
+    width: region.width,
+    revision: region.revision,
+  })), [
+    {
+      id: 'zone-left',
+      player: 'front-center',
+      zone: 'zone-left',
+      x: 0,
+      width: 50,
+      revision: 21,
+    },
+    {
+      id: 'zone-right',
+      player: 'front-center',
+      zone: 'zone-right',
+      x: 50,
+      width: 50,
+      revision: 21,
+    },
+  ]);
+  assert.throws(
+    () => regionsFromLayoutZones(mosaicWall, mosaicMembers, [], { revision: 21 }),
+    /at least one layout zone/i,
+  );
+  assert.throws(
+    () => regionsFromLayoutZones(mosaicWall, [...mosaicMembers, { device_id: 'other' }], [{
+      id: 'zone',
+      name: 'Zone',
+      x_percent: 0,
+      y_percent: 0,
+      width_percent: 100,
+      height_percent: 100,
+    }], { revision: 21 }),
+    /exactly one current wall member/i,
+  );
 });
 
 test('preset identity is derived from ordered member ids, not group lengths', () => {

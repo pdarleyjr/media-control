@@ -786,7 +786,7 @@ async function createWallFromSelection() {
       grid_col: i % cols,
       grid_row: Math.floor(i / cols),
     }));
-    await api.setWallDevices(wall.id, placement);
+    await api.setWallDevices(wall.id, placement, Number(wall.layout_revision) || 0);
     selectedDeviceIds.clear();
     showToast('Video wall created', 'success');
     window.location.hash = `#/wall/${wall.id}`;

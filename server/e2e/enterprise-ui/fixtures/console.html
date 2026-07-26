@@ -5,7 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>UI Contract Harness — Enterprise Operator Console</title>
   <link rel="stylesheet" href="/frontend/css/media-control-enterprise/operator-console.css" />
-  <style> body { margin: 0; background: var(--mc-bg-primary); } </style>
+  <link rel="stylesheet" href="/frontend/css/media-control.css" />
+  <style>
+    body { margin: 0; background: var(--mc-bg-primary); }
+    #open-split-picker { min-width: 48px; min-height: 48px; }
+  </style>
 </head>
 <body>
   <main id="harness">
@@ -15,6 +19,7 @@
     <section id="host-playback" aria-label="Playback slot"></section>
     <section id="host-screenshare" aria-label="Screen share slot"></section>
     <section id="host-privacy" aria-label="Privacy slot"></section>
+    <button id="open-split-picker" type="button">Send selected content</button>
   </main>
 
   <script>globalThis.__MC_ENTERPRISE_MOCK_ONLY = true;</script>
@@ -31,6 +36,7 @@
     import { mountPlaybackControl } from '/frontend/js/components/playback-control/playback-control.js';
     import { mountScreenSharePanel } from '/frontend/js/components/operator-console/screen-share-panel.js';
     import { mountPrivacyPublishing } from '/frontend/js/components/content-library/privacy-publishing.js';
+    import { openTargetPicker } from '/frontend/js/components/target-picker.js';
 
     const i18n = createEnterpriseI18n((k) => k);
 
@@ -70,6 +76,86 @@
     }
     window.__snapshot = snapshot;
     roomStore.applySnapshot(snapshot(1));
+
+    const splitRoutingSnapshot = {
+      schemaVersion: 1,
+      workspaceId: 'ws-1',
+      roomId: 'classroom-1',
+      revision: 51,
+      confirmedState: {
+        displays: [
+          { id: 'front-left', name: 'Front Left', status: 'online' },
+          { id: 'front-center', name: 'Front Center', status: 'online' },
+          { id: 'front-right', name: 'Front Right', status: 'online' },
+          { id: 'mosaic-player', name: 'P3 Mosaic Player', status: 'online' },
+        ],
+      },
+      deviceStates: {
+        displays: [
+          { id: 'front-left', name: 'Front Left', status: 'online', width: 3840, height: 2160 },
+          { id: 'front-center', name: 'Front Center', status: 'online', width: 3840, height: 2160 },
+          { id: 'front-right', name: 'Front Right', status: 'online', width: 3840, height: 2160 },
+          { id: 'mosaic-player', name: 'P3 Mosaic Player', status: 'online', width: 11520, height: 2160 },
+        ],
+        nodes: [],
+      },
+      layoutState: {
+        walls: [
+          {
+            id: 'physical-wall',
+            name: 'Physical Front Wall',
+            layoutMode: 'split',
+            layoutRevision: 50,
+            members: [
+              { deviceId: 'front-left', viewport: { x: 0, y: 0, width: 3840, height: 2160 } },
+              { deviceId: 'front-center', viewport: { x: 3840, y: 0, width: 3840, height: 2160 } },
+              { deviceId: 'front-right', viewport: { x: 7680, y: 0, width: 3840, height: 2160 } },
+            ],
+          },
+          {
+            id: 'mosaic-wall',
+            name: 'Mosaic Front Wall',
+            layoutMode: 'split',
+            layoutRevision: 51,
+            members: [
+              { deviceId: 'mosaic-player', viewport: { x: 0, y: 0, width: 11520, height: 2160 } },
+            ],
+            layout: {
+              revision: 51,
+              regions: [
+                {
+                  id: 'left-tv', name: 'Left TV', x: 0, y: 0, width: 33.3333, height: 100,
+                  player_device_id: 'mosaic-player', zone_id: 'mosaic-left',
+                  z_index: 0, fit_mode: 'contain', enabled: true, revision: 51,
+                },
+                {
+                  id: 'center-tv', name: 'Center TV', x: 33.3333, y: 0, width: 33.3334, height: 100,
+                  player_device_id: 'mosaic-player', zone_id: 'mosaic-center',
+                  z_index: 0, fit_mode: 'contain', enabled: true, revision: 51,
+                },
+                {
+                  id: 'right-tv', name: 'Right TV', x: 66.6667, y: 0, width: 33.3333, height: 100,
+                  player_device_id: 'mosaic-player', zone_id: 'mosaic-right',
+                  z_index: 0, fit_mode: 'contain', enabled: true, revision: 51,
+                },
+              ],
+            },
+          },
+        ],
+        groups: [],
+      },
+    };
+    window.__splitRoutingResult = null;
+    document.getElementById('open-split-picker').addEventListener('click', async () => {
+      window.__splitRoutingResult = await openTargetPicker({
+        snapshot: splitRoutingSnapshot,
+        capability: 'content',
+        selection: 'multiple',
+        allowOffline: false,
+        allowIndividualWallMembers: false,
+        allowSplitWallTargets: true,
+      });
+    });
 
     const adapter = {
       sendCommand: (id, type, payload, cb) => { window.__sent = window.__sent || []; window.__sent.push({ id, type, payload }); if (cb) cb({ delivered: true }); },

@@ -58,7 +58,7 @@ test('player applies validated seek commands to YouTube and HTML5 video', () => 
   assert.ok(snippet.includes('payload.position'), 'seek should retain the legacy position alias');
   assert.ok(snippet.includes('payload.time'), 'seek should retain the legacy time alias');
   assert.ok(snippet.includes("action === 'seek'"), 'transport should recognize seek');
-  assert.ok(snippet.includes('activeYtPlayer.seekTo(position, true)'), 'YouTube seek should use the IFrame API');
+  assert.ok(snippet.includes('youtubeTarget.seekTo(position, true)'), 'YouTube seek should use the exact fullscreen or Mosaic-region IFrame API target');
   assert.ok(snippet.includes('currentVideoEl && currentVideoEl.isConnected'), 'HTML5 transport should prefer the tracked active video');
   assert.ok(snippet.includes("document.querySelector('#playerContainer video, .wall-stage video, .zone video')"), 'HTML5 transport should fall back to a DOM lookup');
   assert.ok(snippet.includes('video.currentTime = boundedPosition'), 'HTML5 video seek should update currentTime');

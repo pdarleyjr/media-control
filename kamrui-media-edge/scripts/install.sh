@@ -14,10 +14,14 @@ curl -fsSL https://get.docker.com | sudo sh
 
 echo "==> stack directory"
 sudo mkdir -p "$STACK/camera-api" /etc/mbfd/media-stack /mnt/data/recordings/{active,completed,failed,metadata}
-sudo chown -R "$USER:$USER" "$STACK" /mnt/data/recordings
+if ! getent passwd mbfd-recording >/dev/null; then
+  sudo useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin mbfd-recording
+fi
+sudo chown -R "$USER:mbfd-recording" "$STACK" /mnt/data/recordings
+sudo chmod 2770 /mnt/data/recordings /mnt/data/recordings/{active,completed,failed,metadata}
 
 echo "==> camera-api source"
-cp "$HERE/camera-api/server.js" "$HERE/camera-api/peertube-upload.js" "$HERE/camera-api/package.json" "$STACK/camera-api/"
+cp "$HERE/camera-api/server.js" "$HERE/camera-api/recording-safety.js" "$HERE/camera-api/peertube-upload.js" "$HERE/camera-api/package.json" "$STACK/camera-api/"
 ( cd "$STACK/camera-api" && npm ci --omit=dev --no-audit --no-fund )
 
 echo "==> MediaMTX config (template -> live, creds from env, mode 0600)"
@@ -38,6 +42,16 @@ echo "==> systemd units"
 for u in mbfd-annke-main-relay mbfd-annke-preview-relay mbfd-camera-api; do
   sudo cp "$HERE/systemd/$u.service" /etc/systemd/system/
 done
+# Install but do not enable the per-session recording template. The current API
+# retains validated Node detachment until the supervisor adapter is selected.
+sudo cp "$HERE/systemd/mbfd-camera-recording@.service" /etc/systemd/system/
+sudo install -o root -g root -m 0755 "$HERE/scripts/mbfd-camera-recording-run" /usr/local/libexec/mbfd-camera-recording-run
+sudo install -o root -g root -m 0755 "$HERE/mbfd-recording-admin" /usr/local/sbin/mbfd-recording-admin
+echo "peter ALL=(root) NOPASSWD: /usr/local/sbin/mbfd-recording-admin *" | sudo tee /etc/sudoers.d/mbfd-recording-admin >/dev/null
+sudo chmod 0440 /etc/sudoers.d/mbfd-recording-admin
+sudo visudo -cf /etc/sudoers.d/mbfd-recording-admin
+sudo install -d -o peter -g peter -m 0755 "$STACK/scripts"
+sudo install -o peter -g peter -m 0755 "$HERE/scripts/user-long-recording-test.sh" "$STACK/scripts/user-long-recording-test.sh"
 sudo systemctl daemon-reload
 
 echo "==> least-privilege admin helper"

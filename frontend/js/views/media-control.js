@@ -12,6 +12,8 @@ import * as displayState from '../services/display-state.js';
 import { previewSource, renderStage } from './media-control/stage.js';
 import { renderToolbox } from './media-control/toolbox.js';
 import { sendToDisplays, sentToast, trackBroadcastDelivery } from './media-control/send.js';
+import { sendTransportCommand } from './media-control/transport.js';
+import { transportContextForTarget } from '../services/region-playback-state.js';
 import { renderInspector, closeInspector } from './media-control/inspector.js';
 import { renderMultiview, teardownMultiview, buildSplitGridUrl } from './media-control/multiview.js';
 import { pickRoutingTargets } from './media-control/routing-picker.js';
@@ -176,7 +178,6 @@ const BACKGROUND_PREVIEW_INTERVAL_MS = 60000;
 // array indexed by column (0=left). Survives repaint (kept here, NOT in the DOM)
 // so dropping on the right column never blanks the left — both columns are re-sent
 // together as one composite grid on each drop.
-const wallSplitState = {};
 
 // Build the set of device ids that belong to a video wall — those devices are
 // represented by the wall card, never their own (mirrors dashboard.js:789-793).
@@ -207,6 +208,31 @@ function layoutGroupTargets() {
     }
   }
   return result;
+}
+
+function wallRegionTargets() {
+  const result = [];
+  for (const wall of (walls || [])) {
+    if (wall.layout_mode !== 'split' || wall.layout?.valid === false) continue;
+    for (const region of (wall.layout?.regions || [])) {
+      if (region.enabled === false) continue;
+      result.push({
+        ...region,
+        type: 'region',
+        id: `${wall.id}:${region.id}`,
+        region_id: region.id,
+        wall_id: wall.id,
+        device_id: region.player_device_id,
+        layout_revision: Number(wall.layout_revision) || 0,
+        label: `${wall.name || wall.id} · ${region.name || region.id}`,
+      });
+    }
+  }
+  return result;
+}
+
+function commandCenterControlTargets() {
+  return [...layoutGroupTargets(), ...wallRegionTargets()];
 }
 
 function layoutGroupById(groupId) {
@@ -251,9 +277,23 @@ function commandCenterCatalog() {
       };
     })
   ));
+  const wallRegions = wallTargets.flatMap((wall) => (
+    (wall.layout?.valid === false ? [] : (wall.layout?.regions || [])).map((region) => ({
+      ...region,
+      type: 'wall-region',
+      id: `${wall.id}:${region.id}`,
+      wallId: wall.id,
+      regionId: region.id,
+      playerDeviceId: region.player_device_id,
+      layoutRevision: wall.layoutRevision,
+      memberIds: [region.player_device_id].filter(Boolean),
+      members: [byId.get(region.player_device_id)].filter(Boolean),
+    }))
+  ));
   return {
     walls: wallTargets,
     wallGroups,
+    wallRegions,
     groups: [],
     displays,
     standaloneDisplays: displays.filter((display) =>
@@ -778,7 +818,10 @@ async function setWallMode(wallId, mode) {
   const wall = (walls || []).find(w => w.id === wallId);
   if (wall && wall.layout_mode === mode) return; // already in this template
   try {
-    await api.updateWall(wallId, { layout_mode: mode });
+    await api.updateWall(wallId, {
+      layout_mode: mode,
+      expected_revision: Number(wall.layout_revision) || 0,
+    });
     await loadWalls();
     if (activeControlTarget?.wall_id === wallId) {
       activeControlTarget = null;
@@ -797,7 +840,7 @@ async function setWallLayout(wallId, preset, expectedRevision) {
   try {
     await api.updateWallLayout(wallId, { preset, expected_revision: expectedRevision });
     await loadWalls();
-    if (targetApi) targetApi.setOptions(walls, layoutGroupTargets(), routeableDisplays());
+    if (targetApi) targetApi.setOptions(walls, commandCenterControlTargets(), routeableDisplays());
     const wall = (walls || []).find((candidate) => candidate.id === wallId);
     const groups = wall?.layout?.groups || [];
     const preferred = groups.find((group) => group.layout === 'span' && group.member_ids?.length > 1)
@@ -816,39 +859,26 @@ async function setWallLayout(wallId, preset, expectedRevision) {
   }
 }
 
-// Drop a source onto ONE column of a single-spanning-device split wall (a PC
-// driving N TVs as one Mosaic window). There is only one physical device, so both
-// columns must travel together as ONE composite grid URL: we MERGE the new column
-// into the wall's kept column state, rebuild the grid, ensure the wall is in split
-// mode (so the server gives this device its own playlist, not the shared span one),
-// then broadcast the merged grid to that single device. Dropping on the right
-// leaves the left intact and vice-versa.
-async function dropOnWallHalf(wallId, halfIndex, source, label) {
+// Route directly to one persisted Mosaic region. Sibling region assignments are
+// preserved by the scene engine; no synthetic composite URL is generated.
+async function dropOnWallRegion(wallId, regionId, source, label) {
   const wall = (walls || []).find(w => w.id === wallId);
   if (!wall) return;
-  const cols = Math.max(2, wall.grid_cols || 2);
-  const leaderId = wall.leader_device_id
-    || (wall.devices && wall.devices[0] && wall.devices[0].device_id);
-  if (!leaderId) { showToast(t('mc.send.no_displays'), 'error'); return; }
-
-  const arr = wallSplitState[wallId] ? wallSplitState[wallId].slice() : new Array(cols).fill(null);
-  arr[halfIndex] = { source, label };
-  wallSplitState[wallId] = arr;
-
-  let url;
-  try { url = await buildSplitGridUrl(arr, cols); }
-  catch { url = null; }
-  if (!url) { showToast(t('mc.send.failed'), 'error'); return; }
-
-  // The single device needs its OWN playlist (not the shared span playlist) for the
-  // composite to land — that happens only in split mode. Idempotent if already split.
-  if (wall.layout_mode !== 'split') {
-    try { await api.updateWall(wallId, { layout_mode: 'split' }); await loadWalls(); }
-    catch { /* best-effort; broadcast still targets the device directly */ }
+  const region = (wall.layout?.regions || []).find((candidate) => candidate.id === regionId);
+  if (!region || region.enabled === false || wall.layout?.valid === false) {
+    showToast(t('mc.wall.regions_sync_required'), 'error');
+    return;
   }
-
-  const ok = await sendToPhysicalScope({ remote_url: url }, [leaderId], label || t('mc.wall.split_label'));
-  if (ok) { refreshAfterSend([leaderId]); paintStage(); }
+  const leaderId = region.player_device_id;
+  if (!leaderId) return;
+  const reference = {
+    type: 'wall-region',
+    wall_id: wall.id,
+    region_id: region.id,
+    layout_revision: Number(wall.layout_revision) || 0,
+  };
+  const ok = await sendToDisplays(source, [leaderId], label, { targets: [reference] });
+  if (ok) refreshAfterSend([leaderId]);
 }
 
 // ---- Live preview driver ----
@@ -1000,6 +1030,7 @@ async function chooseRouteTargets(label) {
     allowOffline: false,
     availability: 'any',
     allowIndividualWallMembers: false,
+    allowSplitWallTargets: true,
     allowLiveProgram: false,
     title: label,
   });
@@ -1552,7 +1583,7 @@ function attachStageDrop(stageContainer) {
   // Single-spanning-device split halves: drop a source onto ONE column of a wall
   // driven by one Mosaic window. Each half pushes its own source into a composite
   // grid on that single device (merge-and-resend; the other column is untouched).
-  stageContainer.querySelectorAll('.mc-wall-split-half[data-device-id][data-split-half]').forEach(half => {
+  stageContainer.querySelectorAll('.mc-wall-split-half[data-device-id][data-wall-region-id]').forEach(half => {
     if (half.__mcDropWired) return;
     half.__mcDropWired = true;
     half.addEventListener('dragover', (e) => {
@@ -1568,12 +1599,31 @@ function attachStageDrop(stageContainer) {
       half.classList.remove('mc-card-dragover');
       const parsed = parseDragSource(e);
       const wallId = half.closest('.mc-wall[data-wall-id]')?.dataset.wallId;
-      const idx = parseInt(half.dataset.splitHalf, 10);
-      if (!parsed || !wallId || !Number.isInteger(idx)) return;
-      await dropOnWallHalf(wallId, idx, parsed.source, parsed.label);
+      const regionId = half.dataset.wallRegionId;
+      if (!parsed || !wallId || !regionId) return;
+      await dropOnWallRegion(wallId, regionId, parsed.source, parsed.label);
     };
     half.addEventListener('drop', handleDrop);
     half.addEventListener('mc:source-drop', handleDrop);
+  });
+  stageContainer.querySelectorAll('[data-wall-sync-regions][data-wall-id]').forEach((button) => {
+    if (button.__mcSyncWired) return;
+    button.__mcSyncWired = true;
+    button.addEventListener('click', async () => {
+      const wall = (walls || []).find((candidate) => candidate.id === button.dataset.wallId);
+      if (!wall) return;
+      button.disabled = true;
+      try {
+        await api.syncWallRegions(wall.id, Number(wall.layout_revision) || 0);
+        await loadWalls();
+        targetApi?.setOptions?.(walls, commandCenterControlTargets(), routeableDisplays());
+        paintStage();
+        showToast(t('mc.wall.regions_sync_success'), 'success');
+      } catch (error) {
+        showToast(error?.message || t('mc.wall.regions_sync_failed'), 'error');
+        button.disabled = false;
+      }
+    });
   });
 
   // Whole-wall drop strips: drop a source here to fill EVERY screen of that wall
@@ -1678,6 +1728,9 @@ function activeTargetDeviceIds() {
     const group = layoutGroupById(commandTarget.id);
     return group ? [...group.member_ids] : [];
   }
+  if (commandTarget.type === 'region') {
+    return commandTarget.device_id ? [commandTarget.device_id] : [];
+  }
   if (commandTarget.type === 'wall') {
     const w = (walls || []).find((x) => x.id === commandTarget.id);
     return w ? wallDeviceIds(w) : [];
@@ -1695,6 +1748,7 @@ function wallTransportDeviceIds(wall) {
 // the standalone display itself. Split walls are independent, so their member
 // cards own transport and the wall-level transport row stays hidden.
 function activeTargetTransportIds() {
+  if (activeControlTarget?.type === 'region') return activeTargetDeviceIds();
   if (activeControlTarget?.type === 'group') return activeTargetDeviceIds();
   if (activeTarget && activeTarget.type === 'group') return activeTargetDeviceIds();
   if (activeTarget && activeTarget.type === 'wall') {
@@ -1706,8 +1760,9 @@ function activeTargetTransportIds() {
 }
 // The active wall object (or null) — used by the Span/Split toggle.
 function activeWall() {
-  if (!activeTarget || (activeTarget.type !== 'wall' && activeTarget.type !== 'group')) return null;
-  return (walls || []).find((x) => x.id === (activeTarget.wall_id || activeTarget.id)) || null;
+  const target = activeControlTarget || activeTarget;
+  if (!target || !['wall', 'group', 'region'].includes(target.type)) return null;
+  return (walls || []).find((x) => x.id === (target.wall_id || target.id)) || null;
 }
 // Content currently assigned to the wall? (Any member showing a real source.)
 function wallHasContent(wall) {
@@ -1746,8 +1801,12 @@ function syncSocketTarget(tgt) {
     clearSocketTarget();
     return;
   }
-  const type = tgt.type === 'wall' || tgt.type === 'group' ? 'wall' : tgt.type === 'display' ? 'display' : null;
-  const id = tgt.type === 'group' ? tgt.wall_id : (tgt.id || tgt.wall_id || tgt.device_id);
+  const type = tgt.type === 'wall' || tgt.type === 'group'
+    ? 'wall'
+    : (tgt.type === 'display' || tgt.type === 'region') ? 'display' : null;
+  const id = tgt.type === 'group'
+    ? tgt.wall_id
+    : (tgt.type === 'region' ? tgt.device_id : (tgt.id || tgt.wall_id || tgt.device_id));
   if (!type || !id) clearSocketTarget();
   else selectSocketTarget(type, id);
 }
@@ -1764,11 +1823,11 @@ function handleTargetChange(tgt) {
     if (fallback) { handleTargetChange(fallback); }
     return;
   }
-  if (tgt?.type === 'group') {
+  if (tgt?.type === 'group' || tgt?.type === 'region') {
     activeControlTarget = tgt;
     activeTarget = { type: 'wall', id: tgt.wall_id, wall_id: tgt.wall_id, supportsModes: true };
     commandCenterState = setControlTarget(commandCenterState, activeControlTarget);
-    targetApi?.setActive?.(activeTarget);
+    targetApi?.setActive?.(tgt.type === 'region' ? tgt : activeTarget);
   } else {
     activeTarget = tgt;
     if (activeTarget?.type === 'wall') {
@@ -1792,7 +1851,7 @@ function handleTargetChange(tgt) {
     sessionStorage.removeItem(LAST_TARGET_KEY);
   } catch { /* session storage is best effort */ }
   activePreviewCursor = 0;
-  syncSocketTarget(activeTarget);
+  syncSocketTarget(activeControlTarget || activeTarget);
   paintStage();
   paintSummary();
   paintChips();
@@ -1980,11 +2039,30 @@ function mountTransportRow(hostEl) {
       if (!ids.length) return;
       const action = btn.dataset.ccTp; // 'prev' | 'restart' | 'play_pause' | 'next'
       const primary = displayState.get(ids[0]);
-      const paused = primary && primary.now_playing ? primary.now_playing.paused : undefined;
+      const regionContext = activeControlTarget?.type === 'region'
+        ? transportContextForTarget(activeControlTarget, primary)
+        : null;
+      const playback = regionContext?.playback || primary?.now_playing;
+      const paused = playback?.paused;
       const resolvedAction = action === 'play_pause' && paused !== undefined
         ? (paused ? 'play' : 'pause')
         : action;
-      ids.forEach(id => sendCommand(id, COMMAND_TYPES.TRANSPORT, { action: resolvedAction }));
+      if (regionContext) {
+        sendTransportCommand(
+          regionContext.deviceId,
+          resolvedAction,
+          {},
+          {
+            regionId: regionContext.regionId,
+            zoneId: regionContext.zoneId,
+            wallId: regionContext.wallId,
+            expectedRevision: regionContext.expectedRevision,
+            contentInstanceId: regionContext.contentInstanceId,
+          },
+        );
+      } else {
+        ids.forEach(id => sendCommand(id, COMMAND_TYPES.TRANSPORT, { action: resolvedAction }));
+      }
       refreshAfterSend(ids);
       // Optimistically refresh the Play/Pause label after a toggle.
       setTimeout(() => transportApi && transportApi.repaint && transportApi.repaint(), 400);
@@ -1997,7 +2075,11 @@ function mountTransportRow(hostEl) {
       if (row) row.hidden = !id;
       if (!id) return;
       const dev = displayState.get(id);
-      const kind = (dev && dev.now_playing && dev.now_playing.kind) || 'idle';
+      const regionContext = activeControlTarget?.type === 'region'
+        ? transportContextForTarget(activeControlTarget, dev)
+        : null;
+      const playback = regionContext?.playback || dev?.now_playing;
+      const kind = playback?.kind || 'idle';
       const isWeb = kind === 'web';
       const isPresentation = kind === 'pdf' || kind === 'document';
       const isVideo = kind === 'video';
@@ -2017,7 +2099,7 @@ function mountTransportRow(hostEl) {
       if (nextTxt) nextTxt.textContent = isPresentation ? t('mc.cc.transport.next_slide') : t('mc.cc.transport.next');
       const pp = hostEl.querySelector('[data-cc-tp="play_pause"] .mc-cc-tp-text');
       if (pp) {
-        const paused = dev && dev.now_playing ? dev.now_playing.paused : undefined;
+        const paused = playback?.paused;
         pp.textContent = paused === true
           ? t('mc.cc.transport.play')
           : paused === false ? t('mc.cc.transport.pause') : t('mc.tp.play_pause');
@@ -2056,8 +2138,9 @@ function mountScreensaverRow(hostEl) {
   };
   const repaint = () => {
     const ids = activeTargetDeviceIds();
-    if (row) row.hidden = ids.length === 0;
-    if (!ids.length) {
+    const regionScoped = activeControlTarget?.type === 'region';
+    if (row) row.hidden = ids.length === 0 || regionScoped;
+    if (!ids.length || regionScoped) {
       pending = null;
       sel.value = '';
       return;
@@ -2077,6 +2160,11 @@ function mountScreensaverRow(hostEl) {
   };
 
   sel.addEventListener('change', () => {
+    if (activeControlTarget?.type === 'region') {
+      showToast(t('mc.region.blank_unavailable'), 'info');
+      sel.value = '';
+      return;
+    }
     const val = sel.value;
     if (!val || val === MIXED_SCREENSAVER_VALUE) return;
     const ids = activeTargetDeviceIds();
@@ -2137,6 +2225,7 @@ function activePreviewDeviceId() {
   const previewTarget = activeControlTarget || activeTarget;
   if (!previewTarget) return null;
   if (previewTarget.type === 'display') return previewTarget.id || null;
+  if (previewTarget.type === 'region') return previewTarget.device_id || null;
   if (previewTarget.type === 'group') {
     const group = layoutGroupById(previewTarget.id);
     return group?.leader_device_id || group?.member_ids?.[0] || null;
@@ -2198,6 +2287,10 @@ function paintChips() {
 
 // ---- Action-dock command providers (route to existing functionality) ----
 function blankActiveTarget() {
+  if (activeControlTarget?.type === 'region') {
+    showToast(t('mc.region.blank_unavailable'), 'info');
+    return;
+  }
   const ids = activeTargetDeviceIds();
   if (!ids.length) { showToast(t('mc.cmd.no_displays'), 'error'); return; }
   ids.forEach((id) => sendCommand(id, COMMAND_TYPES.SCREEN_OFF, {}));
@@ -2212,6 +2305,10 @@ function blankActiveTarget() {
 // After sending commands it immediately refreshes display state so the status
 // dots and the dock button label repaint without waiting for the next server push.
 function blankToggleActiveTarget() {
+  if (activeControlTarget?.type === 'region') {
+    showToast(t('mc.region.blank_unavailable'), 'info');
+    return;
+  }
   const ids = activeTargetDeviceIds();
   if (!ids.length) { showToast(t('mc.cmd.no_displays'), 'error'); return; }
   const all = displayState.getAll();
@@ -2661,7 +2758,7 @@ pruneSelection();
 
   targetApi = mountTargetSelector(document.getElementById('mc-target-host'), {
     walls,
-    groups: layoutGroupTargets(),
+    groups: commandCenterControlTargets(),
     displays: routeableDisplays(),
     onTargetChange: handleTargetChange,
     onPinsChange: (pinnedRefs) => {
@@ -2900,7 +2997,7 @@ pruneSelection();
     if (targetApi) {
       targetApi.setOptions(
         walls,
-        layoutGroupTargets(),
+        commandCenterControlTargets(),
         routeableDisplays(),
       );
     }

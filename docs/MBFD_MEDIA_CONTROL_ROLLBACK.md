@@ -22,7 +22,21 @@ ssh gmktec '
   # ALWAYS back up the DB before a deploy that touches schema.sql / database.js:
   docker run --rm -v media-control_media_control_db:/db -v /home/mbfd/backups:/out alpine \
     cp /db/remote_display.db /out/remote_display.$(date +%s).db
-  CACHEBUST=$(git -C app rev-parse HEAD) docker compose -p media-control build --build-arg CACHEBUST=$CACHEBUST media-control
+  GIT_COMMIT=$(git -C app rev-parse HEAD)
+  GIT_TREE=$(git -C app rev-parse HEAD^{tree})
+  GIT_BRANCH=$(git -C app rev-parse --abbrev-ref HEAD)
+  BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  BUILD_ID=manual-${BUILD_TIMESTAMP}
+  IMAGE_TAG=media-control:manual-${GIT_COMMIT}
+  docker compose -p media-control build \
+    --build-arg CACHEBUST="${GIT_COMMIT}" \
+    --build-arg GIT_COMMIT="${GIT_COMMIT}" \
+    --build-arg GIT_TREE="${GIT_TREE}" \
+    --build-arg GIT_BRANCH="${GIT_BRANCH}" \
+    --build-arg BUILD_TIMESTAMP="${BUILD_TIMESTAMP}" \
+    --build-arg BUILD_ID="${BUILD_ID}" \
+    --build-arg IMAGE_TAG="${IMAGE_TAG}" \
+    media-control
   docker compose -p media-control up -d media-control'
 ```
 `CACHEBUST` is REQUIRED (BuildKit over-caches the COPY layer).
@@ -40,7 +54,21 @@ Only rebuild if it prints `SCHEMA_OK`.
 ssh gmktec '
   cd /home/mbfd/media-control/app && git checkout -B main <previous_good_sha>
   cd /home/mbfd/media-control
-  CACHEBUST=<previous_good_sha> docker compose -p media-control build --build-arg CACHEBUST=<previous_good_sha> media-control
+  GIT_COMMIT=$(git -C app rev-parse HEAD)
+  GIT_TREE=$(git -C app rev-parse HEAD^{tree})
+  GIT_BRANCH=$(git -C app rev-parse --abbrev-ref HEAD)
+  BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  BUILD_ID=rollback-${BUILD_TIMESTAMP}
+  IMAGE_TAG=media-control:rollback-${GIT_COMMIT}
+  docker compose -p media-control build \
+    --build-arg CACHEBUST="${GIT_COMMIT}" \
+    --build-arg GIT_COMMIT="${GIT_COMMIT}" \
+    --build-arg GIT_TREE="${GIT_TREE}" \
+    --build-arg GIT_BRANCH="${GIT_BRANCH}" \
+    --build-arg BUILD_TIMESTAMP="${BUILD_TIMESTAMP}" \
+    --build-arg BUILD_ID="${BUILD_ID}" \
+    --build-arg IMAGE_TAG="${IMAGE_TAG}" \
+    media-control
   docker compose -p media-control up -d media-control'
 ```
 Known-good SHAs: `f1cc6f2` (pre-studio classroom UX) · `c4e2510` (studio complete: Home/Presentations/AI/Player/Editor/Files/Downloads/Audit).
