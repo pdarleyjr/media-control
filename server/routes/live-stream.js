@@ -857,7 +857,7 @@ router.get('/recordings', requireGlobalCameraAdmin, async (req, res) => {
 router.get('/recordings/:id/deletion-impact', requireGlobalCameraAdmin, async (req, res) => {
   const requestId = createRequestId();
   if (!workspaceGuard(req, res, requestId)) return;
-  const result = await cameraControl.getDeletionImpact(req.params.id);
+  const result = await cameraControl.getDeletionImpact(req.params.id, { operatorId: req.user.id });
   if (result.ok) {
     res.json({ success: true, request_id: requestId, ...(result.data || {}) });
   } else {

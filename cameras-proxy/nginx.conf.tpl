@@ -35,7 +35,10 @@ http {
     location = /index.html { add_header Cache-Control "no-store"; }
 
     location /api/ {
-      proxy_pass http://kamrui_api/api/;
+      # No URI suffix: preserve the exact post-proxy path signed by Media
+      # Control, including its percent-encoding. Query ordering is canonicalized
+      # by the shared signer/verifier.
+      proxy_pass http://kamrui_api;
       proxy_http_version 1.1;
       proxy_set_header Host $host;
       proxy_set_header X-Real-IP $remote_addr;
@@ -46,7 +49,7 @@ http {
       proxy_connect_timeout 5s;
       proxy_read_timeout 30s;
       proxy_send_timeout 10s;
-      limit_except GET POST { deny all; }
+      limit_except GET POST PATCH DELETE { deny all; }
       add_header X-Proxy-Source "kamrui" always;
     }
 

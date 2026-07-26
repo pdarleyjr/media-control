@@ -10,6 +10,16 @@ fi
 : "${MBFD_RECORDING_SOURCE:?missing credential-free local RTSP source}"
 : "${MBFD_RECORDING_OUTPUT_PATTERN:?missing recording output pattern}"
 : "${MBFD_RECORDING_NONCE:?missing session nonce}"
+: "${MBFD_RECORDING_SESSION_ID:?missing recording session id}"
+
+if [[ "$MBFD_RECORDING_SESSION_ID" != "$session_id" ]]; then
+  echo "recording session identity mismatch" >&2
+  exit 2
+fi
+if [[ ! "$MBFD_RECORDING_NONCE" =~ ^[A-Fa-f0-9]{64}$ ]]; then
+  echo "invalid recording session nonce" >&2
+  exit 2
+fi
 
 case "$MBFD_RECORDING_SOURCE" in
   rtsp://127.0.0.1:*|rtsp://localhost:*) ;;
@@ -18,7 +28,7 @@ esac
 
 expected_root="/mnt/data/recordings/active/$session_id/"
 case "$MBFD_RECORDING_OUTPUT_PATTERN" in
-  "$expected_root"*) ;;
+  "$expected_root"*%03d.mp4) ;;
   *) echo "recording output escaped the session directory" >&2; exit 2 ;;
 esac
 

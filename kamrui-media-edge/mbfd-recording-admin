@@ -10,11 +10,115 @@ if [[ ! "$session_id" =~ ^ses_[A-Za-z0-9_-]+$ ]]; then
 fi
 
 unit="mbfd-camera-recording@${session_id}.service"
+env_file="/run/mbfd-camera-recording/${session_id}.env"
+
+env_value() {
+  local key="$1"
+  [[ -f "$env_file" && ! -L "$env_file" ]] || return 1
+  grep -m1 -E "^${key}=" "$env_file" | cut -d= -f2-
+}
+
+unit_fields() {
+  /usr/bin/systemctl show "$unit" --no-pager \
+    --property=Id,ActiveState,SubState,MainPID,Result
+}
+
+validate_environment() {
+  [[ -f "$env_file" && ! -L "$env_file" ]] || {
+    echo "recording environment is missing or unsafe" >&2
+    return 1
+  }
+  local mode owner configured_session source output nonce segment
+  mode="$(stat -c '%a' "$env_file")"
+  owner="$(stat -c '%U' "$env_file")"
+  [[ "$owner" == "peter" && ( "$mode" == "640" || "$mode" == "600" ) ]] || {
+    echo "recording environment ownership or mode is invalid" >&2
+    return 1
+  }
+  configured_session="$(env_value MBFD_RECORDING_SESSION_ID)"
+  source="$(env_value MBFD_RECORDING_SOURCE)"
+  output="$(env_value MBFD_RECORDING_OUTPUT_PATTERN)"
+  nonce="$(env_value MBFD_RECORDING_NONCE)"
+  segment="$(env_value MBFD_RECORDING_SEGMENT_SECONDS)"
+  [[ "$configured_session" == "$session_id" ]] || return 1
+  [[ "$source" =~ ^rtsp://(127\.0\.0\.1|localhost):[0-9]+/ ]] || return 1
+  [[ "$source" != *"@"* ]] || return 1
+  [[ "$output" == "/mnt/data/recordings/active/${session_id}/"*"%03d.mp4" ]] || return 1
+  [[ "$nonce" =~ ^[A-Fa-f0-9]{64}$ ]] || return 1
+  [[ "$segment" =~ ^[0-9]+$ && "$segment" -ge 1 && "$segment" -le 86400 ]] || return 1
+}
+
+validate_active_unit() {
+  validate_environment
+  local active sub pid source output nonce segment configured_session
+  active="$(/usr/bin/systemctl show "$unit" --property=ActiveState --value)"
+  sub="$(/usr/bin/systemctl show "$unit" --property=SubState --value)"
+  pid="$(/usr/bin/systemctl show "$unit" --property=MainPID --value)"
+  [[ "$active" == "active" && "$sub" == "running" && "$pid" =~ ^[0-9]+$ && "$pid" -gt 1 ]] || return 1
+  [[ "$(readlink -f "/proc/${pid}/exe")" == "/usr/bin/ffmpeg" ]] || return 1
+
+  configured_session="$(env_value MBFD_RECORDING_SESSION_ID)"
+  source="$(env_value MBFD_RECORDING_SOURCE)"
+  output="$(env_value MBFD_RECORDING_OUTPUT_PATTERN)"
+  nonce="$(env_value MBFD_RECORDING_NONCE)"
+  segment="$(env_value MBFD_RECORDING_SEGMENT_SECONDS)"
+  local -a expected actual
+  expected=(
+    /usr/bin/ffmpeg -nostdin -hide_banner -loglevel warning -n
+    -rtsp_transport tcp -i "$source"
+    -map 0:v:0 -map '0:a:0?'
+    -c:v copy -c:a aac -ar 48000 -ac 1 -b:a 96k
+    -af 'aresample=async=1:first_pts=0'
+    -max_muxing_queue_size 1024
+    -f segment -segment_time "$segment"
+    -segment_format mp4 -reset_timestamps 1
+    -movflags '+frag_keyframe+empty_moov+default_base_moof'
+    "$output"
+  )
+  mapfile -d '' -t actual < "/proc/${pid}/cmdline"
+  [[ "${#actual[@]}" -eq "${#expected[@]}" ]] || return 1
+  local i
+  for i in "${!expected[@]}"; do
+    [[ "${actual[$i]}" == "${expected[$i]}" ]] || return 1
+  done
+  tr '\0' '\n' < "/proc/${pid}/environ" | grep -Fqx "MBFD_RECORDING_NONCE=${nonce}"
+}
+
+status() {
+  local active sub output
+  active="$(/usr/bin/systemctl show "$unit" --property=ActiveState --value)"
+  sub="$(/usr/bin/systemctl show "$unit" --property=SubState --value)"
+  if [[ "$active" == "active" && "$sub" == "running" ]]; then
+    validate_active_unit || {
+      echo "recording unit failed executable, command, nonce, or output validation" >&2
+      exit 3
+    }
+    output="$(env_value MBFD_RECORDING_OUTPUT_PATTERN)"
+    unit_fields
+    echo "Validated=yes"
+    echo "OutputPath=${output}"
+    return
+  fi
+  unit_fields
+  if [[ "$active" == "failed" ]]; then
+    echo "Validated=failed"
+  else
+    echo "Validated=inactive"
+  fi
+}
+
 case "$action" in
-  start)  exec /usr/bin/systemctl start "$unit" ;;
-  stop)   exec /usr/bin/systemctl stop "$unit" ;;
-  status) exec /usr/bin/systemctl show "$unit" --no-pager \
-    --property=Id,ActiveState,SubState,MainPID,ExecMainStartTimestampMonotonic,Result ;;
+  start)
+    validate_environment
+    exec /usr/bin/systemctl start "$unit"
+    ;;
+  stop)
+    validate_active_unit
+    exec /usr/bin/systemctl stop "$unit"
+    ;;
+  status)
+    status
+    ;;
   *)
     echo "usage: mbfd-recording-admin start|stop|status <ses_id>" >&2
     exit 2

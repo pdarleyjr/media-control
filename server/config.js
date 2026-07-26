@@ -273,6 +273,8 @@ module.exports = {
     baseUrl: (process.env.CAMERA_CONTROL_BASE_URL || '').replace(/\/+$/, ''),
     token: process.env.CAMERA_CONTROL_TOKEN || '',
     signingSecret: process.env.CAMERA_CONTROL_SIGNING_SECRET || '',
+    signingKeyId: process.env.CAMERA_CONTROL_SIGNING_KEY_ID || 'media-control',
+    signingKeyVersion: process.env.CAMERA_CONTROL_SIGNING_KEY_VERSION || 'v1',
     previewUrl: process.env.CAMERA_PREVIEW_URL || '',
   },
 
