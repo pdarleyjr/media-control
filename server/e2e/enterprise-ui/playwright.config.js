@@ -9,6 +9,10 @@ module.exports = defineConfig({
   expect: { timeout: 10000 },
   fullyParallel: false,
   workers: 1,
+  reporter: [
+    ['list'],
+    ['../no-skips-reporter.js', { requiredProjects: ['podium', 'handheld-admin', 'desktop'] }],
+  ],
   use: {
     headless: true,
     baseURL: 'http://127.0.0.1:4321',

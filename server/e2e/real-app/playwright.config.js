@@ -11,7 +11,11 @@ module.exports = defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: 0,
-  reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report' }]],
+  reporter: [
+    ['list'],
+    ['html', { open: 'never', outputFolder: 'playwright-report' }],
+    ['../no-skips-reporter.js', { requiredProjects: ['chromium'] }],
+  ],
   use: {
     headless: true,
     viewport: { width: 1440, height: 900 },
