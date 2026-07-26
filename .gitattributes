@@ -1,0 +1,3 @@
+*.sh text eol=lf
+kamrui-media-edge/mbfd-recording-admin text eol=lf
+kamrui-media-edge/scripts/mbfd-camera-recording-run text eol=lf
