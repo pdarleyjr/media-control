@@ -222,6 +222,14 @@ test('camera API, installer and unit use the independent recording supervisor co
     path.join(__dirname, '..', '..', 'kamrui-media-edge', 'mbfd-recording-admin'),
     'utf8'
   );
+  const lockfile = path.join(
+    __dirname,
+    '..',
+    '..',
+    'kamrui-media-edge',
+    'camera-api',
+    'package-lock.json'
+  );
 
   assert.match(edge, /createRecordingSupervisor/);
   assert.match(edge, /recordingSupervisor\.startSession/);
@@ -233,7 +241,10 @@ test('camera API, installer and unit use the independent recording supervisor co
   );
   assert.doesNotMatch(edge, /async function startRecordingProcess/);
   assert.match(install, /recording-supervisor\.js/);
+  assert.equal(fs.existsSync(lockfile), true);
+  assert.match(install, /camera-api\/package-lock\.json/);
   assert.match(upgrade, /mbfd-camera-recording@\.service/);
+  assert.match(upgrade, /camera-api\/package-lock\.json/);
   assert.match(upgrade, /useradd --system/);
   assert.match(upgrade, /user-long-recording-test\.sh/);
   assert.match(unit, /KillSignal=SIGINT/);

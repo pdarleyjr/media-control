@@ -26,7 +26,8 @@ sudo chmod 2770 /mnt/data/recordings /mnt/data/recordings/{active,completed,fail
 echo "==> camera-api source"
 cp "$HERE/camera-api/server.js" "$HERE/camera-api/recording-safety.js" \
   "$HERE/camera-api/recording-supervisor.js" "$HERE/camera-api/camera-service-signature.js" \
-  "$HERE/camera-api/peertube-upload.js" "$HERE/camera-api/package.json" "$STACK/camera-api/"
+  "$HERE/camera-api/peertube-upload.js" "$HERE/camera-api/package.json" \
+  "$HERE/camera-api/package-lock.json" "$STACK/camera-api/"
 ( cd "$STACK/camera-api" && npm ci --omit=dev --no-audit --no-fund )
 
 echo "==> MediaMTX config (template -> live, creds from env, mode 0600)"
