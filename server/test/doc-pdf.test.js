@@ -75,7 +75,7 @@ test('getOfficePdf returns a cached PDF without re-converting', async () => {
 // Windows dev box). Build a minimal ODF doc and assert a real PDF comes out.
 test('getOfficePdf converts an ODF document to a real PDF (requires LibreOffice)', async (t) => {
   if (!hasSoffice) { t.skip('soffice not installed'); return; }
-  const archiver = require('archiver');
+  const { ZipArchive } = require('archiver');
   // A complete minimal ODT package LibreOffice reliably opens: the `mimetype`
   // entry stored first (uncompressed), META-INF/manifest.xml, and a content.xml
   // with the full namespace set + office:version.
@@ -98,7 +98,7 @@ test('getOfficePdf converts an ODF document to a real PDF (requires LibreOffice)
     '</office:document-content>';
   await new Promise((resolve, reject) => {
     const out = fs.createWriteStream(odt);
-    const ar = archiver('zip');
+    const ar = new ZipArchive();
     out.on('close', resolve); ar.on('error', reject); ar.pipe(out);
     ar.append('application/vnd.oasis.opendocument.text', { name: 'mimetype', store: true });
     ar.append(manifest, { name: 'META-INF/manifest.xml' });

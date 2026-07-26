@@ -12,10 +12,10 @@ process.on('exit', () => { try { fs.rmSync(tmp, { recursive: true, force: true }
 // Build a tiny zip (ODF/OOXML are zips) containing one entry, using archiver
 // (already a direct dependency, present in the container).
 function makeZip(zipPath, entryName, buffer) {
-  const archiver = require('archiver');
+  const { ZipArchive } = require('archiver');
   return new Promise((resolve, reject) => {
     const out = fs.createWriteStream(zipPath);
-    const archive = archiver('zip');
+    const archive = new ZipArchive();
     out.on('close', resolve);
     archive.on('error', reject);
     archive.pipe(out);
@@ -98,7 +98,6 @@ test('generateDocThumbnail returns null for OOXML with no embedded preview when 
     catch { return false; }
   })();
   if (hasSoffice) { return; } // when LibreOffice IS present it would render a real thumbnail; skip the negative assertion
-  const archiver = require('archiver');
   const pptx = path.join(tmp, 'nopreview.pptx');
   await makeZip(pptx, 'docProps/app.xml', Buffer.from('<Properties/>'));
   const out = await generateDocThumbnail({
