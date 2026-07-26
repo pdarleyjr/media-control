@@ -344,7 +344,12 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
           VALUES (?, ?, 0, ?, ?)
         `).run(playlistId, contentId, duration, fitMode);
       }
-      const snapshot = buildSnapshotItems(playlistId);
+      const snapshot = buildSnapshotItems(playlistId).map((item) => ({
+        ...item,
+        content_instance_id: source.content_instance_id
+          ? String(source.content_instance_id)
+          : String(item.id),
+      }));
       db.prepare("UPDATE playlists SET status = 'published', published_snapshot = ?, updated_at = strftime('%s','now') WHERE id = ?")
         .run(JSON.stringify(snapshot), playlistId);
       db.prepare('UPDATE devices SET playlist_id = ? WHERE id = ?').run(playlistId, deviceId);
@@ -476,7 +481,12 @@ function pushSourceToRegions(io, deviceId, source, routes, opts = {}) {
           source.fit_mode || route.fit_mode || null,
         );
       }
-      const snapshot = buildSnapshotItems(playlistId);
+      const snapshot = buildSnapshotItems(playlistId).map((item) => ({
+        ...item,
+        content_instance_id: source.content_instance_id
+          ? String(source.content_instance_id)
+          : String(item.id),
+      }));
       db.prepare("UPDATE playlists SET status = 'published', published_snapshot = ?, updated_at = strftime('%s','now') WHERE id = ?")
         .run(JSON.stringify(snapshot), playlistId);
       db.prepare('UPDATE devices SET playlist_id = ? WHERE id = ?').run(playlistId, deviceId);

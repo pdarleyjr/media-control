@@ -817,6 +817,22 @@ CREATE TABLE IF NOT EXISTS display_states (
     PRIMARY KEY (target_type, target_id)
 );
 
+-- Authoritative fixed-compositor state. Runtime credentials and OBS connection
+-- details are intentionally never stored here.
+CREATE TABLE IF NOT EXISTS live_stream_compositions (
+    workspace_id TEXT PRIMARY KEY,
+    state_json   TEXT NOT NULL,
+    updated_at   INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS live_stream_composition_requests (
+    workspace_id    TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    request_json    TEXT NOT NULL,
+    created_at      INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, idempotency_key)
+);
+
 CREATE TABLE IF NOT EXISTS content_publication_requests (
     id                   TEXT PRIMARY KEY,
     content_id           TEXT NOT NULL REFERENCES content(id) ON DELETE CASCADE,

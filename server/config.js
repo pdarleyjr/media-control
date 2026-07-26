@@ -247,11 +247,24 @@ module.exports = {
     // stopping the backing services server-side.
     classroomMode: ['true', '1'].includes(String(process.env.CLASSROOM_MODE_ENABLED || '').toLowerCase()),
   },
-  // Live stream orchestration. Media Control only talks to the local AI Director
-  // API; OBS websocket remains local-only behind that service.
+  // Deterministic live-stream orchestration. The retired AI Director values
+  // remain only for rolling compatibility; fixed_compositor talks directly to
+  // the private authenticated OBS WebSocket.
   liveStream: {
     aiDirectorUrl: process.env.AI_DIRECTOR_URL || 'http://127.0.0.1:8766',
     aiDirectorTimeoutMs: parseInt(process.env.AI_DIRECTOR_TIMEOUT_MS, 10) || 5000,
+    publisherMode: String(
+      process.env.LIVE_PUBLISHER_MODE
+      || process.env.LIVE_STREAM_PUBLISHER_MODE
+      || 'direct_camera',
+    ).toLowerCase() === 'fixed_compositor'
+      ? 'fixed_compositor'
+      : 'direct_camera',
+    obsWebSocketUrl: process.env.OBS_WEBSOCKET_URL || 'ws://127.0.0.1:4455',
+    obsWebSocketPassword: process.env.OBS_WEBSOCKET_PASSWORD || '',
+    obsRequestTimeoutMs: parseInt(process.env.OBS_WEBSOCKET_TIMEOUT_MS, 10) || 5000,
+    obsCameraInputName: process.env.OBS_CAMERA_INPUT_NAME || 'MBFD_ANNKE_CAMERA',
+    obsContentInputName: process.env.OBS_CONTENT_INPUT_NAME || 'MBFD_LIVE_CONTENT',
     // OBS runs beside Media Control and must not inherit the public APP_URL.
     // Set this dedicated override only when OBS reaches the appliance through
     // another direct LAN address; otherwise the route defaults to loopback.
@@ -264,6 +277,10 @@ module.exports = {
     bootstrapHosts: process.env.LIVE_STREAM_BOOTSTRAP_HOSTS || '',
     bootstrapRemoteAddresses: process.env.LIVE_STREAM_BOOTSTRAP_REMOTE_ADDRESSES || '',
     peerTubeWatchUrl: process.env.PEERTUBE_LIVE_WATCH_URL || '',
+    peerTubeIngestHealthUrl: process.env.PEERTUBE_INGEST_HEALTH_URL || '',
+    peerTubeIngestHealthToken: process.env.PEERTUBE_INGEST_HEALTH_TOKEN || '',
+    peerTubeIngestRequestTimeoutMs: parseInt(process.env.PEERTUBE_INGEST_HEALTH_TIMEOUT_MS, 10) || 2500,
+    peerTubeIngestConfirmationTimeoutMs: parseInt(process.env.PEERTUBE_INGEST_CONFIRM_TIMEOUT_MS, 10) || 8000,
   },
 
   // Kamrui ANNKE camera-control edge. Media Control proxies every camera record

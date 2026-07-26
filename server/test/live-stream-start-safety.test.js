@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'routes', 'live-stream.js'), 'utf8');
 
-test('live-program preparation is explicit and does not start the stream or change director mode', () => {
+test('deprecated live-program preparation remains side-effect free for rolling clients', () => {
   assert.match(source, /router\.post\('\/prepare'/);
   assert.match(source, /async function prepareLiveProgram/);
   const prepareRoute = source.match(/router\.post\('\/prepare'[\s\S]*?\n\}\);/);
@@ -16,35 +16,43 @@ test('live-program preparation is explicit and does not start the stream or chan
   assert.match(source, /STREAM_ALREADY_ACTIVE/);
 });
 
-test('live start defaults to manual mode and gates automatic direction explicitly', () => {
-  assert.match(source, /const directorMode = 'manual'/);
-  assert.match(source, /confirm_auto_canary/);
+test('live start is one-click, operator-only, and does not consume a production plan', () => {
+  const startRoute = source.match(/router\.post\('\/start'[\s\S]*?\n\}\);/);
+  assert.ok(startRoute, 'start route should exist');
+  assert.doesNotMatch(startRoute[0], /consumePlanForStart/);
+  assert.match(startRoute[0], /production_mode:\s*'fixed_camera'/);
+  assert.match(startRoute[0], /camera_id:\s*3/);
   assert.match(source, /initiator !== 'operator' && initiator !== 'user'/);
-  assert.match(source, /cameraControl\.startLivestream\(\)/);
-  assert.match(source, /require\('\.\.\/lib\/live-stream-safety'\)/);
-  assert.match(source, /APPROVED_PROGRAM_SCENES/);
-  assert.match(source, /OPERATOR_STREAM_START_DISABLED|startGateFailure/);
   assert.match(source, /AUTOMATIC_STREAM_START_DISABLED/);
 });
 
-test('live start reports failure unless OBS confirms the stream is active', () => {
-  assert.match(source, /STREAM_START_NOT_CONFIRMED/);
-  assert.match(source, /stream_active === true/);
-  assert.match(source, /if \(!verified\)[\s\S]*cameraControl\.stopLivestream\(\)/);
+test('live start selects Camera Only and uses exactly one configured publisher', () => {
+  const startRoute = source.match(/router\.post\('\/start'[\s\S]*?\n\}\);/);
+  assert.ok(startRoute);
+  assert.match(startRoute[0], /PUBLISHER_MODES\.FIXED_COMPOSITOR/);
+  assert.match(startRoute[0], /selectCameraOnly/);
+  assert.match(startRoute[0], /startStreaming/);
+  assert.match(startRoute[0], /cameraControl\.startLivestream\(\)/);
+  assert.match(startRoute[0], /DUPLICATE_PUBLISHER_ACTIVE/);
+  assert.doesNotMatch(startRoute[0], /Promise\.all\([\s\S]*(?:startStreaming|startLivestream)/);
 });
 
-test('live start replaces and refreshes the OBS browser source before scene selection', () => {
+test('live start reports failure unless the selected publisher confirms active state', () => {
+  assert.match(source, /STREAM_START_NOT_CONFIRMED/);
+  assert.match(source, /publisherStatus[\s\S]*active === true/);
+  assert.match(source, /rollbackSelectedPublisher/);
+});
+
+test('live start retains the credential-free OBS receiver URL and Camera Only composition', () => {
   assert.match(source, /buildLiveStreamPlayerUrl/);
   assert.match(source, /program_url/);
-  assert.match(source, /program_refresh/);
-  assert.match(source, /prepareLiveProgram/);
+  assert.match(source, /FIXED_SCENES\.CAMERA_ONLY/);
 });
 
-test('stopping a stream preserves the current classroom scene and director mode by default', () => {
+test('stopping a stream preserves the current classroom composition', () => {
   const stopRoute = source.match(/router\.post\('\/stop'[\s\S]*?\n\}\);/);
   assert.ok(stopRoute, 'stop route should exist');
-  assert.doesNotMatch(stopRoute[0], /\/mode\/manual/);
-  assert.doesNotMatch(stopRoute[0], /\/scene\//);
+  assert.doesNotMatch(stopRoute[0], /setCurrentProgramScene/);
   assert.match(source, /STREAM_STOP_NOT_CONFIRMED/);
 });
 

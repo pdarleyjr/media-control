@@ -1028,6 +1028,7 @@ module.exports = function setupDeviceSocket(io) {
           : {};
         const playerState = {
           current_content_id: rawState.current_content_id || null,
+          content_instance_id: rawState.content_instance_id || null,
           current_asset_id: rawState.current_asset_id || null,
           content_type: rawState.content_type || null,
           layout_mode: rawState.layout_mode || null,

@@ -18,12 +18,16 @@ import { t, tn } from '../../i18n.js';
 import { showToast } from '../../components/toast.js';
 import { confirmDialog } from '../../components/confirm.js';
 import { performanceMetrics } from '../../services/ui-runtime-v1.js';
-import { isLiveActive, isLiveStateKnown } from './action-dock.js';
+import {
+  isLiveActive,
+  isLiveCompositionAvailable,
+  isLiveStateKnown,
+} from './action-dock.js';
 
 // YouTube URL detection (same regex as present.js).
 const YT_RE = /^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//i;
 
-let livePromptCache = { at: 0, active: false };
+let livePromptCache = { at: 0, available: false };
 const deliveryPanels = new Map();
 const DELIVERY_TERMINAL = new Set(['confirmed', 'partial', 'failed', 'timed_out']);
 
@@ -125,17 +129,18 @@ export async function trackBroadcastDelivery(requestId, label, initial = null) {
 
 async function shouldOfferLiveStreamInclusion() {
   const now = Date.now();
-  if (now - livePromptCache.at < 5000) return livePromptCache.active;
+  if (now - livePromptCache.at < 5000) return livePromptCache.available;
   try {
     const status = await api.liveStream.status();
-    const director = status && status.ai_director && status.ai_director.data;
     livePromptCache = {
       at: now,
-      active: !!(director && director.stream_active),
+      available: status?.publisher?.active === true
+        && status?.publisher?.mode === 'fixed_compositor'
+        && status?.compositor?.available === true,
     };
-    return livePromptCache.active;
+    return livePromptCache.available;
   } catch (_) {
-    livePromptCache = { at: now, active: false };
+    livePromptCache = { at: now, available: false };
     return false;
   }
 }
@@ -147,17 +152,15 @@ async function shouldOfferLiveStreamInclusion() {
 // fall back to the cached status fetch so existing behaviour is unchanged.
 async function liveStreamCurrentlyActive() {
   try {
-    if (isLiveStateKnown()) return isLiveActive();
+    if (isLiveStateKnown()) return isLiveActive() && isLiveCompositionAvailable();
   } catch { /* dock not importable */ }
   return shouldOfferLiveStreamInclusion();
 }
 
-// confirmDialog only supports two buttons; the live-include choice needs three
-// (Yes add to live / No display only / Cancel abort). We build a tiny transient
-// <dialog> reusing the same .mc-dialog* classes + structure as
-// components/confirm.js so styling stays consistent with no new CSS. Returns
-// 'yes' | 'no' | 'cancel'.
-function chooseLiveStreamInclusion(label) {
+// Display only, either fixed PiP composition, or Cancel. We build a transient
+// <dialog> reusing the same dialog structure. There is deliberately no generic
+// yes/no choice: the operator selects the exact on-air program layout.
+function chooseLiveStreamComposition(label) {
   return new Promise((resolve) => {
     let dialogEl = null;
     let settled = false;
@@ -170,17 +173,24 @@ function chooseLiveStreamInclusion(label) {
       <form method="dialog" class="mc-dialog-card">
         <h3 id="mcLiveIncludeTitle" class="mc-dialog-title">${esc(t('mc.send.live_include_title'))}</h3>
         <p class="mc-dialog-msg">${esc(t('mc.send.live_include_msg', { label }))}</p>
-        <div class="mc-dialog-actions">
+        <label class="mc-live-audio-choice">
+          <input type="checkbox" data-mc-live-content-audio>
+          <span>${esc(t('mc.send.live_content_audio'))}</span>
+        </label>
+        <p class="mc-live-audio-warning">${esc(t('mc.send.live_content_audio_warning'))}</p>
+        <div class="mc-dialog-actions mc-live-send-choices">
           <button type="button" class="mc-btn mc-btn-ghost" data-mc-live-cancel>${esc(t('mc.send.live_include_cancel'))}</button>
-          <button type="button" class="mc-btn mc-btn-ghost" data-mc-live-no>${esc(t('mc.send.live_include_no_display'))}</button>
-          <button type="button" class="mc-btn mc-btn-confirm" data-mc-live-yes>${esc(t('mc.send.live_include_yes'))}</button>
+          <button type="button" class="mc-btn mc-btn-ghost" data-mc-live-display-only>${esc(t('mc.send.live_display_only'))}</button>
+          <button type="button" class="mc-btn mc-btn-confirm" data-mc-live-content-main>${esc(t('mc.send.live_content_main'))}</button>
+          <button type="button" class="mc-btn mc-btn-confirm" data-mc-live-camera-main>${esc(t('mc.send.live_camera_main'))}</button>
         </div>
       </form>`;
     document.body.appendChild(dialogEl);
 
     const cleanup = () => {
-      yesBtn.removeEventListener('click', onYes);
-      noBtn.removeEventListener('click', onNo);
+      displayOnlyBtn.removeEventListener('click', onDisplayOnly);
+      contentMainBtn.removeEventListener('click', onContentMain);
+      cameraMainBtn.removeEventListener('click', onCameraMain);
       cancelBtn.removeEventListener('click', onCancel);
       dialogEl.removeEventListener('cancel', onCancel);
       dialogEl.removeEventListener('close', onCancel);
@@ -193,15 +203,24 @@ function chooseLiveStreamInclusion(label) {
       cleanup();
       resolve(val);
     };
-    const yesBtn = dialogEl.querySelector('[data-mc-live-yes]');
-    const noBtn = dialogEl.querySelector('[data-mc-live-no]');
+    const displayOnlyBtn = dialogEl.querySelector('[data-mc-live-display-only]');
+    const contentMainBtn = dialogEl.querySelector('[data-mc-live-content-main]');
+    const cameraMainBtn = dialogEl.querySelector('[data-mc-live-camera-main]');
     const cancelBtn = dialogEl.querySelector('[data-mc-live-cancel]');
-    const onYes = () => finish('yes');
-    const onNo = () => finish('no');
+    const contentAudio = dialogEl.querySelector('[data-mc-live-content-audio]');
+    const compositionChoice = (layout) => ({
+      layout,
+      audio_policy: contentAudio?.checked ? 'content_replace' : 'camera',
+      confirm_content_audio: contentAudio?.checked === true,
+    });
+    const onDisplayOnly = () => finish('display_only');
+    const onContentMain = () => finish(compositionChoice('content_main_camera_pip'));
+    const onCameraMain = () => finish(compositionChoice('camera_main_content_pip'));
     const onCancel = (e) => { if (e && e.preventDefault) e.preventDefault(); finish('cancel'); };
 
-    yesBtn.addEventListener('click', onYes);
-    noBtn.addEventListener('click', onNo);
+    displayOnlyBtn.addEventListener('click', onDisplayOnly);
+    contentMainBtn.addEventListener('click', onContentMain);
+    cameraMainBtn.addEventListener('click', onCameraMain);
     cancelBtn.addEventListener('click', onCancel);
     dialogEl.addEventListener('cancel', onCancel);
     dialogEl.addEventListener('close', onCancel);
@@ -210,16 +229,35 @@ function chooseLiveStreamInclusion(label) {
   });
 }
 
-// Resolve the live-include choice for a broadcast. Returns null when no stream
-// is active (the existing send path runs unchanged), otherwise 'yes' | 'no' |
-// 'cancel' from the 3-button prompt. Never throws — a status-check failure
-// resolves to null so it never blocks a local broadcast.
-async function resolveLiveStreamChoice(label) {
+// Resolve the exact composition choice. Returns null when no stream is active,
+// so the existing display-only flow remains unchanged.
+async function resolveLiveStreamChoice(label, source) {
+  if (source?.playlist_id) return null;
   let active = false;
   try { active = await liveStreamCurrentlyActive(); } catch { active = false; }
   if (!active) return null;
-  try { return await chooseLiveStreamInclusion(label); }
-  catch { return 'no'; }
+  try { return await chooseLiveStreamComposition(label); }
+  catch { return 'display_only'; }
+}
+
+async function routeToLiveComposition(choice, source) {
+  if (!choice || choice === 'display_only') return true;
+  const composition = await api.liveStream.composition();
+  const contentInstanceId = globalThis.crypto?.randomUUID?.()
+    || `live-content-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  await api.liveStream.compositionContent({
+    content_id: source?.content_id || null,
+    presentation_id: source?.presentation_id || null,
+    remote_url: source?.remote_url || null,
+    content_instance_id: contentInstanceId,
+    layout: choice.layout,
+    audio_policy: choice.audio_policy,
+    confirm_content_audio: choice.confirm_content_audio === true,
+    expected_compositor_revision: Number(composition?.revision) || 0,
+    idempotency_key: globalThis.crypto?.randomUUID?.()
+      || `live-composition-${contentInstanceId}`,
+  });
+  return true;
 }
 
 /**
@@ -287,9 +325,8 @@ export async function sendToDisplays(source, targetIds, label = t('mc.tile.conte
     delete resolvedSource.remote_url;   // replace the URL with the content id
   }
 
-const liveChoice = await resolveLiveStreamChoice(label);
-  if (liveChoice === 'cancel') return false;          // Cancel aborts the whole broadcast
-  const includeLiveStream = liveChoice === 'yes';     // 'no'/null → display only
+  const liveChoice = await resolveLiveStreamChoice(label, resolvedSource);
+  if (liveChoice === 'cancel') return false;
   const typedTargets = Array.isArray(options.targets) ? options.targets : [];
   const targetPayload = typedTargets.length ? { targets: typedTargets } : { device_ids: targetIds };
   const idempotencyKey = globalThis.crypto?.randomUUID?.()
@@ -300,7 +337,7 @@ const liveChoice = await resolveLiveStreamChoice(label);
     result = await api.broadcast({
       ...resolvedSource,
       ...targetPayload,
-      include_live_stream: includeLiveStream,
+      include_live_stream: false,
       idempotency_key: idempotencyKey,
     });
   } catch (e) {
@@ -323,7 +360,7 @@ const liveChoice = await resolveLiveStreamChoice(label);
         ...resolvedSource,
         ...targetPayload,
         confirm_wall_replace: true,
-        include_live_stream: includeLiveStream,
+        include_live_stream: false,
         idempotency_key: idempotencyKey,
       });
     } catch (e) {
@@ -347,7 +384,7 @@ const liveChoice = await resolveLiveStreamChoice(label);
         ...targetPayload,
         confirm_all: true,
         confirm_wall_replace: wallReplaceConfirmed,
-        include_live_stream: includeLiveStream,
+        include_live_stream: false,
         idempotency_key: idempotencyKey,
       });
     } catch (e) {
@@ -359,21 +396,25 @@ const liveChoice = await resolveLiveStreamChoice(label);
   finishDispatchMetric();
 
   if (result && result.success) {
-    // "Yes, add to live stream": the broadcast already reached the display(s);
-    // now refresh the live program so the new content is marked as changed on the
-    // server side (api.liveStream.refresh() -> markLiveContentChanged). Sent
-    // first, refreshed after — the display send is never blocked by this.
-    if (liveChoice === 'yes') {
-      try { await api.liveStream.refresh(); } catch { /* best-effort; display send already succeeded */ }
-    }
     if (result.request_id) {
       const delivery = await trackBroadcastDelivery(result.request_id, label, result.delivery || null);
-      return delivery?.status === 'confirmed';
+      if (delivery?.status !== 'confirmed') return false;
+      try {
+        return await routeToLiveComposition(liveChoice, resolvedSource);
+      } catch (error) {
+        showToast(error?.message || t('mc.send.live_failed'), 'error');
+        return false;
+      }
     }
     // Compatibility for an older server during a rolling deployment. This is
     // never used by a server that supports persistent player confirmation.
     sentToast(label, Number(result.sent) || 0, Number(result.total) || 0);
-    return true;
+    try {
+      return await routeToLiveComposition(liveChoice, resolvedSource);
+    } catch (error) {
+      showToast(error?.message || t('mc.send.live_failed'), 'error');
+      return false;
+    }
   }
   // Unexpected non-error non-success response — be silent (server logged it).
   return false;

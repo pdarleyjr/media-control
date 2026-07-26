@@ -275,10 +275,10 @@ app.get('/player/live-stream', (req, res) => {
         // leaving the PIP stuck in "connecting").
         serverUrl: config.liveStream.playerBaseUrl || 'http://127.0.0.1:8096',
         connectionScope: 'obs-same-host',
-        // OBS Browser Source has unattended autoplay permission. This is the
-        // single program-content audio source in OBS, so it must not inherit
-        // the muted-by-default policy used by wall followers.
-        audioEnabled: true,
+        // Camera audio is the authoritative default. Content audio can only be
+        // enabled by the authenticated compositor controller's explicit
+        // content_replace event; it is never granted by the browser-source URL.
+        audioEnabled: false,
       },
     };
     const inject = '  <script>window.__playerConfig = ' + JSON.stringify(publicConfig).replace(/</g, '\\u003c') + ';document.documentElement.classList.add("managed-program-receiver");</script>\n';

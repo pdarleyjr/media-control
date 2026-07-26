@@ -2904,6 +2904,94 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
 .mc-live-ladder[data-state="ready"] { border-color: #2563eb; background: #dbeafe; }
 .mc-dock-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 
+/* Fixed program bus: compact broadcast-console treatment. Red is used only
+   for the confirmed on-air tally and selected program scene. */
+.mc-composition-control {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 52px;
+  padding: 4px 6px;
+  border: 1px solid rgba(148, 163, 184, .28);
+  border-radius: 10px;
+  background: #111827;
+  color: #e5e7eb;
+}
+.mc-composition-control[hidden] { display: none; }
+.mc-composition-control button {
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid rgba(148, 163, 184, .34);
+  border-radius: 8px;
+  background: #1f2937;
+  color: #e5e7eb;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.mc-composition-control button:hover:not(:disabled) { border-color: #cbd5e1; background: #273449; }
+.mc-composition-control button:focus-visible { outline: 3px solid #60a5fa; outline-offset: 2px; }
+.mc-composition-control button.is-active {
+  border-color: #dc2626;
+  background: #991b1b;
+  color: #fff;
+}
+.mc-composition-control button:disabled { cursor: not-allowed; opacity: .48; }
+.mc-composition-control .mc-composition-remove {
+  border-color: rgba(251, 191, 36, .46);
+  color: #fde68a;
+}
+.mc-composition-tally {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 8px;
+  color: #fecaca;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.mc-composition-tally-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ef4444;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, .18);
+}
+.mc-live-send-choices .mc-btn { min-height: 44px; }
+.mc-live-audio-choice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  margin-top: 12px;
+  padding: 8px 10px;
+  border: 1px solid rgba(245, 158, 11, .4);
+  border-radius: 8px;
+  background: rgba(120, 53, 15, .16);
+  color: #fef3c7;
+  font-weight: 700;
+  cursor: pointer;
+}
+.mc-live-audio-choice input {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  accent-color: #f59e0b;
+}
+.mc-live-audio-choice:focus-within { outline: 3px solid #fbbf24; outline-offset: 2px; }
+.mc-live-audio-warning {
+  margin: 6px 0 12px;
+  color: #fde68a;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .mc-prepare-prod-dialog { border: none; border-radius: 12px; padding: 0; max-width: 520px; width: calc(100vw - 2rem); background: #0f172a; color: #e2e8f0; box-shadow: 0 24px 64px rgba(0,0,0,.55); }
 .mc-prepare-prod { padding: 1.25rem 1.5rem 1.5rem; display: grid; gap: 1rem; }
 .mc-prepare-prod header h2 { margin: 0 0 .35rem; font-size: 1.25rem; }
