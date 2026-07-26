@@ -147,4 +147,3 @@ test('OBS adapter uses official scene request names and confirms the selected pr
   );
   adapter.close();
 });
-

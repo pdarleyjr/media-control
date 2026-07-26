@@ -71,4 +71,3 @@ test('configured but unreachable PeerTube health fails closed', async () => {
   assert.equal(result.confirmed, false);
   assert.equal(result.code, 'PEERTUBE_INGEST_UNREACHABLE');
 });
-

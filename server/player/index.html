@@ -3700,6 +3700,7 @@
       if (newFp === oldFp && playlist.length > 0 && !wallChanged) {
         console.log('Playlist unchanged');
         if (hasDisplayRestore) scheduleDisplayStateRestore('playlist-unchanged');
+        bindPendingBroadcastToRender();
         requestAnimationFrame(confirmCurrentRenderIfReady);
         return;
       }
@@ -3740,6 +3741,7 @@
           if (!wallChanged && oldAnchorRenderKey === renderKeyOf(playlist[stillThereIdx])) {
             isPlaying = true;
             if (hasDisplayRestore) scheduleDisplayStateRestore('playlist-continuity');
+            bindPendingBroadcastToRender();
             requestAnimationFrame(confirmCurrentRenderIfReady);
             return;
           }

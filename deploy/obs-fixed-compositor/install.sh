@@ -29,4 +29,3 @@ fi
 systemctl daemon-reload
 echo "Installed mbfd-fixed-compositor.service without enabling or starting it."
 echo "Validate the protected environment, then use the controlled mode-switch procedure in README.md."
-
