@@ -1,7 +1,7 @@
 [Unit]
 Description=MBFD deterministic fixed livestream compositor
-After=network-online.target graphical-session.target
-Wants=network-online.target
+After=network-online.target mbfd-obs-x.service
+Wants=network-online.target mbfd-obs-x.service
 StartLimitIntervalSec=120
 StartLimitBurst=3
 
@@ -9,6 +9,8 @@ StartLimitBurst=3
 Type=simple
 User=mbfd
 Group=mbfd
+Environment=DISPLAY=:20
+Environment=QT_QPA_PLATFORM=xcb
 Environment=HOME=/var/lib/mbfd-obs
 Environment=XDG_CONFIG_HOME=/var/lib/mbfd-obs/.config
 Environment=OBS_CONFIG_HOME=/var/lib/mbfd-obs/.config/obs-studio
@@ -16,6 +18,7 @@ EnvironmentFile=/etc/mbfd/obs-fixed-compositor.env
 WorkingDirectory=/opt/mbfd/media-control
 UMask=0077
 ExecStartPre=/usr/bin/node /opt/mbfd/media-control/deploy/obs-fixed-compositor/generate-config.js
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 80); do xdpyinfo -display :20 >/dev/null 2>&1 && exit 0; sleep .25; done; exit 1'
 ExecStart=/usr/bin/obs --profile MBFD_FIXED_COMPOSITOR --collection MBFD_FIXED_COMPOSITOR --disable-shutdown-check --minimize-to-tray
 ExecStartPost=/usr/bin/node /opt/mbfd/media-control/deploy/obs-fixed-compositor/healthcheck.js --wait-ms 30000
 Restart=on-failure
@@ -40,4 +43,4 @@ LogRateLimitIntervalSec=60s
 LogRateLimitBurst=100
 
 [Install]
-WantedBy=graphical.target
+WantedBy=multi-user.target

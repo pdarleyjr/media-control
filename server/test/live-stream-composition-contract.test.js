@@ -96,6 +96,12 @@ test('source-controlled OBS assets contain exactly the required scenes and no ru
   assert.match(generator, /keyint_sec/);
   assert.doesNotMatch(generator, /stream[_ -]?key\s*[:=]\s*['"][^'"]+/i);
   assert.match(unit, /EnvironmentFile=/);
+  assert.match(unit, /Wants=.*mbfd-obs-x\.service/);
+  assert.match(unit, /After=.*mbfd-obs-x\.service/);
+  assert.match(unit, /Environment=DISPLAY=:20/);
+  assert.match(unit, /Environment=QT_QPA_PLATFORM=xcb/);
+  assert.match(unit, /ExecStartPre=.*xdpyinfo -display :20/);
+  assert.match(unit, /WantedBy=multi-user\.target/);
   assert.match(health, /getCurrentProgramScene/);
   assert.match(deploy, /install/);
   assert.match(docs, /direct_camera/);
