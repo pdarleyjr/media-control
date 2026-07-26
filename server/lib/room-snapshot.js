@@ -122,10 +122,18 @@ const STORED_LAYOUT_GROUP_SCHEMA = {
   playlist_id: PUBLIC_SCALAR,
   audio_policy: { mode: PUBLIC_SCALAR },
 };
+const STORED_LAYOUT_REGION_SCHEMA = {
+  id: PUBLIC_SCALAR, name: PUBLIC_SCALAR,
+  x: PUBLIC_SCALAR, y: PUBLIC_SCALAR, width: PUBLIC_SCALAR, height: PUBLIC_SCALAR,
+  coordinate_system: PUBLIC_SCALAR, player_device_id: PUBLIC_SCALAR,
+  zone_id: PUBLIC_SCALAR, z_index: PUBLIC_SCALAR, fit_mode: PUBLIC_SCALAR,
+  enabled: PUBLIC_SCALAR, revision: PUBLIC_SCALAR,
+};
 const STORED_LAYOUT_SCHEMA = {
   version: PUBLIC_SCALAR, id: PUBLIC_SCALAR, wall_id: PUBLIC_SCALAR,
   mode: PUBLIC_SCALAR, revision: PUBLIC_SCALAR, preset: PUBLIC_SCALAR,
   source: PUBLIC_SCALAR, groups: [STORED_LAYOUT_GROUP_SCHEMA],
+  regions: [STORED_LAYOUT_REGION_SCHEMA],
 };
 const WALL_SCHEMA = {
   id: PUBLIC_SCALAR, name: PUBLIC_SCALAR, gridColumns: PUBLIC_SCALAR,

@@ -36,8 +36,8 @@ test('authenticated player status is persisted and relayed to the workspace dash
 
 test('player distinguishes receipt from confirmed rendering', () => {
   const player = source('player/index.html');
-  assert.match(player, /emitPendingBroadcastStatus\('acknowledged'\)/);
-  assert.match(player, /emitPendingBroadcastStatus\('confirmed'\)/);
+  assert.match(player, /emitPendingBroadcastStatusFor\(pending, 'acknowledged'\)/);
+  assert.match(player, /emitPendingBroadcastStatusFor\(pending, 'confirmed'\)/);
   assert.match(player, /expected_playlist_revision/);
   assert.match(player, /render_generation/);
   assert.match(player, /confirmPendingBroadcastRender/);

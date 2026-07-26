@@ -6,6 +6,18 @@ const { execFile, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const {
+  atomicWriteJson,
+  acquireFilesystemLease,
+  releaseFilesystemLease,
+  readProcessIdentity,
+  processIdentityMatches,
+  validateFinalizedMedia,
+  isInterruptedFinalization,
+  acceptFilesystemNonce,
+  revisionPrecondition,
+  stopValidatedProcess,
+} = require('./recording-safety');
 
 const app = express();
 app.use(express.json({ limit: '64kb' }));
@@ -30,6 +42,7 @@ function loadConfig() {
   return {
     port: parseInt(env.CAMERA_API_PORT || '8200', 10),
     token: env.CAMERA_API_TOKEN || '',
+    serviceSigningSecret: env.CAMERA_SERVICE_SIGNING_SECRET || '',
     recordingDir: env.RECORDING_DIR || '/mnt/data/recordings',
     peertubeRtmpUrl: env.PEERTUBE_RTMP_URL || '',
     peertubeStreamKey: env.PEERTUBE_STREAM_KEY || '',
@@ -65,11 +78,18 @@ function createInitialState() {
   return {
     recording: false,
     livestreaming: false,
-    sessionId: null,
+    recordingSessionId: null,
+    livestreamSessionId: null,
+    recordingState: 'idle',
+    streamState: 'idle',
+    finalizationState: 'idle',
+    synchronizationState: 'idle',
+    uploadState: 'idle',
     recordingStartedAt: null,
     streamStartedAt: null,
     recordingPath: null,
     recordingProcess: null,
+    recordingIdentity: null,
     streamProcess: null,
     lastRecording: null,
     errors: [],
@@ -109,7 +129,54 @@ function authMiddleware(req, res, next) {
   if (!token || !constantTimeCompare(token, CONFIG.token)) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
-  req.operatorId = req.headers['x-operator-id'] || 'api-client';
+  req.operatorId = 'api-client';
+  next();
+}
+
+function requestSignature(req, timestamp) {
+  const operatorId = String(req.headers['x-operator-id'] || 'media-control-service');
+  const nonce = String(req.headers['x-service-nonce'] || '');
+  const ifMatch = String(req.headers['if-match'] || '');
+  const bodyHash = crypto.createHash('sha256')
+    .update(JSON.stringify(req.body == null ? null : req.body))
+    .digest('hex');
+  return crypto.createHmac('sha256', CONFIG.serviceSigningSecret)
+    .update(`${req.method}\n${req.originalUrl}\n${timestamp}\n${bodyHash}\n${operatorId}\n${nonce}\n${ifMatch}`)
+    .digest('hex');
+}
+
+const SERVICE_NONCE_ROOT = path.join(CONFIG.recordingDir, 'metadata', '.service-nonces');
+
+// Destructive camera-edge calls must originate from the authenticated Media
+// Control service. Operator identity is accepted only inside this signed
+// envelope; a browser-supplied X-Operator-Id is never trusted directly.
+function requireServiceAuth(req, res, next) {
+  if (!CONFIG.serviceSigningSecret) {
+    return res.status(503).json({ error: 'Signed camera service identity is not configured' });
+  }
+  const timestamp = String(req.headers['x-service-timestamp'] || '');
+  const nonce = String(req.headers['x-service-nonce'] || '');
+  const signature = String(req.headers['x-service-signature'] || '');
+  const parsed = Date.parse(timestamp);
+  if (!Number.isFinite(parsed) || Math.abs(Date.now() - parsed) > 60_000) {
+    return res.status(401).json({ error: 'Invalid or expired service timestamp' });
+  }
+  if (!/^[a-f0-9-]{36}$/i.test(nonce)) {
+    return res.status(401).json({ error: 'Invalid service nonce' });
+  }
+  if (!constantTimeCompare(signature, requestSignature(req, timestamp))) {
+    return res.status(401).json({ error: 'Invalid service signature' });
+  }
+  try {
+    if (!acceptFilesystemNonce(SERVICE_NONCE_ROOT, nonce, 60_000)) {
+      return res.status(409).json({ error: 'Replayed service nonce' });
+    }
+  } catch (error) {
+    addError(`Service nonce cache unavailable: ${error.message}`);
+    return res.status(503).json({ error: 'Service replay protection unavailable' });
+  }
+  req.operatorId = String(req.headers['x-operator-id'] || 'media-control-service').slice(0, 128);
+  req.serviceAuthenticated = true;
   next();
 }
 
@@ -209,7 +276,7 @@ function getRecordingFilePath(sessionId) {
   };
 }
 
-function startRecordingProcess(rtspUrl, outputPattern) {
+async function startRecordingProcess(rtspUrl, outputPattern, sessionNonce) {
   const args = [
     '-nostdin', '-hide_banner', '-loglevel', 'warning',
     '-y',
@@ -227,14 +294,24 @@ function startRecordingProcess(rtspUrl, outputPattern) {
     '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
     outputPattern,
   ];
-  // detached: true so the FFmpeg process survives camera-api restarts.
-  // The PID is persisted to a state file and re-adopted on next startup.
-  const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
-  proc.stderr.on('data', d => {
-    const msg = d.toString().trim();
-    if (msg) console.error('[recording]', msg);
+  // Detached FFmpeg must not retain pipes to Node. Production supervision can
+  // use the systemd template/journal; the compatible Node path ignores stdio.
+  const proc = spawn('ffmpeg', args, {
+    stdio: ['ignore', 'ignore', 'ignore'],
+    detached: true,
+    env: { ...process.env, MBFD_RECORDING_NONCE: sessionNonce },
   });
-  return proc;
+  await new Promise((resolve, reject) => {
+    proc.once('spawn', resolve);
+    proc.once('error', reject);
+  });
+  proc.unref();
+  const identity = readProcessIdentity(proc.pid, { expectedOutputPath: outputPattern });
+  if (identity.sessionNonce !== sessionNonce || identity.processGroup !== proc.pid) {
+    try { process.kill(-proc.pid, 'SIGKILL'); } catch {}
+    throw new Error('Unable to establish durable recording process identity');
+  }
+  return { proc, identity };
 }
 
 function startStreamProcess(rtspUrl, rtmpUrl, streamKey) {
@@ -263,11 +340,18 @@ function startStreamProcess(rtspUrl, rtmpUrl, streamKey) {
 function stopProcess(proc) {
   return new Promise((resolve) => {
     if (!proc || proc.killed) return resolve(null);
-    proc.on('close', (code) => resolve(code));
+    let settled = false;
+    const finish = (code) => {
+      if (settled) return;
+      settled = true;
+      resolve(code);
+    };
+    proc.once('close', finish);
     proc.kill('SIGINT');
     setTimeout(() => {
-      if (!proc.killed) proc.kill('SIGKILL');
+      if (!settled) proc.kill('SIGKILL');
     }, 10000);
+    setTimeout(() => finish(null), 15000);
   });
 }
 
@@ -282,15 +366,18 @@ function saveRecordingState() {
   try {
     const stateData = {
       recording: state.recording,
-      sessionId: state.sessionId,
+      recordingSessionId: state.recordingSessionId,
       recordingStartedAt: state.recordingStartedAt,
       recordingPath: state.recordingPath,
-      recordingPid: state.recordingProcess ? state.recordingProcess.pid : null,
+      recordingIdentity: state.recordingIdentity,
+      recordingState: state.recordingState,
+      finalizationState: state.finalizationState,
       savedAt: new Date().toISOString(),
     };
-    fs.writeFileSync(RECORDING_STATE_FILE, JSON.stringify(stateData, null, 2));
+    atomicWriteJson(RECORDING_STATE_FILE, stateData);
   } catch (e) {
     console.error('[recording-state] Failed to save:', e.message);
+    throw e;
   }
 }
 
@@ -303,6 +390,25 @@ function pidIsAlive(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
+function monitorReAdoptedRecording(sessionId, identity) {
+  const pid = identity.pid;
+  const exitPoll = setInterval(() => {
+    if (!pidIsAlive(pid)) {
+      clearInterval(exitPoll);
+      if (state.recordingSessionId !== sessionId) return;
+      console.log(`[recording-state] Re-adopted recording PID ${pid} exited — finalizing`);
+      state.recording = false;
+      state.recordingState = 'stopped';
+      state.recordingProcess = null;
+      state.recordingExitPoll = null;
+      finalizeRecording(sessionId).catch(e => {
+        addError(`Finalization of re-adopted session ${sessionId} failed: ${e.message}`);
+      });
+    }
+  }, 5000);
+  state.recordingExitPoll = exitPoll;
+}
+
 // On startup, check for a recording that was running before the restart.
 // If the FFmpeg process is still alive, re-adopt it so it survives this
 // camera-api session. If it died, finalize the recording.
@@ -310,46 +416,63 @@ function readoptRecording() {
   try {
     if (!fs.existsSync(RECORDING_STATE_FILE)) return;
     const data = JSON.parse(fs.readFileSync(RECORDING_STATE_FILE, 'utf8'));
-    if (!data.recording || !data.sessionId) { clearRecordingState(); return; }
+    if (isInterruptedFinalization(data)) {
+      state.recording = false;
+      state.recordingSessionId = data.recordingSessionId;
+      state.recordingStartedAt = data.recordingStartedAt || null;
+      state.recordingPath = data.recordingPath || null;
+      state.recordingIdentity = data.recordingIdentity || null;
+      state.recordingState = 'finalizing';
+      state.finalizationState = 'finalizing';
+      console.log(`[recording-state] Resuming interrupted finalization for ${data.recordingSessionId}`);
+      finalizeRecording(data.recordingSessionId).catch((error) => {
+        addError(`Recovery finalization of ${data.recordingSessionId} failed: ${error.message}`);
+      });
+      return;
+    }
+    if (!data.recording) { clearRecordingState(); return; }
+    if (!data.recordingSessionId || !data.recordingIdentity) {
+      // A pre-hardening state file contains only sessionId/PID. A PID-only
+      // record cannot be signalled safely. Preserve it, block a second
+      // recording, and require explicit operator reconciliation.
+      if (data.sessionId && data.recordingPid) {
+        state.recording = true;
+        state.recordingSessionId = data.sessionId;
+        state.recordingStartedAt = data.recordingStartedAt || null;
+        state.recordingPath = data.recordingPath || null;
+        state.recordingState = 'unverified_legacy';
+        addError(`Legacy recording state for ${data.sessionId} lacks process identity; refusing automatic adoption or signalling`);
+        return;
+      }
+      clearRecordingState();
+      return;
+    }
 
-    const alive = pidIsAlive(data.recordingPid);
+    const actualIdentity = pidIsAlive(data.recordingIdentity.pid)
+      ? readProcessIdentity(data.recordingIdentity.pid, { expectedOutputPath: data.recordingIdentity.outputPath })
+      : null;
+    const alive = processIdentityMatches(data.recordingIdentity, actualIdentity);
     if (alive) {
-      console.log(`[recording-state] Re-adopting recording session ${data.sessionId} (PID ${data.recordingPid})`);
+      console.log(`[recording-state] Re-adopting recording session ${data.recordingSessionId} (PID ${data.recordingIdentity.pid})`);
       // The process is detached and still running — we can't re-attach the
       // stdio streams, but we can track its PID for stop/finalize.
       // Create a minimal handle that lets us send signals.
       state.recording = true;
-      state.sessionId = data.sessionId;
+      state.recordingSessionId = data.recordingSessionId;
+      state.recordingState = 'recording';
+      state.finalizationState = data.finalizationState || 'idle';
       state.recordingStartedAt = data.recordingStartedAt;
       state.recordingPath = data.recordingPath;
-      // Poll for the process exit so we can finalize when it stops.
-      const pid = data.recordingPid;
-      const exitPoll = setInterval(() => {
-        if (!pidIsAlive(pid)) {
-          clearInterval(exitPoll);
-          console.log(`[recording-state] Re-adopted recording PID ${pid} exited — finalizing`);
-          state.recording = false;
-          state.recordingProcess = null;
-          clearRecordingState();
-          finalizeRecording(data.sessionId).catch(e => {
-            addError(`Finalization of re-adopted session ${data.sessionId} failed: ${e.message}`);
-          });
-        }
-      }, 5000);
-      // Store the poll interval for cleanup
-      state.recordingExitPoll = exitPoll;
-      // Create a pseudo-process handle for stop()
-      state.recordingProcess = {
-        pid,
-        killed: false,
-        kill: (sig) => { try { process.kill(pid, sig); } catch {} },
-        on: () => {},
-      };
+      state.recordingIdentity = data.recordingIdentity;
+      monitorReAdoptedRecording(data.recordingSessionId, data.recordingIdentity);
+      // Re-adopted processes are stopped by validated identity + exit polling,
+      // never by a fabricated ChildProcess close event.
+      state.recordingProcess = null;
     } else {
-      console.log(`[recording-state] Recording session ${data.sessionId} (PID ${data.recordingPid}) is no longer running — finalizing`);
+      console.log(`[recording-state] Recording session ${data.recordingSessionId} is no longer running or failed identity validation — finalizing without signalling`);
       clearRecordingState();
-      finalizeRecording(data.sessionId).catch(e => {
-        addError(`Finalization of orphaned session ${data.sessionId} failed: ${e.message}`);
+      finalizeRecording(data.recordingSessionId).catch(e => {
+        addError(`Finalization of orphaned session ${data.recordingSessionId} failed: ${e.message}`);
       });
     }
   } catch (e) {
@@ -361,21 +484,32 @@ function readoptRecording() {
 async function finalizeRecording(sessionId) {
   const dir = path.join(CONFIG.recordingDir, 'active', sessionId);
   const completedDir = path.join(CONFIG.recordingDir, 'completed', sessionId);
+  const finalPath = path.join(completedDir, `${sessionId}.mp4`);
+  const finalTempPath = path.join(completedDir, `.${sessionId}.finalizing.mp4`);
+  state.recording = false;
+  state.recordingSessionId = sessionId;
+  state.finalizationState = 'finalizing';
+  state.recordingState = 'finalizing';
+  saveRecordingState();
 
   try {
     fs.mkdirSync(completedDir, { recursive: true });
-    const files = fs.readdirSync(dir).filter(f => f.endsWith('.mp4')).sort();
+    const files = fs.existsSync(dir)
+      ? fs.readdirSync(dir).filter(f => f.endsWith('.mp4')).sort()
+      : [];
 
-    if (files.length === 0) {
-      addError(`No recording segments found for session ${sessionId}`);
-      return { ok: false, error: 'No segments found' };
+    if (!fs.existsSync(finalPath) && files.length === 0) {
+      throw new Error(`No recording segments found for session ${sessionId}`);
     }
 
-    const finalPath = path.join(completedDir, `${sessionId}.mp4`);
-
-    if (files.length === 1) {
+    // Recovery is idempotent: a crash may happen after the final file is
+    // atomically renamed/concatenated but before metadata is committed.
+    if (!fs.existsSync(finalPath) && files.length === 1) {
       fs.renameSync(path.join(dir, files[0]), finalPath);
-    } else {
+    } else if (!fs.existsSync(finalPath)) {
+      // FFmpeg writes a recoverable temporary output. A crash can never leave a
+      // partial file at the authoritative final path.
+      fs.rmSync(finalTempPath, { force: true });
       const concatList = path.join(dir, 'concat.txt');
       const concatContent = files.map(f => `file '${path.join(dir, f)}'`).join('\n');
       fs.writeFileSync(concatList, concatContent);
@@ -383,15 +517,18 @@ async function finalizeRecording(sessionId) {
         execFile('ffmpeg', [
           '-nostdin', '-hide_banner', '-loglevel', 'warning', '-y',
           '-f', 'concat', '-safe', '0', '-i', concatList,
-          '-c', 'copy', finalPath
+          '-c', 'copy', finalTempPath
         ], (err) => err ? reject(err) : resolve());
       });
+      const finalFd = fs.openSync(finalTempPath, 'r');
+      try { fs.fsyncSync(finalFd); } finally { fs.closeSync(finalFd); }
+      fs.renameSync(finalTempPath, finalPath);
     }
 
     const probeResult = await new Promise((resolve) => {
       execFile('ffprobe', [
         '-v', 'error', '-show_entries', 'format=duration,size',
-        '-show_entries', 'stream=codec_name,width,height,r_frame_rate',
+        '-show_entries', 'stream=codec_type,codec_name,width,height,r_frame_rate',
         '-of', 'json', finalPath
       ], (err, stdout) => {
         if (err) return resolve({ ok: false });
@@ -406,26 +543,32 @@ async function finalizeRecording(sessionId) {
       });
     });
 
-    const streams = probeResult.data?.streams || [];
-    const videoStream = streams.find(s => s.codec_name === 'h264');
-    const audioStream = streams.find(s => s.codec_name === 'aac');
+    const validation = validateFinalizedMedia({
+      probe: probeResult.ok ? probeResult.data : null,
+      sha256: fileHash,
+    });
+    if (!validation.ok) throw new Error(validation.error);
+    const videoStream = validation.video;
+    const audioStream = validation.audio;
 
     const metadata = {
       sessionId,
       finalizedAt: new Date().toISOString(),
       filePath: finalPath,
-      duration: probeResult.data?.format?.duration || null,
-      sizeBytes: probeResult.data?.format?.size || null,
-      sha256: fileHash,
-      segments: files.length,
-      validated: probeResult.ok && !!videoStream && !!audioStream,
+      duration: validation.duration,
+      sizeBytes: validation.sizeBytes,
+      sha256: validation.sha256,
+      segments: Math.max(files.length, 1),
+      validated: true,
       videoCodec: videoStream?.codec_name || null,
       audioCodec: audioStream?.codec_name || null,
       resolution: videoStream ? `${videoStream.width}x${videoStream.height}` : null,
       synced: false,
       syncedAt: null,
+      synchronizationState: 'idle',
       uploaded: false,
       uploadedAt: null,
+      uploadState: 'idle',
       peertubeVideoId: null,
       peertubeVideoUuid: null,
       peertubeWatchUrl: null,
@@ -435,22 +578,28 @@ async function finalizeRecording(sessionId) {
       error: null,
     };
 
-    fs.writeFileSync(
-      path.join(CONFIG.recordingDir, 'metadata', `${sessionId}.json`),
-      JSON.stringify(metadata, null, 2)
-    );
+    atomicWriteJson(path.join(CONFIG.recordingDir, 'metadata', `${sessionId}.json`), metadata);
 
     fs.rmSync(dir, { recursive: true, force: true });
 
     state.lastRecording = metadata;
+    state.finalizationState = 'complete';
+    state.recordingState = 'idle';
+    state.recordingSessionId = null;
+    state.recordingIdentity = null;
+    state.recordingPath = null;
+    clearRecordingState();
     return { ok: true, metadata };
   } catch (e) {
+    state.finalizationState = 'failed';
+    state.recordingState = 'failed';
+    saveRecordingState();
     addError(`Finalization failed: ${e.message}`);
     try {
       const failedDir = path.join(CONFIG.recordingDir, 'failed', sessionId);
       fs.mkdirSync(failedDir, { recursive: true });
-      fs.cpSync(dir, failedDir, { recursive: true });
-      fs.rmSync(dir, { recursive: true, force: true });
+      if (fs.existsSync(dir)) fs.cpSync(dir, failedDir, { recursive: true });
+      if (fs.existsSync(finalPath)) fs.copyFileSync(finalPath, path.join(failedDir, `${sessionId}.mp4`));
     } catch {}
     return { ok: false, error: e.message };
   }
@@ -508,6 +657,9 @@ async function syncToGmktec(sessionId) {
   let lastError = null;
   let usedHost = null;
   let rsyncOk = false;
+  state.synchronizationState = 'syncing';
+  metadata.synchronizationState = 'syncing';
+  atomicWriteJson(metadataPath, metadata);
 
   for (const host of hosts) {
     const dest = `${syncUser}@${host}:${remoteRelPath}`;
@@ -527,7 +679,9 @@ async function syncToGmktec(sessionId) {
     metadata.syncVerified = false;
     metadata.remoteChecksum = null;
     metadata.syncError = lastError;
-    fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
+    metadata.synchronizationState = 'failed';
+    state.synchronizationState = 'failed';
+    atomicWriteJson(metadataPath, metadata);
     return { ok: false, error: `Synchronization failed: ${lastError}`, attemptedHosts: hosts };
   }
 
@@ -545,7 +699,9 @@ async function syncToGmktec(sessionId) {
   metadata.syncHost = usedHost;
   metadata.syncPathIsLan = usedHost === CONFIG.gmktecLanIp;
   metadata.syncError = verified ? null : (verifyR.ok ? 'Remote checksum mismatch' : (verifyR.stderr || verifyR.err?.message || 'Remote checksum verification failed'));
-  fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
+  metadata.synchronizationState = verified ? 'complete' : 'failed';
+  state.synchronizationState = metadata.synchronizationState;
+  atomicWriteJson(metadataPath, metadata);
 
   if (!verified) {
     addError(`Sync verification failed for ${sessionId}: ${metadata.syncError} (local copy preserved)`);
@@ -593,6 +749,9 @@ async function uploadToPeerTube(sessionId) {
 
   process.env.PEERTUBE_BASE_URL = CONFIG.peertubeBaseUrl;
   process.env.PEERTUBE_ACCESS_TOKEN = CONFIG.peertubeAccessToken;
+  metadata.uploadState = 'uploading';
+  state.uploadState = 'uploading';
+  atomicWriteJson(metadataPath, metadata);
 
   try {
     const result = await peertube.uploadRecording(metadata.filePath, {
@@ -612,10 +771,14 @@ async function uploadToPeerTube(sessionId) {
       metadata.peertubeVideoUuid = result.videoUuid;
       metadata.peertubeWatchUrl = result.watchUrl;
       metadata.peertubePrivacy = 3;
-      fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
+      metadata.uploadState = 'complete';
+      state.uploadState = 'complete';
+      atomicWriteJson(metadataPath, metadata);
     } else {
       metadata.error = result.error || 'Upload failed';
-      fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
+      metadata.uploadState = 'failed';
+      state.uploadState = 'failed';
+      atomicWriteJson(metadataPath, metadata);
     }
 
     return result;
@@ -623,7 +786,9 @@ async function uploadToPeerTube(sessionId) {
     const errorMsg = e.message || 'Upload crashed';
     addError(`PeerTube upload failed: ${errorMsg}`);
     metadata.error = errorMsg;
-    fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
+    metadata.uploadState = 'failed';
+    state.uploadState = 'failed';
+    atomicWriteJson(metadataPath, metadata);
     return { ok: false, error: errorMsg };
   }
 }
@@ -656,7 +821,7 @@ async function publishRecording(sessionId, privacy) {
       metadata.peertubePrivacy = privacy;
       metadata.published = privacy !== 3;
       metadata.publishedAt = privacy !== 3 ? new Date().toISOString() : null;
-      fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
+      atomicWriteJson(metadataPath, metadata);
     }
 
     return result;
@@ -672,7 +837,7 @@ app.use((req, res, next) => {
   if (origin && CONFIG.allowedOrigins.includes(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Api-Token, Authorization, X-Operator-Id, X-Idempotency-Key');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Api-Token, Authorization, X-Idempotency-Key');
     res.setHeader('Access-Control-Max-Age', '86400');
   }
   if (req.method === 'OPTIONS') return res.status(204).end();
@@ -699,7 +864,14 @@ app.get('/api/status', authMiddleware, async (req, res) => {
     preview_online: previewOnline,
     recording: state.recording,
     livestreaming: state.livestreaming,
-    session_id: state.sessionId,
+    session_id: state.recordingSessionId || state.livestreamSessionId,
+    recording_session_id: state.recordingSessionId,
+    livestream_session_id: state.livestreamSessionId,
+    recording_state: state.recordingState,
+    stream_state: state.streamState,
+    finalization_state: state.finalizationState,
+    synchronization_state: state.synchronizationState,
+    upload_state: state.uploadState,
     recording_started_at: state.recordingStartedAt,
     stream_started_at: state.streamStartedAt,
     recording_path: state.recordingPath,
@@ -721,10 +893,12 @@ app.get('/api/storage', authMiddleware, (req, res) => {
 });
 
 app.get('/api/session/current', authMiddleware, (req, res) => {
-  if (!state.sessionId) return res.json({ active: false });
+  if (!state.recordingSessionId && !state.livestreamSessionId) return res.json({ active: false });
   res.json({
     active: true,
-    session_id: state.sessionId,
+    session_id: state.recordingSessionId || state.livestreamSessionId,
+    recording_session_id: state.recordingSessionId,
+    livestream_session_id: state.livestreamSessionId,
     recording: state.recording,
     livestreaming: state.livestreaming,
     recording_started_at: state.recordingStartedAt,
@@ -739,7 +913,7 @@ app.post('/api/record/start', authMiddleware, commandRateLimit, async (req, res)
   }
 
   if (state.recording) {
-    return res.status(409).json({ ok: false, error: 'Already recording', session_id: state.sessionId });
+    return res.status(409).json({ ok: false, error: 'Already recording', session_id: state.recordingSessionId });
   }
 
   const mainOnline = await checkMediaMtxPath('annke-main');
@@ -766,25 +940,42 @@ app.post('/api/record/start', authMiddleware, commandRateLimit, async (req, res)
   }
 
   const sessionId = generateSessionId();
-  const { dir, pattern, metadataPath } = getRecordingFilePath(sessionId);
+  const { dir, pattern } = getRecordingFilePath(sessionId);
+  const sessionNonce = crypto.randomBytes(32).toString('hex');
 
   const rtspSource = `${CONFIG.mediamtxRtsp}/annke-main`;
-  const proc = startRecordingProcess(rtspSource, pattern);
+  const { proc, identity } = await startRecordingProcess(rtspSource, pattern, sessionNonce);
 
   state.recording = true;
-  state.sessionId = sessionId;
+  state.recordingSessionId = sessionId;
+  state.recordingState = 'recording';
+  state.finalizationState = 'idle';
   state.recordingStartedAt = new Date().toISOString();
   state.recordingPath = dir;
   state.recordingProcess = proc;
+  state.recordingIdentity = identity;
 
   // Persist state so the recording survives camera-api restarts.
-  saveRecordingState();
+  try {
+    saveRecordingState();
+  } catch (error) {
+    try { await stopValidatedProcess(identity); } catch {}
+    state.recording = false;
+    state.recordingState = 'failed';
+    state.recordingSessionId = null;
+    state.recordingProcess = null;
+    state.recordingIdentity = null;
+    state.recordingStartedAt = null;
+    state.recordingPath = null;
+    clearRecordingState();
+    throw error;
+  }
 
   proc.on('close', (code) => {
     if (state.recordingProcess === proc) {
       state.recording = false;
+      state.recordingState = 'stopped';
       state.recordingProcess = null;
-      clearRecordingState();
       if (code !== 0 && code !== null) {
         addError(`Recording process exited with code ${code}`);
       }
@@ -815,26 +1006,47 @@ app.post('/api/record/start', authMiddleware, commandRateLimit, async (req, res)
 app.post('/api/record/stop', authMiddleware, commandRateLimit, async (req, res) => {
   const idempotencyKey = req.headers['x-idempotency-key'];
   if (idempotencyKey && state.idempotencyKeys.has(idempotencyKey)) {
-    return res.json(state.idempotencyKeys.get(idempotencyKey));
+    const cached = state.idempotencyKeys.get(idempotencyKey);
+    return res.status(cached.ok ? 200 : 422).json(cached);
   }
 
   if (!state.recording) {
     return res.status(409).json({ ok: false, error: 'Not recording' });
   }
 
-  const sessionId = state.sessionId;
+  const sessionId = state.recordingSessionId;
+  const identity = state.recordingIdentity;
   const proc = state.recordingProcess;
+  const recordingStartedAt = state.recordingStartedAt;
+  if (!identity) {
+    return res.status(409).json({
+      ok: false,
+      error: 'Recording process identity is unavailable; refusing to signal. Reconcile the legacy session manually.',
+      session_id: sessionId,
+    });
+  }
 
   state.recording = false;
+  state.recordingState = 'stopping';
   state.recordingProcess = null;
   state.recordingStartedAt = null;
-  state.recordingPath = null;
   if (state.recordingExitPoll) { clearInterval(state.recordingExitPoll); state.recordingExitPoll = null; }
-  clearRecordingState();
 
-  await stopProcess(proc);
+  try {
+    await stopValidatedProcess(identity);
+  } catch (error) {
+    // Fail closed: identity validation errors signal nothing. Restore the
+    // active in-memory view so an operator can retry without an API restart.
+    state.recording = true;
+    state.recordingState = 'recording';
+    state.recordingProcess = proc;
+    state.recordingStartedAt = recordingStartedAt;
+    if (!proc) monitorReAdoptedRecording(sessionId, identity);
+    throw error;
+  }
 
   const finalizeResult = await finalizeRecording(sessionId);
+  state.recordingPath = null;
 
   const entry = audit('record.stop', { sessionId, finalizeResult }, req.operatorId);
 
@@ -851,7 +1063,7 @@ app.post('/api/record/stop', authMiddleware, commandRateLimit, async (req, res) 
     setTimeout(() => state.idempotencyKeys.delete(idempotencyKey), 300000);
   }
 
-  res.json(response);
+  res.status(finalizeResult.ok ? 200 : 422).json(response);
 });
 
 app.post('/api/stream/start', authMiddleware, commandRateLimit, async (req, res) => {
@@ -878,13 +1090,17 @@ app.post('/api/stream/start', authMiddleware, commandRateLimit, async (req, res)
   const proc = startStreamProcess(rtspSource, CONFIG.peertubeRtmpUrl, CONFIG.peertubeStreamKey);
 
   state.livestreaming = true;
+  state.streamState = 'streaming';
+  state.livestreamSessionId = generateSessionId();
   state.streamStartedAt = new Date().toISOString();
   state.streamProcess = proc;
 
   proc.on('close', (code) => {
     if (state.streamProcess === proc) {
       state.livestreaming = false;
+      state.streamState = code === 0 || code === null ? 'idle' : 'failed';
       state.streamProcess = null;
+      state.livestreamSessionId = null;
       state.streamStartedAt = null;
       if (code !== 0 && code !== null) {
         addError(`Livestream process exited with code ${code}`);
@@ -892,15 +1108,11 @@ app.post('/api/stream/start', authMiddleware, commandRateLimit, async (req, res)
     }
   });
 
-  if (!state.sessionId) {
-    state.sessionId = generateSessionId();
-  }
-
-  const entry = audit('stream.start', { sessionId: state.sessionId }, req.operatorId);
+  const entry = audit('stream.start', { sessionId: state.livestreamSessionId }, req.operatorId);
 
   const response = {
     ok: true,
-    session_id: state.sessionId,
+    session_id: state.livestreamSessionId,
     started_at: state.streamStartedAt,
     peertube_watch_url: `https://videos.mbfdhub.com/videos/watch/${CONFIG.peertubeLiveVideoUuid}`,
     request_id: entry.requestId,
@@ -926,10 +1138,13 @@ app.post('/api/stream/stop', authMiddleware, commandRateLimit, async (req, res) 
 
   const proc = state.streamProcess;
   state.livestreaming = false;
+  state.streamState = 'stopping';
   state.streamProcess = null;
   state.streamStartedAt = null;
 
   await stopProcess(proc);
+  state.streamState = 'idle';
+  state.livestreamSessionId = null;
 
   const entry = audit('stream.stop', {}, req.operatorId);
 
@@ -951,6 +1166,8 @@ app.post('/api/emergency-stop', authMiddleware, async (req, res) => {
   const entry = audit('emergency.stop', {}, req.operatorId);
 
   const recordingProc = state.recordingProcess;
+  const recordingIdentity = state.recordingIdentity;
+  const recordingSessionId = state.recordingSessionId;
   const streamProc = state.streamProcess;
 
   state.recording = false;
@@ -961,13 +1178,19 @@ app.post('/api/emergency-stop', authMiddleware, async (req, res) => {
   state.streamStartedAt = null;
   state.recordingPath = null;
 
-  await Promise.all([stopProcess(recordingProc), stopProcess(streamProc)]);
+  await Promise.all([
+    recordingIdentity ? stopValidatedProcess(recordingIdentity) : stopProcess(recordingProc),
+    stopProcess(streamProc),
+  ]);
 
-  if (state.sessionId) {
-    try { await finalizeRecording(state.sessionId); } catch {}
+  if (recordingSessionId) {
+    try { await finalizeRecording(recordingSessionId); } catch {}
   }
 
-  state.sessionId = null;
+  state.recordingSessionId = null;
+  state.livestreamSessionId = null;
+  state.recordingState = 'idle';
+  state.streamState = 'idle';
 
   res.json({
     ok: true,
@@ -1009,29 +1232,45 @@ app.get('/api/recordings/:id', authMiddleware, (req, res) => {
 });
 
 app.post('/api/recordings/:id/upload', authMiddleware, commandRateLimit, async (req, res) => {
-  const result = await uploadToPeerTube(req.params.id);
+  if (!validateSessionId(req.params.id)) return res.status(400).json({ error: 'Invalid session ID' });
+  const result = await withRecordingOperationLease(
+    req.params.id,
+    `upload:${crypto.randomUUID()}`,
+    () => uploadToPeerTube(req.params.id),
+  );
   audit('recording.upload', { sessionId: req.params.id, result }, req.operatorId);
-  res.json(result);
+  res.status(result.locked ? 409 : 200).json(result);
 });
 
 app.post('/api/recordings/:id/sync', authMiddleware, commandRateLimit, async (req, res) => {
-  const result = await syncToGmktec(req.params.id);
+  if (!validateSessionId(req.params.id)) return res.status(400).json({ error: 'Invalid session ID' });
+  const result = await withRecordingOperationLease(
+    req.params.id,
+    `sync:${crypto.randomUUID()}`,
+    () => syncToGmktec(req.params.id),
+  );
   audit('recording.sync', { sessionId: req.params.id, result }, req.operatorId);
-  res.json(result);
+  res.status(result.locked ? 409 : 200).json(result);
 });
 
 app.post('/api/recordings/:id/publish', authMiddleware, commandRateLimit, async (req, res) => {
+  if (!validateSessionId(req.params.id)) return res.status(400).json({ error: 'Invalid session ID' });
   const privacy = req.body?.privacy || 3;
   if (![1, 2, 3].includes(privacy)) {
     return res.status(400).json({ error: 'Invalid privacy value. Use 1=Public, 2=Unlisted, 3=Private' });
   }
-  const result = await publishRecording(req.params.id, privacy);
+  const result = await withRecordingOperationLease(
+    req.params.id,
+    `publish:${crypto.randomUUID()}`,
+    () => publishRecording(req.params.id, privacy),
+  );
   audit('recording.publish', { sessionId: req.params.id, privacy, result }, req.operatorId);
-  res.json(result);
+  res.status(result.locked ? 409 : 200).json(result);
 });
 
 // Alias: /api/recordings/:id/privacy (same as /publish)
 app.post('/api/recordings/:id/privacy', authMiddleware, commandRateLimit, async (req, res) => {
+  if (!validateSessionId(req.params.id)) return res.status(400).json({ error: 'Invalid session ID' });
   const privacy = req.body?.privacy || 3;
   if (![1, 2, 3].includes(privacy)) {
     return res.status(400).json({ error: 'Invalid privacy value. Use 1=Public, 2=Unlisted, 3=Private' });
@@ -1039,14 +1278,18 @@ app.post('/api/recordings/:id/privacy', authMiddleware, commandRateLimit, async 
   if (privacy === 1 && req.body?.confirmPublic !== true) {
     return res.status(400).json({ error: 'Setting to Public requires confirmPublic: true' });
   }
-  const result = await publishRecording(req.params.id, privacy);
+  const result = await withRecordingOperationLease(
+    req.params.id,
+    `privacy:${crypto.randomUUID()}`,
+    () => publishRecording(req.params.id, privacy),
+  );
   audit('recording.privacy', { sessionId: req.params.id, privacy, result }, req.operatorId);
-  res.json(result);
+  res.status(result.locked ? 409 : 200).json(result);
 });
 
 // Helper: validate session ID (reject path traversal, allow only alnum + underscore)
 function validateSessionId(id) {
-  return /^[a-zA-Z0-9_]+$/.test(id);
+  return /^ses_[A-Za-z0-9_-]+$/.test(String(id || ''));
 }
 
 // Helper: find recording file path from metadata
@@ -1175,16 +1418,48 @@ app.get('/api/recordings/:id/peertube-status', authMiddleware, async (req, res) 
 // PeerTube deletion is a separate explicit endpoint.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const deletionLocks = new Map(); // sessionId -> { acquiredAt, operatorId }
+const RECORDING_OPERATION_LOCK_ROOT = path.join(CONFIG.recordingDir, 'metadata', '.operation-locks');
+const DELETION_AUDIT_FILE = path.join(CONFIG.recordingDir, 'metadata', 'deletion-audit.jsonl');
 
-function acquireDeletionLock(sessionId, operatorId) {
-  if (deletionLocks.has(sessionId)) return false;
-  deletionLocks.set(sessionId, { acquiredAt: Date.now(), operatorId: operatorId || 'system' });
-  return true;
+function acquireRecordingOperationLease(sessionId, owner) {
+  // Upload/sync may legitimately run for hours. A durable day-long lease
+  // prevents another API process from taking over mid-operation; a crashed
+  // worker's lease is recoverable on the following day without manual cleanup.
+  return acquireFilesystemLease(RECORDING_OPERATION_LOCK_ROOT, sessionId, owner, 24 * 60 * 60 * 1000);
 }
 
-function releaseDeletionLock(sessionId) {
-  deletionLocks.delete(sessionId);
+function releaseRecordingOperationLease(sessionId, owner) {
+  return releaseFilesystemLease(RECORDING_OPERATION_LOCK_ROOT, sessionId, owner);
+}
+
+async function withRecordingOperationLease(sessionId, owner, operation) {
+  const lock = acquireRecordingOperationLease(sessionId, owner);
+  if (!lock.acquired) {
+    return { ok: false, locked: true, error: 'Recording is locked by another operation' };
+  }
+  try {
+    return await operation();
+  } finally {
+    releaseRecordingOperationLease(sessionId, owner);
+  }
+}
+
+function appendDeletionAudit(event) {
+  fs.mkdirSync(path.dirname(DELETION_AUDIT_FILE), { recursive: true });
+  const fd = fs.openSync(DELETION_AUDIT_FILE, 'a', 0o600);
+  try {
+    fs.writeSync(fd, `${JSON.stringify(event)}\n`);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function metadataOperationStates(metadata) {
+  return {
+    isSyncing: metadata.synchronizationState === 'syncing',
+    isUploading: metadata.uploadState === 'uploading',
+  };
 }
 
 // Impact preview: return everything the operator needs to confirm deletion.
@@ -1194,11 +1469,9 @@ app.get('/api/recordings/:id/deletion-impact', authMiddleware, (req, res) => {
   const metadataPath = path.join(CONFIG.recordingDir, 'metadata', `${sessionId}.json`);
   try {
     const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
-    const activeDir = path.join(CONFIG.recordingDir, 'active', sessionId);
-    const isActive = state.recording && state.currentSessionId === sessionId;
-    const isFinalizing = state.finalizing === true;
-    const isSyncing = metadata.synced === true && !metadata.syncVerified;
-    const isUploading = metadata.uploaded === true && !metadata.peertubeVideoUuid;
+    const isActive = state.recording && state.recordingSessionId === sessionId;
+    const isFinalizing = state.recordingSessionId === sessionId && state.finalizationState === 'finalizing';
+    const { isSyncing, isUploading } = metadataOperationStates(metadata);
     const fileExists = metadata.filePath && fs.existsSync(metadata.filePath);
     const revision = metadata.sha256 || metadata.finalizedAt || sessionId;
     const impact = {
@@ -1238,35 +1511,40 @@ app.get('/api/recordings/:id/deletion-impact', authMiddleware, (req, res) => {
 });
 
 // Archive (soft delete): mark as archived, keep files, create tombstone.
-app.post('/api/recordings/:id/archive', authMiddleware, commandRateLimit, async (req, res) => {
+app.post('/api/recordings/:id/archive', authMiddleware, requireServiceAuth, commandRateLimit, async (req, res) => {
   if (!validateSessionId(req.params.id)) return res.status(400).json({ error: 'Invalid session ID' });
   const sessionId = req.params.id;
-  if (!acquireDeletionLock(sessionId, req.operatorId)) {
+  const lockOwner = crypto.randomUUID();
+  if (!acquireRecordingOperationLease(sessionId, lockOwner).acquired) {
     return res.status(409).json({ error: 'Recording is locked by another operation' });
   }
   try {
     const metadataPath = path.join(CONFIG.recordingDir, 'metadata', `${sessionId}.json`);
     const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
-    if (state.recording && state.currentSessionId === sessionId) {
+    if (state.recording && state.recordingSessionId === sessionId) {
       return res.status(409).json({ error: 'Cannot archive an active recording' });
     }
     metadata.archived = true;
     metadata.archivedAt = new Date().toISOString();
     metadata.archivedBy = req.operatorId;
-    fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
+    atomicWriteJson(metadataPath, metadata);
     audit('recording.archive', { sessionId, operatorId: req.operatorId }, req.operatorId);
     res.json({ ok: true, archived: true, sessionId });
   } catch {
     res.status(404).json({ error: 'Recording not found' });
   } finally {
-    releaseDeletionLock(sessionId);
+    releaseRecordingOperationLease(sessionId, lockOwner);
   }
 });
 
 // Restore from archive.
-app.post('/api/recordings/:id/restore', authMiddleware, commandRateLimit, async (req, res) => {
+app.post('/api/recordings/:id/restore', authMiddleware, requireServiceAuth, commandRateLimit, async (req, res) => {
   if (!validateSessionId(req.params.id)) return res.status(400).json({ error: 'Invalid session ID' });
   const sessionId = req.params.id;
+  const lockOwner = `restore:${crypto.randomUUID()}`;
+  if (!acquireRecordingOperationLease(sessionId, lockOwner).acquired) {
+    return res.status(409).json({ error: 'Recording is locked by another operation' });
+  }
   try {
     const metadataPath = path.join(CONFIG.recordingDir, 'metadata', `${sessionId}.json`);
     const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
@@ -1277,24 +1555,28 @@ app.post('/api/recordings/:id/restore', authMiddleware, commandRateLimit, async 
     metadata.archivedAt = null;
     metadata.archivedBy = null;
     metadata.restoredAt = new Date().toISOString();
-    fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
+    atomicWriteJson(metadataPath, metadata);
     audit('recording.restore', { sessionId, operatorId: req.operatorId }, req.operatorId);
     res.json({ ok: true, restored: true, sessionId });
   } catch {
     res.status(404).json({ error: 'Recording not found' });
+  } finally {
+    releaseRecordingOperationLease(sessionId, lockOwner);
   }
 });
 
 // Permanent delete: remove Kamrui file + GMKtec synced copy + metadata.
 // Requires If-Match revision check for optimistic concurrency.
-app.delete('/api/recordings/:id', authMiddleware, commandRateLimit, async (req, res) => {
+app.delete('/api/recordings/:id', authMiddleware, requireServiceAuth, commandRateLimit, async (req, res) => {
   if (!validateSessionId(req.params.id)) return res.status(400).json({ error: 'Invalid session ID' });
   const sessionId = req.params.id;
   const ifMatch = req.headers['if-match'];
   const confirmTyped = req.body?.confirm;
   const requestId = crypto.randomUUID();
+  const lockOwner = requestId;
 
-  if (!acquireDeletionLock(sessionId, req.operatorId)) {
+  if (!ifMatch) return res.status(428).json({ error: 'If-Match is required for permanent deletion', request_id: requestId });
+  if (!acquireRecordingOperationLease(sessionId, lockOwner).acquired) {
     return res.status(409).json({ error: 'Recording is locked by another operation', request_id: requestId });
   }
 
@@ -1304,10 +1586,9 @@ app.delete('/api/recordings/:id', authMiddleware, commandRateLimit, async (req, 
     const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
 
     // Revalidate state.
-    const isActive = state.recording && state.currentSessionId === sessionId;
-    const isFinalizing = state.finalizing === true;
-    const isSyncing = metadata.synced === true && !metadata.syncVerified;
-    const isUploading = metadata.uploaded === true && !metadata.peertubeVideoUuid;
+    const isActive = state.recording && state.recordingSessionId === sessionId;
+    const isFinalizing = state.recordingSessionId === sessionId && state.finalizationState === 'finalizing';
+    const { isSyncing, isUploading } = metadataOperationStates(metadata);
     if (isActive || isFinalizing || isSyncing || isUploading) {
       return res.status(409).json({
         error: 'Cannot delete: recording is active or undergoing an operation',
@@ -1323,8 +1604,9 @@ app.delete('/api/recordings/:id', authMiddleware, commandRateLimit, async (req, 
 
     // Revision check (If-Match).
     const revision = metadata.sha256 || metadata.finalizedAt || sessionId;
-    if (ifMatch && ifMatch !== revision && ifMatch !== `"${revision}"`) {
-      return res.status(412).json({ error: 'Revision mismatch (stale request)', request_id: requestId, expected: revision, provided: ifMatch });
+    const precondition = revisionPrecondition(ifMatch, revision);
+    if (!precondition.ok) {
+      return res.status(precondition.status).json({ error: `${precondition.error} (stale request)`, request_id: requestId, expected: revision, provided: ifMatch });
     }
 
     // Typed confirmation (must include the session ID to prevent accidental delete).
@@ -1332,7 +1614,22 @@ app.delete('/api/recordings/:id', authMiddleware, commandRateLimit, async (req, 
       return res.status(400).json({ error: 'Typed confirmation required: { "confirm": "<sessionId>" }', request_id: requestId });
     }
 
-    // Tombstone audit record (before deletion).
+    const originalPeerTubeUuid = metadata.peertubeVideoUuid || null;
+    metadata.deletionState = {
+      status: 'locked',
+      requestId,
+      requestedAt: metadata.deletionState?.requestedAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      owner: req.operatorId,
+      local_deleted: metadata.deletionState?.local_deleted === true,
+      remote_deleted: metadata.deletionState?.remote_deleted === true,
+      remote_verified: metadata.deletionState?.remote_verified === true,
+      errors: [],
+    };
+    atomicWriteJson(metadataPath, metadata);
+    results.steps.push('deletion_state_locked');
+
+    // Durable tombstone/audit intent is written before any file mutation.
     const tombstone = {
       sessionId,
       finalizedAt: metadata.finalizedAt,
@@ -1342,68 +1639,123 @@ app.delete('/api/recordings/:id', authMiddleware, commandRateLimit, async (req, 
       deletedAt: new Date().toISOString(),
       deletedBy: req.operatorId,
       requestId,
-      peertubeVideoUuid: metadata.peertubeVideoUuid || null,
+      originalPeerTubeUuid,
       syncDestination: metadata.syncDestination || null,
+      status: 'requested',
     };
     const tombstonePath = path.join(CONFIG.recordingDir, 'metadata', `${sessionId}.tombstone.json`);
-    fs.writeFileSync(tombstonePath, JSON.stringify(tombstone, null, 2));
+    atomicWriteJson(tombstonePath, tombstone);
+    appendDeletionAudit({ type: 'recording.delete.requested', ...tombstone });
     audit('recording.delete.tombstone', tombstone, req.operatorId);
     results.steps.push('tombstone_created');
 
     // Delete Kamrui file.
-    if (metadata.filePath && fs.existsSync(metadata.filePath)) {
+    if (!metadata.deletionState.local_deleted && metadata.filePath && fs.existsSync(metadata.filePath)) {
       try {
         const resolved = path.resolve(metadata.filePath);
         const completedDir = path.join(CONFIG.recordingDir, 'completed');
         if (resolved.startsWith(completedDir + path.sep)) {
           fs.rmSync(resolved, { force: true });
-          results.steps.push('kamrui_file_deleted');
+          if (fs.existsSync(resolved)) throw new Error('local file still exists after deletion');
+          metadata.deletionState.local_deleted = true;
+          metadata.deletionState.status = 'local_deleted';
+          metadata.deletionState.updatedAt = new Date().toISOString();
+          atomicWriteJson(metadataPath, metadata);
+          results.steps.push('local_deleted');
         } else {
           results.errors.push('kamrui_file_path_traversal_blocked');
         }
       } catch (e) {
         results.errors.push(`kamrui_file_delete_failed: ${e.message}`);
       }
+    } else if (!metadata.filePath || !fs.existsSync(metadata.filePath)) {
+      metadata.deletionState.local_deleted = true;
     }
 
-    // Delete GMKtec synced copy (if configured).
-    if (metadata.synced && metadata.syncDestination && CONFIG.gmktecSyncDest) {
+    // Delete and authoritatively verify the GMKtec copy. The destination was
+    // persisted by the checksum-verified sync operation.
+    const remoteRequired = metadata.synced === true || metadata.syncVerified === true;
+    if (remoteRequired && !metadata.deletionState.remote_verified) {
       try {
-        const m = CONFIG.gmktecSyncDest.match(/^([^@]+)@([^:]+):(.+)$/);
-        if (m) {
-          const remotePath = `${m[3]}/${sessionId}.mp4`;
-          const { execFileSync } = require('child_process');
-          execFileSync('ssh', ['-o', 'ConnectTimeout=10', '-o', 'BatchMode=yes', `${m[1]}@${m[2]}`, `rm -f ${remotePath}`], { timeout: 30000 });
-          results.steps.push('gmktec_copy_deleted');
-        }
+        const m = String(metadata.syncDestination || '').match(/^([^@]+)@([^:]+):(.+)$/);
+        const allowedHosts = [CONFIG.gmktecLanIp, CONFIG.gmktecTailscaleIp].filter(Boolean);
+        if (
+          !m
+          || m[1] !== CONFIG.gmktecSyncUser
+          || !allowedHosts.includes(m[2])
+          || path.posix.dirname(m[3]) !== CONFIG.gmktecSyncPath
+          || path.posix.basename(m[3]) !== `${sessionId}.mp4`
+        ) throw new Error('invalid persisted sync destination');
+        const remotePath = m[3];
+        const quoted = `'${remotePath.replace(/'/g, `'\\''`)}'`;
+        const remote = await runCmd('ssh', [
+          '-o', 'ConnectTimeout=10', '-o', 'BatchMode=yes',
+          `${m[1]}@${m[2]}`,
+          `rm -f -- ${quoted} && test ! -e ${quoted}`,
+        ], 30_000);
+        if (!remote.ok) throw new Error(remote.stderr || remote.err?.message || 'remote delete/verify failed');
+        metadata.deletionState.remote_deleted = true;
+        metadata.deletionState.remote_verified = true;
+        metadata.deletionState.status = 'remote_verified';
+        metadata.deletionState.updatedAt = new Date().toISOString();
+        atomicWriteJson(metadataPath, metadata);
+        results.steps.push('remote_deleted', 'remote_verified');
       } catch (e) {
         results.errors.push(`gmktec_copy_delete_failed: ${e.message}`);
       }
+    } else if (!remoteRequired) {
+      metadata.deletionState.remote_deleted = true;
+      metadata.deletionState.remote_verified = true;
     }
 
-    // Verify files no longer exist.
     const kamruiGone = !metadata.filePath || !fs.existsSync(metadata.filePath);
     results.kamrui_copy_exists = !kamruiGone;
+    if (!kamruiGone) results.errors.push('kamrui_copy_delete_verification_failed');
 
-    // Update catalog: remove metadata JSON (tombstone remains).
-    fs.rmSync(metadataPath, { force: true });
-    results.steps.push('metadata_removed');
+    if (results.errors.length > 0 || !metadata.deletionState.remote_verified) {
+      metadata.deletionState.status = 'partial_failure';
+      metadata.deletionState.updatedAt = new Date().toISOString();
+      metadata.deletionState.errors = results.errors;
+      atomicWriteJson(metadataPath, metadata);
+      appendDeletionAudit({
+        type: 'recording.delete.partial_failure',
+        sessionId,
+        requestId,
+        originalPeerTubeUuid,
+        errors: results.errors,
+        at: new Date().toISOString(),
+      });
+      results.ok = false;
+      results.retryable = true;
+      return res.status(502).json(results);
+    }
 
-    audit('recording.delete.complete', { sessionId, results, requestId }, req.operatorId);
-    results.ok = results.errors.length === 0;
+    tombstone.status = 'complete';
+    tombstone.completedAt = new Date().toISOString();
+    tombstone.steps = [...results.steps];
+    atomicWriteJson(tombstonePath, tombstone);
+    appendDeletionAudit({ type: 'recording.delete.complete', ...tombstone });
+    fs.rmSync(metadataPath);
+    results.steps.push('catalog_tombstoned');
+    audit('recording.delete.complete', { sessionId, results, requestId, originalPeerTubeUuid }, req.operatorId);
+    results.ok = true;
     res.json(results);
-  } catch {
-    res.status(404).json({ error: 'Recording not found', request_id: requestId });
+  } catch (error) {
+    res.status(error.code === 'ENOENT' ? 404 : 500).json({ error: error.message || 'Recording deletion failed', request_id: requestId });
   } finally {
-    releaseDeletionLock(sessionId);
+    releaseRecordingOperationLease(sessionId, lockOwner);
   }
 });
 
 // Separate PeerTube deletion: does NOT touch local files.
-app.delete('/api/recordings/:id/peertube', authMiddleware, commandRateLimit, async (req, res) => {
+app.delete('/api/recordings/:id/peertube', authMiddleware, requireServiceAuth, commandRateLimit, async (req, res) => {
   if (!validateSessionId(req.params.id)) return res.status(400).json({ error: 'Invalid session ID' });
   const sessionId = req.params.id;
   const requestId = crypto.randomUUID();
+  const lockOwner = `peertube-delete:${requestId}`;
+  if (!acquireRecordingOperationLease(sessionId, lockOwner).acquired) {
+    return res.status(409).json({ error: 'Recording is locked by another operation', request_id: requestId });
+  }
   try {
     const metadataPath = path.join(CONFIG.recordingDir, 'metadata', `${sessionId}.json`);
     const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
@@ -1419,15 +1771,24 @@ app.delete('/api/recordings/:id/peertube', authMiddleware, commandRateLimit, asy
     process.env.PEERTUBE_BASE_URL = CONFIG.peertubeBaseUrl;
     process.env.PEERTUBE_ACCESS_TOKEN = CONFIG.peertubeAccessToken;
     try {
-      const del = await peertube.deleteVideo(metadata.peertubeVideoUuid);
+      const originalPeerTubeUuid = metadata.peertubeVideoUuid;
+      const del = await peertube.deleteVideo(originalPeerTubeUuid);
       // Update local metadata only after PeerTube confirms.
       metadata.peertubeVideoId = null;
       metadata.peertubeVideoUuid = null;
       metadata.peertubeWatchUrl = null;
       metadata.peertubePrivacy = null;
       metadata.peertubeDeletedAt = new Date().toISOString();
-      fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
-      audit('recording.peertube.delete', { sessionId, uuid: metadata.peertubeVideoUuid, result: del, requestId }, req.operatorId);
+      atomicWriteJson(metadataPath, metadata);
+      appendDeletionAudit({
+        type: 'recording.peertube.delete',
+        sessionId,
+        originalPeerTubeUuid,
+        requestId,
+        operatorId: req.operatorId,
+        at: metadata.peertubeDeletedAt,
+      });
+      audit('recording.peertube.delete', { sessionId, uuid: originalPeerTubeUuid, result: del, requestId }, req.operatorId);
       res.json({ ok: true, sessionId, peertube_deleted: true, request_id: requestId });
     } catch (e) {
       // Do NOT update local metadata if PeerTube fails.
@@ -1436,6 +1797,8 @@ app.delete('/api/recordings/:id/peertube', authMiddleware, commandRateLimit, asy
     }
   } catch {
     res.status(404).json({ error: 'Recording not found', request_id: requestId });
+  } finally {
+    releaseRecordingOperationLease(sessionId, lockOwner);
   }
 });
 
@@ -1459,6 +1822,7 @@ process.on('SIGTERM', async () => {
   // Only stop the livestream (RTMP push) — recording must continue.
   if (state.streamProcess) await stopProcess(state.streamProcess);
   if (state.recordingExitPoll) clearInterval(state.recordingExitPoll);
-  saveRecordingState();
+  // Active recording state was fsync'd at start and is not mutated during an
+  // API-only shutdown. Do not replace it here if storage is degraded.
   process.exit(0);
 });

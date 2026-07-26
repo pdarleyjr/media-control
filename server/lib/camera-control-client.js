@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const config = require('../config');
 
 function getBaseUrl() {
@@ -10,7 +11,33 @@ function getToken() {
   return config.cameraControl?.token || process.env.CAMERA_CONTROL_TOKEN || '';
 }
 
-async function callCameraApi(method, path, body, timeoutMs = 15000) {
+function headerValue(headers, name) {
+  const match = Object.entries(headers || {}).find(([key]) => key.toLowerCase() === name.toLowerCase());
+  return match ? String(match[1] ?? '') : '';
+}
+
+function serviceHeaders(method, requestPath, body, operatorId, signedHeaders = {}) {
+  const secret = config.cameraControl?.signingSecret || process.env.CAMERA_CONTROL_SIGNING_SECRET || '';
+  if (!secret) return {};
+  const timestamp = new Date().toISOString();
+  const nonce = crypto.randomUUID();
+  const signedOperatorId = String(operatorId || 'media-control-service');
+  const ifMatch = headerValue(signedHeaders, 'if-match');
+  const bodyHash = crypto.createHash('sha256')
+    .update(JSON.stringify(body == null ? null : body))
+    .digest('hex');
+  const signature = crypto.createHmac('sha256', secret)
+    .update(`${method}\n${requestPath}\n${timestamp}\n${bodyHash}\n${signedOperatorId}\n${nonce}\n${ifMatch}`)
+    .digest('hex');
+  return {
+    'X-Service-Timestamp': timestamp,
+    'X-Service-Nonce': nonce,
+    'X-Service-Signature': signature,
+    'X-Operator-Id': signedOperatorId,
+  };
+}
+
+async function callCameraApi(method, path, body, timeoutMs = 15000, { headers: extraHeaders = {}, operatorId } = {}) {
   const base = getBaseUrl();
   if (!base) return { ok: false, message: 'Camera control base URL is not configured' };
 
@@ -24,6 +51,8 @@ async function callCameraApi(method, path, body, timeoutMs = 15000) {
     const headers = {
       'X-Api-Token': token,
       'Content-Type': 'application/json',
+      ...extraHeaders,
+      ...serviceHeaders(method, path, body, operatorId, extraHeaders),
     };
 
     const response = await fetch(`${base}${path}`, {
@@ -86,22 +115,22 @@ async function getDeletionImpact(sessionId) {
   return callCameraApi('GET', `/api/recordings/${sessionId}/deletion-impact`);
 }
 
-async function archiveRecording(sessionId) {
-  return callCameraApi('POST', `/api/recordings/${sessionId}/archive`);
+async function archiveRecording(sessionId, { operatorId } = {}) {
+  return callCameraApi('POST', `/api/recordings/${sessionId}/archive`, undefined, 15000, { operatorId });
 }
 
-async function restoreRecording(sessionId) {
-  return callCameraApi('POST', `/api/recordings/${sessionId}/restore`);
+async function restoreRecording(sessionId, { operatorId } = {}) {
+  return callCameraApi('POST', `/api/recordings/${sessionId}/restore`, undefined, 15000, { operatorId });
 }
 
-async function deleteRecording(sessionId, { ifMatch, confirmTyped } = {}) {
-  const headers = { 'X-Api-Token': getToken(), 'Content-Type': 'application/json' };
+async function deleteRecording(sessionId, { ifMatch, confirmTyped, operatorId } = {}) {
+  const headers = {};
   if (ifMatch) headers['If-Match'] = ifMatch;
-  return callCameraApi('DELETE', `/api/recordings/${sessionId}`, { confirm: confirmTyped }, 30000);
+  return callCameraApi('DELETE', `/api/recordings/${sessionId}`, { confirm: confirmTyped }, 30000, { headers, operatorId });
 }
 
-async function deletePeerTubeVideo(sessionId, { confirmTyped } = {}) {
-  return callCameraApi('DELETE', `/api/recordings/${sessionId}/peertube`, { confirm: confirmTyped }, 30000);
+async function deletePeerTubeVideo(sessionId, { confirmTyped, operatorId } = {}) {
+  return callCameraApi('DELETE', `/api/recordings/${sessionId}/peertube`, { confirm: confirmTyped }, 30000, { operatorId });
 }
 
 module.exports = {
@@ -120,4 +149,5 @@ module.exports = {
   deletePeerTubeVideo,
   getBaseUrl,
   getToken,
+  serviceHeaders,
 };

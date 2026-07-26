@@ -292,17 +292,44 @@ const liveChoice = await resolveLiveStreamChoice(label);
   const includeLiveStream = liveChoice === 'yes';     // 'no'/null → display only
   const typedTargets = Array.isArray(options.targets) ? options.targets : [];
   const targetPayload = typedTargets.length ? { targets: typedTargets } : { device_ids: targetIds };
+  const idempotencyKey = globalThis.crypto?.randomUUID?.()
+    || `broadcast-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  let wallReplaceConfirmed = false;
   let result;
   try {
     result = await api.broadcast({
       ...resolvedSource,
       ...targetPayload,
       include_live_stream: includeLiveStream,
+      idempotency_key: idempotencyKey,
     });
   } catch (e) {
     finishDispatchMetric();
     showToast(e?.message || t('mc.send.failed'), 'error');
     return false;
+  }
+
+  if (result && result.code === 'CONFIRM_WALL_REPLACE_REQUIRED') {
+    const ok = await confirmDialog({
+      title: t('mc.send.confirm_wall_replace_title'),
+      message: t('mc.send.confirm_wall_replace_msg', { label, n: result.region_count }),
+      confirmLabel: t('mc.send.confirm_wall_replace_ok'),
+      tone: 'danger',
+    });
+    if (!ok) return false;
+    wallReplaceConfirmed = true;
+    try {
+      result = await api.broadcast({
+        ...resolvedSource,
+        ...targetPayload,
+        confirm_wall_replace: true,
+        include_live_stream: includeLiveStream,
+        idempotency_key: idempotencyKey,
+      });
+    } catch (e) {
+      showToast(e?.message || t('mc.send.failed'), 'error');
+      return false;
+    }
   }
 
   // 409 CONFIRM_ALL_REQUIRED: operator is targeting every display in the workspace.
@@ -319,7 +346,9 @@ const liveChoice = await resolveLiveStreamChoice(label);
         ...resolvedSource,
         ...targetPayload,
         confirm_all: true,
+        confirm_wall_replace: wallReplaceConfirmed,
         include_live_stream: includeLiveStream,
+        idempotency_key: idempotencyKey,
       });
     } catch (e) {
       showToast(e?.message || t('mc.send.failed'), 'error');

@@ -58,7 +58,8 @@ router.post('/', async (req, res) => {
   }
 
   const {
-    device_ids, targets: target_refs, content_id, remote_url, playlist_id, presentation_id, fit_mode, confirm_all, include_live_stream,
+    device_ids, targets: target_refs, content_id, remote_url, playlist_id, presentation_id,
+    fit_mode, confirm_all, confirm_wall_replace, include_live_stream,
   } = req.body || {};
 
   // Validate the target selection.
@@ -147,6 +148,18 @@ router.post('/', async (req, res) => {
     }
   }
   const physicalTargets = resolvedTargets.targets;
+  const typedRoutes = typedRefs.length > 0
+    ? typedResolution.routes.filter((route) => physicalTargets.includes(route.device_id))
+    : physicalTargets.map((deviceId) => ({ type: 'display', device_id: deviceId }));
+  const wallReplacementRoutes = typedRoutes.filter((route) => route.wall_replace === true);
+  if (wallReplacementRoutes.length > 0 && confirm_wall_replace !== true) {
+    return res.status(409).json({
+      error: 'Replacing every Mosaic region requires explicit confirmation',
+      code: 'CONFIRM_WALL_REPLACE_REQUIRED',
+      wall_id: wallReplacementRoutes[0].wall_id,
+      region_count: wallReplacementRoutes.length,
+    });
+  }
 
   // Confirmation gate when targeting ALL displays in the workspace.
   const totalInWorkspace = db.prepare(
@@ -167,54 +180,161 @@ router.post('/', async (req, res) => {
     if (liveStreamDisplay && !targets.includes(liveStreamDisplay.id)) targets.push(liveStreamDisplay.id);
     if (liveStreamDisplay) markLiveContentChanged(liveStreamDisplay.id);
   }
+  const dispatchRoutes = [...typedRoutes];
+  for (const deviceId of targets) {
+    if (!dispatchRoutes.some((route) => route.device_id === deviceId)) {
+      dispatchRoutes.push({ type: 'display', device_id: deviceId });
+    }
+  }
 
   const source = { content_id, remote_url: effectiveRemoteUrl, playlist_id, fit_mode };
   const io = req.app.get('io');
-  const totalRequested = targets.length + resolvedTargets.missing.length;
+  const totalRequested = dispatchRoutes.length + resolvedTargets.missing.length;
   const sourceRef = sourceIdentity({
     contentId: content_id,
     playlistId: playlist_id,
     presentationId: presentation_id,
     remoteUrl: effectiveRemoteUrl,
   });
-  const deliveryRequest = broadcastDelivery.createRequest({
-    workspaceId: req.workspaceId,
-    userId: req.user.id,
-    sourceType: sourceRef.type,
-    sourceId: sourceRef.id,
-    typedTargets: typedRefs,
-    expectedTargetCount: totalRequested,
-    targets: [
-      ...targets.map((deviceId) => ({
-        deviceId,
-        expectedSourceId: content_id ? String(content_id) : null,
-      })),
-      ...resolvedTargets.missing.map((deviceId) => ({
-        deviceId,
-        resolved: false,
-        initialState: 'failed',
-        failureReason: 'Display was not found in the active workspace',
-      })),
-    ],
-  });
-  const deliveryByDevice = new Map(
-    deliveryRequest.devices.map((entry) => [entry.device_id, entry])
+  const idempotencyKey = String(
+    req.get('X-Idempotency-Key') || req.body?.idempotency_key || ''
+  ).trim();
+  const fingerprint = crypto.createHash('sha256').update(JSON.stringify({
+    workspace_id: req.workspaceId,
+    source: sourceRef,
+    remote_url: effectiveRemoteUrl || null,
+    fit_mode: fit_mode || null,
+    routes: dispatchRoutes.map((route) => ({
+      type: route.type,
+      device_id: route.device_id,
+      wall_id: route.wall_id || null,
+      region_id: route.region_id || null,
+      zone_id: route.zone_id || null,
+      layout_revision: route.layout_revision ?? null,
+    })),
+  })).digest('hex');
+  let deliveryRequest;
+  try {
+    deliveryRequest = broadcastDelivery.createRequest({
+      workspaceId: req.workspaceId,
+      userId: req.user.id,
+      sourceType: sourceRef.type,
+      sourceId: sourceRef.id,
+      typedTargets: typedRefs,
+      expectedTargetCount: totalRequested,
+      idempotencyKey: idempotencyKey || null,
+      requestFingerprint: fingerprint,
+      targets: [
+        ...dispatchRoutes.map((route) => ({
+          deviceId: route.device_id,
+          regionId: route.region_id || null,
+          zoneId: route.zone_id || null,
+          expectedSourceId: content_id ? String(content_id) : null,
+        })),
+        ...resolvedTargets.missing.map((deviceId) => ({
+          deviceId,
+          resolved: false,
+          initialState: 'failed',
+          failureReason: 'Display was not found in the active workspace',
+        })),
+      ],
+    });
+  } catch (error) {
+    if (error?.code === 'IDEMPOTENCY_KEY_REUSED') {
+      return res.status(409).json({
+        error: error.message,
+        code: error.code,
+      });
+    }
+    throw error;
+  }
+  if (deliveryRequest.idempotent_replay === true) {
+    res.set('Cache-Control', 'no-store');
+    return res.status(200).json({
+      accepted: true,
+      success: true,
+      idempotent_replay: true,
+      request_id: deliveryRequest.id,
+      status_url: `/api/broadcast/${encodeURIComponent(deliveryRequest.id)}`,
+      delivery: deliveryRequest,
+    });
+  }
+  const deliveryByTarget = new Map(
+    deliveryRequest.devices.map((entry) => [entry.target_key, entry])
   );
   let sent = 0;
   const failed = resolvedTargets.missing.slice();
-  for (const deviceId of targets) {
-    const delivery = deliveryByDevice.get(deviceId);
+  const regionRoutesByDevice = new Map();
+  for (const route of dispatchRoutes) {
+    if (route.type !== 'wall-region') continue;
+    const entries = regionRoutesByDevice.get(route.device_id) || [];
+    entries.push(route);
+    regionRoutesByDevice.set(route.device_id, entries);
+  }
+  const batchProcessedDevices = new Set();
+  for (const route of dispatchRoutes) {
+    const deviceId = route.device_id;
+    const regionBatch = regionRoutesByDevice.get(deviceId) || [];
+    if (regionBatch.length > 1) {
+      if (batchProcessedDevices.has(deviceId)) continue;
+      batchProcessedDevices.add(deviceId);
+      const batchDeliveries = regionBatch.map((batchRoute) => {
+        const key = `${deviceId}:region:${batchRoute.region_id}`;
+        const entry = deliveryByTarget.get(key);
+        return {
+          requestId: deliveryRequest.id,
+          commandId: entry.command_id,
+          sourceId: sourceRef.id,
+          sourceType: sourceRef.type,
+          expectedSourceId: content_id ? String(content_id) : null,
+          regionId: batchRoute.region_id,
+          zoneId: batchRoute.zone_id,
+        };
+      });
+      const batchResult = sceneEngine.pushSourceToRegions(io, deviceId, source, regionBatch, {
+        workspaceId: req.workspaceId,
+        userId: req.user.id,
+        contentContext: contextFromRequest(req),
+        targetDeviceIds: targets,
+        deliveries: batchDeliveries,
+      });
+      for (const [index, batchRoute] of regionBatch.entries()) {
+        const delivery = deliveryByTarget.get(`${deviceId}:region:${batchRoute.region_id}`);
+        broadcastDelivery.markDispatched({
+          requestId: deliveryRequest.id,
+          deviceId,
+          commandId: delivery.command_id,
+          delivered: batchResult.delivered,
+          queued: batchResult.queued,
+          playlistRevision: batchResult.playlistRevision,
+          expectedSourceId: batchResult.expectedSourceId,
+          regionId: batchRoute.region_id,
+          failureReason: batchResult.failureReason,
+        });
+        if (batchResult.ok) sent++; else failed.push(`${deviceId}:region:${batchRoute.region_id}`);
+      }
+      continue;
+    }
+    const targetKey = route.region_id
+      ? `${deviceId}:region:${route.region_id}`
+      : deviceId;
+    const delivery = deliveryByTarget.get(targetKey);
     const result = sceneEngine.pushSourceToDevice(io, deviceId, source, {
       workspaceId: req.workspaceId,
       userId: req.user.id,
       contentContext: contextFromRequest(req),
       targetDeviceIds: targets,
+      regionId: route.region_id || null,
+      zoneId: route.zone_id || null,
+      target: route,
       delivery: {
         requestId: deliveryRequest.id,
         commandId: delivery.command_id,
         sourceId: sourceRef.id,
         sourceType: sourceRef.type,
         expectedSourceId: content_id ? String(content_id) : null,
+        regionId: route.region_id || null,
+        zoneId: route.zone_id || null,
       },
       returnDetails: true,
     });
@@ -226,9 +346,10 @@ router.post('/', async (req, res) => {
       queued: result.queued,
       playlistRevision: result.playlistRevision,
       expectedSourceId: result.expectedSourceId,
+      regionId: route.region_id || null,
       failureReason: result.failureReason,
     });
-    if (result.ok) sent++; else failed.push(deviceId);
+    if (result.ok) sent++; else failed.push(targetKey);
   }
   // The device playlist assignment above is the authorization event that makes
   // the asset eligible for the room node. Prewarm only after that transaction;
@@ -270,6 +391,12 @@ router.post('/', async (req, res) => {
       presentation_id: presentation_id || null,
       remote_url: effectiveRemoteUrl || null,
       device_ids: targets,
+      target_routes: dispatchRoutes.map((route) => ({
+        type: route.type,
+        device_id: route.device_id,
+        wall_id: route.wall_id || null,
+        region_id: route.region_id || null,
+      })),
       target_count: totalRequested,
       missing_device_count: resolvedTargets.missing.length,
       sent,

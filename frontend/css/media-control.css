@@ -363,6 +363,34 @@
 .mc-wall-split-half:hover { box-shadow: inset 0 0 0 2px rgba(37, 99, 235, 0.8); }
 .mc-wall-split-half:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
 .mc-wall-split-half.mc-card-dragover { box-shadow: inset 0 0 0 3px var(--accent); }
+.mc-wall-region-unavailable {
+  grid-column: 1 / -1;
+  min-height: 112px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  color: var(--text-muted);
+  text-align: center;
+}
+.mc-wall-region-unavailable button {
+  min-height: 48px;
+  min-width: 132px;
+  padding: 0 18px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.mc-wall-region-unavailable button:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent), white 45%);
+  outline-offset: 2px;
+}
 .mc-wall-all {
   display: flex; align-items: center; justify-content: center; gap: var(--space-2, 8px);
   margin-top: var(--mc-space-sm, 8px); min-height: 40px; padding: 0 var(--space-3, 12px);
@@ -1062,7 +1090,7 @@
   align-items: flex-start;
   gap: var(--space-3);
   min-width: 0;
-  min-height: var(--tap-min);
+  min-height: max(48px, var(--tap-min, 48px));
   padding: var(--space-3);
   color: var(--text-primary);
   background: var(--bg-card);

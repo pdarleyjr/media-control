@@ -104,4 +104,52 @@ jobs:
             --build-arg "IMAGE_TAG=${TAG}" \
             -t "${TAG}" \
             .
-          docker image inspect "${TAG}" --format '{{.Id}}'
+          mkdir -p image-provenance
+          IMAGE_ID="$(docker image inspect "${TAG}" --format '{{.Id}}')"
+          OCI_REVISION="$(docker image inspect "${TAG}" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
+          OCI_SOURCE="$(docker image inspect "${TAG}" --format '{{index .Config.Labels "org.opencontainers.image.source"}}')"
+          test "${OCI_REVISION}" = "${GIT_COMMIT}"
+          test "${OCI_SOURCE}" = "https://github.com/pdarleyjr/media-control"
+
+          docker run -d --rm --name media-control-provenance-test \
+            -p 127.0.0.1:3001:3001 "${TAG}"
+          trap 'docker rm -f media-control-provenance-test >/dev/null 2>&1 || true' EXIT
+          for attempt in $(seq 1 60); do
+            curl --fail --silent http://127.0.0.1:3001/api/system/version > image-provenance/api-version.json && break
+            sleep 1
+          done
+          test -s image-provenance/api-version.json
+          node -e '
+            const fs = require("fs");
+            const version = JSON.parse(fs.readFileSync("image-provenance/api-version.json", "utf8"));
+            const expectedCommit = process.argv[1];
+            const expectedTree = process.argv[2];
+            if (version.git_commit !== expectedCommit) throw new Error(`commit mismatch: ${version.git_commit}`);
+            if (version.git_tree !== expectedTree) throw new Error(`tree mismatch: ${version.git_tree}`);
+            if (version.provenance?.mode !== "embedded") throw new Error("embedded provenance is not active");
+            if (version.provenance?.mutable_environment_ignored !== true) throw new Error("runtime environment is not ignored");
+          ' "${GIT_COMMIT}" "${GIT_TREE}"
+          docker rm -f media-control-provenance-test
+          trap - EXIT
+
+          node -e '
+            const fs = require("fs");
+            const payload = {
+              git_commit: process.argv[1],
+              git_tree: process.argv[2],
+              image_id: process.argv[3],
+              image_tag: process.argv[4],
+              oci_revision: process.argv[5],
+              oci_source: process.argv[6],
+              github_run_id: process.env.GITHUB_RUN_ID,
+            };
+            fs.writeFileSync("image-provenance/image.json", `${JSON.stringify(payload, null, 2)}\n`);
+          ' "${GIT_COMMIT}" "${GIT_TREE}" "${IMAGE_ID}" "${TAG}" "${OCI_REVISION}" "${OCI_SOURCE}"
+
+      - name: Upload image provenance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: image-provenance-${{ github.sha }}
+          path: image-provenance/
+          if-no-files-found: error
+          retention-days: 30

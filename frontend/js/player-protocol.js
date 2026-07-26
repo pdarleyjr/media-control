@@ -42,6 +42,7 @@ export const TARGET_FIELDS = Object.freeze([
   'room_id',
   'wall_id',
   'device_id',
+  'region_id',
   'zone_id',
   'cell_id',
   'content_instance_id',

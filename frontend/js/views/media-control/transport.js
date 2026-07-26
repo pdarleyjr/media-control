@@ -40,6 +40,7 @@ const pendingApply = new Map();
 function matchesExpectedState(entry, state) {
   if (!state || typeof state !== 'object') return false;
   if (state.device_id && entry.deviceId && state.device_id !== entry.deviceId) return false;
+  if (entry.regionId && String(state.region_id || '') !== String(entry.regionId)) return false;
   if (entry.contentInstanceId && state.content_instance_id
       && state.content_instance_id !== entry.contentInstanceId) return false;
   const action = entry.action;
@@ -184,6 +185,7 @@ export function sendTransportCommand(deviceId, action, payload = {}, opts = {}) 
     ...(opts.target || {}),
     device_id: deviceId,
     ...(opts.zoneId ? { zone_id: opts.zoneId } : {}),
+    ...(opts.regionId ? { region_id: opts.regionId } : {}),
     ...(opts.cellId ? { cell_id: opts.cellId } : {}),
     ...(opts.contentInstanceId ? { content_instance_id: opts.contentInstanceId } : {}),
     ...(opts.wallId ? { wall_id: opts.wallId } : {}),
@@ -267,6 +269,7 @@ export function sendTransportCommand(deviceId, action, payload = {}, opts = {}) 
         action: resolvedAction,
         payload: payload || {},
         contentInstanceId: opts.contentInstanceId || targetMeta.content_instance_id || null,
+        regionId: opts.regionId || targetMeta.region_id || null,
         acknowledged: false,
         onInterim: typeof opts.onInterim === 'function' ? opts.onInterim : null,
       });
@@ -285,6 +288,7 @@ export function renderTransportBar(container, {
   paused,
   target,
   zoneId,
+  regionId,
   cellId,
   wallId,
   contentInstanceId,
@@ -379,6 +383,7 @@ export function renderTransportBar(container, {
       const result = await sendTransportCommand(id, resolvedAction, extraPayload, {
         target,
         zoneId,
+        regionId,
         cellId,
         wallId,
         contentInstanceId,

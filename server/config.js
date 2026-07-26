@@ -272,6 +272,7 @@ module.exports = {
   cameraControl: {
     baseUrl: (process.env.CAMERA_CONTROL_BASE_URL || '').replace(/\/+$/, ''),
     token: process.env.CAMERA_CONTROL_TOKEN || '',
+    signingSecret: process.env.CAMERA_CONTROL_SIGNING_SECRET || '',
     previewUrl: process.env.CAMERA_PREVIEW_URL || '',
   },
 

@@ -43,8 +43,8 @@ test('camera-edge server defines deletion endpoints with safety gates', () => {
   assert.match(edgeSrc, /app\.delete\('\/api\/recordings\/:id'/);
   assert.match(edgeSrc, /app\.delete\('\/api\/recordings\/:id\/peertube'/);
   // Safety: per-recording lock.
-  assert.match(edgeSrc, /acquireDeletionLock/);
-  assert.match(edgeSrc, /releaseDeletionLock/);
+  assert.match(edgeSrc, /acquireRecordingOperationLease/);
+  assert.match(edgeSrc, /releaseRecordingOperationLease/);
   // Safety: tombstone before deletion.
   assert.match(edgeSrc, /tombstone/);
   // Safety: revision check via If-Match.

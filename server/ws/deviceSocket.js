@@ -332,6 +332,40 @@ function buildPlaylistPayload(deviceId, delivery = null) {
     `).all(wall.id) : [];
     wallLayout = wall ? resolveEffectiveLayoutLeaders(parseStoredLayout(wall, allMembers), allMembers) : null;
     layoutGroup = groupForDevice(wallLayout, deviceId);
+    if (
+      wall
+      && String(wall.layout_mode || '') === 'split'
+      && allMembers.length === 1
+      && Array.isArray(wallLayout?.regions)
+      && wallLayout.regions.length > 0
+    ) {
+      // A Mosaic wall is one physical player with several authoritative logical
+      // destinations. Project the persisted wall regions into the existing
+      // percentage-zone player protocol while retaining both stable identities.
+      layout = {
+        id: wallLayout.id,
+        name: `${wall.name || wall.id} Mosaic regions`,
+        width: 100,
+        height: 100,
+        wall_id: wall.id,
+        layout_revision: wallLayout.revision,
+        authoritative_regions: true,
+        zones: wallLayout.regions
+          .filter((region) => region.enabled !== false && region.player_device_id === deviceId)
+          .map((region, index) => ({
+            id: region.zone_id,
+            region_id: region.id,
+            name: region.name,
+            x_percent: region.x,
+            y_percent: region.y,
+            width_percent: region.width,
+            height_percent: region.height,
+            z_index: region.z_index,
+            fit_mode: region.fit_mode,
+            sort_order: index,
+          })),
+      };
+    }
     if (wall && pos && layoutGroup) {
       // Canvas fallback now comes from each actual panel geometry. Calibrated
       // canvas_* values still win; mixed-resolution seams convert physical
@@ -430,17 +464,21 @@ function buildPlaylistPayload(deviceId, delivery = null) {
     device_geometry: payload.device_geometry,
     display_profile: payload.display_profile,
   })).digest('hex').slice(0, 24);
-  let activeDelivery = delivery && typeof delivery === 'object' ? delivery : null;
-  if (!activeDelivery) {
-    activeDelivery = broadcastDelivery.pendingForDevice(deviceId, payload.playlist_revision);
+  let activeDeliveries = Array.isArray(delivery)
+    ? delivery
+    : (delivery && typeof delivery === 'object' ? [delivery] : []);
+  if (activeDeliveries.length === 0) {
+    activeDeliveries = broadcastDelivery.pendingForDevice(deviceId, payload.playlist_revision);
   }
-  if (
-    activeDelivery
-    && typeof activeDelivery === 'object'
-    && activeDelivery.requestId
-    && activeDelivery.commandId
-    && activeDelivery.sourceId
-  ) {
+  payload.broadcast_deliveries = [];
+  for (const activeDelivery of activeDeliveries) {
+    if (
+      !activeDelivery
+      || typeof activeDelivery !== 'object'
+      || !activeDelivery.requestId
+      || !activeDelivery.commandId
+      || !activeDelivery.sourceId
+    ) continue;
     const prepared = broadcastDelivery.markPrepared({
       requestId: activeDelivery.requestId,
       deviceId,
@@ -448,14 +486,21 @@ function buildPlaylistPayload(deviceId, delivery = null) {
       playlistRevision: payload.playlist_revision,
       expectedSourceId: activeDelivery.expectedSourceId || null,
     });
-    if (prepared.applied) payload.broadcast_delivery = {
+    if (prepared.applied) payload.broadcast_deliveries.push({
       request_id: String(activeDelivery.requestId),
       command_id: String(activeDelivery.commandId),
       source_id: String(activeDelivery.sourceId),
       source_type: String(activeDelivery.sourceType || 'content'),
       expected_source_id: activeDelivery.expectedSourceId ? String(activeDelivery.expectedSourceId) : null,
+      region_id: activeDelivery.regionId ? String(activeDelivery.regionId) : null,
+      zone_id: activeDelivery.zoneId ? String(activeDelivery.zoneId) : null,
       expected_playlist_revision: payload.playlist_revision,
-    };
+    });
+  }
+  if (payload.broadcast_deliveries.length > 0) {
+    [payload.broadcast_delivery] = payload.broadcast_deliveries;
+  } else {
+    delete payload.broadcast_deliveries;
   }
   return payload;
 }

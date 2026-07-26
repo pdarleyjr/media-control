@@ -317,6 +317,111 @@ export function buildTargetCatalog(snapshot, options = {}) {
     }).filter(Boolean);
   });
 
+  // A physical wall member is routable only when the authoritative wall is in
+  // split mode and has more than one independent player. The typed target
+  // carries both wall identity and layout revision so a later span switch or
+  // membership edit fails closed on the server.
+  const wallMembers = walls.flatMap((wall) => {
+    if (wall.layoutMode !== 'split' || wall.members.length <= 1) return [];
+    return wall.members.map((member) => ({
+      ...member,
+      type: 'wall-member',
+      id: `${wall.id}:${member.id}`,
+      deviceId: member.id,
+      wallId: wall.id,
+      layoutRevision: wall.layoutRevision,
+      name: `${wall.name} · ${member.name}`,
+      label: `${wall.name} · ${member.name}`,
+      memberIds: [member.id],
+      topologySummary: [
+        'individual split display',
+        member.status,
+        member.dimensionsLabel,
+        `wall revision ${wall.layoutRevision}`,
+      ].join(' · '),
+      topologyLabel: [
+        wall.name,
+        member.name,
+        'individual split display',
+        member.status,
+        member.dimensionsLabel,
+        `wall revision ${wall.layoutRevision}`,
+      ].join(' · '),
+    }));
+  });
+
+  // One-player Mosaic walls expose logical screen regions from persisted wall
+  // layout JSON. These are stable target identities, not transient DOM cells.
+  const wallRegions = walls.flatMap((wall) => {
+    if (wall.layoutMode !== 'split' || wall.members.length !== 1) return [];
+    const rawRegions = Array.isArray(wall.raw?.layout?.regions) ? wall.raw.layout.regions : [];
+    const currentPlayerId = wall.members[0]?.id || '';
+    return rawRegions.map((rawRegion) => {
+      const regionId = text(rawRegion?.id);
+      const playerDeviceId = text(rawRegion?.player_device_id || rawRegion?.playerDeviceId);
+      const revision = Number(rawRegion?.revision);
+      const zoneId = text(rawRegion?.zone_id || rawRegion?.zoneId || regionId);
+      const x = finiteNumber(rawRegion?.x ?? rawRegion?.x_percent);
+      const y = finiteNumber(rawRegion?.y ?? rawRegion?.y_percent);
+      const width = positiveNumber(rawRegion?.width ?? rawRegion?.width_percent);
+      const height = positiveNumber(rawRegion?.height ?? rawRegion?.height_percent);
+      if (
+        !regionId
+        || !zoneId
+        || rawRegion?.enabled === false
+        || playerDeviceId !== currentPlayerId
+        || revision !== wall.layoutRevision
+        || x === null
+        || y === null
+        || width === null
+        || height === null
+        || x < 0
+        || y < 0
+        || x + width > 100.0001
+        || y + height > 100.0001
+      ) return null;
+      const member = wall.members[0];
+      const regionName = text(rawRegion?.name) || regionId;
+      const name = `${wall.name} · ${regionName}`;
+      return {
+        type: 'wall-region',
+        id: `${wall.id}:${regionId}`,
+        regionId,
+        zoneId,
+        wallId: wall.id,
+        playerDeviceId,
+        layoutRevision: wall.layoutRevision,
+        name,
+        label: name,
+        status: member.status,
+        online: member.online,
+        memberCount: 1,
+        onlineCount: member.online ? 1 : 0,
+        memberIds: [playerDeviceId],
+        members: [member],
+        geometry: { x, y, width, height },
+        coordinateSystem: text(rawRegion?.coordinate_system) || 'normalized-percent',
+        zIndex: Number(rawRegion?.z_index) || 0,
+        fitMode: text(rawRegion?.fit_mode) || 'contain',
+        dimensions: null,
+        dimensionsLabel: `${width.toFixed(2).replace(/\.?0+$/, '')}% × ${height.toFixed(2).replace(/\.?0+$/, '')}%`,
+        topologySummary: [
+          'Mosaic region',
+          `${width.toFixed(2).replace(/\.?0+$/, '')}% × ${height.toFixed(2).replace(/\.?0+$/, '')}%`,
+          member.status,
+          `wall revision ${wall.layoutRevision}`,
+        ].join(' · '),
+        topologyLabel: [
+          name,
+          'Mosaic region',
+          member.status,
+          `wall revision ${wall.layoutRevision}`,
+        ].join(' · '),
+        raw: rawRegion,
+      };
+    }).filter(Boolean);
+  });
+
   const groups = groupRows.map((rawGroup) => {
     const id = text(rawGroup?.id);
     const name = text(rawGroup?.name) || id || 'Unnamed group';
@@ -393,10 +498,19 @@ export function buildTargetCatalog(snapshot, options = {}) {
     serverTimestamp: Number(state.serverTimestamp) || null,
     walls,
     wallGroups,
+    wallMembers,
+    wallRegions,
     groups,
     displays,
     standaloneDisplays,
-    targets: [...walls, ...wallGroups, ...groups, ...standaloneDisplays],
+    targets: [
+      ...walls,
+      ...wallGroups,
+      ...wallMembers,
+      ...wallRegions,
+      ...groups,
+      ...standaloneDisplays,
+    ],
     physicalMembers,
     physicalMemberLine: memberLine(physicalMembers),
     liveProgram,
@@ -427,6 +541,12 @@ export function findCatalogTarget(catalog, target) {
   if (reference.type === 'wall-group') {
     return catalog?.wallGroups?.find((candidate) => candidate.id === reference.id) || null;
   }
+  if (reference.type === 'wall-member') {
+    return catalog?.wallMembers?.find((candidate) => candidate.id === reference.id) || null;
+  }
+  if (reference.type === 'wall-region') {
+    return catalog?.wallRegions?.find((candidate) => candidate.id === reference.id) || null;
+  }
   if (reference.type === 'group') {
     return catalog?.groups?.find((candidate) => candidate.id === reference.id) || null;
   }
@@ -440,6 +560,8 @@ export function expandTargetToDeviceIds(target, catalog) {
   const resolved = findCatalogTarget(catalog, target);
   if (!resolved || resolved.type === 'live-program') return [];
   if (resolved.type === 'display') return [resolved.id];
+  if (resolved.type === 'wall-member') return resolved.deviceId ? [resolved.deviceId] : [];
+  if (resolved.type === 'wall-region') return resolved.playerDeviceId ? [resolved.playerDeviceId] : [];
   return [...new Set(Array.isArray(resolved.memberIds) ? resolved.memberIds : [])];
 }
 

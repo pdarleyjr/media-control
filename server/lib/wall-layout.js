@@ -1,6 +1,94 @@
 const crypto = require('crypto');
 
 const LAYOUT_VERSION = 1;
+const FIT_MODES = new Set(['contain', 'cover', 'fill', 'none', 'scale-down']);
+
+class InvalidStoredWallLayoutError extends Error {
+  constructor(wallId, cause) {
+    super(`Stored layout for wall ${wallId || '(unknown)'} is invalid`);
+    this.name = 'InvalidStoredWallLayoutError';
+    this.code = 'INVALID_STORED_WALL_LAYOUT';
+    this.wallId = wallId || null;
+    this.cause = cause;
+  }
+}
+
+function finitePercent(value, field, { positive = false } = {}) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw new Error(`Region ${field} must be a finite percentage`);
+  if (number < 0 || number > 100 || (positive && number === 0)) {
+    throw new Error(`Region ${field} must be ${positive ? 'greater than 0 and ' : ''}between 0 and 100`);
+  }
+  return number;
+}
+
+function normalizeWallRegions(wall, members, input, options = {}) {
+  const rawRegions = Array.isArray(input?.regions) ? input.regions : [];
+  if (!rawRegions.length) return [];
+  const revision = Number(options.revision ?? input?.revision ?? wall?.layout_revision) || 0;
+  const memberIds = new Set((members || []).map((member) => String(member.device_id)));
+  const seen = new Set();
+  const seenZoneIds = new Set();
+
+  return rawRegions.map((candidate, index) => {
+    const id = String(candidate?.id || '').trim();
+    if (!id) throw new Error('Wall regions require a stable id');
+    if (seen.has(id)) throw new Error(`Wall region ${id} appears more than once`);
+    seen.add(id);
+    const name = String(candidate?.name || '').trim();
+    if (!name) throw new Error(`Wall region ${id} requires a name`);
+    const playerDeviceId = String(
+      candidate?.player_device_id ?? candidate?.playerDeviceId ?? ''
+    ).trim();
+    if (!playerDeviceId || !memberIds.has(playerDeviceId)) {
+      throw new Error(`Wall region ${id} player must be a current wall member`);
+    }
+    const zoneId = String(candidate?.zone_id ?? candidate?.zoneId ?? id).trim();
+    if (!zoneId) throw new Error(`Wall region ${id} requires a stable zone id`);
+    if (seenZoneIds.has(zoneId)) throw new Error(`Wall region zone ${zoneId} appears more than once`);
+    seenZoneIds.add(zoneId);
+    const x = finitePercent(candidate?.x ?? candidate?.x_percent, `${id} x`);
+    const y = finitePercent(candidate?.y ?? candidate?.y_percent, `${id} y`);
+    const width = finitePercent(
+      candidate?.width ?? candidate?.width_percent,
+      `${id} width`,
+      { positive: true },
+    );
+    const height = finitePercent(
+      candidate?.height ?? candidate?.height_percent,
+      `${id} height`,
+      { positive: true },
+    );
+    if (x + width > 100.0001 || y + height > 100.0001) {
+      throw new Error(`Wall region ${id} exceeds the normalized canvas`);
+    }
+    const candidateRevision = candidate?.revision == null
+      ? revision
+      : Number(candidate.revision);
+    if (!Number.isInteger(candidateRevision) || candidateRevision !== revision) {
+      throw new Error(`Wall region ${id} revision must match wall revision ${revision}`);
+    }
+    const fitMode = String(candidate?.fit_mode || 'contain').trim().toLowerCase();
+    if (!FIT_MODES.has(fitMode)) throw new Error(`Wall region ${id} has an invalid fit mode`);
+    const zIndex = Number(candidate?.z_index ?? index);
+    if (!Number.isInteger(zIndex)) throw new Error(`Wall region ${id} z-index must be an integer`);
+    return {
+      id,
+      name,
+      x,
+      y,
+      width,
+      height,
+      coordinate_system: 'normalized-percent',
+      player_device_id: playerDeviceId,
+      zone_id: zoneId,
+      z_index: zIndex,
+      fit_mode: fitMode,
+      enabled: candidate?.enabled !== false,
+      revision,
+    };
+  });
+}
 
 function orderedMembers(members) {
   return [...(members || [])].sort((a, b) =>
@@ -54,14 +142,70 @@ function legacyLayout(wall, members) {
   };
 }
 
-function parseStoredLayout(wall, members) {
+function parseStoredLayout(wall, members, options = {}) {
   if (!wall?.layout_json) return legacyLayout(wall, members);
   try {
     const parsed = JSON.parse(wall.layout_json);
     return validateLayout(wall, members, parsed, { revision: Number(wall.layout_revision) || Number(parsed.revision) || 0, source: 'stored' });
-  } catch (_) {
-    return legacyLayout(wall, members);
+  } catch (error) {
+    const invalid = new InvalidStoredWallLayoutError(wall?.id, error);
+    if (options.onInvalid === 'return') {
+      return {
+        version: LAYOUT_VERSION,
+        id: `${wall?.id || 'wall'}:layout:${Number(wall?.layout_revision) || 0}`,
+        wall_id: wall?.id || null,
+        mode: 'invalid',
+        revision: Number(wall?.layout_revision) || 0,
+        preset: null,
+        source: 'invalid',
+        valid: false,
+        error: {
+          code: invalid.code,
+          message: invalid.message,
+        },
+        groups: [],
+        regions: [],
+      };
+    }
+    throw invalid;
   }
+}
+
+function regionsFromLayoutZones(wall, members, zones, options = {}) {
+  const currentMembers = Array.isArray(members) ? members : [];
+  if (String(wall?.layout_mode || '') !== 'split' || currentMembers.length !== 1) {
+    throw new Error('Mosaic region synchronization requires exactly one current wall member in split mode');
+  }
+  if (!Array.isArray(zones) || zones.length === 0) {
+    throw new Error('Mosaic region synchronization requires at least one layout zone');
+  }
+  const revision = Number(options.revision);
+  if (!Number.isInteger(revision) || revision < 0) {
+    throw new Error('Mosaic region synchronization requires a non-negative revision');
+  }
+  const playerDeviceId = String(currentMembers[0].device_id || '');
+  return normalizeWallRegions(
+    { ...wall, layout_revision: revision },
+    currentMembers,
+    {
+      revision,
+      regions: zones.map((zone, index) => ({
+        id: String(zone.region_id || zone.id || '').trim(),
+        name: String(zone.name || `Region ${index + 1}`).trim(),
+        x: zone.x_percent,
+        y: zone.y_percent,
+        width: zone.width_percent,
+        height: zone.height_percent,
+        player_device_id: playerDeviceId,
+        zone_id: String(zone.id || '').trim(),
+        z_index: Number.isInteger(Number(zone.z_index)) ? Number(zone.z_index) : index,
+        fit_mode: zone.fit_mode || 'contain',
+        enabled: zone.enabled !== false,
+        revision,
+      })),
+    },
+    { revision },
+  );
 }
 
 function presetGroups(wall, members, preset) {
@@ -104,7 +248,11 @@ function validateLayout(wall, members, input, options = {}) {
   const ordered = orderedMembers(members);
   const orderedIds = ordered.map((member) => member.device_id);
   const memberById = new Map(ordered.map((member) => [member.device_id, member]));
-  const groupsInput = Array.isArray(input?.groups) ? input.groups : [];
+  const revision = Number(options.revision ?? input.revision ?? wall.layout_revision) || 0;
+  const regions = normalizeWallRegions(wall, ordered, input, { revision });
+  const groupsInput = Array.isArray(input?.groups) && input.groups.length
+    ? input.groups
+    : (regions.length && ordered.length === 1 ? [buildGroup(wall.id, ordered, 'solo')] : []);
   if (!groupsInput.length && orderedIds.length) throw new Error('At least one layout group is required');
 
   const seen = new Set();
@@ -125,7 +273,6 @@ function validateLayout(wall, members, input, options = {}) {
   });
 
   if (seen.size !== orderedIds.length) throw new Error('Every wall display must belong to exactly one layout group');
-  const revision = Number(options.revision ?? input.revision ?? wall.layout_revision) || 0;
   return {
     version: LAYOUT_VERSION,
     id: `${wall.id}:layout:${revision}`,
@@ -135,6 +282,7 @@ function validateLayout(wall, members, input, options = {}) {
     preset: presetForGroups(ordered, groups),
     source: options.source || 'request',
     groups,
+    regions,
   };
 }
 
@@ -169,12 +317,15 @@ function resolveEffectiveLayoutLeaders(layout, members) {
 
 module.exports = {
   LAYOUT_VERSION,
+  InvalidStoredWallLayoutError,
   orderedMembers,
   legacyLayout,
   parseStoredLayout,
   presetGroups,
   presetForGroups,
   validateLayout,
+  normalizeWallRegions,
+  regionsFromLayoutZones,
   groupForDevice,
   resolveEffectiveLayoutLeaders,
 };

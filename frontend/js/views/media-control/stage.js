@@ -472,19 +472,20 @@ function wallGroupsCard(wall, byId, livePreviewDeviceId, activeControlTargetId, 
 // column `half` of the composite grid on that one device. The preview crops the
 // device's live screenshot to this column so each half shows what is actually on
 // that TV. data-device-id = the spanning (leader) device; data-split-half = index.
-function wallSplitHalfCell(leader, half, cols) {
+function wallSplitRegionCell(leader, region) {
   const pv = previewSource(leader);
-  const label = cols === 2
-    ? (half === 0 ? t('mc.wall.half_left') : t('mc.wall.half_right'))
-    : t('mc.wall.screen_n', { n: half + 1 });
-  // Crop the composite screenshot to this column via background sizing.
-  const posX = cols > 1 ? (half * 100 / (cols - 1)) : 0;
+  const label = region.name || region.id;
+  const width = Math.max(0.01, Number(region.width) || 100);
+  const height = Math.max(0.01, Number(region.height) || 100);
+  const posX = width >= 100 ? 0 : (Number(region.x) || 0) * 100 / (100 - width);
+  const posY = height >= 100 ? 0 : (Number(region.y) || 0) * 100 / (100 - height);
   const bg = pv
-    ? ` style="background-image:url('${esc(pv.src)}');background-size:${cols * 100}% 100%;background-position:${posX}% 0;background-repeat:no-repeat;"`
+    ? ` style="background-image:url('${esc(pv.src)}');background-size:${10000 / width}% ${10000 / height}%;background-position:${posX}% ${posY}%;background-repeat:no-repeat;"`
     : '';
   const empty = pv ? '' : `<span class="mc-wall-cell-empty">${esc(t('mc.card.no_preview'))}</span>`;
   return `
-    <div class="mc-wall-split-half" data-device-id="${esc(leader.id)}" data-split-half="${half}"
+    <div class="mc-wall-split-half" data-device-id="${esc(leader.id)}"
+         data-wall-region-id="${esc(region.id)}" data-zone-id="${esc(region.zone_id)}"
          role="button" tabindex="0" aria-label="${esc(t('mc.wall.split_drop_aria', { label }))}"${bg}>
       ${empty}
       <span class="mc-wall-cell-name">${esc(label)}</span>
@@ -501,11 +502,17 @@ function wallSplitGroup(wall, byId, livePreviewDeviceId = null) {
   // per-device-card split below can't express "drop onto screen 2" (no 2nd device).
   // Render N independent half drop cells instead; each drop composites its source
   // into one column of a grid pushed to the single window (see dropOnWallHalf).
-  if (members.length === 1 && cols > 1) {
+  if (members.length === 1 && ((wall.layout?.regions || []).length > 0 || cols > 1)) {
     const leader = members[0];
-    const transportId = wallTransportDeviceId(wall, members) || leader.id;
-    const halves = [];
-    for (let i = 0; i < cols; i++) halves.push(wallSplitHalfCell(leader, i, cols));
+    const regions = (wall.layout?.valid === false ? [] : (wall.layout?.regions || []))
+      .filter((region) => region.enabled !== false && region.player_device_id === leader.id);
+    const halves = regions.map((region) => wallSplitRegionCell(leader, region));
+    const missingRegions = regions.length === 0
+      ? `<div class="mc-wall-region-unavailable" role="status">
+          <span>${esc(t('mc.wall.regions_sync_required'))}</span>
+          <button type="button" data-wall-sync-regions data-wall-id="${esc(wall.id)}">${esc(t('mc.wall.regions_sync_action'))}</button>
+        </div>`
+      : '';
     return `
     <section class="mc-card mc-wall mc-wall-split mc-wall-split-one" data-wall-id="${esc(wall.id)}" data-layout-mode="split" style="--mc-cols:${cols}" aria-label="${esc(t('mc.wall.aria', { name: wall.name }))}">
       <div class="mc-wall-head">
@@ -523,8 +530,8 @@ function wallSplitGroup(wall, byId, livePreviewDeviceId = null) {
         <a class="mc-wall-edit" href="#/walls">${esc(t('mc.wall.edit'))}</a>
       </div>
       <div class="mc-wall-hint">${esc(t('mc.wall.split_one_hint'))}</div>
-      <div class="mc-wall-grid" style="grid-template-columns:repeat(${cols}, 1fr)">
-        ${halves.join('')}
+      <div class="mc-wall-grid" style="grid-template-columns:repeat(${Math.max(1, regions.length)}, 1fr)">
+        ${halves.join('')}${missingRegions}
       </div>
     </section>`;
   }

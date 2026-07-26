@@ -479,7 +479,7 @@
     const rendererSessionId = (window.crypto && typeof window.crypto.randomUUID === 'function')
       ? window.crypto.randomUUID()
       : `renderer-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    let pendingBroadcastDelivery = null;
+    const pendingBroadcastDeliveries = new Map();
     let currentMediaAbortController = null;
     let activeSeekCancel = null;
     let transportSeekInProgress = false;
@@ -892,6 +892,7 @@
     let ytApiReady = false;
     let ytApiCallbacks = [];
     let activeYtPlayer = null;
+    const zoneYoutubePlayers = new Set();
     let ytGeneration = 0;
     let calibrationTimer = null;
     let watchdogTimer = null;
@@ -1593,6 +1594,43 @@
       if (snapshot.cache_status == null) snapshot.cache_status = currentCacheStatus;
       if (snapshot.wall_state == null) snapshot.wall_state = wallConfig ? 'synced' : 'standalone';
       if (snapshot.current_asset_id == null && item) snapshot.current_asset_id = item.content_id || item.asset_id || null;
+      snapshot.region_states = zoneElements().map((zone) => {
+        const video = zone.querySelector('video');
+        const youtube = zone._mcYoutubePlayer || null;
+        let youtubeState = null;
+        let youtubeTime = null;
+        let youtubeDuration = null;
+        let youtubeMuted = null;
+        let youtubeVolume = null;
+        if (youtube) {
+          try { youtubeState = youtube.getPlayerState(); } catch (_) {}
+          try { youtubeTime = Number(youtube.getCurrentTime() || 0); } catch (_) {}
+          try { youtubeDuration = Number(youtube.getDuration() || 0) || null; } catch (_) {}
+          try { youtubeMuted = !!youtube.isMuted(); } catch (_) {}
+          try { youtubeVolume = Number(youtube.getVolume()) / 100; } catch (_) {}
+        }
+        return {
+          region_id: zone.dataset.regionId || null,
+          zone_id: zone.dataset.zoneId || null,
+          content_instance_id: zone.dataset.contentInstanceId || null,
+          current_content_id: zone.dataset.contentId || null,
+          content_type: youtube ? 'youtube' : (video ? 'video' : (zone.querySelector('iframe') ? 'document' : (zone.querySelector('img') ? 'image' : 'content'))),
+          fit_mode: zone.dataset.fitMode || null,
+          current_time: youtube ? youtubeTime : (video ? Number(video.currentTime || 0) : null),
+          duration: youtube ? youtubeDuration : (video && Number.isFinite(video.duration) ? Number(video.duration) : null),
+          paused: youtube ? youtubeState !== 1 : (video ? !!video.paused : false),
+          muted: youtube ? youtubeMuted : (video ? !!video.muted : null),
+          volume: youtube ? youtubeVolume : (video ? Number(video.volume) : null),
+          slide_index: zone.dataset.slideIndex ? Number(zone.dataset.slideIndex) : null,
+          render_state: youtubeState === 1
+            ? 'playing'
+            : (zone.querySelector('[data-mc-render-ready="1"]')
+            || (video && video.readyState >= 2)
+            || (zone.querySelector('img')?.complete)
+            ? 'playing'
+            : 'loading'),
+        };
+      }).filter((region) => region.region_id || region.zone_id);
 
       return snapshot;
     }
@@ -1637,8 +1675,7 @@
       return snapshot;
     }
 
-    function emitPendingBroadcastStatus(phase, failureReason = null) {
-      const pending = pendingBroadcastDelivery;
+    function emitPendingBroadcastStatusFor(pending, phase, failureReason = null) {
       if (!pending || !socket?.connected) return false;
       socket.emit('device:broadcast-status', {
         request_id: pending.requestId,
@@ -1654,78 +1691,94 @@
     }
 
     function acceptBroadcastDelivery(data) {
-      const delivery = data && data.broadcast_delivery;
-      if (!delivery || typeof delivery !== 'object') {
-        pendingBroadcastDelivery = null;
-        return;
-      }
+      const deliveries = Array.isArray(data?.broadcast_deliveries)
+        ? data.broadcast_deliveries
+        : (data?.broadcast_delivery ? [data.broadcast_delivery] : []);
+      if (deliveries.length === 0) return;
       const playlistRevision = typeof data.playlist_revision === 'string'
         ? data.playlist_revision
         : null;
-      if (
-        !delivery.request_id
-        || !delivery.command_id
-        || !playlistRevision
-        || delivery.expected_playlist_revision !== playlistRevision
-      ) {
-        pendingBroadcastDelivery = {
+      for (const delivery of deliveries) {
+        const pending = {
           requestId: String(delivery.request_id || ''),
           commandId: String(delivery.command_id || ''),
           playlistRevision: playlistRevision || String(delivery.expected_playlist_revision || ''),
           expectedSourceId: delivery.expected_source_id || null,
+          expectedRegionId: delivery.region_id || null,
+          expectedZoneId: delivery.zone_id || null,
           renderGeneration: playbackGeneration,
           pendingZones: null,
         };
-        emitPendingBroadcastStatus('failed', 'Playlist delivery metadata did not match the payload revision');
-        pendingBroadcastDelivery = null;
-        return;
+        if (
+          !delivery.request_id
+          || !delivery.command_id
+          || !playlistRevision
+          || delivery.expected_playlist_revision !== playlistRevision
+        ) {
+          emitPendingBroadcastStatusFor(
+            pending,
+            'failed',
+            'Playlist delivery metadata did not match the payload revision',
+          );
+          continue;
+        }
+        pending.renderGeneration = null;
+        pendingBroadcastDeliveries.set(pending.commandId, pending);
+        emitPendingBroadcastStatusFor(pending, 'acknowledged');
       }
-      pendingBroadcastDelivery = {
-        requestId: String(delivery.request_id),
-        commandId: String(delivery.command_id),
-        playlistRevision,
-        expectedSourceId: delivery.expected_source_id || null,
-        renderGeneration: null,
-        pendingZones: null,
-      };
-      emitPendingBroadcastStatus('acknowledged');
     }
 
     function bindPendingBroadcastToRender() {
-      if (!pendingBroadcastDelivery) return;
-      pendingBroadcastDelivery.renderGeneration = playbackGeneration;
-      pendingBroadcastDelivery.pendingZones = null;
+      for (const pending of pendingBroadcastDeliveries.values()) {
+        pending.renderGeneration = playbackGeneration;
+        pending.pendingZones = null;
+      }
     }
 
     function failPendingBroadcastRender(reason) {
-      if (!pendingBroadcastDelivery) return;
-      emitPendingBroadcastStatus('failed', reason || 'Player could not render the requested content');
-      pendingBroadcastDelivery = null;
+      for (const pending of pendingBroadcastDeliveries.values()) {
+        emitPendingBroadcastStatusFor(
+          pending,
+          'failed',
+          reason || 'Player could not render the requested content',
+        );
+      }
+      pendingBroadcastDeliveries.clear();
     }
 
     function confirmPendingBroadcastRender(reason = 'render-ready') {
-      const pending = pendingBroadcastDelivery;
-      if (!pending) return false;
-      if (pending.playlistRevision !== appliedPlaylistRevision) return false;
-      if (!pending.renderGeneration || pending.renderGeneration !== playbackGeneration) return false;
-      if (pending.pendingZones && pending.pendingZones.size > 0) return false;
       const state = buildPlayerState();
-      if (
-        pending.expectedSourceId
-        && state.current_content_id
-        && String(pending.expectedSourceId) !== String(state.current_content_id)
-      ) {
-        failPendingBroadcastRender('Rendered source did not match the requested content');
-        return false;
+      let confirmed = false;
+      for (const [commandId, pending] of pendingBroadcastDeliveries) {
+        if (pending.playlistRevision !== appliedPlaylistRevision) continue;
+        if (!pending.renderGeneration || pending.renderGeneration !== playbackGeneration) continue;
+        if (pending.pendingZones && pending.pendingZones.size > 0) continue;
+        if (pending.expectedRegionId) {
+          const regionState = (state.region_states || []).find(
+            (entry) => String(entry.region_id || '') === String(pending.expectedRegionId)
+          );
+          if (!regionState) continue;
+          if (
+            pending.expectedSourceId
+            && String(regionState.current_content_id || '') !== String(pending.expectedSourceId)
+          ) continue;
+        } else if (
+          pending.expectedSourceId
+          && state.current_content_id
+          && String(pending.expectedSourceId) !== String(state.current_content_id)
+        ) {
+          continue;
+        }
+        if (state.render_state === 'error' || state.error_state) {
+          emitPendingBroadcastStatusFor(pending, 'failed', 'Player reported a render error');
+        } else {
+          state.confirmation_reason = reason;
+          emitPendingBroadcastStatusFor(pending, 'confirmed');
+          confirmed = true;
+        }
+        pendingBroadcastDeliveries.delete(commandId);
       }
-      if (state.render_state === 'error' || state.error_state) {
-        failPendingBroadcastRender('Player reported a render error');
-        return false;
-      }
-      state.confirmation_reason = reason;
-      emitPendingBroadcastStatus('confirmed');
-      pendingBroadcastDelivery = null;
-      return true;
+      return confirmed;
     }
 
     function markBroadcastElementReady(element, reason) {
@@ -1737,7 +1790,7 @@
 
     function confirmCurrentRenderIfReady() {
       const container = document.getElementById('playerContainer');
-      if (!container || !pendingBroadcastDelivery) return false;
+      if (!container || pendingBroadcastDeliveries.size === 0) return false;
       const img = container.querySelector('img');
       if (img && img.complete && img.naturalWidth > 0) {
         return confirmPendingBroadcastRender('existing-image-ready');
@@ -1758,15 +1811,18 @@
     }
 
     function beginBroadcastZoneBarrier(keys) {
-      if (!pendingBroadcastDelivery) return;
-      pendingBroadcastDelivery.pendingZones = new Set(keys);
+      for (const pending of pendingBroadcastDeliveries.values()) {
+        pending.pendingZones = new Set(
+          pending.expectedZoneId ? [String(pending.expectedZoneId)] : keys.map(String)
+        );
+      }
     }
 
     function markBroadcastZoneReady(key, reason) {
-      const pending = pendingBroadcastDelivery;
-      if (!pending || !pending.pendingZones) return;
-      pending.pendingZones.delete(String(key));
-      if (pending.pendingZones.size === 0) confirmPendingBroadcastRender(reason || 'all-zones-ready');
+      for (const pending of pendingBroadcastDeliveries.values()) {
+        if (pending.pendingZones) pending.pendingZones.delete(String(key));
+      }
+      confirmPendingBroadcastRender(reason || 'all-zones-ready');
     }
 
     function publishPlayerState(options = {}) {
@@ -1790,12 +1846,20 @@
         state,
       });
       if (options.ack && options.ack.command_id) {
+        const requestedZoneId = options.ack?.payload?.zone_id || options.ack?.payload?.zoneId || null;
+        const requestedRegionId = options.ack?.payload?.region_id || options.ack?.payload?.regionId || null;
+        const regionState = requestedZoneId || requestedRegionId
+          ? (state.region_states || []).find((entry) => (
+              (requestedZoneId && String(entry.zone_id || '') === String(requestedZoneId))
+              || (requestedRegionId && String(entry.region_id || '') === String(requestedRegionId))
+            ))
+          : null;
         socket.emit('device:ack', window.MbfdDeviceContract.createAck({
           device_id: config.deviceId,
           command_id: options.ack.command_id,
           ok: options.ack.ok !== false,
           error: options.ack.error || null,
-          state,
+          state: regionState ? { ...regionState, device_id: config.deviceId } : state,
         }));
       }
       return state;
@@ -1836,6 +1900,7 @@
         ok: ok !== false,
         status: ok === false ? 'failed' : 'acked',
         error: error || null,
+        payload: command.payload || null,
         state: state || null,
       };
       if (command.command_id || (lastTransportCommand && lastTransportCommand.action === command.action)) {
@@ -2970,57 +3035,59 @@
             return;
           }
 
+          const zoneScoped = !!(command.payload && (command.payload.zone_id || command.payload.cell_id || command.payload.content_instance_id));
+          const youtubeTarget = targetRoot?._mcYoutubePlayer || (zoneScoped ? null : activeYtPlayer);
           // ── YouTube IFrame API fast path ───────────────────────────────────
-          if (activeYtPlayer) {
+          if (youtubeTarget) {
             try {
               if (action === 'play_pause') {
-                const state = typeof activeYtPlayer.getPlayerState === 'function'
-                  ? activeYtPlayer.getPlayerState() : -1;
-                if (state === 1) activeYtPlayer.pauseVideo();
-                else activeYtPlayer.playVideo();
+                const state = typeof youtubeTarget.getPlayerState === 'function'
+                  ? youtubeTarget.getPlayerState() : -1;
+                if (state === 1) youtubeTarget.pauseVideo();
+                else youtubeTarget.playVideo();
               } else if (action === 'next') {
                 nextItem();
               } else if (action === 'prev') {
                 if (playlist.length) { currentIndex = (currentIndex - 2 + playlist.length) % playlist.length; nextItem(); }
               } else if (action === 'restart') {
-                if (typeof activeYtPlayer.seekTo === 'function') {
-                  activeYtPlayer.seekTo(0, true);
-                  activeYtPlayer.playVideo();
+                if (typeof youtubeTarget.seekTo === 'function') {
+                  youtubeTarget.seekTo(0, true);
+                  youtubeTarget.playVideo();
                 } else {
                   currentIndex = -1; nextItem();
                 }
               } else if (action === 'seek') {
-                const duration = typeof activeYtPlayer.getDuration === 'function'
-                  ? activeYtPlayer.getDuration()
+                const duration = typeof youtubeTarget.getDuration === 'function'
+                  ? youtubeTarget.getDuration()
                   : null;
                 const position = readSeekPosition(command, duration);
-                if (position === null || typeof activeYtPlayer.seekTo !== 'function') {
+                if (position === null || typeof youtubeTarget.seekTo !== 'function') {
                   throw new Error('Invalid or unsupported seek target');
                 }
-                activeYtPlayer.seekTo(position, true);
+                youtubeTarget.seekTo(position, true);
               } else if (action === 'pause') {
-                if (typeof activeYtPlayer.pauseVideo === 'function') activeYtPlayer.pauseVideo();
+                if (typeof youtubeTarget.pauseVideo === 'function') youtubeTarget.pauseVideo();
               } else if (action === 'play' || action === 'resume') {
-                if (typeof activeYtPlayer.playVideo === 'function') activeYtPlayer.playVideo();
+                if (typeof youtubeTarget.playVideo === 'function') youtubeTarget.playVideo();
               } else if (action === 'stop') {
-                if (typeof activeYtPlayer.stopVideo === 'function') activeYtPlayer.stopVideo();
-                else if (typeof activeYtPlayer.pauseVideo === 'function') {
-                  activeYtPlayer.pauseVideo();
-                  if (typeof activeYtPlayer.seekTo === 'function') activeYtPlayer.seekTo(0, true);
+                if (typeof youtubeTarget.stopVideo === 'function') youtubeTarget.stopVideo();
+                else if (typeof youtubeTarget.pauseVideo === 'function') {
+                  youtubeTarget.pauseVideo();
+                  if (typeof youtubeTarget.seekTo === 'function') youtubeTarget.seekTo(0, true);
                 }
               } else if (action === 'mute') {
-                if (typeof activeYtPlayer.mute === 'function') activeYtPlayer.mute();
+                if (typeof youtubeTarget.mute === 'function') youtubeTarget.mute();
               } else if (action === 'unmute') {
-                if (typeof activeYtPlayer.unMute === 'function') activeYtPlayer.unMute();
+                if (typeof youtubeTarget.unMute === 'function') youtubeTarget.unMute();
               } else if (action === 'volume') {
                 const level = Number((command.payload || {}).volume ?? (command.payload || {}).level ?? (command.payload || {}).value);
                 if (!Number.isFinite(level) || level < 0 || level > 1) throw new Error('Invalid volume level');
-                if (typeof activeYtPlayer.setVolume === 'function') activeYtPlayer.setVolume(Math.round(level * 100));
+                if (typeof youtubeTarget.setVolume === 'function') youtubeTarget.setVolume(Math.round(level * 100));
               } else if (action === 'seek_forward' || action === 'seek_backward') {
                 const delta = Number((command.payload || {}).delta_seconds ?? (command.payload || {}).seconds ?? 10);
-                const cur = typeof activeYtPlayer.getCurrentTime === 'function' ? Number(activeYtPlayer.getCurrentTime()) || 0 : 0;
+                const cur = typeof youtubeTarget.getCurrentTime === 'function' ? Number(youtubeTarget.getCurrentTime()) || 0 : 0;
                 const nextPos = action === 'seek_forward' ? cur + (Number.isFinite(delta) ? delta : 10) : cur - (Number.isFinite(delta) ? delta : 10);
-                if (typeof activeYtPlayer.seekTo === 'function') activeYtPlayer.seekTo(Math.max(0, nextPos), true);
+                if (typeof youtubeTarget.seekTo === 'function') youtubeTarget.seekTo(Math.max(0, nextPos), true);
               }
             } catch (e) {
               finishTransportCommand(command, false, 'YT: ' + e.message, buildPlayerState());
@@ -3031,7 +3098,6 @@
             return;
           }
 
-          const zoneScoped = !!(command.payload && (command.payload.zone_id || command.payload.cell_id || command.payload.content_instance_id));
           const frameInTarget = targetRoot && framesInRoot(targetRoot).length > 0;
           const frameTransportable = frameInTarget || !!(item && (isDocumentMime(item.mime_type) || item.mime_type === 'text/html'));
           if (frameTransportable) {
@@ -3810,11 +3876,19 @@
         else confirmPendingBroadcastRender('youtube-playing');
       };
 
-      // Invalidate any previous player's callbacks
-      const myGeneration = ++ytGeneration;
-
-      // Destroy old player without triggering side effects (callbacks check generation)
-      if (activeYtPlayer) { try { activeYtPlayer.destroy(); } catch {} activeYtPlayer = null; }
+      const zoneScoped = !!container?.classList?.contains('zone');
+      // Fullscreen playback owns the global player. Mosaic zones own independent
+      // IFrame API instances so creating the right region never destroys the
+      // left region's YouTube playback.
+      const myGeneration = zoneScoped ? null : ++ytGeneration;
+      if (!zoneScoped && activeYtPlayer) {
+        try { activeYtPlayer.destroy(); } catch {}
+        activeYtPlayer = null;
+      }
+      let youtubePlayer = null;
+      const isCurrent = () => zoneScoped
+        ? !!(container.isConnected && container._mcYoutubePlayer === youtubePlayer)
+        : myGeneration === ytGeneration;
 
       // Wall-follower flag drives mute/overlay/autoplay decisions below. Followers
       // never have their own audio (leader-only audio rule prevents echo across
@@ -3825,7 +3899,7 @@
 
       // Create a div for the YT player to replace
       const playerDiv = document.createElement('div');
-      playerDiv.id = 'yt-player-' + Date.now();
+      playerDiv.id = 'yt-player-' + Date.now() + '-' + Math.random().toString(36).slice(2, 9);
       playerDiv.style.cssText = 'width:100%;height:100%;background:#000';
       container.appendChild(playerDiv);
 
@@ -3838,9 +3912,9 @@
           e.stopPropagation();
           userHasInteracted = true;
           unlockAudio();
-          if (activeYtPlayer && typeof activeYtPlayer.unMute === 'function') {
-            activeYtPlayer.unMute();
-            activeYtPlayer.setVolume(100);
+          if (youtubePlayer && typeof youtubePlayer.unMute === 'function') {
+            youtubePlayer.unMute();
+            youtubePlayer.setVolume(100);
             console.log('Unmuted YouTube player via overlay');
           }
           overlay.remove();
@@ -3854,11 +3928,11 @@
 
       loadYoutubeApi(() => {
         // Bail if a newer player was created while we waited for the API
-        if (myGeneration !== ytGeneration) return;
+        if (!zoneScoped && myGeneration !== ytGeneration) return;
 
         const shouldLoop = playlist.length <= 1;
         let playStartTime = 0;
-        activeYtPlayer = new YT.Player(playerDiv.id, {
+        youtubePlayer = new YT.Player(playerDiv.id, {
           videoId: videoId,
           width: '100%',
           height: '100%',
@@ -3879,7 +3953,7 @@
           },
           events: {
             onReady: (event) => {
-              if (myGeneration !== ytGeneration) return;
+              if (!isCurrent()) return;
               const role = isFollowerEmbed ? 'follower' : (wallConfig?.is_leader ? 'leader' : 'solo');
               console.log('YouTube player ready:', item.filename, 'role=' + role);
               event.target.playVideo();
@@ -3893,11 +3967,11 @@
               // to kick playVideo() until the state machine actually transitions.
               let kickRetries = 0;
               const kick = () => {
-                if (myGeneration !== ytGeneration) return;
-                if (!activeYtPlayer || typeof activeYtPlayer.getPlayerState !== 'function') return;
-                const s = activeYtPlayer.getPlayerState();
+                if (!isCurrent()) return;
+                if (!youtubePlayer || typeof youtubePlayer.getPlayerState !== 'function') return;
+                const s = youtubePlayer.getPlayerState();
                 if (s === -1 || s === 5) {
-                  try { activeYtPlayer.playVideo(); } catch (_) {}
+                  try { youtubePlayer.playVideo(); } catch (_) {}
                   kickRetries++;
                   if (kickRetries < 5) setTimeout(kick, 1000);
                 }
@@ -3905,7 +3979,7 @@
               setTimeout(kick, 1000);
             },
             onError: (event) => {
-              if (myGeneration !== ytGeneration) return;
+              if (!isCurrent()) return;
               console.error('YouTube error', event.data, 'for:', item.filename);
               failPendingBroadcastRender(`YouTube render failed (${event.data})`);
               if (playlist.length > 1) {
@@ -3914,7 +3988,7 @@
               }
             },
             onStateChange: (event) => {
-              if (myGeneration !== ytGeneration) return;
+              if (!isCurrent()) return;
               // Track when video actually starts playing
               if (event.data === 1) {
                 playStartTime = Date.now();
@@ -3926,10 +4000,10 @@
               // playback state on its own.
               if (event.data === 2 && isFollowerEmbed && !lastWallSync?.paused) {
                 setTimeout(() => {
-                  if (myGeneration === ytGeneration && activeYtPlayer &&
-                      typeof activeYtPlayer.getPlayerState === 'function' &&
-                      activeYtPlayer.getPlayerState() === 2 && !lastWallSync?.paused) {
-                    try { activeYtPlayer.playVideo(); } catch (_) {}
+                  if (isCurrent() && youtubePlayer &&
+                      typeof youtubePlayer.getPlayerState === 'function' &&
+                      youtubePlayer.getPlayerState() === 2 && !lastWallSync?.paused) {
+                    try { youtubePlayer.playVideo(); } catch (_) {}
                   }
                 }, 500);
               }
@@ -3943,6 +4017,12 @@
             },
           },
         });
+        if (zoneScoped) {
+          container._mcYoutubePlayer = youtubePlayer;
+          zoneYoutubePlayers.add(youtubePlayer);
+        } else {
+          activeYtPlayer = youtubePlayer;
+        }
       });
 
       // Note: YouTube advancement is handled by onStateChange ENDED event.
@@ -3974,6 +4054,10 @@
         try { activeYtPlayer.destroy(); } catch (_) {}
         activeYtPlayer = null;
       }
+      for (const player of zoneYoutubePlayers) {
+        try { player.destroy(); } catch (_) {}
+      }
+      zoneYoutubePlayers.clear();
       const container = document.getElementById('playerContainer');
       if (container) {
         container.querySelectorAll('video, audio').forEach(v => {
@@ -4420,7 +4504,11 @@
       const zoneGeneration = playbackGeneration;
       const zoneAssignments = new Map();
       (layout.zones || []).forEach((zone, index) => {
-        const assignment = playlist.find(a => a.zone_id === zone.id) || defaultItem;
+        // Authoritative Mosaic regions are independent destinations. An
+        // unassigned region stays blank; the unzoned/default playlist item must
+        // never bleed into it.
+        const assignment = playlist.find(a => a.zone_id === zone.id)
+          || (layout.authoritative_regions === true ? null : defaultItem);
         if (!assignment) return;
         const key = String(zone.id ?? zone.cell_id ?? index);
         zoneAssignments.set(key, assignment);
@@ -4438,7 +4526,9 @@
         const div = document.createElement('div');
         div.className = 'zone';
         div.dataset.zoneId = zone.id != null ? String(zone.id) : '';
+        div.dataset.regionId = zone.region_id != null ? String(zone.region_id) : '';
         div.dataset.cellId = zone.cell_id != null ? String(zone.cell_id) : (zone.id != null ? String(zone.id) : '');
+        div.dataset.fitMode = zone.fit_mode || 'cover';
         div.style.cssText = `left:${zone.x_percent}%;top:${zone.y_percent}%;width:${zone.width_percent}%;height:${zone.height_percent}%;z-index:${zone.z_index || 0}`;
 
         // Find assignment for this zone

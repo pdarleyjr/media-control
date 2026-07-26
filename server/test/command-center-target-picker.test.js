@@ -9,9 +9,17 @@ test('Command Center view picker uses authoritative wall and standalone topology
   assert.match(source, /openAuthoritativeTargetPicker\(\{/);
   assert.match(source, /waitForTargetCatalog\(\{ includeVirtualDisplays: false \}, \{ requireFresh: true \}\)/);
   assert.match(source, /selection: 'single'/);
+  assert.match(source, /allowSplitWallTargets: true/);
   assert.match(source, /allowIndividualWallMembers: false/);
   assert.match(source, /allowLiveProgram: false/);
   assert.doesNotMatch(source, /mc-target-choice-list/);
+});
+
+test('Command Center click, tap and keyboard content workflow sends typed split targets without drag and drop', () => {
+  assert.match(source, /async function routeSourceWithPicker/);
+  assert.match(source, /openAuthoritativeTargetPicker\(\{/);
+  assert.match(source, /targetReferences: result\.references/);
+  assert.match(source, /sendToDisplays\(source,\s*route\.targetIds,\s*label,\s*\{ targets: route\.targetReferences \}\)/);
 });
 
 test('Command Center screen share preselects a logical wall without exposing member TVs', () => {

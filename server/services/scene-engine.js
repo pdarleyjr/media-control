@@ -34,7 +34,7 @@ const { contentUseDecision } = require('../lib/content-visibility');
 // published snapshot the player consumes carries the same denormalized shape.
 function buildSnapshotItems(playlistId) {
   return db.prepare(`
-    SELECT pi.content_id, pi.widget_id, pi.zone_id, pi.sort_order, pi.duration_sec,
+    SELECT pi.id, pi.content_id, pi.widget_id, pi.zone_id, pi.sort_order, pi.duration_sec,
            COALESCE(pi.fit_mode, c.default_fit_mode) AS fit_mode,
            COALESCE(c.filename, w.name) as filename, c.mime_type, c.filepath, c.file_size,
            c.duration_sec as content_duration, c.remote_url,
@@ -160,6 +160,7 @@ function persistGroupPlaylist(scope, playlistId) {
     mode: scope.layout.mode,
     revision: scope.layout.revision,
     groups,
+    regions: scope.layout.regions || [],
   }), scope.wall.id);
 }
 
@@ -233,6 +234,8 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
     targetDeviceIds = null,
     contentContext = null,
     delivery = null,
+    regionId = null,
+    zoneId = null,
     returnDetails = false,
   } = opts;
   const authoritativeTargets = Array.isArray(targetDeviceIds);
@@ -254,6 +257,11 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
 
     // --- Playlist source: reuse the assign-then-push path verbatim. ---
     if (source.playlist_id) {
+      if (zoneId) {
+        return finish(false, {
+          failureReason: 'Playlist sources cannot be assigned to one Mosaic region',
+        });
+      }
       const pl = db.prepare('SELECT id, workspace_id FROM playlists WHERE id = ?').get(source.playlist_id);
       if (!pl) return finish(false, { failureReason: 'Playlist not found' });
       // Tenancy guard: playlist must be in the device's workspace (or a
@@ -308,16 +316,34 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
     });
     if (!playlistId) return finish(false, { failureReason: 'Display playlist unavailable' });
 
-    const fitMode = typeof source.fit_mode === 'string' && source.fit_mode ? source.fit_mode : null;
+    const fitMode = typeof source.fit_mode === 'string' && source.fit_mode
+      ? source.fit_mode
+      : (typeof opts.target?.fit_mode === 'string' ? opts.target.fit_mode : null);
     const duration = (typeof source.duration_sec === 'number' && source.duration_sec >= 1)
       ? Math.round(source.duration_sec) : 10;
 
     const tx = db.transaction(() => {
-      db.prepare('DELETE FROM playlist_items WHERE playlist_id = ?').run(playlistId);
-      db.prepare(`
-        INSERT INTO playlist_items (playlist_id, content_id, sort_order, duration_sec, fit_mode)
-        VALUES (?, ?, 0, ?, ?)
-      `).run(playlistId, contentId, duration, fitMode);
+      if (zoneId) {
+        const zone = db.prepare(`
+          SELECT lz.id, lz.sort_order
+          FROM layout_zones lz
+          JOIN devices d ON d.layout_id = lz.layout_id
+          WHERE lz.id = ? AND d.id = ?
+        `).get(zoneId, deviceId);
+        if (!zone) throw new Error('Mosaic region is not bound to the selected player layout');
+        db.prepare('DELETE FROM playlist_items WHERE playlist_id = ? AND zone_id = ?')
+          .run(playlistId, zoneId);
+        db.prepare(`
+          INSERT INTO playlist_items (playlist_id, content_id, zone_id, sort_order, duration_sec, fit_mode)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(playlistId, contentId, zoneId, Number(zone.sort_order) || 0, duration, fitMode);
+      } else {
+        db.prepare('DELETE FROM playlist_items WHERE playlist_id = ?').run(playlistId);
+        db.prepare(`
+          INSERT INTO playlist_items (playlist_id, content_id, sort_order, duration_sec, fit_mode)
+          VALUES (?, ?, 0, ?, ?)
+        `).run(playlistId, contentId, duration, fitMode);
+      }
       const snapshot = buildSnapshotItems(playlistId);
       db.prepare("UPDATE playlists SET status = 'published', published_snapshot = ?, updated_at = strftime('%s','now') WHERE id = ?")
         .run(JSON.stringify(snapshot), playlistId);
@@ -327,7 +353,7 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
 
     whiteboardState.clearForMedia(io, deviceId);
     const dispatch = pushPlaylistUpdate(io, deviceId, delivery
-      ? { ...delivery, expectedSourceId: contentId }
+      ? { ...delivery, expectedSourceId: contentId, regionId, zoneId }
       : null);
 
     // ── Span-wall fan-out ────────────────────────────────────────────────────
@@ -347,13 +373,15 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
       const isSingleScreenWeb = content.mime_type === 'text/html'
         && !isInternalPlayer
         && !isStreamingMedia;
-      fanOutPlaylistToPlaybackScope(io, deviceId, playlistId, authoritativeTargets
-        ? {
-            singleScreenOnly: isSingleScreenWeb,
-            allowedDeviceIds: targetDeviceIds,
-            emitFollowers: false,
-          }
-        : { singleScreenOnly: isSingleScreenWeb });
+      if (!zoneId) {
+        fanOutPlaylistToPlaybackScope(io, deviceId, playlistId, authoritativeTargets
+          ? {
+              singleScreenOnly: isSingleScreenWeb,
+              allowedDeviceIds: targetDeviceIds,
+              emitFollowers: false,
+            }
+          : { singleScreenOnly: isSingleScreenWeb });
+      }
     } catch (e) {
       console.warn(`[scene-engine] span fan-out lookup failed: ${e.message}`);
     }
@@ -361,6 +389,109 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
   } catch (e) {
     console.warn(`[scene-engine] pushSourceToDevice failed for ${deviceId}: ${e.message}`);
     return finish(false, { failureReason: e.message });
+  }
+}
+
+// Atomically replace several authoritative Mosaic regions on one player and
+// emit one playlist revision carrying every region-keyed delivery command.
+// This prevents an intermediate payload from superseding an earlier region's
+// confirmation before the player can acknowledge it.
+function pushSourceToRegions(io, deviceId, source, routes, opts = {}) {
+  const {
+    workspaceId = null,
+    userId = null,
+    targetDeviceIds = null,
+    contentContext = null,
+    deliveries = [],
+  } = opts;
+  const finish = (ok, details = {}) => ({
+    ok: !!ok,
+    delivered: details.delivered === true,
+    queued: details.queued === true,
+    playlistRevision: details.playlistRevision || null,
+    expectedSourceId: details.expectedSourceId || null,
+    failureReason: ok ? null : (details.failureReason || 'Broadcast mutation failed'),
+  });
+  try {
+    const regionRoutes = Array.isArray(routes) ? routes : [];
+    if (regionRoutes.length < 2 || regionRoutes.some((route) => !route?.zone_id || !route?.region_id)) {
+      return finish(false, { failureReason: 'At least two complete Mosaic region routes are required' });
+    }
+    if (source.playlist_id) {
+      return finish(false, { failureReason: 'Playlist sources cannot be assigned to Mosaic regions' });
+    }
+    const device = db.prepare('SELECT id, workspace_id, user_id FROM devices WHERE id = ?').get(deviceId);
+    if (!device) return finish(false, { failureReason: 'Display not found' });
+    let contentId = source.content_id || null;
+    if (!contentId && source.remote_url) {
+      contentId = resolveRemoteUrlContent(
+        source.remote_url,
+        device.workspace_id || workspaceId,
+        userId || device.user_id,
+      );
+    }
+    if (!contentId) return finish(false, { failureReason: 'Content could not be resolved' });
+    const decision = contentUseDecision(
+      db,
+      contentId,
+      device.workspace_id || workspaceId,
+      { ...(contentContext || {}), userId: contentContext?.userId || userId },
+    );
+    if (!decision.content || !decision.allowed) {
+      return finish(false, { failureReason: 'Content unavailable' });
+    }
+    const playlistId = ensureDevicePlaylist(deviceId, userId || device.user_id, {
+      mutableDeviceIds: targetDeviceIds,
+    });
+    if (!playlistId) return finish(false, { failureReason: 'Display playlist unavailable' });
+    const duration = (typeof source.duration_sec === 'number' && source.duration_sec >= 1)
+      ? Math.round(source.duration_sec) : 10;
+    const seenZones = new Set();
+    const resolvedRoutes = regionRoutes.map((route) => {
+      if (seenZones.has(String(route.zone_id))) throw new Error('Mosaic zone appears more than once');
+      seenZones.add(String(route.zone_id));
+      const zone = db.prepare(`
+        SELECT lz.id, lz.sort_order
+        FROM layout_zones lz
+        JOIN devices d ON d.layout_id = lz.layout_id
+        WHERE lz.id = ? AND d.id = ?
+      `).get(route.zone_id, deviceId);
+      if (!zone) throw new Error('Mosaic region is not bound to the selected player layout');
+      return { route, zone };
+    });
+    const tx = db.transaction(() => {
+      const remove = db.prepare('DELETE FROM playlist_items WHERE playlist_id = ? AND zone_id = ?');
+      const insert = db.prepare(`
+        INSERT INTO playlist_items (playlist_id, content_id, zone_id, sort_order, duration_sec, fit_mode)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      for (const { route, zone } of resolvedRoutes) {
+        remove.run(playlistId, route.zone_id);
+        insert.run(
+          playlistId,
+          contentId,
+          route.zone_id,
+          Number(zone.sort_order) || 0,
+          duration,
+          source.fit_mode || route.fit_mode || null,
+        );
+      }
+      const snapshot = buildSnapshotItems(playlistId);
+      db.prepare("UPDATE playlists SET status = 'published', published_snapshot = ?, updated_at = strftime('%s','now') WHERE id = ?")
+        .run(JSON.stringify(snapshot), playlistId);
+      db.prepare('UPDATE devices SET playlist_id = ? WHERE id = ?').run(playlistId, deviceId);
+    });
+    tx();
+    whiteboardState.clearForMedia(io, deviceId);
+    const dispatch = pushPlaylistUpdate(
+      io,
+      deviceId,
+      deliveries.map((delivery) => ({ ...delivery, expectedSourceId: contentId })),
+    );
+    return finish(true, { ...dispatch, expectedSourceId: contentId });
+  } catch (error) {
+    console.warn(`[scene-engine] pushSourceToRegions failed for ${deviceId}: ${error.message}`);
+    return finish(false, { failureReason: error.message });
   }
 }
 
@@ -507,4 +638,5 @@ module.exports = {
   captureCurrent,
   // Exposed for the broadcast route so it reuses the exact same per-device push.
   pushSourceToDevice,
+  pushSourceToRegions,
 };
