@@ -125,6 +125,16 @@ export default {
 
   // Content library
   'content.title': 'Biblioteca de contenido',
+  'content.status_preparing': 'Preparando vídeo…',
+  'content.status_ready': 'Listo',
+  'content.status_failed': 'Error',
+  'content.status_failed_reason': 'No se pudo preparar este vídeo: {reason}',
+  'content.status_failed_fallback': 'No se proporcionaron detalles del procesamiento.',
+  'content.send_btn': 'Enviar',
+  'content.send_when_ready': 'Enviar automáticamente cuando esté listo',
+  'content.auto_send_queued': '{name} se enviará cuando esté listo.',
+  'content.auto_send_cancelled': 'Se canceló el envío automático de {name}.',
+  'content.auto_send_failed': '{name} no se envió: {reason}',
   'content.subtitle': 'Sube y administra tus archivos multimedia',
   'content.help_tip': 'Sube videos e imágenes aquí. Selecciona varios archivos para subir en lote. Usa URL remota para transmitir desde fuentes externas. Haz clic en una miniatura para previsualizar.',
   'content.drop': 'Arrastra archivos aquí o haz clic para subir',

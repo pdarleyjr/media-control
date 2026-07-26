@@ -195,6 +195,16 @@ export default {
 
   // Content library
   'content.title': 'Content Library',
+  'content.status_preparing': 'Preparing video…',
+  'content.status_ready': 'Ready',
+  'content.status_failed': 'Failed',
+  'content.status_failed_reason': 'Could not prepare this video: {reason}',
+  'content.status_failed_fallback': 'No processing details were provided.',
+  'content.send_btn': 'Send',
+  'content.send_when_ready': 'Send automatically when ready',
+  'content.auto_send_queued': '{name} will send when ready.',
+  'content.auto_send_cancelled': 'Automatic send cancelled for {name}.',
+  'content.auto_send_failed': '{name} was not sent: {reason}',
   'content.subtitle': 'Upload and manage your media files',
   'content.help_tip': 'Upload videos and images here. Select multiple files for bulk upload. Use Remote URL to stream from external sources. Click a thumbnail to preview.',
   'content.drop': 'Drop files here or click to upload',

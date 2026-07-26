@@ -27,7 +27,7 @@ const { promisify } = require('util');
 const { v4: uuidv4 } = require('uuid');
 const config = require('../config');
 const { sha256File } = require('./asset-manifest');
-const { finalizeContentAsset } = require('./content-finalization');
+const { emitContentUpdated, finalizeContentAsset } = require('./content-finalization');
 
 const pexecFile = promisify(execFile);
 
@@ -363,7 +363,7 @@ async function normalizeVideoJob(job = {}) {
   } catch (error) {
     safeUnlink(stagedPath);
     safeUnlink(thumbnailPath);
-    setProcessingState(
+    const stateChanged = setProcessingState(
       db,
       contentId,
       expectedFilepath,
@@ -372,6 +372,10 @@ async function normalizeVideoJob(job = {}) {
       error.message || 'normalization_failed',
       null,
     );
+    if (stateChanged) {
+      const failedRow = db.prepare('SELECT * FROM content WHERE id = ?').get(contentId);
+      emitContentUpdated(job.io, failedRow, expectedVersion);
+    }
     console.warn(`[transcode] failed for ${contentId}: ${error.message}`);
     return { status: 'failed', content_id: contentId, error: error.message };
   }

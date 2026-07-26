@@ -151,6 +151,13 @@ export function connectSocket() {
     emit('content-ack', data);
   });
 
+  // Canonical media finalization lifecycle. The server emits this only after
+  // the content row, immutable manifest, checksum, and generation have changed
+  // atomically, so UI send gates can transition without polling.
+  dashboardSocket.on('content-updated', (data) => {
+    emit('content-updated', data);
+  });
+
   // Command ack / timeout (Phase-2 reliable command model). Server emits
   // command:ack to the target's workspace room. ok:false (status 'timeout' or
   // a device-reported failure) is the non-silent failure path: the Command

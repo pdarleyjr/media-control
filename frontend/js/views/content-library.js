@@ -2,6 +2,18 @@ import { api } from '../api.js';
 import { showToast } from '../components/toast.js';
 import { esc, isPlatformAdmin } from '../utils.js';
 import { t } from '../i18n.js';
+import { on as socketOn, off as socketOff } from '../socket.js';
+import { openTargetPicker as openAuthoritativeTargetPicker } from '../components/target-picker.js';
+import { waitForTargetCatalog } from '../services/target-catalog-runtime.js';
+import { applyContentUpdate, getContentReadiness } from '../services/content-readiness.js';
+import { sendToDisplays } from './media-control/send.js';
+
+// Auto-send is deliberately opt-in and tab-scoped. The route and typed
+// topology references are captured when the instructor opts in, then reused
+// exactly once after the server publishes the final canonical generation.
+const queuedAutoSends = new Map();
+let contentUpdatedHandler = null;
+let viewMounted = false;
 
 function formatFileSize(bytes) {
   if (!bytes) return '--';
@@ -47,10 +59,57 @@ function contentTypeLabel(content) {
   return t('content.type_image');
 }
 
+function readinessLabel(readiness) {
+  if (readiness.state === 'preparing') return t('content.status_preparing');
+  if (readiness.state === 'failed') return t('content.status_failed');
+  return t('content.status_ready');
+}
+
+function readinessMarkup(content) {
+  const readiness = getContentReadiness(content);
+  const reason = readiness.reason || t('content.status_failed_fallback');
+  const progress = readiness.state === 'preparing'
+    ? `<progress class="content-readiness-progress" max="100" ${readiness.progress === null ? '' : `value="${readiness.progress}"`} aria-label="${esc(t('content.status_preparing'))}"></progress>`
+    : '';
+  const failedReason = readiness.state === 'failed'
+    ? `<span class="content-readiness-reason">${esc(t('content.status_failed_reason', { reason }))}</span>`
+    : '';
+  return `
+    <div class="content-readiness is-${readiness.state}" role="status" id="content-readiness-${esc(content.id)}">
+      <span class="content-readiness-dot" aria-hidden="true"></span>
+      <span class="content-readiness-label">${esc(readinessLabel(readiness))}</span>
+      ${progress}
+      ${failedReason}
+    </div>
+  `;
+}
+
+function sendActions(content) {
+  const readiness = getContentReadiness(content);
+  const queued = queuedAutoSends.has(String(content.id));
+  return `
+    <button
+      type="button"
+      class="btn btn-primary btn-sm content-send-control"
+      data-send-content="${esc(content.id)}"
+      aria-describedby="content-readiness-${esc(content.id)}"
+      ${readiness.sendEnabled ? '' : 'disabled'}
+    >${t('content.send_btn')}</button>
+    ${readiness.state === 'preparing' ? `
+      <label class="content-auto-send">
+        <input type="checkbox" data-auto-send-ready="${esc(content.id)}" aria-describedby="content-readiness-${esc(content.id)}">
+        <span>${t('content.send_when_ready')}</span>
+      </label>
+      ${queued ? `<span class="content-auto-send-queued">${t('content.auto_send_queued')}</span>` : ''}
+    ` : ''}
+  `;
+}
+
 function governedActions(content) {
   const permissions = content.permissions || {};
   const pending = content.visibility?.publication_request_status === 'pending';
   return `
+    ${sendActions(content)}
     ${content.filepath ? `<button class="btn btn-secondary btn-sm" data-download-content="${content.id}" data-download-name="${esc(content.original_filename || content.filename || '')}">${t('content.btn_download')}</button>` : ''}
     ${permissions?.can_edit ? `<button class="btn btn-secondary btn-sm" data-edit-content="${content.id}">${t('content.btn_edit')}</button>` : ''}
     ${permissions?.can_request_organization && !pending ? `<button class="btn btn-secondary btn-sm" data-request-publication="${content.id}">${t('content.btn_request_org')}</button>` : ''}
@@ -63,7 +122,97 @@ function governedActions(content) {
   `;
 }
 
+async function chooseContentTargets(label) {
+  let catalog;
+  try {
+    catalog = await waitForTargetCatalog(
+      { includeVirtualDisplays: false },
+      { requireFresh: true },
+    );
+  } catch (error) {
+    showToast(error?.message || t('mc.send.no_displays'), 'error');
+    return null;
+  }
+
+  const result = await openAuthoritativeTargetPicker({
+    catalog,
+    capability: 'content',
+    selection: 'multiple',
+    allowOffline: false,
+    availability: 'any',
+    allowIndividualWallMembers: false,
+    allowSplitWallTargets: true,
+    allowLiveProgram: false,
+    title: label,
+  });
+  if (!result?.deviceIds?.length) return null;
+  return {
+    deviceIds: [...new Set(result.deviceIds.map(String))],
+    references: Array.isArray(result.references) ? result.references : [],
+  };
+}
+
+async function sendContentToTargets(content, route) {
+  if (!content || !route?.deviceIds?.length) return false;
+  return sendToDisplays(
+    { content_id: content.id },
+    route.deviceIds,
+    content.filename || t('content.type_video'),
+    { targets: route.references },
+  );
+}
+
+function syncQueuedAutoSendControls() {
+  document.querySelectorAll('[data-auto-send-ready]').forEach((checkbox) => {
+    checkbox.checked = queuedAutoSends.has(String(checkbox.dataset.autoSendReady));
+  });
+}
+
+function maybeDetachContentUpdatedListener() {
+  if (!viewMounted && queuedAutoSends.size === 0 && contentUpdatedHandler) {
+    socketOff('content-updated', contentUpdatedHandler);
+    contentUpdatedHandler = null;
+  }
+}
+
+function ensureContentUpdatedListener() {
+  if (contentUpdatedHandler) return;
+  contentUpdatedHandler = async (update) => {
+    const contentId = String(update?.content_id || '');
+    if (!contentId) return;
+
+    state.contentItems = state.contentItems.map(item => applyContentUpdate(item, update));
+    const queued = queuedAutoSends.get(contentId);
+    const updatedItem = state.contentItems.find(item => String(item.id) === contentId);
+    const readiness = updatedItem
+      ? getContentReadiness(updatedItem)
+      : { state: String(update?.processing_status || '') };
+
+    if (queued && readiness.state === 'ready') {
+      queuedAutoSends.delete(contentId);
+      await sendContentToTargets(
+        updatedItem || { id: contentId, filename: queued.label },
+        queued.route,
+      );
+    } else if (queued && readiness.state === 'failed') {
+      queuedAutoSends.delete(contentId);
+      showToast(t('content.auto_send_failed', {
+        name: queued.label,
+        reason: updatedItem?.processing_error || t('content.status_failed_fallback'),
+      }), 'error');
+    }
+
+    if (viewMounted && document.getElementById('contentGrid')) {
+      await loadContent();
+    }
+    maybeDetachContentUpdatedListener();
+  };
+  socketOn('content-updated', contentUpdatedHandler);
+}
+
 export function render(container) {
+  viewMounted = true;
+  ensureContentUpdatedListener();
   let currentUser = {};
   try { currentUser = JSON.parse(localStorage.getItem('user') || '{}'); } catch { /* keep empty identity */ }
   container.innerHTML = `
@@ -506,12 +655,14 @@ async function loadContent({ append = false } = {}) {
             ${c.source_content_id ? `<span>${t('content.source_copy')}</span>` : ''}
             ${c.usage_count ? `<span>${t('content.in_use', { count: c.usage_count })}</span>` : ''}
           </div>
+          ${readinessMarkup(c)}
         </div>
         <div class="content-item-actions">
           ${governedActions(c)}
         </div>
       </div>
     `).join('');
+    syncQueuedAutoSendControls();
 
     // Drag-to-move: each content item exposes its id; folder cards are the drop targets.
     grid.querySelectorAll('.content-item').forEach(item => {
@@ -523,6 +674,22 @@ async function loadContent({ append = false } = {}) {
 
     // Delete handler via event delegation
     grid.onclick = async (e) => {
+      const sendBtn = e.target.closest('[data-send-content]');
+      if (sendBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const item = state.contentItems.find(entry => String(entry.id) === String(sendBtn.dataset.sendContent));
+        if (!item || !getContentReadiness(item).sendEnabled) return;
+        sendBtn.disabled = true;
+        try {
+          const route = await chooseContentTargets(item.filename || t('content.type_video'));
+          if (route) await sendContentToTargets(item, route);
+        } finally {
+          if (sendBtn.isConnected) sendBtn.disabled = false;
+        }
+        return;
+      }
+
       // Preview on click (not on delete button)
       const previewTarget = e.target.closest('.content-item-preview');
       if (previewTarget) {
@@ -658,6 +825,62 @@ async function loadContent({ append = false } = {}) {
         }
       }, 3000);
     };
+
+    grid.onchange = async (event) => {
+      const checkbox = event.target.closest('[data-auto-send-ready]');
+      if (!checkbox) return;
+      const contentId = String(checkbox.dataset.autoSendReady || '');
+      const item = state.contentItems.find(entry => String(entry.id) === contentId);
+      if (!item) {
+        checkbox.checked = false;
+        return;
+      }
+
+      if (!checkbox.checked) {
+        if (queuedAutoSends.delete(contentId)) {
+          showToast(t('content.auto_send_cancelled', { name: item.filename }), 'success');
+        }
+        maybeDetachContentUpdatedListener();
+        return;
+      }
+
+      checkbox.disabled = true;
+      try {
+        const route = await chooseContentTargets(item.filename || t('content.type_video'));
+        if (!route) {
+          checkbox.checked = false;
+          return;
+        }
+
+        // Close the picker/event race: if finalization finished while targets
+        // were being chosen, send now instead of waiting for a past event.
+        const latest = await api.getContentItem(contentId).catch(() => item);
+        const readiness = getContentReadiness(latest);
+        const label = latest.filename || item.filename || t('content.type_video');
+        if (readiness.state === 'ready') {
+          checkbox.checked = false;
+          await sendContentToTargets(latest, route);
+          await loadContent();
+          return;
+        }
+        if (readiness.state === 'failed') {
+          checkbox.checked = false;
+          showToast(t('content.auto_send_failed', {
+            name: label,
+            reason: readiness.reason || t('content.status_failed_fallback'),
+          }), 'error');
+          await loadContent();
+          return;
+        }
+
+        queuedAutoSends.set(contentId, { route, label });
+        ensureContentUpdatedListener();
+        showToast(t('content.auto_send_queued', { name: label }), 'success');
+      } finally {
+        if (checkbox.isConnected) checkbox.disabled = false;
+      }
+    };
+
     // 316b8e8c9c3c Real pagination (task §10): a Load More affordance after the
     // grid. Fetching the next page does NOT reset the accumulated list.
     const existingMore = grid.querySelector('#contentLoadMore');
@@ -682,6 +905,11 @@ async function loadContent({ append = false } = {}) {
   } finally {
     state.contentLoading = false;
   }
+}
+
+export function cleanup() {
+  viewMounted = false;
+  maybeDetachContentUpdatedListener();
 }
 
 function showEditModal(contentItem, onSave) {

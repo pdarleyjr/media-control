@@ -264,12 +264,14 @@ test('unprobeable uploads fail closed without a manifest or P3 prewarm', async (
   fs.writeFileSync(source, 'not-a-video');
   const db = createDb('corrupt.mp4');
   let prewarms = 0;
+  const socketEvents = [];
 
   try {
     const result = await normalizeVideoJob({
       contentId: 'video-id',
       absPath: source,
       db,
+      io: captureIo(socketEvents),
       contentDir: dir,
       probeMedia: () => null,
       prewarmContent: async () => {
@@ -282,6 +284,18 @@ test('unprobeable uploads fail closed without a manifest or P3 prewarm', async (
     assert.deepEqual(transitions(db), ['probing', 'failed']);
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM asset_checksums').get().count, 0);
     assert.equal(prewarms, 0);
+    assert.deepEqual(socketEvents, [{
+      namespace: '/dashboard',
+      room: 'workspace:workspace-1',
+      event: 'content-updated',
+      payload: {
+        content_id: 'video-id',
+        processing_status: 'failed',
+        processing_error: 'media_probe_failed',
+        version: 1,
+        generation: 1,
+      },
+    }]);
   } finally {
     db.close();
     fs.rmSync(dir, { recursive: true, force: true });

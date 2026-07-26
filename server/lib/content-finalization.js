@@ -19,14 +19,19 @@ function safeUnlink(filePath, fileSystem = fs) {
 function emitContentUpdated(io, row, generation) {
   if (!io || typeof io.of !== 'function' || !row || !row.workspace_id) return false;
   try {
+    const processingStatus = String(row.processing_status || 'ready');
+    const payload = {
+      content_id: row.id,
+      processing_status: processingStatus,
+      version: generation,
+      generation,
+    };
+    if (processingStatus === 'failed' && row.processing_error) {
+      payload.processing_error = row.processing_error;
+    }
     io.of('/dashboard')
       .to(`workspace:${row.workspace_id}`)
-      .emit('content-updated', {
-        content_id: row.id,
-        processing_status: 'ready',
-        version: generation,
-        generation,
-      });
+      .emit('content-updated', payload);
     return true;
   } catch (_) {
     return false;

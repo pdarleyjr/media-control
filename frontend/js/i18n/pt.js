@@ -126,6 +126,16 @@ export default {
 
   // Content library
   'content.title': 'Biblioteca de conteúdo',
+  'content.status_preparing': 'Preparando vídeo…',
+  'content.status_ready': 'Pronto',
+  'content.status_failed': 'Falhou',
+  'content.status_failed_reason': 'Não foi possível preparar este vídeo: {reason}',
+  'content.status_failed_fallback': 'Nenhum detalhe de processamento foi fornecido.',
+  'content.send_btn': 'Enviar',
+  'content.send_when_ready': 'Enviar automaticamente quando estiver pronto',
+  'content.auto_send_queued': '{name} será enviado quando estiver pronto.',
+  'content.auto_send_cancelled': 'Envio automático cancelado para {name}.',
+  'content.auto_send_failed': '{name} não foi enviado: {reason}',
   'content.subtitle': 'Envie e gerencie seus arquivos de mídia',
   'content.help_tip': 'Envie vídeos e imagens aqui. Selecione vários arquivos para envio em lote. Use URL remota para transmitir de fontes externas. Clique em uma miniatura para pré-visualizar.',
   'content.drop': 'Solte os arquivos aqui ou clique para enviar',

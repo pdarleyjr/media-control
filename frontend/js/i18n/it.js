@@ -128,6 +128,16 @@ export default {
 
   // Content library
   'content.title': 'Libreria Contenuti',
+  'content.status_preparing': 'Preparazione del video…',
+  'content.status_ready': 'Pronto',
+  'content.status_failed': 'Operazione non riuscita',
+  'content.status_failed_reason': 'Impossibile preparare questo video: {reason}',
+  'content.status_failed_fallback': 'Non sono stati forniti dettagli sull’elaborazione.',
+  'content.send_btn': 'Invia',
+  'content.send_when_ready': 'Invia automaticamente quando è pronto',
+  'content.auto_send_queued': '{name} verrà inviato quando sarà pronto.',
+  'content.auto_send_cancelled': 'Invio automatico annullato per {name}.',
+  'content.auto_send_failed': '{name} non è stato inviato: {reason}',
   'content.subtitle': 'Carica e gestisci i tuoi file multimediali',
   'content.help_tip': 'Carica video e immagini qui. Seleziona più file per il caricamento di massa. Usa "URL Remoto" per lo streaming da fonti esterne. Clicca su un\'anteprima per visualizzarla.',
   'content.drop': 'Trascina i file qui o clicca per caricare',

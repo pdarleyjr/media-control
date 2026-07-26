@@ -126,6 +126,16 @@ export default {
 
   // Content library
   'content.title': 'Bibliothèque de contenu',
+  'content.status_preparing': 'Préparation de la vidéo…',
+  'content.status_ready': 'Prêt',
+  'content.status_failed': 'Échec',
+  'content.status_failed_reason': 'Impossible de préparer cette vidéo : {reason}',
+  'content.status_failed_fallback': 'Aucun détail de traitement n’a été fourni.',
+  'content.send_btn': 'Envoyer',
+  'content.send_when_ready': 'Envoyer automatiquement dès que le contenu est prêt',
+  'content.auto_send_queued': '{name} sera envoyé dès qu’il sera prêt.',
+  'content.auto_send_cancelled': 'Envoi automatique annulé pour {name}.',
+  'content.auto_send_failed': '{name} n’a pas été envoyé : {reason}',
   'content.subtitle': 'Téléversez et gérez vos fichiers multimédias',
   'content.help_tip': 'Téléversez des vidéos et des images ici. Sélectionnez plusieurs fichiers pour un envoi groupé. Utilisez l\'URL distante pour diffuser depuis des sources externes. Cliquez sur une miniature pour prévisualiser.',
   'content.drop': 'Déposez les fichiers ici ou cliquez pour téléverser',

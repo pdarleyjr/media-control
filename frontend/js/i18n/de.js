@@ -126,6 +126,16 @@ export default {
 
   // Content library
   'content.title': 'Inhaltsbibliothek',
+  'content.status_preparing': 'Video wird vorbereitet…',
+  'content.status_ready': 'Bereit',
+  'content.status_failed': 'Fehlgeschlagen',
+  'content.status_failed_reason': 'Dieses Video konnte nicht vorbereitet werden: {reason}',
+  'content.status_failed_fallback': 'Es wurden keine Verarbeitungsdetails bereitgestellt.',
+  'content.send_btn': 'Senden',
+  'content.send_when_ready': 'Automatisch senden, sobald es bereit ist',
+  'content.auto_send_queued': '{name} wird gesendet, sobald es bereit ist.',
+  'content.auto_send_cancelled': 'Automatisches Senden für {name} abgebrochen.',
+  'content.auto_send_failed': '{name} wurde nicht gesendet: {reason}',
   'content.subtitle': 'Laden Sie Ihre Mediendateien hoch und verwalten Sie sie',
   'content.help_tip': 'Laden Sie hier Videos und Bilder hoch. Wählen Sie mehrere Dateien für einen Sammel-Upload. Verwenden Sie Remote-URL für externe Quellen. Klicken Sie auf eine Miniaturansicht für die Vorschau.',
   'content.drop': 'Dateien hier ablegen oder zum Hochladen klicken',
