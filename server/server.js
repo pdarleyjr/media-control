@@ -296,7 +296,10 @@ app.get('/player/live-stream', (req, res) => {
 // bypass manual pairing for known displays using their existing device token.
 app.get('/player/managed', (req, res) => {
   const { normalizePlayerAccessQuery } = require('./lib/player-access');
-  const { loadManagedDisplay } = require('./lib/managed-player-display');
+  const {
+    authorizeManagedDisplayAudio,
+    loadManagedDisplay,
+  } = require('./lib/managed-player-display');
   const { deviceId, token, audioEnabled } = normalizePlayerAccessQuery(req.query);
   const display = loadManagedDisplay(deviceId, token);
   if (!display) return res.status(404).type('text/plain').send('managed display not found');
@@ -311,9 +314,9 @@ app.get('/player/managed', (req, res) => {
         deviceToken: display.device_token,
         deviceName: display.name,
         serverUrl: `${req.protocol}://${req.get('host')}`,
-        // audioEnabled drives auto-unmute in the player. Passed by the kiosk as
-        // ?audio_enabled=1 only for the TV that feeds the eARC soundbar (TV1).
-        audioEnabled,
+        // Query input is only a request. The authenticated display identity is
+        // authoritative: only Front Left may auto-unmute for the eARC soundbar.
+        audioEnabled: authorizeManagedDisplayAudio(display, audioEnabled),
       },
     };
     const inject = '  <script>window.__playerConfig = ' + JSON.stringify(publicConfig).replace(/</g, '\\u003c') + ';</script>\n';

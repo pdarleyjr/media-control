@@ -503,16 +503,16 @@ function ackRequiredForType(type) {
 }
 
 // Classroom single-audio-authority model.
-// Only Front Center feeds the eARC/Ultimea path. Follower TVs must stay muted.
+// Only Front Left feeds the eARC/Ultimea path. Follower TVs must stay muted.
 const AUDIO_AUTHORITY_ROLE_NAMES = {
   authority: [
-    'front center',
-    'classroom 1 - front center',
-    'classroom1 - front center',
-    'fc',
+    'front left',
+    'classroom 1 - front left',
+    'classroom1 - front left',
+    'fl',
   ],
   followers: [
-    'front left',
+    'front center',
     'front right',
     'side left',
     'side right',
@@ -527,7 +527,7 @@ function resolveClassroomAudioAuthority(devices) {
   const list = Array.isArray(devices) ? devices : [];
   const authority = list.find((d) => {
     const n = _normName(d && d.name);
-    return AUDIO_AUTHORITY_ROLE_NAMES.authority.some((alias) => n === alias || n.endsWith(alias));
+    return AUDIO_AUTHORITY_ROLE_NAMES.authority.some((alias) => n === alias);
   }) || null;
   const followers = list.filter((d) => {
     if (!d || (authority && d.id === authority.id)) return false;
@@ -535,7 +535,7 @@ function resolveClassroomAudioAuthority(devices) {
     return AUDIO_AUTHORITY_ROLE_NAMES.followers.some((alias) => n.includes(alias));
   });
   return {
-    configured_authority_name: 'Front Center',
+    configured_authority_name: 'Front Left',
     authority_device_id: authority ? authority.id : null,
     authority_device_name: authority ? authority.name : null,
     followers: followers.map((d) => ({ id: d.id, name: d.name })),

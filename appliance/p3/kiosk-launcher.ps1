@@ -3,9 +3,9 @@
 # isolated Edge/Chromium player window per managed display, pointing each at the
 # existing `/player/managed` route on the Media Control server using per-display
 # credentials sourced from a gitignored `config.local.json` (example-only
-# `config.example.json` lives in this directory). Non-TV1 windows are started
-# with `--mute`; only TV1 (Video Wall 1) passes audio through (audio-enforce.ps1
-# keeps TV1 -> Ultimea/eARC as the Default device).
+# `config.example.json` lives in this directory). Every window except the
+# explicitly named Front Left display is started with `--mute`; Front Left is
+# the sole eARC/Ultimea audio authority.
 #
 # Functional + simple, not a full reimplementation. Read secrets ONLY from
 # config.local.json on-box; never commit a real one.
@@ -47,12 +47,20 @@ foreach ($d in $displays) {
     Write-Warning "display '$($d.label)' missing deviceId/deviceToken -- skipping"
     continue
   }
+  $displayName = [string]$d.name
+  $normalizedDisplayName = $displayName.Trim().ToLowerInvariant()
+  $isAudioAuthority = @(
+    'front left',
+    'classroom 1 - front left',
+    'classroom1 - front left'
+  ) -contains $normalizedDisplayName
   $playerUrl = "$serverUrl/player/managed?device_id=$([uri]::EscapeDataString($d.deviceId))&token=$([uri]::EscapeDataString($d.deviceToken))"
+  if ($isAudioAuthority) { $playerUrl += '&audio_enabled=1' }
   # --autoplay-policy=no-user-gesture-required: without this, Chrome blocks unmuted
   # video.play() in nested iframes (news HLS via grid.html → hls.html) even when the
   # top frame has the userHasInteracted flag set. This is a kiosk — the operator is
-  # never going to tap the screen; media MUST autoplay with sound on TV1 and silently
-  # on every other panel.
+  # never going to tap the screen; media MUST autoplay with sound on Front Left and
+  # silently on every other panel.
   # NOTE: pass --app=<url> WITHOUT inner quotes. Quoting it as `--app="https://..."`
   # makes Edge/Chrome treat the literal double-quotes as part of the URL, which breaks
   # the managed-player route. The URL is already a single token (no spaces) so it needs
@@ -60,17 +68,17 @@ foreach ($d in $displays) {
   # so each element is one verbatim argv entry — this also preserves the & and ? in
   # the query string instead of letting the shell re-parse them.
   $launchArgs = @('--app=' + $playerUrl, '--no-default-browser-check', '--no-first-run', '--disable-features=Translate', '--kiosk', '--autoplay-policy=no-user-gesture-required')
-  # Mute every player EXCEPT TV1 (wall 1 label TV1) so only the Ultimea path sounds.
+  # Fail muted: only an exact, configured Front Left name may emit sound.
+  # A missing or mistyped name is intentionally muted.
   # --mute-audio is the correct Chromium command-line flag to start a window muted.
-  $isTv1 = ($d.wall -eq 1 -and $d.label -eq 'TV1')
-  if (-not $isTv1) { $launchArgs += '--mute-audio' }
+  if (-not $isAudioAuthority) { $launchArgs += '--mute-audio' }
   # Position the window on the target monitor. Chrome/Edge requires --window-position=X,Y
   # as a single flag (not two separate arguments).
   if ($d.display) { $launchArgs += "--window-position=$($d.display)" }
   try {
     $p = Start-Process -FilePath $browser -ArgumentList $launchArgs -PassThru
     $pids += $p.Id
-    Write-Host "launched '$($d.label)' pid=$($p.Id) url=$playerUrl mute=$(-not $isTv1)"
+    Write-Host "launched '$($d.label)' pid=$($p.Id) url=$playerUrl mute=$(-not $isAudioAuthority)"
   } catch {
     Write-Warning "failed to launch '$($d.label)': $($_.Exception.Message)"
   }

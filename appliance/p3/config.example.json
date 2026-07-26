@@ -9,27 +9,27 @@
   "MC_AUDIO_ENDPOINT": "eARC",
   "managedDisplays": [
     {
-      "wall": 1, "label": "TV1", "display": "0,0",
+      "wall": 1, "label": "TV1", "name": "Classroom 1 - Front Left", "display": "0,0",
       "deviceId": "PLACEHOLDER_DEVICE_ID",
       "deviceToken": " SECRET — populate on-box only; never commit "
     },
     {
-      "wall": 1, "label": "TV2", "display": "1920,0",
+      "wall": 1, "label": "TV2", "name": "Classroom 1 - Front Center", "display": "1920,0",
       "deviceId": "PLACEHOLDER_DEVICE_ID",
       "deviceToken": " SECRET — populate on-box only; never commit "
     },
     {
-      "wall": 1, "label": "TV3", "display": "3840,0",
+      "wall": 1, "label": "TV3", "name": "Classroom 1 - Front Right", "display": "3840,0",
       "deviceId": "PLACEHOLDER_DEVICE_ID",
       "deviceToken": " SECRET — populate on-box only; never commit "
     },
     {
-      "wall": 2, "label": "TV4", "display": "0,1080",
+      "wall": 2, "label": "TV4", "name": "Classroom 1 - Side Left", "display": "0,1080",
       "deviceId": "PLACEHOLDER_DEVICE_ID",
       "deviceToken": " SECRET — populate on-box only; never commit "
     },
     {
-      "wall": 2, "label": "TV5", "display": "1920,1080",
+      "wall": 2, "label": "TV5", "name": "Classroom 1 - Side Right", "display": "1920,1080",
       "deviceId": "PLACEHOLDER_DEVICE_ID",
       "deviceToken": " SECRET — populate on-box only; never commit "
     }

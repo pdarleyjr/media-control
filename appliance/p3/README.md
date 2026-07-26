@@ -14,7 +14,8 @@ is by the owner; nothing here commits a real token.
 - `network-enforce.ps1` / `network-watchdog.ps1` — wired-first policy that
   disables Wi-Fi when Ethernet is active and keeps the P3 on the LAN uplink.
 - `kiosk-launcher.ps1` — launches N `/player/managed` windows (replaces the
-  legacy `FiveDisplayKiosk`; non-TV1 windows started with `--mute`).
+  legacy `FiveDisplayKiosk`; every window except the exactly named Front Left
+  display starts muted).
 - `healthcheck.ps1` — prints `{players, audio, network, agent}` JSON for watchdogs.
 - `config.example.json` — placeholders only. Copy to `config.local.json`
   (gitignored) and populate on-box.
@@ -50,6 +51,8 @@ is by the owner; nothing here commits a real token.
 - **Audio wrong device**: optionally `Install-Module AudioDeviceCmdlets -Scope
   CurrentUser` so `audio-enforce.ps1` can actually switch defaults. Without it the
   script logs the chosen endpoint but cannot change it (graceful degradation).
+  Front Left is the sole display audio authority because it feeds the soundbar
+  through eARC; missing or unrecognized display names fail muted.
 - **Restart loop**: agent emits stack traces to Task Scheduler output; the 60s
   watchdog restart re-attempts with exponential backoff.
 - **Firewall**: Windows Firewall stays ENABLED (constraint). Do not disable it;
