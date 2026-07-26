@@ -1,0 +1,4 @@
+# False-positive fixture values in broadcast delivery tests. These fingerprints
+# are commit-, path-, rule-, and line-specific; all other findings remain fatal.
+200c826d3c50048e3b09e6ab66cf4d3220ee5c5e:server/test/broadcast-delivery.test.js:generic-api-key:323
+e3e40cc2cc6774a9cf584048073238004f575ca2:server/test/broadcast-delivery.test.js:generic-api-key:323
