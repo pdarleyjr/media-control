@@ -240,7 +240,7 @@ export function mountActionDock(hostEl, opts = {}) {
       const composition = status?.composition || status?.compositor_state || null;
       const authoritativeComposition = composition?.confirmed_layout
         ? composition
-        : (data?.compositor_state || null);
+        : (status?.compositor_state || null);
       if (authoritativeComposition) {
         compositionRevision = Number(authoritativeComposition.revision) || 0;
         compositionLayout = authoritativeComposition.confirmed_layout || 'camera_only';

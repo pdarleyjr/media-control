@@ -12,7 +12,7 @@ import * as displayState from '../services/display-state.js';
 import { previewSource, renderStage } from './media-control/stage.js';
 import { renderToolbox } from './media-control/toolbox.js';
 import { sendToDisplays, sentToast, trackBroadcastDelivery } from './media-control/send.js';
-import { sendTransportCommand } from './media-control/transport.js';
+import { dispatchTransportTransaction, sendTransportCommand } from './media-control/transport.js';
 import { transportContextForTarget } from '../services/region-playback-state.js';
 import { renderInspector, closeInspector } from './media-control/inspector.js';
 import { renderMultiview, teardownMultiview, buildSplitGridUrl } from './media-control/multiview.js';
@@ -2044,28 +2044,29 @@ function mountTransportRow(hostEl) {
         : null;
       const playback = regionContext?.playback || primary?.now_playing;
       const paused = playback?.paused;
-      const resolvedAction = action === 'play_pause' && paused !== undefined
-        ? (paused ? 'play' : 'pause')
+      // The button may be visually a toggle, but the wire protocol never is:
+      // unknown state fails safe to an explicit pause instead of play_pause.
+      const resolvedAction = action === 'play_pause'
+        ? (paused === true ? 'play' : 'pause')
         : action;
-      if (regionContext) {
-        sendTransportCommand(
-          regionContext.deviceId,
+      const operation = (resolvedAction === 'scroll_up' || resolvedAction === 'scroll_down')
+        ? Promise.all(ids.map(id => sendTransportCommand(id, resolvedAction)))
+        : dispatchTransportTransaction(
+          regionContext ? [regionContext.deviceId] : ids,
           resolvedAction,
           {},
-          {
+          regionContext ? {
             regionId: regionContext.regionId,
             zoneId: regionContext.zoneId,
             wallId: regionContext.wallId,
             expectedRevision: regionContext.expectedRevision,
             contentInstanceId: regionContext.contentInstanceId,
-          },
+          } : {},
         );
-      } else {
-        ids.forEach(id => sendCommand(id, COMMAND_TYPES.TRANSPORT, { action: resolvedAction }));
-      }
-      refreshAfterSend(ids);
-      // Optimistically refresh the Play/Pause label after a toggle.
-      setTimeout(() => transportApi && transportApi.repaint && transportApi.repaint(), 400);
+      operation.finally(() => {
+        refreshAfterSend(ids);
+        setTimeout(() => transportApi && transportApi.repaint && transportApi.repaint(), 400);
+      });
     });
   });
   return {
