@@ -280,7 +280,10 @@ function createDockerRecordingRuntime({
       `--label=${RECORDING_LABEL}=1`,
       `--label=${SESSION_LABEL}=${sessionId}`,
       `--label=${NONCE_LABEL}=${sessionNonce}`,
-      `--mount=type=bind,src=${validated.recordingRoot},dst=${validated.recordingRoot},rw`,
+      // A bind mount is writable by default. Docker's --mount parser rejects
+      // a bare ",rw" field (it only accepts key=value fields), so including it
+      // prevents the recording container from starting on the production host.
+      `--mount=type=bind,src=${validated.recordingRoot},dst=${validated.recordingRoot}`,
       '--entrypoint=ffmpeg',
       imageRef,
       ...validated.ffmpegArgs,
