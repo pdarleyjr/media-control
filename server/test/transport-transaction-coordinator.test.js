@@ -83,7 +83,7 @@ test('one five-display transaction emits once per physical target and once to ac
     action: 'next',
     payload: {},
     issuedBy: 'operator-1',
-    idempotencyKey: 'operator-click-42',
+    idempotencyKey: 'operator-click-42', // gitleaks:allow - deterministic test-only value
   });
 
   assert.equal(result.ok, true);
