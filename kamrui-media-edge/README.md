@@ -48,6 +48,10 @@ and stop both fail closed if that identity changes or Docker is unavailable.
   only from the GMKtec LAN address.
 - Least-privilege sudo via `/usr/local/sbin/mbfd-media-admin` (root-owned,
   allowlisted subcommands only).
+- The camera API service permits privilege transition only so its exact
+  `/usr/local/sbin/mbfd-recording-admin *` sudoers rule can reach the
+  root-owned, argument-validating recording broker. The dedicated recorder
+  unit retains `NoNewPrivileges=true`; no broad `NOPASSWD: ALL` grant exists.
 - The Docker recording backend is optional because Docker daemon access is
   privileged. Its FFmpeg container drops all capabilities, uses a read-only
   root filesystem and `no-new-privileges`, and bind-mounts only the recording

@@ -12,7 +12,11 @@ ExecStart=/usr/bin/node server.js
 Restart=always
 RestartSec=5s
 Environment=NODE_ENV=production
-NoNewPrivileges=true
+# The unprivileged API invokes only the root-owned, argument-validating
+# mbfd-recording-admin helper through its exact sudoers allowlist. Linux blocks
+# that single broker when NoNewPrivileges=true; the recorder unit itself keeps
+# NoNewPrivileges=true and the remaining confinement controls.
+NoNewPrivileges=false
 PrivateTmp=true
 
 [Install]
