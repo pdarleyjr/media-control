@@ -104,6 +104,7 @@ test('source-controlled OBS assets contain exactly the required scenes and no ru
   assert.match(unit, /\$\{OBS_NODE_BIN\}.*generate-config\.js/);
   assert.match(unit, /\$\{OBS_NODE_BIN\}.*healthcheck\.js/);
   assert.doesNotMatch(unit, /ExecStart(?:Pre|Post)=\/usr\/bin\/node/);
+  assert.match(unit, /--websocket_ipv4_only/);
   assert.match(environment, /^OBS_NODE_BIN=/m);
   assert.match(unit, /ExecStartPre=.*xdpyinfo -display :20/);
   assert.match(unit, /WantedBy=multi-user\.target/);
@@ -147,6 +148,19 @@ test('OBS generator creates one persistent camera and browser source across exac
   assert.equal(collection.sources.filter((source) => source.name === 'MBFD_ANNKE_CAMERA').length, 1);
   assert.equal(collection.sources.filter((source) => source.name === 'MBFD_LIVE_CONTENT').length, 1);
   assert.equal(collection.sources.filter((source) => source.id === 'scene').length, 3);
+  assert.equal(collection.sources.some((source) => source.name === 'Cut'), false);
+  assert.deepEqual(collection.transitions, []);
+  assert.equal(
+    collection.sources.find((source) => source.name === 'MBFD_ANNKE_CAMERA').settings.ffmpeg_options,
+    'rtsp_transport=tcp',
+  );
+
+  const websocket = JSON.parse(fs.readFileSync(
+    path.join(runtimeDir, 'plugin_config', 'obs-websocket', 'config.json'),
+    'utf8',
+  ));
+  assert.equal(websocket.auth_required, true);
+  assert.equal('server_bind_address' in websocket, false);
 
   const profile = fs.readFileSync(
     path.join(runtimeDir, 'basic', 'profiles', 'MBFD_FIXED_COMPOSITOR', 'basic.ini'),
