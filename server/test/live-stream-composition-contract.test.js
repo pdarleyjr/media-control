@@ -83,6 +83,7 @@ test('source-controlled OBS assets contain exactly the required scenes and no ru
   const health = read('../deploy/obs-fixed-compositor/healthcheck.js');
   const deploy = read('../deploy/obs-fixed-compositor/install.sh');
   const docs = read('../deploy/obs-fixed-compositor/README.md');
+  const environment = read('../deploy/obs-fixed-compositor/obs-fixed-compositor.env.example');
   for (const scene of [
     'MBFD_CAMERA_ONLY',
     'MBFD_CONTENT_MAIN_CAMERA_PIP',
@@ -100,6 +101,10 @@ test('source-controlled OBS assets contain exactly the required scenes and no ru
   assert.match(unit, /After=.*mbfd-obs-x\.service/);
   assert.match(unit, /Environment=DISPLAY=:20/);
   assert.match(unit, /Environment=QT_QPA_PLATFORM=xcb/);
+  assert.match(unit, /\$\{OBS_NODE_BIN\}.*generate-config\.js/);
+  assert.match(unit, /\$\{OBS_NODE_BIN\}.*healthcheck\.js/);
+  assert.doesNotMatch(unit, /ExecStart(?:Pre|Post)=\/usr\/bin\/node/);
+  assert.match(environment, /^OBS_NODE_BIN=/m);
   assert.match(unit, /ExecStartPre=.*xdpyinfo -display :20/);
   assert.match(unit, /WantedBy=multi-user\.target/);
   assert.match(health, /getCurrentProgramScene/);
