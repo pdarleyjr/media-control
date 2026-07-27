@@ -326,6 +326,13 @@ router.post('/', requireContentWriteRole, checkStorageLimit, upload.single('file
   try {
     if (!req.workspaceId) return res.status(403).json({ error: 'No workspace context. Switch to a workspace before uploading.' });
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    if (!upload.uploadedFileHasBytes(req.file)) {
+      try { fs.unlinkSync(req.file.path); } catch {}
+      return res.status(400).json({
+        code: 'EMPTY_UPLOAD',
+        error: 'Uploaded file is empty. Select the original file and try again.',
+      });
+    }
 
     // iPhone HEIC/HEIF -> JPEG up front: neither the display players nor sharp
     // can render HEIC, so transcode to JPEG and continue as a normal image so the
@@ -1024,6 +1031,13 @@ router.put('/:id/replace', requireContentWriteRole, upload.single('file'), async
   const content = checkContentWrite(req, res);
   if (!content) return;
   if (!req.file) return res.status(400).json({ error: 'No file provided' });
+  if (!upload.uploadedFileHasBytes(req.file)) {
+    try { fs.unlinkSync(req.file.path); } catch {}
+    return res.status(400).json({
+      code: 'EMPTY_UPLOAD',
+      error: 'Uploaded file is empty. Select the original file and try again.',
+    });
+  }
   if (req.body.expected_version !== undefined
       && Number(req.body.expected_version) !== Number(content.version || 1)) {
     try { fs.unlinkSync(req.file.path); } catch {}
