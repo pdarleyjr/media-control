@@ -1041,6 +1041,14 @@ app.post('/api/record/start', authMiddleware, commandRateLimit, async (req, res)
     if (error.recordingMayBeActive || (identity && !stopped)) {
       state.recordingState = 'recovery_required';
       state.recordingIdentity = identity || provisionalIdentity;
+      try {
+        // Replace the provisional "starting" record before the asynchronous
+        // monitor runs. Otherwise an API restart can re-read stale intent even
+        // though the start outcome was already classified as uncertain.
+        saveRecordingState();
+      } catch (persistError) {
+        addError(`Recording recovery state could not be persisted: ${persistError.message}`);
+      }
       monitorSupervisedRecording(sessionId, state.recordingIdentity);
       addError(`Recording ${sessionId} requires supervised reconciliation: ${error.message}`);
       return res.status(503).json({
