@@ -9,10 +9,17 @@
 // Public exports:
 //   renderTransportBar(container, opts)
 //   sendTransportCommand(deviceId, action, payload, opts) — explicit targeted send
+//   sendWorkspaceTransportTransaction(deviceIds, action, payload, opts)
 
 import { esc } from '../../utils.js';
 import { t } from '../../i18n.js';
-import { sendCommand, on as onSocket, off as offSocket, roomState } from '../../socket.js';
+import {
+  sendCommand,
+  getSocket,
+  on as onSocket,
+  off as offSocket,
+  roomState,
+} from '../../socket.js';
 import {
   COMMAND_TYPES,
   TRANSPORT_ACTIONS,
@@ -33,6 +40,9 @@ const STATIC_TRANSPORT_BTNS = [
 // Pending transport commands awaiting player confirmation (task §8).
 // command_id -> { resolve, timer, deviceId, action, payload, contentInstanceId, acknowledged }
 const pendingApply = new Map();
+// A player can acknowledge before the server's transaction callback reaches
+// this tab. Buffer that race briefly and replay it after pending entries exist.
+const earlyCommandAcks = new Map();
 const EXPLICIT_SYNCHRONIZED_ACTIONS = new Set([
   'next', 'prev', 'go_to_slide', 'play', 'pause', 'seek', 'restart', 'stop',
 ]);
@@ -103,12 +113,18 @@ function ensureDisplayStateConfirmation() {
   } catch { /* display-state optional */ }
 }
 
-function ensureCommandAckBridge() {
-  if (ensureCommandAckBridge.wired) return;
-  ensureCommandAckBridge.wired = true;
-  onSocket('command-ack', (data) => {
+function applyCommandAck(data, allowEarlyBuffer = true) {
     const commandId = data?.command_id || data?.id || null;
-    if (!commandId || !pendingApply.has(commandId)) return;
+    if (!commandId) return;
+    if (!pendingApply.has(commandId)) {
+      if (allowEarlyBuffer) {
+        const previous = earlyCommandAcks.get(commandId);
+        if (previous?.timer) clearTimeout(previous.timer);
+        const timer = setTimeout(() => earlyCommandAcks.delete(commandId), 10000);
+        earlyCommandAcks.set(commandId, { data, timer });
+      }
+      return;
+    }
     const entry = pendingApply.get(commandId);
     const status = String(data?.status || '').toLowerCase();
     const ok = data?.ok !== false && status !== 'timeout' && status !== 'failed';
@@ -167,6 +183,21 @@ function ensureCommandAckBridge() {
       state,
       raw: data,
     });
+}
+
+function replayEarlyCommandAck(commandId) {
+  const early = earlyCommandAcks.get(commandId);
+  if (!early) return;
+  earlyCommandAcks.delete(commandId);
+  clearTimeout(early.timer);
+  queueMicrotask(() => applyCommandAck(early.data, false));
+}
+
+function ensureCommandAckBridge() {
+  if (ensureCommandAckBridge.wired) return;
+  ensureCommandAckBridge.wired = true;
+  onSocket('command-ack', (data) => {
+    applyCommandAck(data);
   });
 }
 
@@ -202,6 +233,7 @@ function awaitCommandConfirmation({
       acknowledged: false,
       onInterim: typeof onInterim === 'function' ? onInterim : null,
     });
+    replayEarlyCommandAck(commandId);
   });
 }
 
@@ -360,40 +392,186 @@ export function sendTransportCommand(deviceId, action, payload = {}, opts = {}) 
   });
 }
 
+function immediateTargetConfirmation(target) {
+  if (target.delivered) {
+    return {
+      ok: true,
+      lifecycle: COMMAND_LIFECYCLE.DELIVERED,
+      delivered: true,
+      command_id: target.command_id || null,
+    };
+  }
+  return {
+    ok: false,
+    lifecycle: target.queued ? COMMAND_LIFECYCLE.OFFLINE : COMMAND_LIFECYCLE.FAILED,
+    delivered: false,
+    queued: target.queued === true,
+    command_id: target.command_id || null,
+    error: target.reason || target.status || 'delivery_failed',
+  };
+}
+
 /**
- * Issue one synchronized classroom transaction. Every physical target receives
- * the same idempotency key; the server mirrors that transaction to the managed
- * Live Program receiver exactly once and the owning target waits for its ack.
+ * Send one server-owned workspace transaction, then correlate every physical
+ * and Live Program command with authoritative player confirmation.
+ */
+export function sendWorkspaceTransportTransaction(deviceIds, action, payload = {}, opts = {}) {
+  ensureCommandAckBridge();
+  const targetIds = [...new Set((Array.isArray(deviceIds) ? deviceIds : [deviceIds]).filter(Boolean))];
+  const resolvedAction = String(action || '').trim();
+  if (!targetIds.length) {
+    return Promise.resolve({
+      ok: false,
+      error: 'missing_device_ids',
+      physical_confirmations: [],
+      live_confirmation: null,
+    });
+  }
+  if (!EXPLICIT_SYNCHRONIZED_ACTIONS.has(resolvedAction)) {
+    return Promise.resolve({
+      ok: false,
+      error: resolvedAction === 'play_pause'
+        ? 'ambiguous_play_pause'
+        : 'unsupported_synchronized_action',
+      physical_confirmations: targetIds.map(deviceId => ({
+        device_id: deviceId,
+        target_role: 'physical',
+        ok: false,
+        lifecycle: COMMAND_LIFECYCLE.FAILED,
+      })),
+      live_confirmation: null,
+    });
+  }
+  const transactionId = opts.transactionId || createTransportTransactionId();
+  const commonPayload = {
+    ...(opts.target || {}),
+    ...(payload || {}),
+    action: resolvedAction,
+    ...(opts.zoneId ? { zone_id: opts.zoneId } : {}),
+    ...(opts.regionId ? { region_id: opts.regionId } : {}),
+    ...(opts.cellId ? { cell_id: opts.cellId } : {}),
+    ...(opts.wallId ? { wall_id: opts.wallId } : {}),
+    ...(opts.contentInstanceId ? { content_instance_id: opts.contentInstanceId } : {}),
+    ...(opts.roomId ? { room_id: opts.roomId } : {}),
+  };
+  if (opts.expectedRevision != null) commonPayload.expected_revision = opts.expectedRevision;
+  else {
+    try {
+      const revision = roomState && typeof roomState.getRevision === 'function'
+        ? roomState.getRevision()
+        : null;
+      if (revision != null) commonPayload.expected_revision = revision;
+    } catch { /* roomState optional */ }
+  }
+  const socket = getSocket();
+  if (!socket) {
+    return Promise.resolve({
+      ok: false,
+      error: 'socket_unavailable',
+      physical_confirmations: targetIds.map(deviceId => ({
+        device_id: deviceId,
+        target_role: 'physical',
+        ...immediateTargetConfirmation({ status: 'socket_unavailable' }),
+      })),
+      live_confirmation: null,
+    });
+  }
+  const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : DEFAULT_COMMAND_TIMEOUT_MS;
+  return new Promise((resolve) => {
+    socket.timeout(5000).emit('dashboard:transport-transaction', {
+      device_ids: targetIds,
+      action: resolvedAction,
+      payload: commonPayload,
+      room_id: opts.roomId || commonPayload.room_id || null,
+      idempotency_key: transactionId,
+      content_instance_id: opts.contentInstanceId || commonPayload.content_instance_id || null,
+      expected_revision: commonPayload.expected_revision ?? null,
+      expected_generation: opts.expectedGeneration ?? commonPayload.expected_generation ?? null,
+    }, (error, ack) => {
+      if (error || !ack?.ok) {
+        const reason = ack?.reason || ack?.error || 'no_ack';
+        resolve({
+          ok: false,
+          error: reason,
+          transaction_id: ack?.transaction_id || transactionId,
+          physical_confirmations: targetIds.map(deviceId => ({
+            device_id: deviceId,
+            target_role: 'physical',
+            ...immediateTargetConfirmation({ status: reason }),
+          })),
+          live_confirmation: null,
+        });
+        return;
+      }
+      const confirmationFor = (target) => {
+        if (!target?.delivered || !target.command_id || opts.waitForApply === false) {
+          return Promise.resolve({
+            device_id: target?.device_id || null,
+            target_role: target?.target_role || 'physical',
+            ...immediateTargetConfirmation(target || { status: 'missing_target' }),
+          });
+        }
+        return awaitCommandConfirmation({
+          commandId: target.command_id,
+          deviceId: target.device_id,
+          action: ack.action || resolvedAction,
+          payload: commonPayload,
+          contentInstanceId: ack.content_instance_id || commonPayload.content_instance_id || null,
+          regionId: target.target_role === 'physical' ? (opts.regionId || commonPayload.region_id || null) : null,
+          timeoutMs,
+          onInterim: opts.onInterim,
+        }).then(result => ({
+          device_id: target.device_id,
+          target_role: target.target_role,
+          ...result,
+        }));
+      };
+      Promise.all((ack.targets || []).map(confirmationFor)).then((confirmations) => {
+        const physical_confirmations = confirmations.filter(
+          confirmation => confirmation.target_role === 'physical',
+        );
+        const live_confirmation = confirmations.find(
+          confirmation => confirmation.target_role === 'live-program',
+        ) || null;
+        resolve({
+          ...ack,
+          ok: confirmations.every(confirmation => confirmation.ok),
+          physical_confirmations,
+          live_confirmation,
+        });
+      });
+    });
+  });
+}
+
+/**
+ * Compatibility return shape for callers that render one result per physical
+ * display. Dispatch still crosses the socket only once.
  */
 export async function dispatchTransportTransaction(deviceIds, action, payload = {}, opts = {}) {
   const targetIds = [...new Set((Array.isArray(deviceIds) ? deviceIds : [deviceIds]).filter(Boolean))];
-  const resolvedAction = String(action || '').trim();
-  if (!targetIds.length) return [];
-  if (!EXPLICIT_SYNCHRONIZED_ACTIONS.has(resolvedAction)) {
-    return targetIds.map(id => ({
-      id,
-      result: {
-        ok: false,
-        lifecycle: COMMAND_LIFECYCLE.FAILED,
-        error: resolvedAction === 'play_pause' ? 'ambiguous_play_pause' : 'unsupported_synchronized_action',
-      },
-    }));
-  }
-  const transactionId = opts.transactionId || createTransportTransactionId();
-  const results = await Promise.all(targetIds.map(async (id) => ({
-    id,
-    result: await sendTransportCommand(id, resolvedAction, {
-      ...(payload || {}),
-      transport_transaction_id: transactionId,
-      idempotency_key: transactionId,
-    }, {
-      ...opts,
-      transactionId,
-      transactionTargetCount: targetIds.length,
-      mirrorToLiveProgram: true,
-    }),
-  })));
-  return results;
+  const transaction = await sendWorkspaceTransportTransaction(targetIds, action, payload, opts);
+  const confirmations = transaction.physical_confirmations || [];
+  return targetIds.map(id => {
+    const confirmation = confirmations.find(candidate => candidate.device_id === id);
+    const result = confirmation || {
+      ok: false,
+      lifecycle: COMMAND_LIFECYCLE.FAILED,
+      error: transaction.error || 'transport_failed',
+    };
+    if (transaction.live_confirmation && !transaction.live_confirmation.ok) {
+      return {
+        id,
+        result: {
+          ...result,
+          ok: false,
+          live_program_result: transaction.live_confirmation,
+          error: transaction.live_confirmation.error || 'live_program_failed',
+        },
+      };
+    }
+    return { id, result: { ...result, live_program_result: transaction.live_confirmation } };
+  });
 }
 
 /**
@@ -496,7 +674,7 @@ export function renderTransportBar(container, {
 
     setLifecycle(COMMAND_LIFECYCLE.REQUESTED, resolvedAction);
     setLifecycle(COMMAND_LIFECYCLE.PENDING, transportIds.join(','));
-    const results = await dispatchTransportTransaction(transportIds, resolvedAction, extraPayload, {
+    const transaction = await sendWorkspaceTransportTransaction(transportIds, resolvedAction, extraPayload, {
       target,
       zoneId,
       regionId,
@@ -506,6 +684,15 @@ export function renderTransportBar(container, {
       timeoutMs: DEFAULT_COMMAND_TIMEOUT_MS,
       onInterim: (lc) => setLifecycle(lc, 'awaiting player confirmation'),
     });
+    const results = [
+      ...(transaction.physical_confirmations || []).map(result => ({
+        id: result.device_id,
+        result,
+      })),
+      ...(transaction.live_confirmation && !transaction.live_confirmation.ok
+        ? [{ id: transaction.live_confirmation.device_id, result: transaction.live_confirmation }]
+        : []),
+    ];
     for (const { result } of results) {
       setLifecycle(result.lifecycle, result.error || result.command_id);
       if (!result.ok) {

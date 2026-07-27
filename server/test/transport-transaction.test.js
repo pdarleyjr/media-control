@@ -253,20 +253,20 @@ test('Live Program persistence failure is contained and never emits an untracked
   assert.equal(f.queued.length, 0);
 });
 
-test('controller creates one transaction, awaits all target confirmations, and includes Live Program owner ack', () => {
+test('controller sends one workspace transaction and awaits physical plus Live Program confirmations', () => {
   const transport = read('frontend/js/views/media-control/transport.js');
   const main = read('frontend/js/views/media-control.js');
   const dashboard = read('server/ws/dashboardSocket.js');
 
-  assert.match(transport, /export async function dispatchTransportTransaction/);
+  assert.match(transport, /export function sendWorkspaceTransportTransaction/);
   assert.match(transport, /const transactionId = opts\.transactionId \|\| createTransportTransactionId\(\)/);
-  assert.match(transport, /Promise\.all\(targetIds\.map/);
-  assert.match(transport, /transport_transaction_id: transactionId/);
+  assert.match(transport, /dashboard:transport-transaction/);
+  assert.match(transport, /Promise\.all\(\(ack\.targets \|\| \[\]\)\.map/);
   assert.match(transport, /idempotency_key: transactionId/);
-  assert.match(transport, /mirrorToLiveProgram: true/);
-  assert.match(transport, /ack\.live_program/);
+  assert.match(transport, /physical_confirmations/);
+  assert.match(transport, /live_confirmation/);
   assert.match(transport, /awaitCommandConfirmation/);
   assert.match(main, /dispatchTransportTransaction\(/);
   assert.doesNotMatch(main, /ids\.forEach\(id => sendCommand\(id, COMMAND_TYPES\.TRANSPORT/);
-  assert.match(dashboard, /live_program: liveProgramResult/);
+  assert.match(dashboard, /dashboard:transport-transaction/);
 });

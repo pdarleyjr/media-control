@@ -56,10 +56,11 @@ test('span wall transport controls fan out to every wall member', () => {
   // every wall member is resolved centrally by activeTargetTransportIds() (which
   // calls wallTransportDeviceIds for a span wall) and sent as one transaction.
   assert.match(transport, /transportDeviceIds/);
-  // Every member shares one idempotency key; all player acknowledgements are
-  // awaited together and Live Program is mirrored once by the server.
-  assert.match(transport, /sendTransportCommand/);
-  assert.match(transport, /Promise\.all\(targetIds\.map/);
+  // Every member shares one idempotency key in one socket transaction; all
+  // physical and Live Program acknowledgements are awaited together.
+  assert.match(transport, /sendWorkspaceTransportTransaction/);
+  assert.match(transport, /dashboard:transport-transaction/);
+  assert.match(transport, /Promise\.all\(\(ack\.targets \|\| \[\]\)\.map/);
   assert.match(transport, /idempotency_key: transactionId/);
   assert.match(transport, /action === 'play_pause'[\s\S]*authoritativePaused === true \? 'play' : 'pause'/);
   assert.match(main, /action === 'play_pause'[\s\S]*paused === true \? 'play' : 'pause'/);
