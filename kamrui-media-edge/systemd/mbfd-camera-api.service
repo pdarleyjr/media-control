@@ -1,19 +1,25 @@
 [Unit]
 Description=MBFD Camera Control API
-After=network-online.target docker.service mbfd-mediamtx.service
+After=network-online.target docker.service mbfd-mediamtx.service mbfd-recording-broker.socket
 Wants=network-online.target
+Requires=mbfd-recording-broker.socket
 
 [Service]
 Type=simple
-User=peter
-Group=peter
+User=mbfd-camera-api
+Group=mbfd-camera-api
 WorkingDirectory=/opt/mbfd/media-stack/camera-api
 ExecStart=/usr/bin/node server.js
 Restart=always
 RestartSec=5s
 Environment=NODE_ENV=production
+Environment=MBFD_RECORDING_BROKER_SOCKET=/run/mbfd-recording-broker/broker.sock
+# The camera API never escalates privileges.  It communicates with the
+# root-owned recording broker through a peer-verified Unix socket (SO_PEERCRED).
+# No sudo, no wildcard sudoers, no NoNewPrivileges relaxation.
 NoNewPrivileges=true
 PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
 WantedBy=multi-user.target
