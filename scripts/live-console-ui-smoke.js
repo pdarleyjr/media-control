@@ -368,22 +368,31 @@ async function main() {
       if (!document.querySelector('.mc-cc-shell') || buttons.length < 2) return false;
       return buttons.map((button) => ({ text: button.textContent.trim(), value: button.dataset.targetValue }));
     })()`, 'command center ready', 30000);
-    assert(ready.some((item) => /Video Wall 1/i.test(item.text)), 'Video Wall 1 target is missing');
-    assert(ready.some((item) => /Video Wall 2/i.test(item.text)), 'Video Wall 2 target is missing');
+    if (ready.length < 2) {
+      throw new Error(`at least two authorized wall targets are required: ${JSON.stringify(ready)}`);
+    }
+    const expectedWallTargets = csv(process.env.SMOKE_EXPECT_WALL_TARGETS);
+    const targetCycle = expectedWallTargets.length
+      ? expectedWallTargets.map((label) => {
+        const target = ready.find((item) => item.text === label);
+        assert(target, `configured wall target is missing: ${label}; visible=${JSON.stringify(ready)}`);
+        return target.value;
+      })
+      : ready.slice(0, 2).map((item) => item.value).reverse();
 
-    for (const label of ['Video Wall 2', 'Video Wall 1']) {
+    for (const targetValue of targetCycle) {
       await evaluate(cdp, `(() => {
         const button = [...document.querySelectorAll('.mc-target-wall-btn')]
-          .find((item) => item.textContent.trim().includes(${JSON.stringify(label)}));
+          .find((button) => button.dataset.targetValue === ${JSON.stringify(targetValue)});
         if (!button) return false;
         button.click();
         return true;
       })()`);
       await waitFor(cdp, `(() => {
         const button = [...document.querySelectorAll('.mc-target-wall-btn')]
-          .find((item) => item.textContent.trim().includes(${JSON.stringify(label)}));
+          .find((button) => button.dataset.targetValue === ${JSON.stringify(targetValue)});
         return !!button && button.getAttribute('aria-pressed') === 'true' && button.classList.contains('is-active');
-      })()`, `${label} selection`);
+      })()`, `${targetValue} selection`);
     }
 
     const hybridLayouts = process.env.SMOKE_HYBRID_LAYOUTS === '1'
