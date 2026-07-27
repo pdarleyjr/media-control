@@ -435,11 +435,6 @@ export const api = {
       method: 'DELETE',
       body: JSON.stringify(body || {}),
     }),
-    // Deprecated rolling-deployment compatibility. Active instructor UI does
-    // not expose Prepare Live or require a production plan before Start.
-    prepare: () => request('/live-stream/prepare', { method: 'POST' }),
-    productionPlan: (body) => request('/live-stream/production-plan', { method: 'POST', body: JSON.stringify(body || {}) }),
-    getProductionPlan: () => request('/live-stream/production-plan'),
     start: (options = {}) => request('/live-stream/start', { method: 'POST', body: JSON.stringify(options) }),
     stop: () => request('/live-stream/stop', { method: 'POST' }),
     clearContent: () => request('/live-stream/clear-content', { method: 'POST' }),

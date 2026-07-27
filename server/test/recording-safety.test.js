@@ -365,14 +365,15 @@ test('camera edge source recovers finalization and serializes all recording meta
 test('global camera recordings are platform-admin-only and edge requests bind If-Match', () => {
   const route = fs.readFileSync(path.join(__dirname, '..', 'routes', 'live-stream.js'), 'utf8');
   const client = fs.readFileSync(path.join(__dirname, '..', 'lib', 'camera-control-client.js'), 'utf8');
-  assert.match(route, /requireGlobalCameraAdmin/);
-  assert.match(route, /req\.user\.role !== 'platform_admin'/);
-  assert.match(route, /get\('\/recordings', requireGlobalCameraAdmin/);
-  assert.match(route, /post\('\/recordings\/:id\/archive', requireGlobalCameraAdmin/);
-  assert.match(route, /post\('\/recordings\/:id\/restore', requireGlobalCameraAdmin/);
-  assert.match(route, /delete\('\/recordings\/:id', requireGlobalCameraAdmin/);
-  assert.match(route, /delete\('\/recordings\/:id\/peertube', requireGlobalCameraAdmin/);
-  assert.match(route, /plan\.recording_requested && req\.user\?\.role !== 'platform_admin'/);
+  assert.doesNotMatch(route, /requireGlobalCameraAdmin/);
+  assert.match(route, /requirePlatformAdmin/);
+  assert.match(route, /isPlatformAdminUser/);
+  assert.match(route, /get\('\/recordings', requirePlatformAdmin/);
+  assert.match(route, /post\('\/recordings\/:id\/archive', requirePlatformAdmin/);
+  assert.match(route, /post\('\/recordings\/:id\/restore', requirePlatformAdmin/);
+  assert.match(route, /delete\('\/recordings\/:id', requirePlatformAdmin/);
+  assert.match(route, /delete\('\/recordings\/:id\/peertube', requirePlatformAdmin/);
+  assert.match(route, /plan\.recording_requested && !isPlatformAdminUser\(req\.user\)/);
   assert.match(client, /signServiceRequest/);
   assert.match(client, /serviceHeaders/);
   assert.match(client, /headerValue\(signedHeaders, 'if-match'\)/);

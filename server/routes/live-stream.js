@@ -49,16 +49,12 @@ const { contentUseDecision, contextFromRequest } = require('../lib/content-visib
 const { deckPlayerUrl } = require('../lib/deck-player-url');
 const { assertRemoteUrlSafe } = require('../lib/ssrf-policy');
 const { createPeerTubeIngestVerifier } = require('../lib/peertube-ingest-health');
+const {
+  isPlatformAdminUser,
+  requirePlatformAdmin,
+} = require('../lib/permissions');
+const { markLegacyLiveCompatibility } = require('../lib/live-stream-compatibility');
 const cameraControl = require('../lib/camera-control-client');
-function requireGlobalCameraAdmin(req, res, next) {
-  // The ANNKE recorder and its catalog are appliance-global, not owned by the
-  // caller's selected workspace. Workspace admin rights therefore cannot grant
-  // authority over recordings created by another workspace.
-  if (!req.user || req.user.role !== 'platform_admin') {
-    return res.status(403).json({ error: 'Global camera administration requires platform_admin' });
-  }
-  next();
-}
 
 // --- Helpers -------------------------------------------------------------
 
@@ -81,10 +77,10 @@ function displayPayload(req) {
   };
 }
 
-function logLiveStreamAction(req, action, details) {
+function logLiveStreamAction(req, action, details, method = 'POST') {
   try {
     const detailsText = details == null ? null : (typeof details === 'string' ? details : JSON.stringify(details));
-    logActivity(req.user.id, `POST /api/live-stream/${action}`, detailsText, null, getClientIp(req), req.workspaceId);
+    logActivity(req.user.id, `${method} /api/live-stream/${action}`, detailsText, null, getClientIp(req), req.workspaceId);
   } catch (_) {}
   try {
     audit({
@@ -716,9 +712,12 @@ router.delete('/composition/content', async (req, res) => {
   }
 });
 
-// Deprecated compatibility endpoint for rolling clients. Active instructor
-// UI uses one-click Start and the authoritative composition routes above.
+// Legacy livestream compatibility removal target: version 2.0.0 on
+// September 30, 2026. Active instructor UI uses one-click Start and the
+// authoritative composition routes above. Publisher mode is process-start
+// configuration, so these routes cannot start an alternative publisher.
 router.post('/prepare', async (req, res) => {
+  markLegacyLiveCompatibility(res);
   const requestId = createRequestId();
   if (!workspaceGuard(req, res, requestId)) return;
   const prepared = await prepareLiveProgram(req);
@@ -750,6 +749,7 @@ router.post('/prepare', async (req, res) => {
 });
 
 router.post('/production-plan', async (req, res) => {
+  markLegacyLiveCompatibility(res);
   const requestId = createRequestId();
   if (!workspaceGuard(req, res, requestId)) return;
   const director = await getCameraDirectorState(req.workspaceId);
@@ -826,9 +826,15 @@ router.post('/production-plan', async (req, res) => {
 });
 
 router.get('/production-plan', (req, res) => {
+  markLegacyLiveCompatibility(res);
   const requestId = createRequestId();
   if (!workspaceGuard(req, res, requestId)) return;
   const plan = getPlan(req.workspaceId);
+  logLiveStreamAction(req, 'production-plan', {
+    production_plan_id: plan?.production_plan_id || null,
+    request_id: requestId,
+    compatibility_read: true,
+  }, 'GET');
   res.json({
     success: true,
     request_id: requestId,
@@ -836,7 +842,7 @@ router.get('/production-plan', (req, res) => {
   });
 });
 
-router.get('/recording/status', requireGlobalCameraAdmin, async (req, res) => {
+router.get('/recording/status', requirePlatformAdmin, async (req, res) => {
   const requestId = createRequestId();
   if (!workspaceGuard(req, res, requestId)) return;
   const director = await getCameraDirectorState(req.workspaceId);
@@ -850,7 +856,7 @@ router.get('/recording/status', requireGlobalCameraAdmin, async (req, res) => {
   });
 });
 
-router.post('/recording/preflight', requireGlobalCameraAdmin, async (req, res) => {
+router.post('/recording/preflight', requirePlatformAdmin, async (req, res) => {
   const requestId = createRequestId();
   if (!workspaceGuard(req, res, requestId)) return;
   const director = await getCameraDirectorState(req.workspaceId);
@@ -863,7 +869,7 @@ router.post('/recording/preflight', requireGlobalCameraAdmin, async (req, res) =
   });
 });
 
-router.post('/recording/start', requireGlobalCameraAdmin, async (req, res) => {
+router.post('/recording/start', requirePlatformAdmin, async (req, res) => {
   const requestId = createRequestId();
   if (!workspaceGuard(req, res, requestId)) return;
   const result = await cameraControl.startRecording();
@@ -877,7 +883,7 @@ router.post('/recording/start', requireGlobalCameraAdmin, async (req, res) => {
   });
 });
 
-router.post('/recording/stop', requireGlobalCameraAdmin, async (req, res) => {
+router.post('/recording/stop', requirePlatformAdmin, async (req, res) => {
   const requestId = createRequestId();
   if (!workspaceGuard(req, res, requestId)) return;
   const result = await cameraControl.stopRecording();
@@ -942,7 +948,7 @@ router.post('/start', async (req, res) => {
       requestId,
     });
   }
-  if (plan.recording_requested && req.user?.role !== 'platform_admin') {
+  if (plan.recording_requested && !isPlatformAdminUser(req.user)) {
     return fail(res, req, {
       httpStatus: 403,
       code: 'GLOBAL_CAMERA_ADMIN_REQUIRED',
@@ -1317,7 +1323,7 @@ router.post('/emergency-stop', async (req, res) => {
   });
 });
 
-router.get('/recordings', requireGlobalCameraAdmin, async (req, res) => {
+router.get('/recordings', requirePlatformAdmin, async (req, res) => {
   const requestId = createRequestId();
   if (!workspaceGuard(req, res, requestId)) return;
   const result = await cameraControl.getRecordings();
@@ -1326,7 +1332,7 @@ router.get('/recordings', requireGlobalCameraAdmin, async (req, res) => {
 
 // Recording deletion: impact preview, archive, restore, permanent delete.
 // PeerTube deletion is a separate explicit route.
-router.get('/recordings/:id/deletion-impact', requireGlobalCameraAdmin, async (req, res) => {
+router.get('/recordings/:id/deletion-impact', requirePlatformAdmin, async (req, res) => {
   const requestId = createRequestId();
   if (!workspaceGuard(req, res, requestId)) return;
   const result = await cameraControl.getDeletionImpact(req.params.id, { operatorId: req.user.id });
@@ -1337,21 +1343,21 @@ router.get('/recordings/:id/deletion-impact', requireGlobalCameraAdmin, async (r
   }
 });
 
-router.post('/recordings/:id/archive', requireGlobalCameraAdmin, async (req, res) => {
+router.post('/recordings/:id/archive', requirePlatformAdmin, async (req, res) => {
   const requestId = createRequestId();
   if (!workspaceGuard(req, res, requestId)) return;
   const result = await cameraControl.archiveRecording(req.params.id, { operatorId: req.user.id });
   res.status(result.ok ? 200 : (result.status || 409)).json({ success: result.ok, request_id: requestId, ...(result.data || {}), error: result.message });
 });
 
-router.post('/recordings/:id/restore', requireGlobalCameraAdmin, async (req, res) => {
+router.post('/recordings/:id/restore', requirePlatformAdmin, async (req, res) => {
   const requestId = createRequestId();
   if (!workspaceGuard(req, res, requestId)) return;
   const result = await cameraControl.restoreRecording(req.params.id, { operatorId: req.user.id });
   res.status(result.ok ? 200 : (result.status || 409)).json({ success: result.ok, request_id: requestId, ...(result.data || {}), error: result.message });
 });
 
-router.delete('/recordings/:id', requireGlobalCameraAdmin, async (req, res) => {
+router.delete('/recordings/:id', requirePlatformAdmin, async (req, res) => {
   const requestId = createRequestId();
   if (!workspaceGuard(req, res, requestId)) return;
   const ifMatch = req.headers['if-match'];
@@ -1363,7 +1369,7 @@ router.delete('/recordings/:id', requireGlobalCameraAdmin, async (req, res) => {
   res.status(result.ok ? 200 : (result.status || 409)).json({ success: result.ok, request_id: requestId, ...(result.data || {}), error: result.message });
 });
 
-router.delete('/recordings/:id/peertube', requireGlobalCameraAdmin, async (req, res) => {
+router.delete('/recordings/:id/peertube', requirePlatformAdmin, async (req, res) => {
   const requestId = createRequestId();
   if (!workspaceGuard(req, res, requestId)) return;
   const result = await cameraControl.deletePeerTubeVideo(req.params.id, {

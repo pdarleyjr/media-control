@@ -30,6 +30,13 @@ ffprobe, and synchronized to the GMKtec over LAN (Tailscale fallback) with
 checksum verification. A recording is marked `syncVerified=true` only when the
 remote SHA-256 matches the local checksum.
 
+Recording supervision defaults to the dedicated, least-privilege systemd unit.
+An optional Docker backend can be selected with `RECORDING_BACKEND=docker` and
+an immutable `RECORDING_DOCKER_IMAGE` digest. Its durable identity binds the
+full container and image IDs, command, session nonce, labels, non-root user,
+host network, recording mount, and confinement settings. Startup re-adoption
+and stop both fail closed if that identity changes or Docker is unavailable.
+
 ## Security
 
 - Camera RTSP credentials live ONLY in `/etc/mbfd/media-stack/mediamtx.yml`
@@ -41,6 +48,10 @@ remote SHA-256 matches the local checksum.
   only from the GMKtec LAN address.
 - Least-privilege sudo via `/usr/local/sbin/mbfd-media-admin` (root-owned,
   allowlisted subcommands only).
+- The Docker recording backend is optional because Docker daemon access is
+  privileged. Its FFmpeg container drops all capabilities, uses a read-only
+  root filesystem and `no-new-privileges`, and bind-mounts only the recording
+  root read-write.
 
 ## Provisioning
 

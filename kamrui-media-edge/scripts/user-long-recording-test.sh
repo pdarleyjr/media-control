@@ -69,6 +69,8 @@ previous_size=0
 api_restart_observed=false
 api_outages=0
 supervisor_failures=0
+expected_container_id=''
+expected_container_image_id=''
 stop_requested=0
 stopped=0
 trap 'stop_requested=1' INT TERM
@@ -117,22 +119,49 @@ while (( $(date +%s) < deadline && stop_requested == 0 )); do
   previous_size=$file_size_bytes
   free_space_bytes="$(df -PB1 /mnt/data/recordings | awk 'NR==2 {print $4}')"
 
-  supervisor_status="$(sudo -n /usr/local/sbin/mbfd-recording-admin status "$session_id" 2>/dev/null || true)"
+  recording_backend="$(json_field "process.stdout.write(String(x.recording_backend||''))" <<<"$status_json" 2>/dev/null || true)"
   supervisor_validated=false
   ffmpeg_pid=''
-  if grep -Fqx 'Validated=yes' <<<"$supervisor_status"; then
-    supervisor_validated=true
-    ffmpeg_pid="$(awk -F= '$1=="MainPID" {print $2}' <<<"$supervisor_status")"
+  container_name=''
+  container_id=''
+  container_image_id=''
+  docker_running=false
+  if [[ "$recording_backend" == "docker" ]]; then
+    container_name="mbfd-camera-recording-$session_id"
+    docker_inspect="$(docker inspect "$container_name" 2>/dev/null || true)"
+    if [[ -n "$docker_inspect" ]]; then
+      container_id="$(json_field "process.stdout.write(String(x[0]?.Id||''))" <<<"$docker_inspect" 2>/dev/null || true)"
+      container_image_id="$(json_field "process.stdout.write(String(x[0]?.Image||''))" <<<"$docker_inspect" 2>/dev/null || true)"
+      docker_running="$(json_field "process.stdout.write(String(x[0]?.State?.Running===true))" <<<"$docker_inspect" 2>/dev/null || echo false)"
+      ffmpeg_pid="$(json_field "process.stdout.write(String(x[0]?.State?.Pid||''))" <<<"$docker_inspect" 2>/dev/null || true)"
+    fi
+    [[ -n "$expected_container_id" ]] || expected_container_id="$container_id"
+    [[ -n "$expected_container_image_id" ]] || expected_container_image_id="$container_image_id"
+    if [[ "$docker_running" == "true" ]] &&
+      [[ -n "$container_id" && "$container_id" == "$expected_container_id" ]] &&
+      [[ "$container_image_id" =~ ^sha256:[a-f0-9]{64}$ ]] &&
+      [[ "$container_image_id" == "$expected_container_image_id" ]]; then
+      supervisor_validated=true
+    else
+      supervisor_failures=$((supervisor_failures + 1))
+    fi
+    supervisor_state="docker/$docker_running/${container_id:0:12}"
   else
-    supervisor_failures=$((supervisor_failures + 1))
+    supervisor_status="$(sudo -n /usr/local/sbin/mbfd-recording-admin status "$session_id" 2>/dev/null || true)"
+    if grep -Fqx 'Validated=yes' <<<"$supervisor_status"; then
+      supervisor_validated=true
+      ffmpeg_pid="$(awk -F= '$1=="MainPID" {print $2}' <<<"$supervisor_status")"
+    else
+      supervisor_failures=$((supervisor_failures + 1))
+    fi
+    supervisor_state="$(awk -F= '
+      $1=="ActiveState" {active=$2}
+      $1=="SubState" {sub=$2}
+      $1=="MainPID" {pid=$2}
+      END {printf "%s/%s/%s", active, sub, pid}
+    ' <<<"$supervisor_status")"
+    [[ -n "$supervisor_state" && "$supervisor_state" != "//" ]] || supervisor_state="unvalidated"
   fi
-  supervisor_state="$(awk -F= '
-    $1=="ActiveState" {active=$2}
-    $1=="SubState" {sub=$2}
-    $1=="MainPID" {pid=$2}
-    END {printf "%s/%s/%s", active, sub, pid}
-  ' <<<"$supervisor_status")"
-  [[ -n "$supervisor_state" && "$supervisor_state" != "//" ]] || supervisor_state="unvalidated"
   cpu_percent=0
   ram_bytes=0
   if [[ "$ffmpeg_pid" =~ ^[0-9]+$ ]]; then
@@ -149,6 +178,8 @@ while (( $(date +%s) < deadline && stop_requested == 0 )); do
   SAMPLE_UTC="$sample_utc" SESSION_ID="$session_id" ELAPSED_SECONDS="$elapsed_seconds" \
   CURRENT_SEGMENT="$current_segment" SUPERVISOR_STATE="$supervisor_state" \
   SUPERVISOR_VALIDATED="$supervisor_validated" FFMPEG_PID="$ffmpeg_pid" \
+  RECORDING_BACKEND="$recording_backend" CONTAINER_NAME="$container_name" \
+  CONTAINER_ID="$container_id" CONTAINER_IMAGE_ID="$container_image_id" DOCKER_RUNNING="$docker_running" \
   VIDEO_TRACK_HEALTHY="$video_track_healthy" AUDIO_TRACK_HEALTHY="$audio_track_healthy" \
   FILE_SIZE_BYTES="$file_size_bytes" GROWTH_BYTES="$growth_bytes" FREE_SPACE_BYTES="$free_space_bytes" \
   CAMERA_SOURCE_HEALTHY="$camera_source_healthy" CPU_PERCENT="$cpu_percent" RAM_BYTES="$ram_bytes" \
@@ -162,6 +193,11 @@ while (( $(date +%s) < deadline && stop_requested == 0 )); do
         supervisor_state:e.SUPERVISOR_STATE,
         supervisor_validated:e.SUPERVISOR_VALIDATED==="true",
         ffmpeg_pid:number(e.FFMPEG_PID),
+        recording_backend:e.RECORDING_BACKEND||null,
+        container_name:e.CONTAINER_NAME||null,
+        container_id:e.CONTAINER_ID||null,
+        container_image_id:e.CONTAINER_IMAGE_ID||null,
+        docker_running:e.DOCKER_RUNNING==="true",
         video_track_healthy:e.VIDEO_TRACK_HEALTHY==="true",
         audio_track_healthy:e.AUDIO_TRACK_HEALTHY==="true",
         file_size_bytes:number(e.FILE_SIZE_BYTES), growth_bytes:number(e.GROWTH_BYTES),

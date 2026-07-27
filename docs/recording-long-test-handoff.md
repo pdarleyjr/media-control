@@ -28,10 +28,16 @@ export CAMERA_API_TOKEN_FILE="/run/user/$UID/mbfd-camera-api.token"
 Optionally set `RUN_SYNC_AFTER_TEST=true` to perform the normal verified sync
 after finalization. The harness continuously appends health samples, tolerates
 temporary API unavailability while the independently supervised systemd unit
-continues, and
-writes read-only JSON and Markdown reports containing the stop result, final
+or configured Docker container continues, and writes read-only JSON and
+Markdown reports containing the stop result, final
 metadata, `ffprobe`, SHA-256 comparison, samples, and sync result. It never
 starts a livestream, uploads, publishes, or deletes a recording.
+
+For the Docker backend, each health sample records the named container,
+immutable image identity, Docker running state, and container PID. The
+supervisor gate remains green only while the same full container and image
+identities remain running, including across an API restart. A changed identity
+or unavailable Docker runtime is a fail-closed result.
 
 Before deploying the API changes, provision the same new random signing secret
 as `CAMERA_CONTROL_SIGNING_SECRET` in Media Control and

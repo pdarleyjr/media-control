@@ -239,6 +239,15 @@ test('camera API, installer and unit use the independent recording supervisor co
     edge,
     /recordingState = 'starting'[\s\S]*saveRecordingState\(\)[\s\S]*recordingSupervisor\.startSession/
   );
+  const uncertainStart = edge.slice(
+    edge.indexOf('if (error.recordingMayBeActive'),
+    edge.indexOf("state.recording = false", edge.indexOf('if (error.recordingMayBeActive')),
+  );
+  assert.match(
+    uncertainStart,
+    /recordingState = 'recovery_required'[\s\S]*saveRecordingState\(\)[\s\S]*monitorSupervisedRecording/,
+    'an uncertain start must durably replace the provisional starting state before reconciliation',
+  );
   assert.doesNotMatch(edge, /async function startRecordingProcess/);
   assert.match(install, /recording-supervisor\.js/);
   assert.equal(fs.existsSync(lockfile), true);

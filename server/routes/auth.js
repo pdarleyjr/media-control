@@ -5,7 +5,8 @@ const https = require('https');
 const { v4: uuidv4 } = require('uuid');
 const { OAuth2Client } = require('google-auth-library');
 const { db } = require('../db/database');
-const { generateToken, requireAuth, requireAdmin, requireSuperAdmin, PLATFORM_ROLES } = require('../middleware/auth');
+const { generateToken, requireAuth, requireAdmin, PLATFORM_ROLES } = require('../middleware/auth');
+const { requirePlatformAdmin } = require('../lib/permissions');
 const { resolveTenancy } = require('../lib/tenancy');
 const { ensurePrimaryWorkspaceMembership } = require('../lib/primary-workspace');
 const { logActivity, getClientIp } = require('../services/activity');
@@ -428,18 +429,19 @@ router.get('/users', requireAuth, requireAdmin, (req, res) => {
   }
 });
 
-// Delete user (superadmin only)
-router.delete('/users/:id', requireAuth, requireSuperAdmin, (req, res) => {
+// Delete user (platform admin only)
+router.delete('/users/:id', requireAuth, requirePlatformAdmin, (req, res) => {
   if (req.params.id === req.user.id) return res.status(400).json({ error: 'Cannot delete yourself' });
   db.prepare('DELETE FROM users WHERE id = ?').run(req.params.id);
   res.json({ success: true });
 });
 
-// Update user role (superadmin only)
-router.put('/users/:id/role', requireAuth, requireSuperAdmin, (req, res) => {
+// Update user role (platform admin only). Legacy role spellings are migration
+// inputs, never values that active code may write back into the database.
+router.put('/users/:id/role', requireAuth, requirePlatformAdmin, (req, res) => {
   const { role } = req.body;
-  if (!['user', 'admin', 'superadmin'].includes(role)) return res.status(400).json({ error: 'Invalid role' });
-  if (req.params.id === req.user.id && role !== 'superadmin') return res.status(400).json({ error: 'Cannot demote yourself' });
+  if (!['user', 'platform_admin'].includes(role)) return res.status(400).json({ error: 'Invalid role' });
+  if (req.params.id === req.user.id && role !== 'platform_admin') return res.status(400).json({ error: 'Cannot demote yourself' });
   db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, req.params.id);
   res.json({ success: true });
 });

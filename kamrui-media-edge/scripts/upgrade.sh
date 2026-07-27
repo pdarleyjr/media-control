@@ -24,7 +24,8 @@ case "${1:-status}" in
       /mnt/data/recordings /mnt/data/recordings/active /mnt/data/recordings/completed \
       /mnt/data/recordings/failed /mnt/data/recordings/metadata
     cp "$HERE/camera-api/server.js" "$HERE/camera-api/recording-safety.js" \
-      "$HERE/camera-api/recording-supervisor.js" "$HERE/camera-api/camera-service-signature.js" \
+      "$HERE/camera-api/recording-supervisor.js" "$HERE/camera-api/docker-recording-runtime.js" \
+      "$HERE/camera-api/camera-service-signature.js" \
       "$HERE/camera-api/peertube-upload.js" "$HERE/camera-api/package.json" \
       "$HERE/camera-api/package-lock.json" "$STACK/camera-api/"
     ( cd "$STACK/camera-api" && npm ci --omit=dev --no-audit --no-fund )
