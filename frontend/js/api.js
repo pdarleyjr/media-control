@@ -584,7 +584,7 @@ export const api = {
   // Media downloads (by URL).
   downloads: {
     health: () => request('/downloads/health'),
-    list: () => request('/downloads'),
+    list: (options = {}) => request('/downloads', options),
     create: (url, title) => request('/downloads', { method: 'POST', body: JSON.stringify({ url, title }) }),
   },
 

@@ -3,10 +3,21 @@
 
 import { api } from '../api.js';
 import { showToast } from '../components/toast.js';
+import { readDownloadJobs } from '../services/download-status.js';
 
 let pollTimer = null;
+let onlineHandler = null;
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
-export function cleanup() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+export function cleanup() {
+  if (pollTimer) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+  if (onlineHandler) {
+    window.removeEventListener('online', onlineHandler);
+    onlineHandler = null;
+  }
+}
 
 const STATUS_COLOR = { done: 'var(--mc-success)', error: 'var(--mc-danger)', downloading: 'var(--mc-info)', pending: 'var(--mc-text-secondary)' };
 
@@ -20,12 +31,33 @@ function jobRow(j) {
 
 async function refresh() {
   const list = document.getElementById('dlList');
-  if (!list) return;
-  let jobs = [];
-  try { jobs = await api.downloads.list(); if (!Array.isArray(jobs)) jobs = []; } catch { return; }
+  if (!list) return false;
+  const refreshState = document.getElementById('dlRefreshState');
+  let jobs;
+  try {
+    jobs = await readDownloadJobs((options) => api.downloads.list(options));
+    if (refreshState) {
+      refreshState.hidden = true;
+      refreshState.textContent = '';
+    }
+  } catch {
+    if (refreshState) {
+      refreshState.hidden = false;
+      refreshState.textContent = 'Status refresh delayed — reconnecting automatically…';
+    }
+    return true;
+  }
   list.innerHTML = jobs.length ? jobs.map(jobRow).join('') : '<div class="mc-panel-empty">No downloads yet.</div>';
-  const active = jobs.some((j) => j.status === 'pending' || j.status === 'downloading');
-  if (!active) cleanup();
+  return jobs.some((j) => j.status === 'pending' || j.status === 'downloading');
+}
+
+function scheduleRefresh(delayMs = 3000) {
+  if (pollTimer) clearTimeout(pollTimer);
+  pollTimer = setTimeout(async () => {
+    pollTimer = null;
+    const shouldContinue = await refresh();
+    if (shouldContinue) scheduleRefresh();
+  }, delayMs);
 }
 
 export async function render(app) {
@@ -38,6 +70,7 @@ export async function render(app) {
           <div class="mc-studio-sub">Pull a video or audio file into your library by URL (YouTube and more).</div>
         </div>
         <div id="dlHealth" style="margin-bottom:var(--mc-space-md)"></div>
+        <div id="dlRefreshState" class="mc-panel-empty" role="status" aria-live="polite" hidden style="text-align:left;margin-bottom:var(--mc-space-sm)"></div>
         <div style="display:flex;gap:var(--mc-space-sm);margin-bottom:var(--mc-space-xl);max-width:680px">
           <input id="dlUrl" type="url" placeholder="https://…" style="flex:1;padding:10px 14px;border:1px solid var(--mc-border-medium);border-radius:var(--mc-radius-sm);background:var(--mc-surface);color:var(--mc-text-primary);font-family:var(--mc-font-family-sans)">
           <button id="dlAdd" class="mc-action-btn-primary" style="border:none;border-radius:var(--mc-radius-sm);padding:0 20px;font-weight:var(--mc-fw-semibold);cursor:pointer">Download</button>
@@ -53,7 +86,14 @@ export async function render(app) {
     else el.innerHTML = '<span class="mc-live-badge" style="background:#DCFCE7;color:var(--mc-success)">● downloader ready</span>';
   }).catch(() => {});
 
-  await refresh();
+  if (await refresh()) scheduleRefresh();
+  onlineHandler = () => {
+    if (!document.getElementById('dlList')) return;
+    refresh().then((shouldContinue) => {
+      if (shouldContinue) scheduleRefresh(250);
+    });
+  };
+  window.addEventListener('online', onlineHandler);
 
   document.getElementById('dlAdd')?.addEventListener('click', async () => {
     const input = document.getElementById('dlUrl');
@@ -63,9 +103,7 @@ export async function render(app) {
       await api.downloads.create(url);
       input.value = '';
       showToast('Download queued', 'success');
-      await refresh();
-      cleanup();
-      pollTimer = setInterval(refresh, 3000);
+      if (await refresh()) scheduleRefresh();
     } catch (e) { showToast(e.message || 'Could not queue download', 'error'); }
   });
 }
