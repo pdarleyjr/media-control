@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
+const { createDockerRecordingRuntime } = require('./docker-recording-runtime');
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_ADMIN = '/usr/local/sbin/mbfd-recording-admin';
@@ -140,6 +141,29 @@ function parseAdminStatus(stdout) {
   };
 }
 
+function buildRecordingFfmpegArgs({
+  source,
+  outputPattern,
+  segmentSeconds = 1800,
+}) {
+  const seconds = Number(segmentSeconds);
+  if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > 86_400) {
+    throw new Error('Recording segment duration is invalid');
+  }
+  return [
+    '-nostdin', '-hide_banner', '-loglevel', 'warning', '-n',
+    '-rtsp_transport', 'tcp', '-i', String(source),
+    '-map', '0:v:0', '-map', '0:a:0?',
+    '-c:v', 'copy', '-c:a', 'aac', '-ar', '48000', '-ac', '1', '-b:a', '96k',
+    '-af', 'aresample=async=1:first_pts=0',
+    '-max_muxing_queue_size', '1024',
+    '-f', 'segment', '-segment_time', String(seconds),
+    '-segment_format', 'mp4', '-reset_timestamps', '1',
+    '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
+    String(outputPattern),
+  ];
+}
+
 function createRecordingSupervisor({
   recordingRoot = '/mnt/data/recordings',
   envRoot = '/run/mbfd-camera-recording',
@@ -254,6 +278,7 @@ function createRecordingSupervisor({
   }
 
   return {
+    supervisor: 'systemd',
     startSession,
     recoverSession,
     stopSession,
@@ -262,9 +287,89 @@ function createRecordingSupervisor({
   };
 }
 
+function createDockerRecordingSupervisor({
+  recordingRoot = '/mnt/data/recordings',
+  imageRef,
+  runtime = createDockerRecordingRuntime({ imageRef }),
+} = {}) {
+  function assertIdentity({ sessionId, outputPattern, identity }) {
+    const safeId = safeSessionId(sessionId);
+    const output = assertLinuxAbsolute(outputPattern, 'Recording output pattern');
+    if (
+      !identity
+      || identity.supervisor !== 'docker'
+      || identity.backend !== 'docker'
+      || identity.sessionId !== safeId
+      || identity.outputPath !== output
+    ) {
+      throw new Error('Docker recording supervisor identity mismatch');
+    }
+    return { safeId, output };
+  }
+
+  async function startSession(options) {
+    const environment = buildSessionEnvironment({ recordingRoot, ...options });
+    const runtimeIdentity = await runtime.start({
+      sessionId: environment.MBFD_RECORDING_SESSION_ID,
+      sessionNonce: environment.MBFD_RECORDING_NONCE,
+      sourceUrl: environment.MBFD_RECORDING_SOURCE,
+      outputPattern: environment.MBFD_RECORDING_OUTPUT_PATTERN,
+      recordingRoot,
+      ffmpegArgs: buildRecordingFfmpegArgs({
+        source: environment.MBFD_RECORDING_SOURCE,
+        outputPattern: environment.MBFD_RECORDING_OUTPUT_PATTERN,
+        segmentSeconds: Number(environment.MBFD_RECORDING_SEGMENT_SECONDS),
+      }),
+    });
+    return {
+      supervisor: 'docker',
+      ...runtimeIdentity,
+    };
+  }
+
+  async function recoverSession({ sessionId, outputPattern, identity }) {
+    assertIdentity({ sessionId, outputPattern, identity });
+    const current = await runtime.inspect(identity);
+    if (current.status === 'running') {
+      return { active: true, status: current, identity };
+    }
+    if (current.status === 'stopped') {
+      return { active: false, status: current };
+    }
+    throw new Error(
+      `Docker recording ${current.status || 'unknown'} `
+      + `(${current.reason || current.error || 'unknown reason'}); refusing automatic reconciliation`
+    );
+  }
+
+  async function stopSession({ sessionId, outputPattern, identity }) {
+    assertIdentity({ sessionId, outputPattern, identity });
+    const result = await runtime.stop(identity);
+    return {
+      stopped: true,
+      alreadyStopped: result.signal === null,
+      status: result,
+    };
+  }
+
+  function cleanupSession() {
+    // Docker uses --rm and keeps no supervisor environment file.
+  }
+
+  return {
+    supervisor: 'docker',
+    startSession,
+    recoverSession,
+    stopSession,
+    cleanupSession,
+  };
+}
+
 module.exports = {
   buildSessionEnvironment,
+  buildRecordingFfmpegArgs,
   serializeEnvironment,
   parseAdminStatus,
   createRecordingSupervisor,
+  createDockerRecordingSupervisor,
 };

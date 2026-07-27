@@ -14,7 +14,11 @@ const commandModel = require('../lib/command-model');
 const deviceContract = require('../player/device-contract');
 const { createRoomSnapshot, publishRoomSnapshot } = require('../lib/room-state-broadcaster');
 const { getRoomRevision } = require('../lib/room-snapshot');
-const { createLiveTransportMirror } = require('../lib/transport-transaction');
+const {
+  TRANSPORT_ACTIONS,
+  createLiveTransportMirror,
+  createTransportTransactionCoordinator,
+} = require('../lib/transport-transaction');
 
 // Phase 2.3: workspace-scoped socket rooms + per-command permission gates.
 // Replaces the previous flat dashboardNs.emit broadcast (which leaked every
@@ -147,6 +151,58 @@ module.exports = function setupDashboardSocket(io) {
         return false;
       }
     },
+  });
+
+  const transportTransactions = createTransportTransactionCoordinator({
+    getDevice: (deviceId) => db.prepare(
+      'SELECT id, name, workspace_id FROM devices WHERE id = ?',
+    ).get(deviceId) || null,
+    listWorkspaceDevices: (workspaceId) => db.prepare(`
+      SELECT id, name, workspace_id
+      FROM devices
+      WHERE workspace_id = ?
+        AND id NOT LIKE 'live-stream-program-%'
+      ORDER BY name COLLATE NOCASE, id
+    `).all(workspaceId),
+    getDisplayState: (deviceId) => db.prepare(`
+      SELECT current_content_id, current_asset_id, slide_index, slide_count,
+             current_time, duration, paused, playback_revision, command_revision,
+             state_revision
+      FROM display_states
+      WHERE target_type = 'display' AND target_id = ?
+    `).get(deviceId) || null,
+    getLiveState: (workspaceId) => liveStreamProgramState(workspaceId),
+    getRoomRevision: (workspaceId, roomId) => getRoomRevision(
+      db,
+      workspaceId,
+      roomId || config.roomId || 'classroom-1',
+    ),
+    getContentGeneration: (contentId) => {
+      if (!contentId) return null;
+      try {
+        return db.prepare('SELECT version FROM content WHERE id = ?').get(contentId)?.version ?? null;
+      } catch (_) {
+        return null;
+      }
+    },
+    isDeviceOnline: (deviceId) => {
+      const room = deviceNs.adapter.rooms.get(deviceId);
+      return Boolean(room && room.size > 0);
+    },
+    emitToDevice: (deviceId, envelope) => {
+      deviceNs.to(deviceId).emit('device:command', envelope);
+    },
+    queueToDevice: (deviceId, envelope) => {
+      try {
+        const queue = require('../lib/command-queue');
+        return queue.queueCommand(deviceId, 'device:command', envelope);
+      } catch (_) {
+        return false;
+      }
+    },
+    ingestCommand: (values) => commandModel.ingestCommand(values),
+    createCommand: (values) => deviceContract.createCommand(values),
+    resolveAudioAuthority: (devices) => commandModel.resolveClassroomAudioAuthority(devices),
   });
 
   // Build a per-socket registrar for rate-limited control events. Each accepted
@@ -494,6 +550,65 @@ module.exports = function setupDashboardSocket(io) {
       console.log(`Whiteboard stopped on device ${device_id}`);
     });
 
+    // Canonical workspace transport path: one operator action owns one
+    // idempotency key and one shared content/revision/generation context across
+    // every classroom renderer plus the managed Live Program receiver.
+    onControl('dashboard:transport-transaction', (data, ack) => {
+      const deviceIds = [...new Set(
+        (Array.isArray(data?.device_ids) ? data.device_ids : [])
+          .filter(Boolean)
+          .map(String),
+      )];
+      if (!deviceIds.length) {
+        if (typeof ack === 'function') ack({ ok: false, reason: 'missing_device_ids', targets: [] });
+        return;
+      }
+      if (deviceIds.some((deviceId) => !canActOnDevice(socket, deviceId, 'write'))) {
+        if (typeof ack === 'function') ack({ ok: false, reason: 'forbidden', targets: [] });
+        return;
+      }
+      const firstDevice = db.prepare(
+        'SELECT workspace_id FROM devices WHERE id = ?',
+      ).get(deviceIds[0]);
+      const workspaceId = firstDevice?.workspace_id || null;
+      const payload = data?.payload && typeof data.payload === 'object'
+        ? { ...data.payload }
+        : {};
+      const result = transportTransactions.dispatch({
+        workspaceId,
+        roomId: data?.room_id || socket.roomId,
+        deviceIds,
+        action: data?.action || payload.action,
+        payload,
+        issuedBy: socket.userId,
+        idempotencyKey: data?.idempotency_key,
+        contentInstanceId: data?.content_instance_id,
+        expectedRevision: data?.expected_revision,
+        expectedGeneration: data?.expected_generation,
+      });
+      if (!result.ok) {
+        if (typeof ack === 'function') ack({ ...result, reason: result.error || 'transport_failed' });
+        return;
+      }
+      for (const deviceId of deviceIds) {
+        const target = result.targets.find((entry) => entry.device_id === deviceId);
+        auditDeviceControl(socket, 'display.transport', deviceId, {
+          type: result.action,
+          command_id: target?.command_id || null,
+          transport_transaction_id: result.transaction_id,
+          delivered: target?.delivered === true,
+          queued: target?.queued === true,
+        });
+      }
+      publishRoomSnapshot(io, {
+        workspaceId,
+        roomId: data?.room_id || socket.roomId,
+        reason: `transport:${result.action}`,
+        bump: true,
+      });
+      if (typeof ack === 'function') ack(result);
+    });
+
     onControl('dashboard:device-command', (data, ack) => {
       const { device_id } = data || {};
       if (!canActOnDevice(socket, device_id, 'write')) {
@@ -534,6 +649,55 @@ module.exports = function setupDashboardSocket(io) {
       const room = deviceNs.adapter.rooms.get(device_id);
       const commandType = String(envelope.payload.action).toLowerCase();
       const requiresAck = 1;
+      // Deployed dashboards historically sent one transport command per
+      // physical screen. Fold that short burst into one shared transaction so
+      // Live Program receives exactly one absolute command.
+      if (TRANSPORT_ACTIONS.has(commandType)) {
+        const workspaceId = workspaceIdForDevice(device_id, socket.roomWorkspaceId);
+        const result = transportTransactions.dispatchLegacyTarget({
+          workspaceId,
+          roomId: envelope.payload.room_id || socket.roomId,
+          deviceId: device_id,
+          action: commandType,
+          payload: envelope.payload,
+          issuedBy: socket.userId,
+          commandId: envelope.command_id,
+        });
+        const target = result.targets?.find((entry) => entry.device_id === device_id) || null;
+        if (!result.ok || !target) {
+          if (typeof ack === 'function') {
+            ack({
+              delivered: false,
+              reason: result.error || 'transport_failed',
+              transport_transaction: result,
+            });
+          }
+          return;
+        }
+        if (typeof ack === 'function') {
+          ack({
+            delivered: target.delivered,
+            queued: target.queued,
+            reason: target.reason || null,
+            command_id: target.command_id,
+            transport_transaction: result,
+          });
+        }
+        auditDeviceControl(socket, 'display.transport', device_id, {
+          type: result.action,
+          command_id: target.command_id,
+          transport_transaction_id: result.transaction_id,
+          delivered: target.delivered,
+          queued: target.queued,
+        });
+        publishRoomSnapshot(io, {
+          workspaceId,
+          roomId: envelope.payload.room_id || socket.roomId,
+          reason: `transport:${result.action}`,
+          bump: true,
+        });
+        return;
+      }
       if (room && room.size > 0) {
         let cmd = null;
         try { cmd = commandModel.ingestCommand({

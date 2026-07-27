@@ -15,7 +15,10 @@ const {
   acceptFilesystemNonce,
   revisionPrecondition,
 } = require('./recording-safety');
-const { createRecordingSupervisor } = require('./recording-supervisor');
+const {
+  createRecordingSupervisor,
+  createDockerRecordingSupervisor,
+} = require('./recording-supervisor');
 const { verifyServiceRequest } = require('./camera-service-signature');
 
 const app = express();
@@ -33,10 +36,15 @@ app.use(express.json({
 const CONFIG = loadConfig();
 const state = createInitialState();
 const peertube = require('./peertube-upload');
-const recordingSupervisor = createRecordingSupervisor({
-  recordingRoot: CONFIG.recordingDir,
-  envRoot: '/run/mbfd-camera-recording',
-});
+const recordingSupervisor = CONFIG.recordingBackend === 'docker'
+  ? createDockerRecordingSupervisor({
+    recordingRoot: CONFIG.recordingDir,
+    imageRef: CONFIG.recordingDockerImage,
+  })
+  : createRecordingSupervisor({
+    recordingRoot: CONFIG.recordingDir,
+    envRoot: '/run/mbfd-camera-recording',
+  });
 
 function loadConfig() {
   const env = {};
@@ -50,6 +58,10 @@ function loadConfig() {
     }
   } catch (e) {
     console.error('Failed to load camera.env:', e.message);
+  }
+  const recordingBackend = String(env.RECORDING_BACKEND || 'systemd').trim().toLowerCase();
+  if (!['systemd', 'docker'].includes(recordingBackend)) {
+    throw new Error('RECORDING_BACKEND must be "systemd" or "docker"');
   }
   return {
     port: parseInt(env.CAMERA_API_PORT || '8200', 10),
@@ -67,6 +79,8 @@ function loadConfig() {
       },
     ].filter(key => key.id && key.version && key.secret),
     recordingDir: env.RECORDING_DIR || '/mnt/data/recordings',
+    recordingBackend,
+    recordingDockerImage: String(env.RECORDING_DOCKER_IMAGE || '').trim(),
     peertubeRtmpUrl: env.PEERTUBE_RTMP_URL || '',
     peertubeStreamKey: env.PEERTUBE_STREAM_KEY || '',
     peertubeLiveVideoUuid: env.PEERTUBE_LIVE_VIDEO_UUID || '',
@@ -364,6 +378,7 @@ function monitorSupervisedRecording(sessionId, identity) {
       const recovered = await recordingSupervisor.recoverSession({
         sessionId,
         outputPattern: identity.outputPath,
+        identity,
       });
       if (recovered.active) {
         state.recordingIdentity = recovered.identity;
@@ -428,14 +443,18 @@ async function readoptRecording() {
       return;
     }
 
-    if (data.recordingIdentity.supervisor !== 'systemd') {
+    if (data.recordingIdentity.supervisor !== recordingSupervisor.supervisor) {
       state.recording = true;
       state.recordingSessionId = data.recordingSessionId;
       state.recordingStartedAt = data.recordingStartedAt || null;
       state.recordingPath = data.recordingPath || null;
       state.recordingIdentity = data.recordingIdentity;
       state.recordingState = 'unverified_legacy';
-      addError(`Recording state for ${data.recordingSessionId} is not systemd-supervised; refusing automatic adoption or signalling`);
+      addError(
+        `Recording state for ${data.recordingSessionId} uses supervisor `
+        + `${data.recordingIdentity.supervisor || 'unknown'}, but `
+        + `${recordingSupervisor.supervisor} is configured; refusing automatic adoption or signalling`
+      );
       return;
     }
 
@@ -454,9 +473,13 @@ async function readoptRecording() {
     const recovered = await recordingSupervisor.recoverSession({
       sessionId: data.recordingSessionId,
       outputPattern: data.recordingIdentity.outputPath,
+      identity: data.recordingIdentity,
     });
     if (recovered.active) {
-      console.log(`[recording-state] Re-adopting systemd-supervised recording session ${data.recordingSessionId}`);
+      console.log(
+        `[recording-state] Re-adopting ${recordingSupervisor.supervisor}-supervised `
+        + `recording session ${data.recordingSessionId}`
+      );
       state.recording = true;
       state.recordingSessionId = data.recordingSessionId;
       state.recordingState = 'recording';
@@ -867,6 +890,13 @@ app.get('/api/status', authMiddleware, async (req, res) => {
     recording_session_id: state.recordingSessionId,
     livestream_session_id: state.livestreamSessionId,
     recording_state: state.recordingState,
+    recording_backend: state.recordingIdentity?.supervisor || CONFIG.recordingBackend,
+    recording_container_name: state.recordingIdentity?.supervisor === 'docker'
+      ? state.recordingIdentity.containerName
+      : null,
+    recording_container_id: state.recordingIdentity?.supervisor === 'docker'
+      ? state.recordingIdentity.containerId
+      : null,
     stream_state: state.streamState,
     finalization_state: state.finalizationState,
     synchronization_state: state.synchronizationState,
@@ -943,13 +973,22 @@ app.post('/api/record/start', authMiddleware, commandRateLimit, async (req, res)
   const sessionNonce = crypto.randomBytes(32).toString('hex');
 
   const rtspSource = `${CONFIG.mediamtxRtsp}/annke-main`;
-  const provisionalIdentity = {
-    supervisor: 'systemd',
-    unit: `mbfd-camera-recording@${sessionId}.service`,
-    sessionId,
-    mainPid: 0,
-    outputPath: pattern,
-  };
+  const provisionalIdentity = CONFIG.recordingBackend === 'docker'
+    ? {
+      supervisor: 'docker',
+      backend: 'docker',
+      sessionId,
+      sessionNonce,
+      imageRef: CONFIG.recordingDockerImage,
+      outputPath: pattern,
+    }
+    : {
+      supervisor: 'systemd',
+      unit: `mbfd-camera-recording@${sessionId}.service`,
+      sessionId,
+      mainPid: 0,
+      outputPath: pattern,
+    };
   state.recording = true;
   state.recordingSessionId = sessionId;
   state.recordingState = 'starting';
@@ -994,6 +1033,7 @@ app.post('/api/record/start', authMiddleware, commandRateLimit, async (req, res)
         await recordingSupervisor.stopSession({
           sessionId,
           outputPattern: identity.outputPath,
+          identity,
         });
         stopped = true;
       } catch {}
@@ -1072,6 +1112,7 @@ app.post('/api/record/stop', authMiddleware, commandRateLimit, async (req, res) 
     await recordingSupervisor.stopSession({
       sessionId,
       outputPattern: identity.outputPath,
+      identity,
     });
   } catch (error) {
     // Fail closed: identity validation errors signal nothing. Restore the
@@ -1221,7 +1262,13 @@ app.post('/api/emergency-stop', authMiddleware, async (req, res) => {
       request_id: entry.requestId,
     });
   }
-  if (state.recording && (!recordingIdentity || recordingIdentity.supervisor !== 'systemd')) {
+  if (
+    state.recording
+    && (
+      !recordingIdentity
+      || recordingIdentity.supervisor !== recordingSupervisor.supervisor
+    )
+  ) {
     return res.status(409).json({
       ok: false,
       error: 'Recording supervisor identity is unavailable; refusing an unsafe emergency signal',
@@ -1235,6 +1282,7 @@ app.post('/api/emergency-stop', authMiddleware, async (req, res) => {
         ? recordingSupervisor.stopSession({
           sessionId: recordingSessionId,
           outputPattern: recordingIdentity.outputPath,
+          identity: recordingIdentity,
         })
         : Promise.resolve(),
       stopProcess(streamProc),
