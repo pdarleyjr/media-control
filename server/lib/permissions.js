@@ -14,6 +14,23 @@
 
 'use strict';
 
+const PLATFORM_ROLE_NAMES = new Set(['platform_admin', 'superadmin']);
+
+function canonicalGlobalRole(role) {
+  if (role === 'platform_admin' || role === 'superadmin') return 'platform_admin';
+  return 'user';
+}
+
+// One authoritative platform-role predicate. The legacy spelling remains
+// accepted only for the bounded migration window. Recovery tokens are
+// deliberately excluded from appliance-global administration even if a token
+// payload attempts to claim a platform role.
+function isPlatformAdminUser(user) {
+  return !!user
+    && user.auth_provider !== 'recovery'
+    && PLATFORM_ROLE_NAMES.has(user.role);
+}
+
 function canRead(req) {
   if (req.isPlatformAdmin) return true;
   if (req.orgRole === 'org_owner' || req.orgRole === 'org_admin') return true;
@@ -87,7 +104,7 @@ function requireOrgOwner(req, res, next) {
 }
 
 function requirePlatformAdmin(req, res, next) {
-  if (!req.user || req.user.role !== 'platform_admin') {
+  if (!isPlatformAdminUser(req.user)) {
     return res.status(403).json({ error: 'Platform admin required' });
   }
   next();
@@ -100,7 +117,7 @@ function requirePlatformAdmin(req, res, next) {
 // active one. Does its own DB lookups against workspace_members + organization_members.
 function canAdminWorkspace(db, user, workspace) {
   if (!user || !workspace) return false;
-  if (user.role === 'platform_admin' || user.role === 'superadmin') return true;
+  if (isPlatformAdminUser(user)) return true;
   const om = db.prepare('SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ?')
     .get(workspace.organization_id, user.id);
   if (om && (om.role === 'org_owner' || om.role === 'org_admin')) return true;
@@ -115,7 +132,7 @@ function canAdminWorkspace(db, user, workspace) {
 // where resolveTenancy is not on the request (e.g. /api/workspaces/:id/members).
 function canAccessWorkspace(db, user, workspace) {
   if (!user || !workspace) return false;
-  if (user.role === 'platform_admin' || user.role === 'superadmin') return true;
+  if (isPlatformAdminUser(user)) return true;
   const om = db.prepare('SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ?')
     .get(workspace.organization_id, user.id);
   if (om && (om.role === 'org_owner' || om.role === 'org_admin')) return true;
@@ -127,6 +144,8 @@ function canAccessWorkspace(db, user, workspace) {
 module.exports = {
   // boolean predicates
   canRead, canWrite, canAdmin, canAdminWorkspace, canAccessWorkspace, isOrgAdmin, isOrgOwner,
+  canonicalGlobalRole,
+  isPlatformAdminUser,
   // express middleware
   requireWorkspace,
   requireWorkspaceRead,

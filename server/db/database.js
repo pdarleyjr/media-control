@@ -484,6 +484,21 @@ migrateGroupSchedules();
 // updates workspace_id.
 ensureMultitenancyMigration();
 
+// A separate corrective migration is required because some production
+// databases retained legacy roles even though phase5_multitenancy_backfill was
+// already stamped. Keep this in the normal startup path, transactional, and
+// fail closed so authorization never depends on an operator editing SQLite.
+try {
+  const { applyPlatformRoleCorrection } = require('./migrations/platform-role-correction');
+  const roleCorrection = applyPlatformRoleCorrection(db);
+  if (roleCorrection.applied) {
+    console.warn('[boot] Platform role correction complete', roleCorrection.changed);
+  }
+} catch (error) {
+  console.error(`[boot] Platform role correction FAILED: ${error.message}`);
+  throw error;
+}
+
 // Phase 2.2c migration: backfill content_folders.workspace_id from owner's
 // default workspace. The ALTER lives in the migrations array above; this
 // one-shot populates the column for any rows that pre-date it.

@@ -785,7 +785,7 @@ export default {
 
     // Admin (platform admin panel)
   'admin.title': 'Amministratore di Piattaforma',
-  'admin.subtitle': 'Controlli Superadmin - visibili solo a te',
+  'admin.subtitle': 'Controlli amministratore della piattaforma - visibili solo a te',
   'admin.access_denied': 'Accesso Negato',
   'admin.access_denied_desc': 'È richiesto l\'accesso come amministratore di piattaforma.',
   'admin.all_users': 'Tutti gli Utenti',
@@ -802,8 +802,7 @@ export default {
   'admin.col.monthly': 'Mensile',
   'admin.col.yearly': 'Annuale',
   'admin.role.user': 'Utente',
-  'admin.role.admin': 'Admin',
-  'admin.role.superadmin': 'Superadmin',
+  'admin.role.platform_admin': 'Amministratore della piattaforma',
   'admin.remove': 'Rimuovi',
   'admin.owner': 'Proprietario',
   'admin.confirm': 'Confermi?',

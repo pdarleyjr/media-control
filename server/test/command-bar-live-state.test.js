@@ -20,11 +20,11 @@ test('operator starts in one click and controls only the three fixed composition
   const dock = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'js', 'views', 'media-control', 'action-dock.js'), 'utf8');
   const commandBar = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'js', 'views', 'media-control', 'command-bar.js'), 'utf8');
   const send = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'js', 'views', 'media-control', 'send.js'), 'utf8');
-  assert.match(api, /prepare: \(\) => request\('\/live-stream\/prepare'/);
+  assert.doesNotMatch(api, /request\('\/live-stream\/prepare'/);
   assert.match(api, /operatorState: \(\) => request\('\/live-stream\/operator-state'/);
-  // Compatibility APIs remain for rolling deployments, but no active
-  // instructor surface may require or open the old production-plan wizard.
-  assert.match(api, /productionPlan: \(body\) => request\('\/live-stream\/production-plan'/);
+  // Compatibility routes remain server-side for rolling deployments, but no
+  // active instructor client surface carries those calls.
+  assert.doesNotMatch(api, /request\('\/live-stream\/production-plan'/);
   assert.doesNotMatch(dock, /data-dock="prepare-live"|openPrepareLiveProductionModal|programPrepared/);
   assert.doesNotMatch(commandBar, /data-launch="live-prepare"|prepareLiveProgram\(/);
   assert.match(dock, /api\.liveStream\.operatorState\(\)/);

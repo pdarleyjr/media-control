@@ -11,8 +11,7 @@ export async function render(container) {
   let user;
   try { user = await api.getMe(); localStorage.setItem('user', JSON.stringify(user)); }
   catch { user = JSON.parse(localStorage.getItem('user') || '{}'); }
-  const isSuperAdmin = isPlatformAdmin(user);
-  const isAdmin = user.role === 'admin' || isSuperAdmin;
+  const canManagePlatform = isPlatformAdmin(user);
 
   container.innerHTML = `
     <div class="page-header">
@@ -52,13 +51,13 @@ export async function render(container) {
       `}
     </div>
 
-    ${isAdmin ? `
+    ${canManagePlatform ? `
     <div class="settings-section">
       <h3>${t('settings.license')}</h3>
       <div id="licenseSection"><p style="color:var(--text-muted);font-size:13px">${t('settings.license_mit')}</p></div>
     </div>
 
-    ${isSuperAdmin ? `<p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">${t('settings.platform_admin_link')} <a href="#/admin" style="color:var(--accent)">${t('nav.admin')}</a> ${t('settings.platform_admin_page_suffix')}</p>` : ''}
+    <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">${t('settings.platform_admin_link')} <a href="#/admin" style="color:var(--accent)">${t('nav.admin')}</a> ${t('settings.platform_admin_page_suffix')}</p>
 
     <div class="settings-section">
       <h3>${t('settings.user_management')}</h3>
@@ -161,7 +160,7 @@ export async function render(container) {
     </div>
   `;
 
-  if (isAdmin) {
+  if (canManagePlatform) {
     loadUsers();
     loadWhiteLabel();
 
@@ -426,7 +425,7 @@ async function loadUsers() {
                 <span style="background:var(--bg-primary);padding:2px 8px;border-radius:10px;font-size:11px">${u.auth_provider}</span>
               </td>
               <td style="padding:10px 12px">
-                <span style="color:${u.role === 'admin' ? 'var(--accent)' : 'var(--text-secondary)'}">${u.role}</span>
+                <span style="color:${isPlatformAdmin(u) ? 'var(--accent)' : 'var(--text-secondary)'}">${u.role === 'platform_admin' ? t('admin.role.platform_admin') : t('admin.role.user')}</span>
               </td>
               <td style="padding:10px 12px;white-space:nowrap">
                 ${u.auth_provider === 'local' && u.id !== currentUser.id ? `<button class="btn btn-secondary btn-sm reset-user-pw-btn" data-user-id="${u.id}" data-user-email="${u.email}" style="margin-right:4px">${t('settings.user.reset_password')}</button>` : ''}

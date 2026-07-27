@@ -8,6 +8,7 @@ const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 const { db } = require('../db/database');
 const { ensurePrimaryWorkspaceMembership } = require('../lib/primary-workspace');
+const { canonicalGlobalRole } = require('../lib/permissions');
 
 const ADMIN_SYNC_TOKEN = process.env.MBFD_SYNC_TOKEN;
 
@@ -18,8 +19,6 @@ const ADMIN_SYNC_TOKEN = process.env.MBFD_SYNC_TOKEN;
 // privilege-escalation footgun. The real caller (MBFD Hub's SyncToScreentinker
 // observer) always sends an explicit 'platform_admin' for admins it mirrors, so
 // this safe default changes nothing for the legitimate flow.
-const ALLOWED_SYNC_ROLES = new Set(['user', 'admin', 'superadmin', 'platform_admin']);
-
 function requireBearer(req, res, next) {
   if (!ADMIN_SYNC_TOKEN) {
     return res.status(503).json({ error: 'Sync endpoint not configured: MBFD_SYNC_TOKEN env var not set' });
@@ -46,7 +45,7 @@ router.post('/users/sync', requireBearer, (req, res) => {
   if (password.length < 4) return res.status(400).json({ error: 'password too short (min 4)' });
 
   const normalizedEmail = String(email).toLowerCase().trim();
-  const normalizedRole = ALLOWED_SYNC_ROLES.has(role) ? role : 'user';
+  const normalizedRole = canonicalGlobalRole(role);
   const displayName = (name && String(name).trim()) || normalizedEmail.split('@')[0];
   const passwordHash = bcrypt.hashSync(password, 10);
 

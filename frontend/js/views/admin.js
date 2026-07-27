@@ -64,13 +64,12 @@ async function loadUsers() {
               <td style="padding:8px">
                 <select class="input" style="max-width:120px;width:100%;background:var(--bg-input);font-size:12px;padding:4px" data-role-user="${u.id}">
                   <option value="user" ${u.role === 'user' ? 'selected' : ''}>${t('admin.role.user')}</option>
-                  <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>${t('admin.role.admin')}</option>
-                  <option value="superadmin" ${u.role === 'superadmin' ? 'selected' : ''}>${t('admin.role.superadmin')}</option>
+                  <option value="platform_admin" ${u.role === 'platform_admin' ? 'selected' : ''}>${t('admin.role.platform_admin')}</option>
                 </select>
               </td>
               <td style="padding:8px;white-space:nowrap">
                 ${u.auth_provider === 'local' && u.id !== currentUser.id ? `<button class="btn btn-secondary btn-sm" data-reset-pw-user="${u.id}" data-user-email="${u.email}" style="margin-right:4px">${t('admin.reset_password')}</button>` : ''}
-                ${u.role !== 'superadmin' ? `<button class="btn btn-danger btn-sm" data-delete-user="${u.id}">${t('admin.remove')}</button>` : `<span style="color:var(--text-muted);font-size:11px">${t('admin.owner')}</span>`}
+                ${u.role !== 'platform_admin' ? `<button class="btn btn-danger btn-sm" data-delete-user="${u.id}">${t('admin.remove')}</button>` : `<span style="color:var(--text-muted);font-size:11px">${t('admin.owner')}</span>`}
               </td>
             </tr>
           `).join('')}

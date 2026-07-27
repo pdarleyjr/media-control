@@ -281,7 +281,7 @@ test('client, edge and nginx preserve the signed request contract', () => {
   assert.match(nginx, /proxy_pass http:\/\/kamrui_api;/);
   assert.match(nginx, /limit_except GET POST PATCH DELETE/);
   assert.match(routes, /getDeletionImpact\(req\.params\.id, \{ operatorId: req\.user\.id \}\)/);
-  assert.match(routes, /requireGlobalCameraAdmin/);
+  assert.match(routes, /requirePlatformAdmin/);
   assert.match(contract, /Unix timestamp in decimal milliseconds/);
   assert.match(contract, /exact raw request-body bytes/);
 });

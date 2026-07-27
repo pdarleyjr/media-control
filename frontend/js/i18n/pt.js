@@ -749,7 +749,7 @@ export default {
 
   // Admin
   'admin.title': 'Administração da plataforma',
-  'admin.subtitle': 'Controles de superadmin - apenas você pode ver isso',
+  'admin.subtitle': 'Controles de administrador da plataforma - apenas você pode ver isso',
   'admin.access_denied': 'Acesso negado',
   'admin.access_denied_desc': 'Acesso de admin da plataforma necessário.',
   'admin.all_users': 'Todos os usuários',
@@ -766,8 +766,7 @@ export default {
   'admin.col.monthly': 'Mensal',
   'admin.col.yearly': 'Anual',
   'admin.role.user': 'Usuário',
-  'admin.role.admin': 'Admin',
-  'admin.role.superadmin': 'Superadmin',
+  'admin.role.platform_admin': 'Administrador da plataforma',
   'admin.remove': 'Remover',
   'admin.owner': 'Proprietário',
   'admin.confirm': 'Confirmar?',
