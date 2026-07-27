@@ -1,6 +1,7 @@
 # cameras.mbfdhub.com nginx template — MBFD public camera proxy (GMKtec)
-# SECURITY: live file has camera API token injected (mode 0600). Template uses
-# __CAMERA_API_TOKEN__ placeholder. Deploy injects the value + sets mode 0600.
+# SECURITY: the live token is injected at render time (mode 0600). This
+# template contains only the placeholder token marker, never the secret.
+# Render with cameras-proxy/render-config.sh from a protected runtime source.
 # CRITICAL HLS: MediaMTX cookie-check redirect drops /hls/ prefix. proxy_redirect
 # rewrites it back. absolute_redirect off + port_in_redirect off ensure the
 # redirect is RELATIVE (no http:// scheme or :8120 port leaks to the browser).
