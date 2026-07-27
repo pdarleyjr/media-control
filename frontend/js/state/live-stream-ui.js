@@ -39,6 +39,36 @@ export function extractLiveError(errOrStatus) {
   return { code, message: message || code };
 }
 
+// Derives the actual capability reason a livestream cannot start from the
+// publisher / compositor / camera_edge fields of the operator-state payload.
+// Never references the retired AI Director; surfaces the concrete blocker so
+// the operator can act on it (camera, PeerTube, duplicate publisher, OBS
+// compositor). Falls back to a backend error message when present.
+export function capabilityStartReason(c, data, lastErr) {
+  const publisher = c && c.publisher && typeof c.publisher === 'object' ? c.publisher : null;
+  const cameraEdge = c && c.camera_edge && typeof c.camera_edge === 'object' ? c.camera_edge : null;
+  const compositor = c && c.compositor && typeof c.compositor === 'object' ? c.compositor : null;
+  const publisherMode = (publisher && publisher.mode) || c.publisher_mode || null;
+
+  // A publisher is already active on the other path (direct vs fixed).
+  if ((publisher && publisher.active === true) || (cameraEdge && cameraEdge.livestreaming === true)) {
+    return 'Direct publisher already active';
+  }
+  // Fixed compositor path requires the OBS compositor to be available.
+  if (publisherMode === 'fixed_compositor' && compositor && compositor.available === false) {
+    return 'OBS compositor unavailable';
+  }
+  // Camera edge is the program source for the direct path and the compositor
+  // camera input; offline camera blocks both publisher modes.
+  if ((cameraEdge && cameraEdge.camera_online === false) || c.obs_available === false) {
+    return 'Camera unavailable';
+  }
+  if (c.peertube_configured === false) return 'PeerTube not configured';
+  if (c.peertube_reachable === false) return 'PeerTube unreachable';
+  if (lastErr && lastErr.message) return lastErr.message;
+  return 'Livestream start is blocked by current capabilities';
+}
+
 export function deriveLiveLadder(status, { phase = null } = {}) {
   if (phase === 'preparing') return { state: LIVE_LADDER.PREPARING, canStart: false, reason: 'Preparing program…' };
   if (phase === 'starting') return { state: LIVE_LADDER.STARTING, canStart: false, reason: 'Starting stream…' };
@@ -78,7 +108,7 @@ export function deriveLiveLadder(status, { phase = null } = {}) {
   }
 
   if (c.obs_available === false || (data && data.obs === false)) {
-    return { state: LIVE_LADDER.OBS_UNAVAILABLE, canStart: false, reason: 'OBS is unavailable' };
+    return { state: LIVE_LADDER.OBS_UNAVAILABLE, canStart: false, reason: capabilityStartReason(c, data, null) };
   }
 
   const prepared = c.program_prepared === true
@@ -97,9 +127,7 @@ export function deriveLiveLadder(status, { phase = null } = {}) {
 
   const operatorAllowed = c.operator_start_allowed;
   if (operatorAllowed === false) {
-    const reason = lastErr?.message
-      || 'Operator stream start is disabled on the AI Director'
-      || 'Starting cannot succeed right now';
+    const reason = capabilityStartReason(c, data, lastErr);
     return { state: LIVE_LADDER.FAILED, canStart: false, reason, error: lastErr };
   }
 

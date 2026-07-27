@@ -29,6 +29,62 @@ describe('live-stream-ui ladder', () => {
     assert.match(String(ladder.reason), /disabled|Start|stream/i);
   });
 
+  it('reports OBS compositor unavailable for fixed_compositor blocker (no AI Director text)', () => {
+    const ladder = deriveLiveLadder({
+      publisher: { mode: 'fixed_compositor', active: false },
+      camera_edge: { camera_online: true, livestreaming: false },
+      compositor: { available: false, scene: 'MBFD_CAMERA_ONLY' },
+      capabilities: {
+        peertube_configured: true,
+        peertube_reachable: true,
+        managed_receiver_online: true,
+        obs_available: false,
+        program_prepared: false,
+        program_scene_safe: true,
+        operator_start_allowed: false,
+        publisher_mode: 'fixed_compositor',
+        publisher_ready: false,
+        last_error_code: null,
+        last_error_message: null,
+      },
+    });
+    assert.equal(ladder.canStart, false);
+    assert.equal(ladder.reason, 'OBS compositor unavailable');
+    assert.doesNotMatch(String(ladder.reason), /AI Director/i);
+  });
+
+  it('reports camera unavailable when camera edge is offline', () => {
+    const ladder = deriveLiveLadder({
+      publisher: { mode: 'direct_camera', active: false },
+      camera_edge: { camera_online: false, livestreaming: false },
+      capabilities: {
+        peertube_configured: true,
+        peertube_reachable: true,
+        managed_receiver_online: true,
+        obs_available: false,
+        operator_start_allowed: false,
+      },
+    });
+    assert.equal(ladder.canStart, false);
+    assert.equal(ladder.reason, 'Camera unavailable');
+  });
+
+  it('reports direct publisher already active when the other path is publishing', () => {
+    const ladder = deriveLiveLadder({
+      publisher: { mode: 'fixed_compositor', active: false },
+      camera_edge: { camera_online: true, livestreaming: true },
+      capabilities: {
+        peertube_configured: true,
+        peertube_reachable: true,
+        managed_receiver_online: true,
+        obs_available: true,
+        operator_start_allowed: false,
+      },
+    });
+    assert.equal(ladder.canStart, false);
+    assert.equal(ladder.reason, 'Direct publisher already active');
+  });
+
   it('reports on air from director stream_active', () => {
     const ladder = deriveLiveLadder({
       ai_director: { data: { stream_active: true } },
