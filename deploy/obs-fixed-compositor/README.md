@@ -10,8 +10,10 @@ three program scenes:
 
 The profile is 1920 x 1080 at 30 fps, uses a measured hardware H.264 encoder, a
 two-second keyframe interval, and AAC audio at 48 kHz. OBS logs and systemd
-journal output are bounded. The WebSocket listener is authenticated and must be
-bound to loopback or one specific private address.
+journal output are bounded. The WebSocket listener is authenticated and
+IPv4-only. The host firewall must allow port 4455 only from loopback and the
+exact private Media Control container subnet; it must reject LAN, Tailscale,
+and public ingress.
 
 ## Protected runtime configuration
 
@@ -23,6 +25,11 @@ JavaScript, printed in deployment output, or passed as command-line arguments.
 Set `OBS_NODE_BIN` to the measured absolute path returned by the host's managed
 Node.js installation; the service deliberately does not assume
 `/usr/bin/node`.
+Set `OBS_WEBSOCKET_URL` to the private host bridge address reachable from the
+Media Control container, then enforce that exact source subnet in the host
+firewall. Installed OBS WebSocket 5.x does not implement the obsolete
+`server_bind_address` configuration key, so firewall enforcement is mandatory
+and must be verified before enabling the service.
 
 Before selecting an encoder, inspect and benchmark the target host. Set
 `OBS_H264_ENCODER` to the working OBS hardware encoder ID for that host (for
