@@ -13,7 +13,11 @@ const config = require('../config');
 const { getOfficePdf, isConvertibleOfficeMime } = require('./doc-pdf');
 
 const PDF_MIME = 'application/pdf';
-const DEFAULT_DPI = Math.max(96, Math.min(360, parseInt(process.env.DOC_RENDER_DPI, 10) || 216));
+// 144 DPI renders a standard 4:3 PowerPoint page at 1440x1080: native
+// 1080-line output without retaining oversized decoded PNG surfaces in every
+// Chromium renderer on the five-display P3. Operators can still override this
+// for a higher-resolution installation with DOC_RENDER_DPI.
+const DEFAULT_DPI = Math.max(96, Math.min(360, parseInt(process.env.DOC_RENDER_DPI, 10) || 144));
 const PDFINFO_TIMEOUT_MS = parseInt(process.env.DOC_PDFINFO_TIMEOUT_MS, 10) || 15000;
 const RENDER_TIMEOUT_MS = parseInt(process.env.DOC_RENDER_TIMEOUT_MS, 10) || 60000;
 

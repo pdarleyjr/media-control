@@ -2,11 +2,16 @@ const assert = require('assert');
 const test = require('node:test');
 
 const {
+  DEFAULT_DPI,
   clampPage,
   isDocumentMime,
   parsePdfInfo,
   pageCacheBasename,
 } = require('../lib/doc-render');
+
+test('document rendering defaults to a 1080-line-safe DPI', () => {
+  assert.equal(DEFAULT_DPI, 144);
+});
 
 test('isDocumentMime accepts PDF and Office/ODF documents only', () => {
   assert.equal(isDocumentMime('application/pdf'), true);
