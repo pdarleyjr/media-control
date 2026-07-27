@@ -266,3 +266,22 @@ test('camera API, installer and unit use the independent recording supervisor co
   assert.doesNotMatch(install, /docker\.sock|NOPASSWD:\s*ALL/);
   assert.doesNotMatch(upgrade, /docker\.sock|NOPASSWD:\s*ALL/);
 });
+
+test('camera API service permits only the allowlisted sudo recording broker to elevate', () => {
+  const unit = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'kamrui-media-edge', 'systemd', 'mbfd-camera-api.service'),
+    'utf8'
+  );
+  const install = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'kamrui-media-edge', 'scripts', 'install.sh'),
+    'utf8'
+  );
+
+  assert.match(unit, /^NoNewPrivileges=false$/m);
+  assert.doesNotMatch(unit, /^NoNewPrivileges=true$/m);
+  assert.match(
+    install,
+    /peter ALL=\(root\) NOPASSWD: \/usr\/local\/sbin\/mbfd-recording-admin \*/
+  );
+  assert.doesNotMatch(install, /NOPASSWD:\s*ALL/);
+});

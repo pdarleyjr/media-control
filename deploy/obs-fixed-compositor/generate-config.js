@@ -193,6 +193,7 @@ function collection(cameraUrl, receiverUrl) {
       buffering_mb: 8,
       clear_on_media_end: false,
       close_when_inactive: false,
+      ffmpeg_options: 'rtsp_transport=tcp',
       input: cameraUrl,
       is_local_file: false,
       local_file: '',
@@ -255,23 +256,8 @@ function collection(cameraUrl, receiverUrl) {
         sceneItem(CAMERA_SOURCE, 1, cameraFull),
         sceneItem(CONTENT_SOURCE, 2, pip),
       ]),
-      {
-        balance: 0.5,
-        enabled: true,
-        flags: 0,
-        hotkeys: {},
-        id: 'cut_transition',
-        mixers: 0,
-        monitoring_type: 0,
-        name: 'Cut',
-        private_settings: {},
-        settings: {},
-        sync: 0,
-        versioned_id: 'cut_transition',
-        volume: 1,
-      },
     ],
-    transitions: [{ duration: 0, id: 1, name: 'Cut' }],
+    transitions: [],
   };
 }
 
@@ -334,10 +320,6 @@ function main() {
   }
 
   const websocketPort = integer('OBS_WEBSOCKET_PORT', 4455, 1024, 65535);
-  const websocketBind = String(process.env.OBS_WEBSOCKET_BIND || '127.0.0.1').trim();
-  if (!isPrivateAddress(websocketBind) || websocketBind === '0.0.0.0' || websocketBind === '::') {
-    throw new Error('OBS_WEBSOCKET_BIND must be a specific private or loopback address');
-  }
 
   const hardwareEncoder = required('OBS_H264_ENCODER');
   if (!hardwareEncoder || /x264|software/i.test(hardwareEncoder)) {
@@ -378,7 +360,6 @@ function main() {
       alerts_enabled: false,
       auth_required: true,
       first_load: false,
-      server_bind_address: websocketBind,
       server_enabled: true,
       server_password: websocketPassword,
       server_port: websocketPort,
