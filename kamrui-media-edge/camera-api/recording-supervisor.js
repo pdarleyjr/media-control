@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const fs = require('fs');
+const net = require('net');
 const path = require('path');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
@@ -9,6 +10,8 @@ const { createDockerRecordingRuntime } = require('./docker-recording-runtime');
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_ADMIN = '/usr/local/sbin/mbfd-recording-admin';
+const DEFAULT_BROKER_SOCKET =
+  process.env.MBFD_RECORDING_BROKER_SOCKET || '/run/mbfd-recording-broker/broker.sock';
 const SESSION_PATTERN = /^ses_[A-Za-z0-9_-]+$/;
 
 function safeSessionId(value) {
@@ -141,6 +144,35 @@ function parseAdminStatus(stdout) {
   };
 }
 
+/**
+ * Parse the broker's reconcile response into a classification result.
+ * The broker returns text lines: Classification=, Unit=, ActiveState=, etc.
+ */
+function parseReconcileStatus(stdout) {
+  const fields = {};
+  for (const line of String(stdout || '').split(/\r?\n/)) {
+    const separator = line.indexOf('=');
+    if (separator > 0) fields[line.slice(0, separator)] = line.slice(separator + 1);
+  }
+  const classification = String(fields.Classification || '').trim();
+  const valid = [
+    'ACTIVE', 'FINALIZING', 'RECOVERABLE', 'ORPHANED_METADATA',
+    'FAILED_WITH_MEDIA', 'FAILED_WITHOUT_MEDIA', 'UNKNOWN',
+  ];
+  if (!valid.includes(classification)) {
+    throw new Error(`Recording reconcile returned an unknown classification: ${classification}`);
+  }
+  return {
+    classification,
+    unit: fields.Unit || '',
+    activeState: fields.ActiveState || '',
+    subState: fields.SubState || '',
+    mainPid: Number(fields.MainPID || 0),
+    fragmentCount: Number(fields.FragmentCount || 0),
+    fragmentBytes: Number(fields.FragmentBytes || 0),
+  };
+}
+
 function buildRecordingFfmpegArgs({
   source,
   outputPattern,
@@ -164,15 +196,54 @@ function buildRecordingFfmpegArgs({
   ];
 }
 
+/**
+ * Send a bounded JSON request to the root-owned recording broker over a
+ * peer-verified Unix socket (SO_PEERCRED).  No sudo, no shell, no arbitrary
+ * executable.  The broker validates the session ID, environment, systemd unit
+ * identity, process executable, and nonce before performing any action.
+ *
+ * Returns a text response compatible with parseAdminStatus, or throws on error.
+ */
+function sendBrokerRequest(socketPath, { action, session_id, environment = null }) {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(socketPath);
+    let response = '';
+    let connected = false;
+    socket.setTimeout(10_000);
+    socket.on('connect', () => {
+      connected = true;
+      const request = JSON.stringify({ action, session_id, environment }) + '\n';
+      socket.write(request);
+    });
+    socket.on('data', (data) => {
+      response += data.toString('utf8');
+      if (response.includes('\n')) socket.end();
+    });
+    socket.on('timeout', () => {
+      socket.destroy();
+      reject(new Error('recording broker request timed out'));
+    });
+    socket.on('error', (err) => {
+      if (!connected) reject(new Error(`recording broker unavailable: ${err.message}`));
+      else reject(err);
+    });
+    socket.on('close', () => {
+      if (response.startsWith('Error=')) {
+        reject(new Error(response.slice('Error='.length).trim()));
+      } else {
+        resolve({ stdout: response });
+      }
+    });
+  });
+}
+
 function createRecordingSupervisor({
   recordingRoot = '/mnt/data/recordings',
   envRoot = '/run/mbfd-camera-recording',
   adminPath = DEFAULT_ADMIN,
-  runAdmin = async (action, sessionId) => execFileAsync(
-    '/usr/bin/sudo',
-    ['-n', adminPath, action, safeSessionId(sessionId)],
-    { timeout: action === 'stop' ? 30_000 : 10_000, maxBuffer: 64 * 1024 }
-  ),
+  brokerSocket = DEFAULT_BROKER_SOCKET,
+  runAdmin = async (action, sessionId, environment = null) =>
+    sendBrokerRequest(brokerSocket, { action, session_id: sessionId, environment }),
   pollIntervalMs = 250,
   startTimeoutMs = 10_000,
   stopTimeoutMs = 25_000,
@@ -209,9 +280,10 @@ function createRecordingSupervisor({
     const environment = buildSessionEnvironment({ recordingRoot, ...options });
     const safeId = environment.MBFD_RECORDING_SESSION_ID;
     const envPath = envPathFor(safeId);
-    atomicWriteEnvironment(envPath, environment);
     try {
-      await runAdmin('start', safeId);
+      // The broker validates the environment and atomically writes the root-owned
+      // env file.  The unprivileged camera API never writes recording secrets.
+      await runAdmin('start', safeId, environment);
       const running = await waitFor(safeId, (item) => item.active, startTimeoutMs);
       assertOutput(running, environment.MBFD_RECORDING_OUTPUT_PATTERN);
       return {
@@ -228,9 +300,9 @@ function createRecordingSupervisor({
         stopped = true;
       } catch {}
       if (stopped) {
-        try { fs.rmSync(envPath, { force: true }); } catch {}
+        try { await runAdmin('finalize', safeId); } catch {}
       } else {
-        // The helper could be unavailable while systemd accepted the start.
+        // The broker could be unavailable while systemd accepted the start.
         // Preserve the validated environment so startup recovery can prove and
         // reconcile the exact unit instead of orphaning an unmanageable FFmpeg.
         error.recordingMayBeActive = true;
@@ -263,18 +335,24 @@ function createRecordingSupervisor({
     const safeId = safeSessionId(sessionId);
     const current = await status(safeId);
     if (!current.active) {
-      try { fs.rmSync(envPathFor(safeId), { force: true }); } catch {}
+      try { await runAdmin('finalize', safeId); } catch {}
       return { stopped: true, alreadyStopped: true, status: current };
     }
     assertOutput(current, outputPattern);
     await runAdmin('stop', safeId);
     const stopped = await waitFor(safeId, (item) => !item.active, stopTimeoutMs);
-    try { fs.rmSync(envPathFor(safeId), { force: true }); } catch {}
+    try { await runAdmin('finalize', safeId); } catch {}
     return { stopped: true, alreadyStopped: false, status: stopped };
   }
 
-  function cleanupSession(sessionId) {
-    fs.rmSync(envPathFor(sessionId), { force: true });
+  async function cleanupSession(sessionId) {
+    try { await runAdmin('finalize', safeSessionId(sessionId)); } catch {}
+  }
+
+  async function reconcile(sessionId) {
+    const safeId = safeSessionId(sessionId);
+    const result = await runAdmin('reconcile', safeId);
+    return parseReconcileStatus(result?.stdout);
   }
 
   return {
@@ -284,6 +362,7 @@ function createRecordingSupervisor({
     stopSession,
     cleanupSession,
     status,
+    reconcile,
   };
 }
 
@@ -352,6 +431,10 @@ function createDockerRecordingSupervisor({
     };
   }
 
+  async function reconcile(sessionId) {
+    throw new Error('Docker recording supervisor does not support broker reconcile');
+  }
+
   function cleanupSession() {
     // Docker uses --rm and keeps no supervisor environment file.
   }
@@ -362,6 +445,8 @@ function createDockerRecordingSupervisor({
     recoverSession,
     stopSession,
     cleanupSession,
+    status: async () => { throw new Error('Docker supervisor has no broker status'); },
+    reconcile,
   };
 }
 
@@ -370,6 +455,8 @@ module.exports = {
   buildRecordingFfmpegArgs,
   serializeEnvironment,
   parseAdminStatus,
+  parseReconcileStatus,
+  sendBrokerRequest,
   createRecordingSupervisor,
   createDockerRecordingSupervisor,
 };

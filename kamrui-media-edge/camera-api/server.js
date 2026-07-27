@@ -390,7 +390,7 @@ function monitorSupervisedRecording(sessionId, identity) {
       state.recordingState = 'stopped';
       state.recordingProcess = null;
       state.recordingExitPoll = null;
-      recordingSupervisor.cleanupSession(sessionId);
+      try { await recordingSupervisor.cleanupSession(sessionId); } catch {}
       finalizeRecording(sessionId).catch(e => {
         addError(`Finalization of supervised session ${sessionId} failed: ${e.message}`);
       });
@@ -419,7 +419,7 @@ async function readoptRecording() {
       state.recordingState = 'finalizing';
       state.finalizationState = 'finalizing';
       console.log(`[recording-state] Resuming interrupted finalization for ${data.recordingSessionId}`);
-      recordingSupervisor.cleanupSession(data.recordingSessionId);
+      try { await recordingSupervisor.cleanupSession(data.recordingSessionId); } catch {}
       finalizeRecording(data.recordingSessionId).catch((error) => {
         addError(`Recovery finalization of ${data.recordingSessionId} failed: ${error.message}`);
       });
@@ -458,7 +458,7 @@ async function readoptRecording() {
       return;
     }
 
-    // Block a second start before consulting the helper. If systemd or sudo is
+    // Block a second start before consulting the broker. If the broker is
     // temporarily unavailable, the persisted unit remains authoritative and
     // requires reconciliation instead of being treated as idle.
     state.recording = true;
@@ -470,6 +470,73 @@ async function readoptRecording() {
     state.recordingIdentity = data.recordingIdentity;
     state.recordingProcess = null;
 
+    // Attempt authoritative reconciliation through the broker's 7-way
+    // classification: ACTIVE, FINALIZING, RECOVERABLE, ORPHANED_METADATA,
+    // FAILED_WITH_MEDIA, FAILED_WITHOUT_MEDIA, UNKNOWN.
+    let reconciliation = null;
+    if (typeof recordingSupervisor.reconcile === 'function') {
+      try {
+        reconciliation = await recordingSupervisor.reconcile(data.recordingSessionId);
+      } catch (reconcileError) {
+        console.error(
+          `[recording-state] Reconcile for ${data.recordingSessionId} failed: ${reconcileError.message}`
+        );
+      }
+    }
+
+    if (reconciliation) {
+      console.log(
+        `[recording-state] Reconcile classified ${data.recordingSessionId} as ${reconciliation.classification}`
+      );
+      switch (reconciliation.classification) {
+        case 'ACTIVE': {
+          const recovered = await recordingSupervisor.recoverSession({
+            sessionId: data.recordingSessionId,
+            outputPattern: data.recordingIdentity.outputPath,
+            identity: data.recordingIdentity,
+          });
+          state.recording = true;
+          state.recordingState = 'recording';
+          state.finalizationState = data.finalizationState || 'idle';
+          state.recordingStartedAt = data.recordingStartedAt;
+          state.recordingPath = data.recordingPath;
+          state.recordingIdentity = recovered.identity;
+          monitorSupervisedRecording(data.recordingSessionId, recovered.identity);
+          state.recordingProcess = null;
+          break;
+        }
+        case 'ORPHANED_METADATA':
+        case 'FAILED_WITHOUT_MEDIA':
+          // No process, no unit, no recoverable media. Clear the stale state.
+          console.log(`[recording-state] Clearing stale ${reconciliation.classification} for ${data.recordingSessionId}`);
+          try { await recordingSupervisor.cleanupSession(data.recordingSessionId); } catch {}
+          clearRecordingState();
+          state.recording = false;
+          state.recordingState = 'idle';
+          break;
+        case 'RECOVERABLE':
+        case 'FAILED_WITH_MEDIA':
+          // Inactive but media fragments exist. Finalize to recover them.
+          console.log(`[recording-state] Finalizing ${reconciliation.classification} for ${data.recordingSessionId}`);
+          try { await recordingSupervisor.cleanupSession(data.recordingSessionId); } catch {}
+          clearRecordingState();
+          finalizeRecording(data.recordingSessionId).catch(e => {
+            addError(`Finalization of ${reconciliation.classification} session ${data.recordingSessionId} failed: ${e.message}`);
+          });
+          break;
+        case 'UNKNOWN':
+        case 'FINALIZING':
+        default:
+          // Unknown or finalizing — leave in recovery_required for operator.
+          addError(
+            `Recording ${data.recordingSessionId} classified as ${reconciliation.classification}; requires operator reconciliation`
+          );
+          break;
+      }
+      return;
+    }
+
+    // Fallback: use the existing recoverSession when reconcile is unavailable.
     const recovered = await recordingSupervisor.recoverSession({
       sessionId: data.recordingSessionId,
       outputPattern: data.recordingIdentity.outputPath,
@@ -491,7 +558,7 @@ async function readoptRecording() {
       state.recordingProcess = null;
     } else {
       console.log(`[recording-state] Recording unit ${data.recordingSessionId} is inactive — finalizing`);
-      recordingSupervisor.cleanupSession(data.recordingSessionId);
+      try { await recordingSupervisor.cleanupSession(data.recordingSessionId); } catch {}
       clearRecordingState();
       finalizeRecording(data.recordingSessionId).catch(e => {
         addError(`Finalization of orphaned session ${data.recordingSessionId} failed: ${e.message}`);

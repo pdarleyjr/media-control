@@ -47,11 +47,27 @@ and stop both fail closed if that identity changes or Docker is unavailable.
 - UFW: deny incoming by default; SSH from Tailscale + LAN; media ports 8200/8888
   only from the GMKtec LAN address.
 - Least-privilege sudo via `/usr/local/sbin/mbfd-media-admin` (root-owned,
-  allowlisted subcommands only).
+  allowlisted subcommands only, operator use only).
+- Recording administration uses a **root-owned recording broker** reached
+  through a peer-verified Unix socket (`/run/mbfd-recording-broker/broker.sock`).
+  systemd socket activation creates the socket with `SocketGroup=mbfd-camera-api`
+  and `SocketMode=0660`; the broker verifies `SO_PEERCRED` on every connection
+  and rejects any peer whose UID is not the dedicated `mbfd-camera-api` system
+  user. The broker accepts a bounded JSON protocol with an exact allowlist of
+  `start`, `stop`, `status`, `reconcile`, and `finalize` operations. No shell,
+  no arbitrary executable, no arbitrary path, no arbitrary environment, no
+  wildcard sudoers grant. The camera API service retains `NoNewPrivileges=true`.
+- Stale recording state is reconciled through the broker's 7-way classification:
+  `ACTIVE`, `FINALIZING`, `RECOVERABLE`, `ORPHANED_METADATA`,
+  `FAILED_WITH_MEDIA`, `FAILED_WITHOUT_MEDIA`, `UNKNOWN`. Stale state is cleared
+  only when all authoritative evidence (systemd unit, PID, executable, media
+  fragments) proves no process or recoverable media exists.
 - The Docker recording backend is optional because Docker daemon access is
   privileged. Its FFmpeg container drops all capabilities, uses a read-only
   root filesystem and `no-new-privileges`, and bind-mounts only the recording
   root read-write.
+- Docker is not installed via curl-pipe-shell-as-root. The installer requires a
+  pre-existing, verified Docker installation or fails closed.
 
 ## Provisioning
 
