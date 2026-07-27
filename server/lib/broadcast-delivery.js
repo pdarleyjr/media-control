@@ -18,10 +18,10 @@ function createBroadcastDeliveryStore(database, options = {}) {
 
   const now = typeof options.now === 'function' ? options.now : Date.now;
   const randomUUID = typeof options.randomUUID === 'function' ? options.randomUUID : crypto.randomUUID;
-  const configuredTimeout = Number(options.timeoutMs || process.env.BROADCAST_CONFIRM_TIMEOUT_MS || 15000);
+  const configuredTimeout = Number(options.timeoutMs || process.env.BROADCAST_CONFIRM_TIMEOUT_MS || 45000);
   const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout >= 1000
     ? Math.round(configuredTimeout)
-    : 15000;
+    : 45000;
 
   function ensureSchema() {
     // Boot schema.sql owns the production tables. This self-heal covers upgraded

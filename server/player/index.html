@@ -1102,7 +1102,16 @@
       } catch (e) { /* MutationObserver unavailable on older TVs */ }
     }
 
-    startSelfHealingWatchdog();
+    if (
+      !window.MbfdPlayerBootstrap?.shouldStartSelfHealingWatchdog
+      || window.MbfdPlayerBootstrap.shouldStartSelfHealingWatchdog({
+        managedProgramReceiver: isManagedProgramReceiver(),
+      })
+    ) {
+      startSelfHealingWatchdog();
+    } else {
+      console.log('[watchdog] generic stall reload disabled for managed program receiver');
+    }
 
     // Track user interaction for autoplay policy
     ['click', 'touchstart', 'keydown'].forEach(evt => {
@@ -1810,9 +1819,21 @@
 
     function markBroadcastElementReady(element, reason) {
       if (element && element.dataset) element.dataset.mcRenderReady = '1';
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => confirmPendingBroadcastRender(reason));
-      });
+      const scheduleRenderConfirmation = window.MbfdPlayerBootstrap?.scheduleRenderConfirmation;
+      if (typeof scheduleRenderConfirmation === 'function') {
+        scheduleRenderConfirmation(
+          () => confirmPendingBroadcastRender(reason),
+          {
+            requestAnimationFrame: window.requestAnimationFrame.bind(window),
+            setTimeout: window.setTimeout.bind(window),
+            fallbackDelayMs: 250,
+          },
+        );
+        return;
+      }
+      requestAnimationFrame(() => requestAnimationFrame(
+        () => confirmPendingBroadcastRender(reason),
+      ));
     }
 
     function confirmCurrentRenderIfReady() {
@@ -4491,10 +4512,14 @@
               currentCacheStatus = 'local';
               publishPlayerState();
             }
+            // `load` proves the image is decoded and this element is already
+            // attached. Mark it immediately: Electron can suppress every RAF
+            // callback for non-focused videowall BrowserWindows even while the
+            // physical output is visibly painted.
+            markBroadcastElementReady(img, 'image-decoded');
             requestAnimationFrame(() => {
               if (img.isConnected && container.contains(img)) {
                 captureAndSend();
-                markBroadcastElementReady(img, 'image-painted');
               }
             });
           }, { once: true });

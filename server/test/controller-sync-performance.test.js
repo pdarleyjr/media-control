@@ -41,7 +41,10 @@ test('media control drag drop refreshes the active visual truth without polling 
   assert.match(source, /activeIntervalMs: LIVE_EMBED_PREVIEWS \? BACKGROUND_PREVIEW_INTERVAL_MS : ACTIVE_PREVIEW_INTERVAL_MS/);
   assert.match(source, /backgroundIntervalMs: BACKGROUND_PREVIEW_INTERVAL_MS/);
   assert.match(source, /for \(const delay of \[350, 1400\]\)/);
-  assert.match(source, /const ok = await sendToPhysicalScope\(parsed\.source, \[deviceId\], parsed\.label\)/);
+  assert.match(
+    source,
+    /const ok = await sendToPhysicalScope\(\s*parsed\.source,\s*\[deviceId\],\s*parsed\.label,\s*DROP_DELIVERY_OPTIONS,\s*\)/,
+  );
   assert.match(source, /if \(ok\) refreshAfterSend\(\[deviceId\]\)/);
 });
 

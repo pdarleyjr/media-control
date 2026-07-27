@@ -98,31 +98,46 @@ function renderBroadcastDelivery(request, label) {
  * HTTP 202 is only acceptance; success is announced only after every player
  * reports the exact playlist revision as rendered.
  */
-export async function trackBroadcastDelivery(requestId, label, initial = null) {
+export async function trackBroadcastDelivery(requestId, label, initial = null, options = {}) {
+  const quietSuccess = options.quietSuccess === true;
   let request = initial;
-  if (request) renderBroadcastDelivery(request, label);
+  if (request && !quietSuccess) renderBroadcastDelivery(request, label);
   const startedAt = Date.now();
-  const localCeilingMs = 22000;
+  let localCeilingMs = 52000;
+  let lastPollError = null;
+  const updateLocalCeiling = () => {
+    const serverWindow = Number(request?.expires_at) - Number(request?.created_at);
+    if (Number.isFinite(serverWindow) && serverWindow > 0) {
+      localCeilingMs = Math.max(22000, Math.min(120000, serverWindow + 7000));
+    }
+  };
+  updateLocalCeiling();
   while (!request || !DELIVERY_TERMINAL.has(request.status)) {
     if (Date.now() - startedAt >= localCeilingMs) break;
     await new Promise((resolve) => setTimeout(resolve, 350));
     try {
       request = await api.broadcastStatus(requestId);
-      renderBroadcastDelivery(request, label);
+      lastPollError = null;
+      updateLocalCeiling();
+      if (!quietSuccess) renderBroadcastDelivery(request, label);
     } catch (error) {
+      lastPollError = error;
       if (Date.now() - startedAt >= localCeilingMs) {
-        showToast(error?.message || 'Could not verify player delivery', 'error');
         break;
       }
     }
   }
 
   if (request?.status === 'confirmed') {
-    showToast(`${label}: every player confirmed`, 'success', 6000);
+    if (!quietSuccess) showToast(`${label}: every player confirmed`, 'success', 6000);
   } else if (request && DELIVERY_TERMINAL.has(request.status)) {
+    if (quietSuccess) renderBroadcastDelivery(request, label);
     const devices = Array.isArray(request.devices) ? request.devices : [];
     const confirmed = devices.filter((device) => device.state === 'confirmed').length;
     showToast(`${label}: ${confirmed}/${request.expected_target_count || devices.length} players confirmed`, 'error', 9000);
+  } else {
+    if (quietSuccess && request) renderBroadcastDelivery(request, label);
+    showToast(lastPollError?.message || 'Could not verify player delivery', 'error', 9000);
   }
   return request;
 }
@@ -306,7 +321,8 @@ async function materializeYouTube(url) {
  *                              presentation_id | remote_url)
  * @param {string[]} targetIds  device ids to broadcast to
  * @param {string}  [label]     human-readable label for toasts
- * @param {{targets?:object[]}} [options] authoritative typed picker references
+ * @param {{targets?:object[],quietSuccess?:boolean}} [options] authoritative
+ *        typed picker references and optional silent-success delivery feedback
  * @returns {Promise<boolean>}  true = sent successfully, false = cancelled/error
  */
 export async function sendToDisplays(source, targetIds, label = t('mc.tile.content_fallback'), options = {}) {
@@ -397,7 +413,12 @@ export async function sendToDisplays(source, targetIds, label = t('mc.tile.conte
 
   if (result && result.success) {
     if (result.request_id) {
-      const delivery = await trackBroadcastDelivery(result.request_id, label, result.delivery || null);
+      const delivery = await trackBroadcastDelivery(
+        result.request_id,
+        label,
+        result.delivery || null,
+        { quietSuccess: options.quietSuccess === true },
+      );
       if (delivery?.status !== 'confirmed') return false;
       try {
         return await routeToLiveComposition(liveChoice, resolvedSource);
@@ -408,7 +429,9 @@ export async function sendToDisplays(source, targetIds, label = t('mc.tile.conte
     }
     // Compatibility for an older server during a rolling deployment. This is
     // never used by a server that supports persistent player confirmation.
-    sentToast(label, Number(result.sent) || 0, Number(result.total) || 0);
+    if (options.quietSuccess !== true) {
+      sentToast(label, Number(result.sent) || 0, Number(result.total) || 0);
+    }
     try {
       return await routeToLiveComposition(liveChoice, resolvedSource);
     } catch (error) {

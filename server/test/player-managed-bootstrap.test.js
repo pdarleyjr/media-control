@@ -5,6 +5,8 @@ const {
   createReceiverHealth,
   normalizeHttpOrigin,
   resolveManagedServerUrl,
+  scheduleRenderConfirmation,
+  shouldStartSelfHealingWatchdog,
   validateRoomSnapshot,
 } = require('../player/managed-bootstrap');
 
@@ -109,4 +111,57 @@ test('receiver health exposes disconnect and snapshot validation errors', () => 
   assert.equal(health.markStale('temporary disconnect').state, 'stale');
   assert.equal(health.acceptSnapshot({ workspaceId: 'wrong' }).state, 'error');
   assert.equal(health.report().code, 'INCOMPLETE_SNAPSHOT');
+});
+
+test('render confirmation falls back to a timer when background rendering suppresses animation frames', () => {
+  const timers = [];
+  let confirmations = 0;
+  scheduleRenderConfirmation(() => {
+    confirmations += 1;
+    return true;
+  }, {
+    requestAnimationFrame() {
+      // Electron may never service this callback for a background-throttled
+      // videowall BrowserWindow.
+    },
+    setTimeout(callback, delay) {
+      timers.push({ callback, delay });
+      return timers.length;
+    },
+    fallbackDelayMs: 250,
+  });
+
+  assert.equal(confirmations, 0);
+  assert.deepEqual(timers.map((timer) => timer.delay), [250]);
+  timers[0].callback();
+  assert.equal(confirmations, 1);
+});
+
+test('render confirmation is idempotent when both paint frames and the fallback timer run', () => {
+  const frames = [];
+  const timers = [];
+  let confirmations = 0;
+  scheduleRenderConfirmation(() => {
+    confirmations += 1;
+    return true;
+  }, {
+    requestAnimationFrame(callback) {
+      frames.push(callback);
+      return frames.length;
+    },
+    setTimeout(callback) {
+      timers.push(callback);
+      return timers.length;
+    },
+  });
+
+  frames.shift()();
+  frames.shift()();
+  timers.shift()();
+  assert.equal(confirmations, 1);
+});
+
+test('managed OBS receivers do not run the generic browser stall reload watchdog', () => {
+  assert.equal(shouldStartSelfHealingWatchdog({ managedProgramReceiver: true }), false);
+  assert.equal(shouldStartSelfHealingWatchdog({ managedProgramReceiver: false }), true);
 });

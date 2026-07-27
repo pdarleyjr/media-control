@@ -1040,6 +1040,17 @@ module.exports = function setupDeviceSocket(io) {
           wall_id: rawState.wall_id || null,
           group_id: rawState.group_id || null,
           member_id: rawState.member_id || currentDeviceId,
+          region_states: Array.isArray(rawState.region_states)
+            ? rawState.region_states.slice(0, 32).map((region) => ({
+              region_id: region?.region_id || null,
+              zone_id: region?.zone_id || null,
+              current_content_id: region?.current_content_id || null,
+              content_instance_id: region?.content_instance_id || null,
+              content_type: region?.content_type || null,
+              render_state: region?.render_state || null,
+              paused: region?.paused == null ? null : !!region.paused,
+            }))
+            : [],
         };
         const result = broadcastDelivery.markPlayerStatus({
           requestId,

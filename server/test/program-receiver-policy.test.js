@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   isAllowedProgramReceiverEvent,
+  isConnectionAuthoritativeForHeartbeat,
   isProgramReceiverId,
   programReceiverEventGuard,
   resolveProgramReceiverSnapshotTarget,
@@ -13,6 +14,12 @@ test('only managed live-program displays are limited program receivers', () => {
   assert.equal(isProgramReceiverId('live-stream-program-abc'), true);
   assert.equal(isProgramReceiverId('classroom-tv-1'), false);
   assert.equal(isProgramReceiverId(''), false);
+});
+
+test('a connected managed program receiver uses transport liveness instead of throttled browser timers', () => {
+  assert.equal(isConnectionAuthoritativeForHeartbeat('live-stream-program-abc', true), true);
+  assert.equal(isConnectionAuthoritativeForHeartbeat('live-stream-program-abc', false), false);
+  assert.equal(isConnectionAuthoritativeForHeartbeat('classroom-tv-1', true), false);
 });
 
 test('program receiver may authenticate, report playback, and request an authoritative snapshot', () => {

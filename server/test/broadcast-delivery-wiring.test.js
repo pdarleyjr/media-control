@@ -32,15 +32,28 @@ test('authenticated player status is persisted and relayed to the workspace dash
   assert.match(socket, /deviceId:\s*currentDeviceId/);
   assert.match(socket, /broadcastDelivery\.markPlayerStatus\(/);
   assert.match(socket, /dashboard:broadcast-status/);
+  assert.match(socket, /region_states:\s*Array\.isArray\(rawState\.region_states\)/);
 });
 
 test('player distinguishes receipt from confirmed rendering', () => {
   const player = source('player/index.html');
+  const bootstrap = source('player/managed-bootstrap.js');
   assert.match(player, /emitPendingBroadcastStatusFor\(pending, 'acknowledged'\)/);
   assert.match(player, /emitPendingBroadcastStatusFor\(pending, 'confirmed'\)/);
   assert.match(player, /expected_playlist_revision/);
   assert.match(player, /render_generation/);
   assert.match(player, /confirmPendingBroadcastRender/);
+  assert.match(player, /scheduleRenderConfirmation/);
+  assert.match(bootstrap, /fallbackDelayMs/);
+  const fullscreenImage = player.slice(
+    player.indexOf('} else if (isImage) {'),
+    player.indexOf('} else if (isPdf) {'),
+  );
+  assert.ok(
+    fullscreenImage.indexOf("markBroadcastElementReady(img, 'image-decoded')")
+      < fullscreenImage.indexOf('requestAnimationFrame(() =>'),
+    'decoded image confirmation must not wait for a throttled animation frame',
+  );
 });
 
 test('re-sending already rendered content binds delivery proof to the visible generation', () => {
@@ -69,4 +82,15 @@ test('frontend polls and renders every device state rather than treating HTTP ac
   assert.match(send, /trackBroadcastDelivery/);
   assert.match(send, /result\.request_id/);
   assert.doesNotMatch(send, /sentToast\(label,\s*result\.sent,\s*result\.total\)/);
+});
+
+test('drag-and-drop delivery tracks silently on success but still surfaces authoritative failures', () => {
+  const send = source('../frontend/js/views/media-control/send.js');
+  const view = source('../frontend/js/views/media-control.js');
+  assert.match(send, /quietSuccess/);
+  assert.match(send, /if \(!quietSuccess\) renderBroadcastDelivery/);
+  assert.match(send, /if \(quietSuccess\) renderBroadcastDelivery\(request, label\)/);
+  assert.match(view, /const DROP_DELIVERY_OPTIONS = \{ quietSuccess: true \}/);
+  assert.match(view, /sendToPhysicalScope\([\s\S]*?DROP_DELIVERY_OPTIONS/);
+  assert.match(view, /targets:\s*commandCenterState\.broadcastTargets,[\s\S]*?quietSuccess:\s*true/);
 });

@@ -85,6 +85,35 @@ test('a broadcast request persists its source, typed targets, resolved players, 
   }
 });
 
+test('the production confirmation window allows background-throttled wall players to prove rendering', () => {
+  const database = new Database(':memory:');
+  database.exec(`
+    CREATE TABLE devices (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      name TEXT NOT NULL
+    );
+    INSERT INTO devices (id, workspace_id, name)
+    VALUES ('front-center', 'classroom', 'Front Center');
+  `);
+  try {
+    const store = createBroadcastDeliveryStore(database, {
+      now: () => 10_000,
+      randomUUID: () => 'request-or-command',
+    });
+    const request = store.createRequest({
+      workspaceId: 'classroom',
+      userId: 'operator-1',
+      sourceType: 'content',
+      sourceId: 'image-1',
+      targets: [{ deviceId: 'front-center' }],
+    });
+    assert.equal(request.expires_at - request.created_at, 45_000);
+  } finally {
+    database.close();
+  }
+});
+
 test('confirmation requires the authenticated player command and exact playlist revision', () => {
   const { database, store } = fixture();
   try {
