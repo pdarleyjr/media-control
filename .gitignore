@@ -102,3 +102,4 @@ logs/
 compose.media-control.*.yaml
 !compose.media-control.example.yaml
 docker-compose.override.yml
+__pycache__/

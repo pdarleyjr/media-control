@@ -1,0 +1,13 @@
+[Unit]
+Description=MBFD recording broker Unix socket
+Documentation=https://github.com/pdarleyjr/media-control/blob/main/kamrui-media-edge/README.md
+
+[Socket]
+ListenStream=/run/mbfd-recording-broker/broker.sock
+SocketUser=root
+SocketGroup=mbfd-camera-api
+SocketMode=0660
+Service=mbfd-recording-broker.service
+
+[Install]
+WantedBy=sockets.target
