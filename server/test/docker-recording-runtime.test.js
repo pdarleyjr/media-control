@@ -132,12 +132,16 @@ test('Docker recorder launches a detached named least-privilege container and va
     `--name=mbfd-camera-recording-${SESSION_ID}`,
     `--label=com.mbfd.camera.session=${SESSION_ID}`,
     `--label=com.mbfd.camera.nonce=${NONCE}`,
-    `--mount=type=bind,src=${RECORDING_ROOT},dst=${RECORDING_ROOT},rw`,
+    `--mount=type=bind,src=${RECORDING_ROOT},dst=${RECORDING_ROOT}`,
     '--entrypoint=ffmpeg',
     IMAGE_ID,
   ]) {
     assert.ok(run.includes(required), required);
   }
+  assert.ok(
+    !run.some((argument) => /^--mount=.*(?:^|,)rw(?:,|$)/.test(argument)),
+    'Docker --mount does not accept a bare rw field; writable is the default',
+  );
   assert.deepEqual(run.slice(-FFMPEG_ARGS.length), FFMPEG_ARGS);
 });
 
