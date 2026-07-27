@@ -64,6 +64,7 @@ function expectedIdentity() {
     containerName: `mbfd-camera-recording-${SESSION_ID}`,
     imageRef: IMAGE_ID,
     imageId: IMAGE_ID,
+    imageDigest: IMAGE_ID,
     sessionId: SESSION_ID,
     sessionNonce: NONCE,
     outputPath: OUTPUT_PATTERN,
@@ -138,6 +139,52 @@ test('Docker recorder launches a detached named least-privilege container and va
     assert.ok(run.includes(required), required);
   }
   assert.deepEqual(run.slice(-FFMPEG_ARGS.length), FFMPEG_ARGS);
+});
+
+test('repository digest references bind the resolved image ID without equating manifest and config digests', async () => {
+  const imageRef = `mbfd/camera-ffmpeg@${IMAGE_ID}`;
+  const resolvedImageId = `sha256:${'9'.repeat(64)}`;
+  const execDocker = async (args) => {
+    if (args[0] === 'image') {
+      return {
+        stdout: JSON.stringify([{
+          Id: resolvedImageId,
+          RepoDigests: [imageRef],
+        }]),
+        stderr: '',
+      };
+    }
+    if (args[0] === 'run') return { stdout: `${CONTAINER_ID}\n`, stderr: '' };
+    if (args[0] === 'inspect') {
+      return {
+        stdout: JSON.stringify([inspectFixture({
+          Image: resolvedImageId,
+          Config: { ...inspectFixture().Config, Image: imageRef },
+        })]),
+        stderr: '',
+      };
+    }
+    throw new Error(`Unexpected docker call: ${args.join(' ')}`);
+  };
+  const runtime = createDockerRecordingRuntime({
+    imageRef,
+    execDocker,
+    uid: 1000,
+    gid: 1000,
+  });
+
+  const identity = await runtime.start({
+    sessionId: SESSION_ID,
+    sessionNonce: NONCE,
+    sourceUrl: SOURCE,
+    outputPattern: OUTPUT_PATTERN,
+    recordingRoot: RECORDING_ROOT,
+    ffmpegArgs: FFMPEG_ARGS,
+  });
+
+  assert.equal(identity.imageRef, imageRef);
+  assert.equal(identity.imageId, resolvedImageId);
+  assert.equal(identity.imageDigest, IMAGE_ID);
 });
 
 test('Docker recorder refuses non-loopback sources and output paths outside the session directory', async () => {

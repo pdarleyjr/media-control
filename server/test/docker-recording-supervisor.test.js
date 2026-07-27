@@ -25,6 +25,7 @@ function runtimeIdentity() {
     containerName: `mbfd-camera-recording-${SESSION_ID}`,
     imageRef: IMAGE_ID,
     imageId: IMAGE_ID,
+    imageDigest: IMAGE_ID,
     sessionId: SESSION_ID,
     sessionNonce: NONCE,
     outputPath: OUTPUT_PATTERN,

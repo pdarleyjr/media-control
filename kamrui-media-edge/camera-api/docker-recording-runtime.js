@@ -102,6 +102,36 @@ function parseInspect(stdout) {
   return inspect;
 }
 
+function resolveImageIdentity(stdout, imageRef, expectedDigest) {
+  const text = String(stdout || '').trim();
+  let record = null;
+  try {
+    const parsed = JSON.parse(text);
+    record = Array.isArray(parsed) ? parsed[0] : parsed;
+  } catch {
+    // Backward-compatible with a direct Docker image ID returned by a custom
+    // executor. The production command below returns the full inspect record.
+    record = { Id: text, RepoDigests: [] };
+  }
+  const imageId = String(record?.Id || '').trim().toLowerCase();
+  if (!CONTAINER_ID_PATTERN.test(imageId.replace(/^sha256:/, ''))) {
+    throw new Error('Docker image inspect returned an invalid image ID');
+  }
+  const repositoryReference = String(imageRef).includes('@');
+  if (repositoryReference) {
+    const repoDigests = Array.isArray(record?.RepoDigests) ? record.RepoDigests : [];
+    const digestPresent = repoDigests.some(
+      value => immutableImageDigest(value) === expectedDigest,
+    );
+    if (!digestPresent) {
+      throw new Error(`Recording Docker repository digest mismatch: expected ${expectedDigest}`);
+    }
+  } else if (imageId !== expectedDigest) {
+    throw new Error(`Recording Docker image identity mismatch: expected ${expectedDigest}`);
+  }
+  return { imageId, imageDigest: expectedDigest };
+}
+
 function hasNoNewPrivileges(options) {
   return Array.isArray(options)
     && options.some((option) => String(option).toLowerCase().startsWith('no-new-privileges'));
@@ -163,7 +193,7 @@ function createDockerRecordingRuntime({
   gracefulTimeoutMs = 10_000,
   killTimeoutMs = 5_000,
 } = {}) {
-  const expectedImageId = immutableImageDigest(imageRef);
+  const expectedImageDigest = immutableImageDigest(imageRef);
   const runAsUser = (
     Number.isSafeInteger(Number(uid))
     && Number(uid) > 0
@@ -174,6 +204,12 @@ function createDockerRecordingRuntime({
   async function inspect(identity) {
     if (!identity || identity.backend !== 'docker' || !CONTAINER_ID_PATTERN.test(String(identity.containerId || ''))) {
       return { status: 'identity_mismatch', reason: 'invalid persisted Docker identity' };
+    }
+    if (
+      identity.imageRef !== imageRef
+      || identity.imageDigest !== expectedImageDigest
+    ) {
+      return { status: 'identity_mismatch', reason: 'persisted image reference changed' };
     }
     let result;
     try {
@@ -221,11 +257,12 @@ function createDockerRecordingRuntime({
       ffmpegArgs,
     });
 
-    const image = await execDocker(['image', 'inspect', '--format={{.Id}}', imageRef]);
-    const actualImageId = String(image.stdout || '').trim().toLowerCase();
-    if (actualImageId !== expectedImageId) {
-      throw new Error(`Recording Docker image identity mismatch: expected ${expectedImageId}`);
-    }
+    const image = await execDocker(['image', 'inspect', imageRef]);
+    const resolvedImage = resolveImageIdentity(
+      image.stdout,
+      imageRef,
+      expectedImageDigest,
+    );
 
     const runArgs = [
       'run',
@@ -259,7 +296,8 @@ function createDockerRecordingRuntime({
       containerId,
       containerName: validated.containerName,
       imageRef,
-      imageId: expectedImageId,
+      imageId: resolvedImage.imageId,
+      imageDigest: resolvedImage.imageDigest,
       sessionId,
       sessionNonce,
       outputPath: validated.outputPath,
@@ -344,7 +382,7 @@ function createDockerRecordingRuntime({
   return {
     backend: 'docker',
     imageRef,
-    imageId: expectedImageId,
+    imageDigest: expectedImageDigest,
     start,
     inspect,
     stop,
