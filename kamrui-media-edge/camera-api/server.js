@@ -20,6 +20,7 @@ const {
   createDockerRecordingSupervisor,
 } = require('./recording-supervisor');
 const { verifyServiceRequest } = require('./camera-service-signature');
+const { createLivestreamAuditMiddleware } = require('./livestream-audit');
 
 const app = express();
 app.use((req, _res, next) => {
@@ -45,6 +46,22 @@ const recordingSupervisor = CONFIG.recordingBackend === 'docker'
     recordingRoot: CONFIG.recordingDir,
     envRoot: '/run/mbfd-camera-recording',
   });
+const livestreamAuditOptions = {
+  recordingDir: CONFIG.recordingDir,
+  getSessionId: () => state.livestreamSessionId,
+  onError: (error) => {
+    console.error(`[livestream-audit] ${error.message}`);
+    addError(`Livestream audit persistence failed: ${error.message}`);
+  },
+};
+const livestreamStartAudit = createLivestreamAuditMiddleware({
+  ...livestreamAuditOptions,
+  action: 'stream.start',
+});
+const livestreamStopAudit = createLivestreamAuditMiddleware({
+  ...livestreamAuditOptions,
+  action: 'stream.stop',
+});
 
 function loadConfig() {
   const env = {};
@@ -1226,7 +1243,7 @@ app.post('/api/record/stop', authMiddleware, commandRateLimit, async (req, res) 
   res.status(finalizeResult.ok ? 200 : 422).json(response);
 });
 
-app.post('/api/stream/start', authMiddleware, commandRateLimit, async (req, res) => {
+app.post('/api/stream/start', livestreamStartAudit, authMiddleware, commandRateLimit, async (req, res) => {
   const idempotencyKey = req.headers['x-idempotency-key'];
   if (idempotencyKey && state.idempotencyKeys.has(idempotencyKey)) {
     return res.json(state.idempotencyKeys.get(idempotencyKey));
@@ -1286,7 +1303,7 @@ app.post('/api/stream/start', authMiddleware, commandRateLimit, async (req, res)
   res.json(response);
 });
 
-app.post('/api/stream/stop', authMiddleware, commandRateLimit, async (req, res) => {
+app.post('/api/stream/stop', livestreamStopAudit, authMiddleware, commandRateLimit, async (req, res) => {
   const idempotencyKey = req.headers['x-idempotency-key'];
   if (idempotencyKey && state.idempotencyKeys.has(idempotencyKey)) {
     return res.json(state.idempotencyKeys.get(idempotencyKey));
