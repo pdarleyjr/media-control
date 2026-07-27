@@ -2,6 +2,7 @@ const { db } = require('../db/database');
 const config = require('../config');
 const { deviceRoom, emitToWorkspace } = require('../lib/socket-rooms');
 const { scheduleRoomSnapshot } = require('../lib/room-state-broadcaster');
+const { isConnectionAuthoritativeForHeartbeat } = require('../lib/program-receiver-policy');
 
 // Track connected device sockets: deviceId -> { socketId, lastHeartbeat }
 const deviceConnections = new Map();
@@ -16,6 +17,11 @@ function startHeartbeatChecker(io) {
 
     for (const device of onlineDevices) {
       const conn = deviceConnections.get(device.id);
+      // The OBS BrowserSource is intentionally retained while its scene is
+      // inactive. Chromium throttles its JavaScript timers, so its authenticated
+      // Socket.IO transport is the authoritative liveness signal. A real
+      // transport disconnect still flows through the existing offline debounce.
+      if (isConnectionAuthoritativeForHeartbeat(device.id, !!conn)) continue;
       const lastBeat = conn ? conn.lastHeartbeat : (device.last_heartbeat ? device.last_heartbeat * 1000 : 0);
 
       if (now - lastBeat > config.heartbeatTimeout) {

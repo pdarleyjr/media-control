@@ -7,6 +7,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 ENV_FILE=/etc/mbfd/media-stack/camera.env
 STACK=/opt/mbfd/media-stack
+RECORDING_ROOT=/mnt/data/recordings
 
 echo "==> prerequisites"
 sudo apt-get update -qq
@@ -33,36 +34,47 @@ if ! getent group mbfd-camera-api >/dev/null; then
 fi
 if ! getent passwd mbfd-camera-api >/dev/null; then
   sudo useradd --system --gid mbfd-camera-api --home-dir /nonexistent --shell /usr/sbin/nologin mbfd-camera-api
-  sudo usermod -aG mbfd-recording mbfd-camera-api
 fi
+# Enforce supplemental access on every run, including hosts where the account
+# was created by an earlier partial deployment.
+sudo usermod -aG mbfd-recording mbfd-camera-api
 
 echo "==> stack directory"
-sudo mkdir -p "$STACK/camera-api" /etc/mbfd/media-stack /mnt/data/recordings/{active,completed,failed,metadata}
-sudo chown -R mbfd-camera-api:mbfd-recording "$STACK" /mnt/data/recordings
-sudo chmod 2770 /mnt/data/recordings /mnt/data/recordings/{active,completed,failed,metadata}
+sudo mkdir -p "$STACK/camera-api" /etc/mbfd/media-stack
+sudo install -d -o mbfd-camera-api -g mbfd-recording -m 2770 \
+  "$RECORDING_ROOT" "$RECORDING_ROOT/active" "$RECORDING_ROOT/completed" \
+  "$RECORDING_ROOT/failed" "$RECORDING_ROOT/metadata"
+# Preserve every existing artifact and its owner while granting the dedicated
+# API and recorder group the access legacy peter-owned 0600 files lacked.
+sudo find "$RECORDING_ROOT" -xdev -type d \
+  -exec chgrp mbfd-recording {} + \
+  -exec chmod u+rwx,g+rwx,g+s {} +
+sudo find "$RECORDING_ROOT" -xdev -type f \
+  -exec chgrp mbfd-recording {} + \
+  -exec chmod u+rw,g+rw {} +
+
+echo "==> protected camera environment"
+sudo chown root:mbfd-camera-api "$ENV_FILE"
+sudo chmod 0640 "$ENV_FILE"
 
 echo "==> camera-api source"
 sudo cp "$HERE/camera-api/server.js" "$HERE/camera-api/recording-safety.js" \
   "$HERE/camera-api/recording-supervisor.js" "$HERE/camera-api/docker-recording-runtime.js" \
-  "$HERE/camera-api/camera-service-signature.js" \
+  "$HERE/camera-api/camera-service-signature.js" "$HERE/camera-api/livestream-audit.js" \
   "$HERE/camera-api/peertube-upload.js" "$HERE/camera-api/package.json" \
   "$HERE/camera-api/package-lock.json" "$STACK/camera-api/"
 sudo chown -R mbfd-camera-api:mbfd-camera-api "$STACK/camera-api"
 ( cd "$STACK/camera-api" && sudo -u mbfd-camera-api npm ci --omit=dev --no-audit --no-fund )
 
 echo "==> MediaMTX config (template -> live, creds from env, mode 0600)"
-cp "$HERE/mediamtx.yml.tpl" "$STACK/mediamtx.yml.tpl"
-cp "$HERE/docker-compose.mediamtx.yml" "$STACK/docker-compose.mediamtx.yml"
-# shellcheck disable=SC1090
-set -a; . "$ENV_FILE"; set +a
-sed -e "s|__ANNKE_MAIN_RTSP_URL__|${ANNKE_MAIN_RTSP_URL}|g" \
-    -e "s|__ANNKE_PREVIEW_RTSP_URL__|${ANNKE_PREVIEW_RTSP_URL}|g" \
-    "$STACK/mediamtx.yml.tpl" > "$STACK/mediamtx.yml"
-chmod 600 "$STACK/mediamtx.yml"
+sudo install -o root -g root -m 0644 "$HERE/mediamtx.yml.tpl" "$STACK/mediamtx.yml.tpl"
+sudo install -o root -g root -m 0644 "$HERE/docker-compose.mediamtx.yml" "$STACK/docker-compose.mediamtx.yml"
+sudo /usr/bin/python3 "$HERE/scripts/render-mediamtx-config.py" \
+  "$ENV_FILE" "$STACK/mediamtx.yml.tpl" "$STACK/mediamtx.yml"
 
 echo "==> relay scripts (credential-free)"
-cp "$HERE/annke-main-relay.sh" "$HERE/annke-preview-relay.sh" "$STACK/"
-chmod +x "$STACK/annke-main-relay.sh" "$STACK/annke-preview-relay.sh"
+sudo install -o root -g root -m 0755 "$HERE/annke-main-relay.sh" "$STACK/annke-main-relay.sh"
+sudo install -o root -g root -m 0755 "$HERE/annke-preview-relay.sh" "$STACK/annke-preview-relay.sh"
 
 echo "==> recording broker (root-owned, peer-verified Unix socket)"
 sudo install -o root -g root -m 0755 "$HERE/recording-broker/mbfd-recording-broker.py" /usr/local/sbin/mbfd-recording-broker

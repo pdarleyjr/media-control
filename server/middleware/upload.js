@@ -1,4 +1,5 @@
 const multer = require('multer');
+const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const config = require('../config');
@@ -83,6 +84,16 @@ function isAllowedUploadMime(mimetype) {
   return ALLOWED_IMAGE_TYPES.has(mimetype) || ALLOWED_VIDEO_TYPES.has(mimetype) || ALLOWED_DOC_TYPES.has(mimetype);
 }
 
+function uploadedFileHasBytes(file, statFile = fs.statSync) {
+  if (!file?.path || !Number.isFinite(Number(file.size)) || Number(file.size) <= 0) return false;
+  try {
+    const stat = statFile(file.path);
+    return stat.isFile() && stat.size > 0;
+  } catch {
+    return false;
+  }
+}
+
 // Extension -> canonical MIME, used only to recover the real type when the
 // client sends a generic/empty Content-Type. Browsers + OSes frequently label
 // .mkv/.mov as application/octet-stream and .pptx/.docx as application/zip or
@@ -159,5 +170,6 @@ module.exports.ALLOWED_DOC_TYPES = ALLOWED_DOC_TYPES;
 module.exports.ALLOWED_IMAGE_TYPES = ALLOWED_IMAGE_TYPES;
 module.exports.ALLOWED_VIDEO_TYPES = ALLOWED_VIDEO_TYPES;
 module.exports.isAllowedUploadMime = isAllowedUploadMime;
+module.exports.uploadedFileHasBytes = uploadedFileHasBytes;
 module.exports.resolveUploadMime = resolveUploadMime;
 module.exports.EXT_TO_MIME = EXT_TO_MIME;

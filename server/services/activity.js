@@ -1,6 +1,7 @@
 const { db } = require('../db/database');
 const proxyaddr = require('proxy-addr');
 const { trustedProxies } = require('../config/cloudflareIps');
+const { normalizeActivityDetails } = require('../lib/activity-details');
 
 // Gate function: returns true when an immediate TCP peer is one we trust
 // to populate forwarding headers (Cloudflare edges, loopback, link-local,
@@ -56,7 +57,14 @@ function logActivity(userId, action, details = null, deviceId = null, ipAddress 
     }
     const result = db.prepare(
       'INSERT INTO activity_log (user_id, device_id, action, details, ip_address, workspace_id) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(userId || null, deviceId || null, action, details || null, ipAddress || null, ws);
+    ).run(
+      userId || null,
+      deviceId || null,
+      action,
+      normalizeActivityDetails(details),
+      ipAddress || null,
+      ws,
+    );
     return result.lastInsertRowid;
   } catch (e) {
     console.error('Activity log error:', e.message);

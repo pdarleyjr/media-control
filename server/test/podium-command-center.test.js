@@ -208,3 +208,13 @@ test('browser smoke can validate the normal signed-in web UI', () => {
   assert.match(smoke, /localStorage\.setItem\('token'/);
   assert.match(smoke, /auth_mode: webSession \? 'web-login' : 'podium-device'/);
 });
+
+test('podium browser smoke follows authorized wall targets without hardcoded room names', () => {
+  const smoke = read('scripts/live-console-ui-smoke.js');
+
+  assert.match(smoke, /SMOKE_EXPECT_WALL_TARGETS/);
+  assert.match(smoke, /ready\.length < 2/);
+  assert.match(smoke, /button\.dataset\.targetValue === \$\{JSON\.stringify\(targetValue\)\}/);
+  assert.doesNotMatch(smoke, /Video Wall 1 target is missing/);
+  assert.doesNotMatch(smoke, /Video Wall 2 target is missing/);
+});

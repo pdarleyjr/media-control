@@ -80,6 +80,45 @@ async function requestStatus(url) {
   return res.json();
 }
 
+function contentMutationApplied(current, desired = {}) {
+  if (!current || typeof current !== 'object') return false;
+  return Object.entries(desired).every(([field, expected]) => {
+    if (field === 'expected_version') return true;
+    if (field === 'archived') {
+      return Boolean(current.visibility?.archived_at ?? current.archived_at) === Boolean(expected);
+    }
+    if (field === 'access_level') {
+      return (current.visibility?.access_level || current.access_level || 'private') === expected;
+    }
+    if (field === 'folder_id' || field === 'remote_url' || field === 'default_fit_mode') {
+      return (current[field] || null) === (expected || null);
+    }
+    return current[field] === expected;
+  });
+}
+
+// A proxy/browser connection can disappear after SQLite commits but before the
+// response reaches the operator. Re-read the authoritative row before calling
+// a content write "failed"; this makes rename/archive idempotent from the UI's
+// point of view and avoids the false-failure state seen during transient drops.
+async function reconcileContentMutation(id, desired, mutate) {
+  try {
+    return await mutate();
+  } catch (error) {
+    // Authentication/authorization failures are definitive and must retain the
+    // normal login/access-denied behavior.
+    if (error?.status === 401 || error?.status === 403) throw error;
+    try {
+      const current = await request(`/content/${id}`);
+      if (contentMutationApplied(current, desired)) return current;
+    } catch {
+      // Preserve the original mutation error; the verification read is only a
+      // recovery path and must not replace the more useful primary failure.
+    }
+    throw error;
+  }
+}
+
 export const api = {
   getSystemVersion: () => request('/system/version'),
   // Devices
@@ -149,7 +188,11 @@ export const api = {
   },
   getContentItem: (id) => request(`/content/${id}`),
   deleteContent: (id) => request(`/content/${id}`, { method: 'DELETE' }),
-  updateContent: (id, data) => request(`/content/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  updateContent: (id, data) => reconcileContentMutation(
+    id,
+    data,
+    () => request(`/content/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  ),
   moveContent: (id, folderId) => request(`/content/${id}`, {
     method: 'PUT',
     body: JSON.stringify({ folder_id: folderId })
@@ -185,10 +228,14 @@ export const api = {
   },
   requestContentPublication: (id) => request(`/content/${id}/publication-request`, { method: 'POST' }),
   duplicateContent: (id) => request(`/content/${id}/duplicate`, { method: 'POST' }),
-  archiveContent: (id, archived = true, confirmRevoke = false) => request(`/content/${id}/archive`, {
-    method: 'PUT',
-    body: JSON.stringify({ archived, confirm_revoke: confirmRevoke }),
-  }),
+  archiveContent: (id, archived = true, confirmRevoke = false) => reconcileContentMutation(
+    id,
+    { archived },
+    () => request(`/content/${id}/archive`, {
+      method: 'PUT',
+      body: JSON.stringify({ archived, confirm_revoke: confirmRevoke }),
+    }),
+  ),
   getContentUsage: (id) => request(`/content/${id}/usage`),
   transferContent: (id, ownerUserId) => request(`/content/${id}/transfer`, {
     method: 'PUT', body: JSON.stringify({ owner_user_id: ownerUserId }),
@@ -537,7 +584,7 @@ export const api = {
   // Media downloads (by URL).
   downloads: {
     health: () => request('/downloads/health'),
-    list: () => request('/downloads'),
+    list: (options = {}) => request('/downloads', options),
     create: (url, title) => request('/downloads', { method: 'POST', body: JSON.stringify({ url, title }) }),
   },
 

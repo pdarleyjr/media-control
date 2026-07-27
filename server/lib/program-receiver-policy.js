@@ -19,6 +19,10 @@ function isProgramReceiverId(deviceId) {
   return String(deviceId || '').startsWith(LIVE_STREAM_DEVICE_PREFIX);
 }
 
+function isConnectionAuthoritativeForHeartbeat(deviceId, connected) {
+  return connected === true && isProgramReceiverId(deviceId);
+}
+
 function isAllowedProgramReceiverEvent(event) {
   return ALLOWED_EVENTS.has(String(event || ''));
 }
@@ -71,6 +75,7 @@ function resolveProgramReceiverSnapshotTarget(options = {}) {
 module.exports = {
   ALLOWED_PROGRAM_RECEIVER_EVENTS: ALLOWED_EVENTS,
   isAllowedProgramReceiverEvent,
+  isConnectionAuthoritativeForHeartbeat,
   isProgramReceiverId,
   programReceiverEventGuard,
   resolveProgramReceiverSnapshotTarget,

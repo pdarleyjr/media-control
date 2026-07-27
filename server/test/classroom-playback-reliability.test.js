@@ -176,6 +176,13 @@ test('duplicate command_id is idempotent in player and deck/doc without re-apply
   assert.ok(doc.includes('ack.idempotent'));
 });
 
+test('document player bounds slide look-ahead to one reusable image surface', () => {
+  const doc = read('doc.html');
+  assert.ok(doc.includes('var prefetchImage = new Image();'));
+  assert.ok(doc.includes('prefetchImage.src = pageUrl(n);'));
+  assert.ok(!doc.includes('prefetch(page - 1);'));
+});
+
 test('duplicate seek payloads remain valid and share canonical command identity', () => {
   const a = contract.createCommand({
     device_id: 'd1',

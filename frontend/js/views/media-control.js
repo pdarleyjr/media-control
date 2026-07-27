@@ -337,7 +337,9 @@ function selectionForPhysicalIds(ids) {
   );
 }
 
-async function sendToPhysicalScope(source, ids, label) {
+const DROP_DELIVERY_OPTIONS = { quietSuccess: true };
+
+async function sendToPhysicalScope(source, ids, label, options = {}) {
   const selection = selectionForPhysicalIds(ids);
   if (!selection.physicalResolvedTargets.length) {
     showToast(t('mc.send.no_displays'), 'error');
@@ -347,7 +349,7 @@ async function sendToPhysicalScope(source, ids, label) {
     source,
     selection.physicalResolvedTargets,
     label,
-    { targets: selection.broadcastTargets },
+    { ...options, targets: selection.broadcastTargets },
   );
 }
 
@@ -877,7 +879,10 @@ async function dropOnWallRegion(wallId, regionId, source, label) {
     region_id: region.id,
     layout_revision: Number(wall.layout_revision) || 0,
   };
-  const ok = await sendToDisplays(source, [leaderId], label, { targets: [reference] });
+  const ok = await sendToDisplays(source, [leaderId], label, {
+    targets: [reference],
+    ...DROP_DELIVERY_OPTIONS,
+  });
   if (ok) refreshAfterSend([leaderId]);
 }
 
@@ -1573,7 +1578,12 @@ function attachStageDrop(stageContainer) {
       const parsed = parseDragSource(e);
       const deviceId = card.dataset.deviceId;
       if (!parsed || !deviceId) return;
-      const ok = await sendToPhysicalScope(parsed.source, [deviceId], parsed.label);
+      const ok = await sendToPhysicalScope(
+        parsed.source,
+        [deviceId],
+        parsed.label,
+        DROP_DELIVERY_OPTIONS,
+      );
       if (ok) refreshAfterSend([deviceId]); // re-fetch state + refresh THIS card's preview
     };
     card.addEventListener('drop', handleDrop);
@@ -1653,11 +1663,21 @@ function attachStageDrop(stageContainer) {
         const wall = (walls || []).find((w) => w.id === wallId);
         const single = wallTransportDeviceId(wall) || ids[0];
         showToast(t('mc.route.single_screen_only'), 'info');
-        const ok = await sendToPhysicalScope(parsed.source, [single], parsed.label);
+        const ok = await sendToPhysicalScope(
+          parsed.source,
+          [single],
+          parsed.label,
+          DROP_DELIVERY_OPTIONS,
+        );
         if (ok) refreshAfterSend([single]);
         return;
       }
-      const ok = await sendToPhysicalScope(parsed.source, ids, parsed.label);
+      const ok = await sendToPhysicalScope(
+        parsed.source,
+        ids,
+        parsed.label,
+        DROP_DELIVERY_OPTIONS,
+      );
       if (ok) refreshAfterSend(ids);
     };
     zone.addEventListener('drop', handleDrop);
@@ -1690,7 +1710,10 @@ function attachStageDrop(stageContainer) {
       parsed.source,
       targets,
       parsed.label,
-      { targets: commandCenterState.broadcastTargets },
+      {
+        targets: commandCenterState.broadcastTargets,
+        quietSuccess: true,
+      },
     );
     if (ok) refreshAfterSend(targets);
   });
@@ -1705,7 +1728,10 @@ function attachStageDrop(stageContainer) {
       parsed.source,
       targets,
       parsed.label,
-      { targets: commandCenterState.broadcastTargets },
+      {
+        targets: commandCenterState.broadcastTargets,
+        quietSuccess: true,
+      },
     );
     if (ok) refreshAfterSend(targets);
   });

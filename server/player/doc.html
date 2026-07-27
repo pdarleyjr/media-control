@@ -44,6 +44,9 @@
       document.body.dataset.fit = fit;
 
       var img = document.getElementById('page');
+      img.decoding = 'async';
+      var prefetchImage = new Image();
+      prefetchImage.decoding = 'async';
       var statusEl = document.getElementById('status');
       var page = Math.max(1, parseInt(params.get('page') || '1', 10) || 1);
       var pages = 1;
@@ -69,8 +72,11 @@
       }
       function prefetch(n) {
         if (n < 1 || n > pages) return;
-        var im = new Image();
-        im.src = pageUrl(n);
+        // Keep one reusable look-ahead surface. Creating separate next/previous
+        // Image instances on every slide change made five-display PowerPoint
+        // playback retain unnecessary decoded PNG surfaces under memory
+        // pressure.
+        prefetchImage.src = pageUrl(n);
       }
       function currentState() {
         var paused = !playTimer;
@@ -136,7 +142,6 @@
         img.src = pageUrl(page);
         img.onload = function () {
           prefetch(page + 1);
-          prefetch(page - 1);
           publishScreenshot();
         };
         if (announce !== false) showStatus();

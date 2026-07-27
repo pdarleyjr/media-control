@@ -135,10 +135,52 @@
     };
   }
 
+  // A visible videowall may use several Electron BrowserWindows while Chromium
+  // services requestAnimationFrame only for the foreground window. Preserve the
+  // painted-frame path when it runs, but add a bounded timer attempt so decoded,
+  // attached media can still confirm from a background-throttled wall window.
+  function scheduleRenderConfirmation(confirm, options) {
+    var input = options || {};
+    if (typeof confirm !== 'function') return null;
+    var raf = typeof input.requestAnimationFrame === 'function'
+      ? input.requestAnimationFrame
+      : null;
+    var schedule = typeof input.setTimeout === 'function'
+      ? input.setTimeout
+      : null;
+    var fallbackDelayMs = Math.max(50, Number(input.fallbackDelayMs) || 250);
+    var settled = false;
+
+    function attempt() {
+      if (settled) return true;
+      settled = confirm() === true;
+      return settled;
+    }
+
+    if (raf) {
+      raf(function () {
+        raf(attempt);
+      });
+    } else if (schedule) {
+      schedule(attempt, 0);
+    }
+    if (schedule) schedule(attempt, fallbackDelayMs);
+    return {
+      attempt: attempt,
+      cancel: function () { settled = true; },
+    };
+  }
+
+  function shouldStartSelfHealingWatchdog(options) {
+    return !(options && options.managedProgramReceiver === true);
+  }
+
   return {
     createReceiverHealth: createReceiverHealth,
     normalizeHttpOrigin: normalizeHttpOrigin,
     resolveManagedServerUrl: resolveManagedServerUrl,
+    scheduleRenderConfirmation: scheduleRenderConfirmation,
+    shouldStartSelfHealingWatchdog: shouldStartSelfHealingWatchdog,
     validateRoomSnapshot: validateRoomSnapshot,
   };
 }));
