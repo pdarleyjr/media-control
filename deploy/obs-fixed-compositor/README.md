@@ -20,6 +20,9 @@ Run `install.sh` from a candidate checkout installed at
 retain mode `0600`. The camera URL, OBS WebSocket password, PeerTube stream key,
 and other runtime secrets must never be committed, copied into browser
 JavaScript, printed in deployment output, or passed as command-line arguments.
+Set `OBS_NODE_BIN` to the measured absolute path returned by the host's managed
+Node.js installation; the service deliberately does not assume
+`/usr/bin/node`.
 
 Before selecting an encoder, inspect and benchmark the target host. Set
 `OBS_H264_ENCODER` to the working OBS hardware encoder ID for that host (for
