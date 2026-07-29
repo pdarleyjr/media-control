@@ -57,6 +57,7 @@ jobs:
         working-directory: appliance/electron
         run: |
           npm ci
+          npm exec -- install-electron
           npm audit --audit-level=high
           test -x node_modules/electron/dist/electron
           node --check main.js
