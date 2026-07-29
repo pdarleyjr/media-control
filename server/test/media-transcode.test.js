@@ -38,8 +38,22 @@ test('isHdr: PQ / HLG / BT.2020 are HDR; bt709 is not', () => {
 });
 
 test('classifyMedia: already-web-safe sources are left alone', () => {
-  assert.deepEqual(MT.classifyMedia({ ext: '.mp4', vcodec: 'h264', pixfmt: 'yuv420p', transfer: 'bt709' }),
-    { webSafe: true, needsReencode: false, tonemap: false });
+  assert.deepEqual(MT.classifyMedia({
+    ext: '.mp4',
+    vcodec: 'h264',
+    pixfmt: 'yuv420p',
+    transfer: 'bt709',
+    audio_codec: 'aac',
+    audio_channels: 2,
+    audio_profile: 'LC',
+    audio_sample_fmt: 'fltp',
+    has_audio: true,
+  }), {
+    webSafe: true,
+    needsReencode: false,
+    audioNeedsTranscode: false,
+    tonemap: false,
+  });
   assert.equal(MT.classifyMedia({ ext: '.mov', vcodec: 'h264', pixfmt: 'yuv420p' }).webSafe, true);
   assert.equal(MT.classifyMedia({ ext: '.webm', vcodec: 'vp9', pixfmt: 'yuv420p' }).webSafe, true);
   assert.equal(MT.classifyMedia({ ext: '.webm', vcodec: 'av1', pixfmt: 'yuv420p' }).webSafe, true);
@@ -55,13 +69,63 @@ test('classifyMedia: H.264 in a non-web container → REMUX (copy video, fix con
 
 test('classifyMedia: HEVC / 10-bit / HDR → RE-ENCODE (tonemap PQ vs HLG only when HDR)', () => {
   assert.deepEqual(MT.classifyMedia({ ext: '.mp4', vcodec: 'hevc', pixfmt: 'yuv420p' }),
-    { webSafe: false, needsReencode: true, tonemap: false });
+    { webSafe: false, needsReencode: true, audioNeedsTranscode: false, tonemap: false });
   assert.equal(MT.classifyMedia({ ext: '.mp4', vcodec: 'h264', pixfmt: 'yuv420p10le' }).needsReencode, true);
   // The DolbyElement case: HEVC Main10 + Dolby Vision (PQ) in an .mkv
   const dv = MT.classifyMedia({ ext: '.mkv', vcodec: 'hevc', pixfmt: 'yuv420p10le', transfer: 'smpte2084', colorspace: 'bt2020nc' });
-  assert.deepEqual(dv, { webSafe: false, needsReencode: true, tonemap: 'pq' });
+  assert.deepEqual(dv, { webSafe: false, needsReencode: true, audioNeedsTranscode: false, tonemap: 'pq' });
   // HLG source → 'hlg' (stamps a different input transfer)
   assert.equal(MT.classifyMedia({ ext: '.mkv', vcodec: 'hevc', pixfmt: 'yuv420p10le', transfer: 'arib-std-b67' }).tonemap, 'hlg');
+});
+
+test('classifyMedia: MP4 audio compatibility covers AAC stereo, multichannel, AC-3, E-AC-3, PCM, Opus, MP3, and silence', () => {
+  const base = {
+    ext: '.mp4',
+    vcodec: 'h264',
+    pixfmt: 'yuv420p',
+    transfer: 'bt709',
+    has_audio: true,
+    audio_channels: 2,
+    audio_sample_fmt: 'fltp',
+  };
+  const compatible = MT.classifyMedia({ ...base, audio_codec: 'aac', audio_profile: 'LC' });
+  assert.equal(compatible.webSafe, true);
+  assert.equal(compatible.audioNeedsTranscode, false);
+
+  for (const sample of [
+    { audio_codec: 'aac', audio_channels: 6, audio_profile: 'LC' },
+    { audio_codec: 'ac3' },
+    { audio_codec: 'eac3' },
+    { audio_codec: 'pcm_s16le', audio_sample_fmt: 's16' },
+    { audio_codec: 'opus' },
+    { audio_codec: 'mp3' },
+  ]) {
+    const classification = MT.classifyMedia({ ...base, ...sample });
+    assert.equal(classification.webSafe, false, JSON.stringify(sample));
+    assert.equal(classification.needsReencode, false, 'audio-only repair must copy H.264');
+    assert.equal(classification.audioNeedsTranscode, true, JSON.stringify(sample));
+  }
+
+  const silent = MT.classifyMedia({ ...base, has_audio: false, audio_codec: null, audio_channels: null });
+  assert.equal(silent.webSafe, true);
+  assert.equal(silent.audioNeedsTranscode, false);
+});
+
+test('classifyMedia: WebM accepts Opus stereo but remuxes multichannel audio and rejects VP9 in MP4', () => {
+  const webm = {
+    ext: '.webm',
+    vcodec: 'vp9',
+    pixfmt: 'yuv420p',
+    has_audio: true,
+    audio_codec: 'opus',
+    audio_channels: 2,
+  };
+  assert.equal(MT.classifyMedia(webm).webSafe, true);
+  const multichannel = MT.classifyMedia({ ...webm, audio_channels: 6 });
+  assert.equal(multichannel.webSafe, false);
+  assert.equal(multichannel.needsReencode, true, 'VP9 cannot be copied into the MP4 delivery profile');
+  assert.equal(multichannel.audioNeedsTranscode, true);
+  assert.equal(MT.classifyMedia({ ...webm, ext: '.mp4' }).needsReencode, true);
 });
 
 test('buildTranscodeArgs: REMUX path copies video, forces stereo AAC + faststart', () => {
@@ -77,10 +141,25 @@ test('buildTranscodeArgs: REMUX path copies video, forces stereo AAC + faststart
 test('buildTranscodeArgs: RE-ENCODE (SDR) uses libx264 8-bit, no tonemap filter', () => {
   const a = MT.buildTranscodeArgs('/in.mp4', '/out.mp4', { needsReencode: true, tonemap: false });
   assert.ok(a.includes('libx264'));
-  assert.ok(a.includes('-pix_fmt') && a[a.indexOf('-pix_fmt') + 1] === 'yuv420p');
+  assert.match(a[a.indexOf('-vf') + 1], /format=yuv420p/);
+  assert.match(a[a.indexOf('-vf') + 1], /min\(iw,1920\)/);
+  assert.equal(a[a.indexOf('-maxrate') + 1], '12M');
   assert.ok(a.includes('-threads') && a[a.indexOf('-threads') + 1] === '8');
   assert.ok(!a.some((x) => typeof x === 'string' && x.includes('tonemap')));
   assert.ok(a.includes('-ac') && a[a.indexOf('-ac') + 1] === '2');
+});
+
+test('buildTranscodeArgs preserves compatible AAC while bounding an ultrawide derivative', () => {
+  const args = MT.buildTranscodeArgs('/wall.mkv', '/wall.mp4', {
+    needsReencode: true,
+    tonemap: false,
+    audioNeedsTranscode: false,
+    sourceWidth: 5760,
+    sourceHeight: 1080,
+  });
+  assert.equal(args[args.indexOf('-c:a') + 1], 'copy');
+  assert.match(args[args.indexOf('-vf') + 1], /min\(iw,7680\)/);
+  assert.equal(args[args.indexOf('-maxrate') + 1], '35M');
 });
 
 test('buildTranscodeArgs: RE-ENCODE (HDR) stamps input + tonemaps; PQ vs HLG transfer', () => {

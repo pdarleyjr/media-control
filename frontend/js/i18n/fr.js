@@ -4,7 +4,7 @@
 export default {
   // Nav
   'nav.displays': 'Écrans',
-  'nav.content': 'Contenu',
+  'nav.content': 'Médiathèque',
   'nav.playlists': 'Listes de lecture',
   'nav.layouts': 'Mises en page',
   'nav.widgets': 'Widgets',
@@ -125,7 +125,7 @@ export default {
   'dashboard.toast.command_sent_with_offline': '{cmd} envoyé à {sent}/{total} appareils ({offline} hors ligne)',
 
   // Content library
-  'content.title': 'Bibliothèque de contenu',
+  'content.title': 'Médiathèque',
   'content.status_preparing': 'Préparation de la vidéo…',
   'content.status_ready': 'Prêt',
   'content.status_failed': 'Échec',

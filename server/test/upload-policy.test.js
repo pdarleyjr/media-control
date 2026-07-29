@@ -100,10 +100,20 @@ test('TUS finalize recovers canonical Office/PDF MIME from generic client metada
   // Keep this test focused on finalizeUpload's policy behavior. The test DB has
   // no real users/workspaces, and FK behavior is covered elsewhere.
   db.pragma('foreign_keys = OFF');
+  let jobSequence = 0;
+  const pipeline = {
+    enqueueVideo: () => ({ job: { id: `job-${++jobSequence}`, status: 'queued', stage: 'received', progress_pct: 0 } }),
+    enqueueThumbnailFinalize: () => ({ job: { id: `job-${++jobSequence}`, status: 'queued', stage: 'received', progress_pct: 0 } }),
+  };
   try {
     for (const r of rows) {
       const file = path.join(dir, r.name);
-      fs.writeFileSync(file, 'test bytes');
+      fs.writeFileSync(
+        file,
+        r.name.endsWith('.pdf')
+          ? Buffer.from('%PDF-1.7\n')
+          : Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00]),
+      );
       const inserted = await finalizeUpload({
         absPath: file,
         originalName: r.name,
@@ -111,11 +121,46 @@ test('TUS finalize recovers canonical Office/PDF MIME from generic client metada
         size: 10,
         userId: 'test-user',
         workspaceId: 'test-workspace',
+        contentDir: dir,
+        pipeline,
       });
       assert.equal(inserted.mime_type, r.expected);
       assert.equal(inserted.filename, r.name);
       assert.equal(fs.existsSync(file), false);
+      assert.equal(inserted.media_job.status, 'queued');
     }
+  } finally {
+    db.pragma('foreign_keys = ON');
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('TUS finalize rolls back the catalog and removes materialized bytes when queueing fails', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-upload-queue-fail-'));
+  const file = path.join(dir, 'plan.pdf');
+  fs.writeFileSync(file, '%PDF-1.7\n');
+  const before = db.prepare('SELECT COUNT(*) AS count FROM content').get().count;
+  db.pragma('foreign_keys = OFF');
+  try {
+    await assert.rejects(
+      finalizeUpload({
+        absPath: file,
+        originalName: 'plan.pdf',
+        mimeType: 'application/pdf',
+        size: fs.statSync(file).size,
+        userId: 'test-user',
+        workspaceId: 'test-workspace',
+        contentDir: dir,
+        pipeline: {
+          enqueueThumbnailFinalize: () => {
+            throw new Error('queue unavailable');
+          },
+        },
+      }),
+      /queue unavailable/,
+    );
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM content').get().count, before);
+    assert.deepEqual(fs.readdirSync(dir), [], 'neither assembled nor renamed partial bytes remain');
   } finally {
     db.pragma('foreign_keys = ON');
     fs.rmSync(dir, { recursive: true, force: true });

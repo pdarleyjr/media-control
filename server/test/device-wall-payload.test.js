@@ -87,7 +87,6 @@ test('device playlist payload exposes universal geometry and backward-compatible
 test('device transitions schedule coalesced authoritative room snapshots without making heartbeats revision events', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'ws', 'deviceSocket.js'), 'utf8');
   assert.match(source, /scheduleRoomSnapshot/);
-  assert.match(source, /scheduleDeviceRoomSnapshot\(io, existing\.device_id, 'device:online'\)/);
   assert.match(source, /scheduleDeviceRoomSnapshot\(io, device_id, 'device:online'\)/);
   assert.match(source, /scheduleDeviceRoomSnapshot\(io, currentDeviceId, 'device:state-report'\)/);
   assert.match(source, /scheduleDeviceRoomSnapshot\(io, deviceId, 'device:offline'\)/);

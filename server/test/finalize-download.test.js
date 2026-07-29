@@ -24,6 +24,8 @@ function makeDb() {
       filepath TEXT NOT NULL DEFAULT '',
       mime_type TEXT NOT NULL,
       file_size INTEGER NOT NULL DEFAULT 0,
+      processing_status TEXT NOT NULL DEFAULT 'uploaded',
+      version INTEGER NOT NULL DEFAULT 1,
       access_level TEXT NOT NULL DEFAULT 'private',
       created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     );
@@ -36,7 +38,8 @@ function makeDb() {
       local_path TEXT,
       content_id TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
-      progress_pct INTEGER DEFAULT 0
+      progress_pct INTEGER DEFAULT 0,
+      error_msg TEXT
     );
   `);
   return db;
@@ -55,8 +58,29 @@ function seedJob(db, over = {}) {
 // Temp content dir with a fake finished download file for the job.
 function makeContentDir(jobId, ext) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-dl-'));
-  if (jobId) fs.writeFileSync(path.join(dir, `${jobId}.${ext}`), Buffer.alloc(1234, 7));
+  if (jobId) {
+    const header = Buffer.from('\x00\x00\x00\x18ftypisom\x00\x00\x00\x00isommp42', 'binary');
+    fs.writeFileSync(
+      path.join(dir, `${jobId}.${ext}`),
+      Buffer.concat([header, Buffer.alloc(1234 - header.length, 7)]),
+    );
+  }
   return dir;
+}
+
+function makePipeline() {
+  let sequence = 0;
+  const queued = [];
+  const enqueue = (kind, args) => {
+    const job = { id: `media-job-${++sequence}`, status: 'queued', stage: 'received', progress_pct: 0 };
+    queued.push({ kind, args, job });
+    return { created: true, job };
+  };
+  return {
+    queued,
+    enqueueVideo: (args) => enqueue('video_normalize', args),
+    enqueueThumbnailFinalize: (args) => enqueue('thumbnail_finalize', args),
+  };
 }
 
 // ───────────────────────── pure row builder ─────────────────────────
@@ -110,8 +134,9 @@ test('finalizeDownload: completed job yields a content row with the right file p
   const db = makeDb();
   const job = seedJob(db);
   const contentDir = makeContentDir(job.id, 'mp4');
+  const pipeline = makePipeline();
 
-  const row = finalizeDownload({ db, contentDir, jobId: job.id });
+  const row = finalizeDownload({ db, contentDir, jobId: job.id, pipeline });
 
   assert.ok(row, 'a content row was created');
   assert.equal(row.filepath, 'job-1.mp4');         // reachable: points at the finished file
@@ -120,6 +145,9 @@ test('finalizeDownload: completed job yields a content row with the right file p
   assert.equal(row.mime_type, 'video/mp4');
   assert.equal(row.file_size, 1234);               // real on-disk size
   assert.equal(row.access_level, 'private');       // downloads are private by default
+  assert.equal(row.processing_status, 'uploaded');
+  assert.equal(row.media_job.status, 'queued');
+  assert.equal(pipeline.queued.length, 1);
 
   // The job is now linked back to the content row (no longer an orphan).
   const updated = db.prepare('SELECT content_id, local_path FROM download_jobs WHERE id = ?').get(job.id);
@@ -131,12 +159,14 @@ test('finalizeDownload: idempotent on re-poll — second call does NOT insert a 
   const db = makeDb();
   const job = seedJob(db);
   const contentDir = makeContentDir(job.id, 'mp4');
+  const pipeline = makePipeline();
 
-  const first = finalizeDownload({ db, contentDir, jobId: job.id });
-  const second = finalizeDownload({ db, contentDir, jobId: job.id });
+  const first = finalizeDownload({ db, contentDir, jobId: job.id, pipeline });
+  const second = finalizeDownload({ db, contentDir, jobId: job.id, pipeline });
 
   assert.equal(first.id, second.id, 'same content row returned both times');
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM content').get().n, 1, 'exactly one content row exists');
+  assert.equal(pipeline.queued.length, 1, 'restart/re-poll does not enqueue a duplicate');
 });
 
 test('finalizeDownload: returns null when no finished file is on disk (nothing inserted)', () => {
@@ -144,7 +174,7 @@ test('finalizeDownload: returns null when no finished file is on disk (nothing i
   const job = seedJob(db);
   const emptyDir = makeContentDir(null);           // no file for the job
 
-  const row = finalizeDownload({ db, contentDir: emptyDir, jobId: job.id });
+  const row = finalizeDownload({ db, contentDir: emptyDir, jobId: job.id, pipeline: makePipeline() });
   assert.equal(row, null);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM content').get().n, 0);
   assert.equal(db.prepare('SELECT content_id FROM download_jobs WHERE id = ?').get(job.id).content_id, null);
@@ -153,5 +183,23 @@ test('finalizeDownload: returns null when no finished file is on disk (nothing i
 test('finalizeDownload: unknown job id is a safe no-op', () => {
   const db = makeDb();
   const contentDir = makeContentDir(null);
-  assert.equal(finalizeDownload({ db, contentDir, jobId: 'nope' }), null);
+  assert.equal(finalizeDownload({ db, contentDir, jobId: 'nope', pipeline: makePipeline() }), null);
+});
+
+test('finalizeDownload rejects corrupt completed bytes without publishing or deleting evidence', () => {
+  const db = makeDb();
+  const job = seedJob(db);
+  const contentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-dl-corrupt-'));
+  const file = path.join(contentDir, `${job.id}.mp4`);
+  fs.writeFileSync(file, 'not actually a video');
+  const row = finalizeDownload({
+    db,
+    contentDir,
+    jobId: job.id,
+    pipeline: makePipeline(),
+  });
+  assert.equal(row, null);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM content').get().n, 0);
+  assert.equal(db.prepare('SELECT status FROM download_jobs WHERE id=?').get(job.id).status, 'error');
+  assert.equal(fs.existsSync(file), true, 'failed source remains available for diagnosis/repair');
 });

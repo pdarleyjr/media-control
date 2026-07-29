@@ -3,7 +3,7 @@
 export default {
   // Nav (sidebar)
   'nav.displays': 'Schermi',
-  'nav.content': 'Contenuti',
+  'nav.content': 'Libreria multimediale',
   'nav.playlists': 'Playlist',
   'nav.layouts': 'Layout',
   'nav.widgets': 'Widget',
@@ -127,7 +127,7 @@ export default {
   'dashboard.toast.command_sent_with_offline': 'Comando {cmd} inviato a {sent}/{total} dispositivi ({offline} offline)',
 
   // Content library
-  'content.title': 'Libreria Contenuti',
+  'content.title': 'Libreria multimediale',
   'content.status_preparing': 'Preparazione del video…',
   'content.status_ready': 'Pronto',
   'content.status_failed': 'Operazione non riuscita',

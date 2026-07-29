@@ -16,6 +16,8 @@
 const path = require('path');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
+const { inspectMediaFile } = require('./media-integrity');
+const { getMediaPipeline } = require('./media-pipeline');
 
 // yt-dlp emits whatever container it muxed to (mp4 by default here, but
 // 'mp4/best' can fall back to webm/mkv). Map the on-disk extension to a sane
@@ -104,7 +106,7 @@ function resolveDownloadedFile(contentDir, jobId) {
  * @param {string} deps.jobId
  * @returns {object|null} the content row, or null if the file couldn't be resolved
  */
-function finalizeDownload({ db, contentDir, jobId }) {
+function finalizeDownload({ db, contentDir, jobId, pipeline }) {
   const job = db.prepare('SELECT * FROM download_jobs WHERE id = ?').get(jobId);
   if (!job) return null;
 
@@ -119,7 +121,29 @@ function finalizeDownload({ db, contentDir, jobId }) {
   let size = 0;
   try { size = fs.statSync(path.join(contentDir, filename)).size; } catch { /* keep 0 */ }
 
-  const row = buildContentRowForDownload({ job, filename, size });
+  const absolutePath = path.join(contentDir, filename);
+  const integrity = inspectMediaFile({
+    filePath: absolutePath,
+    contentDir,
+    claimedMime: mimeFromExt(path.extname(filename)),
+    filename,
+  });
+  if (!integrity.ok) {
+    db.prepare(`
+      UPDATE download_jobs
+      SET status='error', error_msg=?
+      WHERE id=? AND content_id IS NULL
+    `).run(`Downloaded bytes failed media validation: ${integrity.code}`, jobId);
+    return null;
+  }
+  const row = buildContentRowForDownload({
+    job,
+    filename,
+    size,
+    mimeType: integrity.detectedMime,
+  });
+  const mediaPipeline = pipeline || getMediaPipeline({ db, contentDir });
+  let queued;
 
   // Single synchronous transaction: insert the content row + link it back onto
   // the job. The job-side guard (content_id IS NULL) keeps a concurrent/replayed
@@ -136,12 +160,57 @@ function finalizeDownload({ db, contentDir, jobId }) {
       db.prepare('DELETE FROM content WHERE id = ?').run(row.id);
       return null;
     }
+    try {
+      db.prepare(`
+        UPDATE content SET processing_status='uploaded' WHERE id=?
+      `).run(row.id);
+      db.prepare(`
+        INSERT INTO content_media_metadata (
+          content_id, workspace_id, source_type, source_identity, source_url,
+          detected_mime_type, remote_health_status, remote_source_kind,
+          created_at, updated_at
+        ) VALUES (?, ?, 'legacy_url_download', ?, ?, ?, 'localized',
+          'imported_local', strftime('%s','now'), strftime('%s','now'))
+      `).run(row.id, row.workspace_id, job.source_url, job.source_url, row.mime_type);
+    } catch (error) {
+      if (!/no such table|no such column/i.test(error.message)) throw error;
+    }
+    queued = row.mime_type.startsWith('video/')
+      ? mediaPipeline.enqueueVideo({
+        contentId: row.id,
+        workspaceId: row.workspace_id,
+        userId: row.user_id,
+        absolutePath,
+        expectedVersion: 1,
+        expectedFilepath: row.filepath,
+        sourceType: 'legacy_url_download',
+      })
+      : mediaPipeline.enqueueThumbnailFinalize({
+        contentId: row.id,
+        workspaceId: row.workspace_id,
+        userId: row.user_id,
+        absolutePath,
+        expectedVersion: 1,
+        expectedFilepath: row.filepath,
+        mimeType: row.mime_type,
+        sourceType: 'legacy_url_download',
+      });
     return row.id;
   });
 
   const insertedId = tx();
   const finalId = insertedId || db.prepare('SELECT content_id FROM download_jobs WHERE id = ?').get(jobId)?.content_id;
-  return finalId ? db.prepare('SELECT * FROM content WHERE id = ?').get(finalId) : null;
+  if (!finalId) return null;
+  const content = db.prepare('SELECT * FROM content WHERE id = ?').get(finalId);
+  return queued ? {
+    ...content,
+    media_job: {
+      id: queued.job.id,
+      status: queued.job.status,
+      stage: queued.job.stage,
+      progress_pct: queued.job.progress_pct,
+    },
+  } : content;
 }
 
 module.exports = { buildContentRowForDownload, mimeFromExt, resolveDownloadedFile, finalizeDownload };

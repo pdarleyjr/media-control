@@ -20,9 +20,26 @@ const {
 const { contentRowsWithThumbnailUrls } = require('../lib/content-response');
 const { gridUrlReferencesContent } = require('../lib/public-content-access');
 const { checkRemoteUrlShape, assertRemoteUrlSafe } = require('../lib/ssrf-policy');
-const { isDocThumbnailMime, kickDocThumbnail } = require('../lib/doc-thumbnail');
-const { isHeicMime, heicToJpeg, kickHevcTranscodeIfNeeded } = require('../lib/media-transcode');
-const { prewarmUploadedContent } = require('../lib/node-registry');
+const {
+  inspectMediaFile,
+  isActiveContentMime,
+} = require('../lib/media-integrity');
+const {
+  getMediaPipeline,
+  normalizeYoutubeId,
+  youtubeSourceIdentity,
+} = require('../lib/media-pipeline');
+const {
+  contentCursorPredicate,
+  contentFtsQuery,
+  decodeContentCursor,
+  encodeContentCursor,
+} = require('../lib/content-pagination');
+const {
+  requestMatchesEtag,
+  thumbnailCacheIdentity,
+} = require('../lib/content-thumbnail-cache');
+const { normalizePosterRequest } = require('../lib/thumbnail-studio');
 const { logActivity, getClientIp } = require('../services/activity');
 
 function visibilityContext(req, overrides = {}) {
@@ -55,10 +72,67 @@ function contentSelect(req) {
   return {
     sql: `
       SELECT c.*, w.organization_id, u.name AS owner_name, u.email AS owner_email,
+        cmm.source_type AS media_source_type,
+        cmm.source_identity AS media_source_identity,
+        cmm.source_url AS media_source_url,
+        cmm.detected_mime_type,
+        cmm.source_sha256,
+        cmm.container AS media_container,
+        cmm.video_codec,
+        cmm.video_profile,
+        cmm.pixel_format,
+        cmm.color_transfer,
+        cmm.audio_codec,
+        cmm.audio_profile,
+        cmm.audio_sample_format,
+        cmm.audio_channels,
+        cmm.audio_channel_layout,
+        cmm.bitrate_bps,
+        cmm.frame_rate,
+        cmm.thumbnail_generation,
+        cmm.thumbnail_provenance,
+        cmm.remote_health_status,
+        cmm.remote_source_kind,
+        cmm.remote_last_validated_at,
+        cmm.remote_error_code,
+        cmm.remote_final_url,
+        cmm.remote_content_length,
+        cmm.remote_range_supported,
+        cmm.remote_cors_allowed,
+        cmm.remote_etag,
+        cmm.remote_last_modified,
         EXISTS (
           SELECT 1 FROM content_template_assignments cta
           WHERE cta.content_id = c.id AND cta.workspace_id = ?
         ) AS template_assigned,
+        EXISTS (
+          SELECT 1 FROM content_favorites cf
+          WHERE cf.content_id = c.id AND cf.user_id = ?
+        ) AS is_favorite,
+        (
+          SELECT COUNT(*)
+          FROM content duplicate_content
+          LEFT JOIN content_media_metadata duplicate_media
+            ON duplicate_media.content_id = duplicate_content.id
+          WHERE duplicate_content.id <> c.id
+            AND duplicate_content.workspace_id IS c.workspace_id
+            AND duplicate_content.archived_at IS NULL
+            AND COALESCE(c.original_sha256, cmm.source_sha256) IS NOT NULL
+            AND COALESCE(duplicate_content.original_sha256, duplicate_media.source_sha256)
+              = COALESCE(c.original_sha256, cmm.source_sha256)
+        ) AS duplicate_count,
+        EXISTS (
+          SELECT 1
+          FROM asset_checksums ac
+          JOIN node_assets na ON na.asset_id = ac.asset_id
+          JOIN managed_nodes mn ON mn.node_id = na.node_id
+          WHERE ac.content_id = c.id
+            AND mn.workspace_id = ?
+            AND na.desired = 1
+            AND na.sync_status = 'ready'
+            AND na.checksum_verified = 1
+            AND na.generation = ac.generation
+        ) AS classroom_ready,
         (SELECT COUNT(*) FROM playlist_items pi WHERE pi.content_id = c.id)
           + (SELECT COUNT(*) FROM assignments a WHERE a.content_id = c.id)
           + (SELECT COUNT(*) FROM schedules s WHERE s.content_id = c.id)
@@ -73,8 +147,9 @@ function contentSelect(req) {
       FROM content c
       LEFT JOIN workspaces w ON w.id = c.workspace_id
       LEFT JOIN users u ON u.id = c.user_id
+      LEFT JOIN content_media_metadata cmm ON cmm.content_id = c.id
     `,
-    params: [workspaceId],
+    params: [workspaceId, req.user?.id || '', workspaceId],
   };
 }
 
@@ -83,6 +158,9 @@ function decorateContent(row, req) {
   const caps = contentCapabilities(row, visibilityContext(req, { includeArchived: true }));
   return {
     ...row,
+    is_favorite: row.is_favorite === 1,
+    duplicate_count: Number(row.duplicate_count) || 0,
+    classroom_ready: row.classroom_ready === 1,
     visibility: {
       access_level: row.access_level || VISIBILITY.PRIVATE,
       owner_user_id: row.user_id || null,
@@ -105,6 +183,38 @@ function decorateContent(row, req) {
       can_delete: caps.canDelete,
       can_transfer: caps.canTransfer,
       can_review_publication_requests: caps.canReviewPublicationRequests,
+    },
+    media: {
+      source_type: row.media_source_type || null,
+      source_identity: row.media_source_identity || null,
+      source_url: row.media_source_url || null,
+      detected_mime_type: row.detected_mime_type || row.mime_type || null,
+      source_sha256: row.source_sha256 || null,
+      container: row.media_container || null,
+      video_codec: row.video_codec || null,
+      video_profile: row.video_profile || null,
+      pixel_format: row.pixel_format || null,
+      color_transfer: row.color_transfer || null,
+      audio_codec: row.audio_codec || null,
+      audio_profile: row.audio_profile || null,
+      audio_sample_format: row.audio_sample_format || null,
+      audio_channels: row.audio_channels ?? null,
+      audio_channel_layout: row.audio_channel_layout || null,
+      bitrate_bps: row.bitrate_bps ?? null,
+      frame_rate: row.frame_rate ?? null,
+      thumbnail_generation: row.thumbnail_generation ?? null,
+      thumbnail_provenance: row.thumbnail_provenance || null,
+      remote_health_status: row.remote_health_status || null,
+      remote_source_kind: row.remote_source_kind || null,
+      remote_last_validated_at: row.remote_last_validated_at || null,
+      remote_error_code: row.remote_error_code || null,
+      remote_final_url: row.remote_final_url || null,
+      remote_content_length: row.remote_content_length ?? null,
+      remote_range_supported: row.remote_range_supported === 1,
+      remote_cors_allowed: row.remote_cors_allowed === 1,
+      remote_etag: row.remote_etag || null,
+      remote_last_modified: row.remote_last_modified || null,
+      externally_dependent: Boolean(row.remote_url && !row.filepath),
     },
   };
 }
@@ -228,13 +338,108 @@ function safeFilename(name) {
   return sanitizeString((name || '').normalize('NFC'));
 }
 
+function normalizeContentTags(tags) {
+  if (!Array.isArray(tags)) return null;
+  const normalized = [];
+  for (const value of tags) {
+    if (typeof value !== 'string') return null;
+    const tag = sanitizeString(value.normalize('NFC').trim()).slice(0, 40);
+    if (tag && !normalized.includes(tag)) normalized.push(tag);
+    if (normalized.length > 20) return null;
+  }
+  return normalized;
+}
+
+const SAVED_VIEW_FILTERS = new Set([
+  'search', 'visibility', 'type', 'owner', 'archived', 'processing',
+  'codec', 'dimensions', 'source', 'thumbnail', 'p3', 'favorite', 'sort',
+]);
+
+function normalizeSavedViewQuery(query) {
+  if (!query || typeof query !== 'object' || Array.isArray(query)) return null;
+  const normalized = {};
+  for (const [key, value] of Object.entries(query)) {
+    if (!SAVED_VIEW_FILTERS.has(key)) continue;
+    if (typeof value !== 'string' && typeof value !== 'boolean') return null;
+    const serialized = typeof value === 'string' ? value.trim().slice(0, 120) : value;
+    if (serialized !== '' && serialized !== false) normalized[key] = serialized;
+  }
+  return normalized;
+}
+
 function removeLocalContentFile(relativePath) {
   if (!relativePath || /^https?:\/\//i.test(relativePath)) return;
   const root = path.resolve(config.contentDir);
   const candidate = path.resolve(root, path.basename(relativePath));
   if (path.dirname(candidate) !== root) return;
   try { if (fs.existsSync(candidate)) fs.unlinkSync(candidate); } catch (error) {
-    console.warn(`Could not remove superseded content file ${path.basename(relativePath)}: ${error.message}`);
+    console.warn('Could not remove a superseded content file', {
+      code: String(error?.code || 'UNKNOWN').replace(/[^A-Z0-9_-]/gi, '').slice(0, 32),
+    });
+  }
+}
+
+function validateUploadedFile(req, res) {
+  let integrity;
+  try {
+    integrity = inspectMediaFile({
+      filePath: req.file.path,
+      contentDir: config.contentDir,
+      claimedMime: req.file.mimetype,
+      filename: req.file.originalname,
+    });
+  } catch (error) {
+    removeLocalContentFile(req.file.filename);
+    res.status(422).json({
+      code: 'MEDIA_VALIDATION_FAILED',
+      error: 'The uploaded file could not be inspected.',
+    });
+    return false;
+  }
+  if (!integrity.ok) {
+    removeLocalContentFile(req.file.filename);
+    const status = integrity.code === 'SOURCE_TOO_LARGE' ? 413 : 415;
+    res.status(status).json({
+      code: integrity.code,
+      error: integrity.code === 'ACTIVE_CONTENT_REJECTED'
+        ? 'Executable HTML, JavaScript, and SVG uploads are not accepted as media.'
+        : 'The file contents do not match a supported media type.',
+      detected_mime_type: integrity.detectedMime || null,
+    });
+    return false;
+  }
+  req.file.mimetype = integrity.detectedMime;
+  req.file.size = integrity.size;
+  return true;
+}
+
+function publicMediaJob(job) {
+  if (!job) return null;
+  return {
+    id: job.id,
+    content_id: job.content_id,
+    job_type: job.job_type,
+    status: job.status,
+    stage: job.stage,
+    progress_pct: job.progress_pct,
+    attempts: job.attempts,
+    max_attempts: job.max_attempts,
+    retryable: job.retryable === 1,
+    error_code: job.error_code || null,
+    created_at: job.created_at,
+    updated_at: job.updated_at,
+    started_at: job.started_at || null,
+    completed_at: job.completed_at || null,
+  };
+}
+
+function contentFtsAvailable(database = db) {
+  try {
+    return Boolean(database.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='content_fts'",
+    ).get());
+  } catch {
+    return false;
   }
 }
 
@@ -260,7 +465,10 @@ function validateRemoteUrl(url) {
 // switch-workspace, not a special list filter.
 // folder_id filter: omit for everything; "root" or "" for root-level only; <uuid> for that folder.
 router.get('/', (req, res) => {
-  if (!req.workspaceId) return res.json([]);
+  const cursorMode = req.query.pagination === 'cursor' || req.query.cursor !== undefined;
+  if (!req.workspaceId) {
+    return res.json(cursorMode ? { items: [], next_cursor: null } : []);
+  }
   const folder = req.query.folder;
   const folderId = req.query.folder_id;
   const ctx = visibilityContext(req);
@@ -290,25 +498,226 @@ router.get('/', (req, res) => {
   if (req.query.owner === 'me') {
     sql += ' AND c.user_id = ?';
     params.push(req.user.id);
+  } else if (req.query.owner && String(req.query.owner).length <= 128) {
+    sql += ' AND c.user_id = ?';
+    params.push(String(req.query.owner));
   }
   if (req.query.type) {
     sql += ' AND (c.content_type = ? OR c.mime_type LIKE ?)';
     params.push(req.query.type, `${req.query.type}/%`);
   }
   if (req.query.search) {
-    sql += ' AND (c.filename LIKE ? ESCAPE \'\\\' OR COALESCE(c.tags_json, \'\') LIKE ? ESCAPE \'\\\')';
-    const q = `%${String(req.query.search).replace(/[\\%_]/g, '\\$&')}%`;
-    params.push(q, q);
+    const ftsQuery = contentFtsQuery(req.query.search);
+    if (ftsQuery && contentFtsAvailable(db)) {
+      sql += ' AND c.id IN (SELECT content_id FROM content_fts WHERE content_fts MATCH ?)';
+      params.push(ftsQuery);
+    } else {
+      sql += ` AND (
+        c.filename LIKE ? ESCAPE '\\'
+        OR COALESCE(c.tags_json, '') LIKE ? ESCAPE '\\'
+        OR COALESCE(c.metadata_json, '') LIKE ? ESCAPE '\\'
+        OR COALESCE(u.name, '') LIKE ? ESCAPE '\\'
+        OR COALESCE(u.email, '') LIKE ? ESCAPE '\\'
+      )`;
+      const q = `%${String(req.query.search).replace(/[\\%_]/g, '\\$&')}%`;
+      params.push(q, q, q, q, q);
+    }
   }
-  sql += ' ORDER BY c.folder, c.created_at DESC LIMIT ? OFFSET ?';
+  if (req.query.processing) {
+    const processing = String(req.query.processing).toLowerCase();
+    if (['ready', 'processing', 'failed', 'uploaded'].includes(processing)) {
+      sql += processing === 'ready'
+        ? " AND c.processing_status IN ('ready','completed')"
+        : ' AND c.processing_status = ?';
+      if (processing !== 'ready') params.push(processing);
+    }
+  }
+  if (req.query.codec && /^[a-z0-9._-]{1,32}$/i.test(String(req.query.codec))) {
+    sql += ' AND (LOWER(cmm.video_codec) = LOWER(?) OR LOWER(cmm.audio_codec) = LOWER(?))';
+    params.push(String(req.query.codec), String(req.query.codec));
+  }
+  if (req.query.dimensions === '4k') {
+    sql += ' AND (c.width >= 3840 OR c.height >= 2160)';
+  } else if (req.query.dimensions === 'hd') {
+    sql += ' AND c.width >= 1280 AND c.height >= 720';
+  } else if (req.query.dimensions === 'portrait') {
+    sql += ' AND c.height > c.width';
+  } else if (req.query.dimensions === 'landscape') {
+    sql += ' AND c.width >= c.height AND c.width IS NOT NULL';
+  } else if (req.query.dimensions === 'unknown') {
+    sql += ' AND (c.width IS NULL OR c.height IS NULL)';
+  }
+  if (req.query.source) {
+    const source = String(req.query.source).toLowerCase();
+    if (source === 'local') {
+      sql += ' AND c.filepath IS NOT NULL';
+    } else if (source === 'remote') {
+      sql += ' AND c.remote_url IS NOT NULL AND c.filepath IS NULL';
+    } else if (/^[a-z0-9._-]{1,32}$/.test(source)) {
+      sql += ' AND LOWER(cmm.source_type) = ?';
+      params.push(source);
+    }
+  }
+  if (req.query.thumbnail === 'ready') {
+    sql += " AND c.thumbnail_path IS NOT NULL AND TRIM(c.thumbnail_path) <> ''";
+  } else if (req.query.thumbnail === 'missing') {
+    sql += " AND (c.thumbnail_path IS NULL OR TRIM(c.thumbnail_path) = '')";
+  }
+  if (req.query.p3 === 'ready') {
+    sql += ` AND EXISTS (
+      SELECT 1 FROM asset_checksums filter_ac
+      JOIN node_assets filter_na ON filter_na.asset_id = filter_ac.asset_id
+      JOIN managed_nodes filter_mn ON filter_mn.node_id = filter_na.node_id
+      WHERE filter_ac.content_id = c.id AND filter_mn.workspace_id = ?
+        AND filter_na.desired = 1 AND filter_na.sync_status = 'ready'
+        AND filter_na.checksum_verified = 1
+        AND filter_na.generation = filter_ac.generation
+    )`;
+    params.push(req.workspaceId);
+  } else if (req.query.p3 === 'pending') {
+    sql += ` AND NOT EXISTS (
+      SELECT 1 FROM asset_checksums filter_ac
+      JOIN node_assets filter_na ON filter_na.asset_id = filter_ac.asset_id
+      JOIN managed_nodes filter_mn ON filter_mn.node_id = filter_na.node_id
+      WHERE filter_ac.content_id = c.id AND filter_mn.workspace_id = ?
+        AND filter_na.desired = 1 AND filter_na.sync_status = 'ready'
+        AND filter_na.checksum_verified = 1
+        AND filter_na.generation = filter_ac.generation
+    )`;
+    params.push(req.workspaceId);
+  }
+  if (req.query.favorite === '1' || req.query.favorite === 'true') {
+    sql += ' AND EXISTS (SELECT 1 FROM content_favorites filter_cf WHERE filter_cf.content_id = c.id AND filter_cf.user_id = ?)';
+    params.push(req.user.id);
+  }
   const limit = Math.max(1, Math.min(Number.parseInt(req.query.limit, 10) || 100, 500));
-  const offset = Math.max(0, Number.parseInt(req.query.offset, 10) || 0);
-  params.push(limit, offset);
-  const content = db.prepare(sql).all(...params);
-  res.json(contentRowsWithThumbnailUrls(
+  if (cursorMode && req.query.cursor) {
+    let cursor;
+    try {
+      cursor = decodeContentCursor(req.query.cursor);
+    } catch {
+      return res.status(400).json({
+        code: 'INVALID_CONTENT_CURSOR',
+        error: 'The pagination cursor is invalid or expired.',
+      });
+    }
+    const predicate = contentCursorPredicate(cursor);
+    sql += ` AND ${predicate.sql}`;
+    params.push(...predicate.params);
+  }
+  sql += " ORDER BY COALESCE(c.folder, '') ASC, c.created_at DESC, c.id DESC LIMIT ?";
+  params.push(cursorMode ? limit + 1 : limit);
+  if (!cursorMode) {
+    const offset = Math.max(0, Number.parseInt(req.query.offset, 10) || 0);
+    sql += ' OFFSET ?';
+    params.push(offset);
+  }
+  const rows = db.prepare(sql).all(...params);
+  const hasMore = cursorMode && rows.length > limit;
+  const content = cursorMode ? rows.slice(0, limit) : rows;
+  const items = contentRowsWithThumbnailUrls(
     content.map((row) => decorateContent(row, req)),
     { secret: config.jwtSecret, ttlSeconds: 3600 },
+  );
+  if (!cursorMode) return res.json(items);
+  const nextCursor = hasMore ? encodeContentCursor(content.at(-1)) : null;
+  if (nextCursor) res.setHeader('X-Next-Cursor', nextCursor);
+  return res.json({ items, next_cursor: nextCursor });
+});
+
+router.get('/library-summary', (req, res) => {
+  if (!req.workspaceId) {
+    return res.json({
+      total_items: 0,
+      storage_bytes: 0,
+      archived_items: 0,
+      duplicate_items: 0,
+      favorite_items: 0,
+      retained_originals: 0,
+    });
+  }
+  const ctx = visibilityContext(req);
+  const scope = contentVisibilityScope(ctx, { alias: 'c', includeArchived: true });
+  let where = scope.clause;
+  const params = [...scope.params];
+  if (!ctx.isPlatformAdmin && ctx.orgRole !== 'org_owner' && ctx.orgRole !== 'org_admin' && ctx.workspaceRole !== 'workspace_admin') {
+    where += ' AND (c.archived_at IS NULL OR c.user_id = ?)';
+    params.push(req.user.id);
+  }
+  const row = db.prepare(`
+    SELECT
+      COUNT(*) AS total_items,
+      COALESCE(SUM(COALESCE(c.file_size, 0)), 0) AS storage_bytes,
+      COALESCE(SUM(CASE WHEN c.archived_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS archived_items,
+      COALESCE(SUM(CASE WHEN c.original_filepath IS NOT NULL THEN 1 ELSE 0 END), 0) AS retained_originals,
+      COALESCE(SUM(CASE WHEN EXISTS (
+        SELECT 1 FROM content_favorites summary_cf
+        WHERE summary_cf.content_id = c.id AND summary_cf.user_id = ?
+      ) THEN 1 ELSE 0 END), 0) AS favorite_items,
+      COALESCE(SUM(CASE WHEN EXISTS (
+        SELECT 1
+        FROM content summary_duplicate
+        LEFT JOIN content_media_metadata summary_media
+          ON summary_media.content_id = summary_duplicate.id
+        WHERE summary_duplicate.id <> c.id
+          AND summary_duplicate.workspace_id IS c.workspace_id
+          AND summary_duplicate.archived_at IS NULL
+          AND COALESCE(c.original_sha256, cmm.source_sha256) IS NOT NULL
+          AND COALESCE(summary_duplicate.original_sha256, summary_media.source_sha256)
+            = COALESCE(c.original_sha256, cmm.source_sha256)
+      ) THEN 1 ELSE 0 END), 0) AS duplicate_items
+    FROM content c
+    LEFT JOIN content_media_metadata cmm ON cmm.content_id = c.id
+    WHERE ${where}
+  `).get(req.user.id, ...params);
+  return res.json(Object.fromEntries(
+    Object.entries(row).map(([key, value]) => [key, Number(value) || 0]),
   ));
+});
+
+router.get('/saved-views', (req, res) => {
+  if (!req.workspaceId) return res.json([]);
+  const rows = db.prepare(`
+    SELECT id, name, query_json, created_at, updated_at
+    FROM content_saved_views
+    WHERE workspace_id = ? AND user_id = ?
+    ORDER BY name COLLATE NOCASE, created_at
+  `).all(req.workspaceId, req.user.id);
+  return res.json(rows.map((row) => {
+    let query = {};
+    try { query = normalizeSavedViewQuery(JSON.parse(row.query_json)) || {}; } catch { /* corrupt rows become empty views */ }
+    const { query_json: _queryJson, ...savedView } = row;
+    return { ...savedView, query };
+  }));
+});
+
+router.post('/saved-views', (req, res) => {
+  if (!req.workspaceId) return res.status(403).json({ error: 'No workspace context' });
+  const name = safeFilename(String(req.body.name || '').trim()).slice(0, 80);
+  const query = normalizeSavedViewQuery(req.body.query);
+  if (!name || !query) {
+    return res.status(400).json({ code: 'INVALID_SAVED_VIEW', error: 'A valid name and filter set are required.' });
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const id = uuidv4();
+  db.prepare(`
+    INSERT INTO content_saved_views
+      (id, workspace_id, user_id, name, query_json, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(id, req.workspaceId, req.user.id, name, JSON.stringify(query), now, now);
+  logActivity(req.user.id, 'content:saved_view_create', `saved_view_id: ${id}`, null, getClientIp(req), req.workspaceId);
+  return res.status(201).json({ id, name, query, created_at: now, updated_at: now });
+});
+
+router.delete('/saved-views/:viewId', (req, res) => {
+  if (!req.workspaceId) return res.status(404).json({ error: 'Saved view not found' });
+  const result = db.prepare(`
+    DELETE FROM content_saved_views
+    WHERE id = ? AND workspace_id = ? AND user_id = ?
+  `).run(req.params.viewId, req.workspaceId, req.user.id);
+  if (!result.changes) return res.status(404).json({ error: 'Saved view not found' });
+  logActivity(req.user.id, 'content:saved_view_delete', `saved_view_id: ${req.params.viewId}`, null, getClientIp(req), req.workspaceId);
+  return res.json({ deleted: true });
 });
 
 // Get folders list for the caller's current workspace.
@@ -333,120 +742,55 @@ router.post('/', requireContentWriteRole, checkStorageLimit, upload.single('file
         error: 'Uploaded file is empty. Select the original file and try again.',
       });
     }
-
-    // iPhone HEIC/HEIF -> JPEG up front: neither the display players nor sharp
-    // can render HEIC, so transcode to JPEG and continue as a normal image so the
-    // existing image branch generates dimensions + a thumbnail. Non-fatal: on
-    // failure we keep the original (it just won't render/thumbnail).
-    if (isHeicMime(req.file.mimetype)) {
-      const conv = await heicToJpeg(req.file.path, config.contentDir).catch(() => null);
-      if (conv) {
-        try { fs.unlinkSync(req.file.path); } catch { /* ignore */ }
-        req.file.path = conv.absPath;
-        req.file.filename = conv.filename;
-        req.file.mimetype = 'image/jpeg';
-        req.file.size = conv.size;
-      }
-    }
+    if (!validateUploadedFile(req, res)) return;
 
     const id = uuidv4();
     const filepath = req.file.filename;
-    let width = null, height = null, durationSec = null, thumbnailPath = null;
-
-    // Try to generate thumbnail, get dimensions, and detect duration.
-    // Thumbnail failure must be non-fatal: a 25MP triple-4K wallpaper can
-    // exceed libvips defaults or run out of RAM during decode, but the
-    // upload itself should still succeed (we keep the original file and
-    // accept that the thumbnail might be missing — the UI falls back to a
-    // placeholder).
-    try {
-      if (req.file.mimetype.startsWith('image/')) {
-        const sharp = require('sharp');
-        // limitInputPixels:false disables libvips's 268MP safety ceiling.
-        // We deliberately accept any pixel count the user uploaded — the
-        // multer fileSize cap is the real gate. failOn:'none' makes sharp
-        // skip transient ICC/EXIF warnings that would otherwise throw on
-        // some camera-exported images.
-        const sharpOpts = { limitInputPixels: false, failOn: 'none' };
-        try {
-          const metadata = await sharp(req.file.path, sharpOpts).metadata();
-          width = metadata.width;
-          height = metadata.height;
-        } catch (e) {
-          console.warn('sharp metadata read failed (non-fatal):', e.message);
-        }
-        // Thumbnail: best-effort. Wrapped in its own try so a thumbnail
-        // failure does not orphan the upload.
-        try {
-          thumbnailPath = `thumb_${filepath}`;
-          await sharp(req.file.path, sharpOpts)
-            .resize(config.thumbnailWidth)
-            .jpeg({ quality: 70 })
-            .toFile(path.join(config.contentDir, thumbnailPath));
-        } catch (e) {
-          console.warn('sharp thumbnail generation failed (non-fatal):', e.message);
-          thumbnailPath = null;
-        }
-      } else if (req.file.mimetype.startsWith('video/')) {
-        // Extract video duration and dimensions with ffprobe
-        try {
-          const { execFileSync } = require('child_process');
-          // Use execFileSync (not execSync) to prevent shell injection - args are NOT passed through shell
-          const probe = execFileSync('ffprobe', ['-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', req.file.path],
-            { timeout: 15000 }
-          ).toString();
-          const info = JSON.parse(probe);
-          if (info.format?.duration) durationSec = parseFloat(info.format.duration);
-          const videoStream = info.streams?.find(s => s.codec_type === 'video');
-          if (videoStream) {
-            width = videoStream.width;
-            height = videoStream.height;
-          }
-          // Generate video thumbnail at 2 second mark
-          thumbnailPath = `thumb_${filepath.replace(/\.[^.]+$/, '.jpg')}`;
-          try {
-            execFileSync('ffmpeg', ['-y', '-i', req.file.path, '-ss', '2', '-vframes', '1', '-vf', `scale=${config.thumbnailWidth}:-1`, path.join(config.contentDir, thumbnailPath)],
-              { timeout: 15000 }
-            );
-          } catch { thumbnailPath = null; }
-        } catch (e) {
-          console.warn('ffprobe failed:', e.message);
-        }
-      }
-    } catch (e) {
-      console.warn('Thumbnail/metadata generation failed:', e.message);
-    }
-
-    db.prepare(`
-      INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, duration_sec, thumbnail_path, width, height, access_level)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'private')
-    `).run(id, req.user.id, req.workspaceId, safeFilename(req.file.originalname), filepath, req.file.mimetype, req.file.size, durationSec, thumbnailPath, width, height);
-
-    // PDF/Office/ODF: thumbnail rendering (poppler / LibreOffice) can take a few
-    // seconds, so generate it in the background and attach it to the row when
-    // ready — the upload response returns immediately with thumbnail_path null,
-    // exactly like the YouTube transcode path. Non-fatal by construction.
-    if (isDocThumbnailMime(req.file.mimetype)) {
-      kickDocThumbnail(id, req.file.path, req.file.mimetype);
-    }
-    // iPhone HEVC (H.265) video -> H.264 MP4 in the background so it plays on the
-    // display browsers; no-op for H.264. Row is swapped in place when done.
-    if (req.file.mimetype.startsWith('video/')) {
-      kickHevcTranscodeIfNeeded(id, req.file.path, {
-        io: req.app.get('io'),
-      }).catch((error) => console.warn(`[video-normalize] ${id} failed: ${error.message}`));
-    } else {
-      prewarmUploadedContent(req.app.get('io'), db, {
-        contentId: id,
-        absolutePath: req.file.path,
-      }).catch((error) => console.warn(`[upload-prewarm] ${id} failed: ${error.message}`));
-    }
+    const pipeline = getMediaPipeline({ db, io: req.app.get('io') });
+    let job;
+    db.transaction(() => {
+      db.prepare(`
+        INSERT INTO content (
+          id, user_id, workspace_id, filename, filepath, mime_type, file_size,
+          processing_status, access_level
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'uploaded', 'private')
+      `).run(
+        id,
+        req.user.id,
+        req.workspaceId,
+        safeFilename(req.file.originalname),
+        filepath,
+        req.file.mimetype,
+        req.file.size,
+      );
+      job = (req.file.mimetype.startsWith('video/')
+        ? pipeline.enqueueVideo({
+          contentId: id,
+          workspaceId: req.workspaceId,
+          userId: req.user.id,
+          absolutePath: req.file.path,
+          expectedVersion: 1,
+          expectedFilepath: filepath,
+          sourceType: 'multipart_upload',
+        })
+        : pipeline.enqueueThumbnailFinalize({
+          contentId: id,
+          workspaceId: req.workspaceId,
+          userId: req.user.id,
+          absolutePath: req.file.path,
+          expectedVersion: 1,
+          expectedFilepath: filepath,
+          mimeType: req.file.mimetype,
+          sourceType: 'multipart_upload',
+        })).job;
+    })();
 
     const content = db.prepare('SELECT * FROM content WHERE id = ?').get(id);
-    res.status(201).json(content);
+    res.status(201).json({ ...content, media_job: publicMediaJob(job) });
   } catch (err) {
-    console.error('Upload error:', err);
-    res.status(500).json({ error: 'Upload failed' });
+    if (req.file?.filename) removeLocalContentFile(req.file.filename);
+    console.error('Upload error:', err.message);
+    res.status(500).json({ code: 'UPLOAD_FAILED', error: 'Upload could not be queued for processing.' });
   }
 });
 
@@ -454,129 +798,46 @@ router.post('/', requireContentWriteRole, checkStorageLimit, upload.single('file
 router.post('/remote', requireContentWriteRole, checkRemoteUrl, async (req, res) => {
   try {
     if (!req.workspaceId) return res.status(403).json({ error: 'No workspace context. Switch to a workspace before adding remote content.' });
-    const { url, name, mime_type } = req.body;
+    const { url, name } = req.body;
     if (!url) return res.status(400).json({ error: 'url is required' });
     // Full SSRF check: shape + DNS resolution. A new remote URL will be fetched
     // by the server/displays, so a public hostname that resolves to a private
     // address (DNS rebinding) must be rejected here, not just the literal host.
     const safe = await assertRemoteUrlSafe(url);
     if (!safe.ok) return res.status(400).json({ error: safe.error });
+    if (normalizeYoutubeId(url)) {
+      return res.status(422).json({
+        code: 'USE_YOUTUBE_INGEST',
+        error: 'Use Add YouTube so the video can be downloaded, optimized, and prepared for class.',
+      });
+    }
 
     const id = uuidv4();
     const filename = name || url.split('/').pop()?.split('?')[0] || 'remote_content';
-    // Derive MIME from the URL when the caller doesn't specify one. YouTube URLs
-    // must use video/youtube so the player renders via the IFrame API rather than
-    // the server-side screenshot fallback (which produces a frozen silent still).
-    let mimeType = mime_type;
-    if (!mimeType) {
-      if (/\.(mp4|webm|mkv|avi|mov|m4v)(?:[?#]|$)/i.test(url)) mimeType = 'video/mp4';
-      else if (/\.m3u8(?:[?#]|$)/i.test(url)) mimeType = 'application/x-mpegURL';
-      else if (/^rtmp?:\/\//i.test(url) || /^rtsp:\/\//i.test(url)) mimeType = 'video/mp4';
-      else if (/\.(jpe?g|png|gif|webp|bmp|svg|avif)(?:[?#]|$)/i.test(url)) mimeType = 'image/jpeg';
-      else if (/(?:youtube\.com\/(?:watch|embed|v|shorts)|youtu\.be\/)/i.test(url)) mimeType = 'video/youtube';
-      else mimeType = 'text/html';
-    }
-
-    db.prepare(`
-      INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, remote_url, access_level)
-      VALUES (?, ?, ?, ?, '', ?, 0, ?, 'private')
-    `).run(id, req.user.id, req.workspaceId, safeFilename(filename), mimeType, url);
-
+    const pipeline = getMediaPipeline({ db, io: req.app.get('io') });
+    let queued;
+    db.transaction(() => {
+      db.prepare(`
+        INSERT INTO content (
+          id, user_id, workspace_id, filename, filepath, mime_type, file_size,
+          remote_url, processing_status, access_level
+        ) VALUES (?, ?, ?, ?, '', 'application/octet-stream', 0, ?, 'processing', 'private')
+      `).run(id, req.user.id, req.workspaceId, safeFilename(filename), url);
+      queued = pipeline.enqueueRemoteValidation({
+        contentId: id,
+        workspaceId: req.workspaceId,
+        userId: req.user.id,
+        url,
+        expectedVersion: 1,
+      });
+    })();
     const content = db.prepare('SELECT * FROM content WHERE id = ?').get(id);
-    res.status(201).json(content);
+    res.status(202).json({ ...content, media_job: publicMediaJob(queued.job) });
   } catch (err) {
-    console.error('Remote URL add error:', err);
-    res.status(500).json({ error: 'Failed to add remote URL' });
+    console.error('Remote URL add error:', err.message);
+    res.status(500).json({ code: 'REMOTE_QUEUE_FAILED', error: 'Remote content validation could not be queued.' });
   }
 });
-
-// Background YouTube transcode via yt-dlp. Pulls the HIGHEST available quality
-// (4K/8K when offered) so content looks crisp on large displays and the ultra-
-// wide video-wall canvas. The transcoded file is rendered through the HTML5
-// video path, which works correctly across multi-tile walls — unlike the YouTube
-// iframe, which can only render the video pixels in a centered portion of its
-// own frame. Best-effort: if yt-dlp is missing OR transcode fails, the content
-// row keeps `mime_type='video/youtube'` so the player falls back to iframe embed.
-function transcodeYouTubeInBackground(contentId, videoId) {
-  const { execFile } = require('child_process');
-  const fs = require('fs');
-  const ext = 'mp4';
-  const outFilename = `${uuidv4()}.${ext}`;
-  const outPath = path.join(config.contentDir, outFilename);
-  // -f bestvideo+bestaudio/best pulls the best separate video + audio streams
-  // (4K/8K) and muxes them, falling back to a single progressive stream when
-  // separate tracks aren't offered. --merge-output-format mp4 keeps one playable
-  // file. --no-warnings + --no-progress keeps stderr quiet so we can detect real
-  // errors. NOTE: 4K+ on YouTube is typically VP9/AV1 — modern Chromium players
-  // and ExoPlayer decode these; only very old TV WebKits may need a 1080p source.
-  const args = [
-    '-f', 'bestvideo+bestaudio/best',
-    '--no-warnings', '--no-progress', '--no-playlist',
-    '--merge-output-format', 'mp4',
-    '-o', outPath,
-    `https://www.youtube.com/watch?v=${videoId}`,
-  ];
-  // Download + mux can take a while for 4K/8K. Default 30-minute timeout, tunable
-  // via YDLP_TIMEOUT_MS; runaway downloads still die at the cap.
-  const ydlpTimeoutMs = (() => {
-    const v = parseInt(process.env.YDLP_TIMEOUT_MS, 10);
-    return Number.isFinite(v) && v > 0 ? v : 30 * 60 * 1000;
-  })();
-  execFile('yt-dlp', args, { timeout: ydlpTimeoutMs }, (err, stdout, stderr) => {
-    if (err) {
-      console.warn(`yt-dlp transcode failed for ${videoId}: ${err.message}${stderr ? ' | stderr: ' + String(stderr).slice(0, 200) : ''}`);
-      // Mark transcode as failed in the existing row so the dashboard can show status.
-      // Player keeps iframe fallback; nothing visible breaks.
-      try {
-        db.prepare("UPDATE content SET filepath = '' WHERE id = ? AND filepath = ?").run(contentId, outFilename);
-      } catch (_) { /* row may have been deleted */ }
-      // Clean up any partial file.
-      try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch (_) {}
-      return;
-    }
-    // Probe duration + dimensions before swapping the row to video/mp4.
-    let durationSec = null, width = null, height = null, fileSize = 0;
-    try {
-      const stat = fs.statSync(outPath);
-      fileSize = stat.size;
-      const { execFileSync } = require('child_process');
-      const probe = execFileSync('ffprobe', ['-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', outPath], { timeout: 15000 }).toString();
-      const info = JSON.parse(probe);
-      if (info.format?.duration) durationSec = parseFloat(info.format.duration);
-      const vs = info.streams?.find(s => s.codec_type === 'video');
-      if (vs) { width = vs.width; height = vs.height; }
-    } catch (e) {
-      console.warn(`ffprobe of transcoded YouTube file failed: ${e.message}`);
-    }
-    try {
-      const changed = db.transaction(() => {
-        // Do not overwrite a file that an editor replaced while yt-dlp was
-        // running. A main-asset mutation increments the governed version and
-        // invalidates review of the old bytes.
-        const result = db.prepare(`UPDATE content SET filepath = ?, mime_type = 'video/mp4', file_size = ?,
-          duration_sec = ?, width = ?, height = ?, version = COALESCE(version, 1) + 1,
-          updated_at = strftime('%s','now')
-          WHERE id = ? AND mime_type = 'video/youtube' AND remote_url LIKE ?`)
-          .run(outFilename, fileSize, durationSec, width, height, contentId, `%${videoId}%`);
-        if (result.changes) {
-          db.prepare(`UPDATE content_publication_requests
-            SET status = 'cancelled', decided_by = NULL,
-              decision_reason = 'YouTube asset changed after review was requested',
-              decided_at = strftime('%s','now'), updated_at = strftime('%s','now')
-            WHERE content_id = ? AND status = 'pending'`).run(contentId);
-        }
-        return result.changes;
-      })();
-      if (!changed) {
-        try { fs.unlinkSync(outPath); } catch (_) {}
-        return;
-      }
-      console.log(`yt-dlp transcoded ${videoId} -> ${outFilename} (${width}x${height}, ${durationSec}s)`);
-    } catch (e) {
-      console.error(`Failed to update content row after yt-dlp transcode: ${e.message}`);
-    }
-  });
-}
 
 // Add YouTube content (available to all plans - no storage used)
 //
@@ -594,15 +855,39 @@ router.post('/youtube', requireContentWriteRole, async (req, res) => {
     const { url, name } = req.body;
     if (!url) return res.status(400).json({ error: 'url is required' });
 
-    // Extract YouTube video ID from various URL formats
-    const videoId = extractYoutubeId(url);
+    const videoId = normalizeYoutubeId(url);
     if (!videoId) return res.status(400).json({ error: 'Invalid YouTube URL' });
+    const sourceIdentity = youtubeSourceIdentity(videoId);
+    const existingForSource = () => db.prepare(`
+      SELECT c.* FROM content_media_metadata cmm
+      JOIN content c ON c.id=cmm.content_id
+      WHERE cmm.workspace_id=? AND cmm.source_type='youtube'
+        AND cmm.source_identity=? AND c.archived_at IS NULL
+      LIMIT 1
+    `).get(req.workspaceId, sourceIdentity);
+    const existing = existingForSource();
+    if (existing) {
+      const pipeline = getMediaPipeline({ db, io: req.app.get('io') });
+      const latestJob = pipeline.store.list({
+        workspaceId: req.workspaceId,
+        contentId: existing.id,
+        limit: 1,
+      })[0] || null;
+      return res.status(200).json({
+        ...existing,
+        deduplicated: true,
+        media_job: publicMediaJob(latestJob),
+      });
+    }
 
     // Fetch video title from YouTube oEmbed if no name provided
     let filename = name;
     if (!filename) {
       try {
-        const oembedRes = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`);
+        const oembedRes = await fetch(
+          `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`,
+          { signal: AbortSignal.timeout(5000) },
+        );
         if (oembedRes.ok) {
           const oembed = await oembedRes.json();
           filename = oembed.title;
@@ -614,36 +899,252 @@ router.post('/youtube', requireContentWriteRole, async (req, res) => {
     const id = uuidv4();
     const embedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1&mute=1&controls=0&rel=0&modestbranding=1&loop=1&playlist=${videoId}&enablejsapi=1`;
     const thumbnailUrl = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
-
-    db.prepare(`
-      INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, remote_url, thumbnail_path, access_level)
-      VALUES (?, ?, ?, ?, '', 'video/youtube', 0, ?, ?, 'private')
-    `).run(id, req.user.id, req.workspaceId, safeFilename(filename), embedUrl, thumbnailUrl);
-
-    // Kick off background transcode (no await — caller gets 201 immediately).
-    try { transcodeYouTubeInBackground(id, videoId); } catch (e) {
-      console.warn(`Failed to dispatch yt-dlp transcode: ${e.message}`);
-    }
+    const sourceUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    const now = Math.floor(Date.now() / 1000);
+    const pipeline = getMediaPipeline({ db, io: req.app.get('io') });
+    let queued;
+    db.transaction(() => {
+      db.prepare(`
+        INSERT INTO content (
+          id, user_id, workspace_id, filename, filepath, mime_type, file_size,
+          remote_url, thumbnail_path, processing_status, access_level
+        ) VALUES (?, ?, ?, ?, '', 'video/youtube', 0, ?, ?, 'processing', 'private')
+      `).run(id, req.user.id, req.workspaceId, safeFilename(filename), embedUrl, thumbnailUrl);
+      db.prepare(`
+        INSERT INTO content_media_metadata (
+          content_id, workspace_id, source_type, source_identity, source_url,
+          detected_mime_type, remote_health_status, created_at, updated_at
+        ) VALUES (?, ?, 'youtube', ?, ?, 'video/youtube', 'importing', ?, ?)
+      `).run(id, req.workspaceId, sourceIdentity, sourceUrl, now, now);
+      queued = pipeline.enqueueYoutube({
+        contentId: id,
+        workspaceId: req.workspaceId,
+        userId: req.user.id,
+        videoId,
+        expectedVersion: 1,
+      });
+    })();
 
     const content = db.prepare('SELECT * FROM content WHERE id = ?').get(id);
-    res.status(201).json(content);
+    res.status(202).json({ ...content, media_job: publicMediaJob(queued.job) });
   } catch (err) {
-    console.error('YouTube add error:', err);
-    res.status(500).json({ error: 'Failed to add YouTube video' });
+    if (String(err.code || '').startsWith('SQLITE_CONSTRAINT')) {
+      try {
+        const videoId = normalizeYoutubeId(req.body?.url);
+        const duplicate = db.prepare(`
+          SELECT c.* FROM content_media_metadata cmm
+          JOIN content c ON c.id=cmm.content_id
+          WHERE cmm.workspace_id=? AND cmm.source_type='youtube'
+            AND cmm.source_identity=? AND c.archived_at IS NULL
+          LIMIT 1
+        `).get(req.workspaceId, youtubeSourceIdentity(videoId));
+        if (duplicate) return res.status(200).json({ ...duplicate, deduplicated: true });
+      } catch { /* fall through to stable error */ }
+    }
+    console.error('YouTube add error:', err.message);
+    res.status(500).json({ code: 'YOUTUBE_QUEUE_FAILED', error: 'YouTube import could not be queued.' });
   }
 });
 
-function extractYoutubeId(url) {
-  const patterns = [
-    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/,
-    /^([a-zA-Z0-9_-]{11})$/ // bare video ID
-  ];
-  for (const p of patterns) {
-    const m = url.match(p);
-    if (m) return m[1];
+router.get('/jobs', (req, res) => {
+  if (!req.workspaceId) return res.json([]);
+  const pipeline = getMediaPipeline({ db, io: req.app.get('io') });
+  const jobs = pipeline.store.list({
+    workspaceId: req.workspaceId,
+    contentId: req.query.content_id || null,
+    limit: req.query.limit,
+  });
+  res.json(jobs.map(publicMediaJob));
+});
+
+router.get('/jobs/:jobId', (req, res) => {
+  const pipeline = getMediaPipeline({ db, io: req.app.get('io') });
+  const job = pipeline.store.get(req.params.jobId);
+  if (!job || (job.workspace_id !== req.workspaceId && !visibilityContext(req).isPlatformAdmin)) {
+    return res.status(404).json({ error: 'Media job not found' });
   }
-  return null;
-}
+  res.json(publicMediaJob(job));
+});
+
+router.post('/jobs/:jobId/retry', requireContentWriteRole, (req, res) => {
+  const pipeline = getMediaPipeline({ db, io: req.app.get('io') });
+  const current = pipeline.store.get(req.params.jobId);
+  if (!current || (current.workspace_id !== req.workspaceId && !visibilityContext(req).isPlatformAdmin)) {
+    return res.status(404).json({ error: 'Media job not found' });
+  }
+  const retried = pipeline.store.retry(current.id, { resetAttempts: true });
+  if (!retried) {
+    return res.status(409).json({
+      code: 'MEDIA_JOB_NOT_RETRYABLE',
+      error: 'Only failed media jobs can be retried.',
+    });
+  }
+  pipeline.schedule();
+  res.status(202).json(publicMediaJob(retried));
+});
+
+router.post('/jobs/:jobId/cancel', requireContentWriteRole, (req, res) => {
+  const pipeline = getMediaPipeline({ db, io: req.app.get('io') });
+  const current = pipeline.store.get(req.params.jobId);
+  if (!current || (current.workspace_id !== req.workspaceId && !visibilityContext(req).isPlatformAdmin)) {
+    return res.status(404).json({ error: 'Media job not found' });
+  }
+  const cancelled = pipeline.store.requestCancel(current.id);
+  res.status(cancelled.status === 'cancelled' ? 200 : 202).json(publicMediaJob(cancelled));
+});
+
+router.post('/:id/thumbnail/regenerate', requireContentWriteRole, (req, res) => {
+  const content = checkContentWrite(req, res);
+  if (!content) return;
+  if (!content.filepath) {
+    return res.status(422).json({
+      code: 'LOCAL_SOURCE_REQUIRED',
+      error: 'A local media file is required to regenerate a poster.',
+    });
+  }
+  const absolutePath = path.join(config.contentDir, path.basename(content.filepath));
+  if (!fs.existsSync(absolutePath)) {
+    return res.status(409).json({ code: 'SOURCE_MISSING', error: 'The local source file is missing.' });
+  }
+  const pipeline = getMediaPipeline({ db, io: req.app.get('io') });
+  const token = uuidv4();
+  const mimeType = String(content.mime_type || '');
+  const queued = mimeType.startsWith('video/') || mimeType.startsWith('image/')
+    ? pipeline.enqueueThumbnailStudio({
+      contentId: content.id,
+      workspaceId: content.workspace_id || '__platform__',
+      userId: req.user.id,
+      expectedVersion: Number(content.version) || 1,
+      expectedFilepath: content.filepath,
+      timestampSeconds: 0,
+      position: 'center',
+      sourceType: 'thumbnail_regenerate',
+      idempotencyKey: `poster:${content.id}:v${content.version}:${token}`,
+    })
+    : pipeline.enqueueThumbnailFinalize({
+      contentId: content.id,
+      workspaceId: content.workspace_id || '__platform__',
+      userId: req.user.id,
+      absolutePath,
+      expectedVersion: Number(content.version) || 1,
+      expectedFilepath: content.filepath,
+      mimeType: content.mime_type,
+      sourceType: 'thumbnail_regenerate',
+      idempotencyKey: `poster:${content.id}:v${content.version}:${token}`,
+    });
+  res.status(202).json(publicMediaJob(queued.job));
+});
+
+router.post(
+  '/:id/thumbnail/studio',
+  requireContentWriteRole,
+  upload.single('poster'),
+  async (req, res) => {
+    const cleanupUpload = () => {
+      if (req.file?.filename) removeLocalContentFile(req.file.filename);
+    };
+    const content = checkContentWrite(req, res);
+    if (!content) {
+      cleanupUpload();
+      return;
+    }
+    if (!content.filepath) {
+      cleanupUpload();
+      return res.status(422).json({
+        code: 'LOCAL_SOURCE_REQUIRED',
+        error: 'A local media file is required to create a poster.',
+      });
+    }
+    if (req.file) {
+      if (Number(req.file.size) > 20 * 1024 * 1024) {
+        cleanupUpload();
+        return res.status(413).json({
+          code: 'POSTER_TOO_LARGE',
+          error: 'Custom posters must be 20 MB or smaller.',
+        });
+      }
+      if (!validateUploadedFile(req, res)) return;
+      if (!new Set(['image/jpeg', 'image/png', 'image/webp']).has(String(req.file.mimetype || ''))
+          || isActiveContentMime(req.file.mimetype)) {
+        cleanupUpload();
+        return res.status(415).json({
+          code: 'POSTER_IMAGE_REQUIRED',
+          error: 'Custom posters must be a safe JPEG, PNG, or WebP image.',
+        });
+      }
+    }
+    const isVideo = String(content.mime_type || '').startsWith('video/');
+    let request;
+    try {
+      request = normalizePosterRequest(req.body, {
+        isVideo,
+        durationSeconds: content.duration_sec,
+      });
+    } catch (error) {
+      cleanupUpload();
+      return res.status(400).json({
+        code: String(error.message || 'INVALID_POSTER_SETTINGS').toUpperCase(),
+        error: 'Choose a valid video time and crop position.',
+      });
+    }
+    if (!req.file && !isVideo && !String(content.mime_type || '').startsWith('image/')) {
+      return res.status(422).json({
+        code: 'CUSTOM_POSTER_REQUIRED',
+        error: 'Upload a custom poster for this media type.',
+      });
+    }
+    try {
+      const pipeline = getMediaPipeline({ db, io: req.app.get('io') });
+      const queued = pipeline.enqueueThumbnailStudio({
+        contentId: content.id,
+        workspaceId: content.workspace_id || '__platform__',
+        userId: req.user.id,
+        expectedVersion: Number(content.version) || 1,
+        expectedFilepath: content.filepath,
+        timestampSeconds: request.timestampSeconds,
+        position: request.position,
+        customPosterPath: req.file?.path || null,
+        sourceType: req.file ? 'custom_poster' : 'thumbnail_studio',
+        idempotencyKey: `thumbnail-studio:${content.id}:v${content.version}:${uuidv4()}`,
+      });
+      auditContent(
+        req,
+        req.file ? 'content:poster_upload' : 'content:poster_generate',
+        content,
+        content,
+        `job_id: ${queued.job.id}; position: ${request.position}; timestamp_seconds: ${request.timestampSeconds}`,
+      );
+      return res.status(202).json(publicMediaJob(queued.job));
+    } catch (error) {
+      cleanupUpload();
+      return res.status(500).json({
+        code: 'POSTER_QUEUE_FAILED',
+        error: 'The poster could not be queued.',
+      });
+    }
+  },
+);
+
+router.post('/:id/remote/recheck', requireContentWriteRole, (req, res) => {
+  const content = checkContentWrite(req, res);
+  if (!content) return;
+  if (!content.remote_url || content.filepath) {
+    return res.status(422).json({
+      code: 'REMOTE_SOURCE_REQUIRED',
+      error: 'This item is not a direct external dependency.',
+    });
+  }
+  const pipeline = getMediaPipeline({ db, io: req.app.get('io') });
+  const queued = pipeline.enqueueRemoteValidation({
+    contentId: content.id,
+    workspaceId: content.workspace_id || '__platform__',
+    userId: req.user.id,
+    url: content.remote_url,
+    expectedVersion: Number(content.version) || 1,
+    idempotencyKey: `remote-recheck:${content.id}:v${content.version}:${uuidv4()}`,
+  });
+  res.status(202).json(publicMediaJob(queued.job));
+});
 
 // List pending organization-publication requests for the active organization.
 // Platform administrators may review every organization; org owner/admin is
@@ -803,6 +1304,27 @@ router.put('/:id/archive', requireContentWriteRole, (req, res) => {
   res.json(decorateContent(updated, req));
 });
 
+router.put('/:id/favorite', (req, res) => {
+  const content = checkContentRead(req, res);
+  if (!content) return;
+  db.prepare(`
+    INSERT INTO content_favorites (user_id, content_id, created_at)
+    VALUES (?, ?, strftime('%s','now'))
+    ON CONFLICT(user_id, content_id) DO NOTHING
+  `).run(req.user.id, content.id);
+  logActivity(req.user.id, 'content:favorite', `content_id: ${content.id}`, null, getClientIp(req), req.workspaceId);
+  return res.json({ content_id: content.id, is_favorite: true });
+});
+
+router.delete('/:id/favorite', (req, res) => {
+  const content = checkContentRead(req, res);
+  if (!content) return;
+  db.prepare('DELETE FROM content_favorites WHERE user_id = ? AND content_id = ?')
+    .run(req.user.id, content.id);
+  logActivity(req.user.id, 'content:unfavorite', `content_id: ${content.id}`, null, getClientIp(req), req.workspaceId);
+  return res.json({ content_id: content.id, is_favorite: false });
+});
+
 router.put('/:id/transfer', requireContentWriteRole, (req, res) => {
   const content = getContentRow(req, req.params.id);
   if (!content) return res.status(404).json({ error: 'Content not found' });
@@ -916,12 +1438,26 @@ router.put('/:id', requireContentWriteRole, (req, res) => {
     return res.status(409).json({ code: 'CONTENT_VERSION_CONFLICT', error: 'Content changed; reload before saving.' });
   }
 
-  const { filename, mime_type, remote_url, folder, folder_id, default_fit_mode, access_level } = req.body;
+  const {
+    filename,
+    mime_type,
+    remote_url,
+    folder,
+    folder_id,
+    default_fit_mode,
+    access_level,
+    tags,
+  } = req.body;
   const updates = [];
   const values = [];
   let normalizedAccessLevel = null;
   if (filename !== undefined) { updates.push('filename = ?'); values.push(safeFilename(filename)); }
-  if (mime_type !== undefined) { updates.push('mime_type = ?'); values.push(mime_type); }
+  if (mime_type !== undefined) {
+    return res.status(400).json({
+      code: 'TECHNICAL_MIME_READ_ONLY',
+      error: 'Technical MIME type is detected from the media and cannot be edited.',
+    });
+  }
   if (default_fit_mode !== undefined) {
     const VALID = ['cover', 'contain', 'fill', 'none', 'scale-down'];
     let v = default_fit_mode;
@@ -932,14 +1468,25 @@ router.put('/:id', requireContentWriteRole, (req, res) => {
     values.push(v);
   }
   if (remote_url !== undefined) {
-    if (remote_url) {
-      const urlErr = validateRemoteUrl(remote_url);
-      if (urlErr) return res.status(urlErr.status).json({ error: urlErr.error });
-    }
+    if (!remote_url) return res.status(400).json({ error: 'remote_url cannot be empty' });
+    const urlErr = validateRemoteUrl(remote_url);
+    if (urlErr) return res.status(urlErr.status).json({ error: urlErr.error });
     updates.push('remote_url = ?');
-    values.push(remote_url || null);
+    values.push(remote_url);
+    updates.push("processing_status = 'processing'", 'processing_error = NULL');
   }
   if (folder !== undefined) { updates.push('folder = ?'); values.push(folder || null); }
+  if (tags !== undefined) {
+    const normalizedTags = normalizeContentTags(tags);
+    if (!normalizedTags) {
+      return res.status(400).json({
+        code: 'INVALID_CONTENT_TAGS',
+        error: 'Tags must be an array of up to 20 short text labels.',
+      });
+    }
+    updates.push('tags_json = ?');
+    values.push(JSON.stringify(normalizedTags));
+  }
   if (folder_id !== undefined) {
     // Phase 2.2c: target folder must live in the same workspace as the
     // content row being modified. Strict same-workspace check - no
@@ -1004,6 +1551,9 @@ router.put('/:id', requireContentWriteRole, (req, res) => {
   if (updates.length > 0) {
     updates.push('version = COALESCE(version, 1) + 1', "updated_at = strftime('%s','now')");
     values.push(req.params.id);
+    const pipeline = remote_url !== undefined
+      ? getMediaPipeline({ db, io: req.app.get('io') })
+      : null;
     db.transaction(() => {
       db.prepare(`UPDATE content SET ${updates.join(', ')} WHERE id = ?`).run(...values);
       if (normalizedAccessLevel === VISIBILITY.PLATFORM_TEMPLATE && req.workspaceId) {
@@ -1018,6 +1568,15 @@ router.put('/:id', requireContentWriteRole, (req, res) => {
           decided_at = strftime('%s','now'), updated_at = strftime('%s','now')
         WHERE content_id = ? AND status = 'pending'`)
         .run(req.user.id, req.params.id);
+      if (pipeline) {
+        pipeline.enqueueRemoteValidation({
+          contentId: content.id,
+          workspaceId: content.workspace_id || '__platform__',
+          userId: req.user.id,
+          url: remote_url,
+          expectedVersion: Math.max(1, Number(content.version) || 1) + 1,
+        });
+      }
     })();
   }
 
@@ -1043,93 +1602,75 @@ router.put('/:id/replace', requireContentWriteRole, upload.single('file'), async
     try { fs.unlinkSync(req.file.path); } catch {}
     return res.status(409).json({ code: 'CONTENT_VERSION_CONFLICT', error: 'Content changed; reload before replacing the file.' });
   }
+  if (!validateUploadedFile(req, res)) return;
 
   const filepath = req.file.filename;
-  let width = null, height = null, thumbnailPath = null;
-
-  // Generate new thumbnail for images. Same defenses as the create path:
-  // limitInputPixels:false bypasses libvips's 268MP ceiling for triple-4K
-  // wallpapers, failOn:'none' skips transient EXIF/ICC warnings, and any
-  // failure here is logged but doesn't break the replace-content flow.
-  try {
-    if (req.file.mimetype.startsWith('image/')) {
-      const sharp = require('sharp');
-      const sharpOpts = { limitInputPixels: false, failOn: 'none' };
-      try {
-        const metadata = await sharp(req.file.path, sharpOpts).metadata();
-        width = metadata.width;
-        height = metadata.height;
-      } catch (e) {
-        console.warn('sharp metadata read failed (non-fatal):', e.message);
-      }
-      try {
-        thumbnailPath = `thumb_${filepath}`;
-        await sharp(req.file.path, sharpOpts).resize(config.thumbnailWidth).jpeg({ quality: 70 })
-          .toFile(path.join(config.contentDir, thumbnailPath));
-      } catch (e) {
-        console.warn('sharp thumbnail generation failed (non-fatal):', e.message);
-        thumbnailPath = null;
-      }
-    }
-  } catch (e) {
-    console.warn('Thumbnail generation failed:', e.message);
-  }
+  const oldPaths = [...new Set([content.filepath, content.original_filepath, content.thumbnail_path])]
+    .filter((oldPath) => oldPath && oldPath !== filepath);
+  const staleAbsolutePaths = oldPaths.map(
+    (oldPath) => path.join(config.contentDir, path.basename(oldPath)),
+  );
+  const nextVersion = Math.max(1, Number(content.version) || 1) + 1;
+  const pipeline = getMediaPipeline({ db, io: req.app.get('io') });
 
   let changed = 0;
+  let queued;
   try {
     changed = db.transaction(() => {
       const result = db.prepare(`UPDATE content SET filepath = ?, original_filepath = ?, original_sha256 = NULL,
-          mime_type = ?, file_size = ?, thumbnail_path = ?, width = ?, height = ?,
+          mime_type = ?, file_size = ?, thumbnail_path = NULL, width = NULL, height = NULL,
+          duration_sec = NULL, remote_url = NULL,
           processing_status = 'uploaded', processing_error = NULL,
           version = COALESCE(version, 1) + 1, updated_at = strftime('%s','now')
           WHERE id = ? AND COALESCE(version, 1) = ?`)
-        .run(filepath, filepath, req.file.mimetype, req.file.size, thumbnailPath, width, height,
+        .run(filepath, filepath, req.file.mimetype, req.file.size,
           req.params.id, Number(content.version || 1));
       if (result.changes) {
+        db.prepare('DELETE FROM content_media_metadata WHERE content_id=?').run(req.params.id);
         db.prepare(`UPDATE content_publication_requests
           SET status = 'cancelled', decided_by = ?, decision_reason = 'File replaced after review was requested',
             decided_at = strftime('%s','now'), updated_at = strftime('%s','now')
           WHERE content_id = ? AND status = 'pending'`).run(req.user.id, req.params.id);
+        queued = req.file.mimetype.startsWith('video/')
+          ? pipeline.enqueueVideo({
+            contentId: req.params.id,
+            workspaceId: content.workspace_id || '__platform__',
+            userId: req.user.id,
+            absolutePath: req.file.path,
+            expectedVersion: nextVersion,
+            expectedFilepath: filepath,
+            staleAbsolutePaths,
+            sourceType: 'replacement',
+          })
+          : pipeline.enqueueThumbnailFinalize({
+            contentId: req.params.id,
+            workspaceId: content.workspace_id || '__platform__',
+            userId: req.user.id,
+            absolutePath: req.file.path,
+            expectedVersion: nextVersion,
+            expectedFilepath: filepath,
+            mimeType: req.file.mimetype,
+            staleAbsolutePaths,
+            sourceType: 'replacement',
+          });
       }
       return result.changes;
     })();
   } catch (error) {
     removeLocalContentFile(filepath);
-    removeLocalContentFile(thumbnailPath);
-    return res.status(500).json({ error: `Could not replace content: ${error.message}` });
+    return res.status(500).json({ code: 'CONTENT_REPLACE_FAILED', error: 'The replacement could not be saved.' });
   }
   if (!changed) {
     removeLocalContentFile(filepath);
-    removeLocalContentFile(thumbnailPath);
     return res.status(409).json({ code: 'CONTENT_VERSION_CONFLICT', error: 'Content changed; reload before replacing the file.' });
-  }
-
-  const oldPaths = [...new Set([content.filepath, content.original_filepath, content.thumbnail_path])]
-    .filter((oldPath) => oldPath && oldPath !== filepath && oldPath !== thumbnailPath);
-
-  // Regenerate a document thumbnail in the background when a file is replaced
-  // with a PDF/Office/ODF document (the inline branch above only covers images).
-  if (isDocThumbnailMime(req.file.mimetype)) {
-    kickDocThumbnail(req.params.id, req.file.path, req.file.mimetype);
-  }
-  if (req.file.mimetype.startsWith('video/')) {
-    // Keep prior source/thumbnail bytes until the immutable final generation is
-    // committed and handed to the P3. The normalizer retires them afterward.
-    kickHevcTranscodeIfNeeded(req.params.id, req.file.path, {
-      io: req.app.get('io'),
-      staleAbsolutePaths: oldPaths.map((oldPath) => path.join(config.contentDir, path.basename(oldPath))),
-    }).catch((error) => console.warn(`[video-normalize] ${req.params.id} failed: ${error.message}`));
-  } else {
-    for (const oldPath of oldPaths) removeLocalContentFile(oldPath);
-    prewarmUploadedContent(req.app.get('io'), db, {
-      contentId: req.params.id,
-      absolutePath: req.file.path,
-    }).catch((error) => console.warn(`[replace-prewarm] ${req.params.id} failed: ${error.message}`));
   }
 
   const updated = getContentRow(req, req.params.id);
   auditContent(req, 'content:replace', content, updated);
-  res.json(decorateContent(updated, req));
+  res.status(202).json({
+    ...decorateContent(updated, req),
+    media_job: publicMediaJob(queued.job),
+  });
 });
 
 // Serve content file
@@ -1140,6 +1681,14 @@ router.get('/:id/file', (req, res) => {
   // Prevent path traversal
   const safePath = path.resolve(config.contentDir, path.basename(content.filepath));
   if (!safePath.startsWith(path.resolve(config.contentDir))) return res.status(403).json({ error: 'Invalid path' });
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  if (isActiveContentMime(content.mime_type)) {
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Disposition', 'attachment');
+    res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'");
+  } else {
+    res.setHeader('Content-Type', content.mime_type || 'application/octet-stream');
+  }
   res.sendFile(safePath);
 });
 
@@ -1162,6 +1711,7 @@ router.get('/:id/download', (req, res) => {
   const rawName = content.original_filename || content.filename || path.basename(content.filepath);
   const safeName = String(rawName).replace(/[^\w.\- ]+/g, '_').slice(0, 200) || 'download';
   res.setHeader('Content-Type', content.mime_type || 'application/octet-stream');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Disposition', `attachment; filename="${safeName.replace(/"/g, '_')}"; filename*=UTF-8''${encodeURIComponent(safeName)}`);
   auditContent(req, 'content:download', content, content, { content_id: content.id, filename: safeName });
   res.sendFile(safePath);
@@ -1174,6 +1724,23 @@ router.get('/:id/thumbnail', (req, res) => {
   if (!content.thumbnail_path) return res.status(404).json({ error: 'Thumbnail not found' });
   const safePath = path.resolve(config.contentDir, path.basename(content.thumbnail_path));
   if (!safePath.startsWith(path.resolve(config.contentDir))) return res.status(403).json({ error: 'Invalid path' });
+  let stat;
+  try {
+    stat = fs.statSync(safePath);
+    if (!stat.isFile()) throw new Error('not_file');
+  } catch {
+    return res.status(404).json({ error: 'Thumbnail file is missing' });
+  }
+  const cacheIdentity = thumbnailCacheIdentity(content, stat);
+  res.setHeader('ETag', cacheIdentity.etag);
+  res.setHeader('Cache-Control', 'private, max-age=3600, must-revalidate');
+  res.setHeader('Vary', 'Authorization, Cookie');
+  res.setHeader('Content-Location', cacheIdentity.contentLocation);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Content-Security-Policy', "default-src 'none'; img-src 'self'");
+  if (requestMatchesEtag(req.headers?.['if-none-match'], cacheIdentity.etag)) {
+    return res.status(304).end();
+  }
   res.sendFile(safePath);
 });
 
@@ -1249,3 +1816,6 @@ router.delete('/:id', requireContentWriteRole, (req, res) => {
 });
 
 module.exports = router;
+module.exports.contentFtsQuery = contentFtsQuery;
+module.exports.decodeContentCursor = decodeContentCursor;
+module.exports.encodeContentCursor = encodeContentCursor;

@@ -380,3 +380,120 @@ test('failed replacement retains the prior cache generation until periodic recov
     fs.rmSync(cacheDir, { recursive: true, force: true });
   }
 });
+
+test('authoritative manifest revocation stops serving previously cached bytes', async () => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-cache-revocation-'));
+  const bytes = Buffer.from('workspace-visible-before-archive');
+  const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+  let archived = false;
+  let originRequests = 0;
+  const origin = http.createServer((req, res) => {
+    originRequests += 1;
+    if (archived) {
+      res.writeHead(410, { 'Content-Type': 'application/json' });
+      return res.end('{"error":"Content is archived"}');
+    }
+    res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': bytes.length });
+    res.end(bytes);
+  });
+
+  let cache;
+  try {
+    const originPort = await listen(origin);
+    cache = createCacheServer({
+      originBaseUrl: `http://127.0.0.1:${originPort}`,
+      cacheDir,
+      maxRetries: 0,
+    });
+    const item = {
+      content_id: 'archived-video',
+      generation: 1,
+      sha256,
+      size: bytes.length,
+    };
+    await cache.prewarmManifest([item]);
+    assert.equal(originRequests, 1);
+
+    archived = true;
+    await cache.prewarmManifest([]);
+    const cachePort = await listen(cache.server);
+    const response = await requestBytes(
+      `http://127.0.0.1:${cachePort}/content/archived-video/file`,
+    );
+
+    assert.equal(response.status, 410);
+    assert.equal(response.headers['x-mc-cache'], 'miss');
+    assert.equal(originRequests, 2);
+    assert.notEqual(response.body.toString(), bytes.toString());
+    assert.equal(cache.getStats().manifest_count, 0);
+  } finally {
+    if (cache) await close(cache.server);
+    await close(origin);
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test('manifest generation changes during a fill reconcile to the newest checksum', async () => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-cache-live-generation-'));
+  const oldBytes = Buffer.from('generation-one-bytes');
+  const newBytes = Buffer.from('generation-two-bytes');
+  let requests = 0;
+  let releaseFirstRequest;
+  const firstRequestStarted = new Promise((resolve) => {
+    releaseFirstRequest = resolve;
+  });
+  const origin = http.createServer((req, res) => {
+    requests += 1;
+    const bytes = requests === 1 ? oldBytes : newBytes;
+    res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': bytes.length });
+    if (requests === 1) {
+      releaseFirstRequest();
+      setTimeout(() => res.end(bytes), 40);
+      return;
+    }
+    res.end(bytes);
+  });
+
+  let cache;
+  try {
+    const originPort = await listen(origin);
+    cache = createCacheServer({
+      originBaseUrl: `http://127.0.0.1:${originPort}`,
+      cacheDir,
+      maxRetries: 0,
+    });
+    const generationOne = {
+      content_id: 'changing-video',
+      generation: 1,
+      sha256: crypto.createHash('sha256').update(oldBytes).digest('hex'),
+      size: oldBytes.length,
+    };
+    const generationTwo = {
+      content_id: 'changing-video',
+      generation: 2,
+      sha256: crypto.createHash('sha256').update(newBytes).digest('hex'),
+      size: newBytes.length,
+    };
+
+    const firstSweep = cache.prewarmManifest([generationOne]);
+    await firstRequestStarted;
+    const updatedSweep = cache.prewarmManifest([generationTwo]);
+    await Promise.all([firstSweep, updatedSweep]);
+
+    assert.equal(requests, 2);
+    assert.equal(
+      fs.readFileSync(path.join(cacheDir, 'content', 'changing-video')).equals(newBytes),
+      true,
+    );
+    const meta = JSON.parse(
+      fs.readFileSync(path.join(cacheDir, 'content', 'changing-video.meta'), 'utf8'),
+    );
+    assert.equal(meta.generation, 2);
+    assert.equal(meta.sha256, generationTwo.sha256);
+    assert.equal(cache.getStats().missing_manifest_count, 0);
+  } finally {
+    if (cache) await close(cache.server);
+    await close(origin);
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});

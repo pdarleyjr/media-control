@@ -167,6 +167,7 @@ module.exports = {
   //   CLASSROOM_LOCAL_CACHE_BASE=http://127.0.0.1:8097   room-agent HTTP base
   //                                                 (players run ON the P3, so loopback)
   //   CLASSROOM_LOCAL_CACHE_WALL_IDS=<uuid>,<uuid>  walls whose devices use it
+  //   CLASSROOM_LOCAL_CACHE_WORKSPACE_ID=<uuid>     authoritative tenant scope
   //   CLASSROOM_LOCAL_CACHE_NODE_TOKEN=<secret>     per-node auth (heartbeat/manifest)
   //   CLASSROOM_LOCAL_CACHE_ROOM_ID=classroom-1     room id reported by the node
   classroomCache: {
@@ -175,6 +176,7 @@ module.exports = {
     nodeId: process.env.CLASSROOM_LOCAL_CACHE_NODE_ID || 'classroom-1-p3',
     wallIds: String(process.env.CLASSROOM_LOCAL_CACHE_WALL_IDS || '')
       .split(',').map((s) => s.trim()).filter(Boolean),
+    workspaceId: String(process.env.CLASSROOM_LOCAL_CACHE_WORKSPACE_ID || '').trim(),
     nodeToken: process.env.CLASSROOM_LOCAL_CACHE_NODE_TOKEN || '',
     roomId: process.env.CLASSROOM_LOCAL_CACHE_ROOM_ID || process.env.ROOM_ID || 'classroom-1',
   },

@@ -411,6 +411,118 @@ function addToMediaControl({ replayId, userId, workspaceId, visibility = VISIBIL
   return result;
 }
 
+function localizeInMediaControl({
+  replayId,
+  userId,
+  workspaceId,
+  visibility = VISIBILITY.PRIVATE,
+  title,
+  pipeline,
+  io,
+} = {}) {
+  const ws = requireWorkspaceId(workspaceId);
+  const addition = addToMediaControl({
+    replayId,
+    userId,
+    workspaceId: ws,
+    visibility,
+    title,
+  });
+  let content = db.prepare('SELECT * FROM content WHERE id=?').get(addition.content_id);
+  if (!content) throw error('Linked Media Control content not found', 409);
+
+  if (content.filepath && content.processing_status === 'ready') {
+    return {
+      ...addition,
+      replay: getById(replayId, ws),
+      localization_created: false,
+      media_job: null,
+      classroom_local: true,
+    };
+  }
+
+  let transitioned = false;
+  if (content.remote_url || content.processing_status === 'remote') {
+    const changed = db.prepare(`
+      UPDATE content
+      SET filepath='', remote_url=NULL, file_size=0, original_sha256=NULL,
+          processing_status='processing', processing_error=NULL,
+          version=COALESCE(version,1) + 1, updated_at=strftime('%s','now')
+      WHERE id=? AND (remote_url IS NOT NULL OR processing_status='remote')
+    `).run(content.id);
+    transitioned = changed.changes === 1;
+    content = db.prepare('SELECT * FROM content WHERE id=?').get(content.id);
+  }
+
+  const mediaPipeline = pipeline || require('../lib/media-pipeline').getMediaPipeline({
+    db,
+    io,
+    contentDir: config.contentDir,
+  });
+  const active = db.prepare(`
+    SELECT id FROM media_jobs
+    WHERE content_id=? AND job_type='peertube_localize'
+      AND expected_version=?
+      AND status IN ('queued','running','retry_wait')
+    ORDER BY created_at DESC LIMIT 1
+  `).get(content.id, content.version);
+  if (active && mediaPipeline.store) {
+    mediaPipeline.schedule?.();
+    return {
+      ...addition,
+      replay: getById(replayId, ws),
+      localization_created: false,
+      media_job: mediaPipeline.store.get(active.id),
+      classroom_local: false,
+    };
+  }
+
+  let queued;
+  try {
+    queued = mediaPipeline.enqueuePeerTube({
+      contentId: content.id,
+      workspaceId: ws,
+      userId,
+      replayId,
+      videoUuid: addition.replay.peertube_video_uuid,
+      expectedVersion: content.version,
+      expectedFilepath: content.filepath || '',
+    });
+  } catch (caught) {
+    if (transitioned) {
+      db.prepare(`
+        UPDATE content SET processing_status='failed', processing_error=?,
+          updated_at=strftime('%s','now') WHERE id=?
+      `).run(String(caught.code || caught.message || 'peertube_localization_enqueue_failed').slice(0, 500), content.id);
+    }
+    throw caught;
+  }
+
+  const revision = transitioned ? _bumpRevision(ws) : addition.revision;
+  audit({
+    actorType: 'user',
+    actorId: userId,
+    action: 'peertube.replay.localize',
+    targetType: 'content',
+    targetId: content.id,
+    workspaceId: ws,
+    details: {
+      replayId,
+      sourceIdentity: `peertube:${addition.replay.peertube_video_uuid}`,
+      jobId: queued.job.id,
+    },
+  });
+  if (transitioned) _emitWorkspaceRevision(ws, 'replay-localization-queued', revision);
+  return {
+    ...addition,
+    revision,
+    replay: getById(replayId, ws),
+    localization_created: queued.created,
+    media_job: queued.job,
+    classroom_local: false,
+  };
+}
+
 function discard({ replayId, userId, workspaceId } = {}) {
   const ws = requireWorkspaceId(workspaceId);
   const tx = db.transaction(() => {
@@ -889,6 +1001,7 @@ module.exports = {
   listAll,
   getById,
   addToMediaControl,
+  localizeInMediaControl,
   discard,
   retry,
   archive,

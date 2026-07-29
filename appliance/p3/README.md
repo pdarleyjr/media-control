@@ -98,6 +98,7 @@ Env (read by `cache-agent.js`):
 Server side (GMKtec `.env`): `CLASSROOM_LOCAL_CACHE_ENABLED=true`,
 `CLASSROOM_LOCAL_CACHE_BASE=http://127.0.0.1:8097`,
 `CLASSROOM_LOCAL_CACHE_WALL_IDS=<primary>,<secondary>`,
+`CLASSROOM_LOCAL_CACHE_WORKSPACE_ID=<classroom-workspace>`,
 `CLASSROOM_LOCAL_CACHE_NODE_TOKEN=<secret>`. Only displays in those walls get the
 local URL; every other display/room is unaffected. Health check on-box:
 `curl http://127.0.0.1:8097/healthz`.

@@ -53,6 +53,22 @@ function binaryResp(status, bytes, contentType) {
   };
 }
 
+const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const MP4_BYTES = Buffer.from([
+  0x00, 0x00, 0x00, 0x18,
+  0x66, 0x74, 0x79, 0x70,
+  0x69, 0x73, 0x6f, 0x6d,
+  0x00, 0x00, 0x00, 0x00,
+  0x69, 0x73, 0x6f, 0x6d,
+]);
+const MOV_BYTES = Buffer.from([
+  0x00, 0x00, 0x00, 0x18,
+  0x66, 0x74, 0x79, 0x70,
+  0x71, 0x74, 0x20, 0x20,
+  0x00, 0x00, 0x00, 0x00,
+  0x71, 0x74, 0x20, 0x20,
+]);
+
 // ---- fs patch (never write real bytes during a unit test) ----
 const realWrite = fs.writeFileSync;
 const realMkdir = fs.mkdirSync;
@@ -68,6 +84,9 @@ function makeDb({ devices = {}, total = null } = {}) {
   const inserts = [];
   const db = {
     _inserts: inserts,
+    transaction(fn) {
+      return (...args) => fn(...args);
+    },
     prepare(sql) {
       if (/SELECT id, workspace_id FROM devices WHERE id = \?/.test(sql)) {
         return { get: (id) => devices[id] || null };
@@ -161,8 +180,23 @@ function makeSceneEngine({ result = () => true } = {}) {
   };
 }
 
+function makeMediaPipeline() {
+  let seq = 0;
+  const queued = [];
+  const enqueue = (kind, args) => {
+    const job = { id: `media-job-${++seq}`, kind };
+    queued.push({ kind, args, job });
+    return { created: true, job };
+  };
+  return {
+    _queued: queued,
+    enqueueVideo: (args) => enqueue('video_normalize', args),
+    enqueueThumbnailFinalize: (args) => enqueue('thumbnail_finalize', args),
+  };
+}
+
 // ---- install stubs in the require cache, then (re)load the router ----
-function loadRouter({ db, sceneEngine, delivery } = {}) {
+function loadRouter({ db, sceneEngine, delivery, mediaPipeline } = {}) {
   const dbPath = require.resolve('../db/database');
   require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: { db } };
   const sePath = require.resolve('../services/scene-engine');
@@ -181,6 +215,12 @@ function loadRouter({ db, sceneEngine, delivery } = {}) {
       createBroadcastDeliveryStore: () => store,
       REQUEST_TERMINAL: new Set(['confirmed', 'partial', 'failed', 'timed_out']),
     },
+  };
+  const mpPath = require.resolve('../lib/media-pipeline');
+  const pipeline = mediaPipeline || makeMediaPipeline();
+  require.cache[mpPath] = {
+    id: mpPath, filename: mpPath, loaded: true,
+    exports: { getMediaPipeline: () => pipeline },
   };
   delete require.cache[require.resolve('../routes/files')];
   delete require.cache[require.resolve('../services/nextcloud-fs')];
@@ -224,6 +264,7 @@ afterEach(() => {
   delete require.cache[require.resolve('../services/scene-engine')];
   delete require.cache[require.resolve('../services/activity')];
   delete require.cache[require.resolve('../lib/broadcast-delivery')];
+  delete require.cache[require.resolve('../lib/media-pipeline')];
   delete require.cache[require.resolve('../routes/files')];
   delete require.cache[require.resolve('../services/nextcloud-fs')];
 });
@@ -235,7 +276,7 @@ const DEVS = { d1: { id: 'd1', workspace_id: 'ws1' }, d2: { id: 'd2', workspace_
 // ══════════════════════════════════════════════════════════════════════════════
 
 test('imports an image and broadcasts it to the selected display', async () => {
-  mockFetch(() => binaryResp(200, Buffer.from([0x89, 0x50, 0x4e, 0x47]), 'image/png'));
+  mockFetch(() => binaryResp(200, PNG_BYTES, 'image/png'));
   patchFs();
   const db = makeDb({ devices: DEVS, total: 5 });        // total>targets -> no all-gate
   const se = makeSceneEngine();
@@ -280,7 +321,7 @@ test('imports an image and broadcasts it to the selected display', async () => {
 });
 
 test('an unready Nextcloud video is imported for normalization but never broadcasts original bytes', async () => {
-  mockFetch(() => binaryResp(200, Buffer.from('incompatible-video'), 'video/quicktime'));
+  mockFetch(() => binaryResp(200, MOV_BYTES, 'video/quicktime'));
   patchFs();
   const db = makeDb({ devices: DEVS, total: 5 });
   const se = makeSceneEngine();
@@ -303,7 +344,7 @@ test('an unready Nextcloud video is imported for normalization but never broadca
 });
 
 test('typed file targets are authoritative and legacy expanded ids are not unioned', async () => {
-  mockFetch(() => binaryResp(200, Buffer.from([0x89, 0x50, 0x4e, 0x47]), 'image/png'));
+  mockFetch(() => binaryResp(200, PNG_BYTES, 'image/png'));
   patchFs();
   const db = makeDb({ devices: DEVS, total: 5 });
   const se = makeSceneEngine();
@@ -327,7 +368,7 @@ test('typed file targets are authoritative and legacy expanded ids are not union
 // ══════════════════════════════════════════════════════════════════════════════
 
 test('reads with req.user.email — a spoofed X-OpenWebUI-User-Email header is ignored', async () => {
-  mockFetch(() => binaryResp(200, Buffer.from([0x00, 0x00, 0x00, 0x18]), 'video/mp4'));
+  mockFetch(() => binaryResp(200, MP4_BYTES, 'video/mp4'));
   patchFs();
   const db = makeDb({ devices: DEVS, total: 5 });
   const router = loadRouter({ db, sceneEngine: makeSceneEngine() });
@@ -404,7 +445,7 @@ test('returns 404 when every target device id is stale', async () => {
 });
 
 test('skips stale target ids and broadcasts to valid displays', async () => {
-  mockFetch(() => binaryResp(200, Buffer.from([0x89, 0x50, 0x4e, 0x47]), 'image/png'));
+  mockFetch(() => binaryResp(200, PNG_BYTES, 'image/png'));
   patchFs();
   const db = makeDb({ devices: DEVS, total: 5 });
   const se = makeSceneEngine();
@@ -446,7 +487,7 @@ test('returns 409 CONFIRM_ALL_REQUIRED when targeting all displays without confi
 });
 
 test('proceeds when targeting all displays WITH confirm_all:true', async () => {
-  mockFetch(() => binaryResp(200, Buffer.from([0x89, 0x50, 0x4e, 0x47]), 'image/png'));
+  mockFetch(() => binaryResp(200, PNG_BYTES, 'image/png'));
   patchFs();
   const db = makeDb({ devices: DEVS, total: 2 });
   const se = makeSceneEngine();

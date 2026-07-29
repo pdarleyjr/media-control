@@ -38,6 +38,82 @@ function emitContentUpdated(io, row, generation) {
   }
 }
 
+function upsertTechnicalMetadata(db, row, metadata, generation, sha256, now, finalFilepath) {
+  const probe = metadata.probe || {};
+  try {
+    db.prepare(`
+      INSERT INTO content_media_metadata (
+        content_id, workspace_id, detected_mime_type, source_sha256,
+        container, video_codec, video_profile, pixel_format, color_transfer,
+        audio_codec, audio_profile, audio_sample_format, audio_channels,
+        audio_channel_layout, duration_sec, bitrate_bps, frame_rate,
+        thumbnail_generation, thumbnail_source_sha256,
+        thumbnail_source_filepath, thumbnail_provenance, created_at, updated_at
+      ) VALUES (
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      )
+      ON CONFLICT(content_id) DO UPDATE SET
+        workspace_id=excluded.workspace_id,
+        detected_mime_type=excluded.detected_mime_type,
+        source_sha256=excluded.source_sha256,
+        container=COALESCE(excluded.container, content_media_metadata.container),
+        video_codec=COALESCE(excluded.video_codec, content_media_metadata.video_codec),
+        video_profile=COALESCE(excluded.video_profile, content_media_metadata.video_profile),
+        pixel_format=COALESCE(excluded.pixel_format, content_media_metadata.pixel_format),
+        color_transfer=COALESCE(excluded.color_transfer, content_media_metadata.color_transfer),
+        audio_codec=excluded.audio_codec,
+        audio_profile=excluded.audio_profile,
+        audio_sample_format=excluded.audio_sample_format,
+        audio_channels=excluded.audio_channels,
+        audio_channel_layout=excluded.audio_channel_layout,
+        duration_sec=COALESCE(excluded.duration_sec, content_media_metadata.duration_sec),
+        bitrate_bps=COALESCE(excluded.bitrate_bps, content_media_metadata.bitrate_bps),
+        frame_rate=COALESCE(excluded.frame_rate, content_media_metadata.frame_rate),
+        thumbnail_generation=CASE
+          WHEN excluded.thumbnail_provenance IS NOT NULL THEN excluded.thumbnail_generation
+          ELSE content_media_metadata.thumbnail_generation END,
+        thumbnail_source_sha256=COALESCE(
+          excluded.thumbnail_source_sha256,
+          content_media_metadata.thumbnail_source_sha256
+        ),
+        thumbnail_source_filepath=CASE
+          WHEN excluded.thumbnail_provenance IS NOT NULL THEN excluded.thumbnail_source_filepath
+          ELSE content_media_metadata.thumbnail_source_filepath END,
+        thumbnail_provenance=COALESCE(
+          excluded.thumbnail_provenance,
+          content_media_metadata.thumbnail_provenance
+        ),
+        updated_at=excluded.updated_at
+    `).run(
+      row.id,
+      row.workspace_id || null,
+      metadata.mimeType || row.mime_type || null,
+      sha256,
+      probe.container || null,
+      probe.video_codec || probe.vcodec || null,
+      probe.video_profile || null,
+      probe.pixfmt || null,
+      probe.transfer || null,
+      probe.audio_codec || null,
+      probe.audio_profile || null,
+      probe.audio_sample_fmt || null,
+      probe.audio_channels || null,
+      probe.audio_channel_layout || null,
+      metadata.durationSec ?? probe.duration_seconds ?? row.duration_sec ?? null,
+      probe.bitrate_bps || null,
+      probe.frame_rate || null,
+      generation,
+      metadata.thumbnailPath ? (metadata.thumbnailSourceSha256 || sha256) : null,
+      metadata.thumbnailPath ? (metadata.thumbnailSourceFilepath || finalFilepath) : null,
+      metadata.thumbnailProvenance || null,
+      now,
+      now,
+    );
+  } catch (error) {
+    if (!/no such table/i.test(error.message)) throw error;
+  }
+}
+
 async function defaultPrewarm(io, db, item) {
   const { emitContentPrewarm } = require('./node-registry');
   return emitContentPrewarm(io, db, { item, allowWorkspaceOwned: true });
@@ -107,6 +183,8 @@ async function runFinalization(options) {
         Math.max(1, Number(row.version) || 1),
       );
       if (!result.changes) return null;
+
+      upsertTechnicalMetadata(db, row, metadata, generation, sha256, now, finalFilepath);
 
       try {
         db.prepare(`
@@ -190,4 +268,5 @@ function finalizeContentAsset(options = {}) {
 module.exports = {
   emitContentUpdated,
   finalizeContentAsset,
+  upsertTechnicalMetadata,
 };

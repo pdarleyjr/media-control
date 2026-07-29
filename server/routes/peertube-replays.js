@@ -197,6 +197,30 @@ router.post('/:id/add', (req, res) => {
   }
 });
 
+router.post('/:id/localize', (req, res) => {
+  const replay = scopedReplay(req, res);
+  if (!replay) return;
+  let visibility;
+  try { visibility = parseVisibility(req.body.visibility === undefined ? VISIBILITY.PRIVATE : req.body.visibility); }
+  catch (caught) { return res.status(httpStatus(caught, 400)).json({ error: caught.message }); }
+  if (!canAddReplay(context(req, replay), visibility)) {
+    return res.status(403).json({ error: 'Role is not permitted to publish this replay with the requested visibility' });
+  }
+  try {
+    const result = svc.localizeInMediaControl({
+      replayId: replay.id,
+      userId: req.user.id,
+      workspaceId: req.workspaceId,
+      visibility,
+      title: req.body.title == null ? null : String(req.body.title).slice(0, 255),
+      io: req.app.get('io'),
+    });
+    res.status(result.classroom_local ? 200 : 202).json(result);
+  } catch (caught) {
+    res.status(httpStatus(caught)).json({ error: caught.message });
+  }
+});
+
 router.post('/:id/discard', (req, res) => {
   const replay = scopedReplay(req, res);
   if (!replay) return;

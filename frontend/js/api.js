@@ -5,10 +5,28 @@ function getAuthHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+function normalizeApiPath(value) {
+  if (typeof value !== 'string' || !value.startsWith('/') || /[\\\u0000-\u001f]/.test(value)) {
+    throw new TypeError('API path must be a root-relative path');
+  }
+  const candidate = new URL(`${API_BASE}${value}`, window.location.origin);
+  if (
+    candidate.origin !== window.location.origin
+    || !candidate.pathname.startsWith(`${API_BASE}/`)
+    || candidate.username
+    || candidate.password
+    || candidate.hash
+  ) {
+    throw new TypeError('API path must remain on the current origin');
+  }
+  return `${candidate.pathname}${candidate.search}`;
+}
+
 async function request(url, options = {}) {
-  const res = await fetch(API_BASE + url, {
-    headers: { 'Content-Type': 'application/json', ...getAuthHeaders(), ...options.headers },
-    ...options,
+  const { headers: optionHeaders = {}, ...requestOptions } = options;
+  const res = await fetch(normalizeApiPath(url), {
+    ...requestOptions,
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders(), ...optionHeaders },
   });
   if (res.status === 401) {
     // Token expired or invalid - redirect to login
@@ -29,6 +47,30 @@ async function request(url, options = {}) {
   return res.json();
 }
 
+async function requestForm(url, formData, options = {}) {
+  const res = await fetch(normalizeApiPath(url), {
+    method: options.method || 'POST',
+    headers: { ...getAuthHeaders(), ...(options.headers || {}) },
+    body: formData,
+  });
+  if (res.status === 401) {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    window.location.hash = '#/login';
+    window.location.reload();
+    throw new Error('Session expired');
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    const error = new Error(body.error || 'Request failed');
+    error.status = res.status;
+    error.code = body.code;
+    error.details = body;
+    throw error;
+  }
+  return res.json();
+}
+
 // Phase 3 broadcast helper. The broadcast endpoint returns 409 with a
 // { code: 'CONFIRM_ALL_REQUIRED', count } envelope when the caller targets
 // every display in the workspace WITHOUT passing confirm_all:true. The generic
@@ -38,7 +80,7 @@ async function request(url, options = {}) {
 // operator, and retry with confirm_all:true. All other non-2xx responses still
 // throw (matching request()).
 async function requestBroadcast(payload, endpoint = '/broadcast') {
-  const res = await fetch(API_BASE + endpoint, {
+  const res = await fetch(normalizeApiPath(endpoint), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
     body: JSON.stringify(payload),
@@ -62,7 +104,7 @@ async function requestBroadcast(payload, endpoint = '/broadcast') {
 }
 
 async function requestStatus(url) {
-  const res = await fetch(API_BASE + url, {
+  const res = await fetch(normalizeApiPath(url), {
     headers: { Accept: 'application/json', ...getAuthHeaders() },
     credentials: 'same-origin',
   });
@@ -180,7 +222,15 @@ export const api = {
     if (filters.type) query.set('type', filters.type);
     if (filters.search) query.set('search', filters.search);
     if (filters.mine) query.set('owner', 'me');
+    if (filters.owner) query.set('owner', filters.owner);
     if (filters.archived) query.set('archived', filters.archived);
+    if (filters.processing) query.set('processing', filters.processing);
+    if (filters.codec) query.set('codec', filters.codec);
+    if (filters.dimensions) query.set('dimensions', filters.dimensions);
+    if (filters.source) query.set('source', filters.source);
+    if (filters.thumbnail) query.set('thumbnail', filters.thumbnail);
+    if (filters.p3) query.set('p3', filters.p3);
+    if (filters.favorite) query.set('favorite', '1');
     if (filters.limit) query.set('limit', String(filters.limit));
     if (filters.offset) query.set('offset', String(filters.offset));
     const suffix = query.toString();
@@ -202,7 +252,7 @@ export const api = {
   // blob + a sanitized filename parsed from Content-Disposition. The caller
   // triggers the save-to-disk via a temporary object URL.
   downloadContent: async (id) => {
-    const res = await fetch(API_BASE + `/content/${id}/download`, {
+    const res = await fetch(normalizeApiPath(`/content/${id}/download`), {
       headers: getAuthHeaders(),
     });
     if (res.status === 401) {
@@ -237,6 +287,85 @@ export const api = {
     }),
   ),
   getContentUsage: (id) => request(`/content/${id}/usage`),
+  listContentCaptions: (id, { includeBody = false } = {}) => request(`/captions/content/${encodeURIComponent(id)}${includeBody ? '?include_body=1' : ''}`, {
+    headers: { 'Cache-Control': 'no-store' },
+  }),
+  uploadContentCaption: (id, file, details = {}) => {
+    const form = new FormData();
+    form.append('caption_file', file);
+    form.append('language_code', details.language_code || 'en');
+    form.append('label', details.label || details.language_code || 'English');
+    form.append('kind', details.kind === 'subtitles' ? 'subtitles' : 'captions');
+    form.append('is_default', details.is_default === true ? 'true' : 'false');
+    return requestForm(`/captions/content/${encodeURIComponent(id)}`, form);
+  },
+  getContentLibrarySummary: () => request('/content/library-summary'),
+  getContentSavedViews: () => request('/content/saved-views'),
+  createContentSavedView: (name, query) => request('/content/saved-views', {
+    method: 'POST',
+    body: JSON.stringify({ name, query }),
+  }),
+  deleteContentSavedView: (id) => request(`/content/saved-views/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  }),
+  setContentFavorite: (id, favorite) => request(`/content/${encodeURIComponent(id)}/favorite`, {
+    method: favorite ? 'PUT' : 'DELETE',
+  }),
+  updateContentThumbnail: (id, {
+    file = null,
+    timestampSeconds = 0,
+    position = 'center',
+  } = {}) => {
+    const form = new FormData();
+    if (file) form.append('poster', file);
+    form.append('timestamp_seconds', String(timestampSeconds));
+    form.append('position', position);
+    return requestForm(`/content/${encodeURIComponent(id)}/thumbnail/studio`, form);
+  },
+  regenerateContentThumbnail: (id) => request(
+    `/content/${encodeURIComponent(id)}/thumbnail/regenerate`,
+    { method: 'POST' },
+  ),
+  getMediaJobs: ({ contentId = '', limit = 100 } = {}) => {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (contentId) query.set('content_id', contentId);
+    return request(`/content/jobs?${query.toString()}`);
+  },
+  retryMediaJob: (id) => request(`/content/jobs/${encodeURIComponent(id)}/retry`, {
+    method: 'POST',
+  }),
+  cancelMediaJob: (id) => request(`/content/jobs/${encodeURIComponent(id)}/cancel`, {
+    method: 'POST',
+  }),
+  setDefaultContentCaption: (captionId) => request(
+    `/captions/${encodeURIComponent(captionId)}/default`,
+    { method: 'PUT' },
+  ),
+  deleteContentCaption: (captionId) => request(
+    `/captions/${encodeURIComponent(captionId)}`,
+    { method: 'DELETE' },
+  ),
+  searchContentCaptions: (query) => request(
+    `/captions/search?q=${encodeURIComponent(query)}`,
+  ),
+  getMediaObservability: () => request('/media-observability', {
+    headers: { 'Cache-Control': 'no-store' },
+  }),
+  prepareContentForClass: (contentIds) => request('/classroom-preparation', {
+    method: 'POST',
+    body: JSON.stringify({
+      content_ids: (Array.isArray(contentIds) ? contentIds : [contentIds]).filter(Boolean),
+    }),
+  }),
+  getClassroomPreparation: (id) => request(`/classroom-preparation/${encodeURIComponent(id)}`, {
+    headers: { 'Cache-Control': 'no-store' },
+  }),
+  retryClassroomPreparation: (id) => request(`/classroom-preparation/${encodeURIComponent(id)}/retry`, {
+    method: 'POST',
+  }),
+  cancelClassroomPreparation: (id) => request(`/classroom-preparation/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  }),
   transferContent: (id, ownerUserId) => request(`/content/${id}/transfer`, {
     method: 'PUT', body: JSON.stringify({ owner_user_id: ownerUserId }),
   }),
@@ -456,6 +585,11 @@ export const api = {
   // is every display in the workspace, the server responds 409 with
   // { code:'CONFIRM_ALL_REQUIRED', count }; broadcast() resolves with that body
   // (instead of throwing) so the UI can prompt and retry with confirm_all:true.
+  broadcastPreflight: (payload) => request('/broadcast/preflight', {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
+    headers: { 'Cache-Control': 'no-store' },
+  }),
   broadcast: (payload) => requestBroadcast(payload),
   broadcastStatus: (requestId) => request(`/broadcast/${encodeURIComponent(requestId)}`, {
     headers: { 'Cache-Control': 'no-store' },
@@ -500,7 +634,7 @@ export const api = {
     playbackGrant: (id, download = false) => request(`/peertube-replays/${encodeURIComponent(id)}/playback-grant`, {
       method: 'POST', body: JSON.stringify({ download: download === true }),
     }),
-    add: (id, visibility, title) => request(`/peertube-replays/${encodeURIComponent(id)}/add`, {
+    add: (id, visibility, title) => request(`/peertube-replays/${encodeURIComponent(id)}/localize`, {
       method: 'POST', body: JSON.stringify({ visibility, title }),
     }),
     discard: (id) => request(`/peertube-replays/${encodeURIComponent(id)}/discard`, { method: 'POST' }),

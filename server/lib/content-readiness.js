@@ -1,6 +1,17 @@
 'use strict';
 
 function contentBroadcastReadiness(db, content) {
+  if (content
+      && content.content_type === 'peertube-replay'
+      && !String(content.filepath || '').trim()) {
+    return {
+      ready: false,
+      status: 409,
+      code: 'PEERTUBE_LOCALIZATION_REQUIRED',
+      error: 'PeerTube replay must be prepared as one local classroom asset before broadcasting',
+      processing_status: String(content.processing_status || 'remote'),
+    };
+  }
   if (!content || !content.filepath || !String(content.mime_type || '').startsWith('video/')) {
     return { ready: true };
   }

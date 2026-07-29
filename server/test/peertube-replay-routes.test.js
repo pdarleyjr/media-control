@@ -123,6 +123,31 @@ test('viewer cannot add; editor can add private; numeric PeerTube privacy is rej
   assert.equal(editor.payload.replay.library_visibility, 'PRIVATE');
 });
 
+test('localization endpoint preserves add permissions and returns the queued media job', async () => {
+  const original = svc.localizeInMediaControl;
+  svc.localizeInMediaControl = (input) => ({
+    content_id: 'localized-content',
+    created: true,
+    localization_created: true,
+    media_job: { id: `job-${input.replayId}`, status: 'queued' },
+  });
+  try {
+    const viewer = await request(`/${ws1Replay}/localize`, {
+      method: 'POST', role: 'viewer', body: { visibility: 'PRIVATE' },
+    });
+    assert.equal(viewer.status, 403);
+
+    const editor = await request(`/${ws1Replay}/localize`, {
+      method: 'POST', role: 'editor', body: { visibility: 'PRIVATE' },
+    });
+    assert.equal(editor.status, 202);
+    assert.equal(editor.payload.content_id, 'localized-content');
+    assert.equal(editor.payload.media_job.status, 'queued');
+  } finally {
+    svc.localizeInMediaControl = original;
+  }
+});
+
 test('discard requires workspace administrator and remains workspace scoped', async () => {
   const instructor = await request(`/${discardReplay}/discard`, { method: 'POST', role: 'editor', body: {} });
   assert.equal(instructor.status, 403);

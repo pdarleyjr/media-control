@@ -3,6 +3,7 @@ const http = require('http');
 const https = require('https');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const path = require('path');
 const fs = require('fs');
 const config = require('./config');
@@ -629,25 +630,19 @@ app.use('/socket.io-client', express.static(
   path.join(__dirname, 'node_modules', 'socket.io', 'client-dist')
 ));
 
-// Simple rate limiter for auth endpoints
-const rateLimits = new Map();
-function rateLimit(windowMs, maxRequests) {
-  return (req, res, next) => {
-    const key = getClientIp(req) + req.path;
-    const now = Date.now();
-    const windowStart = now - windowMs;
-    let hits = rateLimits.get(key) || [];
-    hits = hits.filter(t => t > windowStart);
-    if (hits.length >= maxRequests) {
-      return res.status(429).json({ error: 'Too many requests, try again later' });
-    }
-    hits.push(now);
-    rateLimits.set(key, hits);
-    // Cleanup old entries periodically
-    if (rateLimits.size > 10000) {
-      for (const [k, v] of rateLimits) { if (v.every(t => t < windowStart)) rateLimits.delete(k); }
-    }
-    next();
+// Standard in-memory limiter for single-node deployments. Keys retain the
+// existing per-client + per-path behavior while express-rate-limit supplies
+// correct response headers and bounded store maintenance.
+function rateLimitOptions(windowMs, maxRequests) {
+  return {
+    windowMs,
+    limit: maxRequests,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    keyGenerator: req => `${ipKeyGenerator(req.ip)}:${req.path}`,
+    handler: (_req, res) => res.status(429).json({
+      error: 'Too many requests, try again later',
+    }),
   };
 }
 
@@ -658,35 +653,35 @@ const { createLoginFailureRateLimit } = require('./lib/login-rate-limit');
 // ceiling. Successful coworkers behind the same classroom/NAT address must not
 // lock one another out just because they sign in during the same minute.
 app.use('/api/auth/login', createLoginFailureRateLimit({ getClientIp }));
-app.use('/api/auth/register', rateLimit(60000, 5)); // 5 registrations per minute
+app.use('/api/auth/register', rateLimit(rateLimitOptions(60000, 5))); // 5 registrations per minute
 // Admin password-reset endpoint: even if an admin's session is compromised,
 // cap the blast radius to 20 resets/min/IP. Express matches the longest
 // path prefix first, so this fires before /api/auth catches the request.
-app.use('/api/auth/users', rateLimit(60000, 20));
+app.use('/api/auth/users', rateLimit(rateLimitOptions(60000, 20)));
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/admin', require('./routes/admin-sync'));
 // Rate limit pairing to prevent brute force (5 attempts per minute per IP)
-app.use('/api/provision/pair', rateLimit(60000, 5));
+app.use('/api/provision/pair', rateLimit(rateLimitOptions(60000, 5)));
 // Rate limit expensive operations
-app.use('/api/status/export', rateLimit(60000, 5)); // 5 exports per minute
-app.use('/api/status/import', rateLimit(60000, 3)); // 3 imports per minute
-app.use('/api/content', rateLimit(60000, 30)); // 30 content operations per minute
+app.use('/api/status/export', rateLimit(rateLimitOptions(60000, 5))); // 5 exports per minute
+app.use('/api/status/import', rateLimit(rateLimitOptions(60000, 3))); // 3 imports per minute
+app.use('/api/content', rateLimit(rateLimitOptions(60000, 30))); // 30 content operations per minute
 
 // Public contact form (enterprise inquiries from landing page). Rate limited
 // to 5 submissions per minute per IP; honeypot enforced inside the route.
-app.use('/api/contact', rateLimit(60000, 5));
+app.use('/api/contact', rateLimit(rateLimitOptions(60000, 5)));
 app.use('/api/contact', require('./routes/contact'));
 
 // Public player debug-log sink. Smart TVs and other embedded browsers
 // without devtools POST captured errors here. Rate limited to 10 req/min
 // per IP+path. Body is JSON (express.json() is global at line 140).
-app.use('/api/player-debug', rateLimit(60000, 10));
+app.use('/api/player-debug', rateLimit(rateLimitOptions(60000, 10)));
 app.use('/api/player-debug', require('./routes/player-debug'));
 
 // Physical classroom console bootstrap. This route intentionally does not use
 // normal user login; it mints a dashboard JWT for the trusted podium device so
 // the room boots directly into Guest and can switch profiles from the header.
-app.use('/api/console', rateLimit(60000, 60));
+app.use('/api/console', rateLimit(rateLimitOptions(60000, 60)));
 app.use('/api/console', require('./routes/console'));
 
 
@@ -794,6 +789,13 @@ app.get('/api/content/:id/thumbnail', (req, res) => {
   res.sendFile(safePath);
 });
 
+// Caption sidecars follow the same publication boundary as content assets.
+// Unassigned private media never becomes fetchable merely because a caption
+// was uploaded.
+const captionRoutes = require('./routes/captions');
+app.use('/api/captions', rateLimit(rateLimitOptions(60000, 120)));
+app.get('/api/captions/:captionId/file', captionRoutes.publicCaptionFile);
+
 // PeerTube replay media is never represented by an HTML watch page mislabeled
 // as video/mp4. This adapter fetches the actual private media file server-side
 // with the PeerTube bearer token and forwards byte ranges. Unauthenticated
@@ -875,7 +877,7 @@ const CACHE_RECOVERY_WINDOW_MS = 60000;
 // same-origin + rate-limited + audited, and it never runs on the routine shell
 // load. Storage (login/preferences) is preserved — only the "cache" datatype is
 // cleared, matching the safe subset of Clear-Site-Data.
-app.post('/api/admin/cache-recovery', requireAuth, requireAdmin, requireSameOrigin, rateLimit(60000, 5), (req, res) => {
+app.post('/api/admin/cache-recovery', rateLimit(rateLimitOptions(60000, 5)), requireAuth, requireAdmin, requireSameOrigin, (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   // Content-Type validation: accept application/json or an empty body.
   const ct = (req.headers['content-type'] || '').toLowerCase();
@@ -925,6 +927,7 @@ app.use('/api/devices', requireAuth, resolveTenancy, require('./routes/devices')
 app.use('/api/displays', requireAuth, resolveTenancy, require('./routes/displays'));
 app.use('/api/advanced-canvas', requireAuth, resolveTenancy, require('./routes/advanced-canvas'));
 app.use('/api/content', requireAuth, resolveTenancy, require('./routes/content'));
+app.use('/api/captions', requireAuth, resolveTenancy, captionRoutes.router);
 // Resumable chunked uploads (tus) — for multi-GB files that exceed Cloudflare's
 // ~100MB per-request edge limit. app.all (not app.use) so req.url keeps the
 // /api/tus prefix the tus Server matches on; auth runs first so onUploadFinish
@@ -940,7 +943,7 @@ app.use('/api/layouts', requireAuth, resolveTenancy, require('./routes/layouts')
 // Widget render is public (accessed by devices)
 app.get('/api/widgets/:id/render', (req, res, next) => { req._skipAuth = true; next(); });
 // Rate limit preview endpoint — it inlines user content as base64 which is memory-intensive
-app.use('/api/widgets/preview', rateLimit(60000, 30));
+app.use('/api/widgets/preview', rateLimit(rateLimitOptions(60000, 30)));
 app.use('/api/widgets', (req, res, next) => { if (req._skipAuth) return next(); requireAuth(req, res, next); }, resolveTenancy, require('./routes/widgets'));
 app.use('/api/schedules', requireAuth, resolveTenancy, require('./routes/schedules'));
 app.use('/api/walls', requireAuth, resolveTenancy, require('./routes/video-walls'));
@@ -954,6 +957,7 @@ app.use('/api/presentations', requireAuth, resolveTenancy, require('./routes/pre
 // AI Deck Builder (server-side Ollama bridge; async jobs). AI never called from the browser.
 app.use('/api/ai', requireAuth, resolveTenancy, require('./routes/ai'));
 // Files (Nextcloud WebDAV proxy) + media downloads. Feature-flag + env gated.
+app.use('/api/files', rateLimit(rateLimitOptions(60000, 30)));
 app.use('/api/files', requireAuth, resolveTenancy, require('./routes/files'));
 app.use('/api/downloads', requireAuth, resolveTenancy, require('./routes/downloads'));
 // Phase 3: Operational Activities ("Scenes") + Fast Broadcast. Same
@@ -961,6 +965,10 @@ app.use('/api/downloads', requireAuth, resolveTenancy, require('./routes/downloa
 // scope by req.workspaceId and reuse the existing device-content-push path.
 app.use('/api/scenes', requireAuth, resolveTenancy, require('./routes/scenes'));
 app.use('/api/broadcast', requireAuth, resolveTenancy, require('./routes/broadcast'));
+app.use('/api/classroom-preparation', rateLimit(rateLimitOptions(60000, 60)));
+app.use('/api/classroom-preparation', requireAuth, resolveTenancy, require('./routes/classroom-preparation'));
+app.use('/api/media-observability', rateLimit(rateLimitOptions(60000, 60)));
+app.use('/api/media-observability', requireAuth, resolveTenancy, require('./routes/media-observability'));
 app.use('/api/live-stream', requireAuth, resolveTenancy, requireWorkspaceWrite, require('./routes/live-stream'));
 app.use('/api/peertube-replays', requireAuth, resolveTenancy, require('./routes/peertube-replays'));
 app.use('/api/activity', requireAuth, resolveTenancy, require('./routes/activity'));

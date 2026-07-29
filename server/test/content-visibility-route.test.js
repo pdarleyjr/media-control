@@ -315,6 +315,111 @@ test('publication request, approval, private duplicate, archive, and transfer fo
   assert.equal(transferRes.body.user_id, 'cv-owner');
 });
 
+test('personal favorites are idempotent, visibility-scoped, and filterable', () => {
+  const favoriteReq = {
+    ...peerReq(),
+    params: { id: 'cv-workspace' },
+  };
+  const first = response();
+  handler('PUT', '/:id/favorite')(favoriteReq, first);
+  assert.equal(first.statusCode, 200);
+  assert.equal(first.body.is_favorite, true);
+
+  const second = response();
+  handler('PUT', '/:id/favorite')(favoriteReq, second);
+  assert.equal(second.statusCode, 200);
+
+  const list = response();
+  handler('GET', '/')(peerReq({ query: { favorite: '1' } }), list);
+  assert.deepEqual(list.body.map((item) => item.id), ['cv-workspace']);
+  assert.equal(list.body[0].is_favorite, true);
+
+  const removed = response();
+  handler('DELETE', '/:id/favorite')(favoriteReq, removed);
+  assert.equal(removed.body.is_favorite, false);
+});
+
+test('saved views remain private to the user and workspace', () => {
+  const created = response();
+  handler('POST', '/saved-views')(peerReq({
+    body: {
+      name: 'Ready videos',
+      query: { type: 'video', processing: 'ready', favorite: true, unexpected: 'discarded' },
+    },
+  }), created);
+  assert.equal(created.statusCode, 201);
+  assert.deepEqual(created.body.query, {
+    type: 'video',
+    processing: 'ready',
+    favorite: true,
+  });
+
+  const list = response();
+  handler('GET', '/saved-views')(peerReq(), list);
+  assert.equal(list.body.length, 1);
+  assert.equal(list.body[0].name, 'Ready videos');
+
+  const other = response();
+  handler('GET', '/saved-views')({
+    ...peerReq(),
+    user: { id: 'cv-owner', role: 'user' },
+  }, other);
+  assert.deepEqual(other.body, []);
+
+  const deleted = response();
+  handler('DELETE', '/saved-views/:viewId')(peerReq({
+    params: { viewId: created.body.id },
+  }), deleted);
+  assert.equal(deleted.body.deleted, true);
+});
+
+test('operational filters, library summary, and tags use authoritative stored metadata', () => {
+  db.prepare(`
+    UPDATE content
+    SET processing_status='ready', width=3840, height=2160,
+      thumbnail_path='cv-workspace.jpg', filepath='cv-workspace.mp4',
+      file_size=4096, original_filepath='cv-workspace.original.mov'
+    WHERE id='cv-workspace'
+  `).run();
+  db.prepare(`
+    INSERT INTO content_media_metadata
+      (content_id, source_type, source_identity, detected_mime_type, video_codec, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(content_id) DO UPDATE SET
+      source_type=excluded.source_type,
+      video_codec=excluded.video_codec
+  `).run('cv-workspace', 'upload', 'cv-workspace', 'video/mp4', 'h264', 100, 100);
+
+  const filtered = response();
+  handler('GET', '/')(peerReq({
+    query: {
+      processing: 'ready',
+      codec: 'h264',
+      dimensions: '4k',
+      source: 'local',
+      thumbnail: 'ready',
+    },
+  }), filtered);
+  assert.deepEqual(filtered.body.map((item) => item.id), ['cv-workspace']);
+
+  const ownerUpdate = {
+    ...peerReq(),
+    user: { id: 'cv-owner', role: 'user' },
+    workspaceRole: 'workspace_editor',
+    params: { id: 'cv-workspace' },
+    body: { tags: ['training', 'apparatus'] },
+  };
+  const tagged = response();
+  handler('PUT', '/:id')(ownerUpdate, tagged);
+  assert.deepEqual(JSON.parse(tagged.body.tags_json), ['training', 'apparatus']);
+
+  const summary = response();
+  handler('GET', '/library-summary')(peerReq(), summary);
+  assert.ok(summary.body.total_items >= 2);
+  assert.ok(summary.body.storage_bytes >= 4096);
+  assert.ok(summary.body.retained_originals >= 1);
+});
+
 after(() => {
   try { db.close(); } catch {}
   fs.rmSync(tempDir, { recursive: true, force: true });

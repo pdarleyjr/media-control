@@ -28,6 +28,9 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const { v4: uuidv4 } = require('uuid');
 const config = require('../config');
+const { sha256File } = require('./asset-manifest');
+const { emitContentUpdated } = require('./content-finalization');
+const { mediaLimits } = require('./media-integrity');
 
 const pexecFile = promisify(execFile);
 
@@ -157,7 +160,10 @@ async function generateDocThumbnail({ srcPath, mimeType, contentDir, thumbnailWi
     if (!imageInput) { cleanup(); return null; }
 
     const sharp = require('sharp');
-    await sharp(imageInput, { limitInputPixels: false, failOn: 'none' })
+    await sharp(imageInput, {
+      limitInputPixels: mediaLimits().maxImagePixels,
+      failOn: 'error',
+    })
       .resize(width)
       .jpeg({ quality: 70 })
       .toFile(outPath);
@@ -171,20 +177,114 @@ async function generateDocThumbnail({ srcPath, mimeType, contentDir, thumbnailWi
   }
 }
 
+function safeUnlink(filePath) {
+  try { if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch { /* best effort */ }
+}
+
+async function commitGeneratedThumbnail(options = {}) {
+  const {
+    db,
+    io,
+    contentId,
+    expectedVersion,
+    expectedFilepath,
+    expectedSha256,
+    sourcePath,
+    thumbnailPath,
+    thumbnailFilename,
+    provenance,
+  } = options;
+  if (!db || !contentId || !expectedFilepath || !expectedSha256
+      || !sourcePath || !thumbnailPath || !thumbnailFilename) {
+    throw new Error('invalid_thumbnail_commit');
+  }
+  const currentHash = await (options.sha256File || sha256File)(sourcePath).catch(() => null);
+  let row = db.prepare('SELECT * FROM content WHERE id=?').get(contentId);
+  if (!row
+      || String(row.filepath) !== String(expectedFilepath)
+      || Number(row.version) !== Number(expectedVersion)
+      || currentHash !== expectedSha256) {
+    safeUnlink(thumbnailPath);
+    return { status: 'stale', content_id: contentId };
+  }
+
+  const now = Number(options.now) || Math.floor(Date.now() / 1000);
+  const commit = db.transaction(() => {
+    const result = db.prepare(`
+      UPDATE content SET thumbnail_path=?, updated_at=?
+      WHERE id=? AND filepath=? AND COALESCE(version, 1)=?
+    `).run(thumbnailFilename, now, contentId, expectedFilepath, expectedVersion);
+    if (!result.changes) return false;
+    try {
+      db.prepare(`
+        INSERT INTO content_media_metadata (
+          content_id, workspace_id, thumbnail_generation,
+          thumbnail_source_sha256, thumbnail_source_filepath,
+          thumbnail_provenance, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(content_id) DO UPDATE SET
+          workspace_id=excluded.workspace_id,
+          thumbnail_generation=excluded.thumbnail_generation,
+          thumbnail_source_sha256=excluded.thumbnail_source_sha256,
+          thumbnail_source_filepath=excluded.thumbnail_source_filepath,
+          thumbnail_provenance=excluded.thumbnail_provenance,
+          updated_at=excluded.updated_at
+      `).run(
+        contentId,
+        row.workspace_id || null,
+        Number(expectedVersion),
+        expectedSha256,
+        expectedFilepath,
+        provenance || 'generated',
+        now,
+        now,
+      );
+    } catch (error) {
+      // Upgrade/test databases may not have the additive metadata table yet.
+      // The guarded content update remains valid; metadata is not an auth gate.
+      if (!/no such table/i.test(error.message)) throw error;
+    }
+    return true;
+  });
+  if (!commit()) {
+    safeUnlink(thumbnailPath);
+    return { status: 'stale', content_id: contentId };
+  }
+  row = db.prepare('SELECT * FROM content WHERE id=?').get(contentId);
+  emitContentUpdated(io, row, Number(expectedVersion));
+  return {
+    status: 'ready',
+    content_id: contentId,
+    generation: Number(expectedVersion),
+    thumbnail_path: thumbnailFilename,
+  };
+}
+
 // Background wrapper: generate then attach to the content row. Mirrors the
 // fire-and-forget pattern of transcodeYouTubeInBackground. The AND
 // thumbnail_path IS NULL guard avoids clobbering a thumbnail set elsewhere.
 function kickDocThumbnail(contentId, srcPath, mimeType) {
-  generateDocThumbnail({ srcPath, mimeType })
-    .then((thumb) => {
-      if (!thumb) return;
-      try {
-        const { db } = require('../db/database');
-        db.prepare('UPDATE content SET thumbnail_path = ? WHERE id = ? AND thumbnail_path IS NULL')
-          .run(thumb, contentId);
-      } catch (e) {
-        console.warn('doc-thumbnail row update failed (non-fatal):', e && e.message);
-      }
+  let expected = null;
+  let db = null;
+  Promise.resolve()
+    .then(async () => {
+      ({ db } = require('../db/database'));
+      expected = db.prepare('SELECT * FROM content WHERE id=?').get(contentId);
+      if (!expected || expected.filepath !== path.basename(srcPath)) return null;
+      const sourceHash = await sha256File(srcPath);
+      const thumb = await generateDocThumbnail({ srcPath, mimeType });
+      if (!thumb) return null;
+      return commitGeneratedThumbnail({
+        db,
+        contentId,
+        expectedVersion: Math.max(1, Number(expected.version) || 1),
+        expectedFilepath: expected.filepath,
+        expectedSha256: sourceHash,
+        sourcePath: srcPath,
+        thumbnailPath: path.join(config.contentDir, thumb),
+        thumbnailFilename: thumb,
+        provenance: mimeType === PDF_MIME ? 'pdf_page_1' : 'document_page_1',
+      });
     })
     .catch((e) => console.warn('doc-thumbnail kick failed (non-fatal):', e && e.message));
 }
@@ -192,6 +292,7 @@ function kickDocThumbnail(contentId, srcPath, mimeType) {
 module.exports = {
   isDocThumbnailMime,
   generateDocThumbnail,
+  commitGeneratedThumbnail,
   kickDocThumbnail,
   embeddedThumbnail,
   officeToPdf,

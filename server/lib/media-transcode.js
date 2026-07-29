@@ -28,6 +28,7 @@ const { v4: uuidv4 } = require('uuid');
 const config = require('../config');
 const { sha256File } = require('./asset-manifest');
 const { emitContentUpdated, finalizeContentAsset } = require('./content-finalization');
+const { mediaLimits } = require('./media-integrity');
 
 const pexecFile = promisify(execFile);
 
@@ -83,14 +84,15 @@ function needsHevcTranscode(absPath) {
   return codec === 'hevc' || codec === 'h265';
 }
 
-// Full probe of the first video stream -> the fields classifyMedia() needs.
-// Null on failure (caller leaves the file alone). IMPURE (runs ffprobe).
-function probeMedia(absPath) {
+// Full asynchronous probe of the first video stream -> the fields
+// classifyMedia() needs. The durable worker must not stall the main Node event
+// loop while ffprobe inspects a large or remote-backed file.
+async function probeMedia(absPath) {
   try {
-    const json = execFileSync('ffprobe',
+    const { stdout } = await pexecFile('ffprobe',
       ['-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', absPath],
-      { timeout: 20000 }).toString();
-    const info = JSON.parse(json);
+      { timeout: 20000, maxBuffer: 5 * 1024 * 1024, windowsHide: true });
+    const info = JSON.parse(String(stdout));
     const streams = info.streams || [];
     const v = streams.find((stream) => stream.codec_type === 'video') || {};
     const a = streams.find((stream) => stream.codec_type === 'audio') || {};
@@ -102,14 +104,21 @@ function probeMedia(absPath) {
       ext: path.extname(absPath).toLowerCase(),
       vcodec: (v.codec_name || '').toLowerCase(),
       video_codec: (v.codec_name || '').toLowerCase() || null,
+      video_profile: v.profile || null,
       audio_codec: (a.codec_name || '').toLowerCase() || null,
+      audio_profile: a.profile || null,
+      audio_sample_fmt: (a.sample_fmt || '').toLowerCase() || null,
       audio_channels: Number(a.channels) || null,
+      audio_channel_layout: a.channel_layout || null,
       audio_sample_rate: Number(a.sample_rate) || null,
+      audio_bitrate_bps: Number(a.bit_rate) || null,
       has_audio: !!a.codec_name,
       width: Number(v.width) || null,
       height: Number(v.height) || null,
       frame_rate: Number.isFinite(fps) ? fps : null,
       duration_seconds: Number(info.format && info.format.duration) || null,
+      bitrate_bps: Number(info.format && info.format.bit_rate) || null,
+      container: (info.format && info.format.format_name) || null,
       pixfmt: (v.pix_fmt || '').toLowerCase(),
       transfer: (v.color_transfer || '').toLowerCase(),
       colorspace: (v.color_space || '').toLowerCase(),
@@ -138,7 +147,14 @@ function isHdr(transfer, colorspace) {
 // A null probe (unreadable) is treated as web-safe so we never touch a file we
 // can't understand.
 function classifyMedia(m) {
-  if (!m) return { webSafe: true, needsReencode: false, tonemap: false };
+  if (!m) {
+    return {
+      webSafe: true,
+      needsReencode: false,
+      audioNeedsTranscode: false,
+      tonemap: false,
+    };
+  }
   const ext = (m.ext || '').toLowerCase();
   const vcodec = (m.vcodec || '').toLowerCase();
   const tenbit = is10bit(m.pixfmt);
@@ -148,11 +164,38 @@ function classifyMedia(m) {
   const tonemap = hdr ? ((m.transfer || '').toLowerCase() === 'arib-std-b67' ? 'hlg' : 'pq') : false;
   const containerOk = ext === '.webm' || MP4_EXTS.has(ext);
   const codecOk = ext === '.webm' ? ['vp8', 'vp9', 'av1'].includes(vcodec) : vcodec === 'h264';
-  const webSafe = containerOk && codecOk && !tenbit && !hdr;
+  const hasAudio = m.has_audio === true || Boolean(m.audio_codec);
+  const audioCodec = String(m.audio_codec || '').toLowerCase();
+  const audioProfile = String(m.audio_profile || '').toLowerCase();
+  const channels = Number(m.audio_channels) || 0;
+  const channelCountOk = channels === 0 || channels <= 2;
+  const sourceAudioSafe = !hasAudio || (
+    channelCountOk && (
+      (ext === '.webm' && ['opus', 'vorbis'].includes(audioCodec))
+      || (MP4_EXTS.has(ext)
+        && audioCodec === 'aac'
+        && (!audioProfile || audioProfile === 'lc' || audioProfile === 'aac lc'))
+    )
+  );
+  const webSafe = containerOk && codecOk && !tenbit && !hdr && sourceAudioSafe;
+  // Any non-web-safe source is normalized to MP4. AAC-LC stereo can be copied
+  // from another container; WebM Opus/Vorbis must be transcoded for that MP4
+  // delivery derivative even though it is safe when the WebM remains untouched.
+  const mp4AudioSafe = !hasAudio || (
+    channelCountOk
+    && audioCodec === 'aac'
+    && (!audioProfile || audioProfile === 'lc' || audioProfile === 'aac lc')
+  );
+  const audioNeedsTranscode = !webSafe && hasAudio && !mp4AudioSafe;
   // The video ELEMENTARY stream is browser-decodable as-is only when it's 8-bit
   // SDR H.264 — then we can copy it and just fix the container + audio.
   const videoStreamFine = vcodec === 'h264' && !tenbit && !hdr;
-  return { webSafe, needsReencode: !videoStreamFine, tonemap };
+  return {
+    webSafe,
+    needsReencode: !videoStreamFine,
+    audioNeedsTranscode,
+    tonemap,
+  };
 }
 
 // PURE. The HDR->SDR -vf filtergraph. setparams STAMPS the assumed input
@@ -169,16 +212,48 @@ function hdrToSdrVf(kind) {
 function buildTranscodeArgs(inPath, outPath, cls) {
   const args = ['-y', '-i', inPath, '-map', '0:v:0', '-map', '0:a:0?', '-sn', '-dn'];
   if (cls.needsReencode) {
-    if (cls.tonemap) args.push('-vf', hdrToSdrVf(cls.tonemap));
-    else args.push('-pix_fmt', 'yuv420p');
+    const width = Math.max(0, Number(cls.sourceWidth) || 0);
+    const height = Math.max(0, Number(cls.sourceHeight) || 0);
+    const ultrawide = width > 0 && height > 0 && width / height >= 2.5;
+    const maxWidth = ultrawide
+      ? Math.max(1920, Number(process.env.MEDIA_ULTRAWIDE_MAX_WIDTH) || 7680)
+      : Math.max(640, Number(process.env.MEDIA_DELIVERY_MAX_WIDTH) || 1920);
+    const maxHeight = ultrawide
+      ? Math.max(1080, Number(process.env.MEDIA_ULTRAWIDE_MAX_HEIGHT) || 2160)
+      : Math.max(360, Number(process.env.MEDIA_DELIVERY_MAX_HEIGHT) || 1080);
+    const scale = `scale=w='min(iw,${maxWidth})':h='min(ih,${maxHeight})':` +
+      'force_original_aspect_ratio=decrease:force_divisible_by=2';
+    const filters = cls.tonemap
+      ? `${hdrToSdrVf(cls.tonemap)},${scale}`
+      : `${scale},format=yuv420p`;
+    args.push('-vf', filters);
     // -threads 8 bounds memory (an all-cores 4K encode spikes several GB); medium
     // /crf20 + profile high + 8-bit = high-quality, universally decodable default.
-    args.push('-c:v', 'libx264', '-profile:v', 'high', '-preset', 'medium', '-crf', '20', '-threads', '8');
+    const maxRate = ultrawide
+      ? String(process.env.MEDIA_ULTRAWIDE_MAXRATE || '35M')
+      : String(process.env.MEDIA_DELIVERY_MAXRATE || '12M');
+    const bufferSize = ultrawide
+      ? String(process.env.MEDIA_ULTRAWIDE_BUFSIZE || '70M')
+      : String(process.env.MEDIA_DELIVERY_BUFSIZE || '24M');
+    args.push(
+      '-c:v', 'libx264',
+      '-profile:v', 'high',
+      '-preset', 'medium',
+      '-crf', '20',
+      '-maxrate', maxRate,
+      '-bufsize', bufferSize,
+      '-threads', '8',
+    );
   } else {
     args.push('-c:v', 'copy');   // only the container/audio was wrong — keep the H.264 stream
   }
-  // Force stereo AAC: Atmos/TrueHD/E-AC3/5.1/7.1 don't play in display browsers.
-  args.push('-c:a', 'aac', '-ac', '2', '-b:a', '256k', '-movflags', '+faststart', outPath);
+  if (cls.audioNeedsTranscode === false) {
+    args.push('-c:a', 'copy');
+  } else {
+    // Atmos/TrueHD/E-AC3/5.1/7.1 don't play reliably in display browsers.
+    args.push('-c:a', 'aac', '-profile:a', 'aac_low', '-ac', '2', '-b:a', '256k');
+  }
+  args.push('-movflags', '+faststart', outPath);
   return args;
 }
 
@@ -213,7 +288,7 @@ function defaultTranscode(inputPath, outputPath, classification) {
   const run = ffmpegTail.then(() => pexecFile(
     'ffmpeg',
     buildTranscodeArgs(inputPath, outputPath, classification),
-    { timeout: transcodeTimeoutMs() },
+    { timeout: transcodeTimeoutMs(), maxBuffer: 2 * 1024 * 1024, windowsHide: true },
   ));
   // Keep the global one-at-a-time lane usable after a failed encode while
   // returning the real outcome to this normalization job.
@@ -225,10 +300,10 @@ async function defaultThumbnail(inputPath, outputName, contentDir) {
   const thumbnailName = `thumb_${outputName.replace(/\.[^.]+$/, '.jpg')}`;
   try {
     await pexecFile('ffmpeg', [
-      '-y', '-ss', '5', '-i', inputPath, '-vframes', '1',
+      '-y', '-i', inputPath, '-vframes', '1',
       '-vf', `scale=${config.thumbnailWidth}:-1`,
       path.join(contentDir, thumbnailName),
-    ], { timeout: 30000 });
+    ], { timeout: 30000, maxBuffer: 1024 * 1024, windowsHide: true });
     return thumbnailName;
   } catch (_) {
     return null;
@@ -269,6 +344,14 @@ async function normalizeVideoJob(job = {}) {
   try {
     const sourceProbe = await Promise.resolve(probe(absPath));
     if (!sourceProbe) throw new Error('media_probe_failed');
+    const limits = mediaLimits();
+    if (Number(sourceProbe.duration_seconds) > limits.maxDurationSeconds) {
+      throw new Error('media_duration_limit_exceeded');
+    }
+    if (Number(sourceProbe.width) > 0 && Number(sourceProbe.height) > 0
+        && Number(sourceProbe.width) * Number(sourceProbe.height) > limits.maxImagePixels) {
+      throw new Error('media_pixel_limit_exceeded');
+    }
     const classification = classify(sourceProbe);
     let originalSha = null;
     try {
@@ -282,6 +365,15 @@ async function normalizeVideoJob(job = {}) {
     }
 
     if (classification.webSafe) {
+      // Posters are part of canonical readiness even when no transcode is
+      // necessary. A stale/version-mismatched finalizer will discard the new
+      // poster rather than attaching it to replacement bytes.
+      let webSafeThumbnail = null;
+      try {
+        webSafeThumbnail = await createThumbnail(absPath, expectedFilepath, contentDir);
+      } catch (_) {
+        webSafeThumbnail = null;
+      }
       return await finalize({
         db,
         io: job.io,
@@ -296,11 +388,17 @@ async function normalizeVideoJob(job = {}) {
           durationSec: sourceProbe.duration_seconds,
           width: sourceProbe.width,
           height: sourceProbe.height,
+          thumbnailPath: webSafeThumbnail || null,
+          thumbnailProvenance: webSafeThumbnail ? 'video_frame' : null,
+          thumbnailSourceSha256: originalSha,
           probe: sourceProbe,
           originalFilepath: expectedFilepath,
           originalSha256: originalSha,
         },
         staleAbsolutePaths: job.staleAbsolutePaths || [],
+        discardPathsOnStale: webSafeThumbnail
+          ? [path.join(contentDir, webSafeThumbnail)]
+          : [],
         prewarmContent: job.prewarmContent,
         sha256File: job.sha256File,
       });
@@ -317,16 +415,21 @@ async function normalizeVideoJob(job = {}) {
     console.log(`[transcode] ${contentId}: ${classification.needsReencode
       ? (classification.tonemap ? 're-encode+tonemap' : 're-encode')
       : 'remux'} -> ${outputName}`);
-    await transcode(absPath, stagedPath, classification);
+    await transcode(absPath, stagedPath, {
+      ...classification,
+      sourceWidth: sourceProbe.width,
+      sourceHeight: sourceProbe.height,
+    });
 
     const outputProbe = await Promise.resolve(probe(stagedPath));
     if (!outputProbe || !classify(outputProbe).webSafe) throw new Error('normalized_output_not_web_safe');
     const thumbnailName = await createThumbnail(stagedPath, outputName, contentDir);
     thumbnailPath = thumbnailName ? path.join(contentDir, thumbnailName) : null;
-    const stalePaths = [
-      absPath,
-      ...(job.staleAbsolutePaths || []),
-    ];
+    // Preserve the current original/master bytes. They are retained through
+    // original_filepath/original_sha256 unless an explicit retention policy
+    // later authorizes deletion. Superseded prior generations remain eligible
+    // for cleanup after this generation commits.
+    const stalePaths = [...(job.staleAbsolutePaths || [])];
     if (initial.thumbnail_path && (!thumbnailName || initial.thumbnail_path !== thumbnailName)) {
       stalePaths.push(path.join(contentDir, initial.thumbnail_path));
     }
@@ -346,6 +449,8 @@ async function normalizeVideoJob(job = {}) {
         width: outputProbe.width,
         height: outputProbe.height,
         thumbnailPath: thumbnailName,
+        thumbnailProvenance: thumbnailName ? 'video_frame' : null,
+        thumbnailSourceSha256: originalSha,
         probe: outputProbe,
         originalFilepath: expectedFilepath,
         originalSha256: originalSha,
@@ -414,7 +519,50 @@ function enqueueTranscode(job) {
 // runner probes and no-ops when the file already plays. Name kept for the existing
 // call sites (content.js / finalize-upload.js). Non-fatal.
 function kickHevcTranscodeIfNeeded(contentId, absPath, options = {}) {
-  return enqueueTranscode({ ...options, contentId, absPath });
+  try {
+    const db = options.db || require('../db/database').db;
+    const row = db.prepare('SELECT * FROM content WHERE id=?').get(contentId);
+    if (!row || !absPath) return Promise.resolve({ status: 'stale', content_id: contentId });
+    const { getMediaPipeline } = require('./media-pipeline');
+    const pipeline = getMediaPipeline({
+      db,
+      io: options.io,
+      contentDir: options.contentDir || config.contentDir,
+    });
+    const queued = pipeline.enqueueVideo({
+      contentId,
+      workspaceId: row.workspace_id || '__platform__',
+      userId: row.user_id,
+      absolutePath: absPath,
+      expectedVersion: Math.max(1, Number(row.version) || 1),
+      expectedFilepath: row.filepath,
+      staleAbsolutePaths: options.staleAbsolutePaths || [],
+      sourceType: options.sourceType || 'upload',
+    });
+    return pipeline.waitForDrain().then(() => {
+      const completed = pipeline.store.get(queued.job.id);
+      if (completed?.status === 'completed') return completed.result || { status: 'ready', content_id: contentId };
+      if (completed?.status === 'failed') {
+        return {
+          status: 'failed',
+          content_id: contentId,
+          error: completed.error_code || completed.error_message || 'normalization_failed',
+          job_id: completed.id,
+        };
+      }
+      return {
+        status: completed?.status || 'queued',
+        content_id: contentId,
+        job_id: completed?.id || queued.job.id,
+      };
+    });
+  } catch (error) {
+    return Promise.resolve({
+      status: 'failed',
+      content_id: contentId,
+      error: error.message,
+    });
+  }
 }
 
 // On boot, re-queue any video row that isn't already a web-safe MP4/WebM. A
@@ -425,7 +573,7 @@ function resumePendingTranscodes(options = {}) {
   try {
     const { db } = require('../db/database');
     const rows = db.prepare(
-      `SELECT id, filepath FROM content
+      `SELECT id, user_id, workspace_id, filepath, version FROM content
        WHERE mime_type LIKE 'video/%' AND filepath IS NOT NULL
          AND (
            processing_status IN ('uploaded', 'probing', 'processing')
@@ -433,14 +581,29 @@ function resumePendingTranscodes(options = {}) {
            OR (processing_status='ready' AND mime_type NOT IN ('video/mp4', 'video/webm'))
          )`
     ).all();
+    const { getMediaPipeline } = require('./media-pipeline');
+    const pipeline = getMediaPipeline({
+      db,
+      io: options.io,
+      contentDir: options.contentDir || config.contentDir,
+    });
     let queued = 0;
     for (const r of rows) {
       const abs = path.join(config.contentDir, r.filepath);
       if (fs.existsSync(abs)) {
-        enqueueTranscode({ ...options, db, contentId: r.id, absPath: abs });
+        pipeline.enqueueVideo({
+          contentId: r.id,
+          workspaceId: r.workspace_id || '__platform__',
+          userId: r.user_id,
+          absolutePath: abs,
+          expectedVersion: Math.max(1, Number(r.version) || 1),
+          expectedFilepath: r.filepath,
+          sourceType: 'restart_recovery',
+        });
         queued++;
       }
     }
+    pipeline.schedule();
     if (queued) console.log(`[transcode] resume: queued ${queued} incomplete video(s) for normalization`);
   } catch (e) { console.warn(`[transcode] resume scan failed: ${e && e.message}`); }
 }
