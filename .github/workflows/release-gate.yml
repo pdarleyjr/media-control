@@ -49,7 +49,18 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: server/package-lock.json
+          cache-dependency-path: |
+            server/package-lock.json
+            appliance/electron/package-lock.json
+
+      - name: Install and audit podium Electron shell
+        working-directory: appliance/electron
+        run: |
+          npm ci
+          npm audit --audit-level=high
+          test -x node_modules/electron/dist/electron
+          node --check main.js
+          node --check preload.js
 
       - name: Install server dependencies
         run: |

@@ -9,6 +9,6 @@
     "offline": "electron . --offline-bundle=./offline-fallback"
   },
   "dependencies": {
-    "electron": "^31.0.0"
+    "electron": "^42.4.1"
   }
 }
