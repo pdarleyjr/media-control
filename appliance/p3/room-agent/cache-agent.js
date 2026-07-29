@@ -192,6 +192,7 @@ function connect() {
     const result = {
       ok,
       content_id: contentId || null,
+      generation: Number(item && item.generation) || null,
       elapsed_ms: Date.now() - startedAt,
       cache: cache.getStats(),
     };

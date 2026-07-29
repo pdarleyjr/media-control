@@ -618,6 +618,167 @@ CREATE INDEX IF NOT EXISTS idx_ai_jobs_workspace ON ai_generation_jobs(workspace
 CREATE INDEX IF NOT EXISTS idx_nextcloud_sync_workspace ON nextcloud_sync_jobs(workspace_id, status);
 CREATE INDEX IF NOT EXISTS idx_download_jobs_workspace ON download_jobs(workspace_id, status);
 
+-- Durable, restart-safe media processing. Request handlers persist work here;
+-- bounded workers claim leases and can recover an expired in-flight job after a
+-- process/container restart without relying on browser-tab state.
+CREATE TABLE IF NOT EXISTS media_jobs (
+    id                TEXT PRIMARY KEY,
+    content_id        TEXT REFERENCES content(id) ON DELETE CASCADE,
+    workspace_id      TEXT NOT NULL,
+    user_id           TEXT,
+    job_type          TEXT NOT NULL,
+    source_type       TEXT,
+    source_identity   TEXT,
+    idempotency_key   TEXT,
+    expected_version  INTEGER,
+    expected_filepath TEXT,
+    expected_sha256   TEXT,
+    status            TEXT NOT NULL DEFAULT 'queued'
+                      CHECK (status IN ('queued','running','retry_wait','completed','failed','cancelled')),
+    stage             TEXT NOT NULL DEFAULT 'received'
+                      CHECK (stage IN ('received','validating','probing','optimizing','thumbnail','checksum','preparing','ready','failed','cancelled')),
+    progress_pct      INTEGER NOT NULL DEFAULT 0 CHECK (progress_pct BETWEEN 0 AND 100),
+    attempts          INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    max_attempts      INTEGER NOT NULL DEFAULT 3 CHECK (max_attempts BETWEEN 1 AND 20),
+    reserved_bytes    INTEGER NOT NULL DEFAULT 0 CHECK (reserved_bytes >= 0),
+    available_at      INTEGER NOT NULL,
+    lease_owner       TEXT,
+    lease_expires_at  INTEGER,
+    cancel_requested  INTEGER NOT NULL DEFAULT 0 CHECK (cancel_requested IN (0,1)),
+    error_code        TEXT,
+    error_message     TEXT,
+    retryable         INTEGER NOT NULL DEFAULT 0 CHECK (retryable IN (0,1)),
+    payload_json      TEXT,
+    result_json       TEXT,
+    created_at        INTEGER NOT NULL,
+    updated_at        INTEGER NOT NULL,
+    started_at        INTEGER,
+    completed_at      INTEGER
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_media_jobs_idempotency
+ON media_jobs(workspace_id, idempotency_key)
+WHERE idempotency_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_media_jobs_claim
+ON media_jobs(status, available_at, lease_expires_at, created_at);
+CREATE INDEX IF NOT EXISTS idx_media_jobs_content
+ON media_jobs(content_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS media_job_events (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id       TEXT NOT NULL REFERENCES media_jobs(id) ON DELETE CASCADE,
+    status       TEXT NOT NULL,
+    stage        TEXT NOT NULL,
+    progress_pct INTEGER NOT NULL,
+    detail_json  TEXT,
+    created_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_media_job_events_job ON media_job_events(job_id, id);
+
+-- One technical record per catalog item. User-facing category/name remains on
+-- content; detected MIME, codecs, source identity, poster provenance, and remote
+-- dependency health are server-owned facts and are not editable metadata.
+CREATE TABLE IF NOT EXISTS content_media_metadata (
+    content_id                TEXT PRIMARY KEY REFERENCES content(id) ON DELETE CASCADE,
+    workspace_id              TEXT,
+    source_type               TEXT,
+    source_identity           TEXT,
+    source_url                TEXT,
+    detected_mime_type        TEXT,
+    detected_extension        TEXT,
+    source_sha256             TEXT,
+    container                 TEXT,
+    video_codec               TEXT,
+    video_profile             TEXT,
+    pixel_format              TEXT,
+    color_transfer            TEXT,
+    audio_codec               TEXT,
+    audio_profile             TEXT,
+    audio_sample_format       TEXT,
+    audio_channels            INTEGER,
+    audio_channel_layout      TEXT,
+    duration_sec              REAL,
+    bitrate_bps               INTEGER,
+    frame_rate                REAL,
+    thumbnail_generation      INTEGER,
+    thumbnail_source_sha256   TEXT,
+    thumbnail_source_filepath TEXT,
+    thumbnail_provenance      TEXT,
+    remote_health_status      TEXT,
+    remote_source_kind        TEXT,
+    remote_last_validated_at  INTEGER,
+    remote_error_code         TEXT,
+    remote_final_url          TEXT,
+    remote_content_length     INTEGER,
+    remote_range_supported    INTEGER,
+    remote_cors_allowed       INTEGER,
+    remote_etag               TEXT,
+    remote_last_modified      TEXT,
+    created_at                INTEGER NOT NULL,
+    updated_at                INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_content_media_source_identity
+ON content_media_metadata(workspace_id, source_type, source_identity)
+WHERE source_identity IS NOT NULL AND source_type='youtube';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_content_media_peertube_identity
+ON content_media_metadata(workspace_id, source_type, source_identity)
+WHERE source_identity IS NOT NULL AND source_type='peertube';
+CREATE INDEX IF NOT EXISTS idx_content_media_remote_health
+ON content_media_metadata(workspace_id, remote_health_status, remote_last_validated_at);
+
+CREATE TABLE IF NOT EXISTS content_captions (
+    id                  TEXT PRIMARY KEY,
+    content_id          TEXT NOT NULL REFERENCES content(id) ON DELETE CASCADE,
+    workspace_id        TEXT,
+    language_code       TEXT NOT NULL,
+    label               TEXT NOT NULL,
+    kind                TEXT NOT NULL DEFAULT 'captions'
+                        CHECK (kind IN ('captions','subtitles')),
+    is_default          INTEGER NOT NULL DEFAULT 0
+                        CHECK (is_default IN (0,1)),
+    source_type         TEXT NOT NULL DEFAULT 'upload'
+                        CHECK (source_type IN ('upload','transcription','import')),
+    source_format       TEXT NOT NULL,
+    body_vtt            TEXT NOT NULL,
+    search_text         TEXT,
+    sha256              TEXT,
+    cue_count           INTEGER NOT NULL DEFAULT 0 CHECK (cue_count >= 0),
+    created_by          TEXT,
+    created_at          INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_content_captions_content
+ON content_captions(content_id, language_code, created_at);
+CREATE INDEX IF NOT EXISTS idx_content_captions_workspace_search
+ON content_captions(workspace_id, search_text);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_content_captions_one_default
+ON content_captions(content_id)
+WHERE is_default=1;
+
+CREATE TABLE IF NOT EXISTS content_favorites (
+  user_id             TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  content_id          TEXT NOT NULL REFERENCES content(id) ON DELETE CASCADE,
+  created_at          INTEGER NOT NULL,
+  PRIMARY KEY (user_id, content_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_content_favorites_content
+ON content_favorites(content_id, user_id);
+
+CREATE TABLE IF NOT EXISTS content_saved_views (
+  id                  TEXT PRIMARY KEY,
+  workspace_id        TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  user_id             TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name                TEXT NOT NULL,
+  query_json          TEXT NOT NULL,
+  created_at          INTEGER NOT NULL,
+  updated_at          INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_content_saved_views_owner
+ON content_saved_views(workspace_id, user_id, name COLLATE NOCASE);
+
 -- 2026-06-01 Unified Media Control dashboard
 CREATE TABLE IF NOT EXISTS dashboard_state (
     user_id        TEXT NOT NULL,
@@ -902,12 +1063,14 @@ CREATE TABLE IF NOT EXISTS node_assets (
     node_id           TEXT NOT NULL,
     desired           INTEGER NOT NULL DEFAULT 1,
     sync_status       TEXT NOT NULL DEFAULT 'pending',
+    generation        INTEGER,
     local_path        TEXT,
     checksum_verified INTEGER NOT NULL DEFAULT 0,
     bytes_downloaded  INTEGER,
     last_attempt_at   INTEGER,
     last_success_at   INTEGER,
     error_message     TEXT,
+    updated_at        INTEGER,
     PRIMARY KEY (asset_id, node_id)
 );
 

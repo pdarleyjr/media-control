@@ -10,9 +10,8 @@ const { db } = require('../db/database');
 const config = require('../config');
 const { sanitizeString } = require('../middleware/sanitize');
 const { resolveUploadMime } = require('../middleware/upload');
-const { isDocThumbnailMime, kickDocThumbnail } = require('./doc-thumbnail');
-const { isHeicMime, heicToJpeg, kickHevcTranscodeIfNeeded } = require('./media-transcode');
-const { prewarmUploadedContent } = require('./node-registry');
+const { inspectMediaFile } = require('./media-integrity');
+const { getMediaPipeline } = require('./media-pipeline');
 
 // Same filename hygiene as content.js: NFC-normalize (macOS sends NFD) then
 // HTML-escape & < > " ' so a hostile filename renders as text in every UI sink.
@@ -31,7 +30,17 @@ function safeFilename(name) {
  * @param {string} o.workspaceId  owning workspace (required — content is workspace-scoped)
  * @returns {Promise<object>} the inserted content row
  */
-async function finalizeUpload({ absPath, originalName, mimeType, size, userId, workspaceId, io }) {
+async function finalizeUpload({
+  absPath,
+  originalName,
+  mimeType,
+  size,
+  userId,
+  workspaceId,
+  io,
+  pipeline,
+  contentDir = config.contentDir,
+}) {
   if (!workspaceId) {
     try { fs.unlinkSync(absPath); } catch { /* ignore */ }
     const e = new Error('No workspace context. Switch to a workspace before uploading.');
@@ -47,88 +56,96 @@ async function finalizeUpload({ absPath, originalName, mimeType, size, userId, w
     e.status = 415;
     throw e;
   }
+  let integrity;
+  try {
+    integrity = inspectMediaFile({
+      filePath: absPath,
+      claimedMime: mt,
+      filename: originalName,
+    });
+  } catch {
+    try { fs.unlinkSync(absPath); } catch { /* ignore */ }
+    const error = new Error('The resumable upload could not be inspected.');
+    error.status = 422;
+    error.code = 'MEDIA_VALIDATION_FAILED';
+    throw error;
+  }
+  if (!integrity.ok) {
+    try { fs.unlinkSync(absPath); } catch { /* ignore */ }
+    const error = new Error(
+      integrity.code === 'ACTIVE_CONTENT_REJECTED'
+        ? 'Executable HTML, JavaScript, and SVG uploads are not accepted as media.'
+        : 'The resumable upload bytes do not match a supported media type.',
+    );
+    error.status = integrity.code === 'SOURCE_TOO_LARGE' ? 413 : 415;
+    error.code = integrity.code;
+    throw error;
+  }
+  mt = integrity.detectedMime;
+  size = integrity.size;
 
   const id = uuidv4();
   let filename = `${id}${ext}`;
-  let destPath = path.join(config.contentDir, filename);
+  let destPath = path.join(contentDir, filename);
 
-  fs.mkdirSync(config.contentDir, { recursive: true });
+  fs.mkdirSync(contentDir, { recursive: true });
   // Move the assembled file into the content dir. rename() is atomic on the same
   // filesystem; fall back to copy+unlink across devices (tus store and content
   // dir are both under the uploads bind-mount, so rename normally succeeds).
   try {
-    fs.renameSync(absPath, destPath);
+    await fs.promises.rename(absPath, destPath);
   } catch (e) {
-    fs.copyFileSync(absPath, destPath);
-    try { fs.unlinkSync(absPath); } catch { /* ignore */ }
+    if (e.code !== 'EXDEV') throw e;
+    await fs.promises.copyFile(absPath, destPath);
+    try { await fs.promises.unlink(absPath); } catch { /* ignore */ }
   }
 
-  // iPhone HEIC/HEIF -> JPEG (same as the multipart path): displays + sharp can't
-  // render HEIC, so transcode and continue as a normal image. Non-fatal.
-  if (isHeicMime(mt)) {
-    const conv = await heicToJpeg(destPath, config.contentDir).catch(() => null);
-    if (conv) {
-      try { fs.unlinkSync(destPath); } catch { /* ignore */ }
-      filename = conv.filename; destPath = conv.absPath; mt = 'image/jpeg'; size = conv.size;
-    }
-  }
-
-  let width = null, height = null, durationSec = null, thumbnailPath = null;
+  const mediaPipeline = pipeline || getMediaPipeline({ db, io, contentDir });
+  let queued;
   try {
-    if (mt.startsWith('image/')) {
-      const sharp = require('sharp');
-      const sharpOpts = { limitInputPixels: false, failOn: 'none' };
-      try {
-        const metadata = await sharp(destPath, sharpOpts).metadata();
-        width = metadata.width; height = metadata.height;
-      } catch (e) { console.warn('finalizeUpload sharp metadata (non-fatal):', e.message); }
-      try {
-        thumbnailPath = `thumb_${filename}`;
-        await sharp(destPath, sharpOpts).resize(config.thumbnailWidth).jpeg({ quality: 70 })
-          .toFile(path.join(config.contentDir, thumbnailPath));
-      } catch (e) { console.warn('finalizeUpload sharp thumbnail (non-fatal):', e.message); thumbnailPath = null; }
-    } else if (mt.startsWith('video/')) {
-      try {
-        const { execFileSync } = require('child_process');
-        // 30s budget — large 4K/ultra-wide masters take longer to probe than the
-        // 15s used on the small multipart path.
-        const probe = execFileSync('ffprobe', ['-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', destPath],
-          { timeout: 30000 }).toString();
-        const info = JSON.parse(probe);
-        if (info.format && info.format.duration) durationSec = parseFloat(info.format.duration);
-        const vs = info.streams && info.streams.find(s => s.codec_type === 'video');
-        if (vs) { width = vs.width; height = vs.height; }
-        thumbnailPath = `thumb_${filename.replace(/\.[^.]+$/, '.jpg')}`;
-        try {
-          execFileSync('ffmpeg', ['-y', '-i', destPath, '-ss', '2', '-vframes', '1', '-vf', `scale=${config.thumbnailWidth}:-1`, path.join(config.contentDir, thumbnailPath)],
-            { timeout: 30000 });
-        } catch { thumbnailPath = null; }
-      } catch (e) { console.warn('finalizeUpload ffprobe (non-fatal):', e.message); }
-    }
-  } catch (e) { console.warn('finalizeUpload metadata (non-fatal):', e.message); }
-
-  db.prepare(`
-    INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, duration_sec, thumbnail_path, width, height, access_level)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'private')
-  `).run(id, userId, workspaceId, safeFilename(originalName), filename, mt, size || 0, durationSec, thumbnailPath, width, height);
-
-  // PDF/Office/ODF docs uploaded via the resumable path get their thumbnail
-  // rendered in the background too (poppler / LibreOffice). Non-fatal.
-  if (isDocThumbnailMime(mt)) {
-    kickDocThumbnail(id, destPath, mt);
-  }
-  // iPhone HEVC video -> H.264 MP4 in the background; no-op for H.264.
-  if (mt.startsWith('video/')) {
-    kickHevcTranscodeIfNeeded(id, destPath, { io })
-      .catch((error) => console.warn(`[video-normalize] ${id} failed: ${error.message}`));
-  } else {
-    prewarmUploadedContent(io, db, {
-      contentId: id,
-      absolutePath: destPath,
-    }).catch((error) => console.warn(`[upload-prewarm] ${id} failed: ${error.message}`));
+    db.transaction(() => {
+      db.prepare(`
+        INSERT INTO content (
+          id, user_id, workspace_id, filename, filepath, mime_type, file_size,
+          processing_status, access_level
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'uploaded', 'private')
+      `).run(id, userId, workspaceId, safeFilename(originalName), filename, mt, size || 0);
+      queued = mt.startsWith('video/')
+        ? mediaPipeline.enqueueVideo({
+          contentId: id,
+          workspaceId,
+          userId,
+          absolutePath: destPath,
+          expectedVersion: 1,
+          expectedFilepath: filename,
+          sourceType: 'tus_upload',
+        })
+        : mediaPipeline.enqueueThumbnailFinalize({
+          contentId: id,
+          workspaceId,
+          userId,
+          absolutePath: destPath,
+          expectedVersion: 1,
+          expectedFilepath: filename,
+          mimeType: mt,
+          sourceType: 'tus_upload',
+        });
+    })();
+  } catch (error) {
+    try { fs.unlinkSync(destPath); } catch { /* ignore */ }
+    error.status = error.status || 500;
+    throw error;
   }
 
-  return db.prepare('SELECT * FROM content WHERE id = ?').get(id);
+  return {
+    ...db.prepare('SELECT * FROM content WHERE id = ?').get(id),
+    media_job: {
+      id: queued.job.id,
+      status: queued.job.status,
+      stage: queued.job.stage,
+      progress_pct: queued.job.progress_pct,
+    },
+  };
 }
 
 module.exports = { finalizeUpload };

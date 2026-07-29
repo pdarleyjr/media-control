@@ -40,6 +40,33 @@ test('three-display presets create both supported hybrid layouts', () => {
   assert.deepEqual(presetGroups(wall, members, 'split-all').map((group) => group.member_ids), [['tv1'], ['tv2'], ['tv3']]);
 });
 
+test('wall layout remains data-driven when a sixth display is enrolled', () => {
+  const sixMembers = Array.from({ length: 6 }, (_, index) => ({
+    device_id: `tv${index + 1}`,
+    grid_col: index,
+    grid_row: 0,
+    playlist_id: `p${index + 1}`,
+    device_name: `TV ${index + 1}`,
+  }));
+
+  const spanned = validateLayout(wall, sixMembers, {
+    groups: presetGroups(wall, sixMembers, 'span-all'),
+  });
+  assert.deepEqual(spanned.groups[0].member_ids, [
+    'tv1', 'tv2', 'tv3', 'tv4', 'tv5', 'tv6',
+  ]);
+
+  const independent = validateLayout(
+    { ...wall, layout_mode: 'split' },
+    sixMembers,
+    { groups: presetGroups(wall, sixMembers, 'split-all') },
+  );
+  assert.deepEqual(
+    independent.groups.map((group) => group.member_ids),
+    [['tv1'], ['tv2'], ['tv3'], ['tv4'], ['tv5'], ['tv6']],
+  );
+});
+
 test('layout validation rejects cross-wall, duplicate, missing and noncontiguous members', () => {
   assert.throws(() => validateLayout(wall, members, { groups: [{ member_ids: ['tv1', 'other'], layout: 'span' }] }), /not a member/);
   assert.throws(() => validateLayout(wall, members, { groups: [{ member_ids: ['tv1'], layout: 'solo' }, { member_ids: ['tv1', 'tv2', 'tv3'], layout: 'span' }] }), /more than one/);

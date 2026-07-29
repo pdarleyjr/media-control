@@ -794,6 +794,12 @@ app.get('/api/content/:id/thumbnail', (req, res) => {
   res.sendFile(safePath);
 });
 
+// Caption sidecars follow the same publication boundary as content assets.
+// Unassigned private media never becomes fetchable merely because a caption
+// was uploaded.
+const captionRoutes = require('./routes/captions');
+app.get('/api/captions/:captionId/file', captionRoutes.publicCaptionFile);
+
 // PeerTube replay media is never represented by an HTML watch page mislabeled
 // as video/mp4. This adapter fetches the actual private media file server-side
 // with the PeerTube bearer token and forwards byte ranges. Unauthenticated
@@ -925,6 +931,7 @@ app.use('/api/devices', requireAuth, resolveTenancy, require('./routes/devices')
 app.use('/api/displays', requireAuth, resolveTenancy, require('./routes/displays'));
 app.use('/api/advanced-canvas', requireAuth, resolveTenancy, require('./routes/advanced-canvas'));
 app.use('/api/content', requireAuth, resolveTenancy, require('./routes/content'));
+app.use('/api/captions', requireAuth, resolveTenancy, captionRoutes.router);
 // Resumable chunked uploads (tus) — for multi-GB files that exceed Cloudflare's
 // ~100MB per-request edge limit. app.all (not app.use) so req.url keeps the
 // /api/tus prefix the tus Server matches on; auth runs first so onUploadFinish
@@ -961,6 +968,8 @@ app.use('/api/downloads', requireAuth, resolveTenancy, require('./routes/downloa
 // scope by req.workspaceId and reuse the existing device-content-push path.
 app.use('/api/scenes', requireAuth, resolveTenancy, require('./routes/scenes'));
 app.use('/api/broadcast', requireAuth, resolveTenancy, require('./routes/broadcast'));
+app.use('/api/classroom-preparation', requireAuth, resolveTenancy, require('./routes/classroom-preparation'));
+app.use('/api/media-observability', requireAuth, resolveTenancy, require('./routes/media-observability'));
 app.use('/api/live-stream', requireAuth, resolveTenancy, requireWorkspaceWrite, require('./routes/live-stream'));
 app.use('/api/peertube-replays', requireAuth, resolveTenancy, require('./routes/peertube-replays'));
 app.use('/api/activity', requireAuth, resolveTenancy, require('./routes/activity'));

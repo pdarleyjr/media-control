@@ -161,7 +161,7 @@ test('web-safe upload becomes immutable and immediately prewarms exactly its fin
   }
 });
 
-test('HEVC normalization prewarms only the final H.264 file and retires the source after handoff', async () => {
+test('HEVC normalization prewarms only the final H.264 file and retains the original master', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-hevc-video-'));
   const source = path.join(dir, 'camera-hevc.mov');
   fs.writeFileSync(source, 'incompatible-hevc-original');
@@ -199,7 +199,7 @@ test('HEVC normalization prewarms only the final H.264 file and retires the sour
     assert.equal(row.processing_status, 'ready');
     assert.equal(row.version, 2);
     assert.equal(fs.readFileSync(path.join(dir, row.filepath), 'utf8'), 'final-browser-safe-h264');
-    assert.equal(fs.existsSync(source), false);
+    assert.equal(fs.existsSync(source), true, 'master bytes remain until an explicit retention policy removes them');
     assert.equal(prewarms.length, 1);
     assert.equal(prewarms[0].canonical_path, 'normalized-video.mp4');
     assert.equal(

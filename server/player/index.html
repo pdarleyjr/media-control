@@ -3424,11 +3424,11 @@
 
     function register() {
       const data = {};
-      if (config.deviceId && config.paired) {
+      if (config.deviceId && (config.paired || config.deviceToken)) {
         data.device_id = config.deviceId;
         if (config.deviceToken) data.device_token = config.deviceToken;
       } else {
-        const code = String(Math.floor(100000 + Math.random() * 900000));
+        const code = config.pairingCode || String(Math.floor(100000 + Math.random() * 900000));
         config.pairingCode = code;
         saveConfig(config);
         data.pairing_code = code;
@@ -4356,6 +4356,18 @@
           const myGeneration = playbackGeneration;
           let videoHasStarted = false;
           video.src = src;
+          for (const caption of (Array.isArray(item.captions) ? item.captions : [])) {
+            if (!caption || !caption.url || !caption.language_code) continue;
+            const track = document.createElement('track');
+            track.kind = caption.kind === 'subtitles' ? 'subtitles' : 'captions';
+            track.label = caption.label || caption.language_code;
+            track.srclang = caption.language_code;
+            track.src = /^https?:\/\//i.test(caption.url)
+              ? caption.url
+              : `${serverUrl}${caption.url.startsWith('/') ? '' : '/'}${caption.url}`;
+            track.default = caption.is_default === true;
+            video.appendChild(track);
+          }
           const wallStartDelayMs = wallConfig && currentItemStartedAt > Date.now() + 40
             ? Math.min(2000, currentItemStartedAt - Date.now())
             : 0;

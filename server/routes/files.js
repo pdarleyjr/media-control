@@ -11,13 +11,8 @@ const broadcastDelivery = getBroadcastDeliveryStore(db);
 const sceneEngine = require('../services/scene-engine');
 const { logActivity, getClientIp } = require('../services/activity');
 const { resolveUploadMime } = require('../middleware/upload');
-const { isDocThumbnailMime, kickDocThumbnail } = require('../lib/doc-thumbnail');
-const {
-  classifyMedia,
-  kickHevcTranscodeIfNeeded,
-  probeMedia,
-} = require('../lib/media-transcode');
-const { prewarmUploadedContent } = require('../lib/node-registry');
+const { mediaLimits, validateMediaIntegrity } = require('../lib/media-integrity');
+const { getMediaPipeline } = require('../lib/media-pipeline');
 const {
   LIVE_STREAM_DEVICE_PREFIX,
   resolveBroadcastTargets,
@@ -206,10 +201,36 @@ router.post('/broadcast', async (req, res) => {
     return res.status(status).json({ error: e.message || String(e) });
   }
 
-  const canonicalMime = resolveBroadcastMime(file, relPath);
+  let canonicalMime = resolveBroadcastMime(file, relPath);
   if (!canonicalMime) {
     return res.status(415).json({ error: 'Only video, image, PDF, and Office document files can be broadcast', mime: file.mime });
   }
+
+  const sourceBytes = Buffer.isBuffer(file.buffer) ? file.buffer : Buffer.from(file.buffer || '');
+  const maxSourceBytes = mediaLimits().maxSourceBytes;
+  if (sourceBytes.length === 0 || sourceBytes.length > maxSourceBytes) {
+    return res.status(sourceBytes.length > maxSourceBytes ? 413 : 415).json({
+      code: sourceBytes.length > maxSourceBytes ? 'SOURCE_TOO_LARGE' : 'SOURCE_EMPTY',
+      error: sourceBytes.length > maxSourceBytes
+        ? 'The cloud file exceeds the configured media size limit.'
+        : 'The cloud file is empty.',
+    });
+  }
+  const integrity = validateMediaIntegrity({
+    bytes: sourceBytes.subarray(0, 64 * 1024),
+    claimedMime: canonicalMime,
+    filename: file.name || relPath,
+  });
+  if (!integrity.ok) {
+    return res.status(415).json({
+      code: integrity.code,
+      error: integrity.code === 'ACTIVE_CONTENT_REJECTED'
+        ? 'Executable active content cannot be imported as classroom media.'
+        : 'The cloud file contents do not match a supported media type.',
+      detected_mime_type: integrity.detectedMime || null,
+    });
+  }
+  canonicalMime = integrity.detectedMime;
 
   // Materialize the NC bytes into a local content file under config.contentDir
   // (GUARDRAIL 2: the display serves from our origin, never from Nextcloud).
@@ -218,38 +239,56 @@ router.post('/broadcast', async (req, res) => {
   const localName = `${id}${ext}`;
   const localPath = path.join(config.contentDir, localName);
   try {
-    fs.mkdirSync(config.contentDir, { recursive: true });
-    fs.writeFileSync(localPath, file.buffer);
+    await fs.promises.mkdir(config.contentDir, { recursive: true });
+    await fs.promises.writeFile(localPath, sourceBytes);
   } catch (e) {
     return res.status(500).json({ error: 'Failed to materialize file for broadcast' });
   }
 
-  // INSERT a content row (content.js:166 shape) owned by the importer and marked
-  // private — this is the caller's imported copy, not a shared template.
-  db.prepare(`
-    INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, content_type, access_level)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'nextcloud_import', 'private')
-  `).run(
-    id, req.user.id, req.workspaceId,
-    file.name || relPath.split('/').pop() || 'nextcloud_file',
-    localName, canonicalMime, file.buffer.length
-  );
-
-  if (isDocThumbnailMime(canonicalMime)) {
-    kickDocThumbnail(id, localPath, canonicalMime);
-  }
   const io = req.app.get('io');
-  let videoCompletion = null;
-  let videoClassification = null;
-  if (canonicalMime.startsWith('video/')) {
-    const mediaProbe = probeMedia(localPath);
-    videoClassification = mediaProbe ? classifyMedia(mediaProbe) : null;
-    videoCompletion = kickHevcTranscodeIfNeeded(id, localPath, { io });
-  } else {
-    prewarmUploadedContent(io, db, {
-      contentId: id,
-      absolutePath: localPath,
-    }).catch((error) => console.warn(`[nextcloud-prewarm] ${id} failed: ${error.message}`));
+  const pipeline = getMediaPipeline({ db, io });
+  let queued;
+  try {
+    db.transaction(() => {
+      // The catalog row and its durable job are one commit: a queue failure
+      // cannot leave a seemingly usable item that was never normalized.
+      db.prepare(`
+        INSERT INTO content (
+          id, user_id, workspace_id, filename, filepath, mime_type, file_size,
+          content_type, processing_status, access_level
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'nextcloud_import', 'uploaded', 'private')
+      `).run(
+        id, req.user.id, req.workspaceId,
+        file.name || relPath.split('/').pop() || 'nextcloud_file',
+        localName, canonicalMime, sourceBytes.length
+      );
+      queued = canonicalMime.startsWith('video/')
+        ? pipeline.enqueueVideo({
+          contentId: id,
+          workspaceId: req.workspaceId,
+          userId: req.user.id,
+          absolutePath: localPath,
+          expectedVersion: 1,
+          expectedFilepath: localName,
+          sourceType: 'nextcloud_import',
+        })
+        : pipeline.enqueueThumbnailFinalize({
+          contentId: id,
+          workspaceId: req.workspaceId,
+          userId: req.user.id,
+          absolutePath: localPath,
+          expectedVersion: 1,
+          expectedFilepath: localName,
+          mimeType: canonicalMime,
+          sourceType: 'nextcloud_import',
+        });
+    })();
+  } catch (error) {
+    await fs.promises.unlink(localPath).catch(() => {});
+    return res.status(500).json({
+      code: 'MEDIA_QUEUE_FAILED',
+      error: 'The cloud file could not be queued for processing.',
+    });
   }
 
   if (import_only === true) {
@@ -263,32 +302,32 @@ router.post('/broadcast', async (req, res) => {
         req.workspaceId
       );
     } catch (_) {}
-    return res.json({ success: true, content_id: id, imported: true, sent: 0, failed: [], total: 0 });
+    return res.status(202).json({
+      accepted: true,
+      success: true,
+      content_id: id,
+      imported: true,
+      processing: true,
+      job_id: queued.job.id,
+      sent: 0,
+      failed: [],
+      total: 0,
+    });
   }
 
   // A browser-incompatible or unreadable import must not be pushed while the
   // row still references original bytes. Return the durable content id so the
   // operator can broadcast the ready final generation after normalization.
-  if (videoCompletion && (!videoClassification || !videoClassification.webSafe)) {
+  if (canonicalMime.startsWith('video/')) {
     return res.status(202).json({
       accepted: true,
       processing: true,
       content_id: id,
+      job_id: queued.job.id,
       sent: 0,
       failed: [],
       total: targets.length,
     });
-  }
-  if (videoCompletion) {
-    const completion = await videoCompletion;
-    if (!completion || completion.status !== 'ready') {
-      return res.status(422).json({
-        code: 'CONTENT_NOT_READY',
-        error: 'Imported video could not be finalized for browser playback',
-        content_id: id,
-        processing_status: completion && completion.status || 'failed',
-      });
-    }
   }
 
   // Push to each target via the UNMODIFIED shared push path (broadcast.js:62-73).

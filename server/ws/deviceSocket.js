@@ -24,11 +24,24 @@ const pendingOfflines = new Map();
 const OFFLINE_DEBOUNCE_MS = 5000;
 // Phase 2.3: deviceRoom() resolves a device_id to its workspace room so
 // dashboardNs.emit can be scoped instead of broadcast platform-wide.
-const { deviceRoom, emitToWorkspace, targetRoomsForDevice, displayRoom, roomStateRoom } = require('../lib/socket-rooms');
+const {
+  deviceRoom,
+  emitToWorkspace,
+  targetRoomsForDevice,
+  displayRoom,
+  roomStateRoom,
+  workspaceRoom,
+} = require('../lib/socket-rooms');
 const commandModel = require('../lib/command-model');
 const { getBroadcastDeliveryStore } = require('../lib/broadcast-delivery');
 const broadcastDelivery = getBroadcastDeliveryStore(db);
 const nodeRegistry = require('../lib/node-registry');
+const { recordPreparationResult } = require('../lib/classroom-preparation');
+const { attachCaptionsToItems } = require('../lib/content-captions');
+const {
+  bindEnrollmentFingerprint,
+  findReusablePendingEnrollment,
+} = require('../lib/device-enrollment');
 const { parseStoredLayout, groupForDevice, resolveEffectiveLayoutLeaders } = require('../lib/wall-layout');
 const { buildUniversalWallGeometry, buildLayoutAssignment } = require('../lib/wall-geometry');
 const { createRoomSnapshot, scheduleRoomSnapshot } = require('../lib/room-state-broadcaster');
@@ -287,6 +300,8 @@ function buildPlaylistPayload(deviceId, delivery = null) {
         }
       }
     } catch (e) { /* live backfill is best-effort */ }
+
+    assignments = attachCaptionsToItems(db, assignments);
 
     // Asset URL resolution. Classroom-wall displays (when the feature is enabled)
     // get a read-through local-cache URL pointed at their on-box room-agent;
@@ -596,6 +611,31 @@ module.exports = function setupDeviceSocket(io) {
       socket.on('node:request-manifest', () => {
         try { socket.emit('node:sync-manifest', nodeRegistry.buildContentManifest(db, { nodeId })); } catch (_) {}
       });
+      socket.on('node:prewarm-result', (payload) => {
+        try {
+          const result = recordPreparationResult(db, nodeId, payload);
+          if (!result.applied) return;
+          const node = db.prepare(
+            'SELECT workspace_id, room_id FROM managed_nodes WHERE node_id = ?',
+          ).get(nodeId);
+          if (!node?.workspace_id) return;
+          dashboardNs.to(workspaceRoom(node.workspace_id)).emit('dashboard:content-preparation', {
+            node_id: nodeId,
+            content_id: String(payload?.content_id || ''),
+            generation: Number(payload?.generation) || null,
+            state: result.state,
+          });
+          if (node.room_id) {
+            scheduleRoomSnapshot(io, {
+              workspaceId: node.workspace_id,
+              roomId: node.room_id,
+              reason: 'node:prewarm-result',
+            }, 100);
+          }
+        } catch (error) {
+          console.warn(`Node prewarm result rejected for ${nodeId}: ${error.message}`);
+        }
+      });
       socket.on('join', (data) => {
         try { if (data && data.room) socket.join(String(data.room)); } catch (_) {}
       });
@@ -609,89 +649,64 @@ module.exports = function setupDeviceSocket(io) {
     socket.on('device:register', (data) => {
       const { pairing_code, device_id, device_token, device_info, fingerprint } = data;
 
-      // Track device fingerprint to prevent reinstall abuse
+      // Socket.IO reconnects can occur before an operator claims a pairing
+      // code. Reuse that one provisional row instead of minting another
+      // Unnamed Display on every transport flap/page reload.
+      if (!device_id && pairing_code) {
+        const pendingDevice = findReusablePendingEnrollment(db, pairing_code);
+        if (pendingDevice) {
+          const newToken = generateDeviceToken();
+          currentDeviceId = pendingDevice.id;
+          authenticated = true;
+          if (pendingOfflines.has(pendingDevice.id)) {
+            clearTimeout(pendingOfflines.get(pendingDevice.id));
+            pendingOfflines.delete(pendingDevice.id);
+          }
+          evictPriorSocket(pendingDevice.id, socket.id);
+          db.prepare(`
+            UPDATE devices
+            SET device_token = ?, status = 'provisioning',
+                last_heartbeat = strftime('%s','now'), ip_address = ?,
+                android_version = ?, app_version = ?,
+                screen_width = ?, screen_height = ?,
+                updated_at = strftime('%s','now')
+            WHERE id = ?
+          `).run(
+            newToken,
+            getClientIp(socket),
+            device_info?.android_version || null,
+            device_info?.app_version || null,
+            device_info?.screen_width || null,
+            device_info?.screen_height || null,
+            pendingDevice.id,
+          );
+          bindEnrollmentFingerprint(db, fingerprint, pendingDevice.id);
+          heartbeat.registerConnection(pendingDevice.id, socket.id);
+          socket.join(pendingDevice.id);
+          joinDeviceTargetRooms(socket, pendingDevice.id);
+          socket.emit('device:registered', {
+            device_id: pendingDevice.id,
+            device_token: newToken,
+            status: 'provisioning',
+          });
+          console.log(`Pending device enrollment resumed: ${pendingDevice.id}`);
+          return;
+        }
+      }
+
+      // A browser fingerprint is not a device credential: identical displays
+      // can legitimately report the same value. Touch/bind it for diagnostics,
+      // but never use it to reclaim or overwrite another display identity.
+      // Identity resumption is based on the device token above, or the exact
+      // still-pending pairing code handled above.
       if (fingerprint) {
         try {
           const existing = db.prepare('SELECT * FROM device_fingerprints WHERE fingerprint = ?').get(fingerprint);
           if (existing) {
-            db.prepare("UPDATE device_fingerprints SET last_seen = strftime('%s','now'), device_id = ? WHERE fingerprint = ?")
-              .run(device_id || existing.device_id, fingerprint);
-            // If this fingerprint was previously registered to a different device, block the new registration
-            if (!device_id && existing.device_id && pairing_code) {
-              // Someone reinstalled - link them back to existing device
-              const oldDevice = db.prepare('SELECT * FROM devices WHERE id = ?').get(existing.device_id);
-              if (oldDevice) {
-                // Fingerprint reclaim guard: a leaked/duplicated fingerprint shouldn't be enough
-                // to take over a live device. Reject the reclaim if the device is currently
-                // online OR has been online within the last 24h — by then a real reinstall has
-                // had plenty of time to come back, but a credential thief is more likely caught.
-                const liveConn = heartbeat.getConnection(existing.device_id);
-                const RECLAIM_GRACE_SECONDS = 24 * 60 * 60;
-                const lastBeat = oldDevice.last_heartbeat || 0;
-                const secondsSince = Math.floor(Date.now() / 1000) - lastBeat;
-                if (liveConn || (oldDevice.status === 'online') || secondsSince < RECLAIM_GRACE_SECONDS) {
-                  // Reclaim refused (guard against fingerprint hijack of a
-                  // live device), but the player ALSO sent a pairing_code
-                  // which means it is willing to be paired as a fresh slot.
-                  // Don't dead-end with auth-error — that forces the player
-                  // to wipe credentials and show "Authentication failed"
-                  // with no pairing code visible. Instead, log + fall
-                  // through to the normal new-device registration path
-                  // below so the admin can claim it from the dashboard.
-                  console.warn(`Fingerprint reclaim rejected for ${existing.device_id}: device active (status=${oldDevice.status}, ${secondsSince}s since last heartbeat, liveConn=${!!liveConn}); proceeding with new-device pairing for ${pairing_code}`);
-                  // Detach the fingerprint from the in-use device so this
-                  // pairing creates its own row when claimed; avoids two
-                  // physical displays sharing a single fingerprint slot.
-                  try {
-                    db.prepare('DELETE FROM device_fingerprints WHERE fingerprint = ? AND device_id = ?').run(fingerprint, existing.device_id);
-                  } catch (e) {
-                    console.warn('failed to detach colliding fingerprint:', e.message);
-                  }
-                  // Fall through (no return) to the standard new-device flow.
-                } else {
-                  // Fingerprint matched — this is a reinstalled app reconnecting to its old device.
-                  // Issue a fresh token so the app can authenticate going forward.
-                  const newToken = generateDeviceToken();
-                  db.prepare('UPDATE devices SET device_token = ? WHERE id = ?').run(newToken, existing.device_id);
-                  console.log(`Fingerprint match: linking reinstalled app to existing device ${existing.device_id} (new token issued)`);
-                  authenticated = true;
-                  // Cancel any pending offline timer - device is back in the grace window
-                  if (pendingOfflines.has(existing.device_id)) {
-                    clearTimeout(pendingOfflines.get(existing.device_id));
-                    pendingOfflines.delete(existing.device_id);
-                  }
-                  evictPriorSocket(existing.device_id, socket.id);
-                  db.prepare("UPDATE devices SET status = 'online', last_heartbeat = strftime('%s','now'), ip_address = ?, updated_at = strftime('%s','now') WHERE id = ?")
-                    .run(getClientIp(socket), existing.device_id);
-                  socket.emit('device:registered', { device_id: existing.device_id, device_token: newToken, status: 'online' });
-                  // If device was already claimed by a user, tell the player it's paired
-                  if (oldDevice.user_id) {
-                    socket.emit('device:paired', { name: oldDevice.name || 'Display' });
-                  }
-                  currentDeviceId = existing.device_id;
-                  heartbeat.registerConnection(existing.device_id, socket.id);
-                  socket.join(existing.device_id);
-                  joinDeviceTargetRooms(socket, existing.device_id);
-                  logDeviceStatus(existing.device_id, 'online');
-                  emitToDeviceWorkspace(dashboardNs, existing.device_id, 'dashboard:device-status', { device_id: existing.device_id, status: 'online' });
-                  scheduleDeviceRoomSnapshot(io, existing.device_id, 'device:online');
-                  // Flush any commands/playlist-updates queued while this device was offline.
-                  commandQueue.flushQueue(deviceNs, existing.device_id, buildPlaylistPayload);
-                  // Send playlist
-                  const access = checkDeviceAccess(existing.device_id);
-                  if (!access.allowed) {
-                    socket.emit('device:playlist-update', { assignments: [], suspended: true, message: access.message, detail: access.detail });
-                  } else {
-                    socket.emit('device:playlist-update', buildPlaylistPayload(existing.device_id));
-                  }
-                  return;
-                }
-              }
-            }
-          } else if (device_id || pairing_code) {
-            db.prepare("INSERT OR IGNORE INTO device_fingerprints (fingerprint, device_id) VALUES (?, ?)")
-              .run(fingerprint, device_id || null);
+            db.prepare("UPDATE device_fingerprints SET last_seen = strftime('%s','now') WHERE fingerprint = ?")
+              .run(fingerprint);
           }
+          if (device_id) bindEnrollmentFingerprint(db, fingerprint, device_id);
         } catch (e) {
           console.error('Fingerprint tracking error:', e.message);
         }
@@ -798,6 +813,7 @@ module.exports = function setupDeviceSocket(io) {
           device_info?.screen_width || null,
           device_info?.screen_height || null
         );
+        bindEnrollmentFingerprint(db, fingerprint, id);
 
         heartbeat.registerConnection(id, socket.id);
         socket.join(id);

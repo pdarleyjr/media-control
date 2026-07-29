@@ -72,6 +72,7 @@ function createCacheServer(opts = {}) {
   const manifestById = new Map();
   const desiredManifestIds = new Set();
   const pendingManifest = new Map();
+  let manifestAuthoritative = false;
   let manifestSweep = null;
   let failureCount = 0;
   let lastFailure = null;
@@ -254,6 +255,9 @@ function createCacheServer(opts = {}) {
   function prewarm(id, manifestItem) {
     const normalizedId = String(id || '');
     if (!ID_RE.test(normalizedId)) return Promise.resolve(false);
+    if (manifestAuthoritative && !desiredManifestIds.has(normalizedId)) {
+      return Promise.resolve(false);
+    }
     if (manifestItem) manifestById.set(normalizedId, manifestItem);
     const expected = manifestItem || manifestById.get(normalizedId) || null;
     if (cacheEntryMatches(normalizedId, expected)) return Promise.resolve(true);
@@ -429,6 +433,16 @@ function createCacheServer(opts = {}) {
           output.on('finish', () => {
             if (attemptDone || settled) return;
             try {
+              if (manifestAuthoritative && !desiredManifestIds.has(normalizedId)) {
+                attemptDone = true;
+                clearTimers();
+                try { fs.unlinkSync(partPath); } catch (_) {}
+                try { fs.unlinkSync(metaPartPath); } catch (_) {}
+                settled = true;
+                downloads.delete(normalizedId);
+                activeTransfers.delete(normalizedId);
+                return resolve(false);
+              }
               const actualSha = hash.digest('hex');
               const actualSize = fs.statSync(partPath).size;
               if (SHA256_RE.test(expectedSha) && actualSha !== expectedSha) {
@@ -473,6 +487,13 @@ function createCacheServer(opts = {}) {
         const [id, item] = pendingManifest.entries().next().value;
         pendingManifest.delete(id);
         try { await prewarm(id, item); } catch (_) { /* keep warming the remainder */ }
+        const latest = manifestById.get(id);
+        if (latest && latest !== item
+          && desiredManifestIds.has(id)
+          && !cacheEntryMatches(id, latest)
+          && !downloads.has(id)) {
+          pendingManifest.set(id, latest);
+        }
       }
     })().finally(() => { manifestSweep = null; });
     return manifestSweep;
@@ -480,17 +501,24 @@ function createCacheServer(opts = {}) {
 
   function prewarmManifest(items) {
     if (!Array.isArray(items)) return Promise.resolve();
+    manifestAuthoritative = true;
     desiredManifestIds.clear();
+    pendingManifest.clear();
+    const nextManifestIds = new Set();
     for (const it of items) {
       const id = it && (it.content_id || it.id);
       if (id) {
         const normalizedId = String(id);
+        nextManifestIds.add(normalizedId);
         desiredManifestIds.add(normalizedId);
         manifestById.set(normalizedId, it);
         if (!cacheEntryMatches(normalizedId, it) && !downloads.has(normalizedId)) {
           pendingManifest.set(normalizedId, it);
         }
       }
+    }
+    for (const id of manifestById.keys()) {
+      if (!nextManifestIds.has(id)) manifestById.delete(id);
     }
     return startManifestSweep();
   }
@@ -596,6 +624,9 @@ function createCacheServer(opts = {}) {
     if (m) {
       const id = decodeURIComponent(m[1]);
       if (!ID_RE.test(id)) { res.writeHead(400); return res.end('bad id'); }
+      if (manifestAuthoritative && !desiredManifestIds.has(id)) {
+        return proxyOrigin(req, res, id, 0);
+      }
       if (cacheEntryMatches(id, manifestById.get(id))) {
         if (serveLocal(req, res, id)) return;
       }

@@ -36,7 +36,10 @@ function nodeTokenMatches(givenValue, expectedValue) {
 
 function nodeAuthOk(handshakeAuth) {
   const cc = config.classroomCache || {};
-  return nodeTokenMatches(handshakeAuth && handshakeAuth.token, cc.nodeToken);
+  const expectedNodeId = String(cc.nodeId || '').trim();
+  const givenNodeId = String(handshakeAuth && handshakeAuth.node_id || '').trim();
+  return (!expectedNodeId || givenNodeId === expectedNodeId)
+    && nodeTokenMatches(handshakeAuth && handshakeAuth.token, cc.nodeToken);
 }
 
 function nodeHttpAuthOk(req, classroomCache = config.classroomCache || {}) {
@@ -50,24 +53,56 @@ function nodeHttpAuthOk(req, classroomCache = config.classroomCache || {}) {
 }
 
 function nodeWorkspaceIds(db, options = {}) {
-  if (options.workspaceId) return [String(options.workspaceId)];
-  const ids = new Set();
-  const nodeId = String(options.nodeId || '');
+  const cc = options.classroomCache || config.classroomCache || {};
+  const configuredNodeId = String(cc.nodeId || '').trim();
+  const nodeId = String(options.nodeId || configuredNodeId).trim();
+  if (configuredNodeId && nodeId && nodeId !== configuredNodeId) return [];
+
+  const configuredWorkspaceId = String(options.workspaceId || cc.workspaceId || '').trim();
+  let boundWorkspaceId = '';
   if (nodeId) {
     try {
       const node = db.prepare('SELECT workspace_id FROM managed_nodes WHERE node_id = ?').get(nodeId);
-      if (node?.workspace_id) ids.add(node.workspace_id);
+      boundWorkspaceId = String(node?.workspace_id || '').trim();
     } catch (_) {}
   }
-  const wallIds = Array.isArray(options.wallIds) ? options.wallIds.filter(Boolean).map(String) : [];
+
+  const requestedWallIds = Object.prototype.hasOwnProperty.call(options, 'wallIds')
+    ? options.wallIds
+    : cc.wallIds;
+  const wallIds = [...new Set(
+    Array.isArray(requestedWallIds)
+      ? requestedWallIds.filter(Boolean).map((value) => String(value).trim()).filter(Boolean)
+      : [],
+  )];
+  let wallWorkspaceId = '';
   if (wallIds.length) {
     try {
       const slots = wallIds.map(() => '?').join(',');
-      db.prepare(`SELECT DISTINCT workspace_id FROM video_walls WHERE id IN (${slots})`).all(...wallIds)
-        .forEach((row) => { if (row.workspace_id) ids.add(row.workspace_id); });
-    } catch (_) {}
+      const rows = db.prepare(`SELECT id, workspace_id FROM video_walls WHERE id IN (${slots})`).all(...wallIds);
+      if (rows.length !== wallIds.length || rows.some((row) => !row.workspace_id)) return [];
+      const wallWorkspaces = [...new Set(rows.map((row) => String(row.workspace_id).trim()))];
+      if (wallWorkspaces.length !== 1) return [];
+      [wallWorkspaceId] = wallWorkspaces;
+    } catch (_) {
+      return [];
+    }
   }
-  return [...ids];
+
+  // Explicit deployment configuration is authoritative and can intentionally
+  // rebind a stale/null managed_nodes row. Every configured wall must still
+  // agree with it, otherwise tenant scope fails closed.
+  if (configuredWorkspaceId) {
+    if (wallWorkspaceId && wallWorkspaceId !== configuredWorkspaceId) return [];
+    return [configuredWorkspaceId];
+  }
+
+  // Without an explicit deployment scope, the durable node row and configured
+  // walls must agree. A new/null node can bootstrap from one unambiguous wall
+  // workspace, which recordHeartbeat then persists.
+  if (boundWorkspaceId && wallWorkspaceId && boundWorkspaceId !== wallWorkspaceId) return [];
+  const resolvedWorkspaceId = boundWorkspaceId || wallWorkspaceId;
+  return resolvedWorkspaceId ? [resolvedWorkspaceId] : [];
 }
 
 function nodeCanAccessContent(db, content, options = {}) {
@@ -78,7 +113,7 @@ function nodeCanAccessContent(db, content, options = {}) {
     wallIds: options.wallIds || cc.wallIds,
     workspaceId: options.workspaceId || cc.workspaceId,
   })
-    .some((workspaceId) => canServeContentInWorkspace(db, content, workspaceId));
+    .some((workspaceId) => visibilityAllowsWorkspace(db, content, workspaceId));
 }
 
 function boundedText(value, max = 256) {
@@ -176,6 +211,12 @@ function normalizeNodeTelemetry(payload) {
 function recordHeartbeat(db, nodeId, payload) {
   if (!db || !nodeId) return false;
   const cc = config.classroomCache || {};
+  const workspaceId = nodeWorkspaceIds(db, {
+    nodeId,
+    wallIds: cc.wallIds,
+    workspaceId: cc.workspaceId,
+    classroomCache: cc,
+  })[0] || null;
   const now = Math.floor(Date.now() / 1000);
   const p = payload || {};
   const activeDisplays = Array.isArray(p.active_displays) ? p.active_displays.join(',') : (p.active_displays || '');
@@ -191,6 +232,7 @@ function recordHeartbeat(db, nodeId, payload) {
       ON CONFLICT(node_id) DO UPDATE SET
         node_type=excluded.node_type,
         room_id=COALESCE(excluded.room_id, managed_nodes.room_id),
+        workspace_id=COALESCE(excluded.workspace_id, managed_nodes.workspace_id),
         last_heartbeat=excluded.last_heartbeat,
         software_version=excluded.software_version,
         free_disk=excluded.free_disk,
@@ -205,7 +247,7 @@ function recordHeartbeat(db, nodeId, payload) {
       node_name: p.node_name || nodeId,
       node_type: p.node_type || 'p3',
       room_id: cc.roomId || null,
-      workspace_id: null,
+      workspace_id: workspaceId,
       ts: now,
       software_version: p.software_version || null,
       free_disk: Number.isFinite(p.free_disk) ? p.free_disk : null,
@@ -242,7 +284,10 @@ function recordHeartbeat(db, nodeId, payload) {
 function buildContentManifest(db, options = {}) {
   if (!db) return [];
   try {
-    const workspaces = nodeWorkspaceIds(db, options);
+    const workspaces = nodeWorkspaceIds(db, {
+      ...options,
+      classroomCache: options.classroomCache || config.classroomCache || {},
+    });
     if (!workspaces.length && options.allowUnscoped !== true) return [];
     const rows = db.prepare(`
       SELECT c.id AS content_id, c.file_size AS size_bytes, c.mime_type,

@@ -33,6 +33,7 @@ const {
 const nodeRegistry = require('../lib/node-registry');
 const { contentUseDecision, contextFromRequest } = require('../lib/content-visibility');
 const { contentBroadcastReadiness } = require('../lib/content-readiness');
+const { buildBroadcastPreflight } = require('../lib/broadcast-preflight');
 const cameraControl = require('../lib/camera-control-client');
 
 function sourceIdentity({ contentId, playlistId, presentationId, remoteUrl }) {
@@ -50,6 +51,74 @@ router.get('/:requestId', (req, res) => {
   if (!request) return res.status(404).json({ error: 'Broadcast request not found' });
   res.set('Cache-Control', 'no-store');
   return res.json(request);
+});
+
+// Read-only release gate for Media Library sends. This resolves the same typed
+// topology contract used by POST /api/broadcast, but performs no command,
+// prewarm, audit, or display-state mutation.
+router.post('/preflight', (req, res) => {
+  if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
+  const {
+    device_ids: deviceIds,
+    targets: targetRefs,
+    content_id: contentId,
+  } = req.body || {};
+  if (!contentId) return res.status(400).json({ error: 'content_id is required' });
+  if (deviceIds !== undefined && !Array.isArray(deviceIds)) {
+    return res.status(400).json({ error: 'device_ids must be an array' });
+  }
+  if (targetRefs !== undefined && !Array.isArray(targetRefs)) {
+    return res.status(400).json({ error: 'targets must be an array' });
+  }
+  const legacyIds = Array.isArray(deviceIds) ? deviceIds.map(String) : [];
+  const typedRefs = Array.isArray(targetRefs) ? targetRefs : [];
+  if (legacyIds.length === 0 && typedRefs.length === 0) {
+    return res.status(400).json({ error: 'device_ids or targets must select at least one display' });
+  }
+
+  const decision = contentUseDecision(db, String(contentId), req.workspaceId, contextFromRequest(req));
+  if (!decision.content) return res.status(404).json({ error: 'Content not found' });
+  if (!decision.allowed) return res.status(403).json({ error: decision.reason });
+  const readiness = contentBroadcastReadiness(db, decision.content);
+
+  const typedResolution = resolveTypedBroadcastTargets({
+    db,
+    refs: typedRefs,
+    workspaceId: req.workspaceId,
+  });
+  if (!typedResolution.ok) {
+    return res.status(typedResolution.status).json(typedResolution.body);
+  }
+  const requested = [...new Set(
+    typedRefs.length > 0 ? typedResolution.targets : legacyIds,
+  )].filter((id) => !isManagedLiveStreamTarget(id));
+  let resolved = resolveBroadcastTargets({
+    db,
+    requestedIds: requested,
+    workspaceId: req.workspaceId,
+    allowLiveStream: false,
+  });
+  if (!resolved.ok && resolved.status === 404) {
+    resolved = {
+      ok: true,
+      targets: [],
+      missing: resolved.body?.missing || requested,
+    };
+  } else if (!resolved.ok) {
+    return res.status(resolved.status).json(resolved.body);
+  }
+  const routes = typedRefs.length > 0
+    ? typedResolution.routes.filter((route) => resolved.targets.includes(route.device_id))
+    : resolved.targets.map((deviceId) => ({ type: 'display', device_id: deviceId }));
+
+  res.set('Cache-Control', 'no-store');
+  return res.json(buildBroadcastPreflight(db, {
+    workspaceId: req.workspaceId,
+    content: decision.content,
+    readiness,
+    routes,
+    missingDeviceIds: resolved.missing || [],
+  }));
 });
 
 router.post('/', async (req, res) => {

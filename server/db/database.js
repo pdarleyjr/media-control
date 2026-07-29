@@ -854,6 +854,12 @@ function migrateContentLifecycle() {
 
 migrateContentLifecycle();
 
+// Persisted media jobs and immutable technical metadata. The migration validates
+// the actual table shape and stamps only after the whole transaction succeeds,
+// so a partial upgrade never masquerades as a usable queue.
+require('./migrations/media-pipeline').migrateMediaPipeline(db);
+require('./migrations/media-operations').ensureMediaOperationsSchema(db);
+
 // Phase 3: Operational Activities ("Scenes") + asset placements.
 // A scene is a named snapshot of which content/playlist shows on which display;
 // one tap triggers it and pushes each placement to its device via the existing

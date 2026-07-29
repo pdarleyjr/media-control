@@ -73,3 +73,21 @@ test('processing and failed videos fail closed while non-video and remote conten
     mime_type: 'video/youtube',
   }), { ready: true });
 });
+
+test('PeerTube replay rows must be localized before classroom broadcast', () => {
+  const readiness = contentBroadcastReadiness(fakeDb(null), {
+    id: 'peertube-id',
+    filepath: '',
+    remote_url: '/api/peertube-replays/replay-id/playback',
+    mime_type: 'video/mp4',
+    content_type: 'peertube-replay',
+    processing_status: 'remote',
+  });
+  assert.deepEqual(readiness, {
+    ready: false,
+    status: 409,
+    code: 'PEERTUBE_LOCALIZATION_REQUIRED',
+    error: 'PeerTube replay must be prepared as one local classroom asset before broadcasting',
+    processing_status: 'remote',
+  });
+});

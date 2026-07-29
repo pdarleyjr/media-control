@@ -169,6 +169,38 @@ test('concurrency-safe add is idempotent, workspace-scoped, and stores the priva
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM content WHERE content_type='peertube-replay'").get().n, 1);
 });
 
+test('selected PeerTube replay is converted to a queued local classroom derivative', () => {
+  const replay = db.prepare('SELECT id FROM peertube_replays WHERE peertube_video_uuid = ?').get(READY_VIDEO.uuid);
+  const enqueued = [];
+  const pipeline = {
+    enqueuePeerTube(input) {
+      enqueued.push(input);
+      return { created: true, job: { id: 'peer-job-1', status: 'queued' } };
+    },
+  };
+  const result = svc.localizeInMediaControl({
+    replayId: replay.id,
+    userId: 'u1',
+    workspaceId: 'ws1',
+    visibility: VISIBILITY.PRIVATE,
+    pipeline,
+  });
+
+  assert.equal(result.created, false, 'existing library link remains idempotent');
+  assert.equal(result.localization_created, true);
+  assert.equal(result.media_job.id, 'peer-job-1');
+  assert.equal(enqueued.length, 1);
+  assert.equal(enqueued[0].videoUuid, READY_VIDEO.uuid);
+  assert.equal(enqueued[0].replayId, replay.id);
+  assert.equal(enqueued[0].expectedFilepath, '');
+
+  const content = db.prepare('SELECT * FROM content WHERE id=?').get(result.content_id);
+  assert.equal(content.remote_url, null);
+  assert.equal(content.filepath, '');
+  assert.equal(content.processing_status, 'processing');
+  assert.equal(content.version, 2);
+});
+
 test('discard is workspace-scoped and cannot overwrite an added terminal state', () => {
   const linked = db.prepare('SELECT id FROM peertube_replays WHERE peertube_video_uuid = ?').get(READY_VIDEO.uuid);
   assert.throws(() => svc.discard({ replayId: linked.id, workspaceId: 'ws2', userId: 'u2' }), /not found/i);
