@@ -854,6 +854,12 @@ function migrateContentLifecycle() {
 
 migrateContentLifecycle();
 
+// Content Library readiness is read on the first library request, before an
+// operator necessarily opens "Prepare for class". Persisted databases created
+// before generation-aware P3 sync therefore need these additive columns at
+// startup rather than lazily on the first preparation write.
+require('./migrations/classroom-preparation').migrateClassroomPreparationSchema(db);
+
 // Persisted media jobs and immutable technical metadata. The migration validates
 // the actual table shape and stamps only after the whole transaction succeeds,
 // so a partial upgrade never masquerades as a usable queue.
