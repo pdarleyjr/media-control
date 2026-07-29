@@ -26,10 +26,9 @@ test('database and filesystem resource routes use the standard rate limiter', ()
     '/api/classroom-preparation',
     '/api/media-observability',
   ]) {
-    assert.match(
-      server,
-      new RegExp(`app\\.use\\('${route.replace(/\//g, '\\/')}', rateLimit\\(`),
-      `${route} must be rate limited`,
+    assert.ok(
+      server.includes(`app.use('${route}', rateLimit(rateLimitOptions(`),
+      `${route} must use the standard rate limiter`,
     );
   }
 });

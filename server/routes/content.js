@@ -373,7 +373,9 @@ function removeLocalContentFile(relativePath) {
   const candidate = path.resolve(root, path.basename(relativePath));
   if (path.dirname(candidate) !== root) return;
   try { if (fs.existsSync(candidate)) fs.unlinkSync(candidate); } catch (error) {
-    console.warn(`Could not remove superseded content file ${path.basename(relativePath)}: ${error.message}`);
+    console.warn('Could not remove a superseded content file', {
+      code: String(error?.code || 'UNKNOWN').replace(/[^A-Z0-9_-]/gi, '').slice(0, 32),
+    });
   }
 }
 
