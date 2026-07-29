@@ -184,6 +184,47 @@ test('broadcast preflight never calls server-ready media classroom-ready without
   assert.ok(result.warnings.some((warning) => warning.code === 'P3_NOT_VERIFIED'));
 });
 
+test('broadcast preflight treats a localized remote source as locally healthy', () => {
+  const db = fixtureDb();
+  db.prepare('INSERT INTO devices VALUES (?, ?, ?, ?, ?)').run(
+    'display-1',
+    'Front Left',
+    'online',
+    '1.1.0',
+    JSON.stringify({ content: true }),
+  );
+  db.prepare('INSERT INTO content_media_metadata VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+    'content-1',
+    'youtube',
+    'mov,mp4',
+    'h264',
+    'aac',
+    2,
+    72,
+    1_200_000,
+    'localized',
+  );
+
+  const result = buildBroadcastPreflight(db, {
+    workspaceId: 'workspace-1',
+    content: {
+      id: 'content-1',
+      filename: 'Localized YouTube.mp4',
+      mime_type: 'video/mp4',
+      file_size: 10_000_000,
+      version: 2,
+      processing_status: 'ready',
+    },
+    routes: [{ type: 'display', device_id: 'display-1' }],
+    readiness: { ready: true, state: 'ready' },
+  });
+
+  assert.equal(
+    result.warnings.some((warning) => warning.code === 'REMOTE_SOURCE_UNHEALTHY'),
+    false,
+  );
+});
+
 test('broadcast preflight fails closed for missing devices and processing failures', () => {
   const db = fixtureDb();
   const result = buildBroadcastPreflight(db, {

@@ -180,10 +180,11 @@ function buildBroadcastPreflight(db, options = {}) {
       message: `Playback depends on the ${media.source_type} source.`,
     });
   }
-  if (media.remote_health_status && media.remote_health_status !== 'healthy') {
+  const remoteHealthStatus = String(media.remote_health_status || '').trim().toLowerCase();
+  if (remoteHealthStatus && !['healthy', 'localized'].includes(remoteHealthStatus)) {
     warnings.push({
       code: 'REMOTE_SOURCE_UNHEALTHY',
-      message: `Remote source health is ${media.remote_health_status}.`,
+      message: `Remote source health is ${remoteHealthStatus}.`,
     });
   }
 
