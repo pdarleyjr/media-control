@@ -3862,6 +3862,26 @@
       return '';
     }
 
+    function resolveCaptionTrackUrl(rawUrl, baseUrl) {
+      try {
+        const base = new URL(baseUrl || window.location.origin, window.location.origin);
+        const raw = String(rawUrl || '').trim();
+        if (!raw || /[\\\u0000-\u001f]/.test(raw)) return null;
+        const candidate = new URL(raw.startsWith('/') ? raw : `/${raw}`, base.origin);
+        if (
+          candidate.origin !== base.origin
+          || !/^\/api\/captions\/[A-Za-z0-9_-]{1,160}\/file$/.test(candidate.pathname)
+          || candidate.username
+          || candidate.password
+          || candidate.hash
+          || candidate.search
+        ) return null;
+        return candidate.href;
+      } catch {
+        return null;
+      }
+    }
+
     // Origin (server) URL for an item, IGNORING any local/LAN asset_url. This is
     // the SAFETY fallback for local content delivery: if a classroom display is
     // pointed at a local cache (asset_url -> P3 room-agent) and that fetch fails
@@ -4358,13 +4378,13 @@
           video.src = src;
           for (const caption of (Array.isArray(item.captions) ? item.captions : [])) {
             if (!caption || !caption.url || !caption.language_code) continue;
+            const captionTrackUrl = resolveCaptionTrackUrl(caption.url, serverUrl);
+            if (!captionTrackUrl) continue;
             const track = document.createElement('track');
             track.kind = caption.kind === 'subtitles' ? 'subtitles' : 'captions';
             track.label = caption.label || caption.language_code;
             track.srclang = caption.language_code;
-            track.src = /^https?:\/\//i.test(caption.url)
-              ? caption.url
-              : `${serverUrl}${caption.url.startsWith('/') ? '' : '/'}${caption.url}`;
+            track.src = captionTrackUrl;
             track.default = caption.is_default === true;
             video.appendChild(track);
           }

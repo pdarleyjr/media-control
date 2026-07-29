@@ -382,6 +382,7 @@ function validateUploadedFile(req, res) {
   try {
     integrity = inspectMediaFile({
       filePath: req.file.path,
+      contentDir: config.contentDir,
       claimedMime: req.file.mimetype,
       filename: req.file.originalname,
     });

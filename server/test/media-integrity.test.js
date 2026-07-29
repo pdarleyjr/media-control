@@ -2,9 +2,13 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const {
   detectMediaMime,
+  inspectMediaFile,
   validateMediaIntegrity,
   isActiveContentMime,
 } = require('../lib/media-integrity');
@@ -50,4 +54,25 @@ test('specific MIME confusion fails closed while equivalent aliases and generic 
   });
   assert.equal(generic.ok, true);
   assert.equal(generic.detectedMime, 'image/jpeg');
+});
+
+test('file inspection is constrained to the declared content root', () => {
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'media-integrity-'));
+  const contentDir = path.join(sandbox, 'content');
+  const outsidePath = path.join(sandbox, 'outside.jpg');
+  fs.mkdirSync(contentDir);
+  fs.writeFileSync(outsidePath, Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00]));
+  try {
+    assert.throws(
+      () => inspectMediaFile({
+        filePath: outsidePath,
+        contentDir,
+        claimedMime: 'image/jpeg',
+        filename: 'outside.jpg',
+      }),
+      error => error?.code === 'PATH_OUTSIDE_CONTENT_DIRECTORY',
+    );
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
 });

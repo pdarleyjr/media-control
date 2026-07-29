@@ -124,6 +124,7 @@ function finalizeDownload({ db, contentDir, jobId, pipeline }) {
   const absolutePath = path.join(contentDir, filename);
   const integrity = inspectMediaFile({
     filePath: absolutePath,
+    contentDir,
     claimedMime: mimeFromExt(path.extname(filename)),
     filename,
   });

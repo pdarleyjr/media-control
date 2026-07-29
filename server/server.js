@@ -3,6 +3,7 @@ const http = require('http');
 const https = require('https');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const { rateLimit: expressRateLimit, ipKeyGenerator } = require('express-rate-limit');
 const path = require('path');
 const fs = require('fs');
 const config = require('./config');
@@ -629,26 +630,20 @@ app.use('/socket.io-client', express.static(
   path.join(__dirname, 'node_modules', 'socket.io', 'client-dist')
 ));
 
-// Simple rate limiter for auth endpoints
-const rateLimits = new Map();
+// Standard in-memory limiter for single-node deployments. Keys retain the
+// existing per-client + per-path behavior while express-rate-limit supplies
+// correct response headers and bounded store maintenance.
 function rateLimit(windowMs, maxRequests) {
-  return (req, res, next) => {
-    const key = getClientIp(req) + req.path;
-    const now = Date.now();
-    const windowStart = now - windowMs;
-    let hits = rateLimits.get(key) || [];
-    hits = hits.filter(t => t > windowStart);
-    if (hits.length >= maxRequests) {
-      return res.status(429).json({ error: 'Too many requests, try again later' });
-    }
-    hits.push(now);
-    rateLimits.set(key, hits);
-    // Cleanup old entries periodically
-    if (rateLimits.size > 10000) {
-      for (const [k, v] of rateLimits) { if (v.every(t => t < windowStart)) rateLimits.delete(k); }
-    }
-    next();
-  };
+  return expressRateLimit({
+    windowMs,
+    limit: maxRequests,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    keyGenerator: req => `${ipKeyGenerator(req.ip)}:${req.path}`,
+    handler: (_req, res) => res.status(429).json({
+      error: 'Too many requests, try again later',
+    }),
+  });
 }
 
 const { createLoginFailureRateLimit } = require('./lib/login-rate-limit');
@@ -798,6 +793,7 @@ app.get('/api/content/:id/thumbnail', (req, res) => {
 // Unassigned private media never becomes fetchable merely because a caption
 // was uploaded.
 const captionRoutes = require('./routes/captions');
+app.use('/api/captions', rateLimit(60000, 120));
 app.get('/api/captions/:captionId/file', captionRoutes.publicCaptionFile);
 
 // PeerTube replay media is never represented by an HTML watch page mislabeled
@@ -961,6 +957,7 @@ app.use('/api/presentations', requireAuth, resolveTenancy, require('./routes/pre
 // AI Deck Builder (server-side Ollama bridge; async jobs). AI never called from the browser.
 app.use('/api/ai', requireAuth, resolveTenancy, require('./routes/ai'));
 // Files (Nextcloud WebDAV proxy) + media downloads. Feature-flag + env gated.
+app.use('/api/files', rateLimit(60000, 30));
 app.use('/api/files', requireAuth, resolveTenancy, require('./routes/files'));
 app.use('/api/downloads', requireAuth, resolveTenancy, require('./routes/downloads'));
 // Phase 3: Operational Activities ("Scenes") + Fast Broadcast. Same
@@ -968,7 +965,9 @@ app.use('/api/downloads', requireAuth, resolveTenancy, require('./routes/downloa
 // scope by req.workspaceId and reuse the existing device-content-push path.
 app.use('/api/scenes', requireAuth, resolveTenancy, require('./routes/scenes'));
 app.use('/api/broadcast', requireAuth, resolveTenancy, require('./routes/broadcast'));
+app.use('/api/classroom-preparation', rateLimit(60000, 60));
 app.use('/api/classroom-preparation', requireAuth, resolveTenancy, require('./routes/classroom-preparation'));
+app.use('/api/media-observability', rateLimit(60000, 60));
 app.use('/api/media-observability', requireAuth, resolveTenancy, require('./routes/media-observability'));
 app.use('/api/live-stream', requireAuth, resolveTenancy, requireWorkspaceWrite, require('./routes/live-stream'));
 app.use('/api/peertube-replays', requireAuth, resolveTenancy, require('./routes/peertube-replays'));

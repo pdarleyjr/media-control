@@ -138,9 +138,10 @@ function availableDiskBytes(directory, statfs = fs.statfsSync) {
   }
 }
 
-function sourceSize(filePath) {
+function sourceSize(contentDir, filePath) {
+  const safePath = safeContentPath(contentDir, filePath);
   try {
-    const stat = fs.statSync(filePath);
+    const stat = fs.statSync(safePath);
     return stat.isFile() ? stat.size : 0;
   } catch {
     return 0;
@@ -237,7 +238,7 @@ class MediaPipeline {
     idempotencyKey,
   }) {
     const reservation = boundedReservation(
-      Math.ceil(sourceSize(absolutePath) * 1.25),
+      Math.ceil(sourceSize(this.contentDir, absolutePath) * 1.25),
       64 * 1024 * 1024,
     );
     return this.enqueue({
@@ -270,7 +271,7 @@ class MediaPipeline {
     idempotencyKey,
   }) {
     const reservation = boundedReservation(
-      Math.ceil(sourceSize(absolutePath) * 0.5),
+      Math.ceil(sourceSize(this.contentDir, absolutePath) * 0.5),
       32 * 1024 * 1024,
     );
     return this.enqueue({
@@ -517,7 +518,7 @@ class MediaPipeline {
       this.contentDir,
       job.payload?.absolutePath || path.join(this.contentDir, row.filepath),
     );
-    const size = sourceSize(absolutePath);
+    const size = sourceSize(this.contentDir, absolutePath);
     if (size <= 0) throw errorWith('source_missing', 'Source file is missing', false);
     if (size > mediaLimits().maxSourceBytes) {
       throw errorWith('source_too_large', 'Source exceeds the configured media size limit', false);
@@ -563,7 +564,7 @@ class MediaPipeline {
       this.contentDir,
       path.join(this.contentDir, path.basename(row.filepath)),
     );
-    if (sourceSize(sourcePath) <= 0) {
+    if (sourceSize(this.contentDir, sourcePath) <= 0) {
       cleanupCustom();
       throw errorWith('source_missing', 'Source file is missing', false);
     }
@@ -639,7 +640,7 @@ class MediaPipeline {
       job.payload?.absolutePath || path.join(this.contentDir, row.filepath),
     );
     if (!fs.existsSync(absolutePath)) throw errorWith('source_missing', 'Source file is missing', false);
-    if (sourceSize(absolutePath) > mediaLimits().maxSourceBytes) {
+    if (sourceSize(this.contentDir, absolutePath) > mediaLimits().maxSourceBytes) {
       throw errorWith('source_too_large', 'Source exceeds the configured media size limit', false);
     }
     this._ensureDiskReservation(job);
@@ -757,7 +758,7 @@ class MediaPipeline {
       this.contentDir,
       path.join(this.contentDir, `${row.id}.youtube.part.mp4`),
     );
-    if (!localName && fs.existsSync(localPath) && sourceSize(localPath) > 0) {
+    if (!localName && fs.existsSync(localPath) && sourceSize(this.contentDir, localPath) > 0) {
       localName = path.basename(localPath);
     }
     if (!localName || !fs.existsSync(localPath)) {
@@ -900,7 +901,7 @@ class MediaPipeline {
       this.contentDir,
       path.join(this.contentDir, `${base}.part.mp4`),
     );
-    if (!localName && fs.existsSync(localPath) && sourceSize(localPath) > 0) {
+    if (!localName && fs.existsSync(localPath) && sourceSize(this.contentDir, localPath) > 0) {
       localName = path.basename(localPath);
     }
     if (!localName || !fs.existsSync(localPath)) {
@@ -929,7 +930,7 @@ class MediaPipeline {
           maxBuffer: 1024 * 1024,
           windowsHide: true,
         });
-        const size = sourceSize(partPath);
+        const size = sourceSize(this.contentDir, partPath);
         if (size <= 0) throw errorWith('download_output_missing', 'Download produced no media');
         if (size > Number(job.payload?.maxBytes || mediaLimits().maxSourceBytes)) {
           throw errorWith('download_output_too_large', 'Downloaded media exceeded the import limit', false);

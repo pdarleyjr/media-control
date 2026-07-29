@@ -5,9 +5,26 @@ function getAuthHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+function normalizeApiPath(value) {
+  if (typeof value !== 'string' || !value.startsWith('/') || /[\\\u0000-\u001f]/.test(value)) {
+    throw new TypeError('API path must be a root-relative path');
+  }
+  const candidate = new URL(`${API_BASE}${value}`, window.location.origin);
+  if (
+    candidate.origin !== window.location.origin
+    || !candidate.pathname.startsWith(`${API_BASE}/`)
+    || candidate.username
+    || candidate.password
+    || candidate.hash
+  ) {
+    throw new TypeError('API path must remain on the current origin');
+  }
+  return `${candidate.pathname}${candidate.search}`;
+}
+
 async function request(url, options = {}) {
   const { headers: optionHeaders = {}, ...requestOptions } = options;
-  const res = await fetch(API_BASE + url, {
+  const res = await fetch(normalizeApiPath(url), {
     ...requestOptions,
     headers: { 'Content-Type': 'application/json', ...getAuthHeaders(), ...optionHeaders },
   });
@@ -31,7 +48,7 @@ async function request(url, options = {}) {
 }
 
 async function requestForm(url, formData, options = {}) {
-  const res = await fetch(API_BASE + url, {
+  const res = await fetch(normalizeApiPath(url), {
     method: options.method || 'POST',
     headers: { ...getAuthHeaders(), ...(options.headers || {}) },
     body: formData,
@@ -63,7 +80,7 @@ async function requestForm(url, formData, options = {}) {
 // operator, and retry with confirm_all:true. All other non-2xx responses still
 // throw (matching request()).
 async function requestBroadcast(payload, endpoint = '/broadcast') {
-  const res = await fetch(API_BASE + endpoint, {
+  const res = await fetch(normalizeApiPath(endpoint), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
     body: JSON.stringify(payload),
@@ -87,7 +104,7 @@ async function requestBroadcast(payload, endpoint = '/broadcast') {
 }
 
 async function requestStatus(url) {
-  const res = await fetch(API_BASE + url, {
+  const res = await fetch(normalizeApiPath(url), {
     headers: { Accept: 'application/json', ...getAuthHeaders() },
     credentials: 'same-origin',
   });
@@ -235,7 +252,7 @@ export const api = {
   // blob + a sanitized filename parsed from Content-Disposition. The caller
   // triggers the save-to-disk via a temporary object URL.
   downloadContent: async (id) => {
-    const res = await fetch(API_BASE + `/content/${id}/download`, {
+    const res = await fetch(normalizeApiPath(`/content/${id}/download`), {
       headers: getAuthHeaders(),
     });
     if (res.status === 401) {

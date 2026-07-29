@@ -60,6 +60,7 @@ async function finalizeUpload({
   try {
     integrity = inspectMediaFile({
       filePath: absPath,
+      contentDir,
       claimedMime: mt,
       filename: originalName,
     });

@@ -32,7 +32,7 @@ evidence is appended after deployment.
 | U | Prepare for class | asset manifest/node assets/cache agent | Live manifest empty; server has 56 generated checksums, `node_assets` empty | Queue/download/verify/fail/retry/cancel/reconcile and P3 cache tests passed. Live nonzero manifest, checksum and cache hit remain. | Local verified; live pending |
 | V | Duplicates/health/captions/observability | media model/jobs/metrics | Current checksum coverage 56/73; metrics coverage under review | SHA-256, duplicate signal, caption validation, queue/age/failure/manifest/cache metrics and alert contracts passed. Live metric/alert verification remains. | Local verified; live pending |
 | W | Hardware-assisted encoding | isolated canary only | Host exposes AMD `amdgpu` render node, but production has no device mapping; the release image could not initialize VAAPI even in a device-mapped isolated container | Six bounded SDR/HDR/audio/ultrawide H.264/HEVC/VP9/AV1 cases all failed before encoding; keep software fallback and do not map the GPU into production | Failed closed |
-| X | Security/dependencies/CI | all four repositories/workflows | GitHub alert API is unavailable to current auth; existing CI/local scanners remain usable | Four npm audits report zero vulnerabilities; gitleaks reports zero findings; Semgrep added-line findings were reviewed and two path-containment gaps were regression-tested and fixed. Remote CI and image scan remain. | Local verified; remote CI pending |
+| X | Security/dependencies/CI | all four repositories/workflows | The first exact-head GitHub CodeQL gate surfaced 34 changed-code alerts despite its analysis jobs completing | Four npm audits report zero vulnerabilities; gitleaks reports zero findings; Semgrep and CodeQL drove regression-tested same-origin API/caption URL, standard rate-limit, stable file-inspection and path-containment hardening. The hardened exact head still requires a clean repeat CodeQL/release gate and image scan. | Local verified; hardened remote CI pending |
 | Y | Additional display enrollment/topology | device registration, walls, kiosk mapping | Live DB has 196 device rows: 184 unscoped `Unnamed Display`; current five wall members are healthy | Idempotent stable enrollment, sixth logical display, dynamic count, revision and no-orphan source tests passed. No physical sixth TV was asserted, so kiosk expected count remains five. | Local verified; physical addition not asserted |
 
 ## Post-fix local release evidence
@@ -41,7 +41,7 @@ evidence is appended after deployment.
   passed 2/2 in Chromium and WebKit. Processing Center isolation also passed
   2/2.
 - Responsive/mobile matrix: 74/74 passed in Chromium and WebKit with no skips.
-- `npm run test:release`: Node 1,119 passed with one explicitly reported local
+- `npm run test:release`: Node 1,123 passed with one explicitly reported local
   environment skip (`soffice` absent); P3 16/16; UI contract 29/29; enterprise
   UI 51/51; real app 10/10; feature rollback 16/16; Service Worker 10/10; and
   browser console 14/14 across Chromium and Firefox.
@@ -58,6 +58,13 @@ evidence is appended after deployment.
   generated/basename-confined paths and sandboxed `text/vtt` responses are not
   HTML execution sinks. The two identifier-derived path gaps found during that
   review were fixed with failing-then-passing containment regressions.
+- GitHub CodeQL's first pull-request gate reported 34 alerts on the large
+  changed surface. The hardened follow-up constrains browser API requests and
+  caption tracks to their intended origins, replaces the hand-built limiter
+  with `express-rate-limit`, constrains inspection to the media root, and
+  removes the stat/open race by inspecting one open file descriptor. The
+  focused security regression suite passed 7/7 and the complete post-hardening
+  release gate passed.
 
 ## Baseline production evidence
 

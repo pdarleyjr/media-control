@@ -96,8 +96,8 @@ function detectMediaMime(bytes, { filename = '' } = {}) {
     .replace(/^\uFEFF/, '')
     .trimStart()
     .toLowerCase();
-  if (/^(?:<!doctype\s+html|<html\b|<head\b|<body\b)/.test(text)
-      || /<script(?:\s|>)/.test(text)) return 'text/html';
+  if (/^(?:<!doctype\s+html|<html\b|<head\b|<body\b)/i.test(text)
+      || /<script(?:\s|>)/i.test(text)) return 'text/html';
   if (/^<\?xml[\s\S]{0,500}<svg\b/.test(text) || /^<svg\b/.test(text)) return 'image/svg+xml';
 
   if (startsWith(buffer, Buffer.from([0x50, 0x4b, 0x03, 0x04]))) {
@@ -156,18 +156,43 @@ function mediaLimits() {
   };
 }
 
-function inspectMediaFile({ filePath, claimedMime, filename, maxSourceBytes } = {}) {
-  const stat = fs.statSync(filePath);
-  const limit = Number(maxSourceBytes) || mediaLimits().maxSourceBytes;
-  if (!stat.isFile() || stat.size <= 0) {
-    return { ok: false, code: 'SOURCE_EMPTY', size: stat.size };
+function pathOutsideContentDirectory() {
+  const error = new Error('Media file path is outside the content directory');
+  error.code = 'PATH_OUTSIDE_CONTENT_DIRECTORY';
+  return error;
+}
+
+function constrainedMediaPath(contentDir, filePath) {
+  if (!contentDir || !filePath) throw pathOutsideContentDirectory();
+  const root = fs.realpathSync(path.resolve(String(contentDir)));
+  const candidate = fs.realpathSync(path.resolve(String(filePath)));
+  if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) {
+    throw pathOutsideContentDirectory();
   }
-  if (stat.size > limit) {
-    return { ok: false, code: 'SOURCE_TOO_LARGE', size: stat.size, maxSourceBytes: limit };
-  }
-  const fd = fs.openSync(filePath, 'r');
+  return candidate;
+}
+
+function inspectMediaFile({
+  filePath,
+  contentDir,
+  claimedMime,
+  filename,
+  maxSourceBytes,
+} = {}) {
+  const safePath = constrainedMediaPath(contentDir, filePath);
+  const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
+  const fd = fs.openSync(safePath, flags);
+  let stat;
   let bytes;
   try {
+    stat = fs.fstatSync(fd);
+    const limit = Number(maxSourceBytes) || mediaLimits().maxSourceBytes;
+    if (!stat.isFile() || stat.size <= 0) {
+      return { ok: false, code: 'SOURCE_EMPTY', size: stat.size };
+    }
+    if (stat.size > limit) {
+      return { ok: false, code: 'SOURCE_TOO_LARGE', size: stat.size, maxSourceBytes: limit };
+    }
     const length = Math.min(stat.size, MAX_SNIFF_BYTES);
     bytes = Buffer.alloc(length);
     fs.readSync(fd, bytes, 0, length, 0);
