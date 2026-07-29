@@ -877,7 +877,7 @@ const CACHE_RECOVERY_WINDOW_MS = 60000;
 // same-origin + rate-limited + audited, and it never runs on the routine shell
 // load. Storage (login/preferences) is preserved — only the "cache" datatype is
 // cleared, matching the safe subset of Clear-Site-Data.
-app.post('/api/admin/cache-recovery', requireAuth, requireAdmin, requireSameOrigin, rateLimit(rateLimitOptions(60000, 5)), (req, res) => {
+app.post('/api/admin/cache-recovery', rateLimit(rateLimitOptions(60000, 5)), requireAuth, requireAdmin, requireSameOrigin, (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   // Content-Type validation: accept application/json or an empty body.
   const ct = (req.headers['content-type'] || '').toLowerCase();
