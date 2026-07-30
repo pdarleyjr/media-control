@@ -569,40 +569,88 @@ function kickHevcTranscodeIfNeeded(contentId, absPath, options = {}) {
 // transcode killed mid-flight by a deploy/restart leaves the row pointing at the
 // original (e.g. video/x-matroska); this self-heals it. The runner re-probes and
 // skips anything that is actually fine (e.g. an H.264 .mov reported as quicktime).
+function enqueuePendingTranscodeRows(rows, options = {}) {
+  const contentDir = options.contentDir || config.contentDir;
+  const fsApi = options.fsApi || fs;
+  const pipeline = options.pipeline;
+  const onSkip = typeof options.onSkip === 'function' ? options.onSkip : () => {};
+  if (!pipeline || typeof pipeline.enqueueVideo !== 'function') {
+    throw new Error('resume_pipeline_unavailable');
+  }
+
+  let queued = 0;
+  for (const row of (Array.isArray(rows) ? rows : [])) {
+    const filepath = typeof row.filepath === 'string' ? row.filepath : '';
+    if (!filepath.trim()) {
+      onSkip({ contentId: row.id, reason: 'empty_filepath' });
+      continue;
+    }
+
+    const absolutePath = path.join(contentDir, filepath);
+    let stat;
+    try {
+      stat = fsApi.statSync(absolutePath);
+    } catch (error) {
+      onSkip({
+        contentId: row.id,
+        reason: error?.code === 'ENOENT' ? 'missing_file' : (error?.message || 'stat_failed'),
+      });
+      continue;
+    }
+    if (!stat || typeof stat.isFile !== 'function' || !stat.isFile()) {
+      onSkip({ contentId: row.id, reason: 'not_a_file' });
+      continue;
+    }
+
+    try {
+      pipeline.enqueueVideo({
+        contentId: row.id,
+        workspaceId: row.workspace_id || '__platform__',
+        userId: row.user_id,
+        absolutePath,
+        expectedVersion: Math.max(1, Number(row.version) || 1),
+        expectedFilepath: filepath,
+        sourceType: 'restart_recovery',
+      });
+      queued++;
+    } catch (error) {
+      onSkip({ contentId: row.id, reason: error?.message || 'resume_enqueue_failed' });
+    }
+  }
+  return queued;
+}
+
 function resumePendingTranscodes(options = {}) {
   try {
-    const { db } = require('../db/database');
+    const db = options.db || require('../db/database').db;
     const rows = db.prepare(
       `SELECT id, user_id, workspace_id, filepath, version FROM content
        WHERE mime_type LIKE 'video/%' AND filepath IS NOT NULL
+         AND TRIM(filepath) <> ''
          AND (
            processing_status IN ('uploaded', 'probing', 'processing')
            OR processing_status IS NULL
            OR (processing_status='ready' AND mime_type NOT IN ('video/mp4', 'video/webm'))
          )`
     ).all();
-    const { getMediaPipeline } = require('./media-pipeline');
+    const getMediaPipeline = options.getMediaPipeline
+      || require('./media-pipeline').getMediaPipeline;
+    const contentDir = options.contentDir || config.contentDir;
     const pipeline = getMediaPipeline({
       db,
       io: options.io,
-      contentDir: options.contentDir || config.contentDir,
+      contentDir,
     });
-    let queued = 0;
-    for (const r of rows) {
-      const abs = path.join(config.contentDir, r.filepath);
-      if (fs.existsSync(abs)) {
-        pipeline.enqueueVideo({
-          contentId: r.id,
-          workspaceId: r.workspace_id || '__platform__',
-          userId: r.user_id,
-          absolutePath: abs,
-          expectedVersion: Math.max(1, Number(r.version) || 1),
-          expectedFilepath: r.filepath,
-          sourceType: 'restart_recovery',
-        });
-        queued++;
-      }
-    }
+    const queued = enqueuePendingTranscodeRows(rows, {
+      contentDir,
+      fsApi: options.fsApi,
+      pipeline,
+      onSkip: options.onSkip || ((entry) => {
+        if (!['empty_filepath', 'missing_file', 'not_a_file'].includes(entry.reason)) {
+          console.warn(`[transcode] resume skipped content ${entry.contentId}: ${entry.reason}`);
+        }
+      }),
+    });
     pipeline.schedule();
     if (queued) console.log(`[transcode] resume: queued ${queued} incomplete video(s) for normalization`);
   } catch (e) { console.warn(`[transcode] resume scan failed: ${e && e.message}`); }
@@ -610,7 +658,7 @@ function resumePendingTranscodes(options = {}) {
 
 module.exports = {
   isHeicMime, heicToJpeg, probeVideoCodec, needsHevcTranscode,
-  kickHevcTranscodeIfNeeded, normalizeVideoJob, resumePendingTranscodes,
+  enqueuePendingTranscodeRows, kickHevcTranscodeIfNeeded, normalizeVideoJob, resumePendingTranscodes,
   probeMedia, classifyMedia, buildTranscodeArgs, is10bit, isHdr,
   HEIC_MIMES,
 };
