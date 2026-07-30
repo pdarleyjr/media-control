@@ -13,12 +13,13 @@ describe('production-plan', () => {
   it('stores fixed camera plan', () => {
     const plan = putPlan('ws-1', {
       production_mode: 'fixed_camera',
-      camera_id: 1,
+      source_id: 'anpviz',
       audio_mode: 'speech',
       recording_requested: true,
     });
     assert.equal(plan.director_mode, 'manual');
-    assert.equal(plan.scene_name, 'KAMRUI_CAMERA_1_FULL');
+    assert.equal(plan.scene_name, 'ANPVIZ_CAMERA_FULL');
+    assert.equal('camera_id' in plan, false);
     assert.ok(plan.production_plan_id);
     assert.equal(getPlan('ws-1').production_plan_id, plan.production_plan_id);
   });

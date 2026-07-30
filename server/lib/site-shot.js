@@ -5,7 +5,7 @@
 // video walls, and inside multiview frames/arbitrary rects.
 //
 // NOTE: This service is ONLY needed for genuinely external third-party websites
-// that block iframes. Our own /player/* pages (hls.html, oz.html, grid.html,
+// that block iframes. Our own /player/* pages (hls.html, live-source.html, grid.html,
 // deck, YouTube, cameras, presentations) all iframe directly and never reach
 // this code path. site-shot is idle in a classroom that only uses those source
 // types.

@@ -75,15 +75,15 @@ test('MediaMTX renderer writes secrets only to the protected destination', (t) =
   const envPath = path.join(root, 'camera.env');
   const templatePath = path.join(root, 'mediamtx.yml.tpl');
   const outputPath = path.join(root, 'mediamtx.yml');
-  const mainSecret = 'rtsp://camera-user:main-secret@example.invalid/main';
-  const previewSecret = 'rtsp://camera-user:preview-secret@example.invalid/preview';
+  const cameraSecret = 'rtsp://camera-user:camera-secret@example.invalid/main';
+  const guestSecret = 'rtsp://guest-user:guest-secret@example.invalid/main';
   fs.writeFileSync(
     envPath,
-    `ANNKE_MAIN_RTSP_URL=${mainSecret}\nANNKE_PREVIEW_RTSP_URL=${previewSecret}\n`,
+    `ANPVIZ_RTSP_URL=${cameraSecret}\nZOWIEBOX_RTSP_URL=${guestSecret}\n`,
   );
   fs.writeFileSync(
     templatePath,
-    'main: __ANNKE_MAIN_RTSP_URL__\npreview: __ANNKE_PREVIEW_RTSP_URL__\n',
+    'camera: __ANPVIZ_RTSP_URL__\nguest: __ZOWIEBOX_RTSP_URL__\n',
   );
 
   const python = process.platform === 'win32' ? 'python' : 'python3';
@@ -99,6 +99,6 @@ test('MediaMTX renderer writes secrets only to the protected destination', (t) =
   assert.equal(rendered.stderr, '');
   assert.equal(
     fs.readFileSync(outputPath, 'utf8').replace(/\r\n/g, '\n'),
-    `main: ${mainSecret}\npreview: ${previewSecret}\n`,
+    `camera: ${cameraSecret}\nguest: ${guestSecret}\n`,
   );
 });

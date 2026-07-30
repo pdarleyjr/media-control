@@ -8,7 +8,7 @@
 // key responses (re-emitting ACAO:*), rewrites their internal URIs back through
 // itself, and leaves the heavy segment traffic to go direct to CloudFront.
 //
-// SSRF model (mirrors ozolio-resolve's whitelist): the client never passes a URL.
+// SSRF model: the client never passes a URL.
 // It passes `p` = a base64url path that is ALWAYS fetched against the single fixed
 // SYNCBAK_HOST; `p` must decode to an absolute path ("/...") with a safe charset.
 // No host, scheme, or "../" escape is possible.

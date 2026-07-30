@@ -145,13 +145,13 @@ test('OBS generator creates one persistent camera and browser source across exac
     collection.scene_order.map((scene) => scene.name),
     ['MBFD_CAMERA_ONLY', 'MBFD_CONTENT_MAIN_CAMERA_PIP', 'MBFD_CAMERA_MAIN_CONTENT_PIP'],
   );
-  assert.equal(collection.sources.filter((source) => source.name === 'MBFD_ANNKE_CAMERA').length, 1);
+  assert.equal(collection.sources.filter((source) => source.name === 'MBFD_ANPVIZ_CAMERA').length, 1);
   assert.equal(collection.sources.filter((source) => source.name === 'MBFD_LIVE_CONTENT').length, 1);
   assert.equal(collection.sources.filter((source) => source.id === 'scene').length, 3);
   assert.equal(collection.sources.some((source) => source.name === 'Cut'), false);
   assert.deepEqual(collection.transitions, []);
   assert.equal(
-    collection.sources.find((source) => source.name === 'MBFD_ANNKE_CAMERA').settings.ffmpeg_options,
+    collection.sources.find((source) => source.name === 'MBFD_ANPVIZ_CAMERA').settings.ffmpeg_options,
     'rtsp_transport=tcp',
   );
 

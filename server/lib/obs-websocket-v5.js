@@ -69,7 +69,7 @@ class ObsWebSocketV5 {
     requestTimeoutMs = 5000,
     webSocketFactory = null,
     randomUUID = crypto.randomUUID,
-    cameraInputName = 'MBFD_ANNKE_CAMERA',
+    cameraInputName = 'MBFD_ANPVIZ_CAMERA',
     contentInputName = 'MBFD_LIVE_CONTENT',
   } = {}) {
     if (!isPrivateWebSocketUrl(url)) {

@@ -10,8 +10,8 @@ import tempfile
 
 
 REQUIRED = (
-    "ANNKE_MAIN_RTSP_URL",
-    "ANNKE_PREVIEW_RTSP_URL",
+    "ANPVIZ_RTSP_URL",
+    "ZOWIEBOX_RTSP_URL",
 )
 
 
@@ -32,8 +32,8 @@ def load_environment(source: Path) -> dict[str, str]:
 def render(source: Path, template: Path, destination: Path) -> None:
     values = load_environment(source)
     output = template.read_text(encoding="utf-8")
-    output = output.replace("__ANNKE_MAIN_RTSP_URL__", values["ANNKE_MAIN_RTSP_URL"])
-    output = output.replace("__ANNKE_PREVIEW_RTSP_URL__", values["ANNKE_PREVIEW_RTSP_URL"])
+    output = output.replace("__ANPVIZ_RTSP_URL__", values["ANPVIZ_RTSP_URL"])
+    output = output.replace("__ZOWIEBOX_RTSP_URL__", values["ZOWIEBOX_RTSP_URL"])
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(

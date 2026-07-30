@@ -1,11 +1,8 @@
-# MediaMTX configuration — MBFD Kamrui media edge (corrective 2026-07-25)
+# MediaMTX configuration — MBFD KAMRUI media edge
 #
-# SECURITY: camera RTSP credentials live ONLY in this file (mode 0600, owner
-# peter). MediaMTX pulls the ANNKE RTSP sources into local "raw" paths; the
-# FFmpeg audio-conversion relays then read the credential-free local raw paths
-# (rtsp://127.0.0.1:8554/annke-raw-*) and republish converted AAC streams to
-# annke-main / annke-preview. No camera credential appears in any FFmpeg
-# process argument, systemd status, or log.
+# SECURITY: physical-source RTSP credentials live only in the rendered mode-0600
+# file. The P3 reads the credential-free anpviz-video path, combines that video
+# with the locally attached TONOR microphone, and publishes anpviz-main.
 #
 # The committed (GitHub) template replaces credentials with placeholders; the
 # live values are provisioned at deploy time and never committed.
@@ -41,15 +38,17 @@ webrtcAdditionalHosts: [192.168.1.122, 100.82.185.48]
 webrtcICEServers2: []
 
 paths:
-  # Raw pulls from the ANNKE camera (credentials here only; mode 0600 file).
-  annke-raw-main:
-    source: __ANNKE_MAIN_RTSP_URL__
+  # Video-only camera ingest. Never expose this path in a player because the
+  # camera's built-in audio is not authoritative.
+  anpviz-video:
+    source: __ANPVIZ_RTSP_URL__
     sourceProtocol: tcp
-  annke-raw-preview:
-    source: __ANNKE_PREVIEW_RTSP_URL__
+
+  # Canonical P3-published stream: Anpviz H.264 video + TONOR AAC audio.
+  anpviz-main:
+    source: publisher
+
+  # ZowieBox encoder ingest preserves the HDMI source's embedded AAC audio.
+  guest-computer:
+    source: __ZOWIEBOX_RTSP_URL__
     sourceProtocol: tcp
-  # Credential-free local republished paths (AAC-converted) for HLS/API/MC.
-  annke-main:
-    source: publisher
-  annke-preview:
-    source: publisher

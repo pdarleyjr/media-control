@@ -7,17 +7,17 @@ const {
   rewriteCameraManifest,
 } = require('../lib/classroom-camera');
 
-test('cameraUpstreamUrl only permits the three fixed classroom cameras', () => {
+test('cameraUpstreamUrl only permits the two canonical live source identities', () => {
   assert.equal(
-    cameraUpstreamUrl('1', 'index.m3u8'),
-    'http://192.168.1.122:8888/kamrui-camera-1/index.m3u8'
+    cameraUpstreamUrl('anpviz', 'index.m3u8'),
+    'http://192.168.1.122:8888/anpviz-main/index.m3u8'
   );
   assert.equal(
-    cameraUpstreamUrl('3', 'index.m3u8'),
-    'http://192.168.1.122:8888/annke-preview/index.m3u8'
+    cameraUpstreamUrl('guest-computer', 'index.m3u8'),
+    'http://192.168.1.122:8888/guest-computer/index.m3u8'
   );
-  assert.throws(() => cameraUpstreamUrl('4', 'index.m3u8'), /camera/);
-  assert.throws(() => cameraUpstreamUrl('1', '../config.yml'), /asset/);
+  assert.throws(() => cameraUpstreamUrl('focus-210', 'index.m3u8'), /source/);
+  assert.throws(() => cameraUpstreamUrl('anpviz', '../config.yml'), /asset/);
 });
 
 test('rewriteCameraManifest keeps every HLS request on the same-origin locked proxy', () => {
@@ -28,21 +28,21 @@ test('rewriteCameraManifest keeps every HLS request on the same-origin locked pr
     'segment-001.mp4?token=abc',
   ].join('\n');
 
-  const rewritten = rewriteCameraManifest(manifest, '2');
+  const rewritten = rewriteCameraManifest(manifest, 'guest-computer');
 
-  assert.match(rewritten, /URI="\/player\/classroom-camera\/2\/init\.mp4"/);
-  assert.match(rewritten, /\/player\/classroom-camera\/2\/segment-001\.mp4\?token=abc/);
+  assert.match(rewritten, /URI="\/player\/live-source\/guest-computer\/init\.mp4"/);
+  assert.match(rewritten, /\/player\/live-source\/guest-computer\/segment-001\.mp4\?token=abc/);
 });
 
-test('rewriteCameraManifest keeps ANNKE camera 3 assets on the same-origin proxy', () => {
+test('rewriteCameraManifest keeps the canonical Anpviz assets on the same-origin proxy', () => {
   const manifest = [
     '#EXTM3U',
     '#EXT-X-STREAM-INF:BANDWIDTH=2000000',
-    'http://192.168.1.122:8888/annke-preview/video1_stream.m3u8',
+    'http://192.168.1.122:8888/anpviz-main/video1_stream.m3u8',
   ].join('\n');
 
-  const rewritten = rewriteCameraManifest(manifest, '3');
+  const rewritten = rewriteCameraManifest(manifest, 'anpviz');
 
-  assert.match(rewritten, /\/player\/classroom-camera\/3\/video1_stream\.m3u8/);
+  assert.match(rewritten, /\/player\/live-source\/anpviz\/video1_stream\.m3u8/);
   assert.doesNotMatch(rewritten, /192\.168\.1\.122/);
 });

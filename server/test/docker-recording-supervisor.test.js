@@ -15,7 +15,7 @@ const CONTAINER_ID = 'a'.repeat(64);
 const SESSION_ID = 'ses_fixture';
 const NONCE = 'b'.repeat(64);
 const RECORDING_ROOT = '/mnt/data/recordings';
-const SOURCE = 'rtsp://127.0.0.1:8554/annke-main';
+const SOURCE = 'rtsp://127.0.0.1:8554/anpviz-main';
 const OUTPUT_PATTERN = `${RECORDING_ROOT}/active/${SESSION_ID}/recording_001_%03d.mp4`;
 
 function runtimeIdentity() {

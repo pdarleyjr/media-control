@@ -3,7 +3,7 @@ const path = require('node:path');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const player = fs.readFileSync(path.join(__dirname, '..', 'player', 'classroom-camera.html'), 'utf8');
+const player = fs.readFileSync(path.join(__dirname, '..', 'player', 'live-source.html'), 'utf8');
 
 test('classroom camera player reconnects when video stalls', () => {
   assert.match(player, /lastOk/);
@@ -19,17 +19,17 @@ test('classroom camera player has retry button and error display', () => {
   assert.match(player, /clearErr/);
 });
 
-test('classroom camera player exposes the live ANNKE camera', () => {
-  assert.match(player, /camera=params\.get\('camera'\)\|\|'3'/);
-  assert.match(player, /\/player\/classroom-camera\/.*index\.m3u8/);
+test('classroom camera player exposes only the canonical Anpviz source', () => {
+  assert.match(player, /source=params\.get\('source'\)\|\|'anpviz'/);
+  assert.match(player, /\/player\/live-source\/.*index\.m3u8/);
+  assert.doesNotMatch(player, /camera=3|ANNKE|Focus 210|WyreStorm/);
 });
 
-test('camera feed drawer exposes a same-origin Focus 210 control surface', () => {
+test('live source drawer uses same-origin canonical player URLs without legacy camera controls', () => {
   const feeds = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'js', 'views', 'media-control', 'camera-feeds.js'), 'utf8');
   const catalog = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'js', 'views', 'media-control', 'camera-feeds-catalog.js'), 'utf8');
 
-  assert.match(feeds, /mc-cf-control-open/);
-  assert.match(feeds, /openViewModal/);
-  assert.match(catalog, /url: `\/player\/classroom-camera\.html/);
-  assert.doesNotMatch(catalog, /media-control\.mbfdhub\.com\/player\/classroom-camera/);
+  assert.doesNotMatch(feeds, /mc-cf-control-open|Focus 210/);
+  assert.match(catalog, /url: `\/player\/live-source\.html/);
+  assert.ok(!catalog.includes('media-control.mbfdhub.com/player/live-source'));
 });

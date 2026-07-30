@@ -8,9 +8,11 @@ const plansByWorkspace = new Map();
 const PRODUCTION_MODES = new Set(['fixed_camera', 'ai_director', 'manual_multicamera']);
 const AUDIO_MODES = new Set(['speech', 'content_audio', 'screen_share_audio']);
 
-function cameraScene(cameraId) {
-  const id = Number(cameraId) || 1;
-  return `KAMRUI_CAMERA_${id}_FULL`;
+function cameraScene(sourceId) {
+  if (sourceId !== undefined && sourceId !== null && sourceId !== 'anpviz') {
+    throw new Error('Unknown camera source');
+  }
+  return 'ANPVIZ_CAMERA_FULL';
 }
 
 function normalizePlanInput(body = {}) {
@@ -20,10 +22,9 @@ function normalizePlanInput(body = {}) {
     err.code = 'INVALID_PRODUCTION_MODE';
     throw err;
   }
-  const camera_id = body.camera_id != null ? Number(body.camera_id) : null;
   if (production_mode === 'fixed_camera') {
-    if (![1, 2, 3].includes(camera_id)) {
-      const err = new Error('Fixed Camera requires camera_id 1, 2, or 3');
+    if (body.source_id !== 'anpviz') {
+      const err = new Error('Fixed Camera requires source_id anpviz');
       err.code = 'INVALID_CAMERA';
       throw err;
     }
@@ -35,12 +36,13 @@ function normalizePlanInput(body = {}) {
     throw err;
   }
   const director_mode = production_mode === 'ai_director' ? 'auto' : 'manual';
+  const source_id = production_mode === 'fixed_camera' ? 'anpviz' : null;
   const scene_name = body.scene_name
-    || (production_mode === 'fixed_camera' ? cameraScene(camera_id) : null);
+    || (production_mode === 'fixed_camera' ? cameraScene(source_id) : null);
   return {
     production_mode,
     director_mode,
-    camera_id: Number.isFinite(camera_id) ? camera_id : null,
+    source_id,
     scene_name,
     audio_mode,
     recording_requested: body.recording_requested === true,
@@ -69,7 +71,7 @@ function putPlan(workspaceId, body, meta = {}) {
     summary: {
       production_mode: base.production_mode,
       director_mode: base.director_mode,
-      camera_id: base.camera_id,
+      source_id: base.source_id,
       scene_name: base.scene_name,
       audio_mode: base.audio_mode,
       recording_requested: base.recording_requested,

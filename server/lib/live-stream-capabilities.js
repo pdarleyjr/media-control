@@ -143,13 +143,11 @@ function redactDirectorResult(result) {
     autoswitch_enabled: data.autoswitch_enabled === true,
     media_control_available: data.media_control_available === true,
     media_control_content_active: data.media_control_content_active === true,
-    kamrui_camera_1_stream: data.kamrui_camera_1_stream === true,
-    kamrui_camera_2_stream: data.kamrui_camera_2_stream === true,
-    annke_camera_3_stream: data.annke_camera_3_stream === true,
+    anpviz_stream: data.anpviz_stream === true,
   };
   if (data.director && typeof data.director === 'object') {
     safe.director = {
-      active_camera: Number(data.director.active_camera) || null,
+      active_source: data.director.active_source === 'anpviz' ? 'anpviz' : null,
       content_active: data.director.content_active === true,
     };
   }

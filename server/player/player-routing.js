@@ -6,8 +6,8 @@
  *   • index.html loads it as a plain <script> (browser global `window.PlayerRouting`)
  *   • server/test/player-routing.test.js require()s it (CommonJS `module.exports`)
  *
- * THE BUG THIS FIXES: every player content row (news hls.html, cams oz.html /
- * cam.html, the multiview grid.html, decks) is stored with an ABSOLUTE url on
+ * THE BUG THIS FIXES: every player content row (news hls.html, managed
+ * live-source.html, the multiview grid.html, decks) is stored with an ABSOLUTE url on
  * one hostname — e.g. `https://media.mbfdhub.com/player/grid.html?...`. But a
  * display can load the player from a DIFFERENT origin (the sibling hostname
  * `media-control.mbfdhub.com`, or a LAN / Tailscale / localhost address). When

@@ -5,7 +5,7 @@
 // content row whose remote_url is /player/hls.html?station=<key>; that page asks
 // /player/news-stream?station=<key> (this module) for { source } and plays it
 // with hls.js. Station is a SERVER-SIDE whitelisted key — never a raw URL — so
-// there is no SSRF / open-embed surface (mirrors lib/ozolio-resolve.js).
+// there is no SSRF / open-embed surface.
 //
 // Most stations are a direct master .m3u8 the browser fetches itself (the CDNs
 // send ACAO:* or reflect the Origin, and segments are ACAO:*). Two need help:

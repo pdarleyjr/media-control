@@ -43,9 +43,9 @@ test('prepare, manual start, auto gate, disabled start, and stop preserve safety
   };
   // Vestigial director-scene/mode snapshot kept for the stop-preservation
   // assertions below (the synthetic camera director always reports the fixed
-  // ANNKE full-frame scene in manual mode).
+  // canonical Anpviz full-frame scene in manual mode).
   const directorState = {
-    current_scene: 'KAMRUI_CAMERA_3_FULL',
+    current_scene: 'ANPVIZ_CAMERA_FULL',
     mode: 'manual',
   };
   let rejectStart = false;

@@ -660,13 +660,17 @@ export function attachTileHandlers(container, selectedIds, onAfterSend, onRouteS
 
 // Load and render the given tab into the tab-body container.
 async function loadTab(tabId, tabBody, { selectedIds, onAfterSend, onRouteSource, onRouteNextcloud }) {
+  if (tabBody._liveSourcesTimer) {
+    clearTimeout(tabBody._liveSourcesTimer);
+    tabBody._liveSourcesTimer = null;
+  }
   tabBody.innerHTML = loadingState(t('mc.tb.loading'));
   switch (tabId) {
     case 'media':
       await renderMediaTab(tabBody, { selectedIds, onAfterSend, onRouteSource });
       break;
     case 'camerafeeds':
-      renderCameraFeedsTab(tabBody, { selectedIds, onAfterSend, onRouteSource });
+      await renderCameraFeedsTab(tabBody, { selectedIds, onAfterSend, onRouteSource });
       break;
     case 'playlists':
       await renderPlaylistsTab(tabBody, { selectedIds, onAfterSend, onRouteSource });

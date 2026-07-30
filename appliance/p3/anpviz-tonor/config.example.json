@@ -1,0 +1,18 @@
+{
+  "ffmpegPath": "C:\\MBFD\\ffmpeg\\ffmpeg-8.1.1-essentials_build\\bin\\ffmpeg.exe",
+  "videoSourceUrl": "rtsp://192.168.1.122:8554/anpviz-video",
+  "publishUrl": "rtsp://192.168.1.122:8554/anpviz-main",
+  "audioDeviceName": "Microphone (TONOR G11 USB microphone )",
+  "audioPnpInstancePrefix": "USB\\VID_0D8C&PID_0134&MI_00\\",
+  "audioDelayMs": 0,
+  "videoDelayMs": 0,
+  "microphoneGainDb": 0,
+  "noiseReductionDb": 6,
+  "noiseFloorDb": -35,
+  "expanderThresholdDb": -50,
+  "expanderRange": 0.5,
+  "heartbeatUrl": "http://192.168.1.122:8200/api/sources/anpviz/heartbeat",
+  "heartbeatToken": "PROVISION_AT_DEPLOY_TIME",
+  "heartbeatIntervalSeconds": 5,
+  "restartMaximumSeconds": 30
+}

@@ -38,11 +38,13 @@ test('SLOTS: columns tile the canvas with no gaps or overlap', () => {
 });
 
 test('isAllowedCellUrl accepts same-origin player/content paths', () => {
-  assert.ok(MV.isAllowedCellUrl('/player/oz.html?oid=EMB_RANL0000044E'));
+  assert.ok(MV.isAllowedCellUrl('/player/live-source.html?source=anpviz'));
   assert.ok(MV.isAllowedCellUrl('/player/hls.html?station=cbs&audio=1'));
-  assert.ok(MV.isAllowedCellUrl('/player/cam.html?id=470'));
   assert.ok(MV.isAllowedCellUrl('/player/deck/abc-123'));
   assert.ok(MV.isAllowedCellUrl('/api/content/abc-123/file'));
+  assert.ok(!MV.isAllowedCellUrl('/player/oz.html?oid=obsolete'));
+  assert.ok(!MV.isAllowedCellUrl('/player/cam.html?id=obsolete'));
+  assert.ok(!MV.isAllowedCellUrl('/player/classroom-camera.html?camera=3'));
 });
 
 test('isAllowedCellUrl accepts youtube-nocookie embeds only', () => {
@@ -54,12 +56,12 @@ test('isAllowedCellUrl accepts youtube-nocookie embeds only', () => {
 
 test('isAllowedCellUrl rejects foreign origins, schemes, traversal, junk', () => {
   assert.ok(!MV.isAllowedCellUrl('https://evil.example.com/x'));
-  assert.ok(!MV.isAllowedCellUrl('http://media.mbfdhub.com/player/oz.html')); // http, not relative/nocookie
+  assert.ok(!MV.isAllowedCellUrl('http://media.mbfdhub.com/player/live-source.html')); // http, not relative/nocookie
   assert.ok(!MV.isAllowedCellUrl('javascript:alert(1)'));
   assert.ok(!MV.isAllowedCellUrl('data:text/html,<h1>x</h1>'));
   assert.ok(!MV.isAllowedCellUrl('/player/../secret'));
-  assert.ok(!MV.isAllowedCellUrl('/player/oz.html"><img src=x>'));
-  assert.ok(!MV.isAllowedCellUrl('/player/oz.html onload'));   // space
+  assert.ok(!MV.isAllowedCellUrl('/player/live-source.html"><img src=x>'));
+  assert.ok(!MV.isAllowedCellUrl('/player/live-source.html onload'));   // space
   assert.ok(!MV.isAllowedCellUrl(''));
   assert.ok(!MV.isAllowedCellUrl(null));
   assert.ok(!MV.isAllowedCellUrl(undefined));
@@ -68,7 +70,7 @@ test('isAllowedCellUrl rejects foreign origins, schemes, traversal, junk', () =>
 test('encodeCells -> decodeCells round-trips a clean map', () => {
   const map = {
     C1: { u: '/player/hls.html?station=cbs', l: 'CBS News Miami', k: 'i' },
-    L1: { u: '/player/oz.html?oid=EMB_RANL0000044E', l: 'Ocean Drive', k: 'i' },
+    L1: { u: '/player/live-source.html?source=anpviz', l: 'Anpviz Camera', k: 'i' },
     R4: { u: '/api/content/v1/file', l: 'Promo', k: 'v' },
   };
   const decoded = MV.decodeCells(MV.encodeCells(map));
@@ -78,8 +80,8 @@ test('encodeCells -> decodeCells round-trips a clean map', () => {
 test('decodeCells sanitizes: drops bad slots/urls, defaults kind, truncates label', () => {
   const longLabel = 'x'.repeat(200);
   const map = {
-    C1: { u: '/player/oz.html?oid=EMB_A1', l: longLabel, k: 'zzz' }, // bad kind -> i, label trunc
-    ZZ: { u: '/player/oz.html', l: 'unknown slot', k: 'i' },        // unknown slot -> dropped
+    C1: { u: '/player/live-source.html?source=anpviz', l: longLabel, k: 'zzz' }, // bad kind -> i, label trunc
+    ZZ: { u: '/player/live-source.html', l: 'unknown slot', k: 'i' },        // unknown slot -> dropped
     L2: { u: 'https://evil.com/x', l: 'bad url', k: 'i' },          // disallowed -> dropped
   };
   const decoded = MV.decodeCells(MV.encodeCells(map));
@@ -100,7 +102,7 @@ test('decodeCells never throws on garbage', () => {
 test('decodeCells carries valid per-cell geometry, round-trips', () => {
   const map = {
     C1: { u: '/player/hls.html?station=cbs', l: 'CBS', k: 'i', x: 25, y: 0, w: 60, h: 55 },
-    L1: { u: '/player/oz.html?oid=EMB_A1', l: 'Cam', k: 'i' }, // no geometry -> stays {u,l,k}
+    L1: { u: '/player/live-source.html?source=anpviz', l: 'Camera', k: 'i' }, // no geometry -> stays {u,l,k}
   };
   const decoded = MV.decodeCells(MV.encodeCells(map));
   assert.deepEqual(decoded, map);
@@ -111,9 +113,9 @@ test('decodeCells carries valid per-cell geometry, round-trips', () => {
 
 test('decodeCells drops invalid/out-of-range geometry entirely', () => {
   const map = {
-    C1: { u: '/player/oz.html?oid=EMB_A1', l: 'a', k: 'i', x: -5, y: 0, w: 50, h: 50 },   // x<0
-    C2: { u: '/player/oz.html?oid=EMB_A2', l: 'b', k: 'i', x: 0, y: 0, w: 0, h: 50 },     // w=0
-    R1: { u: '/player/oz.html?oid=EMB_A3', l: 'c', k: 'i', x: 10, y: 10, w: 'big', h: 5 },// NaN
+    C1: { u: '/player/live-source.html?source=anpviz', l: 'a', k: 'i', x: -5, y: 0, w: 50, h: 50 },   // x<0
+    C2: { u: '/player/live-source.html?source=guest-computer', l: 'b', k: 'i', x: 0, y: 0, w: 0, h: 50 }, // w=0
+    R1: { u: '/player/live-source.html?source=anpviz', l: 'c', k: 'i', x: 10, y: 10, w: 'big', h: 5 },// NaN
   };
   const decoded = MV.decodeCells(MV.encodeCells(map));
   for (const id of ['C1', 'C2', 'R1']) {
@@ -145,7 +147,7 @@ test('isFit accepts only the two literal modes', () => {
 test('decodeCells keeps f when it is cover or contain, round-trips', () => {
   const map = {
     C1: { u: '/player/hls.html?station=cbs&fit=cover', l: 'CBS', k: 'i', f: 'cover' },
-    L1: { u: '/player/oz.html?oid=EMB_A1', l: 'Cam', k: 'i', f: 'contain' },
+    L1: { u: '/player/live-source.html?source=anpviz', l: 'Camera', k: 'i', f: 'contain' },
   };
   const decoded = MV.decodeCells(MV.encodeCells(map));
   assert.deepEqual(decoded, map);
@@ -153,9 +155,9 @@ test('decodeCells keeps f when it is cover or contain, round-trips', () => {
 
 test('decodeCells DROPS any f value other than cover/contain', () => {
   const map = {
-    C1: { u: '/player/oz.html?oid=EMB_A1', l: 'a', k: 'i', f: 'fill' },      // bogus mode
-    C2: { u: '/player/oz.html?oid=EMB_A2', l: 'b', k: 'i', f: 'COVER' },     // wrong case
-    R1: { u: '/player/oz.html?oid=EMB_A3', l: 'c', k: 'i', f: 1 },           // non-string
+    C1: { u: '/player/live-source.html?source=anpviz', l: 'a', k: 'i', f: 'fill' },      // bogus mode
+    C2: { u: '/player/live-source.html?source=guest-computer', l: 'b', k: 'i', f: 'COVER' }, // wrong case
+    R1: { u: '/player/live-source.html?source=anpviz', l: 'c', k: 'i', f: 1 },           // non-string
   };
   const decoded = MV.decodeCells(MV.encodeCells(map));
   // No cell may carry an `f` key, and an omitted f means default (cover) — so a
@@ -172,13 +174,13 @@ test('f does NOT relax the URL allowlist (foreign origins still rejected)', () =
   }));
   assert.deepEqual(decoded, {});
   // Sanity: the allowlist itself is byte-for-byte unchanged.
-  assert.ok(MV.isAllowedCellUrl('/player/oz.html?oid=EMB_A1&fit=cover'));
+  assert.ok(MV.isAllowedCellUrl('/player/live-source.html?source=anpviz&fit=cover'));
   assert.ok(!MV.isAllowedCellUrl('https://evil.example.com/x'));
   assert.ok(!MV.isAllowedCellUrl('/player/../secret'));
 });
 
 test('f combines with geometry and round-trips', () => {
-  const map = { C1: { u: '/player/cam.html?id=470&fit=cover', l: 'Cam', k: 'i', f: 'cover', x: 25, y: 0, w: 60, h: 55 } };
+  const map = { C1: { u: '/player/live-source.html?source=anpviz&fit=cover', l: 'Camera', k: 'i', f: 'cover', x: 25, y: 0, w: 60, h: 55 } };
   const decoded = MV.decodeCells(MV.encodeCells(map));
   assert.deepEqual(decoded, map);
 });
@@ -321,7 +323,7 @@ test('rectForCell with a layout: operator geom wins, else the tile, else null', 
 // ---- wall audio: a single cell may carry sound; everything else stays muted ----
 function enc(map) { return MV.encodeCells(map); }
 
-test('decodeCells: keeps a:1 on an audio-capable cell (video / oz / hls)', () => {
+test('decodeCells: keeps a:1 on an audio-capable cell (video / live source / news)', () => {
   const d = MV.decodeCells(enc({
     C1: { u: '/player/hls.html?station=mbtv', l: 'MBTV', k: 'i', a: 1 },
     L1: { u: '/api/content/5/file', l: 'clip', k: 'v', a: 1 },
@@ -330,10 +332,10 @@ test('decodeCells: keeps a:1 on an audio-capable cell (video / oz / hls)', () =>
   assert.equal(d.L1.a, 1);
 });
 
-test('decodeCells: DROPS a:1 on a non-audio cell (image / cam / youtube / doc)', () => {
+test('decodeCells: DROPS a:1 on a non-audio cell (image / site / youtube / doc)', () => {
   const d = MV.decodeCells(enc({
     L1: { u: '/api/content/9/file', l: 'pic', k: 'm', a: 1 },          // image
-    L2: { u: '/player/cam.html?id=470', l: 'cam', k: 'i', a: 1 },      // jpeg snapshot
+    L2: { u: '/player/site.html?id=470', l: 'site', k: 'i', a: 1 },    // website snapshot
     L3: { u: 'https://www.youtube-nocookie.com/embed/abc123', l: 'yt', k: 'i', a: 1 },
   }));
   assert.equal(d.L1.a, undefined);
@@ -344,7 +346,7 @@ test('decodeCells: DROPS a:1 on a non-audio cell (image / cam / youtube / doc)',
 test('audioSlotId: returns the first (SLOT-order) cell flagged a:1, else null', () => {
   // R1 comes after C1 in SLOT order, so C1 wins even though both are flagged.
   const both = MV.decodeCells(enc({
-    R1: { u: '/player/oz.html?oid=X', l: 'cam', k: 'i', a: 1 },
+    R1: { u: '/player/live-source.html?source=anpviz', l: 'camera', k: 'i', a: 1 },
     C1: { u: '/player/hls.html?station=mbtv', l: 'MBTV', k: 'i', a: 1 },
   }));
   assert.equal(MV.audioSlotId(both), 'C1');
@@ -354,11 +356,11 @@ test('audioSlotId: returns the first (SLOT-order) cell flagged a:1, else null', 
   assert.equal(MV.audioSlotId({}), null);
 });
 
-test('isAudioCapable: video + oz/hls only', () => {
+test('isAudioCapable: video + managed live source/news only', () => {
   assert.equal(MV.isAudioCapable('v', '/api/content/1/file'), true);
   assert.equal(MV.isAudioCapable('i', '/player/hls.html?station=mbtv'), true);
-  assert.equal(MV.isAudioCapable('i', '/player/oz.html?oid=X'), true);
-  assert.equal(MV.isAudioCapable('i', '/player/cam.html?id=1'), false);
+  assert.equal(MV.isAudioCapable('i', '/player/live-source.html?source=anpviz'), true);
+  assert.equal(MV.isAudioCapable('i', '/player/site.html?id=1'), false);
   assert.equal(MV.isAudioCapable('m', '/api/content/1/file'), false);
   assert.equal(MV.isAudioCapable('i', 'https://www.youtube-nocookie.com/embed/abc123'), false);
 });

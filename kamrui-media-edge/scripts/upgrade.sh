@@ -47,15 +47,14 @@ case "${1:-status}" in
     # ── Camera API source ────────────────────────────────────────────
     sudo cp "$HERE/camera-api/server.js" "$HERE/camera-api/recording-safety.js" \
       "$HERE/camera-api/recording-supervisor.js" "$HERE/camera-api/docker-recording-runtime.js" \
+      "$HERE/camera-api/live-source-health.js" "$HERE/camera-api/audio-level-health.js" \
+      "$HERE/camera-api/zowiebox-client.js" \
       "$HERE/camera-api/camera-service-signature.js" "$HERE/camera-api/livestream-audit.js" \
       "$HERE/camera-api/peertube-upload.js" "$HERE/camera-api/package.json" \
       "$HERE/camera-api/package-lock.json" "$STACK/camera-api/"
     sudo chown -R mbfd-camera-api:mbfd-camera-api "$STACK/camera-api"
     ( cd "$STACK/camera-api" && sudo -u mbfd-camera-api npm ci --omit=dev --no-audit --no-fund )
 
-    # ── Relay scripts ────────────────────────────────────────────────
-    sudo install -o root -g root -m 0755 "$HERE/annke-main-relay.sh" "$STACK/annke-main-relay.sh"
-    sudo install -o root -g root -m 0755 "$HERE/annke-preview-relay.sh" "$STACK/annke-preview-relay.sh"
     sudo /usr/bin/python3 "$HERE/scripts/render-mediamtx-config.py" \
       "$ENV_FILE" "$HERE/mediamtx.yml.tpl" "$STACK/mediamtx.yml"
     sudo install -o root -g root -m 0644 "$HERE/docker-compose.mediamtx.yml" "$STACK/docker-compose.mediamtx.yml"
@@ -67,7 +66,7 @@ case "${1:-status}" in
     sudo systemd-tmpfiles --create /etc/tmpfiles.d/mbfd-recording-broker.conf
 
     # ── Systemd units ────────────────────────────────────────────────
-    for u in mbfd-annke-main-relay mbfd-annke-preview-relay mbfd-camera-api; do
+    for u in mbfd-camera-api; do
       sudo cp "$HERE/systemd/$u.service" /etc/systemd/system/
     done
     sudo cp "$HERE/systemd/mbfd-camera-recording@.service" /etc/systemd/system/
@@ -82,6 +81,10 @@ case "${1:-status}" in
     sudo chmod 0440 /etc/sudoers.d/mbfd-recording-admin
     sudo visudo -cf /etc/sudoers.d/mbfd-recording-admin
     sudo install -o root -g root -m 0755 "$HERE/mbfd-recording-admin" /usr/local/sbin/mbfd-recording-admin
+    # Install the current fixed-command helper before invoking any newly added
+    # allowlisted operation.  Older hosts do not know retire-legacy-relays yet.
+    sudo install -o root -g root -m 0755 "$HERE/mbfd-media-admin" /usr/local/sbin/mbfd-media-admin
+    sudo visudo -cf /etc/sudoers.d/mbfd-media-admin
 
     sudo install -d -o mbfd-camera-api -g mbfd-camera-api -m 0755 "$STACK/scripts"
     sudo install -o mbfd-camera-api -g mbfd-camera-api -m 0755 "$HERE/scripts/user-long-recording-test.sh" "$STACK/scripts/user-long-recording-test.sh"
@@ -95,14 +98,13 @@ case "${1:-status}" in
     sudo chmod 0640 "$ENV_FILE"
 
     sudo systemctl daemon-reload
+    sudo /usr/local/sbin/mbfd-media-admin retire-legacy-relays
 
     # ── Restart services ─────────────────────────────────────────────
     sudo systemctl enable --now mbfd-recording-broker.socket
     sudo systemctl restart mbfd-recording-broker.service
     sudo /usr/local/sbin/mbfd-media-admin restart-mediamtx
     sleep 4
-    sudo /usr/local/sbin/mbfd-media-admin restart-annke-main
-    sudo /usr/local/sbin/mbfd-media-admin restart-annke-preview
     sudo /usr/local/sbin/mbfd-media-admin restart-camera-api
     echo "deploy complete"
     ;;

@@ -65,12 +65,12 @@
   function isFit(v) { return v === 'cover' || v === 'contain'; }
 
   // A cell can carry sound ON THE WALL only if it is a <video> file or one of our
-  // live audio players (oz.html / hls.html). cam.html is a still image, images /
-  // docs / decks have no audio, and cross-origin youtube can't be unmuted from the
+  // live audio players (live-source.html / hls.html). Images, docs, and decks
+  // have no audio, and cross-origin youtube can't be unmuted from the
   // parent — so those never carry wall audio. At most ONE cell is unmuted on the
   // wall (the rest stay muted to avoid cacophony); see audioSlotId().
   function isAudioCapable(kind, url) {
-    return kind === 'v' || (kind === 'i' && /\/player\/(oz|hls)\.html/.test(url || ''));
+    return kind === 'v' || (kind === 'i' && /\/player\/(live-source|hls)\.html/.test(url || ''));
   }
 
   // ---- the SECURITY BOUNDARY ----------------------------------------------
@@ -78,7 +78,7 @@
   // so a cell URL may ONLY be a same-origin player/content path or a
   // youtube-nocookie embed. Everything else is rejected and the cell renders a
   // labelled placeholder — never an attacker-chosen origin. Mirrors the OID_RE
-  // / station-whitelist philosophy of oz.html / hls.html: the client never gets
+  // / station-whitelist philosophy of live-source.html / hls.html: the client never gets
   // to point a tile at an arbitrary URL.
   //
   // Composer normalizes same-origin absolutes to ROOT-RELATIVE ("/player/...",
@@ -93,7 +93,7 @@
     if (typeof u !== 'string' || !u) return false;
     if (u.indexOf('..') !== -1) return false;                       // no traversal
     if (BAD_CHARS.test(u) || hasControlChar(u)) return false;       // no markup/control chars
-    if (u.indexOf('/player/') === 0) return true;                   // oz.html / hls.html / cam.html / deck/<id>
+    if (/^\/player\/(?:hls\.html|live-source\.html|site\.html|(?:deck|doc)\/[^/?#]+)(?:[?#]|$)/.test(u)) return true;
     if (u.indexOf('/api/content/') === 0) return true;              // uploaded file / thumbnail
     return /^https:\/\/(www\.)?youtube-nocookie\.com\/embed\/[A-Za-z0-9_-]{6,15}(\?[^\s]*)?$/.test(u);
   }

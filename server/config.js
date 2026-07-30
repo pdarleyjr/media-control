@@ -265,7 +265,7 @@ module.exports = {
     obsWebSocketUrl: process.env.OBS_WEBSOCKET_URL || 'ws://127.0.0.1:4455',
     obsWebSocketPassword: process.env.OBS_WEBSOCKET_PASSWORD || '',
     obsRequestTimeoutMs: parseInt(process.env.OBS_WEBSOCKET_TIMEOUT_MS, 10) || 5000,
-    obsCameraInputName: process.env.OBS_CAMERA_INPUT_NAME || 'MBFD_ANNKE_CAMERA',
+    obsCameraInputName: process.env.OBS_CAMERA_INPUT_NAME || 'MBFD_ANPVIZ_CAMERA',
     obsContentInputName: process.env.OBS_CONTENT_INPUT_NAME || 'MBFD_LIVE_CONTENT',
     // OBS runs beside Media Control and must not inherit the public APP_URL.
     // Set this dedicated override only when OBS reaches the appliance through
@@ -285,7 +285,7 @@ module.exports = {
     peerTubeIngestConfirmationTimeoutMs: parseInt(process.env.PEERTUBE_INGEST_CONFIRM_TIMEOUT_MS, 10) || 8000,
   },
 
-  // Kamrui ANNKE camera-control edge. Media Control proxies every camera record
+  // KAMRUI canonical Anpviz/TONOR control edge. Media Control proxies each record
   // / livestream / status operation to this edge over LAN; the token is stored
   // in the compose env (never committed) and never reaches the browser.
   cameraControl: {

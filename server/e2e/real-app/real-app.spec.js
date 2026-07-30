@@ -352,6 +352,27 @@ test.describe('Phase 1 — Feature flag OFF: real app loads correctly', () => {
 
     assertNoErrors(errors, 'static assets');
   });
+
+  test('1g. Live Sources renders only the canonical Anpviz camera when the edge is unavailable', async ({ page }) => {
+    const errors = attachErrorCollectors(page);
+    await setupAuth(page);
+    await page.goto(`${BASE_URL}/app#/control`);
+    await expect(page.locator('.mc-cc-shell')).toBeVisible({ timeout: 20000 });
+
+    await page.locator('#mc-library-drawer > [data-library-toggle]').click();
+    const liveSourcesTab = page.locator('.mc-tb-tab[data-tab="camerafeeds"]');
+    await expect(liveSourcesTab).toBeVisible();
+    await liveSourcesTab.click();
+    await expect(page.locator('.mc-live-source-tile')).toHaveCount(1);
+    await expect(page.locator('.mc-live-source-tile .mc-tile-label')).toHaveText('Anpviz Camera');
+    await expect(page.locator('.mc-live-source-tile')).toBeDisabled();
+    await expect(page.locator('body')).not.toContainText(/ANNKE|WyreStorm|Focus 210|Camera [123]/i);
+
+    const height = await page.locator('.mc-live-source-tile').evaluate((element) =>
+      element.getBoundingClientRect().height);
+    expect(height).toBeGreaterThanOrEqual(48);
+    assertNoErrors(errors, 'canonical live sources');
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════

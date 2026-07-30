@@ -80,7 +80,7 @@ const OFFICE_DOC_RE = /(msword|ms-excel|ms-powerpoint|officedocument\.(?:wordpro
 // Iframe player pages whose inner <video>/<img> honors a ?fit=cover param (so a
 // fill choice reaches their letterboxed media). grid.html's object-fit handles
 // <video>/<img> cells directly; youtube/deck/api-content are NOT in here.
-const FIT_PARAM_RE = /^\/player\/(?:(oz|hls|cam|site)\.html|doc\/[^/?#]+)(\?|$)/;
+const FIT_PARAM_RE = /^\/player\/(?:(hls|live-source|site)\.html|doc\/[^/?#]+)(\?|$)/;
 
 // ---- module state (one composer per Command Center mount) ----
 let cells = {};               // slotId -> { cellUrl, monitorUrl, kind, label, thumb, category }
@@ -193,12 +193,12 @@ function cellFit(c) {
 }
 
 // A cell can carry sound ON THE WALL only if it is a video file or one of our live
-// audio players (oz/hls). cam.html is a still image; images/docs/decks/youtube
+// audio players (live-source/hls). Images, docs, decks, and youtube
 // can't drive wall audio. MIRROR of isAudioCapable() in multiview-core.js.
 function wallAudioCapable(c) {
   if (!c || c.kind === 'share') return false;
   if (c.kind === 'v') return true;
-  return c.kind === 'i' && /\/player\/(oz|hls)\.html/.test(c.cellUrl || '');
+  return c.kind === 'i' && /\/player\/(live-source|hls)\.html/.test(c.cellUrl || '');
 }
 
 // Append &fit=cover to a /player iframe URL so cam/oz/hls/site honor it (their
@@ -271,12 +271,11 @@ function resolveCell(source, label, thumb) {
     const rel = toRelativeIfOurs(url);
     if (rel.indexOf('/player/') === 0) {
       const cellUrl = stripLabelParam(rel);
-      // oz.html / hls.html carry audio (add &audio=1 for the monitor); cam.html
-      // is a still-image snapshot (no audio).
-      const audioCapable = /\/player\/(oz|hls)\.html/.test(cellUrl);
+      // Managed live sources and live news carry audio; add &audio=1 for the
+      // operator monitor while wall audio remains explicitly selected.
+      const audioCapable = /\/player\/(live-source|hls)\.html/.test(cellUrl);
       const monitorUrl = audioCapable ? cellUrl + (cellUrl.indexOf('?') === -1 ? '?' : '&') + 'audio=1' : null;
-      const category = /cam\.html/.test(cellUrl) ? 'image' : 'broadcast';
-      return { cellUrl, monitorUrl, kind: 'i', label, thumb: thumb || null, category };
+      return { cellUrl, monitorUrl, kind: 'i', label, thumb: thumb || null, category: 'broadcast' };
     }
     if (rel.indexOf('/api/content/') === 0) {
       return { cellUrl: rel, monitorUrl: null, kind: 'i', label, thumb: thumb || null, category: 'generic' };
@@ -302,7 +301,7 @@ function buildGridUrl() {
       const fit = cellFit(c);
       // Thread fit two ways: grid.html's object-fit reads the `f` field (video/img
       // + the fit-capable iframe pages set their own object-fit from ?fit=cover).
-      // For oz/hls/cam/site iframes, also push &fit=cover into the cell URL so the
+      // For live-source/hls/site iframes, also push &fit=cover into the cell URL so the
       // inner page (whose default is contain) fills the frame.
       const u = FIT_PARAM_RE.test(c.cellUrl) ? withFit(c.cellUrl, fit) : c.cellUrl;
       entry = { u, l: c.label || '', k: c.kind || 'i', f: fit };

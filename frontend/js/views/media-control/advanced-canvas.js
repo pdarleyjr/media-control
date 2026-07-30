@@ -256,7 +256,7 @@ function render(state) {
         </div>
         <span class="mc-canvas-toolbar-spacer"></span>
         <div class="mc-canvas-actions">
-          <button type="button" class="mc-canvas-action" data-canvas-camera="3">Room overview</button>
+          <button type="button" class="mc-canvas-action" data-canvas-camera="anpviz">Anpviz camera</button>
           <button type="button" class="mc-canvas-action mc-canvas-action-danger" data-canvas-clear>Clear canvas</button>
           <button type="button" class="mc-canvas-action mc-canvas-action-apply" data-canvas-apply><span class="mc-canvas-action-dot"></span>Take live</button>
         </div>
@@ -316,7 +316,6 @@ function render(state) {
             <button type="button" data-canvas-monitor-close aria-label="${esc(t('common.close'))}">&times;</button>
           </div>
           <div class="mc-canvas-video-wrap">
-            <img data-canvas-camera-image alt="${esc(t('mc.canvas.room_camera'))}" hidden>
             <iframe data-canvas-camera-frame title="${esc(t('mc.canvas.room_camera'))}" allow="autoplay" hidden></iframe>
             <div class="mc-canvas-video-state" data-canvas-camera-state hidden></div>
           </div>
@@ -555,22 +554,17 @@ function stopPreview(state, { notify = true } = {}) {
   state.previewEndedHandler = null;
 }
 
-function requestCamera(state, { camera, preset = '' }) {
+function requestCamera(state, { camera }) {
   const monitor = state.host.querySelector('[data-canvas-monitor]');
-  const image = state.host.querySelector('[data-canvas-camera-image]');
   const frame = state.host.querySelector('[data-canvas-camera-frame]');
   const status = state.host.querySelector('[data-canvas-camera-state]');
   const title = state.host.querySelector('[data-canvas-monitor-title]');
+  if (camera !== 'anpviz') return;
   monitor.hidden = false;
-  title.textContent = preset
-    ? `${state.endpoint.name} · configured camera preset`
-    : 'Room camera overview';
-  image.hidden = true;
+  title.textContent = 'Anpviz camera · synchronized TONOR audio';
   status.hidden = true;
-  const query = new URLSearchParams({ camera, fit: 'contain' });
-  if (camera === '1') query.set('controls', '1');
-  if (preset) query.set('preset', preset);
-  frame.src = `/player/classroom-camera.html?${query}`;
+  const query = new URLSearchParams({ source: 'anpviz', fit: 'contain' });
+  frame.src = `/player/live-source.html?${query}`;
   frame.hidden = false;
 }
 
@@ -724,7 +718,6 @@ function wire(state) {
   state.host.querySelectorAll('[data-canvas-camera]').forEach((button) => {
     button.addEventListener('click', () => requestCamera(state, {
       camera: button.dataset.canvasCamera,
-      preset: button.dataset.canvasPreset || '',
     }));
   });
   state.host.querySelector('[data-canvas-monitor-close]')?.addEventListener('click', () => {
@@ -779,27 +772,7 @@ export async function mountAdvancedCanvas(host) {
     }
     render(instance);
   };
-  instance.cameraHandler = (payload) => {
-    if (!payload || payload.endpoint_id !== instance?.endpoint.id) return;
-    const image = instance.host.querySelector('[data-canvas-camera-image]');
-    const frame = instance.host.querySelector('[data-canvas-camera-frame]');
-    const status = instance.host.querySelector('[data-canvas-camera-state]');
-    if (!image) return;
-    image.src = payload.image;
-    image.hidden = false;
-    if (frame) frame.hidden = true;
-    if (status) status.hidden = true;
-  };
-  instance.cameraErrorHandler = (payload) => {
-    if (!payload || payload.endpoint_id !== instance?.endpoint.id) return;
-    const status = instance.host.querySelector('[data-canvas-camera-state]');
-    if (!status) return;
-    status.hidden = false;
-    status.textContent = t('mc.canvas.camera_failed');
-  };
   socket?.on('dashboard:canvas-status', instance.statusHandler);
-  socket?.on('canvas:camera-frame', instance.cameraHandler);
-  socket?.on('canvas:camera-error', instance.cameraErrorHandler);
   render(instance);
   startPreview(instance);
   return endpoint;
@@ -844,8 +817,6 @@ export function unmountAdvancedCanvas() {
   if (!instance) return;
   const socket = getSocket();
   socket?.off('dashboard:canvas-status', instance.statusHandler);
-  socket?.off('canvas:camera-frame', instance.cameraHandler);
-  socket?.off('canvas:camera-error', instance.cameraErrorHandler);
   stopPreview(instance);
   instance = null;
 }

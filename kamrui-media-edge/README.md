@@ -1,21 +1,27 @@
 # MBFD Kamrui Media Edge
 
-Dedicated MBFD media-edge server: ingests the ANNKE ceiling camera via MediaMTX,
-provides HLS/RTSP, records (segmented fMP4), livestreams to PeerTube, syncs
-recordings to the GMKtec over LAN (Tailscale fallback), and uploads recordings
-privately to PeerTube for review.
+Dedicated MBFD media edge for the canonical Anpviz + TONOR classroom source and
+the signal-gated ZowieBox Guest Computer source. It provides HLS/RTSP, records
+segmented fMP4, livestreams to PeerTube, syncs recordings to the GMKtec over LAN
+(Tailscale fallback), and uploads recordings privately to PeerTube for review.
 
 ## Architecture
 
 ```
-ANNKE camera (RTSP, G.711 audio)
-  -> MediaMTX pulls RTSP (credentials in mode-0600 mediamtx.yml) into annke-raw-*
-     -> FFmpeg relay reads credential-free local rtsp://127.0.0.1:8554/annke-raw-*
-        (no camera credential in any process argument)
-        -> republishes AAC-converted stream to annke-main / annke-preview
-           -> HLS (:8888)  +  RTSP (:8554)  +  RTMP (:1935)  +  WebRTC (:8889)
+Anpviz camera (RTSP H.264)
+  -> MediaMTX credential-isolated ingest: anpviz-video
+     -> P3 publisher copies H.264 video + captures only TONOR G11
+        -> drift-corrected AAC mono, 48 kHz -> anpviz-main
+           -> HLS (:8888) + RTSP (:8554) + RTMP (:1935) + WebRTC (:8889)
+
+ZowieBox (HDMI H.264/AAC)
+  -> MediaMTX direct pull: guest-computer
+  -> Camera API polls real HDMI input lock and debounces availability
+  -> Media Control keeps one stable source identity and shows it only with signal
 
 Camera Control API (Node.js, :8200)
+  -> /api/sources/anpviz/heartbeat  authenticated P3 publisher health
+  -> /api/status                    canonical source and signal health
   -> /api/record/start|stop      independent FFmpeg segment recorder
   -> /api/stream/start|stop      independent FFmpeg -> PeerTube RTMP push
   -> /api/emergency-stop
@@ -39,13 +45,15 @@ and stop both fail closed if that identity changes or Docker is unavailable.
 
 ## Security
 
-- Camera RTSP credentials live ONLY in `/etc/mbfd/media-stack/mediamtx.yml`
+- Anpviz RTSP credentials live ONLY in `/etc/mbfd/media-stack/camera.env` and
+  the generated mode-0600 `/opt/mbfd/media-stack/mediamtx.yml`
   (mode 0600). No camera credential appears in any FFmpeg process argument,
   systemd status, or log.
 - API token + PeerTube token + RTMP stream key live in
   `/etc/mbfd/media-stack/camera.env` (mode 0600). Never committed.
 - UFW: deny incoming by default; SSH from Tailscale + LAN; media ports 8200/8888
-  only from the GMKtec LAN address.
+  from the GMKtec only, plus port 8200 from the exact P3 LAN/Tailscale identities
+  for authenticated publisher heartbeats.
 - Least-privilege sudo via `/usr/local/sbin/mbfd-media-admin` (root-owned,
   allowlisted subcommands only, operator use only).
 - Recording administration uses a **root-owned recording broker** reached
@@ -73,8 +81,8 @@ and stop both fail closed if that identity changes or Docker is unavailable.
 
 See `scripts/install.sh`. Runtime secrets are provisioned into
 `/etc/mbfd/media-stack/camera.env` (see `.env.example`); `mediamtx.yml` is
-generated from `mediamtx.yml.tpl` with the ANNKE RTSP URLs substituted at
-install time and set to mode 0600.
+generated from `mediamtx.yml.tpl` with the Anpviz and ZowieBox RTSP URLs
+substituted at install time and set to mode 0600.
 
 ## Rollback / upgrade
 

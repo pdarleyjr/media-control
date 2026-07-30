@@ -3,31 +3,31 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
-<title>MBFD Classroom Camera</title>
+<title>MBFD Live Source</title>
 <style>
-  :root { --bg:#0b1220; --txt:#e6edf7; --muted:#8aa0c6; --bad:#ef4444; --ok:#22c55e; --warn:#f59e0b; }
+  :root { --bg:#0b1220; --txt:#e6edf7; --muted:#8aa0c6; --bad:#ef4444; --ok:#22c55e; }
   * { box-sizing:border-box; margin:0; padding:0; }
   html,body { background:var(--bg); color:var(--txt); font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; height:100%; }
   body { display:flex; flex-direction:column; min-height:100vh; }
-  .bar { display:flex; align-items:center; gap:10px; padding:6px 12px; background:linear-gradient(90deg,#0f2748,#0b1220); border-bottom:1px solid #1f2c47; font-size:13px; }
+  .bar { display:flex; align-items:center; gap:10px; padding:8px 12px; background:linear-gradient(90deg,#0f2748,#0b1220); border-bottom:1px solid #1f2c47; font-size:13px; }
   .bar .name { font-weight:600; }
   .bar .dot { width:9px; height:9px; border-radius:50%; background:var(--muted); }
   .bar .dot.on { background:var(--ok); }
   .bar .dot.bad { background:var(--bad); }
   .stage { flex:1; position:relative; background:#000; overflow:hidden; display:flex; align-items:center; justify-content:center; }
   video { width:100%; height:100%; object-fit:contain; background:#000; }
-  .err { position:absolute; inset:0; display:none; flex-direction:column; align-items:center; justify-content:center; gap:10px; text-align:center; padding:20px; }
+  .err { position:absolute; inset:0; display:none; flex-direction:column; align-items:center; justify-content:center; gap:10px; text-align:center; padding:20px; background:var(--bg); }
   .err.show { display:flex; }
   .err .code { color:var(--bad); font-weight:700; }
   .err .msg { color:var(--muted); font-size:13px; max-width:80%; word-break:break-word; }
-  .err button { margin-top:6px; padding:7px 16px; background:#2563eb; color:#fff; border:none; border-radius:6px; font-size:13px; cursor:pointer; }
+  .err button { margin-top:6px; min-width:48px; min-height:48px; padding:8px 18px; background:#2563eb; color:#fff; border:0; border-radius:8px; font-size:14px; cursor:pointer; }
   .meta { position:absolute; right:8px; bottom:6px; font-size:11px; color:var(--muted); background:rgba(0,0,0,.5); padding:2px 6px; border-radius:4px; }
 </style>
 </head>
 <body>
-  <div class="bar"><span class="dot" id="dot"></span><span class="name" id="name">ANNKE</span><span style="color:var(--muted)" id="stat">connecting…</span></div>
+  <div class="bar"><span class="dot" id="dot"></span><span class="name" id="name"></span><span style="color:var(--muted)" id="stat">connecting…</span></div>
   <div class="stage">
-    <video id="v" muted playsinline webkit-playsinline autoplay></video>
+    <video id="v" playsinline webkit-playsinline autoplay></video>
     <div class="err" id="err">
       <div class="code" id="ecode">STREAM ERROR</div>
       <div class="msg" id="emsg"></div>
@@ -39,7 +39,9 @@
 <script>
 (function(){
   var params=new URLSearchParams(location.search);
-  var camera=params.get('camera')||'3';
+  var source=params.get('source')||'anpviz';
+  var allowed={anpviz:'Anpviz Camera','guest-computer':'Guest Computer'};
+  if(!Object.prototype.hasOwnProperty.call(allowed,source)) source='anpviz';
   var v=document.getElementById('v');
   var dot=document.getElementById('dot');
   var stat=document.getElementById('stat');
@@ -50,20 +52,21 @@
   var lastOk=null;
   var hls=null;
   var stallTO=null;
-  function srcUrl(){ return '/player/classroom-camera/'+encodeURIComponent(camera)+'/index.m3u8'; }
+  document.getElementById('name').textContent=allowed[source];
+  function srcUrl(){ return '/player/live-source/'+encodeURIComponent(source)+'/index.m3u8'; }
   function showErr(type,details,fatal,url,code,ct){
     err.classList.add('show');
     ecode.textContent=fatal?'FATAL '+type:type;
     emsg.textContent=(details||'')+(url?(' — '+url):'')+(code?(' ('+code+')'):'')+(ct?(' ['+ct+']'):'');
-    dot.className='dot bad'; stat.textContent='error';
-    console.error('[camera-hls]',{type:type,details:details,fatal:fatal,url:url,code:code,contentType:ct});
+    dot.className='dot bad'; stat.textContent='disconnected';
+    console.error('[live-source-hls]',{type:type,details:details,fatal:fatal,url:url,code:code,contentType:ct});
   }
   function clearErr(){ err.classList.remove('show'); dot.className='dot on'; stat.textContent='live'; lastOk=Date.now(); }
   function startStallWatch(){
     clearInterval(stallTO);
     stallTO=setInterval(function(){
-      if(v.readyState>=2 && v.currentTime>0){
-        if(lastOk && (Date.now()-lastOk)>8000){ stat.textContent='stalled?'; dot.className='dot'; }
+      if(v.readyState>=2 && v.currentTime>0 && lastOk && (Date.now()-lastOk)>8000){
+        stat.textContent='stalled'; dot.className='dot';
       }
     },2000);
   }
@@ -71,17 +74,17 @@
     stop();
     stat.textContent='connecting…'; dot.className='dot';
     if(window.Hls && Hls.isSupported()){
-      hls=new Hls({enableWorker:true, lowLatencyMode:true, backBuffer:2, manifestLoadingTimeOut:8000, manifestLoadingMaxRetry:3, levelLoadingTimeOut:10000, fragLoadingTimeOut:20000});
+      hls=new Hls({enableWorker:true,lowLatencyMode:true,backBufferLength:2,liveSyncDurationCount:3,maxBufferLength:6,manifestLoadingTimeOut:8000,manifestLoadingMaxRetry:3,levelLoadingTimeOut:10000,fragLoadingTimeOut:20000});
       window.__hls=hls;
-      hls.on(Hls.Events.MANIFEST_PARSED,function(){ clearErr(); stat.textContent='live'; v.play().catch(function(){}); });
+      hls.on(Hls.Events.MANIFEST_PARSED,function(){ clearErr(); v.play().catch(function(){}); });
       hls.on(Hls.Events.FRAG_PARSED,function(){ clearErr(); });
-      hls.on(Hls.Events.ERROR,function(e,data){
+      hls.on(Hls.Events.ERROR,function(_event,data){
         var url=data.url||''; var code=data.response?data.response.code:null; var ct=data.response?data.response.text:'';
         if(data.fatal){ showErr(data.type,data.details,true,url,code,ct); switch(data.type){
           case 'networkError': setTimeout(connect,2000); break;
           case 'mediaError': if(hls) hls.recoverMediaError(); break;
           default: if(hls){ hls.destroy(); hls=null; } break;
-        } } else { console.warn('[camera-hls] non-fatal',data.type,data.details); }
+        } }
       });
       hls.loadSource(srcUrl()); hls.attachMedia(v);
     } else if(v.canPlayType('application/vnd.apple.mpegurl')){
@@ -90,7 +93,7 @@
     } else { showErr('unsupported','HLS not supported by this browser',true); }
     startStallWatch();
   }
-  function stop(){ if(hls){ try{hls.destroy();}catch(e){} hls=null; } clearInterval(stallTO); }
+  function stop(){ if(hls){ try{hls.destroy();}catch(_error){} hls=null; } clearInterval(stallTO); }
   setInterval(function(){ meta.textContent=v.videoWidth?(v.videoWidth+'x'+v.videoHeight+' • rt='+v.currentTime.toFixed(1)+'s • rs='+v.readyState):''; },1000);
   document.getElementById('retry').addEventListener('click',connect);
   connect();
