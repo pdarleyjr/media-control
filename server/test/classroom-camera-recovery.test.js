@@ -31,5 +31,5 @@ test('live source drawer uses same-origin canonical player URLs without legacy c
 
   assert.doesNotMatch(feeds, /mc-cf-control-open|Focus 210/);
   assert.match(catalog, /url: `\/player\/live-source\.html/);
-  assert.doesNotMatch(catalog, /media-control\.mbfdhub\.com\/player\/live-source/);
+  assert.ok(!catalog.includes('media-control.mbfdhub.com/player/live-source'));
 });

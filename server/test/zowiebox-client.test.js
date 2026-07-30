@@ -15,7 +15,7 @@ function response(body, ok = true) {
 test('ZowieBox client logs in once and reads HDMI status with the session UUID header', async () => {
   const requests = [];
   const client = createZowieboxClient({
-    baseUrl: 'http://zowiebox.invalid',
+    baseUrl: 'http://192.168.1.186',
     username: 'service-user',
     password: 'secret-value',
     fetchImpl: async (url, options) => {
@@ -49,7 +49,7 @@ test('ZowieBox client logs in once and reads HDMI status with the session UUID h
 
 test('ZowieBox client rejects an unsuccessful device status without exposing the password', async () => {
   const client = createZowieboxClient({
-    baseUrl: 'http://zowiebox.invalid',
+    baseUrl: 'http://192.168.1.186',
     username: 'service-user',
     password: 'highly-sensitive',
     fetchImpl: async (_url, options) => {
@@ -68,4 +68,41 @@ test('ZowieBox client rejects an unsuccessful device status without exposing the
       return /ZowieBox/.test(error.message);
     },
   );
+});
+
+test('ZowieBox client rejects every management origin except the confirmed appliance', () => {
+  for (const baseUrl of [
+    'http://192.168.1.187',
+    'https://192.168.1.186',
+    'http://192.168.1.186:8080',
+    'http://user@192.168.1.186',
+  ]) {
+    assert.throws(
+      () => createZowieboxClient({
+        baseUrl,
+        username: 'service-user',
+        password: 'secret-value',
+        fetchImpl: async () => response({ status: '00000' }),
+      }),
+      /confirmed appliance/,
+    );
+  }
+});
+
+test('camera API receives its protected environment from systemd without parsing camera.env', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const root = path.resolve(__dirname, '../..');
+  const unit = fs.readFileSync(
+    path.join(root, 'kamrui-media-edge/systemd/mbfd-camera-api.service'),
+    'utf8',
+  );
+  const server = fs.readFileSync(
+    path.join(root, 'kamrui-media-edge/camera-api/server.js'),
+    'utf8',
+  );
+
+  assert.match(unit, /^EnvironmentFile=\/etc\/mbfd\/media-stack\/camera\.env$/m);
+  assert.match(server, /const env = process\.env;/);
+  assert.doesNotMatch(server, /readFileSync\('\/etc\/mbfd\/media-stack\/camera\.env'/);
 });

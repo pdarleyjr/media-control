@@ -25,6 +25,7 @@ test('database and filesystem resource routes use the standard rate limiter', ()
     '/api/files',
     '/api/classroom-preparation',
     '/api/media-observability',
+    '/api/live-sources',
   ]) {
     assert.ok(
       server.includes(`app.use('${route}', rateLimit(rateLimitOptions(`),

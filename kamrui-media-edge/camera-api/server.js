@@ -76,18 +76,7 @@ function boundedNumber(value, fallback, min, max) {
 }
 
 function loadConfig() {
-  const env = {};
-  try {
-    const lines = fs.readFileSync('/etc/mbfd/media-stack/camera.env', 'utf8').split('\n');
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const eq = trimmed.indexOf('=');
-      if (eq > 0) env[trimmed.slice(0, eq)] = trimmed.slice(eq + 1);
-    }
-  } catch (e) {
-    console.error('Failed to load camera.env:', e.message);
-  }
+  const env = process.env;
   const recordingBackend = String(env.RECORDING_BACKEND || 'systemd').trim().toLowerCase();
   if (!['systemd', 'docker'].includes(recordingBackend)) {
     throw new Error('RECORDING_BACKEND must be "systemd" or "docker"');

@@ -14,6 +14,7 @@ Restart=always
 RestartSec=5s
 Environment=NODE_ENV=production
 Environment=MBFD_RECORDING_BROKER_SOCKET=/run/mbfd-recording-broker/broker.sock
+EnvironmentFile=/etc/mbfd/media-stack/camera.env
 # The camera API never escalates privileges.  It communicates with the
 # root-owned recording broker through a peer-verified Unix socket (SO_PEERCRED).
 # No sudo, no wildcard sudoers, no NoNewPrivileges relaxation.

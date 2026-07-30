@@ -1,5 +1,7 @@
 'use strict';
 
+const ZOWIEBOX_MANAGEMENT_ORIGIN = 'http://192.168.1.186';
+
 function createZowieboxClient({
   baseUrl,
   username,
@@ -7,8 +9,22 @@ function createZowieboxClient({
   fetchImpl = globalThis.fetch,
   timeoutMs = 4_000,
 } = {}) {
-  const origin = String(baseUrl || '').replace(/\/+$/, '');
-  if (!/^https?:\/\/[^/]+$/i.test(origin)) throw new Error('ZowieBox base URL is invalid');
+  let configuredUrl;
+  try {
+    configuredUrl = new URL(String(baseUrl || ''));
+  } catch {
+    throw new Error('ZowieBox management URL does not identify the confirmed appliance');
+  }
+  if (
+    configuredUrl.origin !== ZOWIEBOX_MANAGEMENT_ORIGIN
+    || configuredUrl.pathname !== '/'
+    || configuredUrl.search
+    || configuredUrl.hash
+    || configuredUrl.username
+    || configuredUrl.password
+  ) {
+    throw new Error('ZowieBox management URL does not identify the confirmed appliance');
+  }
   if (!username || !password) throw new Error('ZowieBox service credentials are not configured');
   if (typeof fetchImpl !== 'function') throw new Error('ZowieBox fetch implementation is unavailable');
 
@@ -20,7 +36,7 @@ function createZowieboxClient({
     try {
       const headers = { 'Content-Type': 'application/json' };
       if (includeSession && uuid) headers.uuid = uuid;
-      const response = await fetchImpl(`${origin}${requestPath}`, {
+      const response = await fetchImpl(`${ZOWIEBOX_MANAGEMENT_ORIGIN}${requestPath}`, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
@@ -97,4 +113,4 @@ function createZowieboxClient({
   };
 }
 
-module.exports = { createZowieboxClient };
+module.exports = { createZowieboxClient, ZOWIEBOX_MANAGEMENT_ORIGIN };

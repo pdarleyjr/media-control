@@ -901,6 +901,7 @@ app.use('/api/devices', requireAuth, resolveTenancy, require('./routes/devices')
 app.use('/api/displays', requireAuth, resolveTenancy, require('./routes/displays'));
 app.use('/api/advanced-canvas', requireAuth, resolveTenancy, require('./routes/advanced-canvas'));
 app.use('/api/content', requireAuth, resolveTenancy, require('./routes/content'));
+app.use('/api/live-sources', rateLimit(rateLimitOptions(60000, 60)));
 app.use('/api/live-sources', requireAuth, resolveTenancy, require('./routes/live-sources'));
 app.use('/api/captions', requireAuth, resolveTenancy, captionRoutes.router);
 // Resumable chunked uploads (tus) — for multi-GB files that exceed Cloudflare's
