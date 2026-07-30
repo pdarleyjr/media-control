@@ -57,6 +57,24 @@ test('one canonical Anpviz stream pairs copied camera video with only TONOR audi
   assert.doesNotMatch(publisher, /built-in|camera audio fallback/i);
 });
 
+test('TONOR DirectShow discovery tolerates expected FFmpeg stderr and restores strict failures', () => {
+  const publisher = read('appliance/p3/anpviz-tonor/Start-AnpvizTonorPublisher.ps1');
+  const resolveStart = publisher.indexOf('function Resolve-TonorAudioEndpoint');
+  const resolveEnd = publisher.indexOf('function Send-Heartbeat', resolveStart);
+  const resolveBlock = publisher.slice(resolveStart, resolveEnd);
+  const savePolicy = resolveBlock.indexOf('$previousErrorActionPreference = $ErrorActionPreference');
+  const relaxPolicy = resolveBlock.indexOf("$ErrorActionPreference = 'Continue'");
+  const enumerate = resolveBlock.indexOf('-list_devices');
+  const restorePolicy = resolveBlock.indexOf('$ErrorActionPreference = $previousErrorActionPreference');
+
+  assert.ok(resolveStart >= 0 && resolveEnd > resolveStart);
+  assert.match(resolveBlock, /Alternative name\\s\+"/);
+  assert.ok(savePolicy >= 0);
+  assert.ok(relaxPolicy > savePolicy);
+  assert.ok(enumerate > relaxPolicy);
+  assert.ok(restorePolicy > enumerate);
+});
+
 test('camera edge records, livestreams, previews, and proxies only the canonical Anpviz stream', () => {
   const api = read('kamrui-media-edge/camera-api/server.js');
   const proxy = read('cameras-proxy/html/index.html');
@@ -74,6 +92,8 @@ test('camera edge records, livestreams, previews, and proxies only the canonical
   assert.match(api, /createAudioLevelMonitor/);
   assert.match(install, /audio-level-health\.js/);
   assert.match(upgrade, /audio-level-health\.js/);
+  assert.match(upgrade, /HOME=\/var\/cache\/mbfd-camera-api/);
+  assert.match(upgrade, /npm_config_cache=\/var\/cache\/mbfd-camera-api\/npm/);
   assert.match(admin, /192\.168\.1\.101 to any port 8200/);
   assert.match(admin, /100\.123\.92\.37 to any port 8200/);
   assert.match(admin, /192\.168\.1\.116 to any port 8554/);

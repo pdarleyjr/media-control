@@ -32,6 +32,13 @@ case "${1:-status}" in
     # account was created by an earlier partial deployment.
     sudo usermod -aG mbfd-recording mbfd-camera-api
 
+    # The service account deliberately has /nonexistent as its login home.
+    # Give npm a dedicated writable cache so a locked-down account can perform
+    # repeatable installs without weakening that account or using root-owned
+    # dependencies.
+    sudo install -d -o mbfd-camera-api -g mbfd-camera-api -m 0750 \
+      /var/cache/mbfd-camera-api
+
     sudo install -d -o mbfd-camera-api -g mbfd-recording -m 2770 \
       "$RECORDING_ROOT" "$RECORDING_ROOT/active" "$RECORDING_ROOT/completed" \
       "$RECORDING_ROOT/failed" "$RECORDING_ROOT/metadata"
@@ -53,7 +60,10 @@ case "${1:-status}" in
       "$HERE/camera-api/peertube-upload.js" "$HERE/camera-api/package.json" \
       "$HERE/camera-api/package-lock.json" "$STACK/camera-api/"
     sudo chown -R mbfd-camera-api:mbfd-camera-api "$STACK/camera-api"
-    ( cd "$STACK/camera-api" && sudo -u mbfd-camera-api npm ci --omit=dev --no-audit --no-fund )
+    ( cd "$STACK/camera-api" && sudo -u mbfd-camera-api \
+      env HOME=/var/cache/mbfd-camera-api \
+      npm_config_cache=/var/cache/mbfd-camera-api/npm \
+      npm ci --omit=dev --no-audit --no-fund )
 
     sudo /usr/bin/python3 "$HERE/scripts/render-mediamtx-config.py" \
       "$ENV_FILE" "$HERE/mediamtx.yml.tpl" "$STACK/mediamtx.yml"
