@@ -1,17 +1,31 @@
 #!/usr/bin/env bash
-# Rollback the Kamrui media edge to the prior backup snapshot.
-# Backups live under /opt/mbfd/media-stack/backup-*-<date>/.
+# Restore the media edge from an explicit, checksum-verified release snapshot.
+# This script never selects a snapshot implicitly and never re-enables retired
+# camera relay units.
 set -euo pipefail
 STACK=/opt/mbfd/media-stack
-LATEST=$(ls -1d "$STACK"/backup-corrective2-* "$STACK"/backup-corrective-* 2>/dev/null | tail -1)
-if [ -z "$LATEST" ]; then echo "no backup snapshot found"; exit 1; fi
-echo "rolling back to: $LATEST"
-cp "$LATEST/server.js.pre-corrective2" "$STACK/camera-api/server.js"
-cp "$LATEST/peertube-upload.js.pre-corrective2" "$STACK/camera-api/peertube-upload.js"
-cp "$LATEST/annke-main-relay.sh.pre-corrective2" "$STACK/annke-main-relay.sh"
-cp "$LATEST/annke-preview-relay.sh.pre-corrective2" "$STACK/annke-preview-relay.sh"
-chmod +x "$STACK/annke-main-relay.sh" "$STACK/annke-preview-relay.sh"
+SNAPSHOT="${1:-}"
+if [ -z "$SNAPSHOT" ]; then
+  echo "usage: rollback.sh /absolute/path/to/verified-snapshot" >&2
+  exit 2
+fi
+SNAPSHOT=$(realpath "$SNAPSHOT")
+case "$SNAPSHOT" in
+  /home/peter/mbfd-backups/*|/opt/mbfd/media-stack/backups/*) ;;
+  *) echo "snapshot is outside an approved backup root" >&2; exit 2 ;;
+esac
+test -f "$SNAPSHOT/SHA256SUMS"
+( cd "$SNAPSHOT" && sha256sum -c SHA256SUMS )
+test -f "$SNAPSHOT/opt/media-stack/mediamtx.yml"
+test -f "$SNAPSHOT/etc/media-stack/camera.env"
+
+sudo install -o root -g root -m 0600 \
+  "$SNAPSHOT/etc/media-stack/camera.env" /etc/mbfd/media-stack/camera.env
+sudo install -o root -g root -m 0600 \
+  "$SNAPSHOT/opt/media-stack/mediamtx.yml" "$STACK/mediamtx.yml"
+if [ -d "$SNAPSHOT/opt/media-stack/camera-api" ]; then
+  sudo cp -a "$SNAPSHOT/opt/media-stack/camera-api/." "$STACK/camera-api/"
+fi
 sudo /usr/local/sbin/mbfd-media-admin restart-camera-api
-sudo /usr/local/sbin/mbfd-media-admin restart-annke-main
-sudo /usr/local/sbin/mbfd-media-admin restart-annke-preview
+sudo /usr/local/sbin/mbfd-media-admin restart-mediamtx
 echo "rollback complete"

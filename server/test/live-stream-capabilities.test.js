@@ -21,14 +21,14 @@ test('status capabilities expose non-secret operator fields', () => {
         obs: true,
         peertube_configured: true,
         stream_active: false,
-        current_scene: 'KAMRUI_CAMERA_1_FULL',
+        current_scene: 'ANPVIZ_CAMERA_FULL',
         mode: 'manual',
         effective_mode: 'manual',
         autoswitch_enabled: false,
-        kamrui_camera_1_stream: true,
+        anpviz_stream: true,
         operator_stream_start_allowed: true,
         automatic_stream_start_allowed: false,
-        director: { active_camera: 1, content_active: true },
+        director: { active_source: 'anpviz', content_active: true },
         settings: { rtmp_url: 'rtmp://secret', stream_key: 'abc' },
       },
     },
@@ -44,7 +44,7 @@ test('status capabilities expose non-secret operator fields', () => {
   assert.equal(caps.managed_receiver_online, true);
   assert.equal(caps.program_prepared, true);
   assert.equal(caps.program_content_active, true);
-  assert.equal(caps.program_scene, 'KAMRUI_CAMERA_1_FULL');
+  assert.equal(caps.program_scene, 'ANPVIZ_CAMERA_FULL');
   assert.equal(caps.stream_state, 'ready');
   assert.equal(caps.director_mode, 'manual');
   assert.equal('rtmp_url' in caps, false);
@@ -62,9 +62,9 @@ test('operator start may stay enabled while automatic remains disabled', () => {
         peertube_configured: true,
         operator_stream_start_allowed: true,
         automatic_stream_start_allowed: false,
-        current_scene: 'KAMRUI_CAMERA_1_FULL',
+        current_scene: 'ANPVIZ_CAMERA_FULL',
         mode: 'manual',
-        kamrui_camera_1_stream: true,
+        anpviz_stream: true,
       },
     },
     peerTubeWatchUrl: 'https://videos.example/watch/x',
@@ -104,15 +104,17 @@ test('redaction strips settings secrets and keeps safe status fields', () => {
     status: 200,
     data: {
       obs: true,
-      current_scene: 'KAMRUI_CAMERA_1_FULL',
+      current_scene: 'ANPVIZ_CAMERA_FULL',
       stream_active: false,
+      anpviz_stream: true,
       settings: { stream_key: 'secret', rtmp_url: 'rtmp://x' },
-      director: { active_camera: 1, content_active: false, internal_token: 'nope' },
+      director: { active_source: 'anpviz', content_active: false, internal_token: 'nope' },
     },
   });
   assert.equal(redacted.data.settings, undefined);
-  assert.equal(redacted.data.current_scene, 'KAMRUI_CAMERA_1_FULL');
-  assert.equal(redacted.data.director.active_camera, 1);
+  assert.equal(redacted.data.current_scene, 'ANPVIZ_CAMERA_FULL');
+  assert.equal(redacted.data.director.active_source, 'anpviz');
+  assert.equal(redacted.data.director.active_camera, undefined);
   assert.equal(redacted.data.director.internal_token, undefined);
 });
 

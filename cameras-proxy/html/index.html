@@ -62,7 +62,7 @@
 <body>
 <div class="top">
   <h1>MBFD Camera Control</h1>
-  <span class="sub">ANNKE I51HP Ceiling Camera</span>
+  <span class="sub">Anpviz Camera + TONOR G11</span>
   <span class="spacer"></span>
   <span class="clock" id="clock"></span>
 </div>
@@ -237,7 +237,7 @@ function addLog(msg) {
 function loadPreview() {
   const video = document.getElementById('preview-video');
   const stateEl = document.getElementById('stream-state');
-  const src = '/hls/annke-preview/index.m3u8';
+  const src = '/hls/anpviz-main/index.m3u8';
 
   function retry() { setTimeout(loadPreview, 5000); }
 
@@ -314,10 +314,14 @@ async function refreshStatus() {
     setDot('stream', s.livestreaming ? 'ok' : 'off');
     document.getElementById('val-stream').textContent = s.livestreaming ? 'Live' : 'Idle';
 
-    // Camera audio status from the edge (ANNKE AAC 48kHz mono).
-    const audioOk = s.camera_audio_online !== false && s.camera_online;
+    // Authoritative TONOR audio status from the canonical synchronized stream.
+    const audioOk = s.sources?.anpviz?.audio_online === true;
     setDot('audio', audioOk ? 'ok' : 'bad');
-    document.getElementById('val-audio').textContent = audioOk ? 'AAC 48kHz' : 'Unavailable';
+    const micOk = s.sources?.anpviz?.microphone_connected === true;
+    const sync = s.sources?.anpviz?.synchronization_status || 'unknown';
+    document.getElementById('val-audio').textContent = audioOk && micOk
+      ? `TONOR · AAC 48kHz · Sync ${sync}`
+      : (micOk ? 'TONOR audio unavailable' : 'TONOR disconnected');
 
     document.getElementById('val-disk').textContent = formatBytes(s.disk_free_bytes);
 

@@ -17,7 +17,7 @@ const SESSION_ID = 'ses_123_fixture';
 const NONCE = 'b'.repeat(64);
 const RECORDING_ROOT = path.resolve('/mnt/data/recordings');
 const OUTPUT_PATTERN = path.join(RECORDING_ROOT, 'active', SESSION_ID, 'recording_%03d.mp4');
-const SOURCE = 'rtsp://127.0.0.1:8554/annke-main';
+const SOURCE = 'rtsp://127.0.0.1:8554/anpviz-main';
 const FFMPEG_ARGS = ['-nostdin', '-i', SOURCE, OUTPUT_PATTERN];
 
 function inspectFixture(overrides = {}) {

@@ -21,7 +21,8 @@ test('live start is one-click, operator-only, and does not consume a production 
   assert.ok(startRoute, 'start route should exist');
   assert.doesNotMatch(startRoute[0], /consumePlanForStart/);
   assert.match(startRoute[0], /production_mode:\s*'fixed_camera'/);
-  assert.match(startRoute[0], /camera_id:\s*3/);
+  assert.match(startRoute[0], /source_id:\s*'anpviz'/);
+  assert.doesNotMatch(startRoute[0], /camera_id/);
   assert.match(source, /initiator !== 'operator' && initiator !== 'user'/);
   assert.match(source, /AUTOMATIC_STREAM_START_DISABLED/);
 });

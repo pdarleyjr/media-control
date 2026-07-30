@@ -1,7 +1,7 @@
 # MBFD fixed livestream compositor
 
 This package generates one deterministic OBS collection with one persistent
-ANNKE camera input, one persistent Media Control browser input, and exactly
+canonical Anpviz-plus-TONOR input, one persistent Media Control browser input, and exactly
 three program scenes:
 
 - `MBFD_CAMERA_ONLY`

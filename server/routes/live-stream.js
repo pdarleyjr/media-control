@@ -2,7 +2,7 @@
 
 // Deterministic livestream orchestration. AI Director remains retired.
 // Runtime mode is selected only at process start:
-//   direct_camera     ANNKE edge publishes directly to PeerTube (rollback mode)
+//   direct_camera     canonical Anpviz/TONOR edge publishes directly to PeerTube
 //   fixed_compositor  OBS owns the single publisher and the three fixed scenes
 // The two publishers are never started together.
 
@@ -210,13 +210,11 @@ async function getCameraDirectorState(workspaceId) {
     autoswitch_runtime_enabled: false,
     media_control_available: cameraOnline,
     media_control_content_active: contentActive,
-    kamrui_camera_1_stream: false,
-    kamrui_camera_2_stream: false,
-    annke_camera_3_stream: cameraOnline,
+    anpviz_stream: cameraOnline,
     camera_online: cameraOnline,
     preview_online: previewOnline,
     director: {
-      active_camera: cameraOnline ? 3 : null,
+      active_source: cameraOnline ? 'anpviz' : null,
       content_active: contentActive,
     },
     operator_stream_start_allowed: true,
@@ -241,8 +239,8 @@ async function getCameraDirectorState(workspaceId) {
       recording_active: recording,
       recording_state: recording ? 'active' : 'standby',
       livestreaming: s.livestreaming === true,
-      annke_camera_3_stream: cameraOnline,
-      active_camera: cameraOnline ? 3 : null,
+      anpviz_stream: cameraOnline,
+      active_source: cameraOnline ? 'anpviz' : null,
       publisher_mode: publisherMode,
       errors: Array.isArray(s.errors) ? s.errors : [],
     },
@@ -305,7 +303,7 @@ async function buildStatusContract(req, directorResult, requestId) {
   });
   const publisher = directorResult?.data?.publisher || {};
   const compositor = directorResult?.data?.compositor || {};
-  const cameraReady = directorResult?.data?.annke_camera_3_stream === true;
+  const cameraReady = directorResult?.data?.anpviz_stream === true;
   const fixedMode = publisher.mode === PUBLISHER_MODES.FIXED_COMPOSITOR;
   // Camera Only is a complete program. Live content is optional and must not
   // make Start depend on the managed receiver being online or pre-populated.
@@ -334,7 +332,7 @@ async function buildStatusContract(req, directorResult, requestId) {
 }
 
 // Prepare the managed live-program receiver. With the OBS/AI-Director path
-// retired, "preparing" means: ensure the managed display exists and the ANNKE
+// retired, "preparing" means: ensure the managed display exists and the Anpviz
 // camera edge is online and acting as the program source.
 async function prepareLiveProgram(req) {
   const payload = displayPayload(req);
@@ -362,7 +360,7 @@ async function prepareLiveProgram(req) {
       error: 'The live stream is already active; program-source refresh is locked while on air',
     };
   }
-  if (!director.data || director.data.annke_camera_3_stream !== true) {
+  if (!director.data || director.data.anpviz_stream !== true) {
     return {
       ok: false,
       status: 502,
@@ -370,7 +368,7 @@ async function prepareLiveProgram(req) {
       payload,
       programState,
       currentStatus: director,
-      error: 'ANNKE camera is offline; cannot prepare live program',
+      error: 'The synchronized Anpviz/TONOR source is offline; cannot prepare live program',
     };
   }
   if (
@@ -573,7 +571,8 @@ router.get('/operator-state', async (req, res) => {
     effective_mode: (director.ok && director.data && director.data.effective_mode) || null,
     manual_hold: !!(director.ok && director.data && director.data.manual_hold),
     autoswitch_runtime_enabled: false,
-    active_camera: (director.ok && director.data && director.data.director && director.data.director.active_camera) || null,
+    active_source: (director.ok && director.data && director.data.director
+      && director.data.director.active_source === 'anpviz') ? 'anpviz' : null,
     state_revision: null,
     updated_at: new Date().toISOString(),
   });
@@ -754,19 +753,17 @@ router.post('/production-plan', async (req, res) => {
   if (!workspaceGuard(req, res, requestId)) return;
   const director = await getCameraDirectorState(req.workspaceId);
   const cams = {
-    1: !!(director.ok && director.data && director.data.kamrui_camera_1_stream),
-    2: !!(director.ok && director.data && director.data.kamrui_camera_2_stream),
-    3: !!(director.ok && director.data && director.data.annke_camera_3_stream),
+    anpviz: !!(director.ok && director.data && director.data.anpviz_stream),
   };
   try {
     const mode = String(req.body && req.body.production_mode || '').toLowerCase();
     if (mode === 'fixed_camera') {
-      const cam = Number(req.body.camera_id);
-      if (!cams[cam]) {
+      const sourceId = String(req.body.source_id || '');
+      if (!cams[sourceId]) {
         return fail(res, req, {
           httpStatus: 409,
           code: 'CAMERA_UNHEALTHY',
-          error: `Camera ${cam} does not have a fresh stream and cannot be selected`,
+          error: 'The Anpviz camera does not have synchronized video and TONOR audio',
           requestId,
         });
       }
@@ -775,7 +772,7 @@ router.post('/production-plan', async (req, res) => {
       return fail(res, req, {
         httpStatus: 409,
         code: 'AI_DIRECTOR_RETIRED',
-        error: 'AI Director has been retired; use fixed_camera (ANNKE) mode',
+        error: 'AI Director has been retired; use the fixed Anpviz camera mode',
         requestId,
       });
     }
@@ -802,7 +799,7 @@ router.post('/production-plan', async (req, res) => {
     }
     const plan = putPlan(req.workspaceId, req.body || {}, { camera_health: cams });
     plan.prepared_at = Date.now();
-    plan.expected_scene = plan.scene_name || (plan.production_mode === 'fixed_camera' ? cameraScene(plan.camera_id) : null);
+    plan.expected_scene = plan.scene_name || (plan.production_mode === 'fixed_camera' ? cameraScene(plan.source_id) : null);
     logLiveStreamAction(req, 'production-plan', {
       production_plan_id: plan.production_plan_id,
       production_mode: plan.production_mode,
@@ -860,12 +857,12 @@ router.post('/recording/preflight', requirePlatformAdmin, async (req, res) => {
   const requestId = createRequestId();
   if (!workspaceGuard(req, res, requestId)) return;
   const director = await getCameraDirectorState(req.workspaceId);
-  const ok = !!(director.ok && director.data && director.data.annke_camera_3_stream);
+  const ok = !!(director.ok && director.data && director.data.anpviz_stream);
   res.status(ok ? 200 : 502).json({
     success: ok,
     request_id: requestId,
     camera_ready: ok,
-    ...(ok ? {} : { error: 'ANNKE camera is not ready for recording' }),
+    ...(ok ? {} : { error: 'The synchronized Anpviz/TONOR source is not ready for recording' }),
   });
 });
 
@@ -933,7 +930,7 @@ router.post('/start', async (req, res) => {
   const plan = {
     production_mode: 'fixed_camera',
     director_mode: 'manual',
-    camera_id: 3,
+    source_id: 'anpviz',
     scene_name: FIXED_SCENES.CAMERA_ONLY,
     recording_requested: body.recording_requested === true,
     production_plan_id: body.production_plan_id || null,
@@ -962,11 +959,11 @@ router.post('/start', async (req, res) => {
   const preflight = await buildStatusContract(req, preflightDirector, requestId);
   const payload = preflight.payload;
   const programState = preflight.programState;
-  if (!preflightDirector.ok || preflightDirector.data?.annke_camera_3_stream !== true) {
+  if (!preflightDirector.ok || preflightDirector.data?.anpviz_stream !== true) {
     return fail(res, req, {
       httpStatus: 502,
       code: 'CAMERA_UNHEALTHY',
-      error: preflightDirector.message || 'ANNKE camera is offline',
+      error: preflightDirector.message || 'The synchronized Anpviz/TONOR source is offline',
       requestId,
       payload: { ...payload, program_state: programState, production_plan: plan },
       capabilities: preflight.capabilities,
@@ -1446,7 +1443,7 @@ router.post('/clear-content', async (req, res) => {
     success: true,
     request_id: requestId,
     cleared,
-    refresh: { ok: true, data: { message: 'Live content cleared; ANNKE program source retained' } },
+    refresh: { ok: true, data: { message: 'Live content cleared; Anpviz/TONOR program source retained' } },
     program_state: liveStreamProgramState(req.workspaceId),
   });
 });

@@ -51,7 +51,7 @@ class TestEnvironmentValidation(unittest.TestCase):
     def _valid_env(self, session_id="ses_test"):
         return {
             "MBFD_RECORDING_SESSION_ID": session_id,
-            "MBFD_RECORDING_SOURCE": "rtsp://127.0.0.1:8554/annke-main",
+            "MBFD_RECORDING_SOURCE": "rtsp://127.0.0.1:8554/anpviz-main",
             "MBFD_RECORDING_OUTPUT_PATTERN": f"/mnt/data/recordings/active/{session_id}/recording_%03d.mp4",
             "MBFD_RECORDING_NONCE": "a" * 64,
             "MBFD_RECORDING_SEGMENT_SECONDS": "1800",

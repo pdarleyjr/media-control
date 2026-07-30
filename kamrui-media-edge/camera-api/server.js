@@ -21,6 +21,12 @@ const {
 } = require('./recording-supervisor');
 const { verifyServiceRequest } = require('./camera-service-signature');
 const { createLivestreamAuditMiddleware } = require('./livestream-audit');
+const {
+  createSignalDebouncer,
+  normalizeZowieInput,
+} = require('./live-source-health');
+const { createAudioLevelMonitor } = require('./audio-level-health');
+const { createZowieboxClient } = require('./zowiebox-client');
 
 const app = express();
 app.use((req, _res, next) => {
@@ -36,6 +42,7 @@ app.use(express.json({
 
 const CONFIG = loadConfig();
 const state = createInitialState();
+const sourceState = createInitialSourceState();
 const peertube = require('./peertube-upload');
 const recordingSupervisor = CONFIG.recordingBackend === 'docker'
   ? createDockerRecordingSupervisor({
@@ -62,6 +69,11 @@ const livestreamStopAudit = createLivestreamAuditMiddleware({
   ...livestreamAuditOptions,
   action: 'stream.stop',
 });
+
+function boundedNumber(value, fallback, min, max) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= min && parsed <= max ? parsed : fallback;
+}
 
 function loadConfig() {
   const env = {};
@@ -103,8 +115,17 @@ function loadConfig() {
     peertubeLiveVideoUuid: env.PEERTUBE_LIVE_VIDEO_UUID || '',
     peertubeBaseUrl: env.PEERTUBE_BASE_URL || 'https://videos.mbfdhub.com',
     peertubeAccessToken: env.PEERTUBE_ACCESS_TOKEN || '',
-    annkeMainRtsp: env.ANNKE_MAIN_RTSP_URL || '',
-    annkePreviewRtsp: env.ANNKE_PREVIEW_RTSP_URL || '',
+    anpvizHeartbeatToken: env.ANPVIZ_HEARTBEAT_TOKEN || '',
+    anpvizHeartbeatStaleMs: parseInt(env.ANPVIZ_HEARTBEAT_STALE_MS || '15000', 10),
+    anpvizAudioLevelPollMs: boundedNumber(env.ANPVIZ_AUDIO_LEVEL_POLL_MS, 10_000, 5_000, 60_000),
+    anpvizSilenceThresholdDb: boundedNumber(env.ANPVIZ_SILENCE_THRESHOLD_DB, -55, -100, -20),
+    anpvizClippingThresholdDb: boundedNumber(env.ANPVIZ_CLIPPING_THRESHOLD_DB, -1, -12, 0),
+    zowieboxBaseUrl: env.ZOWIEBOX_BASE_URL || '',
+    zowieboxUsername: env.ZOWIEBOX_USERNAME || '',
+    zowieboxPassword: env.ZOWIEBOX_PASSWORD || '',
+    zowieboxSignalOnMs: parseInt(env.ZOWIEBOX_SIGNAL_ON_MS || '2000', 10),
+    zowieboxSignalOffMs: parseInt(env.ZOWIEBOX_SIGNAL_OFF_MS || '5000', 10),
+    zowieboxPollMs: parseInt(env.ZOWIEBOX_POLL_MS || '2000', 10),
     gmktecSyncDest: env.GMKTEC_SYNC_DEST || '',
     gmktecTailscaleIp: env.GMKTEC_TAILSCALE_IP || '',
     gmktecLanIp: env.GMKTEC_LAN_IP || '192.168.1.116',
@@ -149,6 +170,33 @@ function createInitialState() {
     errors: [],
     auditLog: [],
     idempotencyKeys: new Map(),
+  };
+}
+
+function createInitialSourceState() {
+  return {
+    anpvizHeartbeat: null,
+    anpvizAudioLevel: {
+      status: 'unknown',
+      audioDetected: false,
+      silenceDetected: false,
+      clipping: false,
+      meanDb: null,
+      peakDb: null,
+      measuredAt: null,
+      probeHealthy: false,
+    },
+    anpvizAudioMonitor: null,
+    guestComputer: {
+      deviceOnline: false,
+      input: normalizeZowieInput(null),
+      available: false,
+      lastUpdate: null,
+      lastError: null,
+      firmware: null,
+      model: null,
+    },
+    zowiePollTimer: null,
   };
 }
 
@@ -289,14 +337,120 @@ function verifyRecordingStorage() {
 }
 
 async function checkMediaMtxPath(pathName) {
+  const pathInfo = await getMediaMtxPath(pathName);
+  return pathInfo.ready === true;
+}
+
+async function getMediaMtxPath(pathName) {
   try {
     const res = await fetch(`${CONFIG.mediamtxApi}/v3/paths/get/${pathName}`);
-    if (!res.ok) return false;
+    if (!res.ok) return { ready: false, tracks: [], bytesReceived: 0 };
     const data = await res.json();
-    return data?.ready === true && data?.online === true;
+    return {
+      ready: data?.ready === true && data?.online === true,
+      tracks: Array.isArray(data?.tracks) ? data.tracks.map(String) : [],
+      bytesReceived: Number(data?.bytesReceived) || 0,
+      readyTime: data?.readyTime || null,
+    };
   } catch {
-    return false;
+    return { ready: false, tracks: [], bytesReceived: 0 };
   }
+}
+
+function heartbeatFresh(now = Date.now()) {
+  const heartbeat = sourceState.anpvizHeartbeat;
+  if (!heartbeat?.receivedAt) return false;
+  return now - heartbeat.receivedAt <= CONFIG.anpvizHeartbeatStaleMs;
+}
+
+async function getCanonicalAnpvizHealth() {
+  const pathInfo = await getMediaMtxPath('anpviz-main');
+  const heartbeat = sourceState.anpvizHeartbeat;
+  const audioLevel = sourceState.anpvizAudioLevel;
+  const fresh = heartbeatFresh();
+  const audioLevelAgeMs = audioLevel?.measuredAt
+    ? Date.now() - Date.parse(audioLevel.measuredAt)
+    : Infinity;
+  const audioLevelFresh = Number.isFinite(audioLevelAgeMs)
+    && audioLevelAgeMs <= Math.max(CONFIG.anpvizAudioLevelPollMs * 3, 30_000);
+  const hasVideo = pathInfo.tracks.some((track) => /H26[45]/i.test(track));
+  const hasAudio = pathInfo.tracks.some((track) => /MPEG-4 Audio|AAC/i.test(track));
+  const microphoneConnected = fresh && heartbeat?.microphoneConnected === true;
+  const publisherRunning = fresh && heartbeat?.publisherRunning === true;
+  const audioOnline = pathInfo.ready && hasAudio && microphoneConnected
+    && publisherRunning && Boolean(heartbeat?.lastAudioFrameAt);
+  return {
+    online: pathInfo.ready && hasVideo && audioOnline,
+    videoOnline: pathInfo.ready && hasVideo,
+    audioOnline,
+    microphoneConnected,
+    publisherRunning,
+    synchronizationStatus: pathInfo.ready && hasVideo && audioOnline ? 'locked' : 'unlocked',
+    configuredDelayMs: fresh && Number.isFinite(heartbeat?.configuredDelayMs)
+      ? heartbeat.configuredDelayMs
+      : null,
+    lastAudioFrameAt: fresh ? heartbeat?.lastAudioFrameAt || null : null,
+    lastUpdate: fresh ? new Date(heartbeat.receivedAt).toISOString() : null,
+    inputLevelDb: audioLevelFresh && Number.isFinite(audioLevel?.peakDb) ? audioLevel.peakDb : null,
+    meanLevelDb: audioLevelFresh && Number.isFinite(audioLevel?.meanDb) ? audioLevel.meanDb : null,
+    audioDetected: audioLevelFresh && audioLevel.audioDetected === true,
+    silenceDetected: audioLevelFresh && audioLevel.silenceDetected === true,
+    clipping: audioLevelFresh && audioLevel.clipping === true,
+    lastAudioMeasurementAt: audioLevelFresh ? audioLevel.measuredAt : null,
+    audioLevelProbeHealthy: audioLevelFresh && audioLevel.probeHealthy === true,
+    tracks: pathInfo.tracks,
+  };
+}
+
+function createZowieMonitor() {
+  if (!CONFIG.zowieboxBaseUrl || !CONFIG.zowieboxUsername || !CONFIG.zowieboxPassword) return null;
+  const client = createZowieboxClient({
+    baseUrl: CONFIG.zowieboxBaseUrl,
+    username: CONFIG.zowieboxUsername,
+    password: CONFIG.zowieboxPassword,
+  });
+  const debounce = createSignalDebouncer({
+    signalOnMs: CONFIG.zowieboxSignalOnMs,
+    signalOffMs: CONFIG.zowieboxSignalOffMs,
+  });
+  let polls = 0;
+  let polling = false;
+  async function poll() {
+    if (polling) return;
+    polling = true;
+    const now = Date.now();
+    try {
+      const input = normalizeZowieInput(await client.getInput());
+      const availability = debounce.update(input.signalPresent, now);
+      sourceState.guestComputer = {
+        ...sourceState.guestComputer,
+        deviceOnline: true,
+        input,
+        available: availability.available,
+        lastUpdate: new Date(now).toISOString(),
+        lastError: null,
+      };
+      polls += 1;
+      if (polls === 1 || polls % 30 === 0) {
+        const info = await client.getSystemInfo();
+        sourceState.guestComputer.firmware = info.firmware_version || info.app_version || null;
+        sourceState.guestComputer.model = info.model || null;
+      }
+    } catch (error) {
+      const availability = debounce.update(false, now);
+      sourceState.guestComputer = {
+        ...sourceState.guestComputer,
+        deviceOnline: false,
+        input: normalizeZowieInput(null),
+        available: availability.available,
+        lastUpdate: new Date(now).toISOString(),
+        lastError: error.message || 'ZowieBox status unavailable',
+      };
+    } finally {
+      polling = false;
+    }
+  }
+  return { poll };
 }
 
 function generateSessionId() {
@@ -865,7 +1019,7 @@ async function uploadToPeerTube(sessionId) {
       description: `Recorded: ${metadata.finalizedAt}\nDuration: ${metadata.duration}s\nSession: ${sessionId}\nSHA-256: ${metadata.sha256}`,
       channelId: 2,
       privacy: 3,
-      tags: ['mbfd', 'recording', 'annke'],
+      tags: ['mbfd', 'recording', 'anpviz', 'tonor'],
       language: 'en',
       recordingDate: metadata.finalizedAt,
     });
@@ -957,17 +1111,77 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', uptime: process.uptime(), timestamp: new Date().toISOString() });
 });
 
+app.post('/api/sources/anpviz/heartbeat', (req, res) => {
+  if (!CONFIG.anpvizHeartbeatToken
+      || !constantTimeCompare(req.get('X-Source-Heartbeat-Token'), CONFIG.anpvizHeartbeatToken)) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  if (body.source_id !== 'anpviz') return res.status(400).json({ error: 'Invalid source identity' });
+  const configuredDelayMs = Number(body.configured_delay_ms);
+  if (!Number.isFinite(configuredDelayMs) || configuredDelayMs < -2000 || configuredDelayMs > 2000) {
+    return res.status(400).json({ error: 'Invalid configured delay' });
+  }
+  sourceState.anpvizHeartbeat = {
+    publisherRunning: body.publisher_running === true,
+    microphoneConnected: body.microphone_connected === true,
+    microphoneIdentity: body.microphone_identity === 'TONOR_G11_USB_VID_0D8C_PID_0134'
+      ? body.microphone_identity
+      : null,
+    configuredDelayMs,
+    lastAudioFrameAt: typeof body.last_audio_frame_at === 'string'
+      ? body.last_audio_frame_at
+      : null,
+    errorCode: typeof body.error_code === 'string' ? body.error_code.slice(0, 80) : null,
+    receivedAt: Date.now(),
+  };
+  return res.status(204).end();
+});
+
 app.get('/api/status', authMiddleware, async (req, res) => {
-  const [cameraOnline, previewOnline] = await Promise.all([
-    checkMediaMtxPath('annke-main'),
-    checkMediaMtxPath('annke-preview'),
+  const [anpviz, guestPath] = await Promise.all([
+    getCanonicalAnpvizHealth(),
+    getMediaMtxPath('guest-computer'),
   ]);
+  const guest = sourceState.guestComputer;
 
   const disk = getDiskInfo(CONFIG.recordingDir);
 
   res.json({
-    camera_online: cameraOnline,
-    preview_online: previewOnline,
+    camera_online: anpviz.online,
+    preview_online: anpviz.online,
+    camera_audio_online: anpviz.audioOnline,
+    sources: {
+      anpviz: {
+        video_online: anpviz.videoOnline,
+        microphone_connected: anpviz.microphoneConnected,
+        audio_online: anpviz.audioOnline,
+        synchronization_status: anpviz.synchronizationStatus,
+        configured_delay_ms: anpviz.configuredDelayMs,
+        last_audio_frame_at: anpviz.lastAudioFrameAt,
+        input_level_db: anpviz.inputLevelDb,
+        mean_level_db: anpviz.meanLevelDb,
+        audio_detected: anpviz.audioDetected,
+        silence_detected: anpviz.silenceDetected,
+        clipping: anpviz.clipping,
+        last_audio_measurement_at: anpviz.lastAudioMeasurementAt,
+        audio_level_probe_healthy: anpviz.audioLevelProbeHealthy,
+        last_update: anpviz.lastUpdate,
+      },
+      'guest-computer': {
+        device_online: guest.deviceOnline,
+        signal_present: guest.input.signalPresent,
+        available: guest.available,
+        stream_ready: guestPath.ready
+          && guestPath.tracks.some((track) => /H26[45]/i.test(track)),
+        resolution: guest.input.resolution,
+        frame_rate: guest.input.frameRate,
+        embedded_audio_detected: guest.input.audioDetected,
+        last_update: guest.lastUpdate,
+        model: guest.model,
+        firmware: guest.firmware,
+      },
+    },
     recording: state.recording,
     livestreaming: state.livestreaming,
     session_id: state.recordingSessionId || state.livestreamSessionId,
@@ -1029,10 +1243,10 @@ app.post('/api/record/start', authMiddleware, commandRateLimit, async (req, res)
     return res.status(409).json({ ok: false, error: 'Already recording', session_id: state.recordingSessionId });
   }
 
-  const mainOnline = await checkMediaMtxPath('annke-main');
-  if (!mainOnline) {
-    addError('Cannot start recording: annke-main stream not available');
-    return res.status(503).json({ ok: false, error: 'Camera stream not available' });
+  const anpviz = await getCanonicalAnpvizHealth();
+  if (!anpviz.online) {
+    addError('Cannot start recording: synchronized Anpviz/TONOR stream not available');
+    return res.status(503).json({ ok: false, error: 'Synchronized camera video and TONOR audio are required' });
   }
 
   // Fail-closed storage gate: never record to the root filesystem.
@@ -1056,7 +1270,7 @@ app.post('/api/record/start', authMiddleware, commandRateLimit, async (req, res)
   const { dir, pattern } = getRecordingFilePath(sessionId);
   const sessionNonce = crypto.randomBytes(32).toString('hex');
 
-  const rtspSource = `${CONFIG.mediamtxRtsp}/annke-main`;
+  const rtspSource = `${CONFIG.mediamtxRtsp}/anpviz-main`;
   const provisionalIdentity = CONFIG.recordingBackend === 'docker'
     ? {
       supervisor: 'docker',
@@ -1257,13 +1471,13 @@ app.post('/api/stream/start', livestreamStartAudit, authMiddleware, commandRateL
     return res.status(503).json({ ok: false, error: 'PeerTube RTMP not configured' });
   }
 
-  const mainOnline = await checkMediaMtxPath('annke-main');
-  if (!mainOnline) {
-    addError('Cannot start livestream: annke-main stream not available');
-    return res.status(503).json({ ok: false, error: 'Camera stream not available' });
+  const anpviz = await getCanonicalAnpvizHealth();
+  if (!anpviz.online) {
+    addError('Cannot start livestream: synchronized Anpviz/TONOR stream not available');
+    return res.status(503).json({ ok: false, error: 'Synchronized camera video and TONOR audio are required' });
   }
 
-  const rtspSource = `${CONFIG.mediamtxRtsp}/annke-main`;
+  const rtspSource = `${CONFIG.mediamtxRtsp}/anpviz-main`;
   const proc = startStreamProcess(rtspSource, CONFIG.peertubeRtmpUrl, CONFIG.peertubeStreamKey);
 
   state.livestreaming = true;
@@ -2052,6 +2266,22 @@ app.listen(CONFIG.port, '0.0.0.0', () => {
   readoptRecording().catch((error) => {
     addError(`Recording recovery failed: ${error.message}`);
   });
+  const zowieMonitor = createZowieMonitor();
+  if (zowieMonitor) {
+    zowieMonitor.poll();
+    sourceState.zowiePollTimer = setInterval(zowieMonitor.poll, CONFIG.zowieboxPollMs);
+    sourceState.zowiePollTimer.unref?.();
+  }
+  sourceState.anpvizAudioMonitor = createAudioLevelMonitor({
+    sourceUrl: `${CONFIG.mediamtxRtsp}/anpviz-main`,
+    intervalMs: CONFIG.anpvizAudioLevelPollMs,
+    silenceThresholdDb: CONFIG.anpvizSilenceThresholdDb,
+    clippingThresholdDb: CONFIG.anpvizClippingThresholdDb,
+    onUpdate: (snapshot) => {
+      sourceState.anpvizAudioLevel = snapshot;
+    },
+  });
+  sourceState.anpvizAudioMonitor.start();
 });
 
 process.on('SIGTERM', async () => {
@@ -2061,6 +2291,8 @@ process.on('SIGTERM', async () => {
   // Only stop the livestream (RTMP push) — recording must continue.
   if (state.streamProcess) await stopProcess(state.streamProcess);
   if (state.recordingExitPoll) clearInterval(state.recordingExitPoll);
+  if (sourceState.zowiePollTimer) clearInterval(sourceState.zowiePollTimer);
+  sourceState.anpvizAudioMonitor?.stop();
   // Active recording state was fsync'd at start and is not mutated during an
   // API-only shutdown. Do not replace it here if storage is degraded.
   process.exit(0);

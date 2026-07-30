@@ -44,13 +44,10 @@ function mapDirectorStatus(data, now = Date.now()) {
   // These are the only recording booleans currently recognized. In
   // particular, streaming does not imply recording.
   const recordingActive = explicitBoolean(source, ['recording_active', 'record_active']);
-  const activeCameraValue = source.director && typeof source.director === 'object'
-    ? Number(source.director.active_camera)
-    : NaN;
-  const activeCamera = Number.isInteger(activeCameraValue)
-    && activeCameraValue > 0 && activeCameraValue <= 64
-    ? activeCameraValue
-    : null;
+  const director = source.director && typeof source.director === 'object'
+    ? source.director
+    : {};
+  const activeSource = director.active_source === 'anpviz' ? 'anpviz' : null;
 
   return {
     streamState: {
@@ -60,7 +57,7 @@ function mapDirectorStatus(data, now = Date.now()) {
       stale: false,
       currentScene: safeText(source.current_scene),
       mode: safeText(source.mode, 40),
-      activeCamera,
+      activeSource,
       updatedAt: timestamp,
       checkedAt: timestamp,
     },
@@ -84,7 +81,7 @@ function emptyState() {
       stale: true,
       currentScene: null,
       mode: null,
-      activeCamera: null,
+      activeSource: null,
       updatedAt: null,
       checkedAt: null,
     },

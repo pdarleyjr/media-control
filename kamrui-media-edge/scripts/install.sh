@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # MBFD Kamrui media-edge installer. Idempotent. Run as a user with sudo.
-# Provisions MediaMTX (Docker), FFmpeg relays, camera-control API, root-owned
+# Provisions MediaMTX (Docker), camera-control API, root-owned
 # recording broker (peer-verified Unix socket), and firewall rules from this
 # committed source tree.
 set -euo pipefail
@@ -60,6 +60,8 @@ sudo chmod 0640 "$ENV_FILE"
 echo "==> camera-api source"
 sudo cp "$HERE/camera-api/server.js" "$HERE/camera-api/recording-safety.js" \
   "$HERE/camera-api/recording-supervisor.js" "$HERE/camera-api/docker-recording-runtime.js" \
+  "$HERE/camera-api/live-source-health.js" "$HERE/camera-api/audio-level-health.js" \
+  "$HERE/camera-api/zowiebox-client.js" \
   "$HERE/camera-api/camera-service-signature.js" "$HERE/camera-api/livestream-audit.js" \
   "$HERE/camera-api/peertube-upload.js" "$HERE/camera-api/package.json" \
   "$HERE/camera-api/package-lock.json" "$STACK/camera-api/"
@@ -72,10 +74,6 @@ sudo install -o root -g root -m 0644 "$HERE/docker-compose.mediamtx.yml" "$STACK
 sudo /usr/bin/python3 "$HERE/scripts/render-mediamtx-config.py" \
   "$ENV_FILE" "$STACK/mediamtx.yml.tpl" "$STACK/mediamtx.yml"
 
-echo "==> relay scripts (credential-free)"
-sudo install -o root -g root -m 0755 "$HERE/annke-main-relay.sh" "$STACK/annke-main-relay.sh"
-sudo install -o root -g root -m 0755 "$HERE/annke-preview-relay.sh" "$STACK/annke-preview-relay.sh"
-
 echo "==> recording broker (root-owned, peer-verified Unix socket)"
 sudo install -o root -g root -m 0755 "$HERE/recording-broker/mbfd-recording-broker.py" /usr/local/sbin/mbfd-recording-broker
 sudo install -o root -g root -m 0644 "$HERE/systemd/mbfd-recording-broker.socket" /etc/systemd/system/
@@ -84,7 +82,7 @@ sudo install -o root -g root -m 0644 "$HERE/tmpfiles.d/mbfd-recording-broker.con
 sudo systemd-tmpfiles --create /etc/tmpfiles.d/mbfd-recording-broker.conf
 
 echo "==> systemd units"
-for u in mbfd-annke-main-relay mbfd-annke-preview-relay mbfd-camera-api; do
+for u in mbfd-camera-api; do
   sudo cp "$HERE/systemd/$u.service" /etc/systemd/system/
 done
 sudo cp "$HERE/systemd/mbfd-camera-recording@.service" /etc/systemd/system/
@@ -109,13 +107,14 @@ sudo install -o root -g root -m 0755 "$HERE/mbfd-media-admin" /usr/local/sbin/mb
 echo "$USER ALL=(root) NOPASSWD: /usr/local/sbin/mbfd-media-admin" | sudo tee /etc/sudoers.d/mbfd-media-admin >/dev/null
 sudo chmod 0440 /etc/sudoers.d/mbfd-media-admin
 sudo visudo -cf /etc/sudoers.d/mbfd-media-admin
+sudo /usr/local/sbin/mbfd-media-admin retire-legacy-relays
 
 echo "==> firewall (deny default; SSH from Tailscale+LAN; media ports GMKtec-only)"
 sudo /usr/local/sbin/mbfd-media-admin ufw-apply
 
 echo "==> enable + start broker and services"
 sudo systemctl enable --now mbfd-recording-broker.socket
-sudo systemctl enable --now mbfd-camera-api mbfd-annke-main-relay mbfd-annke-preview-relay
+sudo systemctl enable --now mbfd-camera-api
 ( cd "$STACK" && docker compose -f docker-compose.mediamtx.yml up -d )
 
 echo "==> install complete. Verify with: scripts/upgrade.sh status"

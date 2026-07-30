@@ -14,7 +14,7 @@ const net = require('node:net');
 const path = require('node:path');
 
 const COLLECTION = 'MBFD_FIXED_COMPOSITOR';
-const CAMERA_SOURCE = 'MBFD_ANNKE_CAMERA';
+const CAMERA_SOURCE = 'MBFD_ANPVIZ_CAMERA';
 const CONTENT_SOURCE = 'MBFD_LIVE_CONTENT';
 const SCENES = Object.freeze([
   'MBFD_CAMERA_ONLY',

@@ -45,7 +45,7 @@ test('recording supervisor accepts only a credential-free loopback source and fi
   const valid = buildSessionEnvironment({
     recordingRoot: '/mnt/data/recordings',
     sessionId: 'ses_fixture',
-    source: 'rtsp://127.0.0.1:8554/annke-main',
+    source: 'rtsp://127.0.0.1:8554/anpviz-main',
     outputPattern: '/mnt/data/recordings/active/ses_fixture/recording_001_%03d.mp4',
     nonce: 'a'.repeat(64),
     segmentSeconds: 1800,
@@ -98,7 +98,7 @@ test('recording supervisor passes validated environment to the broker and starts
 
   const identity = await supervisor.startSession({
     sessionId: 'ses_fixture',
-    source: 'rtsp://127.0.0.1:8554/annke-main',
+    source: 'rtsp://127.0.0.1:8554/anpviz-main',
     outputPattern,
     nonce: 'b'.repeat(64),
     segmentSeconds: 1800,
@@ -194,7 +194,7 @@ test('uncertain start failure preserves recordingMayBeActive for startup reconci
   await assert.rejects(
     supervisor.startSession({
       sessionId: 'ses_fixture',
-      source: 'rtsp://127.0.0.1:8554/annke-main',
+      source: 'rtsp://127.0.0.1:8554/anpviz-main',
       outputPattern,
       nonce: 'c'.repeat(64),
       segmentSeconds: 1800,
