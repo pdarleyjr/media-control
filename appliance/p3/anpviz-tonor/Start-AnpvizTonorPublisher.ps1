@@ -82,9 +82,19 @@ function Resolve-TonorAudioEndpoint {
   # DirectShow endpoint GUIDs can be re-enumerated by Windows after a USB
   # reconnect. The PnP VID/PID check establishes the physical device; this
   # fresh FFmpeg enumeration resolves its current capture endpoint.
-  $listing = (& $FfmpegPath -hide_banner -list_devices true -f dshow -i dummy 2>&1 | Out-String)
+  # FFmpeg exits nonzero after listing devices because `dummy` is intentionally
+  # not opened. Windows PowerShell promotes its stderr to ErrorRecord objects;
+  # under the script-wide Stop policy that would abort before the audio endpoint
+  # can be parsed. Scope Continue to this expected native probe only.
+  $previousErrorActionPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    $listing = (& $FfmpegPath -hide_banner -list_devices true -f dshow -i dummy 2>&1 | Out-String)
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
   $pattern = '"' + [Regex]::Escape($DeviceName) +
-    '"\s+\(audio\).*?Alternative name "(?<endpoint>@device_cm_[^"]+)"'
+    '"\s+\(audio\).*?Alternative name\s+"(?<endpoint>@device_cm_[^"]+)"'
   $match = [Regex]::Match(
     [string]$listing,
     $pattern,
