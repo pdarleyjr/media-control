@@ -6,6 +6,7 @@ const {
   normalizeHttpOrigin,
   resolveManagedServerUrl,
   scheduleRenderConfirmation,
+  scheduleVideoRenderReady,
   shouldStartSelfHealingWatchdog,
   validateRoomSnapshot,
 } = require('../player/managed-bootstrap');
@@ -159,6 +160,89 @@ test('render confirmation is idempotent when both paint frames and the fallback 
   frames.shift()();
   timers.shift()();
   assert.equal(confirmations, 1);
+});
+
+test('video render readiness falls back when Electron suppresses video-frame callbacks', () => {
+  const timers = [];
+  const reasons = [];
+  const video = {
+    error: null,
+    isConnected: true,
+    readyState: 3,
+    requestVideoFrameCallback() {
+      // Chromium exposes this API in every videowall BrowserWindow, but may
+      // suppress the callback while that window is background-throttled.
+    },
+  };
+
+  scheduleVideoRenderReady(video, (reason) => {
+    reasons.push(reason);
+  }, {
+    isCurrent: () => true,
+    setTimeout(callback, delay) {
+      timers.push({ callback, delay });
+      return timers.length;
+    },
+    fallbackDelayMs: 250,
+  });
+
+  assert.deepEqual(timers.map((timer) => timer.delay), [250]);
+  timers[0].callback();
+  assert.deepEqual(reasons, ['video-playing-fallback']);
+});
+
+test('video render fallback rejects stale, detached, undecoded, or failed media', () => {
+  const cases = [
+    { video: { error: null, isConnected: true, readyState: 3 }, isCurrent: () => false },
+    { video: { error: null, isConnected: false, readyState: 3 }, isCurrent: () => true },
+    { video: { error: null, isConnected: true, readyState: 1 }, isCurrent: () => true },
+    { video: { error: { code: 3 }, isConnected: true, readyState: 3 }, isCurrent: () => true },
+  ];
+
+  for (const entry of cases) {
+    let timer = null;
+    let confirmations = 0;
+    scheduleVideoRenderReady(entry.video, () => {
+      confirmations += 1;
+    }, {
+      isCurrent: entry.isCurrent,
+      setTimeout(callback) {
+        timer = callback;
+        return 1;
+      },
+    });
+    timer();
+    assert.equal(confirmations, 0);
+  }
+});
+
+test('video frame callback wins once and cancels the timer confirmation path', () => {
+  let frameCallback = null;
+  let timerCallback = null;
+  const reasons = [];
+  const video = {
+    error: null,
+    isConnected: true,
+    readyState: 3,
+    requestVideoFrameCallback(callback) {
+      frameCallback = callback;
+      return 7;
+    },
+  };
+
+  scheduleVideoRenderReady(video, (reason) => {
+    reasons.push(reason);
+  }, {
+    isCurrent: () => true,
+    setTimeout(callback) {
+      timerCallback = callback;
+      return 1;
+    },
+  });
+
+  frameCallback();
+  timerCallback();
+  assert.deepEqual(reasons, ['video-frame-presented']);
 });
 
 test('managed OBS receivers do not run the generic browser stall reload watchdog', () => {

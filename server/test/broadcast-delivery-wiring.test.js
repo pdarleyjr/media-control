@@ -44,6 +44,7 @@ test('player distinguishes receipt from confirmed rendering', () => {
   assert.match(player, /render_generation/);
   assert.match(player, /confirmPendingBroadcastRender/);
   assert.match(player, /scheduleRenderConfirmation/);
+  assert.match(player, /scheduleVideoRenderReady/);
   assert.match(bootstrap, /fallbackDelayMs/);
   const fullscreenImage = player.slice(
     player.indexOf('} else if (isImage) {'),
@@ -64,7 +65,7 @@ test('re-sending already rendered content binds delivery proof to the visible ge
   );
   assert.match(
     unchanged,
-    /bindPendingBroadcastToRender\(\);\s*requestAnimationFrame\(confirmCurrentRenderIfReady\)/,
+    /bindPendingBroadcastToRender\(\);\s*scheduleCurrentRenderConfirmation\(\)/,
   );
 
   const continuity = player.slice(
@@ -73,8 +74,19 @@ test('re-sending already rendered content binds delivery proof to the visible ge
   );
   assert.match(
     continuity,
-    /bindPendingBroadcastToRender\(\);\s*requestAnimationFrame\(confirmCurrentRenderIfReady\)/,
+    /bindPendingBroadcastToRender\(\);\s*scheduleCurrentRenderConfirmation\(\)/,
   );
+});
+
+test('video confirmation has a bounded fallback for background-throttled wall windows', () => {
+  const player = source('player/index.html');
+  const fullscreenVideo = player.slice(
+    player.indexOf('} else if (isVideo) {'),
+    player.indexOf('} else if (isImage) {'),
+  );
+  assert.match(fullscreenVideo, /scheduleVideoRenderReady\(/);
+  assert.match(fullscreenVideo, /playbackGeneration === myGeneration/);
+  assert.match(fullscreenVideo, /markBroadcastElementReady\(video, reason\)/);
 });
 
 test('frontend polls and renders every device state rather than treating HTTP acceptance as success', () => {

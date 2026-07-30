@@ -171,6 +171,58 @@
     };
   }
 
+  // requestVideoFrameCallback can be present but never serviced in a
+  // background-throttled Electron BrowserWindow. The `playing` event has
+  // already established that decoded data is available; retain the stronger
+  // presented-frame signal when Chromium supplies it, then use a bounded
+  // decoded/attached/current fallback when it does not.
+  function scheduleVideoRenderReady(video, onReady, options) {
+    var input = options || {};
+    if (!video || typeof onReady !== 'function') return null;
+    var isCurrent = typeof input.isCurrent === 'function'
+      ? input.isCurrent
+      : function () { return true; };
+    var schedule = typeof input.setTimeout === 'function'
+      ? input.setTimeout
+      : null;
+    var fallbackDelayMs = Math.max(50, Number(input.fallbackDelayMs) || 250);
+    var settled = false;
+
+    function attempt(reason) {
+      if (settled) return true;
+      if (
+        !isCurrent()
+        || video.isConnected !== true
+        || Number(video.readyState) < 2
+        || video.error
+      ) return false;
+      settled = true;
+      onReady(reason);
+      return true;
+    }
+
+    if (typeof video.requestVideoFrameCallback === 'function') {
+      try {
+        video.requestVideoFrameCallback(function () {
+          attempt('video-frame-presented');
+        });
+      } catch (_) {
+        // The decoded-video fallback below remains authoritative.
+      }
+    } else {
+      attempt('video-playing');
+    }
+    if (schedule) {
+      schedule(function () {
+        attempt('video-playing-fallback');
+      }, fallbackDelayMs);
+    }
+    return {
+      attempt: attempt,
+      cancel: function () { settled = true; },
+    };
+  }
+
   function shouldStartSelfHealingWatchdog(options) {
     return !(options && options.managedProgramReceiver === true);
   }
@@ -180,6 +232,7 @@
     normalizeHttpOrigin: normalizeHttpOrigin,
     resolveManagedServerUrl: resolveManagedServerUrl,
     scheduleRenderConfirmation: scheduleRenderConfirmation,
+    scheduleVideoRenderReady: scheduleVideoRenderReady,
     shouldStartSelfHealingWatchdog: shouldStartSelfHealingWatchdog,
     validateRoomSnapshot: validateRoomSnapshot,
   };

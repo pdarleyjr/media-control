@@ -30,7 +30,7 @@ test('unchanged-content render confirmation has no display or wall-one restricti
   );
   assert.match(
     unchanged,
-    /bindPendingBroadcastToRender\(\);\s*requestAnimationFrame\(confirmCurrentRenderIfReady\)/,
+    /bindPendingBroadcastToRender\(\);\s*scheduleCurrentRenderConfirmation\(\)/,
   );
   assert.doesNotMatch(
     unchanged,
