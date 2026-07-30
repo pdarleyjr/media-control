@@ -602,7 +602,7 @@ class MediaPipeline {
         timestampSeconds: request.timestampSeconds,
         position: request.position,
       });
-      context.progress('finalizing', 80);
+      context.progress('preparing', 80);
       const result = await commitThumbnail({
         db: this.db,
         io: this.io,

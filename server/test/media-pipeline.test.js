@@ -2,6 +2,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const Database = require('better-sqlite3');
 
 const {
@@ -177,6 +180,61 @@ test('worker enforces configured concurrency and marks successful jobs complete'
     assert.equal(db.prepare("SELECT MIN(progress_pct) AS progress FROM media_jobs").get().progress, 100);
   } finally {
     db.close();
+  }
+});
+
+test('thumbnail studio completes through only database-supported progress stages', async () => {
+  const db = createDb();
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-media-pipeline-poster-'));
+  const sourcePath = path.join(tmp, 'source.mp4');
+  fs.writeFileSync(sourcePath, 'canonical-video-bytes');
+  try {
+    db.exec(`
+      ALTER TABLE content ADD COLUMN duration_sec REAL;
+      ALTER TABLE content ADD COLUMN thumbnail_path TEXT;
+      UPDATE content
+      SET mime_type='video/mp4', processing_status='ready', duration_sec=10
+      WHERE id='content-1';
+    `);
+    const pipeline = new MediaPipeline({
+      db,
+      contentDir: tmp,
+      now: () => 200,
+      createThumbnailStudioCandidate: async () => {
+        const thumbnailPath = path.join(tmp, 'thumb_content-1.jpg');
+        fs.writeFileSync(thumbnailPath, 'jpeg-poster-bytes');
+        return {
+          thumbnailPath,
+          thumbnailFilename: path.basename(thumbnailPath),
+          provenance: 'video_timestamp:center',
+        };
+      },
+    });
+    pipeline.store.enqueue({
+      contentId: 'content-1',
+      workspaceId: 'workspace-1',
+      userId: 'user-1',
+      jobType: 'thumbnail_studio',
+      sourceType: 'thumbnail_regenerate',
+      idempotencyKey: 'poster:content-1:v7:test',
+      expectedVersion: 7,
+      expectedFilepath: 'source.mp4',
+      payload: { timestampSeconds: 0, position: 'center' },
+      maxAttempts: 1,
+    });
+
+    await pipeline.worker.drain();
+
+    const job = pipeline.store.list({ workspaceId: 'workspace-1' })[0];
+    assert.equal(job.status, 'completed');
+    assert.equal(job.stage, 'ready');
+    assert.equal(
+      db.prepare("SELECT thumbnail_path FROM content WHERE id='content-1'").get().thumbnail_path,
+      'thumb_content-1.jpg',
+    );
+  } finally {
+    db.close();
+    fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
 
