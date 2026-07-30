@@ -50,7 +50,7 @@ case "$cmd" in
     ;;
   ufw-apply)
     # Approved fixed rules: deny by default; allow SSH from LAN+Tailscale;
-    # allow media ports 8200/8888 only from the GMKtec LAN address.
+    # allow only the exact controller/publisher identities to reach media ports.
     ufw --force reset >/dev/null 2>&1
     ufw default deny incoming
     ufw default allow outgoing
@@ -59,10 +59,14 @@ case "$cmd" in
     ufw allow in from 100.82.185.48 to any port 22 proto tcp
     ufw allow in from 192.168.1.116 to any port 8200 proto tcp
     ufw allow in from 192.168.1.116 to any port 8888 proto tcp
-    # The P3 publishes the canonical Anpviz/TONOR heartbeat. Permit only its
-    # established LAN and Tailscale identities, never the whole subnet.
+    # GMKtec OBS consumes the canonical RTSP program input.
+    ufw allow in from 192.168.1.116 to any port 8554 proto tcp
+    # The P3 publishes the canonical Anpviz/TONOR stream and heartbeat. Permit
+    # only its established LAN and Tailscale identities, never the whole subnet.
     ufw allow in from 192.168.1.101 to any port 8200 proto tcp
     ufw allow in from 100.123.92.37 to any port 8200 proto tcp
+    ufw allow in from 192.168.1.101 to any port 8554 proto tcp
+    ufw allow in from 100.123.92.37 to any port 8554 proto tcp
     ufw --force enable
     ufw status verbose
     ;;
