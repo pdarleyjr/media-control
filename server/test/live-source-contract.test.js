@@ -76,6 +76,10 @@ test('camera edge records, livestreams, previews, and proxies only the canonical
   assert.match(upgrade, /audio-level-health\.js/);
   assert.match(admin, /192\.168\.1\.101 to any port 8200/);
   assert.match(admin, /100\.123\.92\.37 to any port 8200/);
+  assert.match(admin, /192\.168\.1\.116 to any port 8554/);
+  assert.match(admin, /192\.168\.1\.101 to any port 8554/);
+  assert.match(admin, /100\.123\.92\.37 to any port 8554/);
+  assert.doesNotMatch(admin, /192\.168\.1\.0\/24 to any port (?:8200|8554|8888)/);
 });
 
 test('Guest Computer uses embedded HDMI audio and the normal draggable source contract', () => {
