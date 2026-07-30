@@ -69,6 +69,24 @@ test('Kamrui install and upgrade safely migrate legacy service ownership and rec
   );
 });
 
+test('Linux deployment artifacts are exported with LF line endings', () => {
+  const attributes = fs.readFileSync(path.join(edgeRoot, '..', '.gitattributes'), 'utf8');
+  const helper = fs.readFileSync(path.join(edgeRoot, 'mbfd-media-admin'), 'utf8');
+
+  for (const rule of [
+    '*.service text eol=lf',
+    '*.socket text eol=lf',
+    '*.conf text eol=lf',
+    '*.yml text eol=lf',
+    '*.tpl text eol=lf',
+    '*.py text eol=lf',
+    'kamrui-media-edge/mbfd-media-admin text eol=lf',
+  ]) {
+    assert.ok(attributes.includes(rule), `missing export rule: ${rule}`);
+  }
+  assert.doesNotMatch(helper, /\r/);
+});
+
 test('MediaMTX renderer writes secrets only to the protected destination', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-mediamtx-render-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
