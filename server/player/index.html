@@ -1858,6 +1858,22 @@
       return false;
     }
 
+    function scheduleCurrentRenderConfirmation() {
+      const scheduleRenderConfirmation = window.MbfdPlayerBootstrap?.scheduleRenderConfirmation;
+      if (typeof scheduleRenderConfirmation === 'function') {
+        scheduleRenderConfirmation(
+          confirmCurrentRenderIfReady,
+          {
+            requestAnimationFrame: window.requestAnimationFrame.bind(window),
+            setTimeout: window.setTimeout.bind(window),
+            fallbackDelayMs: 250,
+          },
+        );
+        return;
+      }
+      requestAnimationFrame(confirmCurrentRenderIfReady);
+    }
+
     function beginBroadcastZoneBarrier(keys) {
       for (const pending of pendingBroadcastDeliveries.values()) {
         pending.pendingZones = new Set(
@@ -3722,7 +3738,7 @@
         console.log('Playlist unchanged');
         if (hasDisplayRestore) scheduleDisplayStateRestore('playlist-unchanged');
         bindPendingBroadcastToRender();
-        requestAnimationFrame(confirmCurrentRenderIfReady);
+        scheduleCurrentRenderConfirmation();
         return;
       }
 
@@ -3763,7 +3779,7 @@
             isPlaying = true;
             if (hasDisplayRestore) scheduleDisplayStateRestore('playlist-continuity');
             bindPendingBroadcastToRender();
-            requestAnimationFrame(confirmCurrentRenderIfReady);
+            scheduleCurrentRenderConfirmation();
             return;
           }
           isPlaying = true;
@@ -4450,7 +4466,22 @@
             videoHasStarted = true;
             currentMediaEnded = false;
             currentMediaError = null;
-            if (typeof video.requestVideoFrameCallback === 'function') {
+            const scheduleVideoRenderReady = window.MbfdPlayerBootstrap?.scheduleVideoRenderReady;
+            if (typeof scheduleVideoRenderReady === 'function') {
+              scheduleVideoRenderReady(
+                video,
+                (reason) => markBroadcastElementReady(video, reason),
+                {
+                  isCurrent: () => (
+                    playbackGeneration === myGeneration
+                    && currentVideoEl === video
+                    && video.isConnected
+                  ),
+                  setTimeout: window.setTimeout.bind(window),
+                  fallbackDelayMs: 250,
+                },
+              );
+            } else if (typeof video.requestVideoFrameCallback === 'function') {
               video.requestVideoFrameCallback(() => {
                 if (playbackGeneration === myGeneration) {
                   markBroadcastElementReady(video, 'video-frame-presented');
@@ -4674,7 +4705,18 @@
           });
           video.addEventListener('playing', () => {
             if (playbackGeneration !== zoneGeneration) return;
-            if (typeof video.requestVideoFrameCallback === 'function') {
+            const scheduleVideoRenderReady = window.MbfdPlayerBootstrap?.scheduleVideoRenderReady;
+            if (typeof scheduleVideoRenderReady === 'function') {
+              scheduleVideoRenderReady(
+                video,
+                () => markBroadcastZoneReady(zoneKey, 'all-zones-ready'),
+                {
+                  isCurrent: () => playbackGeneration === zoneGeneration && video.isConnected,
+                  setTimeout: window.setTimeout.bind(window),
+                  fallbackDelayMs: 250,
+                },
+              );
+            } else if (typeof video.requestVideoFrameCallback === 'function') {
               video.requestVideoFrameCallback(() => {
                 if (playbackGeneration === zoneGeneration) {
                   markBroadcastZoneReady(zoneKey, 'all-zones-ready');
