@@ -660,35 +660,40 @@ export function attachTileHandlers(container, selectedIds, onAfterSend, onRouteS
 
 // Load and render the given tab into the tab-body container.
 async function loadTab(tabId, tabBody, { selectedIds, onAfterSend, onRouteSource, onRouteNextcloud }) {
-  if (tabBody._liveSourcesTimer) {
-    clearTimeout(tabBody._liveSourcesTimer);
-    tabBody._liveSourcesTimer = null;
+  const previousHost = tabBody._renderHost;
+  if (previousHost?._liveSourcesTimer) {
+    clearTimeout(previousHost._liveSourcesTimer);
+    previousHost._liveSourcesTimer = null;
   }
-  tabBody.innerHTML = loadingState(t('mc.tb.loading'));
+  const renderHost = document.createElement('div');
+  renderHost.className = 'mc-tb-render-host';
+  renderHost.innerHTML = loadingState(t('mc.tb.loading'));
+  tabBody.replaceChildren(renderHost);
+  tabBody._renderHost = renderHost;
   switch (tabId) {
     case 'media':
-      await renderMediaTab(tabBody, { selectedIds, onAfterSend, onRouteSource });
+      await renderMediaTab(renderHost, { selectedIds, onAfterSend, onRouteSource });
       break;
     case 'camerafeeds':
-      await renderCameraFeedsTab(tabBody, { selectedIds, onAfterSend, onRouteSource });
+      await renderCameraFeedsTab(renderHost, { selectedIds, onAfterSend, onRouteSource });
       break;
     case 'playlists':
-      await renderPlaylistsTab(tabBody, { selectedIds, onAfterSend, onRouteSource });
+      await renderPlaylistsTab(renderHost, { selectedIds, onAfterSend, onRouteSource });
       break;
     case 'presentations':
-      await renderPresentationsTab(tabBody, { selectedIds, onAfterSend, onRouteSource });
+      await renderPresentationsTab(renderHost, { selectedIds, onAfterSend, onRouteSource });
       break;
     case 'youtube':
-      renderYouTubeTab(tabBody, { selectedIds, onAfterSend, onRouteSource });
+      renderYouTubeTab(renderHost, { selectedIds, onAfterSend, onRouteSource });
       break;
     case 'scenes':
-      await renderScenesTab(tabBody, { onAfterSend });
+      await renderScenesTab(renderHost, { onAfterSend });
       break;
     case 'nextcloud':
-      await renderNextcloudTab(tabBody, { selectedIds, onAfterSend, onRouteNextcloud });
+      await renderNextcloudTab(renderHost, { selectedIds, onAfterSend, onRouteNextcloud });
       break;
     default:
-      tabBody.innerHTML = '';
+      renderHost.innerHTML = '';
   }
 }
 

@@ -373,6 +373,22 @@ test.describe('Phase 1 — Feature flag OFF: real app loads correctly', () => {
     expect(height).toBeGreaterThanOrEqual(48);
     assertNoErrors(errors, 'canonical live sources');
   });
+
+  test('1h. Direct Camera-panel navigation isolates a delayed Media-tab render', async ({ page }) => {
+    const errors = attachErrorCollectors(page);
+    await setupAuth(page);
+    await page.route('**/api/folders*', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      await route.continue();
+    });
+
+    await page.goto(`${BASE_URL}/app#/control?panel=cameras`);
+    await expect(page.locator('.mc-live-source-tile')).toHaveCount(1, { timeout: 20000 });
+    await expect(page.locator('.mc-live-source-tile .mc-tile-label')).toHaveText('Anpviz Camera');
+    await page.waitForTimeout(1_000);
+
+    assertNoErrors(errors, 'direct Camera-panel navigation');
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════
