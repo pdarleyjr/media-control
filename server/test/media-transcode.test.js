@@ -1,7 +1,101 @@
 const assert = require('assert');
 const test = require('node:test');
+const path = require('node:path');
 const { isHeicMime } = require('../lib/media-transcode');
 const MT = require('../lib/media-transcode');
+
+test('resume scan skips empty, missing, directory, and invalid rows without aborting valid videos', () => {
+  const contentDir = path.resolve('bounded-resume-content');
+  const enqueued = [];
+  const skipped = [];
+  const fsApi = {
+    statSync(candidate) {
+      const name = path.basename(candidate);
+      if (name === 'missing.mp4') {
+        const error = new Error('not found');
+        error.code = 'ENOENT';
+        throw error;
+      }
+      return { isFile: () => name !== 'directory.mp4' };
+    },
+  };
+  const pipeline = {
+    enqueueVideo(job) {
+      if (job.contentId === 'invalid') throw new Error('invalid legacy row');
+      enqueued.push(job);
+    },
+  };
+
+  const queued = MT.enqueuePendingTranscodeRows([
+    { id: 'blank', filepath: '   ', version: 1 },
+    { id: 'missing', filepath: 'missing.mp4', version: 1 },
+    { id: 'directory', filepath: 'directory.mp4', version: 1 },
+    { id: 'invalid', filepath: 'invalid.mp4', version: 1 },
+    {
+      id: 'valid',
+      user_id: 'operator-1',
+      workspace_id: 'workspace-1',
+      filepath: 'valid.mp4',
+      version: 2,
+    },
+  ], {
+    contentDir,
+    fsApi,
+    pipeline,
+    onSkip(entry) {
+      skipped.push(entry);
+    },
+  });
+
+  assert.equal(queued, 1);
+  assert.deepEqual(enqueued, [{
+    contentId: 'valid',
+    workspaceId: 'workspace-1',
+    userId: 'operator-1',
+    absolutePath: path.join(contentDir, 'valid.mp4'),
+    expectedVersion: 2,
+    expectedFilepath: 'valid.mp4',
+    sourceType: 'restart_recovery',
+  }]);
+  assert.deepEqual(
+    skipped.map((entry) => [entry.contentId, entry.reason]),
+    [
+      ['blank', 'empty_filepath'],
+      ['missing', 'missing_file'],
+      ['directory', 'not_a_file'],
+      ['invalid', 'invalid legacy row'],
+    ],
+  );
+});
+
+test('resume query excludes empty legacy filepaths before constructing pipeline jobs', () => {
+  let query = '';
+  let schedules = 0;
+  const db = {
+    prepare(sql) {
+      query = sql;
+      return { all: () => [] };
+    },
+  };
+
+  MT.resumePendingTranscodes({
+    contentDir: path.resolve('bounded-resume-content'),
+    db,
+    getMediaPipeline() {
+      return {
+        enqueueVideo() {
+          assert.fail('empty result set must not enqueue');
+        },
+        schedule() {
+          schedules += 1;
+        },
+      };
+    },
+  });
+
+  assert.match(query, /TRIM\(filepath\) <> ''/);
+  assert.equal(schedules, 1);
+});
 
 test('isHeicMime detects iPhone HEIC/HEIF variants (case-insensitive)', () => {
   assert.equal(isHeicMime('image/heic'), true);
