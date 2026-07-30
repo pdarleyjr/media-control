@@ -595,6 +595,12 @@ export const api = {
     headers: { 'Cache-Control': 'no-store' },
   }),
 
+  liveSources: {
+    list: () => request('/live-sources', {
+      headers: { 'Cache-Control': 'no-store' },
+    }),
+  },
+
   // ==================== MBFD live stream orchestration ====================
   liveStream: {
     display: () => request('/live-stream/display'),

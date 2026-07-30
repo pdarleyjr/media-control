@@ -695,29 +695,20 @@ async function main() {
       tab.click();
       return true;
     })()`);
-    assert(cameraTabOpened, 'Camera Feeds tab is missing');
-    await waitFor(cdp, `!!document.querySelector('.mc-cf-control-open')`, 'camera controls card');
-    await evaluate(cdp, `document.querySelector('.mc-cf-control-open').click()`);
-    await waitFor(cdp, `(() => {
-      const frame = document.querySelector('.mc-view-modal[open] .mc-camera-control-frame');
-      const doc = frame?.contentDocument;
-      const video = doc?.querySelector('#video');
-      return !!doc?.querySelector('#eptz.is-visible')
-        && doc.querySelector('#state')?.hidden === true
-        && video?.readyState >= 2;
-    })()`, 'live Focus 210 camera controls', 30000);
-    const cameraControl = await evaluate(cdp, `(() => {
-      const frame = document.querySelector('.mc-view-modal[open] .mc-camera-control-frame');
-      const video = frame.contentDocument.querySelector('#video');
-      const before = video.style.transform;
-      frame.contentDocument.querySelector('[data-eptz="wall-2"]').click();
-      return { before, after: video.style.transform, readyState: video.readyState, paused: video.paused };
-    })()`);
-    assert(cameraControl.before !== cameraControl.after, `Wall 2 PTZ preset did not change the live transform: ${JSON.stringify(cameraControl)}`);
+    assert(cameraTabOpened, 'Live Sources tab is missing');
+    await waitFor(cdp, `!!document.querySelector('.mc-live-source-tile [data-state]')`, 'live source status');
+    const liveSources = await evaluate(cdp, `(() => [...document.querySelectorAll('.mc-live-source-tile')].map((tile) => ({
+      label: tile.querySelector('.mc-tile-label')?.textContent?.trim(),
+      state: tile.querySelector('[data-state]')?.dataset.state,
+      disabled: tile.disabled,
+      source: JSON.parse(tile.dataset.dragSource || '{}'),
+      height: Math.round(tile.getBoundingClientRect().height),
+    })))()`);
+    assert(liveSources.some((item) => item.label === 'Anpviz Camera'), `canonical Anpviz source missing: ${JSON.stringify(liveSources)}`);
+    assert(!liveSources.some((item) => /Focus|ANNKE|WyreStorm|Camera [123]/i.test(item.label || '')), `obsolete camera surfaced: ${JSON.stringify(liveSources)}`);
+    assert(liveSources.every((item) => item.height >= 48), `live-source touch target is too small: ${JSON.stringify(liveSources)}`);
     const cameraShot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
     fs.writeFileSync(cameraScreenshotPath, Buffer.from(cameraShot.data, 'base64'));
-    await evaluate(cdp, `document.querySelector('.mc-view-modal[open] [data-modal-close]')?.click()`);
-    await waitFor(cdp, `!document.querySelector('.mc-view-modal[open]')`, 'camera controls close');
 
     const runtimeExceptions = cdp.events.filter((event) => event.method === 'Runtime.exceptionThrown');
     console.log(JSON.stringify({
@@ -728,7 +719,7 @@ async function main() {
       viewport,
       multiview,
       route_dialog: routeDialog,
-      camera_control: cameraControl,
+      live_sources: liveSources,
       upload_dialog: uploadDialog,
       drag_drop: dragDrop,
       hybrid_layouts: hybridLayouts,

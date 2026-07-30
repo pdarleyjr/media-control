@@ -479,11 +479,11 @@ router.post('/', async (req, res) => {
   let liveProgram = null;
   if (include_live_stream === true) {
     liveProgram = liveStreamProgramState(req.workspaceId);
-    // AI Director retired: the program source is the ANNKE camera edge. Surface
+    // AI Director retired: the program source is the canonical Anpviz/TONOR edge. Surface
     // its live status instead of an OBS media-control refresh.
     const cameraStatus = await cameraControl.getStatus();
     liveProgram.program_refresh = cameraStatus.ok
-      ? { ok: true, data: { camera_online: !!(cameraStatus.data && cameraStatus.data.camera_online), message: 'ANNKE program source live' } }
+      ? { ok: true, data: { camera_online: !!(cameraStatus.data && cameraStatus.data.camera_online), message: 'Anpviz/TONOR program source live' } }
       : { ok: false, message: cameraStatus.message || 'Camera control edge is unreachable' };
   }
   const deliveryStatus = broadcastDelivery.getRequest(deliveryRequest.id, req.workspaceId);

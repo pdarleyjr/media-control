@@ -439,33 +439,7 @@ app.get('/player/asset/:id', (req, res) => {
   res.sendFile(safePath);
 });
 
-// MBFD Media Control — Ozolio live-camera stream resolver (Camera Feeds tab).
-// Ozolio gates HLS resolution on the embedding "document", so the bare relay embed
-// renders black on our origin. We resolve the .m3u8 here with the allow-listed
-// document; /player/oz.html then plays it via hls.js (relay segments are ACAO:* so
-// they play from any origin). Public + under /player so it inherits the existing
-// Cloudflare-Access bypass — unattended displays reach it with no OTP. The oid is
-// strictly whitelisted (EMB_ alphanumeric) so the fixed upstream host can't be
-// abused for SSRF.
-const { resolveOzolioStream, posterUrl } = require('./lib/ozolio-resolve');
-app.get('/player/oz-stream', async (req, res) => {
-  try {
-    const data = await resolveOzolioStream(String(req.query.oid || ''));
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Cache-Control', 'public, max-age=60');
-    res.json(data);
-  } catch (e) {
-    res.status(e.status || 502).json({ error: e.message || 'resolve failed' });
-  }
-});
-app.get('/player/oz-poster', (req, res) => {
-  const u = posterUrl(String(req.query.oid || ''));
-  if (!u) return res.status(400).type('text/plain').send('invalid oid');
-  res.setHeader('Cache-Control', 'public, max-age=30');
-  res.redirect(302, u);
-});
-
-// MBFD Media Control — Miami live-NEWS resolver + proxy (Camera Feeds "Live News").
+// MBFD Media Control — Miami live-NEWS resolver + proxy (Live Sources tab).
 // /player/news-stream?station=<key> resolves a whitelisted station key to a
 // playable HLS .m3u8 ({source}); /player/hls.html plays it with hls.js. Most
 // stations are a direct CDN master; WSVN is AES-128 + CORS-locked so its source is
@@ -486,10 +460,10 @@ app.get('/player/news-stream', async (req, res) => {
 });
 app.get('/player/hls-proxy', handleProxy);
 
-// Fixed classroom camera gateway. It exposes only the two MediaMTX paths used by
-// the P3 WyreStorm and Linux podium cameras, and rewrites HLS assets to HTTPS.
+// Canonical live-source gateway. It exposes only the synchronized Anpviz/TONOR
+// and ZowieBox Guest Computer MediaMTX paths, and rewrites HLS assets to HTTPS.
 const { handleClassroomCamera } = require('./lib/classroom-camera');
-app.get('/player/classroom-camera/:camera/*', handleClassroomCamera);
+app.get('/player/live-source/:camera/*', handleClassroomCamera);
 
 // MBFD Media Control — server-side website screenshot (Website broadcasting).
 // Renders a third-party site with headless Chromium and serves a JPEG, so sites
@@ -927,6 +901,7 @@ app.use('/api/devices', requireAuth, resolveTenancy, require('./routes/devices')
 app.use('/api/displays', requireAuth, resolveTenancy, require('./routes/displays'));
 app.use('/api/advanced-canvas', requireAuth, resolveTenancy, require('./routes/advanced-canvas'));
 app.use('/api/content', requireAuth, resolveTenancy, require('./routes/content'));
+app.use('/api/live-sources', requireAuth, resolveTenancy, require('./routes/live-sources'));
 app.use('/api/captions', requireAuth, resolveTenancy, captionRoutes.router);
 // Resumable chunked uploads (tus) — for multi-GB files that exceed Cloudflare's
 // ~100MB per-request edge limit. app.all (not app.use) so req.url keeps the

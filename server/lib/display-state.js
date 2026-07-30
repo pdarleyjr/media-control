@@ -34,9 +34,9 @@ function nowPlayingFromSnapshot(snapshotJson) {
   else if (remote) {
     // Multiview grid → 'grid' so live-preview renders a CSS mosaic thumbnail
     if (/\/player\/grid\.html/i.test(remote)) kind = 'grid';
-    // Live streams and camera pages → 'web' so live-preview shows a LIVE badge.
+    // Managed live sources and live-news pages → 'web' so preview shows LIVE.
     // These are never rendered as site.html/Chromium screenshots.
-    else if (/\/player\/(?:hls|oz|cam|classroom-camera)\.html/i.test(remote)) kind = 'web';
+    else if (/\/player\/(?:hls|live-source)\.html/i.test(remote)) kind = 'web';
     else kind = 'web';
   }
   // contentId lets the stage attach the content's poster thumbnail for content

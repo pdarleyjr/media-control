@@ -114,25 +114,6 @@ function setupAdvancedCanvas(io, dashboardNs) {
       });
     });
 
-    socket.on('canvas:camera-frame', (data) => {
-      if (!data || !data.dashboard_socket || !data.image) return;
-      const image = String(data.image);
-      if (image.length > 4_000_000 || !image.startsWith('data:image/jpeg;base64,')) return;
-      dashboardNs.to(String(data.dashboard_socket)).emit('canvas:camera-frame', {
-        endpoint_id: socket.endpointId,
-        image,
-        captured_at: Date.now(),
-      });
-    });
-
-    socket.on('canvas:camera-error', (data) => {
-      if (!data || !data.dashboard_socket) return;
-      dashboardNs.to(String(data.dashboard_socket)).emit('canvas:camera-error', {
-        endpoint_id: socket.endpointId,
-        error: String(data.error || 'camera_failed').slice(0, 300),
-      });
-    });
-
     socket.on('disconnect', () => {
       const room = canvasNs.adapter.rooms.get(socket.endpointId);
       if (room && room.size > 0) return;
@@ -196,18 +177,6 @@ function setupAdvancedCanvas(io, dashboardNs) {
         dashboard_socket: socket.id,
         input: data.input,
       });
-    });
-
-    socket.on('dashboard:canvas-camera-request', (data, ack) => {
-      if (!data || !canActOnCanvas(socket, data.endpoint_id, 'read')) {
-        return ack && ack({ ok: false, error: 'forbidden' });
-      }
-      const room = canvasNs.adapter.rooms.get(data.endpoint_id);
-      if (!room || room.size === 0) return ack && ack({ ok: false, error: 'offline' });
-      canvasNs.to(data.endpoint_id).emit('canvas:camera-request', {
-        dashboard_socket: socket.id,
-      });
-      ack && ack({ ok: true });
     });
 
     socket.on('disconnect', () => {

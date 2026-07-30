@@ -21,8 +21,8 @@ test('ownPlayerPath: absolute URL on the SAME host → root-relative path+query'
     '/player/grid.html?cells=abc&x=1'
   );
   assert.equal(
-    PR.ownPlayerPath('https://media.mbfdhub.com/player/oz.html?oid=EMB_X'),
-    '/player/oz.html?oid=EMB_X'
+    PR.ownPlayerPath('https://media.mbfdhub.com/player/live-source.html?source=anpviz'),
+    '/player/live-source.html?source=anpviz'
   );
 });
 

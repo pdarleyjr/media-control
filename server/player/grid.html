@@ -73,9 +73,9 @@
     // Multiview composite renderer. The cell→source map (which feed sits in
     // which of the 4-left / 2-center / 4-right slots) is carried, sanitized, in
     // the ?cells= base64url param — so this page is self-contained and stateless,
-    // exactly like oz.html / hls.html / deck. The player iframes it as a single
+    // exactly like live-source.html / hls.html / deck. The player iframes it as a single
     // text/html source; each non-empty cell is itself an iframe of the SAME URL
-    // any source tile carries (oz.html / hls.html / cam.html / youtube-nocookie /
+    // any source tile carries (live-source.html / hls.html / youtube-nocookie /
     // /player/deck/<id> / /api/content/<id>/file), so we reuse every existing
     // per-source player verbatim. All cells are muted on the display (no
     // cacophony); audio is monitored from the command center, not here.
@@ -191,7 +191,7 @@
       // {x,y,w,h} percent rect when the operator resized it (reactive layout),
       // otherwise its fixed SLOT rect (default 4+2+4 — unchanged).
       //
-      // STAGGERED LOADING: cells with live-stream iframes (hls.html, oz.html) are
+      // STAGGERED LOADING: cells with live-stream iframes (hls.html, live-source.html) are
       // loaded one at a time with a 1.5-second delay between each. Creating 10
       // hls.js instances simultaneously in one browser window causes a CPU spike
       // that starves the Socket.io WebSocket ping handler → ping timeout →
@@ -240,7 +240,7 @@
           if (cell.l) { var lab1 = document.createElement('div'); lab1.className = 'cell-label'; lab1.innerHTML = esc(cell.l); box.appendChild(lab1); }
           gridEl.appendChild(box);
         } else {
-          // Live-stream iframe (hls.html, oz.html, etc.): STAGGER the load.
+          // Live-stream iframe (hls.html, live-source.html, etc.): STAGGER the load.
           // Box with label is added immediately (so the slot is visible), but the
           // media iframe is deferred to prevent 10 concurrent hls.js instances
           // from overwhelming the browser CPU and causing WebSocket ping timeouts.

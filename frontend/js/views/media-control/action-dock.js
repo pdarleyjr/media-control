@@ -184,15 +184,13 @@ export function mountActionDock(hostEl, opts = {}) {
       return;
     }
     const cams = [
-      { n: 1, name: 'Focus 210', online: !!data.kamrui_camera_1_stream },
-      { n: 2, name: 'Camera 2', online: !!data.kamrui_camera_2_stream },
-      { n: 3, name: 'ANNKE', online: !!data.annke_camera_3_stream },
+      { id: 'anpviz', name: t('mc.live_source.anpviz'), online: !!data.anpviz_stream },
     ];
     const up = cams.filter((cam) => cam.online).length;
-    const active = Number(data.active_camera) || null;
+    const active = data.active_source === 'anpviz' ? 'anpviz' : null;
     const cls = up === cams.length ? 'mc-cam-green' : (up > 0 ? 'mc-cam-yellow' : 'mc-cam-red');
-    const txt = active && cams.some((cam) => cam.n === active && cam.online)
-      ? t('mc.cc.camera.active', { n: active, count: up })
+    const txt = active && cams.some((cam) => cam.id === active && cam.online)
+      ? t('mc.cc.camera.active', { count: up })
       : t('mc.cc.camera.online', { count: up });
     badge.className = 'mc-cam-health ' + cls;
     if (lbl) lbl.textContent = txt;
@@ -203,7 +201,7 @@ export function mountActionDock(hostEl, opts = {}) {
         : '';
       const publisherLine = `<span class="mc-cam-detail-row"><b>Publisher</b><em>${esc(String(data.publisher_mode || 'direct_camera'))}</em></span>`;
       detail.innerHTML = cams.map((cam) => {
-        const selected = active === cam.n;
+        const selected = active === cam.id;
         const state = selected && cam.online         
           ? t('mc.cc.camera.selected')
           : (cam.online ? t('mc.cc.camera.ready') : t('mc.cc.camera.offline'));

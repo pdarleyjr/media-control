@@ -1,29 +1,31 @@
 'use strict';
 
-// Same-origin classroom camera HLS proxy. Routes
-//   /player/classroom-camera/:camera/*
+// Same-origin canonical live-source HLS proxy. Routes
+//   /player/live-source/:source/*
 // to the upstream HLS edge and rewrites manifest segment URIs to same-origin
 // so the browser never cross-origin loads from the camera edge directly.
 //
-// Camera 3 = ANNKE ceiling camera, served by the Kamrui MediaMTX HLS edge
-// (http://192.168.1.122:8888/annke-preview). Cameras 1/2 remain routed to the
-// AI-Director-hosted camera-hls path when that edge is present; with AI
-// Director retired only camera 3 is live.
+// Only two identifiers are valid: the canonical synchronized Anpviz/TONOR
+// stream and the ZowieBox Guest Computer stream.
 //
 // Upstream base is env-overridable (CLASSROOM_CAMERA_UPSTREAM) for deployment
 // flexibility; the default is the Kamrui MediaMTX HLS edge.
 const CAMERA_HOST = (process.env.CLASSROOM_CAMERA_UPSTREAM || 'http://192.168.1.122:8888').replace(/\/+$/, '');
 
+const SOURCE_PATHS = Object.freeze({
+  anpviz: 'anpviz-main',
+  'guest-computer': 'guest-computer',
+});
+
 function normalizeCamera(camera) {
-  const value = String(camera || '');
-  if (value !== '1' && value !== '2' && value !== '3') throw new Error('Unknown classroom camera');
+  const value = String(camera || '').toLowerCase();
+  if (!Object.hasOwn(SOURCE_PATHS, value)) throw new Error('Unknown live source');
   return value;
 }
 
-// Upstream MediaMTX path per camera. Camera 3 (ANNKE) -> annke-preview.
 function cameraPath(camera) {
   const id = normalizeCamera(camera);
-  return id === '3' ? 'annke-preview' : `kamrui-camera-${id}`;
+  return SOURCE_PATHS[id];
 }
 
 function normalizeAsset(asset) {
@@ -51,7 +53,7 @@ function proxyCameraUri(uri, camera) {
     const asset = markerIndex >= 0
       ? parsed.pathname.slice(markerIndex + marker.length)
       : parsed.pathname.replace(/^\/+/, '');
-    return `/player/classroom-camera/${id}/${normalizeAsset(asset)}${parsed.search}`;
+    return `/player/live-source/${id}/${normalizeAsset(asset)}${parsed.search}`;
   } catch {
     return value;
   }

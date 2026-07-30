@@ -859,6 +859,7 @@ migrateContentLifecycle();
 // before generation-aware P3 sync therefore need these additive columns at
 // startup rather than lazily on the first preparation write.
 require('./migrations/classroom-preparation').migrateClassroomPreparationSchema(db);
+require('./migrations/live-sources').migrateLiveSourcesSchema(db);
 
 // Persisted media jobs and immutable technical metadata. The migration validates
 // the actual table shape and stamps only after the whole transaction succeeds,

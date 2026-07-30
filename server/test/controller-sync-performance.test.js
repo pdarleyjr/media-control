@@ -170,7 +170,8 @@ test('camera status reports active sources continuously instead of a static idle
   const dock = read('frontend/js/views/media-control/action-dock.js');
 
   assert.doesNotMatch(dock, /textContent = ['"]cams idle['"]/);
-  assert.match(dock, /Number\(data\.active_camera\)/);
+  assert.match(dock, /data\.active_source === 'anpviz'/);
+  assert.doesNotMatch(dock, /active_camera/);
   assert.doesNotMatch(dock, /data\.director/);
   assert.match(dock, /mc\.cc\.camera\.active/);
   assert.match(dock, /setInterval\(\(\) => syncLive\(\), 5000\)/);
@@ -193,16 +194,18 @@ test('known inactive live state never delays a normal content broadcast with a d
   assert.match(send, /return shouldOfferLiveStreamInclusion\(\)/);
 });
 
-test('camera catalog uses configured wall names while the canvas avoids ordinal camera presets', () => {
+test('live source catalog contains one camera identity while the canvas avoids obsolete ordinal presets', () => {
   const catalog = read('frontend/js/views/media-control/camera-feeds-catalog.js');
   const canvas = read('frontend/js/views/media-control/advanced-canvas.js');
 
-  assert.match(catalog, /Focus 210 · Secondary Wall', 1, 'wall-2'\)/);
-  assert.match(catalog, /ANNKE · Primary Wall', 3\)/);
+  assert.match(catalog, /id:\s*'anpviz'/);
+  assert.match(catalog, /id:\s*'guest-computer'/);
+  assert.doesNotMatch(catalog, /Focus 210|ANNKE|WyreStorm|kamrui-camera-/i);
   assert.doesNotMatch(catalog, /Video Wall [12]/);
   assert.doesNotMatch(canvas, /data-canvas-preset="wall-[12]"/);
-  assert.match(canvas, /data-canvas-camera="3"/);
-  assert.match(canvas, /Room overview/);
+  assert.doesNotMatch(canvas, /data-canvas-camera="[12]"/);
+  assert.match(canvas, /Anpviz camera/);
+  assert.match(canvas, /source:\s*'anpviz'/);
 });
 
 test('periodic state timestamps never hide an authoritative device screenshot', () => {

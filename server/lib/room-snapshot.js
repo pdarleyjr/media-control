@@ -174,7 +174,7 @@ const STREAM_STATE_SCHEMA = {
   status: PUBLIC_SCALAR, active: PUBLIC_SCALAR, available: PUBLIC_SCALAR,
   reachable: PUBLIC_SCALAR,
   stale: PUBLIC_SCALAR, currentScene: PUBLIC_SCALAR, mode: PUBLIC_SCALAR,
-  activeCamera: PUBLIC_SCALAR,
+  activeSource: PUBLIC_SCALAR,
   viewers: PUBLIC_SCALAR, bitrateKbps: PUBLIC_SCALAR,
   droppedFrames: PUBLIC_SCALAR, startedAt: PUBLIC_SCALAR,
   stoppedAt: PUBLIC_SCALAR, updatedAt: PUBLIC_SCALAR,

@@ -4346,7 +4346,7 @@
               const asp = gridTargetAspect(mount);
               webSrc = ownPath + (ownPath.indexOf('?') === -1 ? '?' : '&') + 'aspect=' + asp.toFixed(4);
             } else if (audioOutputAllowed() && /\/player\/(oz|hls)\.html(\?|$)/.test(ownPath)) {
-              // A single full-screen live stream (news / Ozolio cam) → play WITH
+              // A single full-screen managed live source or news stream → play WITH
               // sound on leader/solo (followers stay muted to avoid echo across the
               // wall). The player falls back to muted if the browser blocks unmuted
               // autoplay, then unmutes on the one-time "tap to enable audio" gesture.
