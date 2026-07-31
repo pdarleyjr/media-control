@@ -26,6 +26,7 @@
 import { getSocket, off as socketOff, on as socketOn, requestScreenshot } from '../../socket.js';
 import { t } from '../../i18n.js';
 import { esc } from '../../utils.js';
+import { secureScreenshotUrl } from '../../services/display-state.js';
 
 // ----------------------------------------------------------------------
 // Config
@@ -82,6 +83,7 @@ export function mount(containerEl, options) {
   let pendingPhase = 'append';
   let flushTimer = null;
   let screenshotRefreshTimer = null;
+  let backgroundRenderRevision = 0;
   let closed = false;
   // Session hydration is asynchronous. Track both request ordering and local
   // edits so a delayed response cannot erase ink drawn after the request.
@@ -131,6 +133,7 @@ export function mount(containerEl, options) {
     if (closed) return;
     closed = true;
     sessionRequestRevision += 1;
+    backgroundRenderRevision += 1;
     // Tell the target to hide its overlay so the board doesn't linger on the
     // display after the operator closes it here.
     broadcast('dashboard:wb-stop', {});
@@ -399,6 +402,7 @@ export function mount(containerEl, options) {
 
   function renderCompositeBackground() {
     if (!backgroundGrid || !target) return;
+    const renderRevision = ++backgroundRenderRevision;
     const members = target.members.length
       ? target.members
       : [{ id: previewDeviceId(), screenshot_url: target.screenshot_url, x: 0, y: 0, width: 1, height: 1 }];
@@ -407,9 +411,16 @@ export function mount(containerEl, options) {
         ? member.screenshot_url + (member.screenshot_url.includes('?') ? '&' : '?') + 'wb=' + Date.now()
         : `/api/devices/${encodeURIComponent(member.id)}/screenshot?wb=${Date.now()}`;
       return `<img class="mc-wb-background" data-preview-device-id="${esc(member.id)}"
-        src="${esc(src)}" alt="" draggable="false"
+        data-screenshot-api="${esc(src)}" alt="" draggable="false"
         style="left:${member.x * 100}%;top:${member.y * 100}%;width:${member.width * 100}%;height:${member.height * 100}%">`;
     }).join('');
+    backgroundGrid.querySelectorAll('.mc-wb-background').forEach((image) => {
+      const src = image.dataset.screenshotApi;
+      void secureScreenshotUrl(src).then((blobUrl) => {
+        if (!blobUrl || closed || renderRevision !== backgroundRenderRevision || !image.isConnected) return;
+        image.src = blobUrl;
+      });
+    });
   }
 
   function updateBackgroundFromTarget() {
