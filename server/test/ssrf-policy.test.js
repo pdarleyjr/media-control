@@ -2,10 +2,43 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const {
   isBlockedIp,
+  isAppOwnedRelativeUrl,
   checkRemoteUrlShape,
   assertRemoteUrlSafe,
   REASONS,
 } = require('../lib/ssrf-policy');
+
+// ---------------------------------------------------------------------------
+// isAppOwnedRelativeUrl — same-origin player/content routes
+// ---------------------------------------------------------------------------
+
+test('isAppOwnedRelativeUrl allows managed player and content paths', () => {
+  assert.equal(
+    isAppOwnedRelativeUrl('/player/live-source.html?source=anpviz'),
+    true
+  );
+  assert.equal(
+    isAppOwnedRelativeUrl('/player/live-source.html?source=guest-computer'),
+    true
+  );
+  assert.equal(isAppOwnedRelativeUrl('/api/content/example-id/file'), true);
+});
+
+test('isAppOwnedRelativeUrl rejects external, protocol-relative, and non-player paths', () => {
+  const blocked = [
+    'https://example.com/player/live-source.html?source=anpviz',
+    '//example.com/player/live-source.html?source=anpviz',
+    '/\\example.com/player/live-source.html?source=anpviz',
+    '/api/admin',
+    '/player/../../api/admin',
+    'player/live-source.html?source=anpviz',
+    '',
+    null,
+  ];
+  for (const url of blocked) {
+    assert.equal(isAppOwnedRelativeUrl(url), false, String(url));
+  }
+});
 
 // ---------------------------------------------------------------------------
 // isBlockedIp — IP literal classification

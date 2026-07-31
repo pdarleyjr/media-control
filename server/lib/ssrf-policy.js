@@ -31,8 +31,30 @@ const REASONS = {
   DNS_FAILED: 'dns_failed',
 };
 
+const APP_RELATIVE_ORIGIN = 'https://media-control.invalid';
+const APP_RELATIVE_PREFIXES = ['/player/', '/api/content/'];
+
 function err(reason, message) {
   return { ok: false, reason, error: message };
+}
+
+// App-owned player/content paths are intentionally root-relative so each
+// classroom display loads them from its own Media Control origin. They do not
+// cause a server-side request and are safe to broadcast without public DNS
+// resolution. Protocol-relative URLs, absolute URLs, and paths that normalize
+// outside the narrow app-owned prefixes are not exempt from the SSRF gate.
+function isAppOwnedRelativeUrl(url) {
+  if (typeof url !== 'string' || !url.startsWith('/') || url.startsWith('//')) {
+    return false;
+  }
+  let parsed;
+  try {
+    parsed = new URL(url, APP_RELATIVE_ORIGIN);
+  } catch {
+    return false;
+  }
+  if (parsed.origin !== APP_RELATIVE_ORIGIN) return false;
+  return APP_RELATIVE_PREFIXES.some((prefix) => parsed.pathname.startsWith(prefix));
 }
 
 // Parse an IPv4 dotted-quad into its 32-bit unsigned integer, or null.
@@ -176,6 +198,7 @@ module.exports = {
   REASONS,
   isBlockedIp,
   isBlockedHostname,
+  isAppOwnedRelativeUrl,
   checkRemoteUrlShape,
   assertRemoteUrlSafe,
 };
