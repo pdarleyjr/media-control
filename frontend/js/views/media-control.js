@@ -398,15 +398,15 @@ function toolboxEl()  { return document.getElementById('mc-toolbox'); }
 function inspectorEl() { return document.getElementById('mc-inspector'); }
 function summaryEl()  { return document.getElementById('mc-summary'); }
 
-// A display is "live" (on-air) when it is online, not blanked, and resolving a
-// real source — not idle. Mirrors the stage card's own status logic.
-function isLive(d) {
-  return !!(d && d.online && d.screen_on !== false &&
-            d.now_playing && d.now_playing.kind && d.now_playing.kind !== 'idle');
+function isPlayingDisplay(display) {
+  return !!(display && display.online && display.screen_on !== false
+    && display.now_playing?.kind && display.now_playing.kind !== 'idle');
 }
 
-// Glanceable header summary computed from the live store + selection. Real data
-// only: "{n} displays · {m} online" plus a red on-air chip when any are live.
+// Glanceable header summary computed from the live store + selection. Aggregate
+// display and connectivity counts remain useful; the redundant red "N LIVE"
+// badge is intentionally omitted because each target already exposes its exact
+// playback state and the header badge was visually noisy and ambiguous.
 function paintSummary() {
   const el = summaryEl();
   if (!el) return;
@@ -434,15 +434,11 @@ function paintSummary() {
     return;
   }
   const online = all.filter((d) => d.online).length;
-  const live = all.filter(isLive).length;
   const parts = [
     `<span class="mc-summary-item">${esc(tn('mc.summary.displays', total))}</span>`,
     `<span class="mc-summary-dot" aria-hidden="true">·</span>`,
     `<span class="mc-summary-item">${esc(t('mc.summary.online', { n: online }))}</span>`,
   ];
-  if (live > 0) {
-    parts.push(`<span class="mc-chip mc-chip-live mc-summary-live"><span class="mc-chip-dot" aria-hidden="true"></span>${esc(tn('mc.summary.live', live))}</span>`);
-  }
   el.innerHTML = parts.join('');
 }
 
@@ -1093,17 +1089,7 @@ async function routeNextcloudWithPicker(path, label = t('mc.tile.content_fallbac
   if (!route) return false;
   try {
     await applyWallRoutingModes(route.wallSelections);
-    let result = await api.files.broadcast(path, undefined, { targets: route.targetReferences });
-    if (result && result.code === 'CONFIRM_ALL_REQUIRED') {
-      const ok = await confirmDialog({
-        title: t('mc.send.confirm_all_title', { n: result.count }),
-        message: t('mc.send.confirm_all_msg', { label }),
-        confirmLabel: t('mc.send.confirm_all_ok'),
-        tone: 'default',
-      });
-      if (!ok) return false;
-      result = await api.files.broadcast(path, undefined, { targets: route.targetReferences, confirm_all: true });
-    }
+    const result = await api.files.broadcast(path, undefined, { targets: route.targetReferences });
     if (result && result.success) {
       if (result.request_id) {
         const delivery = await trackBroadcastDelivery(result.request_id, label, result.delivery || null);
@@ -1802,6 +1788,31 @@ function wallHasContent(wall) {
   return false;
 }
 
+function activeLiveCompositionSource() {
+  const byId = new Map(displayState.getAll().map((display) => [String(display.id), display]));
+  for (const deviceId of activeTargetDeviceIds()) {
+    const display = byId.get(String(deviceId));
+    const nowPlaying = display?.now_playing;
+    if (!nowPlaying || !nowPlaying.kind || nowPlaying.kind === 'idle' || nowPlaying.kind === 'playlist') continue;
+    const remoteUrl = nowPlaying.remoteUrl || nowPlaying.remote_url;
+    const presentationId = nowPlaying.presentationId || nowPlaying.presentation_id;
+    const contentId = nowPlaying.contentId || nowPlaying.content_id;
+    const source = remoteUrl
+      ? { remote_url: remoteUrl }
+      : presentationId
+        ? { presentation_id: presentationId }
+        : contentId
+          ? { content_id: contentId }
+          : null;
+    if (!source) continue;
+    return {
+      source,
+      label: nowPlaying.label || nowPlaying.title || display.name || t('mc.tile.content_fallback'),
+    };
+  }
+  return null;
+}
+
 function wallForDeviceId(deviceId) {
   if (!deviceId || !Array.isArray(walls)) return null;
   return walls.find((w) => Array.isArray(w.devices) && w.devices.some((m) => m && m.device_id === deviceId)) || null;
@@ -2294,7 +2305,7 @@ function paintChips() {
   if (!devs.length) { host.innerHTML = `<span class="mc-cc-chip mc-cc-chip-offline">${esc(t('mc.cc.chip.offline'))}</span>`; return; }
   const anyOnline = devs.some((d) => d.online);
   const allOnline = devs.every((d) => d.online);
-  const anyPlaying = devs.some(isLive);
+  const anyPlaying = devs.some(isPlayingDisplay);
   const idle = devs.every((d) => !(d.now_playing && d.now_playing.kind && d.now_playing.kind !== 'idle'));
   const nowS = Math.floor(Date.now() / 1000);
   const anyStale = devs.some((d) => d.screenshot_at && (nowS - d.screenshot_at) > 30) || devs.some((d) => !d.screenshot_at);
@@ -2816,6 +2827,7 @@ pruneSelection();
     onStopLive: stopLive,
     onAddDisplay: openAddPicker,
     onLiveChanged: paintChips,
+    getLiveCompositionSource: activeLiveCompositionSource,
     getActiveTargetDeviceIds: activeTargetDeviceIds,
     getDisplayState: () => displayState,
   });

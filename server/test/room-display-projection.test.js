@@ -66,6 +66,37 @@ test('snapshot membership is authoritative while sparse fields preserve known pr
   assert.equal(projected.get('tv-2').screenshot_url, '/screen/tv-2');
 });
 
+test('a new confirmed content identity cannot inherit the previous source URL or poster', async () => {
+  const { projectRoomDisplays } = await loadProjection();
+  const prior = new Map([['front-left', {
+    id: 'front-left',
+    now_playing: {
+      contentId: 'anpviz-content',
+      content_id: 'anpviz-content',
+      kind: 'web',
+      label: 'Anpviz Camera',
+      remoteUrl: '/player/live-source.html?source=anpviz',
+      poster_url: '/api/content/anpviz-content/thumbnail',
+    },
+  }]]);
+
+  const projected = projectRoomDisplays({
+    confirmedState: { displays: [{
+      id: 'front-left', name: 'Front Left', status: 'online',
+      contentId: 'guest-content', contentType: 'web', renderState: 'playing',
+    }] },
+    deviceStates: { displays: [{ id: 'front-left', screenOn: true }] },
+  }, prior);
+
+  const nowPlaying = projected.get('front-left').now_playing;
+  assert.equal(nowPlaying.contentId, 'guest-content');
+  assert.equal(nowPlaying.content_id, 'guest-content');
+  assert.equal(nowPlaying.kind, 'web');
+  assert.equal(nowPlaying.remoteUrl, undefined);
+  assert.equal(nowPlaying.poster_url, undefined);
+  assert.notEqual(nowPlaying.label, 'Anpviz Camera');
+});
+
 test('invalid snapshots do not erase the current display store', async () => {
   const { projectRoomDisplays } = await loadProjection();
   assert.equal(projectRoomDisplays({}, new Map([['tv-1', { id: 'tv-1' }]])), null);

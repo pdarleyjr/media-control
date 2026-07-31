@@ -250,12 +250,36 @@ router.post('/:id/identify', (req, res) => {
   res.json({ success: true, device_id: req.params.id, ...payload });
 });
 
+function rejectProtectedWallDeviceRemoval(req, res, device) {
+  const protectedWall = db.prepare(`
+    SELECT vw.id, vw.name
+    FROM video_walls vw
+    WHERE vw.is_locked = 1
+      AND (
+        vw.id = ?
+        OR EXISTS (
+          SELECT 1 FROM video_wall_devices vwd
+          WHERE vwd.wall_id = vw.id AND vwd.device_id = ?
+        )
+      )
+    LIMIT 1
+  `).get(device.wall_id || null, device.id);
+  if (!protectedWall) return false;
+  res.status(423).json({
+    code: 'PROTECTED_WALL_DEVICE',
+    error: `${device.name} belongs to protected Classroom Video Wall "${protectedWall.name}" and cannot be removed or retired.`,
+    wall_id: protectedWall.id,
+  });
+  return true;
+}
+
 // Retire/disable display — hides from target selectors, stops screenshot polling,
 // preserves logs and historical data. The recommended default action.
 // Authorization: workspace_editor+ (checkDeviceOwnership already enforces this).
 router.post('/:id/retire', (req, res) => {
   const device = checkDeviceOwnership(req, res);
   if (!device) return;
+  if (rejectProtectedWallDeviceRemoval(req, res, device)) return;
   if (device.retired === 1) return res.json({ success: true, already_retired: true });
 
   db.prepare("UPDATE devices SET retired = 1, updated_at = strftime('%s','now') WHERE id = ?").run(req.params.id);
@@ -443,6 +467,7 @@ async function disconnectDeviceSockets(io, deviceId) {
 router.delete('/:id', async (req, res) => {
   const device = checkDeviceOwnership(req, res);
   if (!device) return;
+  if (rejectProtectedWallDeviceRemoval(req, res, device)) return;
 
   // Explicit role check: permanent deletion requires admin-level access.
   // workspace_editor can retire but NOT permanently delete.

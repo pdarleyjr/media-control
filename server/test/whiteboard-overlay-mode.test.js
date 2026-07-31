@@ -28,15 +28,23 @@ test('whiteboard offers explicit wall/display targets and overlay or blank modes
 test('overlay mode paints over the physical display screenshot and refreshes it while open', () => {
   const board = read('frontend/js/views/media-control/whiteboard.js');
   const css = read('frontend/css/media-control.css');
+  const i18n = read('frontend/js/i18n/en.js');
 
   assert.match(board, /class="mc-wb-background-grid"/);
   assert.match(board, /socketOn\('screenshot-ready'/);
   assert.match(board, /function requestTargetScreenshots\(\)[\s\S]*requestScreenshot\(id\)/);
   assert.doesNotMatch(board, /SCREENSHOT_REFRESH_MS/);
+  assert.match(board, /const OVERLAY_PREVIEW_REFRESH_MS = 2500/);
+  assert.match(board, /setTimeout\([\s\S]{0,520}OVERLAY_PREVIEW_REFRESH_MS/);
+  assert.match(board, /document\.visibilityState === 'hidden'/);
+  assert.match(board, /clearTimeout\(screenshotRefreshTimer\)/);
+  assert.doesNotMatch(board, /setInterval\(/);
   assert.match(board, /ctx\.clearRect\(0, 0, canvas\.width, canvas\.height\)/);
   assert.match(board, /globalCompositeOperation = 'destination-out'/);
   assert.match(css, /\.mc-wb-background/);
   assert.match(css, /\.mc-wb-canvas-wrap\.is-blank/);
+  assert.match(i18n, /'mc\.wb\.mode_overlay': 'Overlay Mode'/);
+  assert.match(i18n, /'mc\.wb\.mode_blank': 'Replace Mode'/);
 });
 
 test('whiteboard start fans out to every resolved wall target and carries mode to players', () => {
@@ -62,14 +70,15 @@ test('whiteboard ignores stale session hydration after a local edit or target mo
   assert.match(board, /localEditRevision \+= 1/);
 });
 
-test('whiteboard composes every target member and avoids a permanent fixed poll', () => {
+test('whiteboard composes every target member and uses one visibility-aware refresh chain', () => {
   const board = read('frontend/js/views/media-control/whiteboard.js');
 
   assert.match(board, /members:\s*Array\.isArray\(t\.members\)/);
   assert.match(board, /class="mc-wb-background-grid"/);
   assert.match(board, /function renderCompositeBackground\(/);
   assert.match(board, /requestTargetScreenshots\(/);
-  assert.doesNotMatch(board, /setInterval\(requestPhysicalScreenshot/);
+  assert.doesNotMatch(board, /setInterval\(/);
+  assert.match(board, /visibilitychange/);
 });
 
 test('whiteboard clips composite strokes and normalizes transformed member payloads', () => {

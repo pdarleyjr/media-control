@@ -5,16 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <title>MBFD Live Source</title>
 <style>
-  :root { --bg:#0b1220; --txt:#e6edf7; --muted:#8aa0c6; --bad:#ef4444; --ok:#22c55e; }
+  :root { --bg:#000; --txt:#e6edf7; --muted:#8aa0c6; --bad:#ef4444; }
   * { box-sizing:border-box; margin:0; padding:0; }
   html,body { background:var(--bg); color:var(--txt); font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; height:100%; }
-  body { display:flex; flex-direction:column; min-height:100vh; }
-  .bar { display:flex; align-items:center; gap:10px; padding:8px 12px; background:linear-gradient(90deg,#0f2748,#0b1220); border-bottom:1px solid #1f2c47; font-size:13px; }
-  .bar .name { font-weight:600; }
-  .bar .dot { width:9px; height:9px; border-radius:50%; background:var(--muted); }
-  .bar .dot.on { background:var(--ok); }
-  .bar .dot.bad { background:var(--bad); }
-  .stage { flex:1; position:relative; background:#000; overflow:hidden; display:flex; align-items:center; justify-content:center; }
+  body { min-height:100vh; overflow:hidden; }
+  .stage { position:fixed; inset:0; background:#000; overflow:hidden; display:flex; align-items:center; justify-content:center; }
   video { width:100%; height:100%; object-fit:contain; background:#000; }
   .err { position:absolute; inset:0; display:none; flex-direction:column; align-items:center; justify-content:center; gap:10px; text-align:center; padding:20px; background:var(--bg); }
   .err.show { display:flex; }
@@ -22,10 +17,10 @@
   .err .msg { color:var(--muted); font-size:13px; max-width:80%; word-break:break-word; }
   .err button { margin-top:6px; min-width:48px; min-height:48px; padding:8px 18px; background:#2563eb; color:#fff; border:0; border-radius:8px; font-size:14px; cursor:pointer; }
   .meta { position:absolute; right:8px; bottom:6px; font-size:11px; color:var(--muted); background:rgba(0,0,0,.5); padding:2px 6px; border-radius:4px; }
+  .meta[hidden] { display:none; }
 </style>
 </head>
 <body>
-  <div class="bar"><span class="dot" id="dot"></span><span class="name" id="name"></span><span style="color:var(--muted)" id="stat">connecting…</span></div>
   <div class="stage">
     <video id="v" playsinline webkit-playsinline autoplay></video>
     <div class="err" id="err">
@@ -33,7 +28,7 @@
       <div class="msg" id="emsg"></div>
       <button id="retry">Reconnect</button>
     </div>
-    <div class="meta" id="meta"></div>
+    <div class="meta" id="meta" hidden></div>
   </div>
 <script src="/vendor/hls.min.js"></script>
 <script>
@@ -42,9 +37,9 @@
   var source=params.get('source')||'anpviz';
   var allowed={anpviz:'Anpviz Camera','guest-computer':'Guest Computer'};
   if(!Object.prototype.hasOwnProperty.call(allowed,source)) source='anpviz';
+  var wantAudio=params.get('audio')==='1';
+  var debug=params.get('debug')==='1';
   var v=document.getElementById('v');
-  var dot=document.getElementById('dot');
-  var stat=document.getElementById('stat');
   var err=document.getElementById('err');
   var ecode=document.getElementById('ecode');
   var emsg=document.getElementById('emsg');
@@ -52,48 +47,104 @@
   var lastOk=null;
   var hls=null;
   var stallTO=null;
-  document.getElementById('name').textContent=allowed[source];
+  var retryTO=null;
+  var outageTO=null;
+  var outageStartedAt=null;
+  var reconnectAttempt=0;
+  var lastFailure=null;
+  meta.hidden=!debug;
+  v.muted=!wantAudio;
   function srcUrl(){ return '/player/live-source/'+encodeURIComponent(source)+'/index.m3u8'; }
-  function showErr(type,details,fatal,url,code,ct){
+  function showErr(type,details,url,code,ct){
     err.classList.add('show');
-    ecode.textContent=fatal?'FATAL '+type:type;
+    ecode.textContent='STREAM UNAVAILABLE';
     emsg.textContent=(details||'')+(url?(' — '+url):'')+(code?(' ('+code+')'):'')+(ct?(' ['+ct+']'):'');
-    dot.className='dot bad'; stat.textContent='disconnected';
-    console.error('[live-source-hls]',{type:type,details:details,fatal:fatal,url:url,code:code,contentType:ct});
+    console.error('[live-source-hls]',{type:type,details:details,url:url,code:code,contentType:ct});
   }
-  function clearErr(){ err.classList.remove('show'); dot.className='dot on'; stat.textContent='live'; lastOk=Date.now(); }
+  function clearRecoveryTimers(){
+    if(retryTO){clearTimeout(retryTO);retryTO=null;}
+    if(outageTO){clearTimeout(outageTO);outageTO=null;}
+  }
+  function clearErr(){
+    err.classList.remove('show');
+    clearRecoveryTimers();
+    outageStartedAt=null;
+    reconnectAttempt=0;
+    lastFailure=null;
+    lastOk=Date.now();
+  }
+  function startVideo(){
+    if(wantAudio){v.muted=false;v.volume=1;try{v.removeAttribute('muted');}catch(_error){}}
+    var play=v.play();
+    if(play&&play.catch) play.catch(function(){
+      v.muted=true;
+      var mutedPlay=v.play();
+      if(mutedPlay&&mutedPlay.catch) mutedPlay.catch(function(){});
+    });
+  }
+  window.__mcEnableAudio=function(){
+    wantAudio=true;
+    v.muted=false;
+    v.volume=1;
+    try{v.removeAttribute('muted');}catch(_error){}
+    var play=v.play();
+    if(play&&play.catch) play.catch(function(){});
+  };
+  function scheduleReconnect(){
+    if(retryTO) return;
+    var delay=Math.min(5000,750*Math.pow(1.6,reconnectAttempt++));
+    retryTO=setTimeout(function(){retryTO=null;connect();},delay);
+  }
+  function recoverFrom(type,details,url,code,ct){
+    lastFailure={type:type,details:details,url:url,code:code,ct:ct};
+    if(outageStartedAt===null) outageStartedAt=Date.now();
+    if(!outageTO){
+      outageTO=setTimeout(function(){
+        outageTO=null;
+        if(outageStartedAt!==null&&lastFailure){
+          showErr(lastFailure.type,lastFailure.details,lastFailure.url,lastFailure.code,lastFailure.ct);
+        }
+      },15000);
+    }
+    scheduleReconnect();
+  }
   function startStallWatch(){
     clearInterval(stallTO);
     stallTO=setInterval(function(){
       if(v.readyState>=2 && v.currentTime>0 && lastOk && (Date.now()-lastOk)>8000){
-        stat.textContent='stalled'; dot.className='dot';
+        recoverFrom('networkError','playback stalled',srcUrl());
       }
     },2000);
   }
   function connect(){
-    stop();
-    stat.textContent='connecting…'; dot.className='dot';
+    if(retryTO){clearTimeout(retryTO);retryTO=null;}
+    stopPlayback();
     if(window.Hls && Hls.isSupported()){
-      hls=new Hls({enableWorker:true,lowLatencyMode:true,backBufferLength:2,liveSyncDurationCount:3,maxBufferLength:6,manifestLoadingTimeOut:8000,manifestLoadingMaxRetry:3,levelLoadingTimeOut:10000,fragLoadingTimeOut:20000});
+      // MediaMTX advertises a sub-second PART-HOLD-BACK. Do not set
+      // liveSyncDurationCount here: doing so overrides that LL-HLS target with
+      // three full target-duration segments (six seconds for the ZowieBox).
+      hls=new Hls({enableWorker:true,lowLatencyMode:true,backBufferLength:2,maxBufferLength:6,maxLiveSyncPlaybackRate:1.1,manifestLoadingTimeOut:8000,manifestLoadingMaxRetry:3,levelLoadingTimeOut:10000,levelLoadingMaxRetry:6,fragLoadingTimeOut:20000,fragLoadingMaxRetry:6});
+      var activeHls=hls;
       window.__hls=hls;
-      hls.on(Hls.Events.MANIFEST_PARSED,function(){ clearErr(); v.play().catch(function(){}); });
-      hls.on(Hls.Events.FRAG_PARSED,function(){ clearErr(); });
+      hls.on(Hls.Events.MANIFEST_PARSED,function(){if(activeHls===hls) startVideo();});
+      hls.on(Hls.Events.FRAG_PARSED,function(){if(activeHls===hls) clearErr();});
       hls.on(Hls.Events.ERROR,function(_event,data){
+        if(activeHls!==hls) return;
         var url=data.url||''; var code=data.response?data.response.code:null; var ct=data.response?data.response.text:'';
-        if(data.fatal){ showErr(data.type,data.details,true,url,code,ct); switch(data.type){
-          case 'networkError': setTimeout(connect,2000); break;
-          case 'mediaError': if(hls) hls.recoverMediaError(); break;
-          default: if(hls){ hls.destroy(); hls=null; } break;
+        if(data.fatal){ switch(data.type){
+          case 'networkError': recoverFrom(data.type,data.details,url,code,ct); break;
+          case 'mediaError': if(hls){hls.recoverMediaError();} recoverFrom(data.type,data.details,url,code,ct); break;
+          default: recoverFrom(data.type,data.details,url,code,ct); break;
         } }
       });
       hls.loadSource(srcUrl()); hls.attachMedia(v);
     } else if(v.canPlayType('application/vnd.apple.mpegurl')){
-      v.src=srcUrl(); v.addEventListener('loadedmetadata',clearErr); v.addEventListener('error',function(){ showErr('native','video error',true,srcUrl()); });
-      v.play().catch(function(){});
-    } else { showErr('unsupported','HLS not supported by this browser',true); }
+      v.src=srcUrl(); v.onloadedmetadata=function(){clearErr();startVideo();}; v.onerror=function(){recoverFrom('native','video error',srcUrl());};
+      startVideo();
+    } else { showErr('unsupported','HLS not supported by this browser'); }
     startStallWatch();
   }
-  function stop(){ if(hls){ try{hls.destroy();}catch(_error){} hls=null; } clearInterval(stallTO); }
+  function stopPlayback(){ if(hls){ try{hls.destroy();}catch(_error){} hls=null; } clearInterval(stallTO); }
   setInterval(function(){ meta.textContent=v.videoWidth?(v.videoWidth+'x'+v.videoHeight+' • rt='+v.currentTime.toFixed(1)+'s • rs='+v.readyState):''; },1000);
   document.getElementById('retry').addEventListener('click',connect);
   connect();

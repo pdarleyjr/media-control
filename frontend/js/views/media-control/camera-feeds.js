@@ -5,7 +5,11 @@ import { esc } from '../../utils.js';
 import { t } from '../../i18n.js';
 import { api } from '../../api.js';
 import { attachTileHandlers } from './toolbox.js';
-import { LIVE_NEWS_CATALOG, LIVE_SOURCE_CATALOG } from './camera-feeds-catalog.js';
+import {
+  LIVE_NEWS_CATALOG,
+  LIVE_SOURCE_CATALOG,
+  MIAMI_BEACH_FEED_GROUPS,
+} from './camera-feeds-catalog.js';
 
 const ICONS = {
   camera: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h11a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1z"></path><path d="M15 10l6-3v10l-6-3"></path></svg>',
@@ -86,12 +90,44 @@ function newsTileHtml(source) {
   </button>`;
 }
 
+function publicWebcamGroupsHtml() {
+  return MIAMI_BEACH_FEED_GROUPS.map((group) => `
+    <section class="mc-public-feed-section" aria-labelledby="mc-public-feed-${esc(group.id)}">
+      <h4 id="mc-public-feed-${esc(group.id)}">${esc(group.title)}</h4>
+      <div class="mc-tile-grid mc-live-source-grid">
+        ${group.feeds.map(newsTileHtml).join('')}
+      </div>
+    </section>`).join('');
+}
+
+function captureDisclosureState(container) {
+  const state = container._feedDisclosureState instanceof Map
+    ? container._feedDisclosureState
+    : new Map();
+  container.querySelectorAll('details[data-feed-group-id]').forEach((group) => {
+    state.set(group.dataset.feedGroupId, group.open === true);
+  });
+  container._feedDisclosureState = state;
+  return state;
+}
+
+function restoreDisclosureState(container, state) {
+  container.querySelectorAll('details[data-feed-group-id]').forEach((group) => {
+    const id = group.dataset.feedGroupId;
+    if (state.has(id)) group.open = state.get(id) === true;
+    group.addEventListener('toggle', () => {
+      state.set(id, group.open === true);
+    });
+  });
+}
+
 /**
  * @param {HTMLElement} container
  * @param {object} opts
  */
 export async function renderCameraFeedsTab(container, { selectedIds, onAfterSend, onRouteSource } = {}) {
   if (container._liveSourcesTimer) clearTimeout(container._liveSourcesTimer);
+  const disclosureState = captureDisclosureState(container);
   try {
     const response = await api.liveSources.list();
     const byId = new Map((response.sources || []).map((source) => [source.id, source]));
@@ -107,7 +143,7 @@ export async function renderCameraFeedsTab(container, { selectedIds, onAfterSend
       <div class="mc-tile-grid mc-live-source-grid">
         ${visible.map(({ config, source }) => tileHtml(config, source)).join('')}
       </div>
-      <details class="mc-live-news-group">
+      <details class="mc-live-news-group" data-feed-group-id="news">
         <summary>
           <span class="mc-live-news-icon" aria-hidden="true">${ICONS.news}</span>
           <strong>${esc(t('mc.cf.group.news'))}</strong>
@@ -117,7 +153,18 @@ export async function renderCameraFeedsTab(container, { selectedIds, onAfterSend
           ${LIVE_NEWS_CATALOG.map(newsTileHtml).join('')}
         </div>
       </details>
+      <details class="mc-live-news-group mc-public-webcams-group" data-feed-group-id="miami-beach">
+        <summary>
+          <span class="mc-live-news-icon" aria-hidden="true">${ICONS.camera}</span>
+          <strong>Miami Beach Public Webcams</strong>
+          <span>${MIAMI_BEACH_FEED_GROUPS.reduce((count, group) => count + group.feeds.length, 0)}</span>
+        </summary>
+        <div class="mc-public-feed-groups">
+          ${publicWebcamGroupsHtml()}
+        </div>
+      </details>
       ${response.edge_available ? '' : `<div class="mc-tb-state mc-tb-error" role="status">${esc(t('mc.live_source.edge_unavailable'))}</div>`}`;
+    restoreDisclosureState(container, disclosureState);
     attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource);
   } catch (_error) {
     container.innerHTML = `<div class="mc-tb-state mc-tb-error" role="alert">${esc(t('mc.live_source.load_failed'))}</div>`;

@@ -9,7 +9,6 @@
 
 import { api } from '../api.js';
 import { showToast } from '../components/toast.js';
-import { confirmDialog } from '../components/confirm.js';
 import { openTargetPicker } from '../components/target-picker.js';
 import { waitForTargetCatalog } from '../services/target-catalog-runtime.js';
 
@@ -48,17 +47,7 @@ async function broadcastNcFile(path, label) {
       return;
     }
 
-    let result = await api.files.broadcast(path, undefined, { targets: selection.references });
-    if (result && result.code === 'CONFIRM_ALL_REQUIRED') {
-      const ok = await confirmDialog({
-        title: `Show on ALL ${result.count} displays?`,
-        message: `This puts "${label}" on every physical display in the room.`,
-        confirmLabel: 'Show on all',
-        tone: 'default',
-      });
-      if (!ok) return;
-      result = await api.files.broadcast(path, undefined, { targets: selection.references, confirm_all: true });
-    }
+    const result = await api.files.broadcast(path, undefined, { targets: selection.references });
     if (result && result.success) {
       const offline = (result.total || 0) - (result.sent || 0);
       showToast(

@@ -34,16 +34,16 @@ test('composition API is authoritative, tenant-scoped, revisioned, and cohesive'
   assert.doesNotMatch(route, /workspaceId:\s*req\.body/);
 });
 
-test('shared send funnel exposes both fixed PiP choices and never a generic yes/no live choice', () => {
+test('live content is added explicitly from the action dock, never by normal display routing', () => {
   const send = read('../frontend/js/views/media-control/send.js');
-  assert.match(send, /content_main_camera_pip/);
-  assert.match(send, /camera_main_content_pip/);
-  assert.match(send, /Display only/);
-  assert.match(send, /api\.liveStream\.compositionContent/);
-  assert.match(send, /isLiveCompositionAvailable/);
-  assert.match(send, /content_replace/);
-  assert.match(send, /confirm_content_audio/);
-  assert.doesNotMatch(send, /'yes'\s*\|\s*'no'/);
+  const dock = read('../frontend/js/views/media-control/action-dock.js');
+  assert.match(dock, /content_main_camera_pip/);
+  assert.match(dock, /camera_main_content_pip/);
+  assert.match(dock, /data-composition-add/);
+  assert.match(dock, /api\.liveStream\.compositionContent/);
+  assert.match(dock, /confirm_content_audio: false/);
+  assert.doesNotMatch(send, /compositionContent|chooseLiveStreamComposition|routeToLiveComposition/);
+  assert.match(send, /include_live_stream: false/);
 });
 
 test('persistent on-air controls use the three fixed layouts and touch-safe controls', () => {

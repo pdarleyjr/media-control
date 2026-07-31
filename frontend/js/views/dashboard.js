@@ -561,10 +561,8 @@ function defaultGridForCount(n) {
 // piece of content (or paste a URL) plus a fit_mode, then pushes it to every
 // selected display in ~2 taps. Reuses the existing "push content to a device"
 // path via the server's /broadcast endpoint (which fans out the same way the
-// per-device assignment path does). The server gates a workspace-wide blast
-// behind a 409 { code:'CONFIRM_ALL_REQUIRED', count } envelope, which
-// api.broadcast() surfaces (rather than throwing); we then prompt and retry
-// with confirm_all:true.
+// per-device assignment path does). The shared API applies the operator's
+// permanent no-confirmation routing preference.
 const VALID_FIT_MODES = ['cover', 'contain', 'fill', 'none', 'scale-down'];
 
 async function openBroadcastPicker() {
@@ -735,26 +733,10 @@ async function openBroadcastPicker() {
   renderContentList();
 }
 
-// Executes a broadcast and handles the confirm-all gate. Returns true when the
-// broadcast completed (success path) so the caller can close its modal, false
-// when the operator declined the all-displays confirmation.
+// Executes a broadcast. Returns true when the broadcast completed so the
+// caller can close its modal.
 async function doBroadcast(payload) {
   const result = await api.broadcast(payload);
-  if (result && result.code === 'CONFIRM_ALL_REQUIRED') {
-    const count = result.count;
-    if (!confirm(`Broadcast to ALL ${count} display${count === 1 ? '' : 's'} in this workspace?`)) {
-      return false;
-    }
-    const confirmed = await api.broadcast({ ...payload, confirm_all: true });
-    if (confirmed && confirmed.code === 'CONFIRM_ALL_REQUIRED') {
-      // Server still wants confirmation despite the flag - surface as an error
-      // rather than looping a confirm dialog.
-      showToast('Broadcast not confirmed', 'error');
-      return false;
-    }
-    reportBroadcast(confirmed);
-    return true;
-  }
   reportBroadcast(result);
   return true;
 }

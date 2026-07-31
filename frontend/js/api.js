@@ -71,19 +71,20 @@ async function requestForm(url, formData, options = {}) {
   return res.json();
 }
 
-// Phase 3 broadcast helper. The broadcast endpoint returns 409 with a
-// { code: 'CONFIRM_ALL_REQUIRED', count } envelope when the caller targets
-// every display in the workspace WITHOUT passing confirm_all:true. The generic
-// request() above turns any non-2xx into a thrown Error and discards the body,
-// which would throw the confirmation signal away. This helper instead resolves
-// with the parsed body so the UI can detect CONFIRM_ALL_REQUIRED, prompt the
-// operator, and retry with confirm_all:true. All other non-2xx responses still
-// throw (matching request()).
+// All routine broadcast entry points share this helper. The operator preference
+// is permanent: routing executes immediately without takeover/replace popups.
+// Destructive controls (blank, retire, delete, stop live) do not use this path
+// and retain their own confirmations.
 async function requestBroadcast(payload, endpoint = '/broadcast') {
+  const authorizedPayload = {
+    ...(payload || {}),
+    confirm_all: true,
+    confirm_wall_replace: true,
+  };
   const res = await fetch(normalizeApiPath(endpoint), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(authorizedPayload),
   });
   if (res.status === 401) {
     localStorage.removeItem('token');
@@ -93,12 +94,12 @@ async function requestBroadcast(payload, endpoint = '/broadcast') {
     throw new Error('Session expired');
   }
   const body = await res.json().catch(() => ({ error: res.statusText }));
-  // Surface the confirm-all gate to the caller instead of throwing it away.
-  if (res.status === 409 && body && body.code === 'CONFIRM_ALL_REQUIRED') {
-    return body;
-  }
   if (!res.ok) {
-    throw new Error(body.error || 'Request failed');
+    const error = new Error(body.error || 'Request failed');
+    error.status = res.status;
+    error.code = body.code;
+    error.details = body;
+    throw error;
   }
   return body;
 }
@@ -495,6 +496,7 @@ export const api = {
 
   // Video walls
   getWalls: () => request('/walls'),
+  getWall: (id) => request(`/walls/${id}`),
   createWall: (data) => request('/walls', { method: 'POST', body: JSON.stringify(data) }),
   setWallDevices: (id, devices, expected_revision) => request(`/walls/${id}/devices`, { method: 'PUT', body: JSON.stringify({ devices, expected_revision }) }),
   updateWall: (id, data) => request(`/walls/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
@@ -581,10 +583,8 @@ export const api = {
   },
 
   // ==================== Phase 3: Fast broadcast ====================
-  // Send one content/URL/playlist to a selection of displays. When the target
-  // is every display in the workspace, the server responds 409 with
-  // { code:'CONFIRM_ALL_REQUIRED', count }; broadcast() resolves with that body
-  // (instead of throwing) so the UI can prompt and retry with confirm_all:true.
+  // Send one content/URL/playlist to a selection of displays. The shared helper
+  // applies the saved no-confirmation routing policy.
   broadcastPreflight: (payload) => request('/broadcast/preflight', {
     method: 'POST',
     body: JSON.stringify(payload || {}),
@@ -707,14 +707,11 @@ export const api = {
     health: () => request('/files/health'),
     list: (path = '') => request('/files' + (path ? ('?path=' + encodeURIComponent(path)) : '')),
     // Import an image/video from the caller's OWN Nextcloud into a local content
-    // row, then broadcast it to displays. Reuses the 409 CONFIRM_ALL_REQUIRED
-    // resolve-not-throw contract: when targeting every display, the returned body
-    // is { code:'CONFIRM_ALL_REQUIRED', count } so the UI can prompt and retry
-    // with confirm_all:true (same as api.broadcast).
+    // row, then broadcast it to displays through the shared routing policy.
     broadcast: (path, device_ids, opts = {}) => {
       const targets = Array.isArray(opts.targets) ? opts.targets : [];
       const targetPayload = targets.length ? { targets } : { device_ids };
-      return requestBroadcast({ path, ...targetPayload, fit_mode: opts.fit_mode, confirm_all: opts.confirm_all }, '/files/broadcast');
+      return requestBroadcast({ path, ...targetPayload, fit_mode: opts.fit_mode }, '/files/broadcast');
     },
     importForCanvas: (path) => request('/files/broadcast', {
       method: 'POST',

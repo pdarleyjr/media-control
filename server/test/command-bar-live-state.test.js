@@ -37,5 +37,7 @@ test('operator starts in one click and controls only the three fixed composition
   assert.match(dock, /data-composition-layout="camera_only"/);
   assert.match(dock, /data-composition-layout="content_main_camera_pip"/);
   assert.match(dock, /data-composition-layout="camera_main_content_pip"/);
-  assert.match(send, /api\.liveStream\.compositionContent/);
+  assert.match(dock, /data-composition-add/);
+  assert.match(dock, /api\.liveStream\.compositionContent/);
+  assert.doesNotMatch(send, /api\.liveStream\.compositionContent/);
 });

@@ -17,6 +17,13 @@ test('broadcast route accepts only app-owned relative player URLs without extern
   assert.match(source, /await assertRemoteUrlSafe\(remote_url\)/);
 });
 
+test('broadcast route rejects ambiguous payloads containing more than one source', () => {
+  assert.match(source, /sourceFields/);
+  assert.match(source, /filter\(\(\[, value\]\) => value !== undefined && value !== null && value !== ''\)/);
+  assert.match(source, /sourceFields\.length !== 1/);
+  assert.match(source, /exactly one of content_id, remote_url, playlist_id, or presentation_id is required/);
+});
+
 test('layout revision conflicts are returned before any live target creation or display push side effect', () => {
   const resolveIndex = source.indexOf('resolveTypedBroadcastTargets({');
   const conflictReturnIndex = source.indexOf('if (!typedResolution.ok)', resolveIndex);

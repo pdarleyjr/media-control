@@ -123,3 +123,48 @@ test('Guest Computer uses embedded HDMI audio and the normal draggable source co
   const guestBlock = catalog.slice(catalog.indexOf("id: 'guest-computer'"));
   assert.doesNotMatch(guestBlock, /tonor/i);
 });
+
+test('live-source refresh preserves operator disclosure state instead of collapsing Live News', () => {
+  const view = read('frontend/js/views/media-control/camera-feeds.js');
+
+  assert.match(view, /captureDisclosureState/);
+  assert.match(view, /restoreDisclosureState/);
+  assert.match(view, /data-feed-group-id="news"/);
+  assert.match(view, /addEventListener\('toggle'/);
+});
+
+test('Miami Beach public webcams are restored as organized external media, not managed cameras', () => {
+  const catalog = read('frontend/js/views/media-control/camera-feeds-catalog.js');
+  const view = read('frontend/js/views/media-control/camera-feeds.js');
+  const wrapper = read('server/player/external-feed.html');
+  const multiview = read('server/player/multiview-core.js');
+
+  assert.match(catalog, /MIAMI_BEACH_FEED_GROUPS/);
+  assert.match(catalog, /mb-1st-street/);
+  assert.match(catalog, /mb-21st-street/);
+  assert.match(catalog, /mb-ocean-drive-south/);
+  assert.match(catalog, /mb-ocean-drive-avalon/);
+  assert.match(catalog, /mb-biscayne-port/);
+  assert.match(view, /data-feed-group-id="miami-beach"/);
+  assert.match(wrapper, /Object\.freeze/);
+  assert.match(wrapper, /relay\.ozolio\.com\/pub\.api\?cmd=embed&oid=/);
+  assert.doesNotMatch(wrapper, /params\.get\('(?:url|oid)'\)/);
+  assert.match(multiview, /external-feed\\\.html/);
+});
+
+test('normal source routing cannot silently add the source to a live camera composition', () => {
+  const send = read('frontend/js/views/media-control/send.js');
+
+  assert.doesNotMatch(send, /chooseLiveStreamComposition/);
+  assert.doesNotMatch(send, /routeToLiveComposition/);
+  assert.doesNotMatch(send, /data-mc-live-content-main/);
+});
+
+test('broadcast success is non-modal and the header has no aggregate red live counter', () => {
+  const send = read('frontend/js/views/media-control/send.js');
+  const host = read('frontend/js/views/media-control.js');
+
+  assert.doesNotMatch(send, /mc-delivery-panel/);
+  assert.doesNotMatch(host, /mc-summary-live/);
+  assert.doesNotMatch(host, /tn\('mc\.summary\.live'/);
+});

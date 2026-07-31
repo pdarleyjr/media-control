@@ -24,6 +24,7 @@ import { mountLayoutSelector } from '../../components/display-layout/layout-sele
 import { mountContentSelector } from '../../components/content-library/content-selector.js';
 import { mountPlaybackControl } from '../../components/playback-control/playback-control.js';
 import { mountScreenSharePanel } from '../../components/operator-console/screen-share-panel.js';
+import { mountTopologyManager } from '../../components/operator-console/topology-manager.js';
 
 const SURFACES = {
   PREVIEW: 'preview',
@@ -55,11 +56,6 @@ export function mountOperatorConsole(host, { socket, i18n, api = enterpriseApi, 
     return i18n ? i18n(map[s]) : s;
   }
 
-  function confirmAction(message) {
-    if (typeof globalThis.confirm === 'function') return globalThis.confirm(message);
-    return true; // tests without window.confirm
-  }
-
   function setError(code, signal) {
     const c = code || deriveErrorCode(signal || {});
     const recovery = recoveryForCode(c);
@@ -85,35 +81,45 @@ export function mountOperatorConsole(host, { socket, i18n, api = enterpriseApi, 
 
   function render() {
     host.innerHTML = `
-      <div class="mc-e-console-grid">
-        <section class="mc-e-pane mc-e-pane-overview" data-slot="overview" aria-label="${esc(surfaceLabel(activeSurface))}"></section>
-        <section class="mc-e-pane mc-e-pane-steps">
-          <ol class="mc-e-workflow" aria-label="${esc(i18n ? i18n('mc.e.workflow.aria') : 'Operator workflow')}">
-            <li class="mc-e-step" data-step="room"><span class="mc-e-step-label">${esc(i18n ? i18n('mc.e.step.room') : 'Choose room')}</span><span class="mc-e-step-value" data-step-value="room">—</span></li>
-            <li class="mc-e-step" data-step="layout"><span class="mc-e-step-label">${esc(i18n ? i18n('mc.e.step.layout') : 'Choose layout')}</span><span class="mc-e-step-value" data-step-value="layout">—</span></li>
-            <li class="mc-e-step" data-step="content"><span class="mc-e-step-label">${esc(i18n ? i18n('mc.e.step.content') : 'Choose content')}</span><span class="mc-e-step-value" data-step-value="content">—</span></li>
-          </ol>
-          <div class="mc-e-surface-switch" role="tablist" aria-label="${esc(i18n ? i18n('mc.e.surface.aria') : 'Target surface')}">
-            <button type="button" role="tab" data-surface="preview" aria-selected="${activeSurface === SURFACES.PREVIEW}">${esc(surfaceLabel(SURFACES.PREVIEW))}</button>
-            <button type="button" role="tab" data-surface="classroom" aria-selected="${activeSurface === SURFACES.CLASSROOM}">${esc(surfaceLabel(SURFACES.CLASSROOM))}</button>
-            <button type="button" role="tab" data-surface="livestream" aria-selected="${activeSurface === SURFACES.LIVESTREAM}">${esc(surfaceLabel(SURFACES.LIVESTREAM))}</button>
-          </div>
-          <div data-slot="layout"></div>
-          <div data-slot="content"></div>
-          <div class="mc-e-send-actions">
-            <button type="button" class="mc-e-send-preview" data-send="preview">${esc(i18n ? i18n('mc.e.send.preview') : 'Preview')}</button>
-            <button type="button" class="mc-e-send-classroom mc-e-primary" data-send="classroom">${esc(i18n ? i18n('mc.e.send.classroom') : 'Send to classroom')}</button>
-            <button type="button" class="mc-e-send-livestream" data-send="livestream">${esc(i18n ? i18n('mc.e.send.livestream') : 'Take to livestream')}</button>
-          </div>
-          <div data-slot="error" aria-live="polite"></div>
-        </section>
-        <section class="mc-e-pane mc-e-pane-playback" data-slot="playback"></section>
-        <section class="mc-e-pane mc-e-pane-screenshare" data-slot="screenshare"></section>
-      </div>`;
+      <header class="mc-e-operator-head">
+        <div><h1>Operator Control</h1><p>Enroll displays, remove obsolete endpoints, and organize custom video walls.</p></div>
+        <a href="#/control">Open Command Center</a>
+      </header>
+      <section data-slot="topology"></section>
+      <details class="mc-e-routing-workspace">
+        <summary>Advanced content routing</summary>
+        <p class="mc-e-routing-note">The Command Center remains the primary live-routing surface. These controls are retained for specialized preview and livestream workflows.</p>
+        <div class="mc-e-console-grid">
+          <section class="mc-e-pane mc-e-pane-overview" data-slot="overview" aria-label="${esc(surfaceLabel(activeSurface))}"></section>
+          <section class="mc-e-pane mc-e-pane-steps">
+            <ol class="mc-e-workflow" aria-label="${esc(i18n ? i18n('mc.e.workflow.aria') : 'Operator workflow')}">
+              <li class="mc-e-step" data-step="room"><span class="mc-e-step-label">${esc(i18n ? i18n('mc.e.step.room') : 'Choose room')}</span><span class="mc-e-step-value" data-step-value="room">—</span></li>
+              <li class="mc-e-step" data-step="layout"><span class="mc-e-step-label">${esc(i18n ? i18n('mc.e.step.layout') : 'Choose layout')}</span><span class="mc-e-step-value" data-step-value="layout">—</span></li>
+              <li class="mc-e-step" data-step="content"><span class="mc-e-step-label">${esc(i18n ? i18n('mc.e.step.content') : 'Choose content')}</span><span class="mc-e-step-value" data-step-value="content">—</span></li>
+            </ol>
+            <div class="mc-e-surface-switch" role="tablist" aria-label="${esc(i18n ? i18n('mc.e.surface.aria') : 'Target surface')}">
+              <button type="button" role="tab" data-surface="preview" aria-selected="${activeSurface === SURFACES.PREVIEW}">${esc(surfaceLabel(SURFACES.PREVIEW))}</button>
+              <button type="button" role="tab" data-surface="classroom" aria-selected="${activeSurface === SURFACES.CLASSROOM}">${esc(surfaceLabel(SURFACES.CLASSROOM))}</button>
+              <button type="button" role="tab" data-surface="livestream" aria-selected="${activeSurface === SURFACES.LIVESTREAM}">${esc(surfaceLabel(SURFACES.LIVESTREAM))}</button>
+            </div>
+            <div data-slot="layout"></div>
+            <div data-slot="content"></div>
+            <div class="mc-e-send-actions">
+              <button type="button" class="mc-e-send-preview" data-send="preview">${esc(i18n ? i18n('mc.e.send.preview') : 'Preview')}</button>
+              <button type="button" class="mc-e-send-classroom mc-e-primary" data-send="classroom">${esc(i18n ? i18n('mc.e.send.classroom') : 'Send to classroom')}</button>
+              <button type="button" class="mc-e-send-livestream" data-send="livestream">${esc(i18n ? i18n('mc.e.send.livestream') : 'Take to livestream')}</button>
+            </div>
+            <div data-slot="error" aria-live="polite"></div>
+          </section>
+          <section class="mc-e-pane mc-e-pane-playback" data-slot="playback"></section>
+          <section class="mc-e-pane mc-e-pane-screenshare" data-slot="screenshare"></section>
+        </div>
+      </details>`;
 
     cleanups.forEach((c) => { try { c(); } catch {} });
     cleanups.length = 0;
 
+    cleanups.push(mountTopologyManager(host.querySelector('[data-slot="topology"]')));
     cleanups.push(mountRoomOverview(host.querySelector('[data-slot="overview"]'), { store: operatorStore, i18n }));
     cleanups.push(mountLayoutSelector(host.querySelector('[data-slot="layout"]'), {
       store: operatorStore, i18n,
@@ -157,8 +163,6 @@ export function mountOperatorConsole(host, { socket, i18n, api = enterpriseApi, 
     if (!sendBtn) return;
     const surface = sendBtn.getAttribute('data-send');
     const d = (operatorStore.get()?.displays || [])[0];
-    const highImpact = (surface === 'classroom' || surface === 'livestream');
-    if (highImpact && !confirmAction(i18n ? i18n('mc.e.send.confirm') : 'Confirm: apply to the active surface?')) return;
     if (surface === 'preview' && !selectedContent) { setError(ERROR_CODES.CONTENT_PROCESSING); return; }
     try {
       if (surface === 'preview') {
@@ -181,7 +185,13 @@ export function mountOperatorConsole(host, { socket, i18n, api = enterpriseApi, 
   async function api_broadcast(_adapter, content, includeLive) {
     const { api: realApi } = await import('../../api.js');
     try {
-      const res = await realApi.broadcast({ content_id: content.id, targets: [], include_live_stream: includeLive });
+      const res = await realApi.broadcast({
+        content_id: content.id,
+        targets: [],
+        include_live_stream: includeLive,
+        confirm_all: true,
+        confirm_wall_replace: true,
+      });
       return !res?.code;
     } catch (e) {
       setError(null, { status: e?.status, reason: e?.message });
@@ -231,31 +241,9 @@ function realSocketInterface() {
     requestRoomSnapshot: socketRequestRoomSnapshot,
   };
 }
-function buildInfoHtml() {
-  const commit = (typeof window !== 'undefined' && (window.__MC_BUILD_COMMIT || window.MC_BUILD_COMMIT))
-    || (typeof document !== 'undefined' && document.querySelector('meta[name="mc-build-commit"]')?.content)
-    || 'unknown';
-  const sw = (typeof navigator !== 'undefined' && navigator.serviceWorker?.controller?.scriptURL) || 'none';
-  return `<section class="mc-e-system-panel" data-slot="system" aria-label="System">
-    <h2 class="mc-e-system-title">About / System</h2>
-    <dl class="mc-e-system-dl">
-      <div><dt>Build</dt><dd data-build-commit>${esc(String(commit).slice(0, 12))}</dd></div>
-      <div><dt>Route</dt><dd>#/operator-console</dd></div>
-      <div><dt>Emergency UI</dt><dd><a href="#/control">Legacy #/control</a></dd></div>
-      <div><dt>Service worker</dt><dd title="${esc(String(sw))}">${esc(String(sw).split('/').pop() || 'none')}</dd></div>
-    </dl>
-  </section>`;
-}
-
 export function render(host, ..._rest) {
   if (_active) { try { _active.destroy(); } catch {} }
   _active = mountOperatorConsole(host, { socket: realSocketInterface() });
-  try {
-    const shell = host.querySelector('.mc-e-console-grid') || host;
-    if (shell && !host.querySelector('[data-slot="system"]')) {
-      shell.insertAdjacentHTML('beforeend', buildInfoHtml());
-    }
-  } catch { /* non-fatal */ }
   return _active;
 }
 

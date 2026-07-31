@@ -36,6 +36,44 @@ export const LIVE_NEWS_CATALOG = Object.freeze([
   audio_policy: 'embedded',
 })));
 
+function publicWebcam(id, title) {
+  return Object.freeze({
+    id,
+    title,
+    url: `/player/external-feed.html?feed=${encodeURIComponent(id)}`,
+    audio_policy: 'embedded',
+  });
+}
+
+// Curated public Internet webcams are media sources, not managed classroom
+// cameras. Keeping them in a separate catalog preserves the single physical
+// camera invariant (Anpviz) while restoring the Miami Beach situational views.
+export const MIAMI_BEACH_FEED_GROUPS = Object.freeze([
+  Object.freeze({
+    id: 'city-beaches',
+    title: 'City Beach Conditions',
+    feeds: Object.freeze([
+      publicWebcam('mb-1st-street', '1st Street Beach · Ocean Rescue'),
+      publicWebcam('mb-21st-street', '21st Street Beach · Ocean Rescue'),
+    ]),
+  }),
+  Object.freeze({
+    id: 'ocean-drive',
+    title: 'Ocean Drive',
+    feeds: Object.freeze([
+      publicWebcam('mb-ocean-drive-south', 'Ocean Drive · South Beach'),
+      publicWebcam('mb-ocean-drive-avalon', 'Ocean Drive · Avalon'),
+    ]),
+  }),
+  Object.freeze({
+    id: 'bay-port',
+    title: 'Bay & Port',
+    feeds: Object.freeze([
+      publicWebcam('mb-biscayne-port', 'Biscayne Bay & PortMiami'),
+    ]),
+  }),
+]);
+
 export const CAMERA_FEED_GROUPS = Object.freeze([
   Object.freeze({
     id: 'live-sources',
@@ -46,5 +84,10 @@ export const CAMERA_FEED_GROUPS = Object.freeze([
     id: 'news',
     nameKey: 'mc.cf.group.news',
     feeds: LIVE_NEWS_CATALOG,
+  }),
+  Object.freeze({
+    id: 'miami-beach-public',
+    name: 'Miami Beach Public Webcams',
+    groups: MIAMI_BEACH_FEED_GROUPS,
   }),
 ]);

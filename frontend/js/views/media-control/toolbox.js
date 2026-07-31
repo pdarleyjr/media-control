@@ -19,7 +19,6 @@ import { t, tn } from '../../i18n.js';
 import { api } from '../../api.js';
 import { sendToDisplays, sentToast, trackBroadcastDelivery } from './send.js';
 import { showToast } from '../../components/toast.js';
-import { confirmDialog } from '../../components/confirm.js';
 import { renderCameraFeedsTab } from './camera-feeds.js';
 
 // Active tab id (persisted only for the lifetime of the rendered toolbox).
@@ -438,17 +437,7 @@ async function renderNextcloudTab(container, { selectedIds, onAfterSend, onRoute
           if (!ok) restore();
           return;
         }
-        let result = await api.files.broadcast(ncPath, selectedIds);
-        if (result && result.code === 'CONFIRM_ALL_REQUIRED') {
-          const ok = await confirmDialog({
-            title: t('mc.send.confirm_all_title', { n: result.count }),
-            message: t('mc.send.confirm_all_msg', { label }),
-            confirmLabel: t('mc.send.confirm_all_ok'),
-            tone: 'default',
-          });
-          if (!ok) { restore(); return; }
-          result = await api.files.broadcast(ncPath, selectedIds, { confirm_all: true });
-        }
+        const result = await api.files.broadcast(ncPath, selectedIds);
         if (result && result.success) {
           if (result.request_id) {
             const delivery = await trackBroadcastDelivery(result.request_id, label, result.delivery || null);
