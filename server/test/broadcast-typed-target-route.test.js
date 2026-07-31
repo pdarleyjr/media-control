@@ -11,6 +11,12 @@ test('broadcast route accepts typed targets alongside legacy device_ids', () => 
   assert.match(source, /typedRefs\.length > 0\s*\? typedResolution\.targets\s*:\s*legacyIds\.map\(String\)/);
 });
 
+test('broadcast route accepts only app-owned relative player URLs without external DNS validation', () => {
+  assert.match(source, /isAppOwnedRelativeUrl/);
+  assert.match(source, /if\s*\(remote_url\s*&&\s*!isAppOwnedRelativeUrl\(remote_url\)\)/);
+  assert.match(source, /await assertRemoteUrlSafe\(remote_url\)/);
+});
+
 test('layout revision conflicts are returned before any live target creation or display push side effect', () => {
   const resolveIndex = source.indexOf('resolveTypedBroadcastTargets({');
   const conflictReturnIndex = source.indexOf('if (!typedResolution.ok)', resolveIndex);
