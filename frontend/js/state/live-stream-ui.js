@@ -73,7 +73,8 @@ export function deriveLiveLadder(status, { phase = null } = {}) {
     return { state: LIVE_LADDER.NOT_CONFIGURED, canStart: false, reason: 'PeerTube is unreachable' };
   }
 
-  if (c.managed_receiver_online === false || c.receiver_online === false) {
+  const receiverOffline = c.managed_receiver_online === false || c.receiver_online === false;
+  if (receiverOffline && c.managed_receiver_required_for_start !== false) {
     return { state: LIVE_LADDER.RECEIVER_OFFLINE, canStart: false, reason: 'Managed receiver is offline' };
   }
 

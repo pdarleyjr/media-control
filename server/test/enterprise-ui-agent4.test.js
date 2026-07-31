@@ -37,6 +37,41 @@ describe('live-stream-ui ladder', () => {
     assert.equal(ladder.canStart, false);
   });
 
+  it('allows direct-camera start when the managed receiver is explicitly not required', () => {
+    const ladder = deriveLiveLadder({
+      capabilities: {
+        peertube_configured: true,
+        peertube_reachable: true,
+        managed_receiver_online: false,
+        managed_receiver_required_for_start: false,
+        obs_available: true,
+        program_prepared: true,
+        program_scene_safe: true,
+        operator_start_allowed: true,
+      },
+    });
+    assert.equal(ladder.state, LIVE_LADDER.READY);
+    assert.equal(ladder.canStart, true);
+    assert.equal(ladder.reason, null);
+  });
+
+  it('keeps receiver-offline fail-closed behavior when the backend does not waive it', () => {
+    const ladder = deriveLiveLadder({
+      capabilities: {
+        peertube_configured: true,
+        peertube_reachable: true,
+        managed_receiver_online: false,
+        obs_available: true,
+        program_prepared: true,
+        program_scene_safe: true,
+        operator_start_allowed: true,
+      },
+    });
+    assert.equal(ladder.state, LIVE_LADDER.RECEIVER_OFFLINE);
+    assert.equal(ladder.canStart, false);
+    assert.match(ladder.reason, /receiver/i);
+  });
+
   it('formats errors without Request failed', () => {
     assert.notEqual(formatLiveFailure({ message: 'Request failed' }).toLowerCase(), 'request failed');
     assert.match(formatLiveFailure({ code: 'OBS_UNAVAILABLE', error: 'OBS down' }), /OBS/);
