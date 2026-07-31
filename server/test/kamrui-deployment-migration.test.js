@@ -40,6 +40,12 @@ function assertDedicatedUserMigration(script, name) {
   );
 
   assert.match(script, /RECORDING_ROOT=\/mnt\/data\/recordings/);
+  assert.match(script, /RECORDING_PARENT="\$\(dirname "\$RECORDING_ROOT"\)"/);
+  assert.match(
+    script,
+    /sudo setfacl -m u:mbfd-camera-api:--x,g:mbfd-recording:--x "\$RECORDING_PARENT"/,
+    `${name} must grant only traversal through the dedicated data mount`,
+  );
   assert.match(
     script,
     /find "\$RECORDING_ROOT" -xdev -type d[\s\S]*chgrp mbfd-recording[\s\S]*chmod u\+rwx,g\+rwx,g\+s/,

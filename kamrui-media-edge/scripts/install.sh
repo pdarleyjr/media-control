@@ -8,10 +8,11 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 ENV_FILE=/etc/mbfd/media-stack/camera.env
 STACK=/opt/mbfd/media-stack
 RECORDING_ROOT=/mnt/data/recordings
+RECORDING_PARENT="$(dirname "$RECORDING_ROOT")"
 
 echo "==> prerequisites"
 sudo apt-get update -qq
-sudo apt-get install -y -qq ffmpeg rsync curl ca-certificates python3
+sudo apt-get install -y -qq acl ffmpeg rsync curl ca-certificates python3
 # Do NOT curl-pipe the Docker convenience installer as root.  Require a
 # verified, pre-existing Docker installation or fail closed.
 if ! command -v docker >/dev/null 2>&1; then
@@ -44,6 +45,9 @@ sudo mkdir -p "$STACK/camera-api" /etc/mbfd/media-stack
 sudo install -d -o mbfd-camera-api -g mbfd-recording -m 2770 \
   "$RECORDING_ROOT" "$RECORDING_ROOT/active" "$RECORDING_ROOT/completed" \
   "$RECORDING_ROOT/failed" "$RECORDING_ROOT/metadata"
+# The dedicated data mount can be operator-owned and mode 0770. Grant only
+# path traversal to the two service identities; never broaden data visibility.
+sudo setfacl -m u:mbfd-camera-api:--x,g:mbfd-recording:--x "$RECORDING_PARENT"
 # Preserve every existing artifact and its owner while granting the dedicated
 # API and recorder group the access legacy peter-owned 0600 files lacked.
 sudo find "$RECORDING_ROOT" -xdev -type d \

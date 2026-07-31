@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import unittest
+from unittest import mock
 
 # Load the broker module from its file path.
 _broker_path = os.path.join(os.path.dirname(__file__), "mbfd-recording-broker.py")
@@ -237,6 +238,31 @@ class TestActiveProcessIdentity(unittest.TestCase):
             if line.startswith("CapabilityBoundingSet=")
         )
         self.assertIn("CAP_SYS_PTRACE", capability_line.split("=", 1)[1].split())
+
+    @mock.patch.object(broker, "write_env_file")
+    @mock.patch.object(broker, "validate_environment")
+    @mock.patch.object(broker.subprocess, "run")
+    @mock.patch.object(
+        broker,
+        "validate_active_unit",
+        side_effect=[
+            (None, {"ActiveState": "active", "SubState": "running"}),
+            (4321, {"ActiveState": "active", "SubState": "running"}),
+        ],
+    )
+    def test_start_waits_for_runner_to_exec_validated_ffmpeg(
+        self,
+        validate_active_unit,
+        run,
+        validate_environment,
+        write_env_file,
+    ):
+        broker.handle_start("ses_test", {})
+
+        self.assertEqual(validate_active_unit.call_count, 2)
+        run.assert_called_once()
+        validate_environment.assert_called_once_with("ses_test", {})
+        write_env_file.assert_called_once_with("ses_test", {})
 
 
 if __name__ == "__main__":
