@@ -156,6 +156,7 @@ if (-not (Test-Path -LiteralPath $config.ffmpegPath -PathType Leaf)) {
 $runtimeRoot = Join-Path (Split-Path -Parent $ConfigPath) 'runtime'
 New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
 $progressFile = Join-Path $runtimeRoot 'ffmpeg-progress.txt'
+$progressMaximumBytes = 10MB
 $stderrLog = Join-Path $runtimeRoot 'ffmpeg-stderr.log'
 
 $createdNew = $false
@@ -243,24 +244,29 @@ try {
     $process = Start-Process -FilePath $config.ffmpegPath -ArgumentList $arguments `
       -RedirectStandardError $stderrLog -PassThru -WindowStyle Hidden
     $retrySeconds = 2
-    $lastProgress = ''
+    $lastProgressWriteUtc = [DateTime]::MinValue
     $lastFrameAt = $null
 
     while (-not $process.HasExited) {
       Start-Sleep -Seconds ([Math]::Max(2, [int]$config.heartbeatIntervalSeconds))
       $microphoneConnected = Test-TonorConnected -PnpPrefix ([string]$config.audioPnpInstancePrefix)
-      if (Test-Path -LiteralPath $progressFile) {
-        $progress = Get-Content -LiteralPath $progressFile -Raw -ErrorAction SilentlyContinue
-        $outTime = [regex]::Match([string]$progress, '(?m)^out_time_us=(\d+)$').Groups[1].Value
-        if ($outTime -and $outTime -ne $lastProgress) {
-          $lastProgress = $outTime
-          $lastFrameAt = [DateTime]::UtcNow.ToString('o')
-        }
+      $progressItem = Get-Item -LiteralPath $progressFile -ErrorAction SilentlyContinue
+      if ($progressItem -and $progressItem.LastWriteTimeUtc -gt $lastProgressWriteUtc) {
+        $lastProgressWriteUtc = $progressItem.LastWriteTimeUtc
+        $lastFrameAt = $progressItem.LastWriteTimeUtc.ToString('o')
+      }
+      $progressLimitReached = $progressItem -and $progressItem.Length -gt $progressMaximumBytes
+      $heartbeatErrorCode = if (-not $microphoneConnected) {
+        'TONOR_DISCONNECTED'
+      } elseif ($progressLimitReached) {
+        'PROGRESS_FILE_LIMIT'
+      } else {
+        $null
       }
       Send-Heartbeat -Config $config -MicrophoneConnected $microphoneConnected `
         -PublisherRunning (-not $process.HasExited) -LastFrameAt $lastFrameAt `
-        -ErrorCode $(if ($microphoneConnected) { $null } else { 'TONOR_DISCONNECTED' })
-      if (-not $microphoneConnected -and -not $process.HasExited) {
+        -ErrorCode $heartbeatErrorCode
+      if (($progressLimitReached -or -not $microphoneConnected) -and -not $process.HasExited) {
         Stop-Process -Id $process.Id -Force
       }
     }

@@ -75,6 +75,16 @@ test('TONOR DirectShow discovery tolerates expected FFmpeg stderr and restores s
   assert.ok(restorePolicy > enumerate);
 });
 
+test('TONOR heartbeat follows current FFmpeg progress and bounds its runtime file', () => {
+  const publisher = read('appliance/p3/anpviz-tonor/Start-AnpvizTonorPublisher.ps1');
+
+  assert.match(publisher, /LastWriteTimeUtc/);
+  assert.match(publisher, /\$progressMaximumBytes\s*=\s*10MB/);
+  assert.match(publisher, /PROGRESS_FILE_LIMIT/);
+  assert.doesNotMatch(publisher, /Get-Content[^\r\n]*\$progressFile/);
+  assert.doesNotMatch(publisher, /out_time_us/);
+});
+
 test('camera edge records, livestreams, previews, and proxies only the canonical Anpviz stream', () => {
   const api = read('kamrui-media-edge/camera-api/server.js');
   const proxy = read('cameras-proxy/html/index.html');
