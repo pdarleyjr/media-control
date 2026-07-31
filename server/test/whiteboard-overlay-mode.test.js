@@ -10,6 +10,7 @@ function read(relPath) {
 test('whiteboard offers explicit wall/display targets and overlay or blank modes', () => {
   const host = read('frontend/js/views/media-control.js');
   const board = read('frontend/js/views/media-control/whiteboard.js');
+  const dock = read('frontend/js/views/media-control/action-dock.js');
 
   assert.match(host, /getCurrentTargetCatalog/);
   assert.match(host, /buildWhiteboardTargets/);
@@ -23,6 +24,9 @@ test('whiteboard offers explicit wall/display targets and overlay or blank modes
   assert.match(board, /data-wb-mode="overlay"/);
   assert.match(board, /data-wb-mode="blank"/);
   assert.match(board, /mode: whiteboardMode/);
+  assert.match(dock, /data-dock="whiteboard"/);
+  assert.match(dock, /case 'whiteboard':[^\n]*cb\.onWhiteboard/);
+  assert.match(host, /onWhiteboard:\s*\(\) => window\.mcOpenWhiteboard\?\.\(\)/);
 });
 
 test('overlay mode paints over the physical display screenshot and refreshes it while open', () => {

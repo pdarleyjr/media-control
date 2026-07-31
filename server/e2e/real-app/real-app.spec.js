@@ -488,6 +488,23 @@ test.describe('Phase 1 — Feature flag OFF: real app loads correctly', () => {
       forcedSegmentCount: false,
     });
   });
+
+  test('1l. enhanced Whiteboard launcher is reachable from the web action dock', async ({ page }) => {
+    const errors = attachErrorCollectors(page);
+    await setupAuth(page);
+    await page.goto(`${BASE_URL}/app#/control`);
+    const launcher = page.locator('[data-dock="whiteboard"]');
+    await expect(launcher).toBeVisible({ timeout: 20000 });
+    const contract = await launcher.evaluate((button) => ({
+      height: button.getBoundingClientRect().height,
+      label: button.textContent.trim(),
+      launcher_registered: typeof window.mcOpenWhiteboard === 'function',
+    }));
+    expect(contract.height).toBeGreaterThanOrEqual(44);
+    expect(contract.label).toBe('Whiteboard');
+    expect(contract.launcher_registered).toBe(true);
+    assertNoErrors(errors, 'web Whiteboard action dock');
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════

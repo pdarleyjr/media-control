@@ -57,6 +57,7 @@ export function mountActionDock(hostEl, opts = {}) {
     <div class="mc-action-dock" role="toolbar" aria-label="${esc(t('mc.cc.brand'))}">
       <button type="button" class="mc-dock-btn mc-dock-primary" data-dock="multiview">${esc(t('mc.cc.dock.multiview'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-default" data-dock="blank-toggle" id="mc-dock-blank-btn">${esc(t('mc.cc.dock.blank_all'))}</button>
+      <button type="button" class="mc-dock-btn mc-dock-default" data-dock="whiteboard">${esc(t('mc.wb.dock_open'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-default" data-dock="share">${esc(t('mc.cc.dock.share'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-default" data-dock="record-toggle" id="mc-dock-record-btn">${esc('Start Recording')}</button>
       <button type="button" class="mc-dock-btn mc-dock-live" data-dock="start-live">${esc(t('mc.cc.dock.start_live'))}</button>
@@ -462,6 +463,7 @@ export function mountActionDock(hostEl, opts = {}) {
           repaintBlank();
           break;
         case 'blank-all': if (typeof cb.onBlankAll === 'function') await cb.onBlankAll(); break;
+        case 'whiteboard': if (typeof cb.onWhiteboard === 'function') cb.onWhiteboard(); break;
         case 'share': if (typeof cb.onShare === 'function') cb.onShare(); break;
         case 'record-toggle': await onRecordToggle(); break;
         case 'start-live': await onStartLive(); break;

@@ -2821,6 +2821,7 @@ pruneSelection();
     onBlankSelected: blankActiveTarget,
     onBlankToggle: blankToggleActiveTarget,
     onBlankAll: blankAllTargets,
+    onWhiteboard: () => window.mcOpenWhiteboard?.(),
     onShare: shareScreenActive,
     onStartLive: startLive,
     onRemoveLive: removeLive,
