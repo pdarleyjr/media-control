@@ -47,6 +47,8 @@ test('overlay mode paints over the physical display screenshot and refreshes it 
   assert.match(board, /secureScreenshotUrl\(src\)/);
   assert.match(board, /data-screenshot-api=/);
   assert.doesNotMatch(board, /<img class="mc-wb-background"[^>]*\n\s*src=/);
+  assert.match(board, /function onScreenshotReady\(data\)[\s\S]*secureScreenshotUrl\(src\)/);
+  assert.doesNotMatch(board, /image\.src = `\/api\/devices\/\$\{encodeURIComponent\(deviceId\)\}\/screenshot/);
   assert.match(board, /ctx\.clearRect\(0, 0, canvas\.width, canvas\.height\)/);
   assert.match(board, /globalCompositeOperation = 'destination-out'/);
   assert.match(css, /\.mc-wb-background/);

@@ -483,7 +483,13 @@ export function mount(containerEl, options) {
       image.src = data.image_data;
       return;
     }
-    image.src = `/api/devices/${encodeURIComponent(deviceId)}/screenshot?t=${Date.now()}`;
+    const src = `/api/devices/${encodeURIComponent(deviceId)}/screenshot?t=${Date.now()}`;
+    const renderRevision = backgroundRenderRevision;
+    image.dataset.screenshotApi = src;
+    void secureScreenshotUrl(src).then((blobUrl) => {
+      if (!blobUrl || closed || renderRevision !== backgroundRenderRevision || !image.isConnected) return;
+      image.src = blobUrl;
+    });
   }
 
   // ------------------------------------------------------------------
