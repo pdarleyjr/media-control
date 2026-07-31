@@ -26,7 +26,9 @@ RestrictAddressFamilies=AF_UNIX
 RestrictSUIDSGID=true
 LockPersonality=true
 SystemCallArchitectures=native
-CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_KILL
+# Required only to inspect /proc/<recording-pid> identity across the
+# mbfd-recording service-user boundary before status or stop is accepted.
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_KILL CAP_SYS_PTRACE
 AmbientCapabilities=
 ReadWritePaths=/run/mbfd-camera-recording /run/mbfd-recording-broker
 # Needs to talk to systemd via D-Bus to start/stop units
