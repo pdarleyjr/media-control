@@ -5,6 +5,12 @@ const path = require('path');
 
 const ALLOWED_ACTIONS = new Set(['stream.start', 'stream.stop']);
 const SESSION_PATTERN = /^ses_[A-Za-z0-9_-]{1,160}$/;
+const CHMOD_PERMISSION_ERRORS = new Set([
+  'EACCES',
+  'ENOTSUP',
+  'EOPNOTSUPP',
+  'EPERM',
+]);
 
 function cleanText(value, fallback, maxLength = 160) {
   const text = String(value ?? '')
@@ -30,6 +36,24 @@ function resultFor(responseBody, statusCode) {
   if (status >= 200 && status < 400 && responseBody?.ok !== false) return 'accepted';
   if (status >= 400 && status < 500) return 'rejected';
   return 'failed';
+}
+
+function ensurePrivateAuditDescriptor(fd) {
+  try {
+    fs.fchmodSync(fd, 0o600);
+    return;
+  } catch (error) {
+    if (!CHMOD_PERMISSION_ERRORS.has(error?.code)) {
+      throw error;
+    }
+  }
+
+  const stat = fs.fstatSync(fd);
+  if (!stat.isFile() || (stat.mode & 0o007) !== 0) {
+    const error = new Error('Livestream audit file permissions are unsafe');
+    error.code = 'AUDIT_FILE_PERMISSIONS_UNSAFE';
+    throw error;
+  }
 }
 
 function buildLivestreamAuditRecord({
@@ -80,7 +104,7 @@ function appendLivestreamAudit({
 
   const fd = fs.openSync(auditPath, 'a', 0o600);
   try {
-    fs.fchmodSync(fd, 0o600);
+    ensurePrivateAuditDescriptor(fd);
     fs.writeSync(fd, `${JSON.stringify(record)}\n`, null, 'utf8');
     fs.fsyncSync(fd);
   } finally {

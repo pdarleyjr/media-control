@@ -19,6 +19,12 @@ function tempDir(t) {
   return dir;
 }
 
+function permissionError(code) {
+  const error = new Error(`simulated ${code}`);
+  error.code = code;
+  return error;
+}
+
 test('livestream audit records only attributable, allowlisted request metadata', () => {
   const secretToken = 'camera-token-must-never-be-logged';
   const secretStreamKey = 'rtmp-stream-key-must-never-be-logged';
@@ -103,6 +109,108 @@ test('livestream audit appends durable JSON lines without exposing response erro
   assert.equal(second.caller_identity, 'unauthenticated');
   assert.equal(second.auth_method, 'none');
   assert.doesNotMatch(fs.readFileSync(auditPath, 'utf8'), /hidden-bearer|hidden-stream-key/);
+});
+
+test('livestream audit appends to an existing secure group-owned file when chmod is not permitted', (t) => {
+  const recordingDir = tempDir(t);
+  const metadataDir = path.join(recordingDir, 'metadata');
+  const auditPath = path.join(metadataDir, 'livestream-audit.jsonl');
+  fs.mkdirSync(metadataDir, { recursive: true });
+  fs.writeFileSync(auditPath, '{"existing":true}\n', 'utf8');
+
+  const originalFchmodSync = fs.fchmodSync;
+  const originalFstatSync = fs.fstatSync;
+  fs.fchmodSync = () => {
+    throw permissionError('EPERM');
+  };
+  fs.fstatSync = (fd) => {
+    const stat = originalFstatSync(fd);
+    return {
+      ...stat,
+      mode: (stat.mode & ~0o777) | 0o660,
+      isFile: () => true,
+    };
+  };
+  t.after(() => {
+    fs.fchmodSync = originalFchmodSync;
+    fs.fstatSync = originalFstatSync;
+  });
+
+  const record = appendLivestreamAudit({
+    recordingDir,
+    action: 'stream.start',
+    req: {
+      operatorId: 'api-client',
+      headers: { 'x-api-token': 'hidden' },
+      socket: { remoteAddress: '127.0.0.1' },
+    },
+    responseBody: { ok: true, session_id: 'ses_secure_group_file' },
+    statusCode: 200,
+    now: () => new Date('2026-07-31T04:00:00.000Z'),
+  });
+
+  const lines = fs.readFileSync(auditPath, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual(lines, [{ existing: true }, record]);
+});
+
+test('livestream audit rejects a shared file that is accessible to other users', (t) => {
+  const recordingDir = tempDir(t);
+  const metadataDir = path.join(recordingDir, 'metadata');
+  const auditPath = path.join(metadataDir, 'livestream-audit.jsonl');
+  fs.mkdirSync(metadataDir, { recursive: true });
+  fs.writeFileSync(auditPath, '{"existing":true}\n', 'utf8');
+
+  const originalFchmodSync = fs.fchmodSync;
+  const originalFstatSync = fs.fstatSync;
+  fs.fchmodSync = () => {
+    throw permissionError('EPERM');
+  };
+  fs.fstatSync = (fd) => {
+    const stat = originalFstatSync(fd);
+    return {
+      ...stat,
+      mode: (stat.mode & ~0o777) | 0o666,
+      isFile: () => true,
+    };
+  };
+  t.after(() => {
+    fs.fchmodSync = originalFchmodSync;
+    fs.fstatSync = originalFstatSync;
+  });
+
+  assert.throws(
+    () => appendLivestreamAudit({
+      recordingDir,
+      action: 'stream.stop',
+      req: { headers: {}, socket: { remoteAddress: '127.0.0.1' } },
+      responseBody: { ok: true },
+      statusCode: 200,
+    }),
+    (error) => error?.code === 'AUDIT_FILE_PERMISSIONS_UNSAFE',
+  );
+  assert.equal(fs.readFileSync(auditPath, 'utf8'), '{"existing":true}\n');
+});
+
+test('livestream audit does not suppress non-permission chmod failures', (t) => {
+  const recordingDir = tempDir(t);
+  const originalFchmodSync = fs.fchmodSync;
+  fs.fchmodSync = () => {
+    throw permissionError('EIO');
+  };
+  t.after(() => {
+    fs.fchmodSync = originalFchmodSync;
+  });
+
+  assert.throws(
+    () => appendLivestreamAudit({
+      recordingDir,
+      action: 'stream.start',
+      req: { headers: {}, socket: { remoteAddress: '127.0.0.1' } },
+      responseBody: { ok: true },
+      statusCode: 200,
+    }),
+    (error) => error?.code === 'EIO',
+  );
 });
 
 test('camera API installs audit middleware before authentication on both livestream actions', () => {
