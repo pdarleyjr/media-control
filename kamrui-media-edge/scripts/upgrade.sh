@@ -6,6 +6,7 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 STACK=/opt/mbfd/media-stack
 ENV_FILE=/etc/mbfd/media-stack/camera.env
 RECORDING_ROOT=/mnt/data/recordings
+RECORDING_PARENT="$(dirname "$RECORDING_ROOT")"
 
 case "${1:-status}" in
   status)
@@ -42,6 +43,13 @@ case "${1:-status}" in
     sudo install -d -o mbfd-camera-api -g mbfd-recording -m 2770 \
       "$RECORDING_ROOT" "$RECORDING_ROOT/active" "$RECORDING_ROOT/completed" \
       "$RECORDING_ROOT/failed" "$RECORDING_ROOT/metadata"
+    if ! command -v setfacl >/dev/null 2>&1; then
+      echo "ERROR: setfacl is required; install the acl package before deployment." >&2
+      exit 1
+    fi
+    # The dedicated data mount can be operator-owned and mode 0770. Grant only
+    # path traversal to the two service identities; never broaden data visibility.
+    sudo setfacl -m u:mbfd-camera-api:--x,g:mbfd-recording:--x "$RECORDING_PARENT"
     # Preserve every existing artifact and its owner while granting the
     # dedicated API and recorder group access to legacy 0600 metadata/nonces.
     sudo find "$RECORDING_ROOT" -xdev -type d \
