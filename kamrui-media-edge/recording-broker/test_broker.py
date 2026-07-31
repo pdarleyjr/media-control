@@ -209,5 +209,35 @@ class TestReconcileClassifications(unittest.TestCase):
             ])
 
 
+class TestActiveProcessIdentity(unittest.TestCase):
+    def test_expected_ffmpeg_arguments_bind_all_runtime_values(self):
+        source = "rtsp://127.0.0.1:8554/anpviz-main"
+        segment = "1800"
+        output = "/mnt/data/recordings/active/ses_test/recording_%03d.mp4"
+
+        arguments = broker.expected_ffmpeg_arguments(source, segment, output)
+
+        self.assertEqual(arguments[arguments.index("-i") + 1], source)
+        self.assertEqual(arguments[arguments.index("-segment_time") + 1], segment)
+        self.assertEqual(arguments[-1], output)
+        self.assertNotIn(None, arguments)
+
+    def test_broker_service_can_inspect_recording_process_identity(self):
+        service_path = os.path.join(
+            os.path.dirname(__file__),
+            "..",
+            "systemd",
+            "mbfd-recording-broker.service",
+        )
+        with open(service_path, "r", encoding="utf-8") as service_file:
+            service = service_file.read()
+
+        capability_line = next(
+            line for line in service.splitlines()
+            if line.startswith("CapabilityBoundingSet=")
+        )
+        self.assertIn("CAP_SYS_PTRACE", capability_line.split("=", 1)[1].split())
+
+
 if __name__ == "__main__":
     unittest.main()

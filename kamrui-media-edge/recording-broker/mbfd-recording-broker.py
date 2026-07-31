@@ -84,6 +84,18 @@ EXPECTED_FFMPEG_ARGS = [
     None,  # output placeholder
 ]
 
+
+def expected_ffmpeg_arguments(source, segment, output):
+    """Bind the three runtime values without relying on fragile list indexes."""
+    if EXPECTED_FFMPEG_ARGS.count(None) != 3:
+        raise RuntimeError("recording FFmpeg argument template must have three placeholders")
+    replacements = iter((source, segment, output))
+    return [
+        next(replacements) if argument is None else argument
+        for argument in EXPECTED_FFMPEG_ARGS
+    ]
+
+
 # ── Audit logging ───────────────────────────────────────────────────────────
 
 AUDIT_FACILITY = syslog.LOG_DAEMON | syslog.LOG_INFO
@@ -259,10 +271,7 @@ def validate_active_unit(session_id):
     if not all([source, segment, output, nonce]):
         raise ValueError("recording environment is missing or unreadable")
 
-    expected = list(EXPECTED_FFMPEG_ARGS)
-    expected[10] = source
-    expected[30] = segment
-    expected[36] = output
+    expected = expected_ffmpeg_arguments(source, segment, output)
 
     if len(cmdline) != len(expected):
         raise ValueError("ffmpeg cmdline length mismatch")
