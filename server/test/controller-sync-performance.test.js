@@ -182,16 +182,17 @@ test('camera status reports active sources continuously instead of a static idle
   assert.doesNotMatch(dock, /if \(classroomModeActive\) \{ syncingLive = false; return; \}/);
 });
 
-test('known inactive live state never delays a normal content broadcast with a director status fetch', () => {
+test('normal display routing never probes or mutates the live composition', () => {
   const dock = read('frontend/js/views/media-control/action-dock.js');
   const send = read('frontend/js/views/media-control/send.js');
 
   assert.match(dock, /let liveStateKnown = false/);
   assert.match(dock, /export function isLiveStateKnown\(\)/);
   assert.match(dock, /liveStateKnown = true/);
-  assert.match(send, /isLiveActive,[\s\S]*isLiveCompositionAvailable,[\s\S]*isLiveStateKnown/);
-  assert.match(send, /if \(isLiveStateKnown\(\)\) return isLiveActive\(\) && isLiveCompositionAvailable\(\)/);
-  assert.match(send, /return shouldOfferLiveStreamInclusion\(\)/);
+  assert.doesNotMatch(send, /isLiveActive|isLiveCompositionAvailable|isLiveStateKnown/);
+  assert.doesNotMatch(send, /api\.liveStream\.(?:status|composition|compositionContent)/);
+  assert.match(send, /include_live_stream: false/);
+  assert.match(dock, /data-composition-add/);
 });
 
 test('live source catalog contains one camera identity while the canvas avoids obsolete ordinal presets', () => {

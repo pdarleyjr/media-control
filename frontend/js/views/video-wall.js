@@ -3,11 +3,6 @@ import { showToast } from '../components/toast.js';
 import { esc } from '../utils.js';
 import { t } from '../i18n.js';
 
-const API = (url, opts = {}) => fetch('/api' + url, {
-  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}`, ...opts.headers },
-  ...opts,
-}).then(r => r.json());
-
 // Default dimensions for the canvas coordinate space (pixels). Screens added
 // fresh start at 320x180 (16:9). The editor canvas itself renders at this
 // natural scale so canvas-pixels == display-pixels.
@@ -41,12 +36,12 @@ async function renderList(container) {
   document.getElementById('newWallBtn').onclick = async () => {
     const name = prompt(t('wall.prompt_name'));
     if (!name) return;
-    const wall = await API('/walls', { method: 'POST', body: JSON.stringify({ name }) });
+    const wall = await api.createWall({ name });
     window.location.hash = `#/wall/${wall.id}`;
   };
 
   try {
-    const walls = await API('/walls');
+    const walls = await api.getWalls();
     const grid = document.getElementById('wallGrid');
 
     if (!walls.length) {
@@ -55,7 +50,9 @@ async function renderList(container) {
     }
 
     grid.innerHTML = walls.map(w => `
-      <div class="content-item" style="cursor:pointer" onclick="window.location.hash='#/wall/${w.id}'">
+      <div class="content-item" ${w.is_locked
+        ? 'data-protected-wall style="cursor:default"'
+        : `style="cursor:pointer" onclick="window.location.hash='#/wall/${esc(w.id)}'"`}>
         <div class="content-item-preview" style="display:flex;align-items:center;justify-content:center;background:var(--bg-primary)">
           <div style="display:grid;grid-template-columns:repeat(${w.grid_cols},1fr);gap:3px;width:60%;aspect-ratio:${w.grid_cols}/${w.grid_rows}">
             ${Array.from({ length: w.grid_cols * w.grid_rows }, (_, i) => {
@@ -67,9 +64,9 @@ async function renderList(container) {
           </div>
         </div>
     <div class="content-item-body">
-      <div class="content-item-name">${w.name}</div>
+      <div class="content-item-name">${esc(w.name)}</div>
       <div class="content-item-size">${t('wall.grid_summary', { cols: w.grid_cols, rows: w.grid_rows, n: w.devices?.length || 0 })}</div>
-      ${w.is_locked ? `<div style="margin-top:6px;display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;background:rgba(245,158,11,.14);color:#f59e0b;font-size:11px;font-weight:700;letter-spacing:.02em">Locked</div>` : ''}
+      ${w.is_locked ? `<div style="margin-top:6px;display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;background:rgba(245,158,11,.14);color:#b45309;font-size:11px;font-weight:700;letter-spacing:.02em">Protected Classroom Video Wall</div>` : ''}
     </div>
   </div>
     `).join('');
@@ -83,12 +80,39 @@ async function renderWallEditor(container, wallId) {
   let wall, devices, playlists;
   try {
     [wall, devices, playlists] = await Promise.all([
-      API(`/walls/${wallId}`),
+      api.getWall(wallId),
       api.getDevices(),
       api.getPlaylists(),
     ]);
   } catch { container.innerHTML = `<div class="empty-state"><h3>${t('wall.not_found')}</h3></div>`; return; }
   const locked = !!wall.is_locked;
+  if (locked) {
+    container.innerHTML = `
+      <section class="wall-protected-summary" data-protected-wall>
+        <a href="#/walls" class="back-link">← ${esc(t('wall.back'))}</a>
+        <div class="page-header">
+          <div>
+            <h1>${esc(wall.name)}</h1>
+            <div class="subtitle">Protected Classroom Video Wall</div>
+          </div>
+          <span class="badge badge-warning">Protected</span>
+        </div>
+        <div class="info-card" style="border-left:4px solid #d97706">
+          <strong>Configuration protected</strong>
+          <p style="margin:6px 0 0;color:var(--text-secondary)">This classroom wall remains available for normal routing and playback. Its name, geometry, display membership, regions, and protection state cannot be changed or deleted from the application.</p>
+        </div>
+        <div class="content-grid" style="margin-top:16px">
+          ${(wall.devices || []).map((device) => `
+            <article class="content-item">
+              <div class="content-item-body">
+                <div class="content-item-name">${esc(device.device_name || device.device_id)}</div>
+                <div class="content-item-size">Row ${Number(device.grid_row) + 1}, column ${Number(device.grid_col) + 1} · ${esc(device.device_status || 'unknown')}</div>
+              </div>
+            </article>`).join('') || '<div class="empty-state"><p>No member displays are reported.</p></div>'}
+        </div>
+      </section>`;
+    return;
+  }
 
   // Local state — server-roundtripped on Save. Backfill from grid math when
   // canvas_* columns aren't populated (fresh walls or pre-canvas walls).
@@ -702,12 +726,14 @@ async function renderWallEditor(container, wallId) {
       const refresh = parseFloat(document.getElementById('refreshRate')?.value) || null;
       // If admin set a canvas width/height that doesn't match the dragged
       // player rect, prefer the typed dims — they're the canonical override.
-      await API(`/walls/${wallId}`, { method: 'PUT', body: JSON.stringify({
+      const updatedWall = await api.updateWall(wallId, {
         grid_cols: cols, grid_rows: rows, bezel_h_mm: bH, bezel_v_mm: bV,
         player_x: Math.round(player.x), player_y: Math.round(player.y),
         player_width: cW, player_height: cH,
         refresh_rate_hz: refresh,
-      })});
+        expected_revision: Number(wall.layout_revision) || 0,
+      });
+      wall = updatedWall;
       // grid_col/grid_row are kept only to satisfy the legacy
       // UNIQUE(wall_id, grid_col, grid_row) constraint — render math now uses
       // canvas_* fields. Synthetic (i, 0) guarantees uniqueness.
@@ -719,7 +745,7 @@ async function renderWallEditor(container, wallId) {
         canvas_x: Math.round(s.x), canvas_y: Math.round(s.y),
         canvas_width: Math.round(s.w), canvas_height: Math.round(s.h),
       }));
-      await API(`/walls/${wallId}/devices`, { method: 'PUT', body: JSON.stringify({ devices: payload }) });
+      wall = await api.setWallDevices(wallId, payload, Number(wall.layout_revision) || 0);
       // Re-fetch master device list so wall_id changes propagate to the sidebar
       devices = await api.getDevices();
       dirty = false;
@@ -734,7 +760,7 @@ async function renderWallEditor(container, wallId) {
     const newName = prompt('Wall name:', wall.name);
     if (!newName || newName === wall.name) return;
     try {
-      await API(`/walls/${wallId}`, { method: 'PUT', body: JSON.stringify({ name: newName }) });
+      await api.updateWall(wallId, { name: newName });
       wall.name = newName;
       document.getElementById('wallTitleText').textContent = newName;
     } catch (err) { showToast(err.message, 'error'); }
@@ -743,7 +769,7 @@ async function renderWallEditor(container, wallId) {
   document.getElementById('setPlaylistBtn').addEventListener('click', async () => {
     const playlistId = document.getElementById('wallPlaylist').value || null;
     try {
-      await API(`/walls/${wallId}`, { method: 'PUT', body: JSON.stringify({ playlist_id: playlistId }) });
+      await api.updateWall(wallId, { playlist_id: playlistId });
       wall.playlist_id = playlistId;
       showToast(t('wall.toast.playlist_updated') || 'Playlist updated', 'success');
     } catch (err) { showToast(err.message, 'error'); }
@@ -753,7 +779,7 @@ async function renderWallEditor(container, wallId) {
     if (locked) return;
     if (!confirm(`Delete wall "${wall.name}"? This returns all displays to ungrouped.`)) return;
     try {
-      await API(`/walls/${wallId}`, { method: 'DELETE' });
+      await api.deleteWall(wallId);
       showToast(t('wall.toast.deleted'), 'success');
       window.location.hash = '#/walls';
     } catch (err) { showToast(err.message, 'error'); }

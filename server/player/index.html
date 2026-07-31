@@ -4345,7 +4345,7 @@
               // the full wall instead of falling back to the tiny 4+2+4 mosaic.
               const asp = gridTargetAspect(mount);
               webSrc = ownPath + (ownPath.indexOf('?') === -1 ? '?' : '&') + 'aspect=' + asp.toFixed(4);
-            } else if (audioOutputAllowed() && /\/player\/(oz|hls)\.html(\?|$)/.test(ownPath)) {
+            } else if (audioOutputAllowed() && /\/player\/(oz|hls|live-source)\.html(\?|$)/.test(ownPath)) {
               // A single full-screen managed live source or news stream → play WITH
               // sound on leader/solo (followers stay muted to avoid echo across the
               // wall). The player falls back to muted if the browser blocks unmuted

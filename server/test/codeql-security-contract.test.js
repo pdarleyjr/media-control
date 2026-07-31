@@ -26,12 +26,19 @@ test('database and filesystem resource routes use the standard rate limiter', ()
     '/api/classroom-preparation',
     '/api/media-observability',
     '/api/live-sources',
+    '/api/devices',
   ]) {
     assert.ok(
       server.includes(`app.use('${route}', rateLimit(rateLimitOptions(`),
       `${route} must use the standard rate limiter`,
     );
   }
+});
+
+test('video-wall requests use the constrained central API client', () => {
+  const wallView = source('frontend/js/views/video-wall.js');
+  assert.doesNotMatch(wallView, /const API\s*=\s*async/);
+  assert.match(wallView, /api\.getWall\(wallId\)/);
 });
 
 test('caption tracks accept only canonical same-origin sidecar URLs', () => {

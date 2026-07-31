@@ -27,12 +27,22 @@ export function projectRoomDisplays(snapshot, priorDisplays = new Map(), options
     .map((display) => {
       const prior = priorById.get(display.id) || {};
       const device = deviceById.get(display.id) || {};
-      const contentId = display.contentId
-        ?? prior.now_playing?.contentId
+      const priorContentId = prior.now_playing?.contentId
         ?? prior.now_playing?.content_id
         ?? null;
+      const contentId = display.contentId
+        ?? priorContentId
+        ?? null;
+      // A room snapshot can arrive between the player confirmation and the
+      // richer REST refresh. Content-bound presentation fields from the prior
+      // item (especially remoteUrl/poster_url) must never cross that identity
+      // boundary: doing so rendered the newly confirmed Guest Computer ID with
+      // the previous Anpviz iframe URL in Command Center.
+      const contentIdentityChanged = priorContentId != null
+        && contentId != null
+        && String(priorContentId) !== String(contentId);
       const nowPlaying = {
-        ...(prior.now_playing || {}),
+        ...(contentIdentityChanged ? {} : (prior.now_playing || {})),
         contentId,
         content_id: contentId,
         kind: display.contentType || prior.now_playing?.kind || 'idle',

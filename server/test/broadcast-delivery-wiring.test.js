@@ -99,9 +99,10 @@ test('frontend polls and renders every device state rather than treating HTTP ac
 test('drag-and-drop delivery tracks silently on success but still surfaces authoritative failures', () => {
   const send = source('../frontend/js/views/media-control/send.js');
   const view = source('../frontend/js/views/media-control.js');
-  assert.match(send, /quietSuccess/);
-  assert.match(send, /if \(!quietSuccess\) renderBroadcastDelivery/);
-  assert.match(send, /if \(quietSuccess\) renderBroadcastDelivery\(request, label\)/);
+  assert.doesNotMatch(send, /renderBroadcastDelivery|mc-delivery-panel/);
+  const confirmed = send.slice(send.indexOf("if (request?.status === 'confirmed')"), send.indexOf("} else if", send.indexOf("if (request?.status === 'confirmed')")));
+  assert.doesNotMatch(confirmed, /showToast/);
+  assert.match(send, /players confirmed`, 'error'/);
   assert.match(view, /const DROP_DELIVERY_OPTIONS = \{ quietSuccess: true \}/);
   assert.match(view, /sendToPhysicalScope\([\s\S]*?DROP_DELIVERY_OPTIONS/);
   assert.match(view, /targets:\s*commandCenterState\.broadcastTargets,[\s\S]*?quietSuccess:\s*true/);

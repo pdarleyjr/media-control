@@ -75,6 +75,7 @@ export function mountActionDock(hostEl, opts = {}) {
           <span class="mc-composition-tally-dot" aria-hidden="true"></span>
           <span data-composition-revision>${esc(t('mc.live.composition.on_air'))}</span>
         </span>
+        <button type="button" class="mc-composition-add" data-composition-add>${esc(t('mc.live.composition.add_active'))}</button>
         <button type="button" data-composition-layout="camera_only">${esc(t('mc.live.composition.camera_only'))}</button>
         <button type="button" data-composition-layout="content_main_camera_pip">${esc(t('mc.live.composition.content_main'))}</button>
         <button type="button" data-composition-layout="camera_main_content_pip">${esc(t('mc.live.composition.camera_main'))}</button>
@@ -163,6 +164,8 @@ export function mountActionDock(hostEl, opts = {}) {
       });
       const remove = compositionEl.querySelector('[data-composition-remove]');
       if (remove) remove.disabled = compositionBusy || !compositionContentInstanceId;
+      const add = compositionEl.querySelector('[data-composition-add]');
+      if (add) add.disabled = compositionBusy;
       const revision = compositionEl.querySelector('[data-composition-revision]');
       if (revision) {
         revision.textContent = t('mc.live.composition.on_air_revision', {
@@ -360,6 +363,43 @@ export function mountActionDock(hostEl, opts = {}) {
     compositionAudioPolicy = result?.compositor_state?.audio_policy || compositionAudioPolicy;
   }
 
+  // Adding content to the livestream is an explicit on-air action. Normal
+  // display routing never calls this path, which prevents a source tap from
+  // silently producing a second simultaneous program.
+  async function onAddActiveContent() {
+    if (compositionBusy || !liveActive) return;
+    const selected = typeof cb.getLiveCompositionSource === 'function'
+      ? cb.getLiveCompositionSource()
+      : null;
+    if (!selected?.source) {
+      showToast(t('mc.live.composition.no_active_content'), 'info');
+      return;
+    }
+    compositionBusy = true;
+    repaintLive();
+    try {
+      const contentInstanceId = nextCompositionKey('content');
+      const result = await api.liveStream.compositionContent({
+        ...selected.source,
+        content_instance_id: contentInstanceId,
+        layout: 'content_main_camera_pip',
+        audio_policy: 'camera',
+        confirm_content_audio: false,
+        expected_compositor_revision: compositionRevision,
+        idempotency_key: nextCompositionKey('add'),
+      });
+      acceptComposition(result);
+      showToast(t('mc.live.composition.added', { label: selected.label || t('mc.tile.content_fallback') }), 'success');
+      if (typeof cb.onLiveChanged === 'function') cb.onLiveChanged();
+    } catch (e) {
+      showToast(formatLiveFailure(e), 'error');
+    } finally {
+      compositionBusy = false;
+      repaintLive();
+      await syncLive();
+    }
+  }
+
   async function onCompositionLayout(layout) {
     if (compositionBusy || !liveActive || layout === compositionLayout) return;
     if (layout !== 'camera_only' && !compositionContentInstanceId) {
@@ -434,6 +474,8 @@ export function mountActionDock(hostEl, opts = {}) {
   hostEl.querySelectorAll('[data-composition-layout]').forEach((button) => {
     button.addEventListener('click', () => onCompositionLayout(button.dataset.compositionLayout));
   });
+  const compositionAdd = hostEl.querySelector('[data-composition-add]');
+  if (compositionAdd) compositionAdd.addEventListener('click', onAddActiveContent);
   const compositionRemove = hostEl.querySelector('[data-composition-remove]');
   if (compositionRemove) {
     compositionRemove.addEventListener('click', onRemoveContent);

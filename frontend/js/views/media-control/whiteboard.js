@@ -37,6 +37,10 @@ const COLORS = ['#111827', '#ef4444', '#f59e0b', '#22c55e', '#3b82f6', '#a855f7'
 const DEFAULT_COLOR = '#111827';
 const DEFAULT_SIZE = 6;
 const STROKE_FLUSH_MS = 50;
+// Screenshot capture is intentionally bounded: one chained request every 2.5s
+// only while Overlay Mode is open, targeted, and visible. A chained timeout
+// avoids overlapping capture bursts if a player or the network responds slowly.
+const OVERLAY_PREVIEW_REFRESH_MS = 2500;
 const WHITE_BG = '#ffffff';
 
 const PLAN_DEFAULTS = {
@@ -77,6 +81,7 @@ export function mount(containerEl, options) {
   let pendingPoints = [];
   let pendingPhase = 'append';
   let flushTimer = null;
+  let screenshotRefreshTimer = null;
   let closed = false;
   // Session hydration is asynchronous. Track both request ordering and local
   // edits so a delayed response cannot erase ink drawn after the request.
@@ -431,10 +436,29 @@ export function mount(containerEl, options) {
 
   function startScreenshotRefresh() {
     stopScreenshotRefresh();
+    if (closed || !target || whiteboardMode !== 'overlay') return;
+    if (document.visibilityState === 'hidden') return;
     requestTargetScreenshots();
+    scheduleScreenshotRefresh();
   }
 
-  function stopScreenshotRefresh() {}
+  function scheduleScreenshotRefresh() {
+    if (screenshotRefreshTimer != null || closed || !target || whiteboardMode !== 'overlay') return;
+    screenshotRefreshTimer = setTimeout(() => {
+      screenshotRefreshTimer = null;
+      if (closed || !target || whiteboardMode !== 'overlay') return;
+      if (document.visibilityState === 'hidden') return;
+      requestTargetScreenshots();
+      scheduleScreenshotRefresh();
+    }, OVERLAY_PREVIEW_REFRESH_MS);
+  }
+
+  function stopScreenshotRefresh() {
+    if (screenshotRefreshTimer != null) {
+      clearTimeout(screenshotRefreshTimer);
+      screenshotRefreshTimer = null;
+    }
+  }
 
   function onScreenshotReady(data) {
     if (!data || !target) return;
@@ -919,10 +943,15 @@ export function mount(containerEl, options) {
   // ------------------------------------------------------------------
   function attachAll() {
     bound.resize = () => sizeCanvas();
+    bound.visibility = () => {
+      if (document.visibilityState === 'hidden') stopScreenshotRefresh();
+      else startScreenshotRefresh();
+    };
     bound.down = onPointerDown;
     bound.move = onPointerMove;
     bound.up = onPointerUp;
     window.addEventListener('resize', bound.resize);
+    document.addEventListener('visibilitychange', bound.visibility);
     canvas.addEventListener('pointerdown', bound.down);
     canvas.addEventListener('pointermove', bound.move);
     canvas.addEventListener('pointerup', bound.up);
@@ -933,6 +962,7 @@ export function mount(containerEl, options) {
 
   function detachAll() {
     if (bound.resize) window.removeEventListener('resize', bound.resize);
+    if (bound.visibility) document.removeEventListener('visibilitychange', bound.visibility);
     if (canvas) {
       if (bound.down) canvas.removeEventListener('pointerdown', bound.down);
       if (bound.move) canvas.removeEventListener('pointermove', bound.move);

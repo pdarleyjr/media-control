@@ -39,5 +39,5 @@ test('shared picker broadcasts carry authoritative typed references to the serve
   assert.match(mediaControl, /sendToDisplays\(source, route\.targetIds, label, \{ targets: route\.targetReferences \}\)/);
   assert.match(mediaControl, /api\.files\.broadcast\(path, undefined, \{ targets: route\.targetReferences \}\)/);
   assert.match(send, /const targetPayload = typedTargets\.length \? \{ targets: typedTargets \} : \{ device_ids: targetIds \}/);
-  assert.equal((send.match(/\.\.\.targetPayload/g) || []).length, 3);
+  assert.equal((send.match(/\.\.\.targetPayload/g) || []).length, 1);
 });

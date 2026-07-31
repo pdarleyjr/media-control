@@ -7,15 +7,13 @@
 //   • a live status grid of the room's displays
 // The persistent command bar (Start Class / Blank / Clear) is added in P3.
 //
-// Reuses existing plumbing only: api.getDevices(), api.broadcast() (the same
-// /api/broadcast + 409 confirm-all gate the dashboard uses), and routes to the
+// Reuses existing plumbing only: api.getDevices(), api.broadcast(), and routes to the
 // already-built screen-share / smartboard / scenes views for interactive sources.
 // CSP-clean: addEventListener only, esc() on all dynamic text, no inline handlers.
 
 import { api } from '../api.js';
 import { esc } from '../utils.js';
 import { showToast } from '../components/toast.js';
-import { confirmDialog } from '../components/confirm.js';
 import { sendCommand } from '../socket.js';
 
 let devices = [];
@@ -46,22 +44,6 @@ async function broadcastSource(source, humanLabel) {
   } catch (e) {
     showToast(e?.message || 'Could not send to the displays.', 'error');
     return;
-  }
-  // 409 confirm-all: targeting every display in the workspace.
-  if (result && result.code === 'CONFIRM_ALL_REQUIRED') {
-    const ok = await confirmDialog({
-      title: `Show on ALL ${result.count} displays?`,
-      message: `This puts ${humanLabel} on every display in the room.`,
-      confirmLabel: 'Show on all',
-      tone: 'default',
-    });
-    if (!ok) return;
-    try {
-      result = await api.broadcast({ ...source, device_ids: ids, confirm_all: true });
-    } catch (e) {
-      showToast(e?.message || 'Could not send to the displays.', 'error');
-      return;
-    }
   }
   if (result && result.success) {
     const offline = (result.total || 0) - (result.sent || 0);

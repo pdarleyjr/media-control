@@ -33,6 +33,7 @@ let serverProcess = null;
 let tmpDir = '';
 let authToken = '';
 let authUser = null;
+let workspaceId = '';
 let serverLogs = [];
 
 // ── Server lifecycle helpers ────────────────────────────────────────
@@ -127,6 +128,7 @@ async function registerTestUser() {
   const body = await res.json();
   authToken = body.token;
   authUser = body.user;
+  workspaceId = body.current_workspace_id || workspaceId;
   return body;
 }
 
@@ -143,7 +145,40 @@ async function loginUser() {
   const body = await res.json();
   authToken = body.token;
   authUser = body.user;
+  workspaceId = body.current_workspace_id || workspaceId;
   return body;
+}
+
+function seedOperatorTopology() {
+  const Database = require('better-sqlite3');
+  const database = new Database(path.join(tmpDir, 'test.db'), { timeout: 10000 });
+  database.pragma('busy_timeout = 10000');
+  try {
+    const resolvedWorkspace = workspaceId || database.prepare(
+      'SELECT workspace_id FROM workspace_members WHERE user_id = ? LIMIT 1'
+    ).get(authUser.id)?.workspace_id;
+    if (!resolvedWorkspace) throw new Error('Test workspace was not resolved');
+
+    database.transaction(() => {
+      const insertDevice = database.prepare(`
+        INSERT INTO devices (id, user_id, workspace_id, name, pairing_code, status, wall_id)
+        VALUES (?, ?, ?, ?, ?, 'offline', ?)
+      `);
+      insertDevice.run('test-display-a', authUser.id, resolvedWorkspace, 'Available Display A', '810001', null);
+      insertDevice.run('test-display-b', authUser.id, resolvedWorkspace, 'Available Display B', '810002', null);
+      insertDevice.run('test-protected-display', authUser.id, resolvedWorkspace, 'Protected Display', '810003', 'test-protected-wall');
+      database.prepare(`
+        INSERT INTO video_walls (id, user_id, workspace_id, name, grid_cols, grid_rows, is_locked)
+        VALUES ('test-protected-wall', ?, ?, 'Classroom Video Walls Test Fixture', 1, 1, 1)
+      `).run(authUser.id, resolvedWorkspace);
+      database.prepare(`
+        INSERT INTO video_wall_devices (wall_id, device_id, grid_col, grid_row, canvas_x, canvas_y, canvas_width, canvas_height)
+        VALUES ('test-protected-wall', 'test-protected-display', 0, 0, 0, 0, 1920, 1080)
+      `).run();
+    })();
+  } finally {
+    database.close();
+  }
 }
 
 // ── Playwright error-collection helpers ────────────────────────────
@@ -389,6 +424,70 @@ test.describe('Phase 1 — Feature flag OFF: real app loads correctly', () => {
 
     assertNoErrors(errors, 'direct Camera-panel navigation');
   });
+
+  test('1i. Live News stays open across refresh and Miami Beach webcams are organized separately', async ({ page }) => {
+    const errors = attachErrorCollectors(page);
+    await setupAuth(page);
+    await page.goto(`${BASE_URL}/app#/control?panel=cameras`);
+    await expect(page.locator('.mc-live-source-tile')).toHaveCount(1, { timeout: 20000 });
+
+    const liveNews = page.locator('details[data-feed-group-id="news"]');
+    await liveNews.locator('summary').click();
+    await expect(liveNews).toHaveJSProperty('open', true);
+
+    // The source inventory refreshes every five seconds. The disclosure must
+    // retain operator state when the DOM is replaced by that refresh.
+    await page.waitForTimeout(6_250);
+    await expect(page.locator('details[data-feed-group-id="news"]')).toHaveJSProperty('open', true);
+
+    const publicWebcams = page.locator('details[data-feed-group-id="miami-beach"]');
+    await expect(publicWebcams.locator('summary')).toContainText('Miami Beach Public Webcams');
+    await publicWebcams.locator('summary').click();
+    await expect(publicWebcams).toHaveJSProperty('open', true);
+    await expect(publicWebcams.locator('.mc-public-feed-section')).toHaveCount(3);
+    await expect(publicWebcams.locator('.mc-live-news-tile')).toHaveCount(5);
+
+    await expect(page.locator('.mc-cc-head')).not.toContainText(/\b\d+\s+LIVE\b/i);
+    assertNoErrors(errors, 'stable live-source disclosures');
+  });
+
+  test('1j. Miami Beach wrapper accepts only curated feed identifiers', async ({ page }) => {
+    await page.goto(`${BASE_URL}/player/external-feed.html?feed=mb-1st-street`);
+    await expect(page.locator('#label')).toHaveText('1st Street Beach · Ocean Rescue');
+    await expect(page.locator('iframe')).toHaveAttribute('src', /^https:\/\/relay\.ozolio\.com\/pub\.api\?/);
+    await expect(page.locator('#error')).toBeHidden();
+
+    await page.goto(`${BASE_URL}/player/external-feed.html?feed=https%3A%2F%2Fexample.com`);
+    await expect(page.locator('iframe')).toHaveCount(0);
+    await expect(page.locator('#error')).toBeVisible();
+  });
+
+  test('1k. Guest Computer player is clean full-stage LL-HLS without forced segment lag', async ({ page }) => {
+    await page.route('**/player/live-source/guest-computer/**', async (route) => {
+      await route.fulfill({ status: 503, contentType: 'text/plain', body: 'fixture unavailable' });
+    });
+    await page.goto(`${BASE_URL}/player/live-source.html?source=guest-computer&audio=1`);
+    await expect(page.locator('.stage')).toBeVisible();
+    await expect(page.locator('.bar')).toHaveCount(0);
+    await expect(page.locator('#meta')).toBeHidden();
+
+    const geometry = await page.locator('video').evaluate((video) => {
+      const rect = video.getBoundingClientRect();
+      return { width: rect.width, height: rect.height, fit: getComputedStyle(video).objectFit };
+    });
+    expect(geometry).toEqual({ width: 1440, height: 900, fit: 'contain' });
+
+    const hlsConfig = await page.evaluate(() => ({
+      lowLatencyMode: window.__hls?.userConfig?.lowLatencyMode,
+      maxLiveSyncPlaybackRate: window.__hls?.userConfig?.maxLiveSyncPlaybackRate,
+      forcedSegmentCount: Object.prototype.hasOwnProperty.call(window.__hls?.userConfig || {}, 'liveSyncDurationCount'),
+    }));
+    expect(hlsConfig).toEqual({
+      lowLatencyMode: true,
+      maxLiveSyncPlaybackRate: 1.1,
+      forcedSegmentCount: false,
+    });
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -406,6 +505,7 @@ test.describe('Phase 2 — Feature flag ON: enterprise operator console', () => 
     // Step 4: Login (token from registration is still valid — same JWT secret + same DB)
     // But to be safe, login to get a fresh token
     await loginUser();
+    seedOperatorTopology();
   });
 
   test.afterAll(() => {
@@ -465,6 +565,62 @@ test.describe('Phase 2 — Feature flag ON: enterprise operator console', () => 
     expect(hasRoomOverview + hasLoadingState, 'Room overview did not render').toBeGreaterThan(0);
 
     assertNoErrors(errors, 'room overview');
+  });
+
+  test('2d. Operator Control prioritizes topology and keeps advanced routing secondary', async ({ page }) => {
+    const errors = attachErrorCollectors(page);
+    await setupAuth(page);
+    await page.goto(`${BASE_URL}/app#/operator-console`);
+
+    await expect(page.getByRole('heading', { name: 'Operator Control' })).toBeVisible({ timeout: 20000 });
+    await expect(page.locator('[data-topology-manager]')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Pair display' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Create custom wall' })).toBeVisible();
+    await expect(page.locator('[data-protected-wall="test-protected-wall"]')).toContainText('Protected Classroom Video Wall');
+    await expect(page.locator('[data-protected-wall="test-protected-wall"] [data-tm-edit-wall]')).toHaveCount(0);
+    await expect(page.locator('[data-protected-wall="test-protected-wall"] [data-tm-delete-wall]')).toHaveCount(0);
+    await expect(page.locator('[data-device-id="test-protected-display"]')).toContainText('Protected wall member');
+    await expect(page.locator('[data-device-id="test-protected-display"] button')).toHaveCount(0);
+
+    const advanced = page.locator('details.mc-e-routing-workspace');
+    await expect(advanced).not.toHaveAttribute('open', '');
+    await expect(advanced.locator('summary')).toHaveText('Advanced content routing');
+    await expect(page.locator('.mc-e-console > section').filter({ hasText: 'About' })).toHaveCount(0);
+
+    assertNoErrors(errors, 'focused Operator Control');
+  });
+
+  test('2e. Custom walls can be created and removed while protected walls reject direct mutation', async ({ page }) => {
+    const errors = attachErrorCollectors(page);
+    await setupAuth(page);
+    await page.goto(`${BASE_URL}/app#/operator-console`);
+    await expect(page.locator('[data-topology-manager]')).toBeVisible({ timeout: 20000 });
+
+    const protectedResponse = await page.request.put(`${BASE_URL}/api/walls/test-protected-wall`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+      data: { name: 'Must Not Change' },
+    });
+    expect(protectedResponse.status()).toBe(423);
+    await expect(protectedResponse.json()).resolves.toMatchObject({ code: 'PROTECTED_WALL' });
+
+    await page.getByRole('button', { name: 'Create custom wall' }).click();
+    const form = page.locator('[data-tm-wall-form]');
+    await form.locator('input[name="name"]').fill('Isolated Browser Test Wall');
+    await form.locator('input[value="test-display-a"]').check();
+    await form.locator('input[value="test-display-b"]').check();
+    await form.getByRole('button', { name: 'Create wall' }).click();
+
+    const customWall = page.locator('.mc-e-wall-row').filter({ hasText: 'Isolated Browser Test Wall' });
+    await expect(customWall).toContainText('2 displays · Custom wall');
+    await expect(customWall.getByRole('button', { name: 'Edit' })).toBeVisible();
+    await expect(customWall.getByRole('button', { name: 'Delete' })).toBeVisible();
+
+    page.on('dialog', async (dialog) => dialog.accept('DELETE'));
+    await customWall.getByRole('button', { name: 'Delete' }).click();
+    await expect(page.locator('.mc-e-wall-row').filter({ hasText: 'Isolated Browser Test Wall' })).toHaveCount(0);
+    await expect(page.locator('[data-protected-wall="test-protected-wall"]')).toBeVisible();
+
+    assertNoErrors(errors, 'custom wall lifecycle');
   });
 });
 

@@ -145,9 +145,14 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: 'device_ids or targets must select at least one display unless Live Program is explicitly selected' });
   }
 
-  // Validate at least one source (presentation_id counts as a valid source).
-  if (!content_id && !remote_url && !playlist_id && !presentation_id) {
-    return res.status(400).json({ error: 'one of content_id, remote_url, playlist_id, or presentation_id is required' });
+  // A broadcast is one authoritative source mutation. Reject ambiguous bodies
+  // instead of relying on precedence between fields; accepting both a camera
+  // URL and Guest Computer URL/content would let the UI label, audit identity,
+  // and playlist mutation disagree.
+  const sourceFields = Object.entries({ content_id, remote_url, playlist_id, presentation_id })
+    .filter(([, value]) => value !== undefined && value !== null && value !== '');
+  if (sourceFields.length !== 1) {
+    return res.status(400).json({ error: 'exactly one of content_id, remote_url, playlist_id, or presentation_id is required' });
   }
   if (content_id) {
     const decision = contentUseDecision(db, String(content_id), req.workspaceId, contextFromRequest(req));

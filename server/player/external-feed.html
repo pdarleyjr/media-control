@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>Miami Beach Public Webcam</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #000; color: #e6edf7; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { display: flex; flex-direction: column; }
+  header { min-height: 38px; display: flex; align-items: center; gap: 9px; padding: 7px 12px; background: #0f2748; border-bottom: 1px solid #294568; font-size: 13px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #22c55e; flex: 0 0 auto; }
+  .label { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .provider { margin-left: auto; color: #a8bad2; font-size: 11px; }
+  iframe { display: block; flex: 1 1 auto; width: 100%; min-height: 0; border: 0; background: #000; }
+  .error { flex: 1 1 auto; display: grid; place-items: center; padding: 24px; color: #a8bad2; text-align: center; }
+  .error[hidden] { display: none; }
+</style>
+</head>
+<body>
+  <header><span class="dot" aria-hidden="true"></span><span class="label" id="label">Miami Beach Public Webcam</span><span class="provider">Public feed</span></header>
+  <div class="error" id="error" hidden>That public webcam is not available.</div>
+<script>
+(function () {
+  'use strict';
+  // Exact allowlist only. The query string selects a friendly ID; it can never
+  // supply an arbitrary URL or provider camera identifier.
+  var feeds = Object.freeze({
+    'mb-1st-street': Object.freeze({ label: '1st Street Beach · Ocean Rescue', url: 'https://relay.ozolio.com/pub.api?cmd=embed&oid=EMB_ZUKF00000B65' }),
+    'mb-21st-street': Object.freeze({ label: '21st Street Beach · Ocean Rescue', url: 'https://relay.ozolio.com/pub.api?cmd=embed&oid=EMB_YCUT00000B6A' }),
+    'mb-ocean-drive-south': Object.freeze({ label: 'Ocean Drive · South Beach', url: 'https://relay.ozolio.com/pub.api?cmd=embed&oid=EMB_RANL0000044E' }),
+    'mb-ocean-drive-avalon': Object.freeze({ label: 'Ocean Drive · Avalon', url: 'https://relay.ozolio.com/pub.api?cmd=embed&oid=EMB_DRHL00000E71' }),
+    'mb-biscayne-port': Object.freeze({ label: 'Biscayne Bay & PortMiami', url: 'https://relay.ozolio.com/pub.api?cmd=embed&oid=EMB_FDVN00000417' })
+  });
+  var params = new URLSearchParams(location.search);
+  var selected = feeds[params.get('feed') || ''];
+  if (!selected) {
+    document.getElementById('error').hidden = false;
+    return;
+  }
+  document.title = selected.label;
+  document.getElementById('label').textContent = selected.label;
+  var frame = document.createElement('iframe');
+  frame.src = selected.url;
+  frame.title = selected.label;
+  frame.referrerPolicy = 'no-referrer';
+  frame.allow = 'autoplay; fullscreen';
+  frame.setAttribute('allowfullscreen', '');
+  document.body.appendChild(frame);
+}());
+</script>
+</body>
+</html>

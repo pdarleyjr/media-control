@@ -9,7 +9,10 @@ test('classroom camera player reconnects when video stalls', () => {
   assert.match(player, /lastOk/);
   assert.match(player, /Date\.now\(\)-lastOk\)>8000/);
   assert.match(player, /stallTO/);
-  assert.match(player, /networkError.*setTimeout\(connect/);
+  assert.match(player, /function scheduleReconnect\(\)/);
+  assert.match(player, /recoverFrom\('networkError','playback stalled'/);
+  assert.match(player, /case 'networkError': recoverFrom/);
+  assert.match(player, /if\(retryTO\) return/);
 });
 
 test('classroom camera player has retry button and error display', () => {
@@ -17,6 +20,29 @@ test('classroom camera player has retry button and error display', () => {
   assert.match(player, /addEventListener\('click',connect\)/);
   assert.match(player, /showErr/);
   assert.match(player, /clearErr/);
+});
+
+test('transient source restarts recover silently before exposing a sustained outage', () => {
+  assert.match(player, /outageStartedAt/);
+  assert.match(player, /outageTO=setTimeout/);
+  assert.match(player, /\},15000\)/);
+  assert.match(player, /reconnectAttempt/);
+  assert.match(player, /Math\.min\(5000,750\*Math\.pow\(1\.6,reconnectAttempt\+\+\)\)/);
+  assert.doesNotMatch(player, /FATAL ['"]?\+?type/);
+});
+
+test('LL-HLS honors MediaMTX part hold-back instead of buffering three full segments', () => {
+  assert.match(player, /lowLatencyMode:true/);
+  assert.match(player, /maxLiveSyncPlaybackRate:1\.1/);
+  assert.doesNotMatch(player, /liveSyncDurationCount\s*:/);
+});
+
+test('live source renders clean full-stage video without a persistent title or diagnostics', () => {
+  assert.doesNotMatch(player, /class="bar"/);
+  assert.match(player, /\.stage \{ position:fixed; inset:0/);
+  assert.match(player, /object-fit:contain/);
+  assert.match(player, /id="meta" hidden/);
+  assert.match(player, /window\.__mcEnableAudio/);
 });
 
 test('classroom camera player exposes only the canonical Anpviz source', () => {

@@ -123,16 +123,7 @@ async function load(app) {
           presentation_id: pid,
           include_live_stream: selection.includesLiveProgram,
         };
-        let r = await api.broadcast(payload);
-        if (r && r.code === 'CONFIRM_ALL_REQUIRED') {
-          const ok = await confirmDialog({
-            title: 'Present to ALL displays?',
-            message: `This takes over all ${r.count} display(s) in this workspace with the presentation.`,
-            confirmLabel: 'Present to all', cancelLabel: 'Cancel', tone: 'danger',
-          });
-          if (!ok) return;
-          r = await api.broadcast({ ...payload, confirm_all: true });
-        }
+        const r = await api.broadcast(payload);
         showToast(`Presenting to ${r.sent != null ? r.sent : ids.length} destination(s)`, 'success');
       } catch (err) {
         showToast(err.message || 'Broadcast failed', 'error');

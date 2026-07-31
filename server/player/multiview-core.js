@@ -93,7 +93,7 @@
     if (typeof u !== 'string' || !u) return false;
     if (u.indexOf('..') !== -1) return false;                       // no traversal
     if (BAD_CHARS.test(u) || hasControlChar(u)) return false;       // no markup/control chars
-    if (/^\/player\/(?:hls\.html|live-source\.html|site\.html|(?:deck|doc)\/[^/?#]+)(?:[?#]|$)/.test(u)) return true;
+    if (/^\/player\/(?:hls\.html|live-source\.html|external-feed\.html|site\.html|(?:deck|doc)\/[^/?#]+)(?:[?#]|$)/.test(u)) return true;
     if (u.indexOf('/api/content/') === 0) return true;              // uploaded file / thumbnail
     return /^https:\/\/(www\.)?youtube-nocookie\.com\/embed\/[A-Za-z0-9_-]{6,15}(\?[^\s]*)?$/.test(u);
   }
