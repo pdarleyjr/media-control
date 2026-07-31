@@ -33,6 +33,7 @@ import socket
 import struct
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 try:
@@ -406,8 +407,28 @@ def handle_start(session_id, environment):
         ["/usr/bin/systemctl", "start", unit],
         check=True, capture_output=True, text=True, timeout=30,
     )
-    audit("start", session_id, "ok")
-    return ""
+    last_error = None
+    for _ in range(100):
+        try:
+            pid, _fields = validate_active_unit(session_id)
+            if pid is not None:
+                audit("start", session_id, "ok")
+                return ""
+        except (OSError, ValueError) as exc:
+            # systemd can report the unit active while the fixed runner is
+            # still between its own validation and execve(/usr/bin/ffmpeg).
+            last_error = exc
+        time.sleep(0.05)
+
+    # This broker started the exact allowlisted unit, so it can safely stop
+    # that same unit if the runner never becomes the validated FFmpeg process.
+    subprocess.run(
+        ["/usr/bin/systemctl", "stop", unit],
+        check=False, capture_output=True, text=True, timeout=30,
+    )
+    remove_env_file(session_id)
+    detail = str(last_error) if last_error else "unit did not remain active"
+    raise ValueError(f"recording process did not reach validated identity: {detail}")
 
 
 def handle_stop(session_id):
