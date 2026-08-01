@@ -557,6 +557,19 @@
       const url = String(item.remote_url || item.asset_url || item.filepath || '');
       return /\/player\/(?:deck|doc)\//.test(url);
     }
+    function isRestorableMediaItem(item, restore) {
+      if (!item || !restore) return false;
+      const kind = String(restore.content_type || contentKindForItem(item) || '').toLowerCase();
+      const mime = String(item.mime_type || '').toLowerCase();
+      const url = String(item.remote_url || item.asset_url || item.filepath || '').toLowerCase();
+      return kind === 'video'
+        || kind === 'youtube'
+        || mime.startsWith('video/')
+        || /(?:youtube\.com|youtu\.be|\/player\/(?:hls|live-source)[/.])/.test(url);
+    }
+    function isRestorableStateItem(item, restore) {
+      return isRestorableSlideItem(item) || isRestorableMediaItem(item, restore);
+    }
     function normalizeDisplayStateRestore(state) {
       if (!state || typeof state !== 'object') return null;
       // Rebase every persisted state, including media without slide metadata,
@@ -567,19 +580,31 @@
       }
       const rawSlide = state.slide_index ?? state.slideIndex ?? state.page ?? state.page_index ?? state.slide;
       const slide = parseInt(rawSlide, 10);
-      if (!Number.isFinite(slide) || slide < 1) return null;
       const rawTotal = state.slide_total ?? state.slideTotal ?? state.total_pages ?? state.totalPages;
       const total = parseInt(rawTotal, 10);
+      const currentTime = Number(state.current_time ?? state.currentTime);
+      const duration = Number(state.duration);
+      const volume = Number(state.volume);
       const restore = {
         current_content_id: state.current_content_id || state.content_id || null,
         current_asset_id: state.current_asset_id || state.asset_id || state.content_id || null,
         content_type: state.content_type || state.media_type || state.kind || null,
-        slide_index: slide,
+        slide_index: Number.isFinite(slide) && slide >= 1 ? slide : null,
         slide_total: Number.isFinite(total) && total > 0 ? total : null,
+        current_time: Number.isFinite(currentTime) && currentTime >= 0 ? currentTime : null,
+        duration: Number.isFinite(duration) && duration > 0 ? duration : null,
+        paused: typeof state.paused === 'boolean' ? state.paused : null,
+        muted: typeof state.muted === 'boolean' ? state.muted : null,
+        volume: Number.isFinite(volume) && volume >= 0 && volume <= 1 ? volume : null,
         restore_source: state.restore_source || null,
         restore_source_device_id: state.restore_source_device_id || null,
         updated_at: state.updated_at || null,
       };
+      const mediaKind = String(restore.content_type || '').toLowerCase();
+      const hasSlideRestore = restore.slide_index > 1;
+      const hasMediaRestore = (mediaKind === 'video' || mediaKind === 'youtube')
+        && (restore.current_time != null || restore.paused != null);
+      if (!hasSlideRestore && !hasMediaRestore) return null;
       if (Number.isInteger(revision) && revision >= 0) {
         restore.state_revision = revision;
       }
@@ -602,22 +627,35 @@
     }
     function shouldHoldStateReportForRestore(state) {
       const restore = pendingDisplayStateRestore;
-      if (!restore || restore.slide_index <= 1) return false;
+      if (!restore) return false;
       const item = getCurrentItem();
-      if (!isRestorableSlideItem(item) || !currentItemMatchesRestore(item, restore)) return false;
-      const currentSlide = parseInt(state && state.slide_index, 10);
-      return !Number.isFinite(currentSlide) || currentSlide !== restore.slide_index;
+      if (!currentItemMatchesRestore(item, restore)) return false;
+      if (isRestorableSlideItem(item) && restore.slide_index > 1) {
+        const currentSlide = parseInt(state && state.slide_index, 10);
+        return !Number.isFinite(currentSlide) || currentSlide !== restore.slide_index;
+      }
+      if (isRestorableMediaItem(item, restore)) {
+        if (restore.paused != null && state?.paused !== restore.paused) return true;
+        if (restore.current_time != null) {
+          const currentTime = Number(state?.current_time);
+          if (!Number.isFinite(currentTime) || Math.abs(currentTime - restore.current_time) > 1.5) return true;
+        }
+      }
+      return false;
     }
     function primeDisplayStateRestore(state, reason) {
       const restore = normalizeDisplayStateRestore(state);
-      if (!restore || restore.slide_index <= 1) {
+      if (!restore) {
         clearDisplayStateRestore();
         return false;
       }
       pendingDisplayStateRestore = restore;
       displayStateRestoreAttempt = 0;
       if (reason) {
-        console.log('[restore] pending slide ' + restore.slide_index + ' from ' + (restore.restore_source || 'display') + ' via ' + reason);
+        const target = restore.slide_index > 1
+          ? 'slide ' + restore.slide_index
+          : 'media state';
+        console.log('[restore] pending ' + target + ' from ' + (restore.restore_source || 'display') + ' via ' + reason);
       }
       return true;
     }
@@ -640,7 +678,7 @@
           displayStateRestoreTimer = setTimeout(retryRestore, 250);
           return;
         }
-        console.warn('[restore] failed to restore slide ' + pendingDisplayStateRestore.slide_index + ' after iframe readiness timeout');
+        console.warn('[restore] failed to restore persisted playback state after renderer readiness timeout');
         clearDisplayStateRestore();
         publishPlayerState({ force: true });
       }, 80);
@@ -839,11 +877,126 @@
       return posted;
     }
 
+    function completeMediaStateRestore(restore, reason) {
+      clearDisplayStateRestore();
+      console.log('[restore] restored media state via ' + (reason || restore.restore_source || 'playlist-update'));
+      publishPlayerState({ force: true });
+      return true;
+    }
+
+    function tryApplyMediaStateRestore(restore, reason) {
+      const item = getCurrentItem();
+      if (!isRestorableMediaItem(item, restore) || !currentItemMatchesRestore(item, restore)) {
+        return false;
+      }
+
+      const video = currentVideoEl || findControllableVideo();
+      if (video) {
+        let expectedTime = restore.current_time;
+        // Set the operator-pause sentinel before touching play/pause. Pending
+        // autoplay promises and the two-second startup fallback both consult it.
+        video.__mcOperatorPaused = restore.paused === true;
+        if (restore.volume != null) {
+          try { video.volume = restore.volume; } catch (_) {}
+        }
+        if (restore.muted != null) {
+          try { video.muted = restore.muted || !audioOutputAllowed(); } catch (_) {}
+        }
+        if (restore.current_time != null) {
+          if (video.readyState < 1) return false;
+          const upper = Number.isFinite(video.duration) && video.duration > 0
+            ? Math.max(0, video.duration - 0.05)
+            : restore.current_time;
+          const target = Math.min(restore.current_time, upper);
+          expectedTime = target;
+          if (Math.abs(Number(video.currentTime || 0) - target) > 0.75) {
+            try { video.currentTime = target; } catch (_) { return false; }
+          }
+        }
+        if (restore.paused === true) video.pause();
+        if (restore.paused === false && video.paused) {
+          if (!video.__mcRestorePlayPending) {
+            video.__mcRestorePlayPending = true;
+            Promise.resolve(video.play())
+              .catch(() => {})
+              .finally(() => { video.__mcRestorePlayPending = false; });
+          }
+          return false;
+        }
+        if (restore.paused != null && video.paused !== restore.paused) return false;
+        if (expectedTime != null
+            && Math.abs(Number(video.currentTime || 0) - expectedTime) > 1.5) return false;
+        return completeMediaStateRestore(restore, reason);
+      }
+
+      if (activeYtPlayer) {
+        try {
+          if (restore.current_time != null && typeof activeYtPlayer.seekTo === 'function') {
+            activeYtPlayer.seekTo(restore.current_time, true);
+          }
+          if (restore.muted === true && typeof activeYtPlayer.mute === 'function') activeYtPlayer.mute();
+          if (restore.muted === false && audioOutputAllowed() && typeof activeYtPlayer.unMute === 'function') activeYtPlayer.unMute();
+          if (restore.volume != null && typeof activeYtPlayer.setVolume === 'function') {
+            activeYtPlayer.setVolume(Math.round(restore.volume * 100));
+          }
+          if (restore.paused === true && typeof activeYtPlayer.pauseVideo === 'function') activeYtPlayer.pauseVideo();
+          if (restore.paused === false && typeof activeYtPlayer.playVideo === 'function') activeYtPlayer.playVideo();
+          const currentTime = typeof activeYtPlayer.getCurrentTime === 'function'
+            ? Number(activeYtPlayer.getCurrentTime())
+            : restore.current_time;
+          const paused = ytPlayerStateLabel() !== 'playing';
+          if (restore.paused != null && paused !== restore.paused) return false;
+          if (restore.current_time != null
+              && (!Number.isFinite(currentTime) || Math.abs(currentTime - restore.current_time) > 1.5)) return false;
+          return completeMediaStateRestore(restore, reason);
+        } catch (_) {
+          return false;
+        }
+      }
+
+      const iframe = document.querySelector('#playerContainer iframe, .wall-stage iframe, .zone iframe');
+      let childWindow = null;
+      try { childWindow = iframe?.contentWindow || null; } catch (_) { return false; }
+      if (!childWindow || typeof childWindow.handleAction !== 'function') return false;
+      const childUrl = String(iframe?.src || item?.remote_url || item?.asset_url || '').toLowerCase();
+      const restoreChildTime = /(?:\/live-source\/|\.m3u8(?:$|[?#]))/.test(childUrl)
+        ? null
+        : restore.current_time;
+      try {
+        if (restoreChildTime != null) {
+          childWindow.handleAction({
+            type: 'transport',
+            action: 'seek',
+            payload: { action: 'seek', position_seconds: restoreChildTime, restore: true },
+          });
+        }
+        if (restore.paused != null) {
+          childWindow.handleAction({
+            type: 'transport',
+            action: restore.paused ? 'pause' : 'play',
+            payload: { action: restore.paused ? 'pause' : 'play', restore: true },
+          });
+        }
+      } catch (_) {
+        return false;
+      }
+      const state = childWindow.__mcTransportState || null;
+      const childTime = Number(state?.current_time);
+      if (restore.paused != null && state?.paused !== restore.paused) return false;
+      if (restoreChildTime != null
+          && (!Number.isFinite(childTime) || Math.abs(childTime - restoreChildTime) > 1.5)) return false;
+      if (state) lastTransportState = state;
+      return completeMediaStateRestore(restore, reason);
+    }
+
     function tryApplyDisplayStateRestore(reason) {
       const restore = pendingDisplayStateRestore;
       if (!restore) return true;
 
       const item = getCurrentItem();
+      if (isRestorableMediaItem(item, restore) && currentItemMatchesRestore(item, restore)) {
+        return tryApplyMediaStateRestore(restore, reason);
+      }
       if (!isRestorableSlideItem(item) || !currentItemMatchesRestore(item, restore)) {
         console.log('[restore] skipped; current item does not match saved slide state');
         clearDisplayStateRestore();
@@ -1521,7 +1674,12 @@
 
     function currentPlaybackSnapshot() {
       const item = getCurrentItem();
-      const child = lastTransportState && typeof lastTransportState === 'object' ? lastTransportState : null;
+      // Child iframe state is authoritative only while the active renderer is
+      // actually a child. A late/hidden frame message must never replace the
+      // numeric clock and pause state of a mounted HTML5 or YouTube player.
+      const child = !currentVideoEl && !activeYtPlayer && lastTransportState && typeof lastTransportState === 'object'
+        ? lastTransportState
+        : null;
       const snapshot = {
         current_content_id: item?.content_id || null,
         content_instance_id: item?.content_instance_id || (item?.id != null ? String(item.id) : null),
@@ -1893,7 +2051,7 @@
       if (!socket?.connected || !config.deviceId) return null;
       const state = buildPlayerState();
       if (!options.force && shouldHoldStateReportForRestore(state)) {
-        console.log('[restore] holding state-report until slide ' + pendingDisplayStateRestore.slide_index + ' is applied');
+        console.log('[restore] holding state-report until persisted playback state is applied');
         return state;
       }
       playerStateRevision += 1;
@@ -3837,7 +3995,9 @@
       }
 
       renderContent(item);
-      if (pendingDisplayStateRestore && isRestorableSlideItem(item) && currentItemMatchesRestore(item, pendingDisplayStateRestore)) {
+      if (pendingDisplayStateRestore
+          && isRestorableStateItem(item, pendingDisplayStateRestore)
+          && currentItemMatchesRestore(item, pendingDisplayStateRestore)) {
         scheduleDisplayStateRestore('play-current-item');
       }
 
