@@ -940,7 +940,48 @@ async function setWallMode(wallId, mode) {
 async function setWallLayout(wallId, preset, expectedRevision) {
   if (!wallId || !preset) return;
   try {
-    await api.updateWallLayout(wallId, { preset, expected_revision: expectedRevision });
+    const cachedWall = (walls || []).find((candidate) => candidate.id === wallId);
+    const cachedMembers = wallDeviceIds(cachedWall);
+    let authoritativeWall = await api.getWall(wallId);
+    const authoritativeMembers = wallDeviceIds(authoritativeWall);
+    if (cachedMembers.length > 0 && !sameTargetSet(cachedMembers, authoritativeMembers)) {
+      throw new Error('Wall membership changed. The layout controls were refreshed; choose the layout again.');
+    }
+
+    const requestedLayoutIsCurrent = (wall) => (
+      wall?.layout_mode === 'groups' && wall?.layout?.preset === preset
+    );
+    if (!requestedLayoutIsCurrent(authoritativeWall)) {
+      const revision = Number(authoritativeWall?.layout_revision);
+      if (!Number.isInteger(revision) || revision < 0) {
+        throw new Error('The current wall revision is unavailable. The layout controls were refreshed.');
+      }
+      try {
+        authoritativeWall = await api.updateWallLayout(wallId, {
+          preset,
+          expected_revision: revision,
+        });
+      } catch (error) {
+        if (error?.code === 'LAYOUT_REVISION_CONFLICT') {
+          const refreshedWall = await api.getWall(wallId);
+          if (!sameTargetSet(authoritativeMembers, wallDeviceIds(refreshedWall))) {
+            throw new Error('Wall membership changed. The layout controls were refreshed; choose the layout again.');
+          }
+          if (requestedLayoutIsCurrent(refreshedWall)) {
+            authoritativeWall = refreshedWall;
+          } else {
+            const refreshedRevision = Number(refreshedWall?.layout_revision);
+            if (!Number.isInteger(refreshedRevision) || refreshedRevision < 0) throw error;
+            authoritativeWall = await api.updateWallLayout(wallId, {
+              preset,
+              expected_revision: refreshedRevision,
+            });
+          }
+        } else {
+          throw error;
+        }
+      }
+    }
     await loadWalls();
     if (targetApi) targetApi.setOptions(walls, commandCenterControlTargets(), routeableDisplays());
     const wall = (walls || []).find((candidate) => candidate.id === wallId);
@@ -955,9 +996,12 @@ async function setWallLayout(wallId, preset, expectedRevision) {
     if (targetApi) targetApi.setActive(wallTarget);
     handleTargetChange(wallTarget);
     showToast('Wall layout applied', 'success');
+    return true;
   } catch (error) {
+    await loadWalls().catch(() => {});
+    reconcileWallUi();
     showToast(error?.message || 'Wall layout could not be applied', 'error');
-    throw error;
+    return false;
   }
 }
 

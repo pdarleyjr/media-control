@@ -13,6 +13,7 @@ import { t } from '../../i18n.js';
  * @param {()=>object|null} opts.getActiveTarget
  * @param {()=>object|null} opts.getActiveWall   the wall object for the active target
  * @param {(wallId:string, mode:string)=>void|Promise<void>} opts.onSetWallMode
+ * @param {(wallId:string, preset:string, expectedRevision:number)=>void|Promise<void>} opts.onSetWallLayout
  * @param {(wall:object)=>boolean} [opts.hasContent] content currently assigned to the wall?
  * @returns {{ repaint: ()=>void }}
  */
@@ -28,6 +29,7 @@ export function mountSpanSplit(hostEl, { getActiveTarget, getActiveWall, onSetWa
   const wrap = hostEl.querySelector('.mc-span-split');
   const spanBtn = wrap.querySelector('[data-ss-mode="span"]');
   const splitBtn = wrap.querySelector('[data-ss-mode="split"]');
+  let layoutMutationPending = false;
 
   function repaint() {
     const tgt = getActiveTarget && getActiveTarget();
@@ -42,8 +44,12 @@ export function mountSpanSplit(hostEl, { getActiveTarget, getActiveWall, onSetWa
     spanBtn.setAttribute('aria-pressed', mode === 'span' ? 'true' : 'false');
     splitBtn.classList.toggle('is-active', mode === 'split');
     splitBtn.setAttribute('aria-pressed', mode === 'split' ? 'true' : 'false');
+    wrap.setAttribute('aria-busy', layoutMutationPending ? 'true' : 'false');
+    spanBtn.disabled = layoutMutationPending;
+    splitBtn.disabled = layoutMutationPending;
     wrap.querySelectorAll('[data-layout-preset]').forEach((button) => {
       button.hidden = (wall.devices || []).length !== 3;
+      button.disabled = layoutMutationPending;
       const activePreset = wall.layout?.preset === button.dataset.layoutPreset;
       button.classList.toggle('is-active', activePreset && wall.layout_mode === 'groups');
       button.setAttribute('aria-pressed', activePreset && wall.layout_mode === 'groups' ? 'true' : 'false');
@@ -54,11 +60,16 @@ export function mountSpanSplit(hostEl, { getActiveTarget, getActiveWall, onSetWa
     const tgt = getActiveTarget && getActiveTarget();
     if (!tgt || tgt.type !== 'wall') return;
     const wall = getActiveWall && getActiveWall();
-    if (!wall || wall.layout_mode === mode) return;
-    if (typeof onSetWallMode === 'function') {
-      try { await onSetWallMode(wall.id, mode); } catch { /* best-effort; host toasts */ }
-    }
+    if (!wall || wall.layout_mode === mode || layoutMutationPending) return;
+    layoutMutationPending = true;
     repaint();
+    try {
+      if (typeof onSetWallMode === 'function') await onSetWallMode(wall.id, mode);
+    } catch { /* host reports and reconciles the failure */ }
+    finally {
+      layoutMutationPending = false;
+      repaint();
+    }
   }
 
   spanBtn.addEventListener('click', () => onClick('span'));
@@ -67,9 +78,21 @@ export function mountSpanSplit(hostEl, { getActiveTarget, getActiveWall, onSetWa
     const button = event.target.closest('[data-layout-preset]');
     if (!button) return;
     const wall = getActiveWall && getActiveWall();
-    if (!wall || typeof onSetWallLayout !== 'function') return;
-    await onSetWallLayout(wall.id, button.dataset.layoutPreset, wall.layout?.revision || 0);
+    if (!wall || typeof onSetWallLayout !== 'function' || layoutMutationPending) return;
+    const expectedRevision = Number(wall.layout_revision);
+    layoutMutationPending = true;
     repaint();
+    try {
+      await onSetWallLayout(
+        wall.id,
+        button.dataset.layoutPreset,
+        Number.isInteger(expectedRevision) && expectedRevision >= 0 ? expectedRevision : 0,
+      );
+    } catch { /* host reports and reconciles the failure */ }
+    finally {
+      layoutMutationPending = false;
+      repaint();
+    }
   });
 
   return { repaint };
