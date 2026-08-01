@@ -759,6 +759,108 @@ test.describe('Phase 2 — Feature flag ON: enterprise operator console', () => 
     await contextA.close();
     await contextB.close();
   });
+
+  test('2g. A stale browser applies both hybrid presets without reload, conflict loops, or uncaught errors', async ({ browser }) => {
+    const contextA = await browser.newContext();
+    const contextB = await browser.newContext();
+    const pageA = await contextA.newPage();
+    const pageB = await contextB.newPage();
+    const errorsA = attachErrorCollectors(pageA);
+    const layoutConflicts = [];
+    const layoutConsoleErrors = [];
+    pageA.on('console', (message) => {
+      if (
+        message.type() === 'error'
+        && (
+          message.location().url.includes('/api/walls/test-protected-wall/layout')
+          || /Wall layout changed|LAYOUT_REVISION_CONFLICT/i.test(message.text())
+        )
+      ) {
+        layoutConsoleErrors.push(message.text());
+      }
+    });
+    pageA.on('response', (response) => {
+      if (
+        response.status() === 409
+        && response.url().includes('/api/walls/test-protected-wall/layout')
+      ) {
+        layoutConflicts.push(response.url());
+      }
+    });
+
+    await setupAuth(pageA);
+    await setupAuth(pageB);
+    await pageA.goto(`${BASE_URL}/app#/control?target=${encodeURIComponent('wall:test-protected-wall')}`);
+    await pageB.goto(`${BASE_URL}/app#/control?target=${encodeURIComponent('wall:test-protected-wall')}`);
+    await expect(pageA.locator('#connectionStatus .status-dot.online')).toBeVisible({ timeout: 15000 });
+    await expect(pageB.locator('#connectionStatus .status-dot.online')).toBeVisible({ timeout: 15000 });
+    await expect(pageA.locator('[data-layout-preset="span-left"]')).toBeVisible();
+    await expect(pageA.locator('[data-layout-preset="span-right"]')).toBeVisible();
+
+    try {
+      // Deliberately hold browser A on an old revision. The operator action
+      // must fetch the current revision before mutating instead of entering a
+      // permanent 409 loop.
+      await pageA.evaluate(async () => {
+        const socket = await import('/js/socket.js');
+        socket.getSocket()?.disconnect();
+      });
+
+      let response = await pageB.request.get(`${BASE_URL}/api/walls/test-protected-wall`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      let wall = await response.json();
+      response = await pageB.request.put(`${BASE_URL}/api/walls/test-protected-wall/layout`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+        data: {
+          preset: 'span-left',
+          expected_revision: Number(wall.layout_revision),
+        },
+      });
+      expect(response.ok()).toBe(true);
+
+      await pageA.locator('[data-layout-preset="span-right"]').click();
+      await expect(pageA.locator('[data-layout-preset="span-right"]')).toHaveAttribute('aria-pressed', 'true');
+
+      response = await pageB.request.get(`${BASE_URL}/api/walls/test-protected-wall`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      wall = await response.json();
+      expect(wall.layout_mode).toBe('groups');
+      expect(wall.layout.preset).toBe('span-right');
+
+      await pageA.locator('[data-layout-preset="span-left"]').click();
+      await expect(pageA.locator('[data-layout-preset="span-left"]')).toHaveAttribute('aria-pressed', 'true');
+
+      response = await pageB.request.get(`${BASE_URL}/api/walls/test-protected-wall`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      wall = await response.json();
+      expect(wall.layout_mode).toBe('groups');
+      expect(wall.layout.preset).toBe('span-left');
+      expect(layoutConflicts).toHaveLength(0);
+      expect(layoutConsoleErrors).toHaveLength(0);
+      expect(errorsA.page).toHaveLength(0);
+      expect(errorsA.failedRequests).toHaveLength(0);
+      expect(errorsA.mimeErrors).toHaveLength(0);
+    } finally {
+      const currentResponse = await pageB.request.get(`${BASE_URL}/api/walls/test-protected-wall`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (currentResponse.ok()) {
+        const current = await currentResponse.json();
+        await pageB.request.put(`${BASE_URL}/api/walls/test-protected-wall/layout`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+          data: {
+            preset: 'span-all',
+            expected_revision: Number(current.layout_revision),
+          },
+        });
+      }
+      await contextA.close();
+      await contextB.close();
+    }
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════

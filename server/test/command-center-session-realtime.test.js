@@ -42,3 +42,23 @@ test('wall layout controls are non-modal and apply immediately', () => {
   assert.doesNotMatch(controls, /confirmDialog/);
   assert.match(controls, /onSetWallLayout/);
 });
+
+test('hybrid wall controls use the authoritative wall revision and contain async failures', () => {
+  const controls = read('frontend/js/views/media-control/span-split.js');
+  const control = read('frontend/js/views/media-control.js');
+
+  assert.match(controls, /wall\.layout_revision/);
+  assert.doesNotMatch(controls, /wall\.layout\?\.revision \|\| 0/);
+  assert.match(controls, /layoutMutationPending/);
+  assert.match(controls, /catch \{ \/\* host reports and reconciles the failure \*\/ \}/);
+  assert.match(control, /await api\.getWall\(wallId\)/);
+  assert.match(control, /error\?\.code === 'LAYOUT_REVISION_CONFLICT'/);
+  assert.match(control, /await loadWalls\(\)/);
+});
+
+test('installable web app capability includes the standard and Apple compatibility metadata', () => {
+  const index = read('frontend/index.html');
+
+  assert.match(index, /<meta name="mobile-web-app-capable" content="yes">/);
+  assert.match(index, /<meta name="apple-mobile-web-app-capable" content="yes">/);
+});
