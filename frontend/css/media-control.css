@@ -2492,8 +2492,11 @@ body.cc-fullscreen { overflow: hidden; }
 body.cc-fullscreen .content {
   margin-left: 0 !important;
   padding: 0 !important;
-  height: 100vh;
+  height: 100dvh;
   overflow: hidden;
+}
+body.has-classroom-banner.cc-fullscreen .content {
+  height: calc(100dvh - var(--classroom-banner-height));
 }
 
 /* Web uses the shared application sidebar; the physical console uses the
@@ -2514,7 +2517,10 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
 }
 
 .mc-cc-shell {
-  height: 100vh;
+  /* #app owns the usable viewport (including any reserved application chrome).
+     Consuming that parent prevents a second viewport-height shell from extending
+     underneath the transport controls on short tablets. */
+  height: 100%;
   width: 100%;
   overflow: hidden;
   display: grid;
@@ -3376,7 +3382,7 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
 @media (max-width: 768px) {
   /* ── Shell: full-height dynamic viewport + safe-area ─────────────────── */
   body { min-height: 100dvh; }
-  .mc-cc-shell { height: 100dvh; padding-top: env(safe-area-inset-top); }
+  .mc-cc-shell { height: 100%; padding-top: env(safe-area-inset-top); }
 
   /* ── Header: compact, scrollable quick tabs ──────────────────────────── */
   .mc-cc-header { flex-wrap: wrap; gap: 4px; padding: 4px max(8px, env(safe-area-inset-right)) 4px max(8px, env(safe-area-inset-left)); min-height: 48px; }
@@ -3467,7 +3473,7 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
 
 /* ── Landscape phones (844×390 etc.) ─────────────────────────────────── */
 @media (max-width: 932px) and (orientation: landscape) and (max-height: 500px) {
-  .mc-cc-shell { height: 100dvh; }
+  .mc-cc-shell { height: 100%; }
   .mc-cc-canvas { height: calc(100dvh - 120px); }
   .mc-cc-tp-text { display: inline; font-size: 11px; }
   .mc-library-drawer { height: 100dvh !important; }
@@ -3478,7 +3484,7 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
    layout, and action controls remain a stable 48px touch rail. */
 @media (min-width: 769px) and (max-width: 1024px) and (max-height: 600px) and (orientation: landscape) {
   .mc-cc-shell {
-    height: 100dvh;
+    height: 100%;
     grid-template-rows: 56px minmax(0, 1fr);
   }
   .mc-cc-shell .mc-cc-head {
