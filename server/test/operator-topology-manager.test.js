@@ -44,3 +44,16 @@ test('custom wall creation combines only available displays and remains reversib
   assert.match(manager, /wall\.is_locked/);
   assert.match(manager, /Protected Classroom Video Wall/);
 });
+
+test('protected classroom walls expose operational layout configuration without edit or delete actions', () => {
+  const manager = read('frontend/js/components/operator-console/topology-manager.js');
+
+  assert.match(manager, /data-tm-configure-wall/);
+  assert.match(manager, /Configure layout/);
+  assert.match(manager, /#\/control\?target=/);
+  const protectedBlock = manager.slice(
+    manager.indexOf('if (wall.is_locked)'),
+    manager.indexOf('return `<article class="mc-e-wall-row">'),
+  );
+  assert.doesNotMatch(protectedBlock, /data-tm-edit-wall|data-tm-delete-wall/);
+});

@@ -153,6 +153,10 @@ let stateSyncHandler = null;
 let playbackStateHandler = null;  // playback-state listener (bridged from dashboard socket)
 let screenshotReadyHandler = null;
 let prefSyncHandler = null;  // cross-session preference convergence (task §11)
+let wallChangedHandler = null;
+let roomSnapshotWallHandler = null;
+let wallRefreshTimer = null;
+let wallRefreshGeneration = 0;
 let multiviewEscapeHandler = null;
 let selectedIds = [];   // ids on the stage; re-hydrated from the server, persisted on change
 let wallMemberIds = new Set();   // device ids owned by a video wall (never their own card)
@@ -181,17 +185,117 @@ const BACKGROUND_PREVIEW_INTERVAL_MS = 60000;
 
 // Build the set of device ids that belong to a video wall — those devices are
 // represented by the wall card, never their own (mirrors dashboard.js:789-793).
-async function loadWalls() {
+async function fetchWalls() {
   try {
-    walls = await api.getWalls();
-    if (!Array.isArray(walls)) walls = [];
-  } catch { walls = []; }
+    const result = await api.getWalls();
+    return Array.isArray(result) ? result : [];
+  } catch {
+    return [];
+  }
+}
+
+function applyWalls(nextWalls) {
+  walls = Array.isArray(nextWalls) ? nextWalls : [];
   wallMemberIds = new Set();
   for (const w of walls) {
     for (const d of (w.devices || [])) {
       if (d && d.device_id) wallMemberIds.add(d.device_id);
     }
   }
+}
+
+function wallsFromRoomSnapshot(snapshot) {
+  const roomWalls = snapshot?.layoutState?.walls;
+  if (!Array.isArray(roomWalls)) return null;
+  const displaysById = new Map(displayState.getAll().map((display) => [String(display.id), display]));
+  return roomWalls.map((wall) => ({
+    id: wall.id,
+    name: wall.name,
+    grid_cols: wall.gridColumns,
+    grid_rows: wall.gridRows,
+    sync_mode: wall.syncMode,
+    layout_mode: wall.layoutMode || 'span',
+    is_locked: wall.locked ? 1 : 0,
+    leader_device_id: wall.leaderDeviceId,
+    content_id: wall.contentId,
+    playlist_id: wall.playlistId,
+    player_x: wall.playerRect?.x ?? null,
+    player_y: wall.playerRect?.y ?? null,
+    player_width: wall.playerRect?.width ?? null,
+    player_height: wall.playerRect?.height ?? null,
+    layout_revision: Number(wall.layoutRevision) || 0,
+    layout: wall.layout || null,
+    updated_at: wall.updatedAt,
+    devices: (wall.members || []).map((member) => ({
+      device_id: member.deviceId,
+      device_name: displaysById.get(String(member.deviceId))?.name || member.deviceId,
+      device_status: displaysById.get(String(member.deviceId))?.status || null,
+      grid_col: member.gridColumn,
+      grid_row: member.gridRow,
+      rotation: member.rotation || 0,
+      canvas_x: member.viewport?.x ?? null,
+      canvas_y: member.viewport?.y ?? null,
+      canvas_width: member.viewport?.width ?? member.displayWidth ?? null,
+      canvas_height: member.viewport?.height ?? member.displayHeight ?? null,
+      screen_width: member.displayWidth ?? null,
+      screen_height: member.displayHeight ?? null,
+    })),
+  }));
+}
+
+async function loadWalls() {
+  applyWalls(await fetchWalls());
+}
+
+function reconcileWallUi() {
+  pruneSelection();
+  targetApi?.setOptions?.(walls, commandCenterControlTargets(), routeableDisplays());
+
+  const activeRef = activeTarget?.id
+    ? `${activeTarget.type || 'display'}:${activeTarget.id}`
+    : null;
+  const refreshedTarget = validatePersistedTarget(activeRef) || chooseDefaultFocusTarget();
+  if (refreshedTarget) {
+    targetApi?.setActive?.(refreshedTarget);
+    restoringTarget = true;
+    try { handleTargetChange(refreshedTarget); } finally { restoringTarget = false; }
+  } else {
+    activeTarget = null;
+    activeControlTarget = null;
+    commandCenterState = setControlTarget(commandCenterState, null);
+    paintStage();
+    paintSummary();
+  }
+  spanSplitApi?.repaint?.();
+  paintChips();
+}
+
+async function refreshWallsFromSocket(generation) {
+  const nextWalls = await fetchWalls();
+  if (generation !== wallRefreshGeneration) return;
+  applyWalls(nextWalls);
+  reconcileWallUi();
+}
+
+function applyRoomSnapshotWalls(snapshot) {
+  const nextWalls = wallsFromRoomSnapshot(snapshot);
+  if (!nextWalls) return;
+  wallRefreshGeneration += 1;
+  if (wallRefreshTimer) {
+    clearTimeout(wallRefreshTimer);
+    wallRefreshTimer = null;
+  }
+  applyWalls(nextWalls);
+  reconcileWallUi();
+}
+
+function scheduleWallRefresh() {
+  const generation = ++wallRefreshGeneration;
+  if (wallRefreshTimer) clearTimeout(wallRefreshTimer);
+  wallRefreshTimer = setTimeout(() => {
+    wallRefreshTimer = null;
+    refreshWallsFromSocket(generation).catch(() => {});
+  }, 50);
 }
 
 function layoutGroupTargets() {
@@ -2812,6 +2916,13 @@ pruneSelection();
     onSetWallLayout: setWallLayout,
     hasContent: wallHasContent,
   });
+  // Register topology convergence as soon as the target + layout controls exist.
+  // A second operator can change the wall while the rest of this view is still
+  // mounting; subscribing here closes that startup race.
+  wallChangedHandler = scheduleWallRefresh;
+  socketOn('wall-changed', wallChangedHandler);
+  roomSnapshotWallHandler = applyRoomSnapshotWalls;
+  socketOn('room-snapshot', roomSnapshotWallHandler);
   screensaverApi = mountScreensaverRow(document.getElementById('mc-screensaver-host'));
   // Dock callbacks reference toggleMultiview (a hoisted function declaration below)
   // and openAddPicker (module-level); both resolve at click time, well after the
@@ -2832,10 +2943,17 @@ pruneSelection();
     getActiveTargetDeviceIds: activeTargetDeviceIds,
     getDisplayState: () => displayState,
   });
-  // Always open in a focused wall/display view (task §5/§6). Restore the last
-  // valid focused target the operator used, validated against the catalog, with
-  // safe fallbacks. Restoring the view emits NO playback command.
-  restoreLastFocusedTarget();
+  // A direct Configure layout action takes precedence for this navigation.
+  // Otherwise restore the last valid focused target with safe fallbacks.
+  const routeTargetRef = new URLSearchParams(routeHash.split('?')[1] || '').get('target');
+  const routeTarget = validatePersistedTarget(routeTargetRef);
+  if (routeTarget) {
+    targetApi?.setActive?.(routeTarget);
+    restoringTarget = true;
+    try { handleTargetChange(routeTarget); } finally { restoringTarget = false; }
+  } else {
+    restoreLastFocusedTarget();
+  }
   paintToolbox();
 
   // Phase-2 non-silent ack: surface command:ack ok:false as a toast + chip flip,
@@ -3012,9 +3130,8 @@ pruneSelection();
   // chooser can make first-click Media Control shares fail intermittently.
   screenShareEngine.init().catch(() => {});
 
-  // Fresh data (status, screenshots, wall changes) repaints the stage. The
-  // store re-fetches walls-affecting changes via its own 'wall-changed' refresh;
-  // we re-derive wall membership opportunistically on each repaint cycle.
+  // Fresh display data repaints the stage. Wall topology has its own scoped
+  // socket listener below because the display store does not own wall records.
   unsub = displayState.subscribe((displayList = []) => {
     for (const display of displayList) {
       if (display && display.online === false) screenshotPoller?.markOffline(display.id);
@@ -3099,6 +3216,16 @@ export function unmount() {
   }
   try { if (playbackStateHandler) socketOff('playback-state', playbackStateHandler); } catch (_) {}
   if (prefSyncHandler) { try { socketOff('control-preferences-updated', prefSyncHandler); } catch (_) {} prefSyncHandler = null; }
+  if (wallChangedHandler) {
+    try { socketOff('wall-changed', wallChangedHandler); } catch (_) {}
+    wallChangedHandler = null;
+  }
+  if (roomSnapshotWallHandler) {
+    try { socketOff('room-snapshot', roomSnapshotWallHandler); } catch (_) {}
+    roomSnapshotWallHandler = null;
+  }
+  wallRefreshGeneration += 1;
+  if (wallRefreshTimer) { clearTimeout(wallRefreshTimer); wallRefreshTimer = null; }
   teardownMultiview();    // stop any local audio monitor so it can't keep playing
   closeViewModal();       // dismiss any open room-setup overlay (e.g. Schedules)
   stopPreviewRefresh();   // stop poking players once we leave the control surface

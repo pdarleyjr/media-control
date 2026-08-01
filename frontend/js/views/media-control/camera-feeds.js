@@ -7,6 +7,7 @@ import { api } from '../../api.js';
 import { attachTileHandlers } from './toolbox.js';
 import {
   LIVE_NEWS_CATALOG,
+  LIVE_NEWS_GROUPS,
   LIVE_SOURCE_CATALOG,
   MIAMI_BEACH_FEED_GROUPS,
 } from './camera-feeds-catalog.js';
@@ -100,6 +101,16 @@ function publicWebcamGroupsHtml() {
     </section>`).join('');
 }
 
+function newsGroupsHtml() {
+  return LIVE_NEWS_GROUPS.map((group) => `
+    <section class="mc-public-feed-section mc-news-feed-section" aria-labelledby="mc-news-feed-${esc(group.id)}">
+      <h4 id="mc-news-feed-${esc(group.id)}">${esc(group.title)}</h4>
+      <div class="mc-tile-grid mc-live-source-grid">
+        ${group.feeds.map(newsTileHtml).join('')}
+      </div>
+    </section>`).join('');
+}
+
 function captureDisclosureState(container) {
   const state = container._feedDisclosureState instanceof Map
     ? container._feedDisclosureState
@@ -114,7 +125,8 @@ function captureDisclosureState(container) {
 function restoreDisclosureState(container, state) {
   container.querySelectorAll('details[data-feed-group-id]').forEach((group) => {
     const id = group.dataset.feedGroupId;
-    if (state.has(id)) group.open = state.get(id) === true;
+    const defaultOpen = id === 'news' || id === 'miami-beach';
+    group.open = state.has(id) ? state.get(id) === true : defaultOpen;
     group.addEventListener('toggle', () => {
       state.set(id, group.open === true);
     });
@@ -149,8 +161,8 @@ export async function renderCameraFeedsTab(container, { selectedIds, onAfterSend
           <strong>${esc(t('mc.cf.group.news'))}</strong>
           <span>${LIVE_NEWS_CATALOG.length}</span>
         </summary>
-        <div class="mc-tile-grid mc-live-source-grid">
-          ${LIVE_NEWS_CATALOG.map(newsTileHtml).join('')}
+        <div class="mc-public-feed-groups">
+          ${newsGroupsHtml()}
         </div>
       </details>
       <details class="mc-live-news-group mc-public-webcams-group" data-feed-group-id="miami-beach">

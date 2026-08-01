@@ -261,7 +261,7 @@ test('preset identity is derived from ordered member ids, not group lengths', ()
 
 test('layout endpoint uses optimistic revision checks and one atomic transaction', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'routes', 'video-walls.js'), 'utf8');
-  assert.match(source, /router\.put\('\/:id\/layout', requireWallWrite/);
+  assert.match(source, /router\.put\('\/:id\/layout', requireWallOperate/);
   assert.match(source, /LAYOUT_REVISION_CONFLICT/);
   assert.match(source, /const tx = db\.transaction\(\(\) => \{/);
   assert.match(source, /SET layout_mode = \?, layout_json = \?, layout_revision = \?/);

@@ -753,6 +753,42 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await context.close();
   });
 
+  test('Lenovo 838x500 landscape keeps the display canvas above 48px transport controls', async ({ browser }) => {
+    const context = await browser.newContext({
+      viewport: { width: 838, height: 500 }, deviceScaleFactor: 1, isMobile: false, hasTouch: true,
+    });
+    const page = await context.newPage();
+    await page.addInitScript(({ token, user }) => {
+      localStorage.setItem('token', token);
+      localStorage.setItem('user', JSON.stringify(user));
+      localStorage.setItem('rd_onboarded', '1');
+    }, { token: authToken, user: { id: userId, email: TEST_EMAIL, name: 'Mobile Test', role: 'platform_admin' } });
+    await page.goto(`${BASE_URL}/app#/control`, { waitUntil: 'networkidle' });
+    await expect(page.locator('.mc-cc-shell')).toBeVisible();
+    await page.evaluate(() => {
+      const transport = document.querySelector('.mc-cc-tp-row');
+      if (transport) transport.hidden = false;
+    });
+
+    const stage = await page.locator('.mc-stage.mc-cc-canvas').boundingBox();
+    const controls = await page.locator('.mc-cc-controls').boundingBox();
+    expect(stage.y + stage.height, 'display canvas must end before controls begin').toBeLessThanOrEqual(controls.y + 1);
+    expect(controls.y + controls.height, 'controls remain inside the viewport').toBeLessThanOrEqual(500);
+
+    const transportButtons = page.locator('.mc-cc-tp-btn:visible');
+    expect(await transportButtons.count()).toBeGreaterThan(0);
+    for (let index = 0; index < await transportButtons.count(); index += 1) {
+      const box = await transportButtons.nth(index).boundingBox();
+      expect(box.height, `transport button ${index} touch height`).toBeGreaterThanOrEqual(48);
+    }
+    const overflow = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      innerWidth: window.innerWidth,
+    }));
+    expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.innerWidth);
+    await context.close();
+  });
+
   test('desktop baseline 1920x1080 — target nav still visible', async ({ browser }) => {
     const context = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
     const page = await context.newPage();

@@ -9,23 +9,41 @@ function read(relPath) {
   return fs.readFileSync(path.join(__dirname, '..', '..', relPath), 'utf8');
 }
 
-test('protected Classroom Video Walls reject every configuration mutation server-side', () => {
+test('protected Classroom Video Walls allow operation but reject structural mutation server-side', () => {
   const route = read('server/routes/video-walls.js');
 
-  assert.match(route, /function rejectProtectedWallMutation\(/);
+  assert.match(route, /function requireWallOperate\(/);
+  assert.match(route, /function rejectProtectedWallStructuralMutation\(/);
+  assert.match(route, /PROTECTED_WALL_OPERATION_FIELDS/);
+  assert.match(route, /router\.put\('\/:id\/layout', requireWallOperate/);
+  const layoutStart = route.indexOf("router.put('/:id/layout'");
+  assert.doesNotMatch(route.slice(layoutStart, layoutStart + 420), /rejectProtectedWallStructuralMutation\(req, res\)/);
+
   for (const signature of [
-    "router.put('/:id'",
-    "router.put('/:id/layout'",
     "router.put('/:id/devices'",
     "router.put('/:id/regions/sync'",
     "router.delete('/:id'",
   ]) {
     const start = route.indexOf(signature);
     assert.notEqual(start, -1, `${signature} route is present`);
-    assert.match(route.slice(start, start + 420), /rejectProtectedWallMutation\(req, res\)/);
+    assert.match(route.slice(start, start + 420), /rejectProtectedWallStructuralMutation\(req, res\)/);
   }
+  const generalUpdate = route.indexOf("router.put('/:id'");
+  assert.match(route.slice(generalUpdate, generalUpdate + 520), /requireWallOperate/);
+  assert.match(route.slice(generalUpdate, generalUpdate + 520), /rejectProtectedWallStructuralMutation\(req, res,\s*\{\s*allowOperations:\s*true\s*\}\)/);
   assert.doesNotMatch(route, /'layout_mode',\s*\n\s*'is_locked'/);
   assert.match(route, /code: 'PROTECTED_WALL'/);
+});
+
+test('workspace viewers can operate only protected classroom targets', () => {
+  const wallRoute = read('server/routes/video-walls.js');
+  const broadcastRoute = read('server/routes/broadcast.js');
+
+  assert.match(wallRoute, /wall\.is_locked/);
+  assert.match(wallRoute, /workspace_viewer/);
+  assert.match(broadcastRoute, /function allTargetsBelongToProtectedWalls\(/);
+  assert.match(broadcastRoute, /include_live_stream !== true/);
+  assert.match(broadcastRoute, /Read-only access/);
 });
 
 test('operator-created custom walls cannot claim protected status', () => {

@@ -165,7 +165,7 @@ async function reconcileContentMutation(id, desired, mutate) {
 export const api = {
   getSystemVersion: () => request('/system/version'),
   // Devices
-  getDevices: () => request('/devices'),
+  getDevices: () => request('/devices', { cache: 'no-store' }),
   getDevice: (id) => request(`/devices/${id}`),
   updateDevice: (id, data) => request(`/devices/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteDevice: (id, etag) => request(`/devices/${id}`, {
@@ -495,7 +495,7 @@ export const api = {
   sendGroupCommand: (groupId, type, payload) => request(`/groups/${groupId}/command`, { method: 'POST', body: JSON.stringify({ type, payload }) }),
 
   // Video walls
-  getWalls: () => request('/walls'),
+  getWalls: () => request('/walls', { cache: 'no-store' }),
   getWall: (id) => request(`/walls/${id}`),
   createWall: (data) => request('/walls', { method: 'POST', body: JSON.stringify(data) }),
   setWallDevices: (id, devices, expected_revision) => request(`/walls/${id}/devices`, { method: 'PUT', body: JSON.stringify({ devices, expected_revision }) }),

@@ -44,6 +44,28 @@ function sourceIdentity({ contentId, playlistId, presentationId, remoteUrl }) {
   return { type: 'remote_url', id: `sha256:${digest}` };
 }
 
+// A workspace viewer is normally read-only. Classroom operation is the narrow
+// exception requested by policy: every selected physical display must currently
+// belong to a protected wall in the same workspace. The authoritative join keeps
+// this fail-closed for removed members, custom walls, mixed selections, and
+// cross-workspace ids.
+function allTargetsBelongToProtectedWalls(database, workspaceId, deviceIds) {
+  const ids = [...new Set((deviceIds || []).map(String).filter(Boolean))];
+  if (!workspaceId || ids.length === 0) return false;
+  const placeholders = ids.map(() => '?').join(', ');
+  const row = database.prepare(`
+    SELECT COUNT(DISTINCT d.id) AS count
+    FROM devices d
+    JOIN video_wall_devices vwd ON vwd.device_id = d.id
+    JOIN video_walls w ON w.id = vwd.wall_id
+    WHERE d.workspace_id = ?
+      AND w.workspace_id = ?
+      AND w.is_locked = 1
+      AND d.id IN (${placeholders})
+  `).get(workspaceId, workspaceId, ...ids);
+  return Number(row?.count || 0) === ids.length;
+}
+
 router.get('/:requestId', (req, res) => {
   if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
   broadcastDelivery.sweepExpired();
@@ -123,9 +145,6 @@ router.post('/preflight', (req, res) => {
 
 router.post('/', async (req, res) => {
   if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
-  if (!req.actingAs && req.workspaceRole === 'workspace_viewer') {
-    return res.status(403).json({ error: 'Read-only access' });
-  }
 
   const {
     device_ids, targets: target_refs, content_id, remote_url, playlist_id, presentation_id,
@@ -229,6 +248,11 @@ router.post('/', async (req, res) => {
   const typedRoutes = typedRefs.length > 0
     ? typedResolution.routes.filter((route) => physicalTargets.includes(route.device_id))
     : physicalTargets.map((deviceId) => ({ type: 'display', device_id: deviceId }));
+  const viewerProtectedWallOperation = include_live_stream !== true
+    && allTargetsBelongToProtectedWalls(db, req.workspaceId, physicalTargets);
+  if (!req.actingAs && req.workspaceRole === 'workspace_viewer' && !viewerProtectedWallOperation) {
+    return res.status(403).json({ error: 'Read-only access' });
+  }
   const wallReplacementRoutes = typedRoutes.filter((route) => route.wall_replace === true);
   if (wallReplacementRoutes.length > 0 && confirm_wall_replace !== true) {
     return res.status(409).json({

@@ -3472,3 +3472,93 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
   .mc-cc-tp-text { display: inline; font-size: 11px; }
   .mc-library-drawer { height: 100dvh !important; }
 }
+
+/* Lenovo Tab One and comparable short landscape tablets. Keep the preview and
+   controls in separate flex tracks: the canvas yields height, while transport,
+   layout, and action controls remain a stable 48px touch rail. */
+@media (min-width: 769px) and (max-width: 1024px) and (max-height: 600px) and (orientation: landscape) {
+  .mc-cc-shell {
+    height: 100dvh;
+    grid-template-rows: 56px minmax(0, 1fr);
+  }
+  .mc-cc-shell .mc-cc-head {
+    height: 56px;
+    min-height: 56px;
+    padding-inline: 10px;
+    gap: 8px;
+  }
+  .mc-cc-logo { width: 36px; height: 36px; min-width: 36px; min-height: 36px; }
+  .mc-cc-title { font-size: 16px !important; }
+  .mc-cc-head .mc-control-summary { display: none; }
+  .mc-cc-main {
+    padding: 6px 10px 8px;
+  }
+  .mc-cc-canvas-area {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .mc-cc-main .mc-stage.mc-cc-canvas,
+  .mc-cc-canvas {
+    height: 100%;
+    min-height: 0;
+    max-height: 100%;
+    max-width: min(100%, 740px);
+  }
+  .mc-cc-controls {
+    flex: 0 0 auto;
+    gap: 4px;
+    margin-top: 4px;
+  }
+  .mc-transport-row-host,
+  .mc-cc-controls .mc-action-dock-host {
+    width: 100%;
+    margin-top: 0;
+  }
+  .mc-cc-tp-row {
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+  .mc-cc-tp-btn,
+  .mc-ss-btn,
+  .mc-cc-saver-select,
+  .mc-dock-btn {
+    min-height: 48px;
+  }
+  .mc-cc-tp-btn {
+    min-width: 48px;
+    padding-inline: 12px;
+  }
+  .mc-cc-controls .mc-cc-sub-row {
+    width: 100%;
+    flex-wrap: nowrap;
+    justify-content: center;
+    gap: 6px;
+    margin-top: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+  .mc-action-dock {
+    width: 100%;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    gap: 6px;
+    padding: 0 2px 2px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+  }
+  .mc-dock-btn {
+    min-width: 48px;
+    padding-inline: 12px;
+  }
+  .mc-dock-add {
+    width: auto;
+    flex-direction: row;
+    padding: 0 12px;
+  }
+  .mc-dock-add-text {
+    writing-mode: horizontal-tb;
+    text-orientation: mixed;
+  }
+}

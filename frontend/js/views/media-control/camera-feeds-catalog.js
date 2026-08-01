@@ -36,6 +36,25 @@ export const LIVE_NEWS_CATALOG = Object.freeze([
   audio_policy: 'embedded',
 })));
 
+const newsById = new Map(LIVE_NEWS_CATALOG.map((source) => [source.id, source]));
+export const LIVE_NEWS_GROUPS = Object.freeze([
+  Object.freeze({
+    id: 'city',
+    title: 'City of Miami Beach',
+    feeds: Object.freeze(['news-mbtv'].map((id) => newsById.get(id))),
+  }),
+  Object.freeze({
+    id: 'english',
+    title: 'English Local News',
+    feeds: Object.freeze(['news-cbs', 'news-nbc6', 'news-local10', 'news-wsvn'].map((id) => newsById.get(id))),
+  }),
+  Object.freeze({
+    id: 'spanish',
+    title: 'Spanish Local News',
+    feeds: Object.freeze(['news-univision23', 'news-telemundo51'].map((id) => newsById.get(id))),
+  }),
+]);
+
 function publicWebcam(id, title) {
   return Object.freeze({
     id,
@@ -84,6 +103,7 @@ export const CAMERA_FEED_GROUPS = Object.freeze([
     id: 'news',
     nameKey: 'mc.cf.group.news',
     feeds: LIVE_NEWS_CATALOG,
+    groups: LIVE_NEWS_GROUPS,
   }),
   Object.freeze({
     id: 'miami-beach-public',

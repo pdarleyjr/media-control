@@ -34,6 +34,7 @@ let tmpDir = '';
 let authToken = '';
 let authUser = null;
 let workspaceId = '';
+let viewerToken = '';
 let serverLogs = [];
 
 // ── Server lifecycle helpers ────────────────────────────────────────
@@ -160,6 +161,14 @@ function seedOperatorTopology() {
     if (!resolvedWorkspace) throw new Error('Test workspace was not resolved');
 
     database.transaction(() => {
+      database.prepare(`
+        INSERT OR IGNORE INTO users (id, email, name, role, auth_provider, plan_id)
+        VALUES ('test-classroom-viewer', 'classroom-viewer@test.local', 'Classroom Viewer', 'user', 'local', 'enterprise')
+      `).run();
+      database.prepare(`
+        INSERT OR REPLACE INTO workspace_members (workspace_id, user_id, role)
+        VALUES (?, 'test-classroom-viewer', 'workspace_viewer')
+      `).run(resolvedWorkspace);
       const insertDevice = database.prepare(`
         INSERT INTO devices (id, user_id, workspace_id, name, pairing_code, status, wall_id)
         VALUES (?, ?, ?, ?, ?, 'offline', ?)
@@ -167,15 +176,26 @@ function seedOperatorTopology() {
       insertDevice.run('test-display-a', authUser.id, resolvedWorkspace, 'Available Display A', '810001', null);
       insertDevice.run('test-display-b', authUser.id, resolvedWorkspace, 'Available Display B', '810002', null);
       insertDevice.run('test-protected-display', authUser.id, resolvedWorkspace, 'Protected Display', '810003', 'test-protected-wall');
+      insertDevice.run('test-protected-display-2', authUser.id, resolvedWorkspace, 'Protected Display 2', '810004', 'test-protected-wall');
+      insertDevice.run('test-protected-display-3', authUser.id, resolvedWorkspace, 'Protected Display 3', '810005', 'test-protected-wall');
       database.prepare(`
         INSERT INTO video_walls (id, user_id, workspace_id, name, grid_cols, grid_rows, is_locked)
-        VALUES ('test-protected-wall', ?, ?, 'Classroom Video Walls Test Fixture', 1, 1, 1)
+        VALUES ('test-protected-wall', ?, ?, 'Classroom Video Walls Test Fixture', 3, 1, 1)
       `).run(authUser.id, resolvedWorkspace);
       database.prepare(`
         INSERT INTO video_wall_devices (wall_id, device_id, grid_col, grid_row, canvas_x, canvas_y, canvas_width, canvas_height)
-        VALUES ('test-protected-wall', 'test-protected-display', 0, 0, 0, 0, 1920, 1080)
+        VALUES
+          ('test-protected-wall', 'test-protected-display', 0, 0, 0, 0, 1920, 1080),
+          ('test-protected-wall', 'test-protected-display-2', 1, 0, 1920, 0, 1920, 1080),
+          ('test-protected-wall', 'test-protected-display-3', 2, 0, 3840, 0, 1920, 1080)
       `).run();
     })();
+    viewerToken = require('jsonwebtoken').sign({
+      id: 'test-classroom-viewer',
+      email: 'classroom-viewer@test.local',
+      role: 'user',
+      current_workspace_id: resolvedWorkspace,
+    }, JWT_SECRET, { algorithm: 'HS256', expiresIn: '1h' });
   } finally {
     database.close();
   }
@@ -432,17 +452,19 @@ test.describe('Phase 1 — Feature flag OFF: real app loads correctly', () => {
     await expect(page.locator('.mc-live-source-tile')).toHaveCount(1, { timeout: 20000 });
 
     const liveNews = page.locator('details[data-feed-group-id="news"]');
-    await liveNews.locator('summary').click();
     await expect(liveNews).toHaveJSProperty('open', true);
+    await expect(liveNews.locator('.mc-news-feed-section')).toHaveCount(3);
+    await expect(liveNews.locator('.mc-live-news-tile')).toHaveCount(7);
 
     // The source inventory refreshes every five seconds. The disclosure must
-    // retain operator state when the DOM is replaced by that refresh.
+    // retain an explicit operator close when the DOM is replaced by that refresh.
+    await liveNews.locator('summary').click();
+    await expect(liveNews).toHaveJSProperty('open', false);
     await page.waitForTimeout(6_250);
-    await expect(page.locator('details[data-feed-group-id="news"]')).toHaveJSProperty('open', true);
+    await expect(page.locator('details[data-feed-group-id="news"]')).toHaveJSProperty('open', false);
 
     const publicWebcams = page.locator('details[data-feed-group-id="miami-beach"]');
     await expect(publicWebcams.locator('summary')).toContainText('Miami Beach Public Webcams');
-    await publicWebcams.locator('summary').click();
     await expect(publicWebcams).toHaveJSProperty('open', true);
     await expect(publicWebcams.locator('.mc-public-feed-section')).toHaveCount(3);
     await expect(publicWebcams.locator('.mc-live-news-tile')).toHaveCount(5);
@@ -565,6 +587,20 @@ test.describe('Phase 2 — Feature flag ON: enterprise operator console', () => 
     assertNoErrors(errors, '#/operator-console flag on');
   });
 
+  test('2b2. Fresh authenticated sessions land on Command Center even when Operator Control is enabled', async ({ page }) => {
+    const errors = attachErrorCollectors(page);
+    await setupAuth(page);
+
+    await page.goto(`${BASE_URL}/app#/login`);
+    await page.waitForURL('**/app#/control', { timeout: 20000 });
+    await expect(page.locator('.mc-cc-shell')).toBeVisible();
+
+    await page.goto(`${BASE_URL}/app`);
+    await page.waitForURL('**/app#/control', { timeout: 20000 });
+    await expect(page.locator('.mc-cc-shell')).toBeVisible();
+    assertNoErrors(errors, 'Command Center session landing');
+  });
+
   test('2c. Room overview component renders', async ({ page }) => {
     const errors = attachErrorCollectors(page);
     await setupAuth(page);
@@ -594,6 +630,7 @@ test.describe('Phase 2 — Feature flag ON: enterprise operator console', () => 
     await expect(page.getByRole('button', { name: 'Pair display' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Create custom wall' })).toBeVisible();
     await expect(page.locator('[data-protected-wall="test-protected-wall"]')).toContainText('Protected Classroom Video Wall');
+    await expect(page.locator('[data-protected-wall="test-protected-wall"] [data-tm-configure-wall]')).toBeVisible();
     await expect(page.locator('[data-protected-wall="test-protected-wall"] [data-tm-edit-wall]')).toHaveCount(0);
     await expect(page.locator('[data-protected-wall="test-protected-wall"] [data-tm-delete-wall]')).toHaveCount(0);
     await expect(page.locator('[data-device-id="test-protected-display"]')).toContainText('Protected wall member');
@@ -607,7 +644,7 @@ test.describe('Phase 2 — Feature flag ON: enterprise operator console', () => 
     assertNoErrors(errors, 'focused Operator Control');
   });
 
-  test('2e. Custom walls can be created and removed while protected walls reject direct mutation', async ({ page }) => {
+  test('2e. Custom walls can be created and removed while protected walls allow layouts but reject identity mutation', async ({ page }) => {
     const errors = attachErrorCollectors(page);
     await setupAuth(page);
     await page.goto(`${BASE_URL}/app#/operator-console`);
@@ -619,6 +656,21 @@ test.describe('Phase 2 — Feature flag ON: enterprise operator console', () => 
     });
     expect(protectedResponse.status()).toBe(423);
     await expect(protectedResponse.json()).resolves.toMatchObject({ code: 'PROTECTED_WALL' });
+
+    const protectedWallBefore = await page.request.get(`${BASE_URL}/api/walls/test-protected-wall`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+    });
+    expect(protectedWallBefore.ok()).toBe(true);
+    const protectedWall = await protectedWallBefore.json();
+    const layoutResponse = await page.request.put(`${BASE_URL}/api/walls/test-protected-wall/layout`, {
+      headers: { Authorization: `Bearer ${viewerToken}` },
+      data: {
+        preset: 'split-all',
+        expected_revision: Number(protectedWall.layout_revision) || 0,
+      },
+    });
+    expect(layoutResponse.ok()).toBe(true);
+    await expect(layoutResponse.json()).resolves.toMatchObject({ layout_mode: 'split' });
 
     await page.getByRole('button', { name: 'Create custom wall' }).click();
     const form = page.locator('[data-tm-wall-form]');
@@ -632,12 +684,80 @@ test.describe('Phase 2 — Feature flag ON: enterprise operator console', () => 
     await expect(customWall.getByRole('button', { name: 'Edit' })).toBeVisible();
     await expect(customWall.getByRole('button', { name: 'Delete' })).toBeVisible();
 
+    const customWallsResponse = await page.request.get(`${BASE_URL}/api/walls`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+    });
+    const customWallRecord = (await customWallsResponse.json()).find((wall) => wall.name === 'Isolated Browser Test Wall');
+    const deniedViewerLayout = await page.request.put(`${BASE_URL}/api/walls/${customWallRecord.id}/layout`, {
+      headers: { Authorization: `Bearer ${viewerToken}` },
+      data: {
+        preset: 'span-all',
+        expected_revision: Number(customWallRecord.layout_revision) || 0,
+      },
+    });
+    expect(deniedViewerLayout.status()).toBe(403);
+
     page.on('dialog', async (dialog) => dialog.accept('DELETE'));
     await customWall.getByRole('button', { name: 'Delete' }).click();
     await expect(page.locator('.mc-e-wall-row').filter({ hasText: 'Isolated Browser Test Wall' })).toHaveCount(0);
     await expect(page.locator('[data-protected-wall="test-protected-wall"]')).toBeVisible();
 
     assertNoErrors(errors, 'custom wall lifecycle');
+  });
+
+  test('2f. Wall layout changes converge in another browser without reload', async ({ browser }) => {
+    const contextA = await browser.newContext();
+    const contextB = await browser.newContext();
+    const pageA = await contextA.newPage();
+    const pageB = await contextB.newPage();
+    await setupAuth(pageA);
+    await setupAuth(pageB);
+    await pageA.goto(`${BASE_URL}/app#/control?target=${encodeURIComponent('wall:test-protected-wall')}`);
+    await pageB.goto(`${BASE_URL}/app#/control?target=${encodeURIComponent('wall:test-protected-wall')}`);
+    await expect(pageA.locator('#connectionStatus .status-dot.online')).toBeVisible({ timeout: 15000 });
+    await expect(pageB.locator('#connectionStatus .status-dot.online')).toBeVisible({ timeout: 15000 });
+    await pageB.evaluate(async () => {
+      const socket = await import('/js/socket.js');
+      window.__wallChangedEvents = 0;
+      window.__roomSnapshotWallModes = [];
+      socket.on('wall-changed', () => { window.__wallChangedEvents += 1; });
+      socket.on('room-snapshot', (snapshot) => {
+        const fixture = snapshot?.layoutState?.walls?.find((wall) => wall.id === 'test-protected-wall');
+        window.__roomSnapshotWallModes.push(fixture?.layoutMode || null);
+      });
+    });
+
+    let wallResponse = await pageA.request.get(`${BASE_URL}/api/walls/test-protected-wall`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+    });
+    let wall = await wallResponse.json();
+    let changed = await pageA.request.put(`${BASE_URL}/api/walls/test-protected-wall/layout`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+      data: {
+        preset: 'split-all',
+        expected_revision: Number(wall.layout_revision) || 0,
+      },
+    });
+    expect(changed.ok()).toBe(true);
+    await expect(pageB.locator('[data-ss-mode="split"]')).toHaveAttribute('aria-pressed', 'true', { timeout: 2500 });
+
+    wallResponse = await pageA.request.get(`${BASE_URL}/api/walls/test-protected-wall`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+    });
+    wall = await wallResponse.json();
+    changed = await pageA.request.put(`${BASE_URL}/api/walls/test-protected-wall/layout`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+      data: {
+        preset: 'span-all',
+        expected_revision: Number(wall.layout_revision) || 0,
+      },
+    });
+    expect(changed.ok()).toBe(true);
+    await expect.poll(() => pageB.evaluate(() => window.__wallChangedEvents), { timeout: 2500 }).toBeGreaterThanOrEqual(2);
+    await expect.poll(() => pageB.evaluate(() => window.__roomSnapshotWallModes.at(-1)), { timeout: 2500 }).toBe('span');
+    await expect(pageB.locator('[data-ss-mode="span"]')).toHaveAttribute('aria-pressed', 'true', { timeout: 2500 });
+    await contextA.close();
+    await contextB.close();
   });
 });
 
