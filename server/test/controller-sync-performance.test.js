@@ -24,6 +24,22 @@ test('dashboard socket exposes selected target helpers and reselects after recon
   assert.match(source, /dashboardSocket\.on\('connect'[\s\S]*emitSelectedTarget\(\)/);
 });
 
+test('repeated room snapshots cannot create a dashboard target-selection event storm', () => {
+  const client = read('frontend/js/socket.js');
+  const server = read('server/ws/dashboardSocket.js');
+
+  assert.match(
+    client,
+    /selectedTarget\?\.target_type === targetType[\s\S]*selectedTarget\?\.target_id === targetId[\s\S]*return/,
+    'the browser should not re-emit an unchanged selected target during UI reconciliation',
+  );
+  assert.match(
+    server,
+    /socket\.currentTargetRoom === newRoom[\s\S]*socket\.currentTarget\?\.target_type === target_type[\s\S]*socket\.currentTarget\?\.target_id === target_id[\s\S]*return/,
+    'the server should ignore unchanged joins from stale dashboard clients before logging',
+  );
+});
+
 test('media control drag drop refreshes the active visual truth without polling every display', () => {
   const source = read('frontend/js/views/media-control.js');
   // Active tile refresh is bounded and routed through the instrumented

@@ -345,6 +345,9 @@ module.exports = function setupDashboardSocket(io) {
       const target_id = data && data.target_id;
       const newRoom = resolveTargetRoom(target_type, target_id);
       if (!newRoom) return;
+      if (socket.currentTargetRoom === newRoom
+          && socket.currentTarget?.target_type === target_type
+          && socket.currentTarget?.target_id === target_id) return;
       if (workspaceForTarget(target_type, target_id) !== socket.roomWorkspaceId) {
         socket.emit('dashboard:target-rejected', { target_type, target_id, reason: 'forbidden' });
         return;
