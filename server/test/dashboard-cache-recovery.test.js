@@ -48,9 +48,9 @@ test('controlled cache recovery is a POST (not GET), admin + same-origin + rate-
 test('dashboard service worker activates without a fragile precache batch', () => {
   const worker = fs.readFileSync(path.join(root, 'frontend', 'sw-admin.js'), 'utf8');
 
-  assert.match(worker, /rd-admin-v4/);
+  assert.match(worker, /rd-admin-v5/);
   assert.match(worker, /self\.skipWaiting\(\)/);
-  assert.match(worker, /e\.request\.method !== 'GET'/);
+  assert.match(worker, /request\.method !== 'GET'/);
   assert.match(worker, /\/\^rd-admin-\/\.test\(k\)/);
   assert.doesNotMatch(worker, /keys\.filter\(k => k !== CACHE\)/);
   assert.doesNotMatch(worker, /addAll\(/);

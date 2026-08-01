@@ -1,4 +1,4 @@
-const CACHE_NAME = 'rd-player-v11';
+const CACHE_NAME = 'rd-player-v12';
 
 // Install: skip waiting to activate immediately
 self.addEventListener('install', (event) => {
@@ -6,51 +6,52 @@ self.addEventListener('install', (event) => {
 });
 
 // Activate: claim clients immediately so the new SW takes over on next
-// navigation. Do NOT delete old caches — the network-first fallback needs
-// them. When the Cloudflare tunnel is slow/unreliable (which it is for the
-// classroom displays), the SW falls back to cache. If we deleted the old
-// cache on activation, the first reload after a SW bump would have NO cache
-// to fall back to, causing 503s that break the player's JS (no socket
-// connection, no content, blank wall). Keeping old caches means the fallback
-// always has SOMETHING to serve. New responses are written to CACHE_NAME
-// (v10), overwriting stale entries incrementally.
+// navigation. Keep prior shell caches as a rollback/offline fallback.
 self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim());
 });
 
-// Fetch handler — ONLY cache player page and static assets.
-// Content files (/uploads/content/) are NOT intercepted — the server sets
-// Cache-Control: public, max-age=2592000, immutable which lets the browser
-// cache them natively without SW complications (range requests, opaque
-// responses, video seeking, etc.)
-self.addEventListener('fetch', (event) => {
-  // Only handle GET requests
-  if (event.request.method !== 'GET') return;
+function isPlayerShellRequest(request) {
+  if (!request || request.method !== 'GET') return false;
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return false;
+  if (request.headers && request.headers.has('range')) return false;
+  if (url.pathname === '/socket.io/socket.io.js') return true;
+  if (url.pathname === '/player' || url.pathname === '/player/') return true;
+  // Cache only one-segment, static player shell files. Dynamic presentation,
+  // document, screenshot, asset, HLS, and camera paths have deeper routes or
+  // no static extension and must stay on the browser's native fetch path.
+  return /^\/player\/[^/]+\.(?:html|js|css|json|webmanifest|svg|png|ico)$/.test(url.pathname);
+}
 
-  const url = new URL(event.request.url);
-
-  // Player page and static assets: network-first, fall back to cache
-  if (url.pathname.startsWith('/player') || url.pathname === '/socket.io/socket.io.js') {
-    event.respondWith(
-      fetch(event.request).then(response => {
-        if (response.ok && response.type !== 'opaque') {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
-        }
-        return response;
-      }).catch(() =>
-        caches.match(event.request, { ignoreSearch: true }).then(cached =>
-          cached || new Response('Offline', {
-            status: 503,
-            statusText: 'Service Unavailable',
-            headers: { 'Content-Type': 'text/plain' }
-          })
-        )
-      )
-    );
-    return;
+function playerNetworkFirst(event) {
+  let cacheUpdate = Promise.resolve();
+  const responsePromise = fetch(event.request)
+    .then((response) => {
+      if (response.ok && response.type !== 'opaque') {
+        cacheUpdate = caches.open(CACHE_NAME)
+          .then(cache => cache.put(event.request, response.clone()))
+          .catch(() => {});
+      }
+      return response;
+    })
+    .catch(async () => {
+      const cached = await caches.match(event.request, { ignoreSearch: true }).catch(() => null);
+      return cached || new Response('Offline', {
+        status: 503,
+        statusText: 'Service Unavailable',
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+      });
+    });
+  if (typeof event.waitUntil === 'function') {
+    event.waitUntil(responsePromise.then(() => cacheUpdate).catch(() => {}));
   }
+  return responsePromise;
+}
 
-  // Everything else (content files, API calls, etc.): don't intercept.
-  // Returning without event.respondWith lets the browser handle it natively.
+// Fetch handler — cache only the small player shell. Content responses rely on
+// their server Cache-Control headers and native browser range/media handling.
+self.addEventListener('fetch', (event) => {
+  if (!isPlayerShellRequest(event.request)) return;
+  event.respondWith(playerNetworkFirst(event));
 });
