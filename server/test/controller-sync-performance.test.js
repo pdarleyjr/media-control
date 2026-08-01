@@ -264,11 +264,15 @@ test('media control inspector does not report an online wall as offline just bec
 
 test('device screenshots update the persisted dashboard preview snapshot', () => {
   const source = read('server/ws/deviceSocket.js');
-  assert.match(source, /function persistScreenshot\(deviceId, imageB64, capturedAt\)/);
+  assert.match(source, /const screenshotPersistChains = new Map\(\)/);
+  assert.match(source, /async function persistScreenshot\(deviceId, imageB64, capturedAt\)/);
+  assert.match(source, /await fs\.promises\.writeFile\(temporaryPath, buffer\)/);
+  assert.match(source, /await fs\.promises\.rename\(temporaryPath, finalPath\)/);
   assert.match(source, /stale_screenshot/);
   assert.match(source, /UPDATE screenshots SET filepath = \?, captured_at = \? WHERE id = \?/);
   assert.match(source, /INSERT INTO screenshots \(device_id, filepath, captured_at\) VALUES \(\?, \?, \?\)/);
-  assert.match(source, /persistScreenshot\(device_id, image_b64, captured_at \?\? timestamp\)/);
+  assert.match(source, /await persistScreenshot\(device_id, image_b64, captured_at \?\? timestamp\)/);
+  assert.doesNotMatch(source, /fs\.writeFileSync\(path\.join\(config\.screenshotsDir/);
 });
 
 test('document player publishes the actual rendered slide to the parent screenshot channel', () => {
