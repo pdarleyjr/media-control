@@ -269,12 +269,15 @@ export function selectTarget(targetType, targetId) {
     clearTarget();
     return;
   }
+  if (selectedTarget?.target_type === targetType
+      && selectedTarget?.target_id === targetId) return;
   selectedTarget = { target_type: targetType, target_id: targetId };
   try { sessionStorage.setItem(TARGET_KEY, JSON.stringify(selectedTarget)); } catch { /* ignore */ }
   emitSelectedTarget();
 }
 
 export function clearTarget() {
+  if (!selectedTarget) return;
   selectedTarget = null;
   try { sessionStorage.removeItem(TARGET_KEY); } catch { /* ignore */ }
   if (dashboardSocket && dashboardSocket.connected) dashboardSocket.emit('dashboard:clear-target');

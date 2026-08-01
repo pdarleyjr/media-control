@@ -497,6 +497,7 @@
     let pendingDisplayStateRestore = null;
     let displayStateRestoreTimer = null;
     let displayStateRestoreAttempt = 0;
+    let awaitingAuthoritativePlaylist = false;
     // Followers in a video wall must stay silent — N copies of the same audio
     // slightly out of sync produce a flanged echo across the wall. Only the
     // leader is allowed to make sound. This helper is the single source of
@@ -2050,6 +2051,9 @@
     function publishPlayerState(options = {}) {
       if (!socket?.connected || !config.deviceId) return null;
       const state = buildPlayerState();
+      if (awaitingAuthoritativePlaylist && !options.ack) {
+        return state;
+      }
       if (!options.force && shouldHoldStateReportForRestore(state)) {
         console.log('[restore] holding state-report until persisted playback state is applied');
         return state;
@@ -2571,6 +2575,7 @@
 
       socket.on('connect', () => {
         console.log('Connected');
+        awaitingAuthoritativePlaylist = !!(config.deviceId && (config.paired || config.deviceToken));
         if (receiverHealth) receiverHealth.markConnecting(_t('receiver_connecting'));
         else {
           // Clear any "reconnecting" overlay shown on disconnect/connect_error.
@@ -2741,6 +2746,7 @@
       socket.on('device:playlist-update', (data) => {
         console.log('Playlist update:', data.assignments?.length, 'items');
         acceptBroadcastDelivery(data);
+        awaitingAuthoritativePlaylist = false;
         handlePlaylistUpdate(data);
         // Refresh the dashboard preview after the new media has painted. The
         // later pass covers document conversion/iframe startup without making

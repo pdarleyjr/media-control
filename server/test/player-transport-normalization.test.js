@@ -404,6 +404,26 @@ test('video reconnect state normalizes into an executable pause and position res
   );
 });
 
+test('reconnecting players wait for authoritative playlist restore before reporting cached media state', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'player', 'index.html'), 'utf8');
+
+  assert.ok(html.includes('let awaitingAuthoritativePlaylist = false'), 'player should track the reconnect restore barrier');
+  assert.ok(
+    html.includes('awaitingAuthoritativePlaylist = !!(config.deviceId && (config.paired || config.deviceToken))'),
+    'managed players should raise the barrier before registering after a socket connect',
+  );
+  assert.match(
+    html,
+    /function publishPlayerState\(options = \{\}\)[\s\S]*if \(awaitingAuthoritativePlaylist && !options\.ack\)[\s\S]*return state/,
+    'cached position must not overwrite persisted state before the reconnect payload arrives',
+  );
+  assert.match(
+    html,
+    /socket\.on\('device:playlist-update'[\s\S]*awaitingAuthoritativePlaylist = false;[\s\S]*handlePlaylistUpdate\(data\)/,
+    'the first authoritative playlist payload should release the reporting barrier',
+  );
+});
+
 test('player rebases persisted revisions even when reconnect state has no slide metadata', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'player', 'index.html'), 'utf8');
   const normalizeStart = html.indexOf('function normalizeDisplayStateRestore(state)');
