@@ -753,7 +753,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await context.close();
   });
 
-  test('Lenovo 838x500 landscape keeps the display canvas above 48px transport controls', async ({ browser }) => {
+  test('Lenovo 838x500 landscape keeps the display canvas above 48px transport controls with app chrome', async ({ browser }) => {
     const context = await browser.newContext({
       viewport: { width: 838, height: 500 }, deviceScaleFactor: 1, isMobile: false, hasTouch: true,
     });
@@ -766,12 +766,19 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await page.goto(`${BASE_URL}/app#/control`, { waitUntil: 'networkidle' });
     await expect(page.locator('.mc-cc-shell')).toBeVisible();
     await page.evaluate(() => {
+      // Reproduce production app chrome that reserves space above #app. The
+      // Command Center shell must consume its parent, not another full viewport.
+      document.body.classList.add('has-classroom-banner');
       const transport = document.querySelector('.mc-cc-tp-row');
       if (transport) transport.hidden = false;
     });
+    await page.waitForTimeout(250);
 
+    const shell = await page.locator('.mc-cc-shell').boundingBox();
     const stage = await page.locator('.mc-stage.mc-cc-canvas').boundingBox();
     const controls = await page.locator('.mc-cc-controls').boundingBox();
+    expect(shell.y + shell.height, 'Command Center shell remains inside the usable viewport')
+      .toBeLessThanOrEqual(500);
     expect(stage.y + stage.height, 'display canvas must end before controls begin').toBeLessThanOrEqual(controls.y + 1);
     expect(controls.y + controls.height, 'controls remain inside the viewport').toBeLessThanOrEqual(500);
 
