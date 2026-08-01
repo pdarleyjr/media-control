@@ -44,15 +44,38 @@ function requireWallWrite(req, res, next) {
   next();
 }
 
-// Classroom Video Walls are provisioned operational assets, not editable user
-// records. Keep playback/routing available through the broadcast paths while
-// refusing every API that could alter their identity, geometry, membership,
-// regions, or lock. This guard is deliberately server-side so a stale client
-// or direct API call cannot bypass the UI's read-only presentation.
-function rejectProtectedWallMutation(req, res) {
+// Every authenticated workspace member may operate a protected classroom wall.
+// Custom walls retain the normal editor-or-higher write policy.
+function requireWallOperate(req, res, next) {
+  const wall = loadWallAccess(req, res, false);
+  if (!wall) return;
+  if (!wall.is_locked && !req.wallCtx.actingAs && req.wallCtx.workspaceRole === 'workspace_viewer') {
+    res.status(403).json({ error: 'Read-only access' });
+    return;
+  }
+  next();
+}
+
+// Classroom Video Walls are permanent topology assets, but their playback mode
+// is intentionally operator-configurable. Protect identity, geometry,
+// membership, calibration, regions, and deletion while allowing content,
+// playlist, synchronization, and Span/Split operation.
+const PROTECTED_WALL_OPERATION_FIELDS = new Set([
+  'content_id',
+  'playlist_id',
+  'sync_mode',
+  'layout_mode',
+  'expected_revision',
+]);
+
+function rejectProtectedWallStructuralMutation(req, res, { allowOperations = false } = {}) {
   if (!req.wall?.is_locked) return false;
+  if (allowOperations) {
+    const requested = Object.keys(req.body || {});
+    if (requested.every((field) => PROTECTED_WALL_OPERATION_FIELDS.has(field))) return false;
+  }
   res.status(423).json({
-    error: 'Protected Classroom Video Wall cannot be modified',
+    error: 'Protected Classroom Video Wall topology cannot be modified',
     code: 'PROTECTED_WALL',
   });
   return true;
@@ -61,6 +84,7 @@ function rejectProtectedWallMutation(req, res) {
 // List walls (with attached devices). Phase 2.2l: scoped to caller's
 // current workspace.
 router.get('/', (req, res) => {
+  res.set('Cache-Control', 'no-store');
   if (!req.workspaceId) return res.json([]);
   const walls = db.prepare('SELECT * FROM video_walls WHERE workspace_id = ? ORDER BY created_at DESC').all(req.workspaceId);
 
@@ -129,6 +153,7 @@ function pushToWallMembers(req, wallId) {
 
 // Get wall with devices
 router.get('/:id', requireWallRead, (req, res) => {
+  res.set('Cache-Control', 'no-store');
   res.json(loadWallWithDevices(req.wall.id));
 });
 
@@ -170,8 +195,8 @@ router.post('/', (req, res) => {
 // Update wall (name, grid, bezels, playlist, leader, sync_mode). Phase 2.2l:
 // closes pre-existing leaks where playlist_id / content_id / leader_device_id
 // were accepted without any cross-tenant check.
-router.put('/:id', requireWallWrite, (req, res) => {
-  if (rejectProtectedWallMutation(req, res)) return;
+router.put('/:id', requireWallOperate, (req, res) => {
+  if (rejectProtectedWallStructuralMutation(req, res, { allowOperations: true })) return;
   const wall = req.wall;
   const currentRevision = Number(wall.layout_revision) || 0;
 
@@ -278,8 +303,7 @@ router.put('/:id', requireWallWrite, (req, res) => {
 
 // Atomically apply a versioned contiguous-group layout. `expected_revision`
 // prevents two dashboards from silently replacing one another's edit.
-router.put('/:id/layout', requireWallWrite, (req, res) => {
-  if (rejectProtectedWallMutation(req, res)) return;
+router.put('/:id/layout', requireWallOperate, (req, res) => {
   const wall = req.wall;
   const members = db.prepare(`
     SELECT vwd.*, d.name AS device_name, d.status AS device_status, d.playlist_id,
@@ -375,7 +399,7 @@ router.put('/:id/layout', requireWallWrite, (req, res) => {
 // Delete wall — clear playlists + wall_id on every former member (matches
 // group-dissolve semantics: leaving the wall returns devices to ungrouped).
 router.delete('/:id', requireWallWrite, (req, res) => {
-  if (rejectProtectedWallMutation(req, res)) return;
+  if (rejectProtectedWallStructuralMutation(req, res)) return;
   const wallWorkspaceId = req.wall.workspace_id; // capture before the DELETE
   const members = db.prepare('SELECT device_id FROM video_wall_devices WHERE wall_id = ?').all(req.params.id);
   const tx = db.transaction(() => {
@@ -401,7 +425,7 @@ router.delete('/:id', requireWallWrite, (req, res) => {
 // missing the workspace dimension. Now: every device must be in the wall's
 // workspace.
 router.put('/:id/devices', requireWallWrite, (req, res) => {
-  if (rejectProtectedWallMutation(req, res)) return;
+  if (rejectProtectedWallStructuralMutation(req, res)) return;
   const { devices } = req.body;
   if (!Array.isArray(devices)) return res.status(400).json({ error: 'devices array required' });
 
@@ -526,7 +550,7 @@ router.put('/:id/devices', requireWallWrite, (req, res) => {
 // path: zone ids become stable routing identities and revision checks prevent a
 // stale editor from replacing a newer topology.
 router.put('/:id/regions/sync', requireWallWrite, (req, res) => {
-  if (rejectProtectedWallMutation(req, res)) return;
+  if (rejectProtectedWallStructuralMutation(req, res)) return;
   const wall = req.wall;
   const currentRevision = Number(wall.layout_revision) || 0;
   if (req.body.expected_revision == null) {

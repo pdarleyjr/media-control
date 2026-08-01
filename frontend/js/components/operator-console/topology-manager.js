@@ -1,6 +1,7 @@
 import { api as defaultApi } from '../../api.js';
 import { showToast } from '../toast.js';
 import { esc } from '../../utils.js';
+import { on as socketOn, off as socketOff } from '../../socket.js';
 
 function isRetired(device) {
   return device?.retired === true || Number(device?.retired) === 1 || device?.status === 'retired';
@@ -60,7 +61,10 @@ export function mountTopologyManager(host, { api = defaultApi } = {}) {
           <strong>${esc(wall.name)}</strong>
           <span>${members.length} display${members.length === 1 ? '' : 's'} · Protected Classroom Video Wall</span>
         </div>
-        <span class="mc-e-protected-chip">Protected</span>
+        <div class="mc-e-topology-actions">
+          <span class="mc-e-protected-chip">Protected topology</span>
+          <button type="button" data-tm-configure-wall="${esc(wall.id)}">Configure layout</button>
+        </div>
       </article>`;
     }
     return `<article class="mc-e-wall-row">
@@ -193,6 +197,11 @@ export function mountTopologyManager(host, { api = defaultApi } = {}) {
 
     const editWall = event.target.closest('[data-tm-edit-wall]');
     if (editWall) { window.location.hash = `#/wall/${encodeURIComponent(editWall.dataset.tmEditWall)}`; return; }
+    const configureWall = event.target.closest('[data-tm-configure-wall]');
+    if (configureWall) {
+      window.location.hash = `#/control?target=${encodeURIComponent(`wall:${configureWall.dataset.tmConfigureWall}`)}`;
+      return;
+    }
 
     const retire = event.target.closest('[data-tm-retire]');
     const restore = event.target.closest('[data-tm-restore]');
@@ -251,10 +260,26 @@ export function mountTopologyManager(host, { api = defaultApi } = {}) {
 
   host.addEventListener('click', onClick);
   host.addEventListener('submit', onSubmit);
+  let topologyRefreshTimer = null;
+  const scheduleRefresh = () => {
+    if (destroyed) return;
+    if (topologyRefreshTimer) clearTimeout(topologyRefreshTimer);
+    topologyRefreshTimer = setTimeout(() => {
+      topologyRefreshTimer = null;
+      void refresh();
+    }, 50);
+  };
+  socketOn('wall-changed', scheduleRefresh);
+  socketOn('device-added', scheduleRefresh);
+  socketOn('device-removed', scheduleRefresh);
   void refresh();
 
   return () => {
     destroyed = true;
+    if (topologyRefreshTimer) clearTimeout(topologyRefreshTimer);
+    socketOff('wall-changed', scheduleRefresh);
+    socketOff('device-added', scheduleRefresh);
+    socketOff('device-removed', scheduleRefresh);
     host.removeEventListener('click', onClick);
     host.removeEventListener('submit', onSubmit);
     host.innerHTML = '';

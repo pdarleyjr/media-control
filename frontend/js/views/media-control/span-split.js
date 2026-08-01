@@ -1,12 +1,11 @@
 // span-split.js — the Command Center "Span | Split" layout toggle shown under the
 // canvas for VIDEO WALL targets only. Toggles the wall's layout_mode via the
-// existing setWallMode() path (host view persists + reloads + repaints). Because
-// span/split re-arranges the physical screens, switching is gated by a confirm
-// when content is currently assigned to the wall.
+// existing setWallMode() path (host view persists + reloads + repaints).
+// Optimistic layout revisions protect against stale concurrent changes, so
+// operator choices apply immediately without blocking confirmation dialogs.
 
 import { esc } from '../../utils.js';
 import { t } from '../../i18n.js';
-import { confirmDialog } from '../../components/confirm.js';
 
 /**
  * @param {HTMLElement} hostEl
@@ -56,15 +55,6 @@ export function mountSpanSplit(hostEl, { getActiveTarget, getActiveWall, onSetWa
     if (!tgt || tgt.type !== 'wall') return;
     const wall = getActiveWall && getActiveWall();
     if (!wall || wall.layout_mode === mode) return;
-    if (typeof hasContent === 'function' && hasContent(wall)) {
-      const ok = await confirmDialog({
-        title: `${t('mc.cc.span')} / ${t('mc.cc.split')}`,
-        message: t('mc.cc.confirm.switch_mode'),
-        confirmLabel: mode === 'split' ? t('mc.cc.split') : t('mc.cc.span'),
-        tone: 'default',
-      });
-      if (!ok) return;
-    }
     if (typeof onSetWallMode === 'function') {
       try { await onSetWallMode(wall.id, mode); } catch { /* best-effort; host toasts */ }
     }
@@ -78,15 +68,6 @@ export function mountSpanSplit(hostEl, { getActiveTarget, getActiveWall, onSetWa
     if (!button) return;
     const wall = getActiveWall && getActiveWall();
     if (!wall || typeof onSetWallLayout !== 'function') return;
-    if (typeof hasContent === 'function' && hasContent(wall)) {
-      const ok = await confirmDialog({
-        title: 'Layout groups',
-        message: t('mc.cc.confirm.switch_mode'),
-        confirmLabel: 'Apply layout',
-        tone: 'default',
-      });
-      if (!ok) return;
-    }
     await onSetWallLayout(wall.id, button.dataset.layoutPreset, wall.layout?.revision || 0);
     repaint();
   });

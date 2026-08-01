@@ -623,11 +623,10 @@ async function route() {
   if (CONSOLE_MODE) {
     const ready = await ensureConsoleSession();
     if (!ready || signal.aborted || generation !== routeGeneration) return;
-    // Podium default: enterprise operator console when authorized.
-    // Emergency fallback remains #/control (never unlocked by query/localStorage).
+    // Every fresh podium session starts in the classroom Command Center.
+    // Operator Control remains available explicitly from its route.
     if (hash === '#/login' || hash === '#/' || hash === '#') {
-      const enterpriseOk = await isEnterpriseUiEnabled();
-      window.location.hash = enterpriseOk ? '#/operator-console' : '#/control';
+      window.location.hash = '#/control';
       return;
     }
   }
@@ -661,17 +660,14 @@ async function route() {
   // workspace_viewer can't broadcast). #/home and #/present stay reachable by hash.
   if (isAuthenticated() && hash === '#/login') {
     if (!localStorage.getItem('rd_onboarded')) { window.location.hash = '#/onboarding'; return; }
-    const enterpriseOk = await isEnterpriseUiEnabled();
-    window.location.hash = enterpriseOk ? '#/operator-console' : '#/control';
+    window.location.hash = '#/control';
     return;
   }
 
-  // Authenticated and opening the BARE domain (no route yet) -> land on the
-  // enterprise operator console when authorized; else unified Command Center.
-  // Explicit '#/' or '#/displays' still opens the Displays grid.
-  if (isAuthenticated() && (hash === '' || hash === '#')) {
-    const enterpriseOk = await isEnterpriseUiEnabled();
-    window.location.hash = enterpriseOk ? '#/operator-console' : '#/control';
+  // Authenticated and opening the bare domain (including the browser-normalized
+  // "#/" hash) always starts in the unified Command Center.
+  if (isAuthenticated() && (hash === '' || hash === '#' || hash === '#/')) {
+    window.location.hash = '#/control';
     return;
   }
 

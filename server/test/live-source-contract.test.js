@@ -129,6 +129,7 @@ test('live-source refresh preserves operator disclosure state instead of collaps
 
   assert.match(view, /captureDisclosureState/);
   assert.match(view, /restoreDisclosureState/);
+  assert.match(view, /defaultOpen/);
   assert.match(view, /data-feed-group-id="news"/);
   assert.match(view, /addEventListener\('toggle'/);
 });
@@ -150,6 +151,17 @@ test('Miami Beach public webcams are restored as organized external media, not m
   assert.match(wrapper, /relay\.ozolio\.com\/pub\.api\?cmd=embed&oid=/);
   assert.doesNotMatch(wrapper, /params\.get\('(?:url|oid)'\)/);
   assert.match(multiview, /external-feed\\\.html/);
+});
+
+test('local news is organized into city, English, and Spanish groups', () => {
+  const catalog = read('frontend/js/views/media-control/camera-feeds-catalog.js');
+  const view = read('frontend/js/views/media-control/camera-feeds.js');
+
+  assert.match(catalog, /LIVE_NEWS_GROUPS/);
+  assert.match(catalog, /City of Miami Beach/);
+  assert.match(catalog, /English Local News/);
+  assert.match(catalog, /Spanish Local News/);
+  assert.match(view, /newsGroupsHtml/);
 });
 
 test('normal source routing cannot silently add the source to a live camera composition', () => {
