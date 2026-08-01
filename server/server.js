@@ -168,6 +168,11 @@ app.use(sanitizeBody);
 app.get('/', (req, res) => res.redirect(302, '/app'));
 
 // Dashboard app
+const dashboardShellTemplate = fs.readFileSync(
+  path.join(config.frontendDir, 'index.html'),
+  'utf8',
+);
+
 app.get('/app', (req, res) => {
   // The shell is always served no-store so a stale service worker can't pin an
   // incompatible module graph. We do NOT emit Clear-Site-Data here: clearing the
@@ -177,7 +182,8 @@ app.get('/app', (req, res) => {
   // poll + service-worker skipWaiting + seamless reload (app.js), and a deliberate
   // one-time recovery is available at POST /api/admin/cache-recovery (admin-only).
   res.setHeader('Cache-Control', 'no-store');
-  res.sendFile(path.join(config.frontendDir, 'index.html'));
+  const bootHash = encodeURIComponent(String(frontendHash || 'boot'));
+  res.type('html').send(dashboardShellTemplate.replaceAll('__MC_FRONTEND_HASH__', bootHash));
 });
 
 // Serve frontend static files
@@ -970,7 +976,8 @@ let frontendHash = '';
 let playerHash = '';
 function updateFrontendHash() {
   try {
-    const files = ['index.html', 'js/app.js', 'js/api.js', 'js/socket.js', 'css/variables.css', 'css/main.css',
+    const files = ['index.html', 'sw-admin.js', 'js/dashboard-bootstrap-v3.js',
+      'js/app.js', 'js/api.js', 'js/socket.js', 'css/variables.css', 'css/main.css',
       'js/views/dashboard.js', 'js/views/device-detail.js', 'js/views/content-library.js',
       'js/views/settings.js', 'js/views/login.js',
       'js/views/admin.js',
@@ -984,7 +991,8 @@ function updateFrontendHash() {
       'js/views/media-control/command-bar.js', 'js/views/media-control/inspector.js',
       'js/views/media-control/routing-picker.js', 'js/views/media-control/stage.js',
       'js/views/media-control/toolbox.js', 'js/views/media-control/send.js',
-      'js/views/media-control/transport.js', 'js/services/screen-share-engine.js'].map(f => {
+      'js/views/media-control/transport.js', 'js/views/media-control/span-split.js',
+      'js/services/screen-share-engine.js'].map(f => {
       try { return fs.readFileSync(path.join(config.frontendDir, f)); } catch { return ''; }
     });
     // Include player files in hash so web players detect code updates
