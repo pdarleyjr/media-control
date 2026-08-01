@@ -186,6 +186,10 @@ test('parent media acknowledgements do not freeze the authoritative playback clo
   assert.ok(!finish.includes('lastTransportState = state'), 'parent acknowledgement snapshots must not override the live media clock');
   assert.ok(html.includes('acceptChildTransportState(data.__mc_transport_state)'), 'verified child frame state should remain authoritative');
   assert.match(html, /acceptChildTransportState\(state\);\r?\n\s+finishTransportCommand/, 'direct child acknowledgements should persist child state before publishing');
+  assert.ok(
+    html.includes("const child = !currentVideoEl && !activeYtPlayer && lastTransportState && typeof lastTransportState === 'object'"),
+    'stale child-frame clocks must never override a mounted HTML5/YouTube media clock',
+  );
 });
 
 test('player screenshot reporting tolerates socket startup and disconnect races', () => {
@@ -334,14 +338,80 @@ test('player restores persisted document slide state after reconnect before publ
   assert.ok(html.includes('publishPlayerState({ force: true })'), 'player should publish authoritative state after restore completes');
 });
 
+test('player restores persisted video position and pause intent before startup can autoplay', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'player', 'index.html'), 'utf8');
+
+  assert.ok(html.includes('function isRestorableMediaItem(item, restore)'), 'player should identify reconnectable video state');
+  assert.ok(html.includes('function tryApplyMediaStateRestore(restore, reason)'), 'player should have an explicit media restore path');
+  assert.ok(html.includes('current_time: Number.isFinite(currentTime) && currentTime >= 0 ? currentTime : null'), 'restore payload should retain a numeric media position');
+  assert.ok(html.includes('paused: typeof state.paused === \'boolean\' ? state.paused : null'), 'restore payload should retain explicit pause intent');
+  assert.ok(html.includes('video.__mcOperatorPaused = restore.paused === true'), 'autoplay retries should observe restored operator pause intent');
+  assert.ok(html.includes('const target = Math.min(restore.current_time, upper)'), 'restore should clamp persisted position to the physical media duration');
+  assert.ok(html.includes('expectedTime = target'), 'restore verification should use the clamped physical time');
+  assert.ok(html.includes('video.currentTime = target'), 'the physical video clock should return to its persisted position');
+  assert.ok(html.includes('if (restore.paused === true) video.pause()'), 'a persisted pause must be re-applied after reload');
+  assert.ok(html.includes('const restoreChildTime = /(?:\\/live-source\\/|\\.m3u8(?:$|[?#]))/'), 'live HLS reloads must not seek to a stale segment clock');
+  assert.ok(html.includes('shouldHoldStateReportForRestore(state)'), 'temporary autoplay state should not overwrite persisted pause intent');
+});
+
+test('video reconnect state normalizes into an executable pause and position restore', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'player', 'index.html'), 'utf8');
+  const normalize = readSnippet(
+    path.join(__dirname, '..', 'player', 'index.html'),
+    'function normalizeDisplayStateRestore(state) {',
+    'function clearDisplayStateRestore()',
+  );
+  const run = new Function('input', `
+    let playerStateRevision = 0;
+    ${normalize}
+    return { restore: normalizeDisplayStateRestore(input), playerStateRevision };
+  `);
+
+  const result = run({
+    current_content_id: 'video-1',
+    current_asset_id: 'video-1',
+    content_type: 'video',
+    current_time: 29.16184,
+    duration: 241.069569,
+    paused: true,
+    muted: false,
+    volume: 1,
+    state_revision: 42,
+  });
+  assert.deepEqual(result, {
+    restore: {
+      current_content_id: 'video-1',
+      current_asset_id: 'video-1',
+      content_type: 'video',
+      slide_index: null,
+      slide_total: null,
+      current_time: 29.16184,
+      duration: 241.069569,
+      paused: true,
+      muted: false,
+      volume: 1,
+      restore_source: null,
+      restore_source_device_id: null,
+      updated_at: null,
+      state_revision: 42,
+    },
+    playerStateRevision: 42,
+  });
+
+  assert.ok(
+    html.includes("const child = !currentVideoEl && !activeYtPlayer"),
+    'direct media should keep ownership of its numeric playback clock',
+  );
+});
+
 test('player rebases persisted revisions even when reconnect state has no slide metadata', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'player', 'index.html'), 'utf8');
   const normalizeStart = html.indexOf('function normalizeDisplayStateRestore(state)');
-  const slideGuard = html.indexOf('if (!Number.isFinite(slide) || slide < 1) return null;', normalizeStart);
+  const restoreParsing = html.indexOf('const rawSlide = state.slide_index', normalizeStart);
   const revisionRebase = html.indexOf('playerStateRevision = Math.max(playerStateRevision, revision);', normalizeStart);
 
   assert.ok(normalizeStart >= 0, 'restore normalizer should exist');
-  assert.ok(revisionRebase > normalizeStart && revisionRebase < slideGuard, 'state revision must rebase before non-slide states return');
+  assert.ok(revisionRebase > normalizeStart && revisionRebase < restoreParsing, 'state revision must rebase before slide or media restore parsing');
 });
 
 test('player reports local cache readiness from completed media loading, not URL presence', () => {
