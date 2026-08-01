@@ -1,6 +1,6 @@
 // Service worker for the admin SPA. Stable JS module names must always be
 // network-first; the cache is only an offline fallback.
-const CACHE = 'rd-admin-v3';
+const CACHE = 'rd-admin-v4';
 
 self.addEventListener('install', () => {
   // Do not make activation depend on a precache batch. One unavailable asset
@@ -9,7 +9,11 @@ self.addEventListener('install', () => {
 });
 
 self.addEventListener('activate', e => {
-  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))));
+  // Never delete player/offline caches or caches owned by another application
+  // on the same origin. This worker owns only the rd-admin-* namespace.
+  e.waitUntil(caches.keys().then(keys => Promise.all(
+    keys.filter(k => /^rd-admin-/.test(k) && k !== CACHE).map(k => caches.delete(k))
+  )));
   self.clients.claim();
 });
 

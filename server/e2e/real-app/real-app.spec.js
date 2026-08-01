@@ -239,10 +239,12 @@ function attachErrorCollectors(page) {
     if (status >= 400 && /\.(js|css|mjs)(\?|$)/i.test(url)) {
       errors.failedRequests.push(`${url} - HTTP ${status}`);
     }
-    // MIME type check for JS modules (must be application/javascript or text/javascript)
-    if (status < 400 && /\.(js|mjs)(\?|$)/i.test(url) && !url.includes('socket.io')) {
+    // A service-worker-mediated Playwright response can omit Content-Type even
+    // though the browser received and executed the module. Flag only a
+    // successful body that explicitly advertises a non-JavaScript MIME.
+    if (status === 200 && /\.(js|mjs)(\?|$)/i.test(url) && !url.includes('socket.io')) {
       const ct = response.headers()['content-type'] || '';
-      if (!ct.includes('javascript') && !ct.includes('text/javascript')) {
+      if (ct && !ct.includes('javascript') && !ct.includes('text/javascript')) {
         errors.mimeErrors.push(`${url} - Content-Type: ${ct}`);
       }
     }

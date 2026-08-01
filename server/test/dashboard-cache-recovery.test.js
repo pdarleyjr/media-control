@@ -10,6 +10,8 @@ test('dashboard shell is no-store and does NOT emit Clear-Site-Data on every loa
   const route = server.slice(server.indexOf("app.get('/app'"), server.indexOf('// Serve frontend static files'));
 
   assert.match(route, /Cache-Control', 'no-store'/);
+  assert.match(route, /__MC_FRONTEND_HASH__/);
+  assert.match(route, /frontendHash/);
   // Clear-Site-Data must NOT be set on the routine /app load — it destroyed
   // service-worker/versioned-asset caching and forced re-downloads on every visit.
   assert.doesNotMatch(route, /setHeader\('Clear-Site-Data/);
@@ -45,20 +47,33 @@ test('controlled cache recovery is a POST (not GET), admin + same-origin + rate-
 test('dashboard service worker activates without a fragile precache batch', () => {
   const worker = fs.readFileSync(path.join(root, 'frontend', 'sw-admin.js'), 'utf8');
 
-  assert.match(worker, /rd-admin-v3/);
+  assert.match(worker, /rd-admin-v4/);
   assert.match(worker, /self\.skipWaiting\(\)/);
   assert.match(worker, /e\.request\.method !== 'GET'/);
+  assert.match(worker, /\/\^rd-admin-\/\.test\(k\)/);
+  assert.doesNotMatch(worker, /keys\.filter\(k => k !== CACHE\)/);
   assert.doesNotMatch(worker, /addAll\(/);
 });
 
-test('dashboard starts through a new cache-busting bootstrap with a visible failure state', () => {
+test('dashboard starts through a release-hashed bootstrap that recovers stale admin caches', () => {
   const html = fs.readFileSync(path.join(root, 'frontend', 'index.html'), 'utf8');
-  const bootstrap = fs.readFileSync(path.join(root, 'frontend', 'js', 'dashboard-bootstrap-v2.js'), 'utf8');
+  const bootstrap = fs.readFileSync(path.join(root, 'frontend', 'js', 'dashboard-bootstrap-v3.js'), 'utf8');
+  const app = fs.readFileSync(path.join(root, 'frontend', 'js', 'app.js'), 'utf8');
+  const server = fs.readFileSync(path.join(root, 'server', 'server.js'), 'utf8');
 
-  assert.match(html, /src="\/js\/dashboard-bootstrap-v2\.js"/);
+  assert.match(html, /src="\/js\/dashboard-bootstrap-v3\.js\?v=__MC_FRONTEND_HASH__"/);
   assert.doesNotMatch(html, /type="module" src="\/js\/app\.js"/);
-  assert.match(bootstrap, /import\('\/js\/app\.js\?v=dashboard-bootstrap-v2'\)/);
+  assert.match(bootstrap, /document\.currentScript/);
+  assert.match(bootstrap, /window\.__MC_FRONTEND_HASH__/);
+  assert.match(bootstrap, /caches\.keys/);
+  assert.match(bootstrap, /rd-admin-/);
+  assert.match(bootstrap, /import\('\/js\/app\.js\?v=' \+ encodeURIComponent\(version\)\)/);
   assert.match(bootstrap, /Media Control could not start/);
+  assert.match(app, /let knownHash = String\(window\.__MC_FRONTEND_HASH__/);
+  assert.match(app, /register\('\/sw-admin\.js\?v=' \+ encodeURIComponent/);
+  assert.match(server, /js\/dashboard-bootstrap-v3\.js/);
+  assert.match(server, /js\/views\/media-control\/span-split\.js/);
+  assert.match(server, /sw-admin\.js/);
 });
 
 test('startup telemetry uses a filter-safe runtime asset path', () => {

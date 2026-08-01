@@ -1014,7 +1014,8 @@ window.addEventListener('hashchange', () => { if (isAuthenticated()) refreshCurr
 
 // Register PWA service worker
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw-admin.js').catch(() => {});
+  const workerVersion = String(window.__MC_FRONTEND_HASH__ || 'runtime');
+  navigator.serviceWorker.register('/sw-admin.js?v=' + encodeURIComponent(workerVersion)).catch(() => {});
 }
 
 // Mobile sidebar: open/close via hamburger, backdrop, nav tap, Escape
@@ -1051,7 +1052,10 @@ window.addEventListener('keydown', (e) => {
 // run on the separate /device Socket.IO namespace), so classroom content is
 // never interrupted by an update. The idle gate only protects the instructor's
 // own control flow (no reload mid-click / mid-command / behind a modal).
-let knownHash = null;
+// The bootstrap injects the hash of the module graph that is actually running.
+// Starting at null caused a cached page opened after a deployment to adopt the
+// new server hash as its own and remain stale indefinitely.
+let knownHash = String(window.__MC_FRONTEND_HASH__ || '').trim() || null;
 let pendingUpdate = false;
 let lastInteractionAt = Date.now();
 const UPDATE_STATE_KEY = 'mc_update_state_v1';

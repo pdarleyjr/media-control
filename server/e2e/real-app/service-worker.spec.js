@@ -8,8 +8,9 @@
 //      GET assets; never intercepts /api or /socket.io).
 //   2. /app shell: Cache-Control no-store + Clear-Site-Data: "cache".
 //   3. JS/CSS: Cache-Control no-cache + ETag revalidation (304 via http).
-//   4. dashboard-bootstrap-v2.js cache-busts the module graph.
-//   5. /api/version poll does not auto-reload the operator dashboard.
+//   4. dashboard-bootstrap-v3.js receives the exact live frontend hash,
+//      removes stale admin caches once per release, and cache-busts app.js.
+//   5. /api/version compares against the loaded bootstrap hash.
 //   6. Player SW is separate at /player/sw.js and must not serve /app.
 
 const { test, expect } = require('@playwright/test');
@@ -215,14 +216,14 @@ test.describe('Part A — Service-Worker / Cache-Busting Transition', () => {
       });
     }
 
-    const jsRes = await requestOnce('/js/dashboard-bootstrap-v2.js');
+    const jsRes = await requestOnce('/js/dashboard-bootstrap-v3.js');
     expect(jsRes.status, `bootstrap JS fetch failed: ${jsRes.status}`).toBe(200);
     const jsCc = jsRes.headers['cache-control'] || '';
     expect(jsCc.toLowerCase(), `JS Cache-Control should be no-cache, got "${jsCc}"`).toContain('no-cache');
     const etag = jsRes.headers.etag;
     expect(etag, 'JS asset should have an ETag for revalidation').toBeTruthy();
 
-    const reval = await requestOnce('/js/dashboard-bootstrap-v2.js', { 'If-None-Match': etag });
+    const reval = await requestOnce('/js/dashboard-bootstrap-v3.js', { 'If-None-Match': etag });
     // Accept 304 (preferred) or 200 with identical ETag + bytes (safe no-cache semantics).
     if (reval.status === 304) {
       expect(reval.status).toBe(304);
@@ -278,6 +279,36 @@ test.describe('Part A — Service-Worker / Cache-Busting Transition', () => {
     assertNoErrors(errors, 'admin service worker on /app');
   });
 
+  test('A3b. a cached prior release is purged once and boots the current hashed module graph', async ({ page }) => {
+    const errors = attachErrorCollectors(page);
+    await setupAuth(page);
+    await page.goto(`${BASE_URL}/app#/control`);
+    await expect(page.locator('.mc-cc-shell')).toBeVisible({ timeout: 20000 });
+    const version = await (await fetch(`${BASE_URL}/api/version`)).json();
+
+    await page.evaluate(async () => {
+      localStorage.setItem('mc_admin_asset_epoch_v1', 'stale-release-hash');
+      const stale = await caches.open('rd-admin-v3');
+      await stale.put('/js/views/media-control/span-split.js', new Response('stale-module'));
+    });
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+    await expect(page.locator('.mc-cc-shell')).toBeVisible({ timeout: 20000 });
+
+    const recovery = await page.evaluate(async () => ({
+      epoch: localStorage.getItem('mc_admin_asset_epoch_v1'),
+      bootHash: window.__MC_FRONTEND_HASH__ || null,
+      cacheKeys: await caches.keys(),
+      appResources: performance.getEntriesByType('resource')
+        .map((entry) => entry.name)
+        .filter((url) => /\/js\/app\.js/.test(url)),
+    }));
+    expect(recovery.epoch).toBe(version.hash);
+    expect(recovery.bootHash).toBe(version.hash);
+    expect(recovery.cacheKeys).not.toContain('rd-admin-v3');
+    expect(recovery.appResources.some((url) => url.includes(`v=${version.hash}`))).toBe(true);
+    assertNoErrors(errors, 'stale admin cache recovery');
+  });
+
   test('A4. #/control loads all JS/CSS from one consistent version (no 404s, no mixed versions)', async ({ page }) => {
     const errors = attachErrorCollectors(page);
     await setupAuth(page);
@@ -291,8 +322,9 @@ test.describe('Part A — Service-Worker / Cache-Busting Transition', () => {
       const perf = performance.getEntriesByType('resource')
         .filter((e) => /\.(js|css|mjs)(\?|$)/i.test(e.name))
         .map((e) => ({ url: e.name, status: e.responseStatus || null }));
-      return { scripts, entry, perf };
+      return { scripts, entry, perf, bootHash: window.__MC_FRONTEND_HASH__ || null };
     });
+    const version = await (await fetch(`${BASE_URL}/api/version`)).json();
 
     console.log(`[A4] script tags=${assetInfo.scripts.length}, module entries=${assetInfo.entry.length}, perf resources=${assetInfo.perf.length}`);
 
@@ -303,7 +335,8 @@ test.describe('Part A — Service-Worker / Cache-Busting Transition', () => {
     // No mixed versions: all app.js imports use the same ?v= query (the cache-bust token).
     const appJsUrls = assetInfo.perf.filter((r) => /\/js\/app\.js/.test(r.url)).map((r) => r.url);
     const versions = new Set(appJsUrls.map((u) => { const m = u.match(/[?&]v=([^&]+)/); return m ? m[1] : 'none'; }));
-    expect(versions.size, `Mixed app.js versions detected: ${JSON.stringify(Array.from(versions))}`).toBeLessThanOrEqual(1);
+    expect(Array.from(versions), 'app.js must use the live frontend hash').toEqual([version.hash]);
+    expect(assetInfo.bootHash).toBe(version.hash);
 
     assertNoErrors(errors, '#/control consistent versions');
   });
@@ -380,6 +413,32 @@ test.describe('Part A — Service-Worker / Cache-Busting Transition', () => {
     assertNoErrors(errors, 'no reload loop');
   });
 
+  test('A8b. a running dashboard reloads when the server hash differs from its loaded bootstrap hash', async ({ page }) => {
+    const errors = attachErrorCollectors(page);
+    await setupAuth(page);
+    const actualVersion = await (await fetch(`${BASE_URL}/api/version`)).json();
+    let versionRequests = 0;
+    let mainNavigations = 0;
+    page.on('framenavigated', (frame) => {
+      if (frame === page.mainFrame() && frame.url().includes('/app')) mainNavigations += 1;
+    });
+    await page.route('**/api/version', async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      versionRequests += 1;
+      if (versionRequests === 1) body.hash = 'next-release-test-hash';
+      await route.fulfill({ response, json: body });
+    });
+
+    await page.goto(`${BASE_URL}/app#/control`);
+    await expect(page.locator('.mc-cc-shell')).toBeVisible({ timeout: 20000 });
+    await expect.poll(() => mainNavigations, { timeout: 25000 }).toBeGreaterThanOrEqual(2);
+    await expect(page.locator('.mc-cc-shell')).toBeVisible({ timeout: 20000 });
+    await expect.poll(() => page.evaluate(() => window.__MC_FRONTEND_HASH__ || null)).toBe(actualVersion.hash);
+    expect(versionRequests).toBeGreaterThanOrEqual(1);
+    assertNoErrors(errors, 'release hash transition reload');
+  });
+
   test('A9. /app is no-store across transitions and never emits Clear-Site-Data; admin recovery is gated', async () => {
     // /app no longer carries Clear-Site-Data on any normal load (it wiped the
     // browser cache on every visit). This verifies a second /app request still
@@ -393,7 +452,8 @@ test.describe('Part A — Service-Worker / Cache-Busting Transition', () => {
     expect(r1.status).toBe(200);
     expect(r1.headers.get('cache-control').toLowerCase()).toContain('no-store');
     expect(r1.headers.get('clear-site-data'), 'no Clear-Site-Data on /app').toBeNull();
-    expect(r1Body).toContain('dashboard-bootstrap-v2.js');
+    expect(r1Body).toContain('dashboard-bootstrap-v3.js?v=');
+    expect(r1Body).not.toContain('__MC_FRONTEND_HASH__');
 
     // Second load (simulates after a transition/rollback — bootstrap still revalidates).
     const r2 = await fetch(`${BASE_URL}/app`);
@@ -401,7 +461,8 @@ test.describe('Part A — Service-Worker / Cache-Busting Transition', () => {
     expect(r2.status).toBe(200);
     expect(r2.headers.get('cache-control').toLowerCase()).toContain('no-store');
     expect(r2.headers.get('clear-site-data'), 'no Clear-Site-Data on /app').toBeNull();
-    expect(r2Body).toContain('dashboard-bootstrap-v2.js');
+    expect(r2Body).toContain('dashboard-bootstrap-v3.js?v=');
+    expect(r2Body).not.toContain('__MC_FRONTEND_HASH__');
 
     // The recovery endpoint requires authentication (no token → 401), proving it
     // is admin-gated and not reachable by an anonymous instructor. It is a POST
@@ -429,10 +490,10 @@ test.describe('Part A — Service-Worker / Cache-Busting Transition', () => {
         req.end();
       });
     }
-    const bootstrap = await requestOnce('/js/dashboard-bootstrap-v2.js');
+    const bootstrap = await requestOnce('/js/dashboard-bootstrap-v3.js');
     const etag = bootstrap.headers.etag;
     expect(etag).toBeTruthy();
-    const reval = await requestOnce('/js/dashboard-bootstrap-v2.js', { 'If-None-Match': etag });
+    const reval = await requestOnce('/js/dashboard-bootstrap-v3.js', { 'If-None-Match': etag });
     expect([200, 304], `unexpected reval status ${reval.status}`).toContain(reval.status);
     if (reval.status === 200) {
       expect(reval.headers.etag).toBe(etag);
