@@ -201,6 +201,67 @@ function seedOperatorTopology() {
   }
 }
 
+function setOperatorFixturePlaybackState(kind) {
+  const Database = require('better-sqlite3');
+  const database = new Database(path.join(tmpDir, 'test.db'), { timeout: 10000 });
+  database.pragma('busy_timeout = 10000');
+  const ids = [
+    'test-protected-display',
+    'test-protected-display-2',
+    'test-protected-display-3',
+  ];
+  try {
+    if (!kind) {
+      database.prepare(`
+        DELETE FROM display_states
+        WHERE target_type = 'display'
+          AND target_id IN (?, ?, ?)
+      `).run(...ids);
+      return;
+    }
+    const resolvedWorkspace = workspaceId || database.prepare(
+      'SELECT workspace_id FROM workspace_members WHERE user_id = ? LIMIT 1'
+    ).get(authUser.id)?.workspace_id;
+    const isVideo = kind === 'video';
+    const upsert = database.prepare(`
+      INSERT INTO display_states (
+        target_type, target_id, workspace_id, current_content_id, content_type,
+        slide_index, slide_count, paused, current_time, duration,
+        render_state, updated_at
+      )
+      VALUES ('display', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(target_type, target_id) DO UPDATE SET
+        workspace_id = excluded.workspace_id,
+        current_content_id = excluded.current_content_id,
+        content_type = excluded.content_type,
+        slide_index = excluded.slide_index,
+        slide_count = excluded.slide_count,
+        paused = excluded.paused,
+        current_time = excluded.current_time,
+        duration = excluded.duration,
+        render_state = excluded.render_state,
+        updated_at = excluded.updated_at
+    `);
+    for (const id of ids) {
+      upsert.run(
+        id,
+        resolvedWorkspace,
+        isVideo ? 'test-video' : 'test-presentation',
+        isVideo ? 'video' : 'document',
+        isVideo ? 1 : 2,
+        isVideo ? 1 : 51,
+        isVideo ? 0 : 1,
+        isVideo ? 12 : 2,
+        isVideo ? 120 : 51,
+        isVideo ? 'playing' : 'paused',
+        Date.now(),
+      );
+    }
+  } finally {
+    database.close();
+  }
+}
+
 // ── Playwright error-collection helpers ────────────────────────────
 
 function attachErrorCollectors(page) {
@@ -601,6 +662,134 @@ test.describe('Phase 2 — Feature flag ON: enterprise operator console', () => 
     await page.waitForURL('**/app#/control', { timeout: 20000 });
     await expect(page.locator('.mc-cc-shell')).toBeVisible();
     assertNoErrors(errors, 'Command Center session landing');
+  });
+
+  test('2b3. presentation Next is one absolute slide transaction and duplicate taps are suppressed', async ({ page }) => {
+    setOperatorFixturePlaybackState('document');
+    try {
+      const errors = attachErrorCollectors(page);
+      await setupAuth(page);
+      const startedAt = Date.now();
+      await page.goto(`${BASE_URL}/app#/control?target=${encodeURIComponent('wall:test-protected-wall')}`);
+      const next = page.locator('[data-cc-tp="next"]');
+      await expect(next).toBeVisible({ timeout: 20000 });
+      await expect(next.locator('.mc-cc-tp-text')).toHaveText('Next slide');
+
+      // Two same-tick taps reproduce a touch double-fire without introducing
+      // timing flakiness. The toolbar's in-flight gate must emit one transaction.
+      await next.evaluate((button) => {
+        button.click();
+        button.click();
+      });
+
+      const Database = require('better-sqlite3');
+      await expect.poll(() => {
+        const database = new Database(path.join(tmpDir, 'test.db'), { readonly: true });
+        try {
+          return database.prepare(`
+            SELECT command_type, payload
+            FROM command_logs
+            WHERE created_at >= ?
+              AND target_id IN (
+                'test-protected-display',
+                'test-protected-display-2',
+                'test-protected-display-3'
+              )
+            ORDER BY created_at, target_id
+          `).all(startedAt);
+        } finally {
+          database.close();
+        }
+      }, { timeout: 10000 }).toHaveLength(3);
+
+      const database = new Database(path.join(tmpDir, 'test.db'), { readonly: true });
+      let commands;
+      try {
+        commands = database.prepare(`
+          SELECT target_id, command_type, payload
+          FROM command_logs
+          WHERE created_at >= ?
+            AND target_id IN (
+              'test-protected-display',
+              'test-protected-display-2',
+              'test-protected-display-3'
+            )
+          ORDER BY target_id
+        `).all(startedAt);
+      } finally {
+        database.close();
+      }
+      const payloads = commands.map((row) => JSON.parse(row.payload));
+      expect(new Set(commands.map((row) => row.command_type))).toEqual(new Set(['go_to_slide']));
+      expect(new Set(payloads.map((payload) => payload.slide))).toEqual(new Set([3]));
+      expect(new Set(payloads.map((payload) => payload.transport_transaction_id)).size).toBe(1);
+      expect(errors.page).toHaveLength(0);
+      expect(errors.console.filter((message) => /uncaught|unhandled/i.test(message))).toHaveLength(0);
+    } finally {
+      setOperatorFixturePlaybackState(null);
+    }
+  });
+
+  test('2b4. video Pause emits once per wall member and duplicate taps are suppressed', async ({ page }) => {
+    const Database = require('better-sqlite3');
+    const dbPath = path.join(tmpDir, 'test.db');
+    setOperatorFixturePlaybackState('video');
+    try {
+      const errors = attachErrorCollectors(page);
+      await setupAuth(page);
+      const startedAt = Date.now();
+      await page.goto(`${BASE_URL}/app#/control?target=${encodeURIComponent('wall:test-protected-wall')}`);
+      const pause = page.locator('[data-cc-tp="play_pause"]');
+      await expect(pause).toBeVisible({ timeout: 20000 });
+      await expect(pause.locator('.mc-cc-tp-text')).toHaveText('Pause');
+
+      await pause.evaluate((button) => {
+        button.click();
+        button.click();
+      });
+
+      await expect.poll(() => {
+        const database = new Database(dbPath, { readonly: true });
+        try {
+          return database.prepare(`
+            SELECT COUNT(*) AS count
+            FROM command_logs
+            WHERE created_at >= ?
+              AND command_type = 'pause'
+              AND target_id IN (
+                'test-protected-display',
+                'test-protected-display-2',
+                'test-protected-display-3'
+              )
+          `).get(startedAt).count;
+        } finally {
+          database.close();
+        }
+      }, { timeout: 10000 }).toBe(3);
+
+      const database = new Database(dbPath, { readonly: true });
+      let transactions;
+      try {
+        transactions = database.prepare(`
+          SELECT payload
+          FROM command_logs
+          WHERE created_at >= ?
+            AND command_type = 'pause'
+            AND target_id IN (
+              'test-protected-display',
+              'test-protected-display-2',
+              'test-protected-display-3'
+            )
+        `).all(startedAt).map((row) => JSON.parse(row.payload).transport_transaction_id);
+      } finally {
+        database.close();
+      }
+      expect(new Set(transactions).size).toBe(1);
+      expect(errors.page).toHaveLength(0);
+      expect(errors.console.filter((message) => /uncaught|unhandled/i.test(message))).toHaveLength(0);
+    } finally {
+      setOperatorFixturePlaybackState(null);
+    }
   });
 
   test('2c. Room overview component renders', async ({ page }) => {

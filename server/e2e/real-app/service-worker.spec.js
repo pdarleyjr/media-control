@@ -279,6 +279,49 @@ test.describe('Part A — Service-Worker / Cache-Busting Transition', () => {
     assertNoErrors(errors, 'admin service worker on /app');
   });
 
+  test('A3a. an offline cache miss returns HTTP 503 without an invalid FetchEvent Response', async ({ page, context }) => {
+    const workerErrors = [];
+    page.on('pageerror', error => workerErrors.push(error.message));
+    page.on('console', message => {
+      if (message.type() === 'error' && /Failed to convert value to 'Response'|FetchEvent/i.test(message.text())) {
+        workerErrors.push(message.text());
+      }
+    });
+    await setupAuth(page);
+    await page.goto(`${BASE_URL}/app#/control`);
+    await expect(page.locator('.mc-cc-shell')).toBeVisible({ timeout: 20000 });
+    await page.evaluate(() => navigator.serviceWorker.ready);
+    const controlled = await page.evaluate(() => !!navigator.serviceWorker.controller);
+    if (!controlled) {
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await expect(page.locator('.mc-cc-shell')).toBeVisible({ timeout: 20000 });
+    }
+
+    await context.setOffline(true);
+    try {
+      const result = await page.evaluate(async () => {
+        try {
+          const response = await fetch(`/app?offline-cache-miss=${Date.now()}`, {
+            headers: { Accept: 'text/html' },
+          });
+          return {
+            resolved: true,
+            status: response.status,
+            contentType: response.headers.get('content-type') || '',
+          };
+        } catch (error) {
+          return { resolved: false, error: error?.message || String(error) };
+        }
+      });
+      expect(result.resolved, JSON.stringify(result)).toBe(true);
+      expect(result.status).toBe(503);
+      expect(result.contentType).toContain('text/html');
+      expect(workerErrors).toEqual([]);
+    } finally {
+      await context.setOffline(false);
+    }
+  });
+
   test('A3b. a cached prior release is purged once and boots the current hashed module graph', async ({ page }) => {
     const errors = attachErrorCollectors(page);
     await setupAuth(page);
@@ -508,9 +551,15 @@ test.describe('Part A — Service-Worker / Cache-Busting Transition', () => {
     expect(fs.existsSync(swPath), 'player sw.js should exist').toBe(true);
     const swSrc = fs.readFileSync(swPath, 'utf8');
 
-    // The player SW only handles /player and socket.io — it ignores everything else.
-    expect(swSrc, 'player sw.js should scope fetch to /player').toContain("url.pathname.startsWith('/player')");
-    expect(swSrc, 'player sw.js should not intercept non-player paths').toMatch(/don.t intercept|Everything else/i);
+    // The player SW handles only the small static shell. Dynamic /player/*
+    // media/document/HLS routes and Range requests must stay on the browser's
+    // native fetch path.
+    expect(swSrc, 'player sw.js should use the shell-only predicate').toContain('isPlayerShellRequest');
+    expect(swSrc, 'player sw.js should bypass Range requests').toContain("request.headers.has('range')");
+    expect(swSrc, 'player sw.js must not broadly intercept every /player route')
+      .not.toContain("url.pathname.startsWith('/player')");
+    expect(swSrc, 'player sw.js should match only one-segment static shell files')
+      .toMatch(/\\\/player\\\/\[\^\/\]\+\\\./);
 
     // Confirm /app is NOT served from /player scope (the dashboard route).
     const appRes = await fetch(`${BASE_URL}/app`);

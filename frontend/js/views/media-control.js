@@ -13,6 +13,7 @@ import { previewSource, renderStage } from './media-control/stage.js';
 import { renderToolbox } from './media-control/toolbox.js';
 import { sendToDisplays, sentToast, trackBroadcastDelivery } from './media-control/send.js';
 import { dispatchTransportTransaction, sendTransportCommand } from './media-control/transport.js';
+import { resolveTransportIntent } from './media-control/transport-intent.js';
 import { transportContextForTarget } from '../services/region-playback-state.js';
 import { renderInspector, closeInspector } from './media-control/inspector.js';
 import { renderMultiview, teardownMultiview, buildSplitGridUrl } from './media-control/multiview.js';
@@ -2218,8 +2219,20 @@ function mountTransportRow(hostEl) {
       <button type="button" class="mc-cc-tp-btn mc-cc-tp-scroll" data-cc-tp="scroll_down" hidden><span class="mc-cc-tp-ico" aria-hidden="true">▼</span><span class="mc-cc-tp-text">${esc(t('mc.cc.transport.scroll_down'))}</span></button>
     </div>`;
   const row = hostEl.querySelector('.mc-cc-tp-row');
+  let inFlight = false;
+  const setBusy = (busy, action = '') => {
+    inFlight = busy;
+    if (row) {
+      row.setAttribute('aria-busy', busy ? 'true' : 'false');
+      row.dataset.pendingAction = busy ? action : '';
+    }
+    hostEl.querySelectorAll('[data-cc-tp]').forEach((control) => {
+      control.disabled = busy;
+    });
+  };
   hostEl.querySelectorAll('[data-cc-tp]').forEach((btn) => {
     btn.addEventListener('click', () => {
+      if (inFlight) return;
       const ids = activeTargetTransportIds();
       if (!ids.length) return;
       const action = btn.dataset.ccTp; // 'prev' | 'restart' | 'play_pause' | 'next'
@@ -2234,12 +2247,15 @@ function mountTransportRow(hostEl) {
       const resolvedAction = action === 'play_pause'
         ? (paused === true ? 'play' : 'pause')
         : action;
-      const operation = (resolvedAction === 'scroll_up' || resolvedAction === 'scroll_down')
-        ? Promise.all(ids.map(id => sendTransportCommand(id, resolvedAction)))
+      const intent = resolveTransportIntent(resolvedAction, playback);
+      if (intent.noOp) return;
+      setBusy(true, intent.action);
+      const operation = (intent.action === 'scroll_up' || intent.action === 'scroll_down')
+        ? Promise.all(ids.map(id => sendTransportCommand(id, intent.action, intent.payload)))
         : dispatchTransportTransaction(
           regionContext ? [regionContext.deviceId] : ids,
-          resolvedAction,
-          {},
+          intent.action,
+          intent.payload,
           regionContext ? {
             regionId: regionContext.regionId,
             zoneId: regionContext.zoneId,
@@ -2248,9 +2264,17 @@ function mountTransportRow(hostEl) {
             contentInstanceId: regionContext.contentInstanceId,
           } : {},
         );
-      operation.finally(() => {
+      Promise.resolve(operation).then((results) => {
+        const failed = Array.isArray(results)
+          && results.some((entry) => entry?.result?.ok === false);
+        if (failed) showToast(t('mc.send.failed'), 'error');
+      }).catch((error) => {
+        showToast(error?.message || t('mc.send.failed'), 'error');
+      }).finally(() => {
         refreshAfterSend(ids);
-        setTimeout(() => transportApi && transportApi.repaint && transportApi.repaint(), 400);
+        setBusy(false);
+        if (transportApi?.repaint) transportApi.repaint();
+        setTimeout(() => transportApi?.repaint?.(), 120);
       });
     });
   });
