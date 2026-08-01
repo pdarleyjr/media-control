@@ -112,6 +112,17 @@ test('camera edge records, livestreams, previews, and proxies only the canonical
   assert.doesNotMatch(admin, /192\.168\.1\.0\/24 to any port (?:8200|8554|8888)/);
 });
 
+test('livestream FLV output does not attempt seek-only duration or filesize rewrites', () => {
+  const api = read('kamrui-media-edge/camera-api/server.js');
+  const streamStart = api.indexOf('function startStreamProcess');
+  const streamStop = api.indexOf('function stopProcess', streamStart);
+  const streamBlock = api.slice(streamStart, streamStop);
+
+  assert.ok(streamStart >= 0 && streamStop > streamStart);
+  assert.match(streamBlock, /'-flvflags',\s*'no_duration_filesize'/);
+  assert.match(streamBlock, /'-f',\s*'flv'/);
+});
+
 test('Guest Computer uses embedded HDMI audio and the normal draggable source contract', () => {
   const view = read('frontend/js/views/media-control/camera-feeds.js');
   const catalog = read('frontend/js/views/media-control/camera-feeds-catalog.js');

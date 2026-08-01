@@ -470,6 +470,9 @@ function startStreamProcess(rtspUrl, rtmpUrl, streamKey) {
     '-c:a', 'aac', '-ar', '48000', '-ac', '1', '-b:a', '96k',
     '-af', 'aresample=async=1:first_pts=0',
     '-max_muxing_queue_size', '1024',
+    // RTMP is non-seekable; suppress FLV trailer rewrites that can never
+    // succeed and otherwise emit false failure warnings on every clean stop.
+    '-flvflags', 'no_duration_filesize',
     '-f', 'flv',
     fullRtmp,
   ];
