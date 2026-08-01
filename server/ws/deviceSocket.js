@@ -112,33 +112,57 @@ function joinDeviceTargetRooms(socket, deviceId) {
 
 // In-memory store for the latest screenshot per device, used for offline snapshots.
 let lastScreenshots = {};
+// Serialize writes per device without blocking the Node event loop. A player
+// reconnect can deliver several screenshots within a few seconds; synchronous
+// filesystem writes here previously stalled every HTTP and Socket.IO client.
+const screenshotPersistChains = new Map();
 
 function screenshotFilename(deviceId) {
   const safeId = String(deviceId || '').replace(/[^a-zA-Z0-9_-]/g, '_');
   return `${safeId}_latest.jpg`;
 }
 
-function persistScreenshot(deviceId, imageB64, capturedAt) {
-  const buffer = Buffer.from(imageB64, 'base64');
-  const filename = screenshotFilename(deviceId);
-  const receivedAt = Math.floor(Date.now() / 1000);
-  const requestedAt = Number(capturedAt);
-  const capturedAtSeconds = Number.isFinite(requestedAt)
-    ? Math.min(receivedAt, Math.floor(requestedAt > 1e12 ? requestedAt / 1000 : requestedAt))
-    : receivedAt;
-  const existing = db.prepare('SELECT id, captured_at FROM screenshots WHERE device_id = ? ORDER BY captured_at DESC LIMIT 1').get(deviceId);
-  if (existing && Number(existing.captured_at) > capturedAtSeconds) {
-    return { applied: false, reason: 'stale_screenshot', captured_at: Number(existing.captured_at) };
+async function persistScreenshot(deviceId, imageB64, capturedAt) {
+  const previous = screenshotPersistChains.get(deviceId) || Promise.resolve();
+  const pending = previous.catch(() => {}).then(async () => {
+    const buffer = Buffer.from(imageB64, 'base64');
+    const filename = screenshotFilename(deviceId);
+    const finalPath = path.join(config.screenshotsDir, filename);
+    const temporaryPath = `${finalPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+    const receivedAt = Math.floor(Date.now() / 1000);
+    const requestedAt = Number(capturedAt);
+    const capturedAtSeconds = Number.isFinite(requestedAt)
+      ? Math.min(receivedAt, Math.floor(requestedAt > 1e12 ? requestedAt / 1000 : requestedAt))
+      : receivedAt;
+    const existing = db.prepare('SELECT id, captured_at FROM screenshots WHERE device_id = ? ORDER BY captured_at DESC LIMIT 1').get(deviceId);
+    if (existing && Number(existing.captured_at) > capturedAtSeconds) {
+      return { applied: false, reason: 'stale_screenshot', captured_at: Number(existing.captured_at) };
+    }
+
+    await fs.promises.mkdir(config.screenshotsDir, { recursive: true });
+    try {
+      await fs.promises.writeFile(temporaryPath, buffer);
+      await fs.promises.rename(temporaryPath, finalPath);
+    } finally {
+      await fs.promises.unlink(temporaryPath).catch(() => {});
+    }
+
+    if (existing) {
+      db.prepare('UPDATE screenshots SET filepath = ?, captured_at = ? WHERE id = ?').run(filename, capturedAtSeconds, existing.id);
+    } else {
+      db.prepare('INSERT INTO screenshots (device_id, filepath, captured_at) VALUES (?, ?, ?)').run(deviceId, filename, capturedAtSeconds);
+    }
+    pruneScreenshots(deviceId);
+    return { applied: true, captured_at: capturedAtSeconds };
+  });
+  screenshotPersistChains.set(deviceId, pending);
+  try {
+    return await pending;
+  } finally {
+    if (screenshotPersistChains.get(deviceId) === pending) {
+      screenshotPersistChains.delete(deviceId);
+    }
   }
-  fs.mkdirSync(config.screenshotsDir, { recursive: true });
-  fs.writeFileSync(path.join(config.screenshotsDir, filename), buffer);
-  if (existing) {
-    db.prepare('UPDATE screenshots SET filepath = ?, captured_at = ? WHERE id = ?').run(filename, capturedAtSeconds, existing.id);
-  } else {
-    db.prepare('INSERT INTO screenshots (device_id, filepath, captured_at) VALUES (?, ?, ?)').run(deviceId, filename, capturedAtSeconds);
-  }
-  pruneScreenshots(deviceId);
-  return { applied: true, captured_at: capturedAtSeconds };
 }
 
 // Generate a random device token
@@ -983,7 +1007,7 @@ module.exports = function setupDeviceSocket(io) {
     });
 
     // Screenshot received from device - relay via WebSocket, keep latest in memory
-    socket.on('device:screenshot', (data) => {
+    socket.on('device:screenshot', async (data) => {
       if (!requireDeviceAuth()) return;
       const { device_id, image_b64, captured_at, timestamp, correlation_id } = data;
       if (!device_id || device_id !== currentDeviceId || !image_b64) return;
@@ -996,7 +1020,7 @@ module.exports = function setupDeviceSocket(io) {
 
       // Keep the hydrated dashboard preview timestamp in sync with live captures.
       try {
-        const result = persistScreenshot(device_id, image_b64, captured_at ?? timestamp);
+        const result = await persistScreenshot(device_id, image_b64, captured_at ?? timestamp);
         if (result && result.applied === false) return;
       } catch (err) {
         console.error('Screenshot persist error:', err);
@@ -1473,20 +1497,13 @@ socket.on('device:wb-undo', () => {
         // Save last screenshot to disk as offline snapshot
         const lastB64 = lastScreenshots[deviceId];
         if (lastB64) {
-          try {
-            const filename = `${deviceId}_latest.jpg`;
-            const buffer = Buffer.from(lastB64, 'base64');
-            fs.writeFileSync(path.join(config.screenshotsDir, filename), buffer);
-            const existing = db.prepare('SELECT id FROM screenshots WHERE device_id = ?').get(deviceId);
-            if (existing) {
-              db.prepare('UPDATE screenshots SET filepath = ?, captured_at = strftime(\'%s\',\'now\') WHERE device_id = ?').run(filename, deviceId);
-            } else {
-              db.prepare('INSERT INTO screenshots (device_id, filepath) VALUES (?, ?)').run(deviceId, filename);
-            }
-          } catch (e) {
-            console.error('Failed to save offline screenshot:', e.message);
-          }
-          delete lastScreenshots[deviceId];
+          void persistScreenshot(deviceId, lastB64, Date.now())
+            .catch((e) => {
+              console.error('Failed to save offline screenshot:', e.message);
+            })
+            .finally(() => {
+              delete lastScreenshots[deviceId];
+            });
         }
       }, OFFLINE_DEBOUNCE_MS));
     });
