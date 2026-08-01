@@ -242,7 +242,7 @@ function attachErrorCollectors(page) {
     // A service-worker-mediated Playwright response can omit Content-Type even
     // though the browser received and executed the module. Flag only a
     // successful body that explicitly advertises a non-JavaScript MIME.
-    if (status === 200 && /\.(js|mjs)(\?|$)/i.test(url) && !url.includes('socket.io')) {
+    if (status === 200 && /\.(js|mjs)(\?|$)/i.test(url)) {
       const ct = response.headers()['content-type'] || '';
       if (ct && !ct.includes('javascript') && !ct.includes('text/javascript')) {
         errors.mimeErrors.push(`${url} - Content-Type: ${ct}`);

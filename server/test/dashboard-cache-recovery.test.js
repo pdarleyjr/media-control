@@ -12,6 +12,7 @@ test('dashboard shell is no-store and does NOT emit Clear-Site-Data on every loa
   assert.match(route, /Cache-Control', 'no-store'/);
   assert.match(route, /__MC_FRONTEND_HASH__/);
   assert.match(route, /frontendHash/);
+  assert.doesNotMatch(route, /fs\.(readFile|readFileSync)/);
   // Clear-Site-Data must NOT be set on the routine /app load — it destroyed
   // service-worker/versioned-asset caching and forced re-downloads on every visit.
   assert.doesNotMatch(route, /setHeader\('Clear-Site-Data/);

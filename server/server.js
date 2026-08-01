@@ -168,7 +168,12 @@ app.use(sanitizeBody);
 app.get('/', (req, res) => res.redirect(302, '/app'));
 
 // Dashboard app
-app.get('/app', (req, res, next) => {
+const dashboardShellTemplate = fs.readFileSync(
+  path.join(config.frontendDir, 'index.html'),
+  'utf8',
+);
+
+app.get('/app', (req, res) => {
   // The shell is always served no-store so a stale service worker can't pin an
   // incompatible module graph. We do NOT emit Clear-Site-Data here: clearing the
   // browser cache on every /app load destroyed service-worker/versioned-asset
@@ -177,11 +182,8 @@ app.get('/app', (req, res, next) => {
   // poll + service-worker skipWaiting + seamless reload (app.js), and a deliberate
   // one-time recovery is available at POST /api/admin/cache-recovery (admin-only).
   res.setHeader('Cache-Control', 'no-store');
-  fs.readFile(path.join(config.frontendDir, 'index.html'), 'utf8', (error, html) => {
-    if (error) return next(error);
-    const bootHash = encodeURIComponent(String(frontendHash || 'boot'));
-    res.type('html').send(html.replaceAll('__MC_FRONTEND_HASH__', bootHash));
-  });
+  const bootHash = encodeURIComponent(String(frontendHash || 'boot'));
+  res.type('html').send(dashboardShellTemplate.replaceAll('__MC_FRONTEND_HASH__', bootHash));
 });
 
 // Serve frontend static files

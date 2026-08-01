@@ -142,7 +142,7 @@ function attachErrorCollectors(page) {
     if (status >= 400 && /\.(js|css|mjs)(\?|$)/i.test(url)) errors.failedRequests.push(`${url} - HTTP ${status}`);
     // Service-worker responses may omit this header in Playwright's observer;
     // fail only when a 200 response explicitly reports a wrong MIME type.
-    if (status === 200 && /\.(js|mjs)(\?|$)/i.test(url) && !url.includes('socket.io')) {
+    if (status === 200 && /\.(js|mjs)(\?|$)/i.test(url)) {
       const ct = response.headers()['content-type'] || '';
       if (ct && !ct.includes('javascript') && !ct.includes('text/javascript')) errors.mimeErrors.push(`${url} - Content-Type: ${ct}`);
     }
