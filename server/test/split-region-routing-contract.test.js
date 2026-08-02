@@ -44,8 +44,12 @@ test('region-qualified transport matches authoritative state by region and conte
     path.join(root, 'frontend/js/views/media-control/transport.js'),
     'utf8',
   );
+  const confirmationSource = fs.readFileSync(
+    path.join(root, 'frontend/js/views/media-control/transport-confirmation.js'),
+    'utf8',
+  );
 
-  assert.match(transportSource, /entry\.regionId/);
-  assert.match(transportSource, /state\.region_id/);
+  assert.match(confirmationSource, /entry\.regionId/);
+  assert.match(confirmationSource, /state\.region_id/);
   assert.match(transportSource, /opts\.zoneId \? \{ zone_id: opts\.zoneId \}/);
 });

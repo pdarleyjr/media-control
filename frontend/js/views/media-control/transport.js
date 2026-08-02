@@ -30,6 +30,8 @@ import {
 } from '../../player-protocol.js';
 import { showToast } from '../../components/toast.js';
 import { get as getDisplayState, subscribe as subscribeDisplayState } from '../../services/display-state.js';
+import { createTransportIntentTracker } from './transport-intent.js';
+import { matchesExpectedTransportState } from './transport-confirmation.js';
 
 const STATIC_TRANSPORT_BTNS = [
   { action: TRANSPORT_ACTIONS[1], label: '⏮', titleKey: 'mc.tp.prev' },
@@ -54,33 +56,6 @@ function createTransportTransactionId() {
   return `transport-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
-// §8: ACKNOWLEDGED is only RECEIPT. CONFIRMED requires a matching physical
-// player-state report. Correlate by device + content instance + the action's
-// expected outcome (paused / currentTime / slide_index / idle).
-function matchesExpectedState(entry, state) {
-  if (!state || typeof state !== 'object') return false;
-  if (state.device_id && entry.deviceId && state.device_id !== entry.deviceId) return false;
-  if (entry.regionId && String(state.region_id || '') !== String(entry.regionId)) return false;
-  if (entry.contentInstanceId && state.content_instance_id
-      && state.content_instance_id !== entry.contentInstanceId) return false;
-  const action = entry.action;
-  if (action === 'pause') return state.paused === true;
-  if (action === 'play') return state.paused === false;
-  if (action === 'stop') return state.kind === 'idle' || state.paused === true || !state.kind;
-  if (action === 'seek') {
-    const target = entry.payload?.seconds ?? entry.payload?.position_seconds;
-    const ct = state.currentTime ?? state.current_time;
-    return target != null && ct != null && Math.abs(Number(ct) - Number(target)) <= 2;
-  }
-  if (action === 'go_to_slide') {
-    const target = entry.payload?.slide ?? entry.payload?.slide_index;
-    return target != null && Number(state.slide_index) === Number(target);
-  }
-  // Transitional actions (next/prev/restart/mute/unmute/volume/scroll): a state
-  // report for the right device + content after the command is sufficient.
-  return true;
-}
-
 // Late-confirmation path: promote an ACKNOWLEDGED (but unconfirmed) command to
 // CONFIRMED when the next authoritative state-sync matches. Wired once.
 let displayStateConfirmationWired = false;
@@ -95,8 +70,15 @@ function ensureDisplayStateConfirmation() {
         const d = getDisplayState(entry.deviceId);
         const np = d?.now_playing;
         if (!np) continue;
-        const state = { ...np, device_id: entry.deviceId, content_instance_id: np.content_id || np.contentId };
-        if (matchesExpectedState(entry, state)) {
+        const state = {
+          ...np,
+          device_id: entry.deviceId,
+          current_content_id: np.current_content_id || np.content_id || np.contentId || null,
+          content_instance_id: np.content_instance_id || np.contentInstanceId || np.content_id || np.contentId || null,
+          slide_index: np.slide_index ?? np.slideIndex ?? d.slide_index ?? null,
+          command_revision: np.command_revision || d.command_revision || null,
+        };
+        if (matchesExpectedTransportState(entry, state)) {
           pendingApply.delete(commandId);
           clearTimeout(entry.timer);
           entry.resolve({
@@ -150,7 +132,7 @@ function applyCommandAck(data, allowEarlyBuffer = true) {
       // ACK proves RECEIPT only. If the ack also carries a matching physical
       // state, promote straight to CONFIRMED. Otherwise stay ACKNOWLEDGED and
       // wait for the next state-sync (ensureDisplayStateConfirmation) or timeout.
-      if (matchesExpectedState(entry, state)) {
+      if (matchesExpectedTransportState(entry, state)) {
         pendingApply.delete(commandId);
         clearTimeout(entry.timer);
         entry.resolve({
@@ -226,6 +208,7 @@ function awaitCommandConfirmation({
       resolve,
       timer,
       deviceId,
+      commandId,
       action,
       payload: payload || {},
       contentInstanceId: contentInstanceId || null,
@@ -603,6 +586,18 @@ export function renderTransportBar(container, {
   const blankIds = (Array.isArray(blankDeviceIds) && blankDeviceIds.length)
     ? [...new Set(blankDeviceIds.filter(Boolean))]
     : (deviceId ? [deviceId] : []);
+  const intentTracker = createTransportIntentTracker();
+  const transportIntentKey = () => {
+    let playback = null;
+    try { playback = getDisplayState(deviceId)?.now_playing || null; } catch { /* optional */ }
+    const contentKey = playback?.contentInstanceId
+      || playback?.content_instance_id
+      || playback?.contentId
+      || playback?.content_id
+      || contentInstanceId
+      || 'unknown-content';
+    return `${transportIds.slice().sort().join(',')}:${contentKey}`;
+  };
 
   const staticHtml = STATIC_TRANSPORT_BTNS.map(b => {
     const title = t(b.titleKey);
@@ -705,6 +700,7 @@ export function renderTransportBar(container, {
       }
     }
     if (typeof onTransportAction === 'function') onTransportAction(transportIds, resolvedAction, results);
+    return transaction;
   }
 
   container.querySelectorAll('[data-tp-action]').forEach(btn => {
@@ -716,17 +712,26 @@ export function renderTransportBar(container, {
       // This is the core fix for the "paused video resumes after unrelated UI
       // actions" defect: the play/pause button never uses a stale value.
       let authoritativePaused = paused;
+      let authoritativePlayback = null;
       try {
         const d = getDisplayState ? getDisplayState(deviceId) : null;
         if (d && d.now_playing && typeof d.now_playing.paused === 'boolean') {
           authoritativePaused = d.now_playing.paused;
         }
+        authoritativePlayback = d?.now_playing || null;
       } catch { /* display-state optional */ }
-      const resolvedAction = action === 'play_pause'
-        ? (authoritativePaused === true ? 'play' : 'pause')
-        : action;
-      btn.disabled = true;
-      dispatchTransport(resolvedAction).finally(() => { btn.disabled = false; });
+      const key = transportIntentKey();
+      const intent = intentTracker.resolve(key, action, {
+        ...(authoritativePlayback || {}),
+        paused: authoritativePaused,
+      });
+      if (intent.noOp) {
+        intentTracker.settle(key, intent.sequence);
+        return;
+      }
+      dispatchTransport(intent.action, intent.payload)
+        .then((result) => intentTracker.settle(key, intent.sequence, { ok: result?.ok !== false }))
+        .catch(() => intentTracker.settle(key, intent.sequence, { ok: false }));
     });
   });
 
@@ -743,10 +748,7 @@ export function renderTransportBar(container, {
         showToast(`Slide must be between 1 and ${slideCount}`, 'error');
         return;
       }
-      gotoBtn.disabled = true;
-      dispatchTransport('go_to_slide', { slide, page: slide, slide_index: slide }).finally(() => {
-        gotoBtn.disabled = false;
-      });
+      dispatchTransport('go_to_slide', { slide, page: slide, slide_index: slide });
     });
   }
 

@@ -61,3 +61,76 @@ export function resolveTransportIntent(action, playback) {
     noOp: slide === current,
   };
 }
+
+/**
+ * Keep the instructor's latest intent ahead of delayed display-state reports.
+ * Every click still becomes an explicit, idempotent command; this tracker only
+ * supplies the next absolute slide / paused destination while earlier commands
+ * are waiting for physical confirmation.
+ */
+export function createTransportIntentTracker({ maxEntries = 64, retentionMs = 2500 } = {}) {
+  const entries = new Map();
+  let sequence = 0;
+
+  function prune() {
+    while (entries.size > maxEntries) entries.delete(entries.keys().next().value);
+  }
+
+  return {
+    resolve(targetKey, action, playback = {}) {
+      const key = String(targetKey || 'default');
+      let previous = entries.get(key) || {};
+      if (previous.retainedUntil && Date.now() > previous.retainedUntil) {
+        entries.delete(key);
+        previous = {};
+      }
+      const effectivePlayback = {
+        ...(playback || {}),
+        ...(previous.slideIndex != null ? { slideIndex: previous.slideIndex } : {}),
+        ...(previous.paused != null ? { paused: previous.paused } : {}),
+      };
+      const requestedAction = String(action || '').trim();
+      const explicitAction = requestedAction === 'play_pause'
+        ? (effectivePlayback.paused === true ? 'play' : 'pause')
+        : requestedAction;
+      const intent = resolveTransportIntent(explicitAction, effectivePlayback);
+      const nextSequence = ++sequence;
+      const nextEntry = {
+        ...previous,
+        sequence: nextSequence,
+      };
+      if (intent.action === 'go_to_slide' && Number.isInteger(Number(intent.payload?.slide))) {
+        nextEntry.slideIndex = Number(intent.payload.slide);
+      }
+      if (intent.action === 'pause') nextEntry.paused = true;
+      else if (intent.action === 'play') nextEntry.paused = false;
+      entries.delete(key);
+      entries.set(key, nextEntry);
+      prune();
+      return {
+        ...intent,
+        sequence: nextSequence,
+        targetKey: key,
+      };
+    },
+
+    settle(targetKey, expectedSequence, result = {}) {
+      const key = String(targetKey || 'default');
+      const current = entries.get(key);
+      if (!current || current.sequence !== expectedSequence) return false;
+      if (result.ok === false) {
+        entries.delete(key);
+      } else {
+        entries.set(key, {
+          ...current,
+          retainedUntil: Date.now() + Math.max(0, Number(retentionMs) || 0),
+        });
+      }
+      return true;
+    },
+
+    clear() {
+      entries.clear();
+    },
+  };
+}

@@ -84,7 +84,9 @@ test('transport UI waits for delivery and player command-ack lifecycle', () => {
 // player-state report. ack alone must NEVER reach CONFIRMED.
 test('command confirmation requires matching player state, not ack alone (task ยง8)', () => {
   const src = readFrontend('views/media-control/transport.js');
-  assert.ok(src.includes('function matchesExpectedState'));
+  const matcher = readFrontend('views/media-control/transport-confirmation.js');
+  assert.ok(src.includes('matchesExpectedTransportState'));
+  assert.ok(matcher.includes('function matchesExpectedTransportState'));
   // ack without a matching state stays ACKNOWLEDGED and waits for state-sync.
   assert.ok(src.includes("COMMAND_LIFECYCLE.ACKNOWLEDGED"));
   assert.ok(src.includes('entry.acknowledged = true'));
@@ -97,12 +99,12 @@ test('command confirmation requires matching player state, not ack alone (task ย
   assert.ok(src.includes('action: resolvedAction'));
   assert.ok(src.includes('contentInstanceId'));
   // Pause confirms only on paused=true; Play on paused=false; Seek on position.
-  assert.ok(src.includes("action === 'pause'") && src.includes('state.paused === true'));
-  assert.ok(src.includes("action === 'play'") && src.includes('state.paused === false'));
-  assert.ok(src.includes("action === 'seek'"));
+  assert.ok(matcher.includes("action === 'pause'") && matcher.includes('state.paused === true'));
+  assert.ok(matcher.includes("action === 'play'") && matcher.includes('state.paused === false'));
+  assert.ok(matcher.includes("action === 'seek'"));
   // Wrong device / wrong content instance must NOT confirm.
-  assert.ok(src.includes('state.device_id') && src.includes('entry.deviceId'));
-  assert.ok(src.includes('entry.contentInstanceId') && src.includes('state.content_instance_id'));
+  assert.ok(matcher.includes('state.device_id') && matcher.includes('entry.deviceId'));
+  assert.ok(matcher.includes('entry.contentInstanceId') && matcher.includes('stateContentIdentities'));
 });
 
 test('player-protocol exports expanded transport + lifecycle vocabulary', () => {
