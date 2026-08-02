@@ -211,6 +211,35 @@ class TestReconcileClassifications(unittest.TestCase):
 
 
 class TestActiveProcessIdentity(unittest.TestCase):
+    def test_runner_cmdline_is_bound_to_the_exact_session(self):
+        broker.validate_runner_cmdline(
+            [b"bash", broker.RUNNER.encode(), b"ses_test"],
+            "ses_test",
+        )
+        with self.assertRaises(ValueError):
+            broker.validate_runner_cmdline(
+                [b"bash", broker.RUNNER.encode(), b"ses_other"],
+                "ses_test",
+            )
+        with self.assertRaises(ValueError):
+            broker.validate_runner_cmdline(
+                [b"bash", broker.RUNNER.encode(), b"ses_test", b"extra"],
+                "ses_test",
+            )
+
+    def test_ffmpeg_child_must_belong_to_the_validated_runner(self):
+        broker.validate_ffmpeg_parent("4321", 4321)
+        with self.assertRaises(ValueError):
+            broker.validate_ffmpeg_parent("9999", 4321)
+        with self.assertRaises(ValueError):
+            broker.validate_ffmpeg_parent("not-a-pid", 4321)
+
+    def test_child_pid_file_is_session_scoped(self):
+        self.assertEqual(
+            broker.child_pid_path_for("ses_test"),
+            "/run/mbfd-camera-recording/ses_test.pid",
+        )
+
     def test_expected_ffmpeg_arguments_bind_all_runtime_values(self):
         source = "rtsp://127.0.0.1:8554/anpviz-main"
         segment = "1800"
@@ -250,7 +279,7 @@ class TestActiveProcessIdentity(unittest.TestCase):
             (4321, {"ActiveState": "active", "SubState": "running"}),
         ],
     )
-    def test_start_waits_for_runner_to_exec_validated_ffmpeg(
+    def test_start_waits_for_runner_to_launch_validated_ffmpeg(
         self,
         validate_active_unit,
         run,
