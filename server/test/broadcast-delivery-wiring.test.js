@@ -57,6 +57,39 @@ test('player distinguishes receipt from confirmed rendering', () => {
   );
 });
 
+test('detached media cannot confirm or fail a newer pending broadcast', () => {
+  const player = source('player/index.html');
+  const readiness = player.slice(
+    player.indexOf('function isCurrentBroadcastElement(element) {'),
+    player.indexOf('function confirmCurrentRenderIfReady()'),
+  );
+  assert.match(readiness, /element\.isConnected/);
+  assert.match(readiness, /container\.contains\(element\)/);
+  assert.match(readiness, /if \(!isCurrentBroadcastElement\(element\)\) return false/);
+  assert.match(readiness, /function failPendingBroadcastElement\(element, message\)/);
+  assert.match(player, /failPendingBroadcastElement\(img, 'Image failed to load'\)/);
+  assert.match(player, /failPendingBroadcastElement\(pdfFrame, 'PDF frame failed to load'\)/);
+  assert.match(player, /failPendingBroadcastElement\(docFrame, 'Document frame failed to load'\)/);
+  assert.match(player, /failPendingBroadcastElement\(iframe, 'Widget frame failed to load'\)/);
+});
+
+test('detached split-zone media cannot mutate a newer broadcast barrier', () => {
+  const player = source('player/index.html');
+  const zones = player.slice(
+    player.indexOf('function renderZones(container, defaultItem) {'),
+    player.indexOf('// ==================== Screenshots'),
+  );
+  assert.match(zones, /playbackGeneration === zoneGeneration/);
+  assert.match(zones, /container\.contains\(zoneElement\)/);
+  assert.match(zones, /mediaElement\.isConnected && zoneElement\.contains\(mediaElement\)/);
+  assert.match(zones, /markCurrentZoneReady\(div, iframe, zoneKey\)/);
+  assert.match(zones, /markCurrentZoneReady\(div, img, zoneKey\)/);
+  assert.match(zones, /markCurrentZoneReady\(div, video, zoneKey\)/);
+  assert.match(zones, /failCurrentZone\(div, iframe,/);
+  assert.match(zones, /failCurrentZone\(div, img,/);
+  assert.match(zones, /failCurrentZone\(div, video,/);
+});
+
 test('re-sending already rendered content binds delivery proof to the visible generation', () => {
   const player = source('player/index.html');
   const unchanged = player.slice(

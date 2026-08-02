@@ -41,6 +41,16 @@ const ICON_PLAYLIST = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor
 // ---- composed state blocks (never a bare sentence) ----
 const ICON_EMPTY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><path d="M3 9h18M9 21V9"></path></svg>';
 const ICON_ERROR = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v5M12 16h.01"></path></svg>';
+const failedThumbnailUrls = new Set();
+const MAX_FAILED_THUMBNAILS = 200;
+
+function rememberFailedThumbnailUrl(url) {
+  if (!url) return;
+  if (failedThumbnailUrls.size >= MAX_FAILED_THUMBNAILS) {
+    failedThumbnailUrls.delete(failedThumbnailUrls.values().next().value);
+  }
+  failedThumbnailUrls.add(url);
+}
 
 function loadingState(msg) {
   return `<div class="mc-tb-state mc-tb-loading"><span class="mc-tb-spin" aria-hidden="true"></span><span>${esc(msg)}</span></div>`;
@@ -55,18 +65,50 @@ function errorState(msg) {
 // Tile preview: real thumbnail when one exists, else a type-aware glyph so a
 // document never shows the generic image placeholder (or, in the library, a
 // broken <img> pointed at raw document bytes).
-function mediaTileThumb(item) {
-  if (item.thumbnail_url) {
-    return `<img class="mc-tile-thumb" src="${esc(item.thumbnail_url)}" alt="" loading="lazy">`;
-  }
+function mediaTileGlyph(item) {
   const mt = item.mime_type || '';
   let glyph = '🖼';
-  if (/pdf/.test(mt)) glyph = '📕';
+  if (item.remote_url) glyph = '🔗';
+  else if (/pdf/.test(mt)) glyph = '📕';
   else if (/presentation|ms-powerpoint/.test(mt)) glyph = '📊';
   else if (/wordprocessing|msword|opendocument\.text/.test(mt)) glyph = '📄';
   else if (/spreadsheet|ms-excel/.test(mt)) glyph = '📈';
   else if (mt.startsWith('video/')) glyph = '🎬';
-  return `<span class="mc-tile-icon">${glyph}</span>`;
+  return glyph;
+}
+
+function mediaTileThumb(item) {
+  const url = String(item.thumbnail_url || '');
+  const fallback = `<span class="mc-tile-icon mc-tile-thumb-fallback" data-thumb-fallback${url && !failedThumbnailUrls.has(url) ? ' hidden' : ''}>${mediaTileGlyph(item)}</span>`;
+  if (!url || failedThumbnailUrls.has(url)) return fallback;
+  return `<img class="mc-tile-thumb" data-media-thumb data-thumb-url="${esc(url)}" src="${esc(url)}" alt="" loading="lazy" decoding="async">${fallback}`;
+}
+
+function wireMediaThumbnailFallbacks(root) {
+  root.querySelectorAll('img[data-media-thumb]').forEach((img) => {
+    const showFallback = () => {
+      rememberFailedThumbnailUrl(img.dataset.thumbUrl || img.currentSrc || img.src);
+      img.hidden = true;
+      const fallback = img.nextElementSibling;
+      if (fallback?.matches('[data-thumb-fallback]')) fallback.hidden = false;
+    };
+    img.addEventListener('error', showFallback, { once: true });
+    if (img.complete && img.naturalWidth === 0) showFallback();
+  });
+}
+
+function mediaTileName(item) {
+  const storedName = String(item.filename || item.name || '').trim();
+  if (storedName && storedName.toLowerCase() !== 'remote') return storedName;
+  if (item.remote_url) {
+    try {
+      return new URL(item.remote_url).hostname || storedName || t('mc.tile.content_fallback');
+    } catch {
+      // The server validates remote URLs. Preserve a useful local fallback if
+      // a legacy row predates that validation.
+    }
+  }
+  return storedName || t('mc.tile.content_fallback');
 }
 
 // ---- tab content renderers ----
@@ -109,7 +151,18 @@ const MEDIA_SORTS = [
 
 async function renderMediaTab(container, { selectedIds, onAfterSend, onRouteSource }) {
   const PAGE = 60;
-  const state = { folderId: undefined, type: '', search: '', sort: 'newest', items: [], offset: 0, hasMore: true, loading: false };
+  const state = {
+    folderId: undefined,
+    type: '',
+    search: '',
+    sort: 'newest',
+    items: [],
+    offset: 0,
+    hasMore: true,
+    loading: false,
+    requestGeneration: 0,
+    requestController: null,
+  };
 
   container.innerHTML = `
     <div class="mc-tb-media-toolbar">
@@ -150,9 +203,8 @@ async function renderMediaTab(container, { selectedIds, onAfterSend, onRouteSour
     foldersEl.querySelectorAll('.mc-tb-folder[data-folder]').forEach(btn => {
       btn.addEventListener('click', () => {
         state.folderId = btn.dataset.folder ? btn.dataset.folder : undefined;
-        state.offset = 0; state.items = []; state.hasMore = true;
         renderFolderChips();
-        loadPage();
+        loadPage({ offset: 0, append: false });
       });
     });
   }
@@ -168,7 +220,7 @@ async function renderMediaTab(container, { selectedIds, onAfterSend, onRouteSour
 
   function tileHtml(item) {
     const src = JSON.stringify({ content_id: item.id });
-    const name = item.filename || item.name || t('mc.tile.content_fallback');
+    const name = mediaTileName(item);
     const thumb = mediaTileThumb(item);
     const downloadable = !!item.filepath;
     return `<div class="mc-tile-cell">
@@ -185,6 +237,7 @@ async function renderMediaTab(container, { selectedIds, onAfterSend, onRouteSour
 
   function renderGrid() {
     grid.innerHTML = state.items.length ? state.items.map(tileHtml).join('') : '';
+    wireMediaThumbnailFallbacks(grid);
     attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource);
     grid.querySelectorAll('[data-download-id]').forEach(btn => {
       btn.addEventListener('click', (e) => {
@@ -197,10 +250,13 @@ async function renderMediaTab(container, { selectedIds, onAfterSend, onRouteSour
 
   function renderLoadMore() {
     loadmoreWrap.innerHTML = state.hasMore
-      ? `<button type="button" class="mc-btn mc-tb-loadmore" id="mc-media-loadmore">${esc(t('mc.media.load_more'))}</button>`
+      ? `<button type="button" class="mc-btn mc-tb-loadmore" id="mc-media-loadmore"${state.loading ? ' disabled aria-busy="true"' : ''}>${esc(t('mc.media.load_more'))}</button>`
       : (state.items.length ? `<div class="mc-tb-end">${esc(t('mc.media.end_of_list'))}</div>` : '');
     const lm = loadmoreWrap.querySelector('#mc-media-loadmore');
-    if (lm) lm.addEventListener('click', () => { state.offset += PAGE; loadPage(); });
+    if (lm) lm.addEventListener('click', () => {
+      if (state.loading) return;
+      loadPage({ offset: state.offset + PAGE, append: true });
+    });
   }
 
   function renderStatus() {
@@ -210,29 +266,50 @@ async function renderMediaTab(container, { selectedIds, onAfterSend, onRouteSour
     statusEl.innerHTML = `<span>${esc(t('mc.media.count', { n: state.items.length }))}</span>`;
   }
 
-  async function loadPage() {
-    if (state.loading) return;
+  async function loadPage({ offset = 0, append = false } = {}) {
+    const requestGeneration = ++state.requestGeneration;
+    if (state.requestController) state.requestController.abort();
+    const controller = new AbortController();
+    state.requestController = controller;
     state.loading = true;
     renderStatus();
+    renderLoadMore();
+    let failed = false;
+    let succeeded = false;
     try {
       const result = await api.getGovernedContent({
         folderId: state.folderId,
         type: state.type || undefined,
         search: state.search || undefined,
         limit: PAGE,
-        offset: state.offset,
-      });
+        offset,
+      }, { signal: controller.signal });
+      if (requestGeneration !== state.requestGeneration) return;
       const page = Array.isArray(result) ? result : (result && Array.isArray(result.content) ? result.content : []);
       const sorted = sortItems(page);
-      state.items = state.offset === 0 ? sorted : state.items.concat(sorted);
+      state.items = append ? state.items.concat(sorted) : sorted;
+      state.offset = offset;
       state.hasMore = page.length === PAGE;
-      if (!state.items.length) { grid.innerHTML = ''; renderStatus(); renderLoadMore(); return; }
-      renderGrid(); renderStatus(); renderLoadMore();
+      if (!state.items.length) grid.innerHTML = '';
+      else renderGrid();
+      succeeded = true;
     } catch (e) {
+      if (e?.name === 'AbortError' || requestGeneration !== state.requestGeneration) return;
+      failed = true;
+      if (!append) {
+        state.items = [];
+        state.offset = 0;
+        state.hasMore = false;
+        grid.innerHTML = '';
+      }
       statusEl.innerHTML = `<span class="mc-tb-error-text">${esc(t('mc.media.error', { error: e?.message || '' }))}</span>`;
-      grid.innerHTML = '';
     } finally {
-      state.loading = false;
+      if (requestGeneration === state.requestGeneration) {
+        state.requestController = null;
+        state.loading = false;
+        renderLoadMore();
+        if (succeeded || !failed) renderStatus();
+      }
     }
   }
 
@@ -244,18 +321,17 @@ async function renderMediaTab(container, { selectedIds, onAfterSend, onRouteSour
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {
       state.search = (e.target.value || '').trim();
-      state.offset = 0; state.items = []; state.hasMore = true;
-      loadPage();
+      loadPage({ offset: 0, append: false });
     }, 300);
   });
   container.querySelector('#mc-media-type').addEventListener('change', (e) => {
-    state.type = e.target.value; state.offset = 0; state.items = []; state.hasMore = true; loadPage();
+    state.type = e.target.value; loadPage({ offset: 0, append: false });
   });
   container.querySelector('#mc-media-sort').addEventListener('change', (e) => {
     state.sort = e.target.value; state.items = sortItems(state.items); renderGrid();
   });
 
-  await loadPage();
+  await loadPage({ offset: 0, append: false });
 }
 
 // Playlists tab — every playlist is a drag-or-tap source ({ playlist_id }); the

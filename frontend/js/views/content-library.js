@@ -288,12 +288,22 @@ function governedActions(content) {
   const pending = content.visibility?.publication_request_status === 'pending';
   const readiness = getContentReadiness(content);
   const repairable = permissions?.can_edit && (readiness.state === 'failed' || Number(content.file_size) === 0);
+  const inWallpaperMenu = content.is_wallpaper_menu === true;
+  const canUseAsWallpaper = permissions?.can_edit && (
+    inWallpaperMenu
+    || (
+      Boolean(content.filepath)
+      && String(content.mime_type || '').toLowerCase().startsWith('image/')
+      && content.archived_at == null
+    )
+  );
   return `
     ${sendActions(content)}
     ${readiness.state === 'ready' ? `<button type="button" class="btn btn-secondary btn-sm" data-prepare-content="${esc(content.id)}">${t('content.prepare_for_class')}</button>` : ''}
     ${content.filepath ? `<button type="button" class="btn btn-secondary btn-sm" data-download-content="${content.id}" data-download-name="${esc(content.original_filename || content.filename || '')}">${t('content.btn_download')}</button>` : ''}
     ${permissions?.can_edit ? `<button type="button" class="btn btn-secondary btn-sm" data-edit-content="${content.id}">${t('content.btn_edit')}</button>` : ''}
     ${permissions?.can_edit && content.filepath ? `<button type="button" class="btn btn-secondary btn-sm" data-thumbnail-studio="${content.id}">${t('content.thumbnail_studio')}</button>` : ''}
+    ${canUseAsWallpaper ? `<button type="button" class="btn btn-secondary btn-sm content-wallpaper-control" data-wallpaper-menu-content="${content.id}" aria-pressed="${inWallpaperMenu ? 'true' : 'false'}">${inWallpaperMenu ? t('content.wallpaper_menu_remove') : t('content.wallpaper_menu_add')}</button>` : ''}
     ${repairable ? `<button type="button" class="btn btn-secondary btn-sm content-repair-control" data-repair-content="${content.id}">${t('content.btn_repair')}</button>` : ''}
     ${permissions?.can_edit ? `<button type="button" class="btn btn-secondary btn-sm" data-move-content="${content.id}">${t('content.btn_move')}</button>` : ''}
     ${permissions?.can_request_organization && !pending ? `<button type="button" class="btn btn-secondary btn-sm" data-request-publication="${content.id}">${t('content.btn_request_org')}</button>` : ''}
@@ -1493,6 +1503,32 @@ async function loadContent({ append = false, renderOnly = false } = {}) {
 
     // Delete handler via event delegation
     grid.onclick = async (e) => {
+      const wallpaperBtn = e.target.closest('[data-wallpaper-menu-content]');
+      if (wallpaperBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const item = findContentItem(wallpaperBtn.dataset.wallpaperMenuContent);
+        if (!item) return;
+        const wasInMenu = item.is_wallpaper_menu === true;
+        wallpaperBtn.disabled = true;
+        wallpaperBtn.setAttribute('aria-busy', 'true');
+        try {
+          const updated = await api.setWallpaperMenu(item.id, !wasInMenu, item.version || 1);
+          state.contentById.set(String(item.id), updated);
+          showToast(
+            wasInMenu ? t('content.wallpaper_menu_removed') : t('content.wallpaper_menu_added'),
+            'success',
+          );
+          renderContentResults();
+        } catch (error) {
+          showToast(error?.message || t('content.wallpaper_menu_failed'), 'error');
+          if (wallpaperBtn.isConnected) {
+            wallpaperBtn.disabled = false;
+            wallpaperBtn.removeAttribute('aria-busy');
+          }
+        }
+        return;
+      }
       const favoriteBtn = e.target.closest('[data-favorite-content]');
       if (favoriteBtn) {
         e.preventDefault();

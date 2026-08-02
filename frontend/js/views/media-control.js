@@ -29,6 +29,7 @@ import {
   MIXED_SCREENSAVER_VALUE,
   SCREENSAVER_OPTIONS,
   screensaverValueForDisplays,
+  setWorkspaceWallpaperOptions,
 } from './media-control/screensaver-state.js';
 import { confirmDialog } from '../components/confirm.js';
 import * as screenShareEngine from '../services/screen-share-engine.js';
@@ -158,6 +159,21 @@ let wallChangedHandler = null;
 let roomSnapshotWallHandler = null;
 let wallRefreshTimer = null;
 let wallRefreshGeneration = 0;
+
+function screensaverOptionLabel(option) {
+  return option?.label || t(option?.labelKey || 'mc.cc.saver.label');
+}
+
+async function loadWorkspaceWallpaperOptions() {
+  try {
+    const items = await api.getWallpaperMenu();
+    setWorkspaceWallpaperOptions(Array.isArray(items) ? items : items?.items || []);
+  } catch {
+    // Wallpaper curation is additive. Built-in classroom presets remain usable
+    // when this small, filtered catalog request is unavailable.
+    setWorkspaceWallpaperOptions([]);
+  }
+}
 let multiviewEscapeHandler = null;
 let selectedIds = [];   // ids on the stage; re-hydrated from the server, persisted on change
 let wallMemberIds = new Set();   // device ids owned by a video wall (never their own card)
@@ -2325,16 +2341,17 @@ function mountTransportRow(hostEl) {
 // "MBFD Default" placeholder per the mockup.
 function mountScreensaverRow(hostEl) {
   if (!hostEl) return null;
-  const opts = SCREENSAVER_OPTIONS
-    .map((o) => `<option value="${esc(o.value)}">${esc(t(o.labelKey))}</option>`)
-    .join('');
+  const optionsMarkup = () => `
+    <option value="">${esc(t('mc.cc.saver.default'))}</option>
+    <option value="${MIXED_SCREENSAVER_VALUE}" disabled>${esc(t('mc.cc.saver.mixed'))}</option>
+    ${SCREENSAVER_OPTIONS
+      .map((o) => `<option value="${esc(o.value)}">${esc(screensaverOptionLabel(o))}</option>`)
+      .join('')}`;
   hostEl.innerHTML = `
     <div class="mc-screensaver-row" hidden>
       <span class="mc-screensaver-label">${esc(t('mc.cc.saver.label'))}:</span>
       <select class="mc-cc-saver-select" aria-label="${esc(t('mc.cc.saver.label'))}">
-        <option value="">${esc(t('mc.cc.saver.default'))}</option>
-        <option value="${MIXED_SCREENSAVER_VALUE}" disabled>${esc(t('mc.cc.saver.mixed'))}</option>
-        ${opts}
+        ${optionsMarkup()}
       </select>
     </div>`;
   const row = hostEl.querySelector('.mc-screensaver-row');
@@ -2368,6 +2385,13 @@ function mountScreensaverRow(hostEl) {
     }
     sel.value = confirmed;
   };
+  const refreshOptions = () => {
+    const preferred = pending?.value || sel.value;
+    sel.innerHTML = optionsMarkup();
+    if ([...sel.options].some(option => option.value === preferred)) sel.value = preferred;
+    else pending = null;
+    repaint();
+  };
 
   sel.addEventListener('change', () => {
     if (activeControlTarget?.type === 'region') {
@@ -2393,7 +2417,7 @@ function mountScreensaverRow(hostEl) {
     pending = { targetKey: targetKey(ids), value: val, expiresAt: Date.now() + 15000 };
     const opt = SCREENSAVER_OPTIONS.find((o) => o.value === val);
     sel.setAttribute('aria-busy', 'true');
-    applyScreensaver(ids, source, opt ? t(opt.labelKey) : t('mc.cc.saver.label'))
+    applyScreensaver(ids, source, opt ? screensaverOptionLabel(opt) : t('mc.cc.saver.label'))
       .then((ok) => {
         if (!ok) pending = null;
         return displayState.refresh().catch(() => {});
@@ -2406,6 +2430,7 @@ function mountScreensaverRow(hostEl) {
   });
   return {
     repaint,
+    refreshOptions,
   };
 }
 
@@ -2912,6 +2937,20 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
 
   // Re-hydrate the last-controlled selection, learn which devices are wall-owned,
   // and load the live display state — then prune any stale/wall-member ids.
+  // Wallpaper curation is additive and must never hold up the classroom's core
+  // target/state controls. Repaint the two selectors when the compact catalog
+  // arrives; the built-in presets are immediately available meanwhile.
+  let wallpaperOptionsLoaded = false;
+  let wallpaperSelectorsMounted = false;
+  const repaintWallpaperOptions = () => {
+    if (signal?.aborted || !wallpaperSelectorsMounted) return;
+    screensaverApi?.refreshOptions?.();
+    if (stageEl()) paintStage();
+  };
+  void loadWorkspaceWallpaperOptions().then(() => {
+    wallpaperOptionsLoaded = true;
+    repaintWallpaperOptions();
+  });
   const [selection] = await Promise.all([
     api.getDisplaysSelection().catch(() => ({ device_ids: [] })),
     loadWalls(),
@@ -2992,6 +3031,8 @@ pruneSelection();
   roomSnapshotWallHandler = applyRoomSnapshotWalls;
   socketOn('room-snapshot', roomSnapshotWallHandler);
   screensaverApi = mountScreensaverRow(document.getElementById('mc-screensaver-host'));
+  wallpaperSelectorsMounted = true;
+  if (wallpaperOptionsLoaded) repaintWallpaperOptions();
   // Dock callbacks reference toggleMultiview (a hoisted function declaration below)
   // and openAddPicker (module-level); both resolve at click time, well after the
   // mvHost / mvMounted consts below are initialized.

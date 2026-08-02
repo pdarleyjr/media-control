@@ -420,6 +420,156 @@ test('operational filters, library summary, and tags use authoritative stored me
   assert.ok(summary.body.retained_originals >= 1);
 });
 
+test('wallpaper menu membership is workspace-governed, manifest-backed, and version-neutral', () => {
+  db.prepare(`INSERT INTO content
+    (id, user_id, workspace_id, filename, filepath, mime_type, processing_status,
+      file_size, access_level, version)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(
+      'cv-wallpaper',
+      'cv-owner',
+      'cv-ws-a',
+      'Classroom Map.png',
+      'classroom-map.png',
+      'image/png',
+      'ready',
+      4096,
+      'workspace_shared',
+      7,
+    );
+  db.prepare(`INSERT INTO asset_checksums
+    (asset_id, content_id, generation, sha256, size_bytes, canonical_path,
+      canonical_url, is_screensaver, screensaver_category)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL)`)
+    .run(
+      'asset-cv-wallpaper',
+      'cv-wallpaper',
+      7,
+      'a'.repeat(64),
+      4096,
+      'classroom-map.png',
+      '/api/content/cv-wallpaper/file',
+    );
+  db.prepare(`INSERT INTO content_publication_requests
+    (id, content_id, requested_by, requested_version)
+    VALUES ('cv-wallpaper-publication', 'cv-wallpaper', 'cv-owner', 7)`).run();
+
+  const editorReq = {
+    ...peerReq(),
+    user: { id: 'cv-owner', role: 'user' },
+    workspaceRole: 'workspace_editor',
+    params: { id: 'cv-wallpaper' },
+  };
+  const add = response();
+  handler('PUT', '/:id/wallpaper-menu')({
+    ...editorReq,
+    body: { enabled: true, expected_version: 7 },
+  }, add);
+  assert.equal(add.statusCode, 200);
+  assert.equal(add.body.is_wallpaper_menu, true);
+
+  const addAgain = response();
+  handler('PUT', '/:id/wallpaper-menu')({
+    ...editorReq,
+    body: { enabled: true, expected_version: 7 },
+  }, addAgain);
+  assert.equal(addAgain.statusCode, 200);
+  assert.equal(addAgain.body.is_wallpaper_menu, true);
+
+  const stored = db.prepare(`SELECT c.version, ac.generation, ac.sha256,
+      ac.is_screensaver, ac.screensaver_category
+    FROM content c JOIN asset_checksums ac ON ac.content_id = c.id
+    WHERE c.id = 'cv-wallpaper'`).get();
+  assert.equal(stored.version, 7);
+  assert.equal(stored.generation, 7);
+  assert.equal(stored.sha256, 'a'.repeat(64));
+  assert.equal(stored.is_screensaver, 1);
+  assert.equal(stored.screensaver_category, 'wallpaper');
+  assert.equal(
+    db.prepare("SELECT status FROM content_publication_requests WHERE id='cv-wallpaper-publication'").get().status,
+    'pending',
+  );
+
+  const menu = response();
+  handler('GET', '/wallpaper-menu')(peerReq(), menu);
+  assert.deepEqual(menu.body.map(item => item.id), ['cv-wallpaper']);
+  assert.equal(menu.body[0].is_wallpaper_menu, true);
+
+  db.prepare("UPDATE content SET access_level='private' WHERE id='cv-wallpaper'").run();
+  const privatePeerMenu = response();
+  handler('GET', '/wallpaper-menu')(peerReq(), privatePeerMenu);
+  assert.deepEqual(privatePeerMenu.body, []);
+  const privateOwnerMenu = response();
+  handler('GET', '/wallpaper-menu')({ ...editorReq, params: {}, query: {} }, privateOwnerMenu);
+  assert.deepEqual(privateOwnerMenu.body.map(item => item.id), ['cv-wallpaper']);
+  db.prepare("UPDATE content SET access_level='workspace_shared' WHERE id='cv-wallpaper'").run();
+
+  const viewerHandlers = routeStack('PUT', '/:id/wallpaper-menu');
+  let viewerContinued = false;
+  const viewerDenied = response();
+  viewerHandlers[0](peerReq({ params: { id: 'cv-wallpaper' }, body: { enabled: false } }), viewerDenied, () => {
+    viewerContinued = true;
+  });
+  assert.equal(viewerDenied.statusCode, 403);
+  assert.equal(viewerContinued, false);
+
+  const crossWorkspace = response();
+  handler('PUT', '/:id/wallpaper-menu')({
+    ...editorReq,
+    user: { id: 'cv-admin', role: 'platform_admin' },
+    isPlatformAdmin: true,
+    orgRole: 'org_admin',
+    params: { id: 'cv-org-shared' },
+    body: { enabled: true },
+  }, crossWorkspace);
+  assert.equal(crossWorkspace.statusCode, 403);
+
+  db.prepare("UPDATE content SET archived_at=strftime('%s','now') WHERE id='cv-wallpaper'").run();
+  const archivedMenu = response();
+  handler('GET', '/wallpaper-menu')(peerReq(), archivedMenu);
+  assert.deepEqual(archivedMenu.body, []);
+
+  const remove = response();
+  handler('PUT', '/:id/wallpaper-menu')({
+    ...editorReq,
+    body: { enabled: false, expected_version: 7 },
+  }, remove);
+  assert.equal(remove.statusCode, 200);
+  assert.equal(remove.body.is_wallpaper_menu, false);
+  db.prepare("UPDATE content SET archived_at=NULL WHERE id='cv-wallpaper'").run();
+  const restoredMenu = response();
+  handler('GET', '/wallpaper-menu')(peerReq(), restoredMenu);
+  assert.deepEqual(restoredMenu.body, []);
+  const removedManifest = db.prepare(`SELECT generation, is_screensaver, screensaver_category
+    FROM asset_checksums WHERE content_id='cv-wallpaper'`).get();
+  assert.deepEqual(removedManifest, { generation: 7, is_screensaver: 0, screensaver_category: null });
+  assert.deepEqual(
+    db.prepare(`SELECT action FROM activity_log
+      WHERE action IN ('content:wallpaper_menu_add', 'content:wallpaper_menu_remove')`)
+      .all().map(row => row.action).sort(),
+    ['content:wallpaper_menu_add', 'content:wallpaper_menu_remove'],
+  );
+
+  const invalidState = response();
+  handler('PUT', '/:id/wallpaper-menu')({ ...editorReq, body: { enabled: 'yes' } }, invalidState);
+  assert.equal(invalidState.statusCode, 400);
+  const versionConflict = response();
+  handler('PUT', '/:id/wallpaper-menu')({
+    ...editorReq,
+    body: { enabled: true, expected_version: 6 },
+  }, versionConflict);
+  assert.equal(versionConflict.body.code, 'CONTENT_VERSION_CONFLICT');
+  db.prepare("UPDATE asset_checksums SET canonical_path='wrong.png' WHERE content_id='cv-wallpaper'").run();
+  const mismatchedManifest = response();
+  handler('PUT', '/:id/wallpaper-menu')({
+    ...editorReq,
+    body: { enabled: true, expected_version: 7 },
+  }, mismatchedManifest);
+  assert.equal(mismatchedManifest.body.code, 'CONTENT_NOT_READY');
+
+  db.prepare("DELETE FROM content WHERE id='cv-wallpaper'").run();
+});
+
 after(() => {
   try { db.close(); } catch {}
   fs.rmSync(tempDir, { recursive: true, force: true });

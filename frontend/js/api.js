@@ -216,7 +216,7 @@ export const api = {
     const q = folderId === null ? 'root' : encodeURIComponent(folderId);
     return request(`/content?folder_id=${q}`);
   },
-  getGovernedContent: (filters = {}) => {
+  getGovernedContent: (filters = {}, options = {}) => {
     const query = new URLSearchParams();
     if (filters.folderId !== undefined) query.set('folder_id', filters.folderId === null ? 'root' : filters.folderId);
     if (filters.visibility) query.set('visibility', filters.visibility);
@@ -235,9 +235,14 @@ export const api = {
     if (filters.limit) query.set('limit', String(filters.limit));
     if (filters.offset) query.set('offset', String(filters.offset));
     const suffix = query.toString();
-    return request(`/content${suffix ? `?${suffix}` : ''}`);
+    return request(`/content${suffix ? `?${suffix}` : ''}`, { signal: options.signal });
   },
   getContentItem: (id) => request(`/content/${id}`),
+  getWallpaperMenu: () => request('/content/wallpaper-menu'),
+  setWallpaperMenu: (id, enabled, expectedVersion) => request(`/content/${id}/wallpaper-menu`, {
+    method: 'PUT',
+    body: JSON.stringify({ enabled: enabled === true, expected_version: expectedVersion }),
+  }),
   deleteContent: (id) => request(`/content/${id}`, { method: 'DELETE' }),
   updateContent: (id, data) => reconcileContentMutation(
     id,

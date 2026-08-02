@@ -2006,6 +2006,10 @@ body.media-library-dialog-open {
   align-self: center;
 }
 
+.content-item-actions .content-wallpaper-control {
+  min-height: 48px;
+}
+
 .content-readiness {
   display: grid;
   grid-template-columns: auto 1fr;
