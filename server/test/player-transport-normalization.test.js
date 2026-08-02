@@ -30,20 +30,17 @@ test('player transport normalization unwraps nested payload wrappers', () => {
   assert.ok(snippet.includes('command.type'), 'normalizeTransportCommand should still preserve the transport wrapper type');
 });
 
-test('player direct iframe transport handles go_to_slide targets', () => {
+test('player direct iframe transport delegates the complete command to the authoritative child state machine', () => {
   const snippet = readSnippet(
     path.join(__dirname, '..', 'player', 'index.html'),
     'function tryDirectIframeTransport(command',
     'function doTransport(input)'
   );
 
-  assert.ok(snippet.includes('go_to_slide'), 'tryDirectIframeTransport should recognize go_to_slide');
-  assert.ok(snippet.includes('payload.page'), 'tryDirectIframeTransport should read slide targets from payload');
-  assert.ok(
-    snippet.indexOf('childWindow.handleAction') >= 0 &&
-      snippet.indexOf('childWindow.handleAction') < snippet.indexOf('const pageImg = idoc.getElementById'),
-    'tryDirectIframeTransport should use child handleAction state before DOM fallback'
-  );
+  assert.ok(snippet.includes('childWindow.handleAction(envelope)'), 'parent should pass the canonical envelope to the child');
+  assert.ok(snippet.includes('acceptChildTransportState(state)'), 'parent should adopt the child acknowledgement state');
+  assert.ok(!snippet.includes('contentDocument'), 'parent must not scrape presentation iframe DOM');
+  assert.ok(!snippet.includes('pageImg.src'), 'parent must not mutate document slide images');
   assert.ok(snippet.includes("typeof result.then === 'function'"), 'parent should await asynchronous child-player acknowledgements');
 });
 

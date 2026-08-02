@@ -81,8 +81,12 @@ test('span wall transport controls fan out to every wall member', () => {
   assert.match(transport, /dashboard:transport-transaction/);
   assert.match(transport, /Promise\.all\(\(ack\.targets \|\| \[\]\)\.map/);
   assert.match(transport, /idempotency_key: transactionId/);
-  assert.match(transport, /action === 'play_pause'[\s\S]*authoritativePaused === true \? 'play' : 'pause'/);
-  assert.match(main, /action === 'play_pause'[\s\S]*paused === true \? 'play' : 'pause'/);
+  // Rapid instructor clicks are resolved through an optimistic intent tracker,
+  // which turns play/pause into explicit actions and keeps every slide tap.
+  assert.match(transport, /createTransportIntentTracker/);
+  assert.match(transport, /intentTracker\.resolve\(key, action/);
+  assert.match(main, /createTransportIntentTracker/);
+  assert.match(main, /intentTracker\.resolve\(intentKey, action, playback\)/);
 });
 
 test('an independently selected split-wall member remains renderable as a display target', () => {

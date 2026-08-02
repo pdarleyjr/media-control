@@ -13,7 +13,7 @@ import { previewSource, renderStage } from './media-control/stage.js';
 import { renderToolbox } from './media-control/toolbox.js';
 import { sendToDisplays, sentToast, trackBroadcastDelivery } from './media-control/send.js';
 import { dispatchTransportTransaction, sendTransportCommand } from './media-control/transport.js';
-import { resolveTransportIntent } from './media-control/transport-intent.js';
+import { createTransportIntentTracker } from './media-control/transport-intent.js';
 import { transportContextForTarget } from '../services/region-playback-state.js';
 import { renderInspector, closeInspector } from './media-control/inspector.js';
 import { renderMultiview, teardownMultiview, buildSplitGridUrl } from './media-control/multiview.js';
@@ -186,6 +186,7 @@ let lastStageSig = null;     // structural signature of the last full stage pain
 let refreshAfterSendTimer = null;
 let previewRequestTimer = null;
 const postActionPreviewTimers = new Set();
+const pendingPostActionPreviewIds = new Set();
 const pendingPreviewRequestIds = new Set();
 const lastPreviewRequestAt = new Map();
 let screenshotPoller = null;
@@ -892,11 +893,20 @@ function queuePreviewRequests(ids, delay = 1200, force = false) {
 function refreshAfterSend(targetIds) {
   scheduleDisplayStateRefresh(100);
   const ids = (Array.isArray(targetIds) && targetIds.length) ? targetIds : visibleDeviceIds();
+  for (const id of ids) {
+    if (id) pendingPostActionPreviewIds.add(id);
+  }
+  // A burst of slide/video commands must not create two screenshot + REST
+  // refresh timers per click. Keep one trailing pair for the whole burst.
+  for (const timer of postActionPreviewTimers) clearTimeout(timer);
+  postActionPreviewTimers.clear();
   for (const delay of [350, 1400]) {
     const timer = setTimeout(() => {
       postActionPreviewTimers.delete(timer);
-      for (const id of ids) requestScreenshotThrottled(id, true);
+      const batch = [...pendingPostActionPreviewIds];
+      for (const id of batch) requestScreenshotThrottled(id, true);
       displayState.refresh().catch(() => {});
+      if (delay === 1400) pendingPostActionPreviewIds.clear();
     }, delay);
     postActionPreviewTimers.add(timer);
   }
@@ -1122,6 +1132,7 @@ function stopPreviewRefresh() {
   if (previewRequestTimer) { clearTimeout(previewRequestTimer); previewRequestTimer = null; }
   for (const timer of postActionPreviewTimers) clearTimeout(timer);
   postActionPreviewTimers.clear();
+  pendingPostActionPreviewIds.clear();
   pendingPreviewRequestIds.clear();
 }
 
@@ -2235,20 +2246,18 @@ function mountTransportRow(hostEl) {
       <button type="button" class="mc-cc-tp-btn mc-cc-tp-scroll" data-cc-tp="scroll_down" hidden><span class="mc-cc-tp-ico" aria-hidden="true">▼</span><span class="mc-cc-tp-text">${esc(t('mc.cc.transport.scroll_down'))}</span></button>
     </div>`;
   const row = hostEl.querySelector('.mc-cc-tp-row');
-  let inFlight = false;
-  const setBusy = (busy, action = '') => {
-    inFlight = busy;
+  const intentTracker = createTransportIntentTracker();
+  let pendingTransportCount = 0;
+  const updateBusyState = (action = '') => {
+    const busy = pendingTransportCount > 0;
     if (row) {
       row.setAttribute('aria-busy', busy ? 'true' : 'false');
       row.dataset.pendingAction = busy ? action : '';
+      row.dataset.pendingCount = String(pendingTransportCount);
     }
-    hostEl.querySelectorAll('[data-cc-tp]').forEach((control) => {
-      control.disabled = busy;
-    });
   };
   hostEl.querySelectorAll('[data-cc-tp]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      if (inFlight) return;
       const ids = activeTargetTransportIds();
       if (!ids.length) return;
       const action = btn.dataset.ccTp; // 'prev' | 'restart' | 'play_pause' | 'next'
@@ -2257,19 +2266,25 @@ function mountTransportRow(hostEl) {
         ? transportContextForTarget(activeControlTarget, primary)
         : null;
       const playback = regionContext?.playback || primary?.now_playing;
-      const paused = playback?.paused;
-      // The button may be visually a toggle, but the wire protocol never is:
-      // unknown state fails safe to an explicit pause instead of play_pause.
-      const resolvedAction = action === 'play_pause'
-        ? (paused === true ? 'play' : 'pause')
-        : action;
-      const intent = resolveTransportIntent(resolvedAction, playback);
-      if (intent.noOp) return;
-      setBusy(true, intent.action);
+      const commandIds = regionContext ? [regionContext.deviceId] : ids;
+      const contentKey = regionContext?.contentInstanceId
+        || playback?.contentInstanceId
+        || playback?.content_instance_id
+        || playback?.contentId
+        || playback?.content_id
+        || 'unknown-content';
+      const intentKey = `${commandIds.slice().sort().join(',')}:${regionContext?.regionId || ''}:${contentKey}`;
+      const intent = intentTracker.resolve(intentKey, action, playback);
+      if (intent.noOp) {
+        intentTracker.settle(intentKey, intent.sequence);
+        return;
+      }
+      pendingTransportCount += 1;
+      updateBusyState(intent.action);
       const operation = (intent.action === 'scroll_up' || intent.action === 'scroll_down')
         ? Promise.all(ids.map(id => sendTransportCommand(id, intent.action, intent.payload)))
         : dispatchTransportTransaction(
-          regionContext ? [regionContext.deviceId] : ids,
+          commandIds,
           intent.action,
           intent.payload,
           regionContext ? {
@@ -2282,13 +2297,16 @@ function mountTransportRow(hostEl) {
         );
       Promise.resolve(operation).then((results) => {
         const failed = Array.isArray(results)
-          && results.some((entry) => entry?.result?.ok === false);
-        if (failed) showToast(t('mc.send.failed'), 'error');
+          && results.some((entry) => (entry?.result || entry)?.ok === false);
+        const latest = intentTracker.settle(intentKey, intent.sequence, { ok: !failed });
+        if (failed && latest) showToast(t('mc.send.failed'), 'error');
       }).catch((error) => {
-        showToast(error?.message || t('mc.send.failed'), 'error');
+        const latest = intentTracker.settle(intentKey, intent.sequence, { ok: false });
+        if (latest) showToast(error?.message || t('mc.send.failed'), 'error');
       }).finally(() => {
         refreshAfterSend(ids);
-        setBusy(false);
+        pendingTransportCount = Math.max(0, pendingTransportCount - 1);
+        updateBusyState();
         if (transportApi?.repaint) transportApi.repaint();
         setTimeout(() => transportApi?.repaint?.(), 120);
       });

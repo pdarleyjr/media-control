@@ -688,7 +688,7 @@ test.describe('Phase 2 — Feature flag ON: enterprise operator console', () => 
     assertNoErrors(errors, 'Command Center session landing');
   });
 
-  test('2b3. presentation Next is one absolute slide transaction and duplicate taps are suppressed', async ({ page }) => {
+  test('2b3. rapid presentation Next/Previous taps preserve every absolute slide intent', async ({ page }) => {
     setOperatorFixturePlaybackState('document');
     try {
       const errors = attachErrorCollectors(page);
@@ -696,14 +696,20 @@ test.describe('Phase 2 — Feature flag ON: enterprise operator console', () => 
       const startedAt = Date.now();
       await page.goto(`${BASE_URL}/app#/control?target=${encodeURIComponent('wall:test-protected-wall')}`);
       const next = page.locator('[data-cc-tp="next"]');
+      const previous = page.locator('[data-cc-tp="prev"]');
       await expect(next).toBeVisible({ timeout: 20000 });
+      await expect(previous).toBeVisible();
       await expect(next.locator('.mc-cc-tp-text')).toHaveText('Next slide');
+      await expect(previous.locator('.mc-cc-tp-text')).toHaveText('Previous slide');
 
-      // Two same-tick taps reproduce a touch double-fire without introducing
-      // timing flakiness. The toolbar's in-flight gate must emit one transaction.
-      await next.evaluate((button) => {
-        button.click();
-        button.click();
+      // The display-state fixture remains on slide 2 while these clicks run.
+      // The optimistic cursor must preserve all three intentions as 3, 4, 3.
+      await page.evaluate(() => {
+        const nextButton = document.querySelector('[data-cc-tp="next"]');
+        const previousButton = document.querySelector('[data-cc-tp="prev"]');
+        nextButton.click();
+        nextButton.click();
+        previousButton.click();
       });
 
       const Database = require('better-sqlite3');
@@ -724,7 +730,7 @@ test.describe('Phase 2 — Feature flag ON: enterprise operator console', () => 
         } finally {
           database.close();
         }
-      }, { timeout: 10000 }).toHaveLength(3);
+      }, { timeout: 10000 }).toHaveLength(9);
 
       const database = new Database(path.join(tmpDir, 'test.db'), { readonly: true });
       let commands;
@@ -745,8 +751,9 @@ test.describe('Phase 2 — Feature flag ON: enterprise operator console', () => 
       }
       const payloads = commands.map((row) => JSON.parse(row.payload));
       expect(new Set(commands.map((row) => row.command_type))).toEqual(new Set(['go_to_slide']));
-      expect(new Set(payloads.map((payload) => payload.slide))).toEqual(new Set([3]));
-      expect(new Set(payloads.map((payload) => payload.transport_transaction_id)).size).toBe(1);
+      expect(payloads.filter((payload) => payload.slide === 3)).toHaveLength(6);
+      expect(payloads.filter((payload) => payload.slide === 4)).toHaveLength(3);
+      expect(new Set(payloads.map((payload) => payload.transport_transaction_id)).size).toBe(3);
       expect(errors.page).toHaveLength(0);
       expect(errors.console.filter((message) => /uncaught|unhandled/i.test(message))).toHaveLength(0);
     } finally {
@@ -754,7 +761,7 @@ test.describe('Phase 2 — Feature flag ON: enterprise operator console', () => 
     }
   });
 
-  test('2b4. video Pause emits once per wall member and duplicate taps are suppressed', async ({ page }) => {
+  test('2b4. rapid video Play/Pause taps preserve both explicit intents', async ({ page }) => {
     const Database = require('better-sqlite3');
     const dbPath = path.join(tmpDir, 'test.db');
     setOperatorFixturePlaybackState('video');
@@ -779,7 +786,7 @@ test.describe('Phase 2 — Feature flag ON: enterprise operator console', () => 
             SELECT COUNT(*) AS count
             FROM command_logs
             WHERE created_at >= ?
-              AND command_type = 'pause'
+              AND command_type IN ('pause', 'play')
               AND target_id IN (
                 'test-protected-display',
                 'test-protected-display-2',
@@ -789,26 +796,28 @@ test.describe('Phase 2 — Feature flag ON: enterprise operator console', () => 
         } finally {
           database.close();
         }
-      }, { timeout: 10000 }).toBe(3);
+      }, { timeout: 10000 }).toBe(6);
 
       const database = new Database(dbPath, { readonly: true });
       let transactions;
       try {
         transactions = database.prepare(`
-          SELECT payload
+          SELECT command_type, payload
           FROM command_logs
           WHERE created_at >= ?
-            AND command_type = 'pause'
+            AND command_type IN ('pause', 'play')
             AND target_id IN (
               'test-protected-display',
               'test-protected-display-2',
               'test-protected-display-3'
             )
-        `).all(startedAt).map((row) => JSON.parse(row.payload).transport_transaction_id);
+        `).all(startedAt);
       } finally {
         database.close();
       }
-      expect(new Set(transactions).size).toBe(1);
+      expect(transactions.filter((row) => row.command_type === 'pause')).toHaveLength(3);
+      expect(transactions.filter((row) => row.command_type === 'play')).toHaveLength(3);
+      expect(new Set(transactions.map((row) => JSON.parse(row.payload).transport_transaction_id)).size).toBe(2);
       expect(errors.page).toHaveLength(0);
       expect(errors.console.filter((message) => /uncaught|unhandled/i.test(message))).toHaveLength(0);
     } finally {

@@ -2985,8 +2985,6 @@
       function tryDirectIframeTransport(command, rootHint) {
         const envelope = normalizeTransportCommand(command);
         const action = envelope.action;
-        const payload = envelope.payload || {};
-        const len = playlist.length || 0;
         const scope = rootHint || document;
         const iframe = scope.querySelector
           ? scope.querySelector('iframe') || (scope.matches && scope.matches('iframe') ? scope : null)
@@ -3029,104 +3027,16 @@
           return true;
         }
 
-        let domHandled = false;
-        try {
-          const idoc = iframe.contentDocument;
-          if (idoc) {
-            const pageImg = idoc.getElementById('page');
-            if (pageImg && pageImg.src) {
-              const m = pageImg.src.match(/\/(\d+)\.png/);
-              const curPage = m ? parseInt(m[1], 10) : 1;
-              const statusEl = idoc.getElementById('status');
-              let totalPages = 1;
-              if (statusEl && statusEl.textContent) {
-                const tm = statusEl.textContent.match(/(\d+)\s*\/\s*(\d+)/);
-                if (tm) totalPages = parseInt(tm[2], 10);
-              }
-              let newPage = curPage;
-              if (action === 'next') newPage = Math.min(totalPages, curPage + 1);
-              else if (action === 'prev') newPage = Math.max(1, curPage - 1);
-              else if (action === 'restart') newPage = 1;
-              else if (action === 'go_to_slide' || action === 'slide' || action === 'goto') {
-                const targetPage = payload.page !== undefined && payload.page !== null
-                  ? payload.page
-                  : payload.slide !== undefined && payload.slide !== null
-                    ? payload.slide
-                    : payload.index !== undefined && payload.index !== null
-                      ? payload.index
-                      : payload.page_number !== undefined && payload.page_number !== null
-                        ? payload.page_number
-                        : payload.slide_number !== undefined && payload.slide_number !== null
-                          ? payload.slide_number
-                          : null;
-                const parsedTarget = parseInt(targetPage, 10);
-                if (Number.isFinite(parsedTarget)) newPage = Math.max(1, parsedTarget);
-              }
-              else if (action === 'play_pause') {
-                try { if (iframe.contentWindow.toggleAuto) iframe.contentWindow.toggleAuto(); } catch (_) {}
-                domHandled = true;
-              }
-              if (!domHandled && newPage !== curPage) {
-                const newSrc = pageImg.src.replace(/\/\d+\.png/, '/' + newPage + '.png');
-                pageImg.src = newSrc;
-                if (statusEl) {
-                  const fn = statusEl.textContent.split('·')[0].trim();
-                  statusEl.textContent = fn + ' · ' + newPage + ' / ' + totalPages;
-                }
-                domHandled = true;
-                _showTransportDebug('slide ' + curPage + '→' + newPage + ' / ' + totalPages);
-              }
-            }
-            if (!domHandled) {
-              const slides = idoc.querySelectorAll('.slide');
-              if (slides.length > 0) {
-                let curIdx = 0;
-                slides.forEach(function(s, i) { if (s.classList.contains('show')) curIdx = i; });
-                let newIdx = curIdx;
-                if (action === 'next') newIdx = Math.min(slides.length - 1, curIdx + 1);
-                else if (action === 'prev') newIdx = Math.max(0, curIdx - 1);
-                else if (action === 'restart') newIdx = 0;
-                else if (action === 'go_to_slide' || action === 'slide' || action === 'goto') {
-                  const targetSlide = payload.page !== undefined && payload.page !== null
-                    ? payload.page
-                    : payload.slide !== undefined && payload.slide !== null
-                      ? payload.slide
-                      : payload.index !== undefined && payload.index !== null
-                        ? payload.index
-                        : payload.page_number !== undefined && payload.page_number !== null
-                          ? payload.page_number
-                          : payload.slide_number !== undefined && payload.slide_number !== null
-                            ? payload.slide_number
-                            : null;
-                  const parsedTarget = parseInt(targetSlide, 10);
-                  if (Number.isFinite(parsedTarget)) {
-                    newIdx = Math.max(0, Math.min(slides.length - 1, parsedTarget > 0 ? parsedTarget - 1 : parsedTarget));
-                  }
-                }
-                if (newIdx !== curIdx) {
-                  slides[curIdx].classList.remove('show');
-                  slides[newIdx].classList.add('show');
-                  domHandled = true;
-                  _showTransportDebug('deck ' + curIdx + '→' + newIdx + ' / ' + slides.length);
-                }
-              }
-            }
-          }
-        } catch (domErr) {
-          _showTransportDebug('DOM access failed: ' + domErr.message + ' — trying postMessage');
-        }
-
-        if (domHandled) {
-          finishTransportCommand(command, true, null, buildPlayerState());
-          return true;
-        }
+        // Never infer or mutate presentation state through iframe DOM. doc.html
+        // and deck.html own slide state through handleAction(); if the child has
+        // not installed that handler yet, the caller uses the bounded
+        // same-origin postMessage/retry path below.
         return false;
       }
 
       // Transport (Broadcast Center control bar): next/prev/play_pause/restart.
       // The child iframe is authoritative when it exists. We try handleAction
-      // first, then postMessage, and only fall back to DOM manipulation if no
-      // transportable child is available.
+      // first and then the child's postMessage contract while it is loading.
       function readSeekPosition(command, duration) {
         const payload = command && command.payload && typeof command.payload === 'object'
           ? command.payload
