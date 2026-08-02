@@ -30,6 +30,7 @@ import json
 import os
 import re
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -56,6 +57,8 @@ ENV_ROOT = "/run/mbfd-camera-recording"
 UNIT_TEMPLATE = "mbfd-camera-recording@{}.service"
 RUNNER = "/usr/local/libexec/mbfd-camera-recording-run"
 FFMPEG = "/usr/bin/ffmpeg"
+RUNNER_SHELL = "/usr/bin/bash"
+SYSTEMCTL_STOP_TIMEOUT_SECONDS = 55
 
 MAX_REQUEST = 8192
 MAX_RESPONSE = 65536
@@ -176,6 +179,14 @@ def env_path_for(session_id):
     return os.path.join(ENV_ROOT, f"{session_id}.env")
 
 
+def child_pid_path_for(session_id):
+    return f"{ENV_ROOT}/{session_id}.pid"
+
+
+def deadline_marker_path_for(session_id):
+    return f"{ENV_ROOT}/{session_id}.finalize-timeout"
+
+
 def unit_for(session_id):
     return UNIT_TEMPLATE.format(session_id)
 
@@ -214,6 +225,14 @@ def remove_env_file(session_id):
         pass
 
 
+def remove_child_runtime_files(session_id):
+    for target in (child_pid_path_for(session_id), deadline_marker_path_for(session_id)):
+        try:
+            os.unlink(target)
+        except FileNotFoundError:
+            pass
+
+
 def read_env_value(env_file, key):
     if not os.path.isfile(env_file) or os.path.islink(env_file):
         return None
@@ -237,8 +256,57 @@ def systemctl_show(unit, *props):
     return fields
 
 
+def read_process_cmdline(pid):
+    with open(f"/proc/{pid}/cmdline", "rb") as fh:
+        cmdline = fh.read().split(b"\x00")
+    if cmdline and cmdline[-1] == b"":
+        cmdline = cmdline[:-1]
+    return cmdline
+
+
+def validate_runner_cmdline(cmdline, session_id):
+    decoded = [item.decode() for item in cmdline]
+    if (
+        len(decoded) != 3
+        or os.path.basename(decoded[0]) != "bash"
+        or decoded[1] != RUNNER
+        or decoded[2] != session_id
+    ):
+        raise ValueError("recording runner cmdline mismatch")
+
+
+def validate_ffmpeg_parent(actual_parent_pid, runner_pid):
+    if not str(actual_parent_pid).isdigit() or int(actual_parent_pid) != runner_pid:
+        raise ValueError("ffmpeg is not a direct child of the recording runner")
+
+
+def validate_process_nonce(pid, nonce):
+    with open(f"/proc/{pid}/environ", "rb") as fh:
+        environ = fh.read().split(b"\x00")
+    expected_nonce = f"MBFD_RECORDING_NONCE={nonce}".encode()
+    if expected_nonce not in environ:
+        raise ValueError("recording nonce not found in process environment")
+
+
+def read_validated_child_pid(session_id):
+    target = child_pid_path_for(session_id)
+    metadata = os.lstat(target)
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise ValueError("recording child PID file is not a regular file")
+    import pwd
+    expected_uid = pwd.getpwnam("mbfd-recording").pw_uid
+    if metadata.st_uid != expected_uid:
+        raise ValueError("recording child PID file owner mismatch")
+    with open(target, "r", encoding="ascii") as fh:
+        value = fh.read().strip()
+    pid = int(value) if value.isdigit() else 0
+    if pid <= 1:
+        raise ValueError("invalid recording child PID")
+    return pid
+
+
 def validate_active_unit(session_id):
-    """Validate an active recording unit's executable, cmdline, and nonce."""
+    """Validate the runner and its exact direct FFmpeg child."""
     unit = unit_for(session_id)
     fields = systemctl_show(
         unit, "Id", "ActiveState", "SubState", "MainPID", "Result"
@@ -253,16 +321,10 @@ def validate_active_unit(session_id):
     if pid <= 1:
         raise ValueError("invalid MainPID for active unit")
 
-    exe = os.path.realpath(f"/proc/{pid}/exe")
-    if exe != FFMPEG:
-        raise ValueError("recording process executable is not ffmpeg")
-
-    # Read cmdline
-    with open(f"/proc/{pid}/cmdline", "rb") as fh:
-        cmdline = fh.read().split(b"\x00")
-    # Trailing empty from the final NUL
-    if cmdline and cmdline[-1] == b"":
-        cmdline = cmdline[:-1]
+    runner_exe = os.path.realpath(f"/proc/{pid}/exe")
+    if runner_exe != RUNNER_SHELL:
+        raise ValueError("recording MainPID executable is not the fixed runner shell")
+    validate_runner_cmdline(read_process_cmdline(pid), session_id)
 
     env_file = env_path_for(session_id)
     source = read_env_value(env_file, "MBFD_RECORDING_SOURCE")
@@ -272,20 +334,26 @@ def validate_active_unit(session_id):
     if not all([source, segment, output, nonce]):
         raise ValueError("recording environment is missing or unreadable")
 
-    expected = expected_ffmpeg_arguments(source, segment, output)
+    validate_process_nonce(pid, nonce)
 
+    child_pid = read_validated_child_pid(session_id)
+    child_exe = os.path.realpath(f"/proc/{child_pid}/exe")
+    if child_exe != FFMPEG:
+        raise ValueError("recording child process executable is not ffmpeg")
+    with open(f"/proc/{child_pid}/status", "r", encoding="ascii") as fh:
+        status_text = fh.read()
+    parent_match = re.search(r"^PPid:\s+([0-9]+)$", status_text, re.MULTILINE)
+    validate_ffmpeg_parent(parent_match.group(1) if parent_match else "", pid)
+
+    cmdline = read_process_cmdline(child_pid)
+    expected = expected_ffmpeg_arguments(source, segment, output)
     if len(cmdline) != len(expected):
         raise ValueError("ffmpeg cmdline length mismatch")
     for i, (exp, act) in enumerate(zip(expected, cmdline)):
         if exp is not None and act.decode() != exp:
             raise ValueError(f"ffmpeg argv[{i}] mismatch")
 
-    # Verify nonce in process environment
-    with open(f"/proc/{pid}/environ", "rb") as fh:
-        environ = fh.read().split(b"\x00")
-    expected_nonce = f"MBFD_RECORDING_NONCE={nonce}".encode()
-    if expected_nonce not in environ:
-        raise ValueError("recording nonce not found in process environment")
+    validate_process_nonce(child_pid, nonce)
 
     return pid, fields
 
@@ -401,6 +469,7 @@ def reconcile_session(session_id):
 
 def handle_start(session_id, environment):
     validate_environment(session_id, environment)
+    remove_child_runtime_files(session_id)
     write_env_file(session_id, environment)
     unit = unit_for(session_id)
     subprocess.run(
@@ -424,7 +493,8 @@ def handle_start(session_id, environment):
     # that same unit if the runner never becomes the validated FFmpeg process.
     subprocess.run(
         ["/usr/bin/systemctl", "stop", unit],
-        check=False, capture_output=True, text=True, timeout=30,
+        check=False, capture_output=True, text=True,
+        timeout=SYSTEMCTL_STOP_TIMEOUT_SECONDS,
     )
     remove_env_file(session_id)
     detail = str(last_error) if last_error else "unit did not remain active"
@@ -438,7 +508,8 @@ def handle_stop(session_id):
     unit = unit_for(session_id)
     subprocess.run(
         ["/usr/bin/systemctl", "stop", unit],
-        check=True, capture_output=True, text=True, timeout=30,
+        check=True, capture_output=True, text=True,
+        timeout=SYSTEMCTL_STOP_TIMEOUT_SECONDS,
     )
     remove_env_file(session_id)
     audit("stop", session_id, "ok")
@@ -486,6 +557,7 @@ def handle_reconcile(session_id):
 def handle_finalize(session_id):
     """Clean up env file after finalization is complete."""
     remove_env_file(session_id)
+    remove_child_runtime_files(session_id)
     audit("finalize", session_id, "ok")
     return ""
 

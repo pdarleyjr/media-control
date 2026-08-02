@@ -36,14 +36,15 @@ test('user-run long recording harness is explicit, bounded by the user and produ
   assert.doesNotMatch(harness, /node-detached/);
 });
 
-test('recording systemd template has constrained process-group stop semantics', () => {
+test('recording systemd template gives the validated runner a bounded finalization window', () => {
   const unit = fs.readFileSync(
     path.join(__dirname, '..', '..', 'kamrui-media-edge', 'systemd', 'mbfd-camera-recording@.service'),
     'utf8'
   );
-  assert.match(unit, /KillMode=control-group/);
+  assert.match(unit, /KillMode=mixed/);
   assert.match(unit, /KillSignal=SIGINT/);
-  assert.match(unit, /TimeoutStopSec=/);
+  assert.match(unit, /TimeoutStopSec=45/);
+  assert.match(unit, /TimeoutStopFailureMode=kill/);
   assert.match(unit, /Restart=no/);
   assert.match(unit, /StartLimitBurst=/);
   assert.match(unit, /NoNewPrivileges=true/);

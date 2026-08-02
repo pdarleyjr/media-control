@@ -32,7 +32,102 @@ case "$MBFD_RECORDING_OUTPUT_PATTERN" in
   *) echo "recording output escaped the session directory" >&2; exit 2 ;;
 esac
 
-exec /usr/bin/ffmpeg \
+finalize_timeout="${MBFD_RECORDING_FINALIZE_TIMEOUT_SECONDS:-40}"
+if [[ ! "$finalize_timeout" =~ ^[0-9]+$ ]] \
+  || (( finalize_timeout < 5 || finalize_timeout > 40 )); then
+  echo "invalid recording finalization timeout" >&2
+  exit 2
+fi
+
+runtime_root="/run/mbfd-camera-recording"
+pid_file="$runtime_root/$session_id.pid"
+deadline_marker="$runtime_root/$session_id.finalize-timeout"
+ffmpeg_pid=''
+watchdog_pid=''
+pid_tmp=''
+stop_requested=0
+runner_pid=$$
+
+cleanup() {
+  trap - EXIT
+  if [[ -n "$watchdog_pid" ]]; then
+    kill "$watchdog_pid" 2>/dev/null || true
+    wait "$watchdog_pid" 2>/dev/null || true
+  fi
+  rm -f -- "$pid_file" "$deadline_marker"
+  if [[ -n "$pid_tmp" ]]; then rm -f -- "$pid_tmp"; fi
+}
+
+request_stop() {
+  if (( stop_requested == 1 )) && [[ -n "$watchdog_pid" ]]; then return; fi
+  stop_requested=1
+  if [[ -z "$ffmpeg_pid" ]]; then return; fi
+  echo "recording stop requested; forwarding SIGINT to ffmpeg pid=$ffmpeg_pid" >&2
+  if ffmpeg_child_is_owned; then
+    kill -INT "$ffmpeg_pid" 2>/dev/null || true
+    (
+      sleep "$finalize_timeout"
+      if ffmpeg_child_is_owned; then
+        printf 'ffmpeg exceeded %ss finalization deadline\n' "$finalize_timeout" >"$deadline_marker"
+        kill -TERM "$ffmpeg_pid" 2>/dev/null || true
+        sleep 2
+        kill -KILL "$ffmpeg_pid" 2>/dev/null || true
+      fi
+    ) &
+    watchdog_pid=$!
+  fi
+}
+
+ffmpeg_child_is_owned() {
+  local actual_parent actual_executable
+  [[ -n "$ffmpeg_pid" ]] || return 1
+  actual_executable="$(readlink -f "/proc/$ffmpeg_pid/exe" 2>/dev/null || true)"
+  actual_parent="$(awk '/^PPid:/ { print $2; exit }' "/proc/$ffmpeg_pid/status" 2>/dev/null || true)"
+  [[ "$actual_executable" == "/usr/bin/ffmpeg" && "$actual_parent" == "$runner_pid" ]]
+}
+
+latest_segment() {
+  local output_dir latest candidate
+  local -a segments
+  output_dir="${MBFD_RECORDING_OUTPUT_PATTERN%/*}"
+  shopt -s nullglob
+  segments=("$output_dir"/*.mp4)
+  shopt -u nullglob
+  if (( ${#segments[@]} == 0 )); then return 1; fi
+  latest="${segments[0]}"
+  for candidate in "${segments[@]:1}"; do
+    if [[ "$candidate" -nt "$latest" ]]; then latest="$candidate"; fi
+  done
+  printf '%s\n' "$latest"
+}
+
+validate_final_segment() {
+  local segment duration video_codec audio_codec
+  segment="$(latest_segment)" || {
+    echo "recording finalization produced no MP4 segment" >&2
+    return 1
+  }
+  if [[ ! -s "$segment" ]]; then
+    echo "recording finalization produced an empty MP4 segment" >&2
+    return 1
+  fi
+  duration="$(/usr/bin/ffprobe -v error -show_entries format=duration \
+    -of default=noprint_wrappers=1:nokey=1 "$segment")" || return 1
+  video_codec="$(/usr/bin/ffprobe -v error -select_streams v:0 \
+    -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$segment")" || return 1
+  audio_codec="$(/usr/bin/ffprobe -v error -select_streams a:0 \
+    -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$segment")" || return 1
+  if [[ ! "$duration" =~ ^[0-9]+([.][0-9]+)?$ || "$duration" =~ ^0+([.]0+)?$ ]]; then return 1; fi
+  if [[ "$video_codec" != "h264" ]]; then return 1; fi
+  if [[ -n "$audio_codec" && "$audio_codec" != "aac" ]]; then return 1; fi
+  echo "recording finalization validated segment=$segment duration=$duration" >&2
+}
+
+trap request_stop INT TERM
+trap cleanup EXIT
+rm -f -- "$deadline_marker"
+
+/usr/bin/ffmpeg \
   -nostdin -hide_banner -loglevel warning -n \
   -rtsp_transport tcp -i "$MBFD_RECORDING_SOURCE" \
   -map 0:v:0 -map '0:a:0?' \
@@ -42,4 +137,52 @@ exec /usr/bin/ffmpeg \
   -f segment -segment_time "${MBFD_RECORDING_SEGMENT_SECONDS:-1800}" \
   -segment_format mp4 -reset_timestamps 1 \
   -movflags '+frag_keyframe+empty_moov+default_base_moof' \
-  "$MBFD_RECORDING_OUTPUT_PATTERN"
+  "$MBFD_RECORDING_OUTPUT_PATTERN" &
+ffmpeg_pid=$!
+
+pid_tmp="$pid_file.$$.tmp"
+umask 0027
+( set -o noclobber; printf '%s\n' "$ffmpeg_pid" >"$pid_tmp" )
+chmod 0640 "$pid_tmp"
+mv -f -- "$pid_tmp" "$pid_file"
+pid_tmp=''
+if (( stop_requested == 1 )); then
+  stop_requested=0
+  request_stop
+fi
+
+child_status=0
+while true; do
+  set +e
+  wait "$ffmpeg_pid"
+  child_status=$?
+  set -e
+  if ! kill -0 "$ffmpeg_pid" 2>/dev/null; then break; fi
+done
+
+if [[ -n "$watchdog_pid" ]]; then
+  kill "$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null || true
+  watchdog_pid=''
+fi
+
+if [[ -f "$deadline_marker" ]]; then
+  echo "recording finalization deadline exceeded" >&2
+  exit 124
+fi
+if (( stop_requested == 0 )); then
+  exit "$child_status"
+fi
+if (( child_status != 0 && child_status != 255 )); then
+  echo "ffmpeg stopped with unexpected status=$child_status" >&2
+  exit "$child_status"
+fi
+if ! validate_final_segment; then
+  echo "ffmpeg stopped but the final MP4 segment did not validate" >&2
+  exit 65
+fi
+
+# FFmpeg commonly returns 255 after a handled SIGINT. Map that status to clean
+# service shutdown only after this runner requested the signal and ffprobe
+# proved the final MP4 trailer/streams readable. Unexpected 255 remains failed.
+exit 0

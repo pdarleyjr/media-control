@@ -11,16 +11,20 @@ User=mbfd-recording
 Group=mbfd-recording
 WorkingDirectory=/mnt/data/recordings
 EnvironmentFile=/run/mbfd-camera-recording/%i.env
+Environment=MBFD_RECORDING_FINALIZE_TIMEOUT_SECONDS=40
 ExecStart=/usr/local/libexec/mbfd-camera-recording-run %i
 # Never restart automatically: the runner uses -n and a fixed per-session
 # pattern, so a failed unit remains preserved for explicit recovery rather than
 # risking segment reuse.
 Restart=no
-KillMode=control-group
+# Signal the runner once. It validates and forwards SIGINT to its exact FFmpeg
+# child; any remaining process is killed only after the bounded stop deadline.
+KillMode=mixed
 KillSignal=SIGINT
 FinalKillSignal=SIGKILL
 SendSIGKILL=yes
-TimeoutStopSec=20
+TimeoutStopSec=45
+TimeoutStopFailureMode=kill
 UMask=0007
 StandardOutput=journal
 StandardError=journal

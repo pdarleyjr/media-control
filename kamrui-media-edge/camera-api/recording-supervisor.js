@@ -13,6 +13,14 @@ const DEFAULT_ADMIN = '/usr/local/sbin/mbfd-recording-admin';
 const DEFAULT_BROKER_SOCKET =
   process.env.MBFD_RECORDING_BROKER_SOCKET || '/run/mbfd-recording-broker/broker.sock';
 const SESSION_PATTERN = /^ses_[A-Za-z0-9_-]+$/;
+const DEFAULT_BROKER_REQUEST_TIMEOUT_MS = 10_000;
+const STOP_BROKER_REQUEST_TIMEOUT_MS = 60_000;
+
+function brokerRequestTimeoutMs(action) {
+  return action === 'stop'
+    ? STOP_BROKER_REQUEST_TIMEOUT_MS
+    : DEFAULT_BROKER_REQUEST_TIMEOUT_MS;
+}
 
 function safeSessionId(value) {
   const sessionId = String(value || '');
@@ -209,7 +217,7 @@ function sendBrokerRequest(socketPath, { action, session_id, environment = null 
     const socket = net.connect(socketPath);
     let response = '';
     let connected = false;
-    socket.setTimeout(10_000);
+    socket.setTimeout(brokerRequestTimeoutMs(action));
     socket.on('connect', () => {
       connected = true;
       const request = JSON.stringify({ action, session_id, environment }) + '\n';
@@ -456,6 +464,7 @@ module.exports = {
   serializeEnvironment,
   parseAdminStatus,
   parseReconcileStatus,
+  brokerRequestTimeoutMs,
   sendBrokerRequest,
   createRecordingSupervisor,
   createDockerRecordingSupervisor,

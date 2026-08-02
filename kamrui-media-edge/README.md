@@ -37,6 +37,12 @@ checksum verification. A recording is marked `syncVerified=true` only when the
 remote SHA-256 matches the local checksum.
 
 Recording supervision defaults to the dedicated, least-privilege systemd unit.
+The unit keeps a validated Bash runner as its main process and binds the exact
+direct FFmpeg child through a session-scoped PID file, command line, parent PID,
+and session nonce. On an intentional stop the runner forwards one SIGINT, waits
+up to 40 seconds, and returns success only after ffprobe validates the final MP4;
+systemd enforces a 45-second hard ceiling. Unexpected FFmpeg exit 255 remains a
+failed unit rather than being globally allowlisted.
 An optional Docker backend can be selected with `RECORDING_BACKEND=docker` and
 an immutable `RECORDING_DOCKER_IMAGE` digest. Its durable identity binds the
 full container and image IDs, command, session nonce, labels, non-root user,
