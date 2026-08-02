@@ -234,6 +234,62 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await context.close();
   });
 
+  test('Lenovo tablet can add and remove a ready image from the wallpaper menu', async ({ browser }) => {
+    const context = await browser.newContext({
+      viewport: { width: 838, height: 500 }, hasTouch: true, serviceWorkers: 'block',
+    });
+    const page = await context.newPage();
+    await page.addInitScript(({ token, user }) => {
+      localStorage.setItem('token', token);
+      localStorage.setItem('user', JSON.stringify(user));
+      localStorage.setItem('rd_onboarded', '1');
+    }, { token: authToken, user: { id: userId, email: TEST_EMAIL, name: 'Mobile Test', role: 'platform_admin' } });
+
+    let item = {
+      id: 'wallpaper-image',
+      filename: 'Classroom Map.png',
+      filepath: 'classroom-map.png',
+      mime_type: 'image/png',
+      file_size: 4096,
+      processing_status: 'ready',
+      version: 7,
+      is_wallpaper_menu: false,
+      visibility: { access_level: 'workspace_shared', archived_at: null, owner_name: 'Mobile Test' },
+      permissions: { can_edit: true, can_archive: true, can_delete: true },
+    };
+    const mutations = [];
+    await page.route('**/api/content/wallpaper-image/wallpaper-menu', async route => {
+      const body = route.request().postDataJSON();
+      mutations.push(body);
+      item = { ...item, is_wallpaper_menu: body.enabled === true };
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(item) });
+    });
+    await page.route('**/api/content?**', async route => {
+      const url = new URL(route.request().url());
+      if (url.pathname !== '/api/content' || route.request().method() !== 'GET') {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([item]) });
+    });
+
+    await page.goto(`${BASE_URL}/app#/content`, { waitUntil: 'networkidle' });
+    const add = page.getByRole('button', { name: 'Add to wallpaper menu' });
+    await expect(add).toBeVisible();
+    expect((await add.boundingBox()).height).toBeGreaterThanOrEqual(48);
+    await add.click();
+    await expect(page.getByRole('button', { name: 'Remove from wallpaper menu' })).toBeVisible();
+    expect(mutations).toEqual([{ enabled: true, expected_version: 7 }]);
+
+    await page.getByRole('button', { name: 'Remove from wallpaper menu' }).click();
+    await expect(page.getByRole('button', { name: 'Add to wallpaper menu' })).toBeVisible();
+    expect(mutations).toEqual([
+      { enabled: true, expected_version: 7 },
+      { enabled: false, expected_version: 7 },
+    ]);
+    await context.close();
+  });
+
   for (const vp of [
     { name: 'Lenovo-Tab-One-landscape', width: 838, height: 500 },
     { name: 'Lenovo-Tab-One-portrait', width: 500, height: 838 },

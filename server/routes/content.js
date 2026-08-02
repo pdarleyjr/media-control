@@ -109,6 +109,12 @@ function contentSelect(req) {
           SELECT 1 FROM content_favorites cf
           WHERE cf.content_id = c.id AND cf.user_id = ?
         ) AS is_favorite,
+        EXISTS (
+          SELECT 1 FROM asset_checksums wallpaper_asset
+          WHERE wallpaper_asset.content_id = c.id
+            AND wallpaper_asset.is_screensaver = 1
+            AND LOWER(COALESCE(wallpaper_asset.screensaver_category, '')) = 'wallpaper'
+        ) AS is_wallpaper_menu,
         (
           SELECT COUNT(*)
           FROM content duplicate_content
@@ -159,6 +165,7 @@ function decorateContent(row, req) {
   return {
     ...row,
     is_favorite: row.is_favorite === 1,
+    is_wallpaper_menu: row.is_wallpaper_menu === 1,
     duplicate_count: Number(row.duplicate_count) || 0,
     classroom_ready: row.classroom_ready === 1,
     visibility: {
@@ -623,6 +630,142 @@ router.get('/', (req, res) => {
   const nextCursor = hasMore ? encodeContentCursor(content.at(-1)) : null;
   if (nextCursor) res.setHeader('X-Next-Cursor', nextCursor);
   return res.json({ items, next_cursor: nextCursor });
+});
+
+// Compact, workspace-governed source for the classroom wallpaper selector.
+// Keep this separate from the full Media Library query: that response computes
+// readiness, usage, duplicate, publication, and P3 state for every card, none of
+// which is needed to paint a select option during control-screen startup.
+router.get('/wallpaper-menu', (req, res) => {
+  if (!req.workspaceId) return res.json([]);
+  const scope = contentVisibilityScope(visibilityContext(req), { alias: 'c' });
+  const rows = db.prepare(`
+    SELECT c.id, c.filename, c.mime_type, c.version, 1 AS is_wallpaper_menu
+    FROM content c
+    JOIN asset_checksums ac ON ac.content_id = c.id
+    WHERE c.workspace_id = ?
+      AND ${scope.clause}
+      AND c.archived_at IS NULL
+      AND c.filepath IS NOT NULL AND TRIM(c.filepath) <> ''
+      AND LOWER(c.mime_type) LIKE 'image/%'
+      AND LOWER(COALESCE(c.processing_status, 'uploaded')) IN ('uploaded', 'ready', 'completed')
+      AND ac.generation = COALESCE(c.version, 1)
+      AND ac.sha256 GLOB '${'[0-9A-Fa-f]'.repeat(64)}'
+      AND ac.size_bytes > 0
+      AND ac.canonical_path = c.filepath
+      AND ac.is_screensaver = 1
+      AND LOWER(COALESCE(ac.screensaver_category, '')) = 'wallpaper'
+    ORDER BY c.filename COLLATE NOCASE, c.id
+    LIMIT 200
+  `).all(req.workspaceId, ...scope.params);
+  return res.json(rows.map(row => ({ ...row, is_wallpaper_menu: true })));
+});
+
+router.put('/:id/wallpaper-menu', requireContentWriteRole, (req, res) => {
+  if (typeof req.body?.enabled !== 'boolean') {
+    return res.status(400).json({ code: 'INVALID_WALLPAPER_MENU_STATE', error: 'enabled must be true or false.' });
+  }
+  const content = checkContentWrite(req, res);
+  if (!content) return;
+  if (!req.workspaceId || content.workspace_id !== req.workspaceId) {
+    return res.status(403).json({ error: 'Wallpaper menu changes must target the current workspace.' });
+  }
+  const generation = Math.max(1, Number(content.version) || 1);
+  if (req.body.expected_version !== undefined && Number(req.body.expected_version) !== generation) {
+    return res.status(409).json({ code: 'CONTENT_VERSION_CONFLICT', error: 'Content changed; reload before saving.' });
+  }
+  const manifest = db.prepare(`SELECT generation, sha256, size_bytes, canonical_path, is_screensaver, screensaver_category
+    FROM asset_checksums WHERE content_id = ?`).get(content.id);
+  const enabled = req.body.enabled === true;
+  const wasEnabled = Number(manifest?.is_screensaver) === 1
+    && String(manifest?.screensaver_category || '').toLowerCase() === 'wallpaper';
+
+  // Removing membership is cleanup, not playback. Allow an authorized editor
+  // to clear a stale flag even after archive, replacement, or manifest drift;
+  // otherwise restoring/re-preparing the row could make it silently reappear.
+  if (!enabled) {
+    if (wasEnabled) {
+      const result = db.prepare(`UPDATE asset_checksums AS target
+        SET is_screensaver = 0, screensaver_category = NULL
+        WHERE target.content_id = ?
+          AND EXISTS (
+            SELECT 1 FROM content current
+            WHERE current.id = target.content_id AND current.workspace_id = ?
+          )`)
+        .run(content.id, req.workspaceId);
+      if (result.changes !== 1) {
+        return res.status(409).json({ code: 'CONTENT_CHANGED', error: 'The image changed before the wallpaper menu was updated.' });
+      }
+    }
+    const updated = getContentRow(req, content.id);
+    const remaining = db.prepare(`SELECT is_screensaver, screensaver_category
+      FROM asset_checksums WHERE content_id = ?`).get(content.id);
+    const stillEnabled = Number(remaining?.is_screensaver) === 1
+      && String(remaining?.screensaver_category || '').toLowerCase() === 'wallpaper';
+    if (!updated || stillEnabled) {
+      return res.status(409).json({ code: 'CONTENT_CHANGED', error: 'The image changed before the wallpaper menu was updated.' });
+    }
+    if (wasEnabled) {
+      auditContent(
+        req,
+        'content:wallpaper_menu_remove',
+        { ...content, is_wallpaper_menu: true },
+        updated,
+        `content_id: ${content.id}`,
+      );
+    }
+    return res.json(decorateContent(updated, req));
+  }
+
+  if (content.archived_at != null) {
+    return res.status(409).json({ code: 'CONTENT_ARCHIVED', error: 'Restore this image before adding it to the wallpaper menu.' });
+  }
+  if (!String(content.mime_type || '').toLowerCase().startsWith('image/') || !String(content.filepath || '').trim()) {
+    return res.status(409).json({ code: 'WALLPAPER_IMAGE_REQUIRED', error: 'Only uploaded images can be added to the wallpaper menu.' });
+  }
+  if (!['uploaded', 'ready', 'completed'].includes(String(content.processing_status || 'uploaded').toLowerCase())) {
+    return res.status(409).json({ code: 'CONTENT_NOT_READY', error: 'This image is not ready for classroom playback.' });
+  }
+  if (!manifest
+      || Number(manifest.generation) !== generation
+      || !/^[0-9a-f]{64}$/i.test(String(manifest.sha256 || ''))
+      || Number(manifest.size_bytes) <= 0
+      || String(manifest.canonical_path || '') !== String(content.filepath)) {
+    return res.status(409).json({ code: 'CONTENT_NOT_READY', error: 'Prepare this image for the classroom before adding it to the wallpaper menu.' });
+  }
+
+  if (!wasEnabled) {
+    const result = db.prepare(`UPDATE asset_checksums AS target
+      SET is_screensaver = ?, screensaver_category = ?
+      WHERE target.content_id = ? AND target.generation = ?
+        AND target.canonical_path = (
+          SELECT current.filepath FROM content current
+          WHERE current.id = target.content_id
+            AND current.workspace_id = ?
+            AND current.archived_at IS NULL
+            AND current.version = target.generation
+            AND LOWER(current.mime_type) LIKE 'image/%'
+            AND LOWER(COALESCE(current.processing_status, 'uploaded')) IN ('uploaded', 'ready', 'completed')
+        )`)
+      .run(enabled ? 1 : 0, enabled ? 'wallpaper' : null, content.id, generation, req.workspaceId);
+    if (result.changes !== 1) {
+      return res.status(409).json({ code: 'CONTENT_CHANGED', error: 'The image changed before the wallpaper menu was updated.' });
+    }
+  }
+  const updated = getContentRow(req, content.id);
+  if (!updated || updated.is_wallpaper_menu !== (enabled ? 1 : 0)) {
+    return res.status(409).json({ code: 'CONTENT_CHANGED', error: 'The image changed before the wallpaper menu was updated.' });
+  }
+  if (!wasEnabled) {
+    auditContent(
+      req,
+      'content:wallpaper_menu_add',
+      { ...content, is_wallpaper_menu: wasEnabled },
+      updated,
+      `content_id: ${content.id}`,
+    );
+  }
+  return res.json(decorateContent(updated, req));
 });
 
 router.get('/library-summary', (req, res) => {

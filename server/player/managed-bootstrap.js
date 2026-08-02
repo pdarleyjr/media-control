@@ -157,6 +157,18 @@
       return settled;
     }
 
+    var controller = {
+      attempt: attempt,
+      cancel: function () { settled = true; },
+    };
+
+    // Most image/iframe load events and unchanged-content broadcasts arrive
+    // after the renderer is already ready. Confirm those synchronously so a
+    // background-throttled Electron window is not forced to wait for callbacks
+    // that Chromium may defer indefinitely. The readiness predicate still
+    // fails closed; deferred attempts remain for media that is not ready yet.
+    if (attempt()) return controller;
+
     if (raf) {
       raf(function () {
         raf(attempt);
@@ -165,10 +177,7 @@
       schedule(attempt, 0);
     }
     if (schedule) schedule(attempt, fallbackDelayMs);
-    return {
-      attempt: attempt,
-      cancel: function () { settled = true; },
-    };
+    return controller;
   }
 
   // requestVideoFrameCallback can be present but never serviced in a

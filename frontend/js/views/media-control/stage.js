@@ -33,7 +33,7 @@ import {
 // (whole wall). Its selected value is derived from current player state.
 function screensaverSelect(dataAttrs, selectedValue = '') {
   const opts = SCREENSAVER_OPTIONS
-    .map(o => `<option value="${esc(o.value)}"${o.value === selectedValue ? ' selected' : ''}>${esc(t(o.labelKey))}</option>`)
+    .map(o => `<option value="${esc(o.value)}"${o.value === selectedValue ? ' selected' : ''}>${esc(o.label || t(o.labelKey))}</option>`)
     .join('');
   return `<select class="mc-screensaver" ${dataAttrs}
             data-current-value="${esc(selectedValue)}"
@@ -842,7 +842,7 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
       if (!source) return;
       const opt = SCREENSAVER_OPTIONS.find(o => o.value === val);
       if (source._screensaver === 'folder') sel.value = sel.dataset.currentValue || '';
-      const result = onScreensaver(ids, source, opt ? t(opt.labelKey) : t('mc.saver.title'));
+      const result = onScreensaver(ids, source, opt ? (opt.label || t(opt.labelKey)) : t('mc.saver.title'));
       Promise.resolve(result).then((ok) => {
         if (ok === false) sel.value = sel.dataset.currentValue || '';
       }).catch(() => { sel.value = sel.dataset.currentValue || ''; });

@@ -114,7 +114,7 @@ test('receiver health exposes disconnect and snapshot validation errors', () => 
   assert.equal(health.report().code, 'INCOMPLETE_SNAPSHOT');
 });
 
-test('render confirmation falls back to a timer when background rendering suppresses animation frames', () => {
+test('render confirmation succeeds synchronously when media is already ready', () => {
   const timers = [];
   let confirmations = 0;
   scheduleRenderConfirmation(() => {
@@ -132,10 +132,31 @@ test('render confirmation falls back to a timer when background rendering suppre
     fallbackDelayMs: 250,
   });
 
-  assert.equal(confirmations, 0);
+  assert.equal(confirmations, 1);
+  assert.deepEqual(timers, []);
+});
+
+test('render confirmation retains a bounded timer retry when media becomes ready later', () => {
+  const timers = [];
+  let attempts = 0;
+  scheduleRenderConfirmation(() => {
+    attempts += 1;
+    return attempts >= 2;
+  }, {
+    requestAnimationFrame() {
+      // Background videowall window: Chromium never services this callback.
+    },
+    setTimeout(callback, delay) {
+      timers.push({ callback, delay });
+      return timers.length;
+    },
+    fallbackDelayMs: 250,
+  });
+
+  assert.equal(attempts, 1);
   assert.deepEqual(timers.map((timer) => timer.delay), [250]);
   timers[0].callback();
-  assert.equal(confirmations, 1);
+  assert.equal(attempts, 2);
 });
 
 test('render confirmation is idempotent when both paint frames and the fallback timer run', () => {
@@ -144,7 +165,7 @@ test('render confirmation is idempotent when both paint frames and the fallback 
   let confirmations = 0;
   scheduleRenderConfirmation(() => {
     confirmations += 1;
-    return true;
+    return confirmations >= 2;
   }, {
     requestAnimationFrame(callback) {
       frames.push(callback);
@@ -159,7 +180,7 @@ test('render confirmation is idempotent when both paint frames and the fallback 
   frames.shift()();
   frames.shift()();
   timers.shift()();
-  assert.equal(confirmations, 1);
+  assert.equal(confirmations, 2);
 });
 
 test('video render readiness falls back when Electron suppresses video-frame callbacks', () => {

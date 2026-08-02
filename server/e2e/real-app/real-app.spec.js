@@ -391,7 +391,31 @@ test.describe('Phase 1 — Feature flag OFF: real app loads correctly', () => {
     await expect(page.locator('.mc-cc-main')).toBeVisible();
     // Let async data fetches settle
     await page.waitForTimeout(3000);
+    await expect(page.locator('#mc-media-status')).not.toContainText('Loading media');
     assertNoErrors(errors, '#/control authenticated');
+  });
+
+  test('1b2. a delayed wallpaper catalog repaints the primary Command Center selector', async ({ page }) => {
+    await page.route('**/api/content/wallpaper-menu', async route => {
+      await new Promise(resolve => setTimeout(resolve, 750));
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([{
+          id: 'delayed-wallpaper',
+          filename: 'Training Ground.png',
+          mime_type: 'image/png',
+          version: 1,
+          is_wallpaper_menu: true,
+        }]),
+      });
+    });
+    await setupAuth(page);
+    await page.goto(`${BASE_URL}/app#/control`);
+    await expect(page.locator('.mc-cc-shell')).toBeVisible({ timeout: 20000 });
+
+    const value = 'content:delayed-wallpaper';
+    await expect(page.locator(`.mc-cc-saver-select option[value="${value}"]`)).toHaveCount(1);
   });
 
   test('1c. /api/features returns enterpriseOperatorUi disabled', async () => {
