@@ -712,6 +712,8 @@ module.exports = function setupDashboardSocket(io) {
           console.error(`[device-contract] command persistence failed for ${device_id}/${envelope.command_id}: ${e.message}`);
           return;
         }
+        envelope.target_revision = cmd.revision;
+        envelope.payload.target_revision = cmd.revision;
         deviceNs.to(device_id).emit('device:command', envelope);
         const liveProgramResult = liveTransportMirror.dispatch({
           sourceDeviceId: device_id,
@@ -727,15 +729,6 @@ module.exports = function setupDashboardSocket(io) {
           });
         }
         auditDeviceControl(socket, 'display.command', device_id, { type: commandType, command_id: envelope.command_id, delivered: true });
-        // Unified dashboard: record authoritative on/off ONLY when actually delivered
-        // to a live display. Never write it for a merely-queued command — that would
-        // make the dashboard lie about reality.
-        if (commandType === 'screen_off' || commandType === 'screen_on') {
-          try {
-            db.prepare("UPDATE devices SET screen_on = ?, updated_at = strftime('%s','now') WHERE id = ?")
-              .run(commandType === 'screen_on' ? 1 : 0, device_id);
-          } catch (_) { /* non-fatal */ }
-        }
         publishRoomSnapshot(io, {
           workspaceId: workspaceIdForDevice(device_id, socket.roomWorkspaceId),
           roomId: socket.roomId,
@@ -750,11 +743,16 @@ module.exports = function setupDashboardSocket(io) {
       // queued=false behavior on every subsequent call). Ingest the command
       // row anyway so the audit trail shows it was issued (fire-and-forget:
       // requires_ack=0, so it never times out).
-      try { commandModel.ingestCommand({
+      let offlineCommand = null;
+      try { offlineCommand = commandModel.ingestCommand({
         target_type: 'display', target_id: device_id, command_type: commandType,
         payload: envelope.payload, issued_by: socket.userId, requires_ack: 0,
         command_id: envelope.command_id, created_at: Date.parse(envelope.issued_at),
       }); } catch (e) { /* best-effort */ }
+      if (offlineCommand) {
+        envelope.target_revision = offlineCommand.revision;
+        envelope.payload.target_revision = offlineCommand.revision;
+      }
       let queued = false;
       try {
         const queue = require('../lib/command-queue');
@@ -848,4 +846,3 @@ module.exports = function setupDashboardSocket(io) {
 
   return dashboardNs;
 };
-

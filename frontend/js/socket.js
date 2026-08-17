@@ -341,6 +341,7 @@ export function sendCommand(deviceId, type, payload, callback) {
   } else {
     dashboardSocket.emit('dashboard:device-command', { device_id: deviceId, type, payload, envelope });
   }
+  return envelope?.command_id || null;
 }
 
 export function getSocket() { return dashboardSocket; }

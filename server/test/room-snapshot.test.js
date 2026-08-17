@@ -60,6 +60,7 @@ function createFixtureDb() {
       member_id TEXT,
       playback_revision INTEGER,
       command_revision TEXT,
+      screen_on INTEGER,
       state_revision INTEGER,
       updated_at INTEGER,
       PRIMARY KEY (target_type, target_id)
@@ -217,13 +218,13 @@ test('authoritative snapshot loads workspace and room state without leaking cred
        content_type, layout_mode, slide_index, slide_count, current_time, duration,
        paused, muted, volume, local_asset_ready, last_ack_at, last_heartbeat_at,
        render_state, error_state, wall_id, layout_id, group_id, member_id,
-       playback_revision, command_revision, state_revision, updated_at)
+       playback_revision, command_revision, screen_on, state_revision, updated_at)
       VALUES
       (@target_type, @target_id, @workspace_id, @current_content_id, @current_asset_id,
        @content_type, @layout_mode, @slide_index, @slide_count, @current_time, @duration,
        @paused, @muted, @volume, @local_asset_ready, @last_ack_at, @last_heartbeat_at,
        @render_state, @error_state, @wall_id, @layout_id, @group_id, @member_id,
-       @playback_revision, @command_revision, @state_revision, @updated_at)`);
+       @playback_revision, @command_revision, @screen_on, @state_revision, @updated_at)`);
     insertState.run({
       target_type: 'display', target_id: 'display-a', workspace_id: 'ws-1',
       current_content_id: 'content-a', current_asset_id: 'asset-a', content_type: 'video',
@@ -232,7 +233,7 @@ test('authoritative snapshot loads workspace and room state without leaking cred
       last_ack_at: 1700000000100, last_heartbeat_at: 1700000000200,
       render_state: 'playing', error_state: null, wall_id: 'wall-a', layout_id: 'layout-a',
       group_id: 'group-a', member_id: 'member-a', playback_revision: 8,
-      command_revision: 'cmd-1', state_revision: 9, updated_at: 1700000000300,
+      command_revision: 'cmd-1', screen_on: 0, state_revision: 9, updated_at: 1700000000300,
     });
     insertState.run({
       target_type: 'display', target_id: 'other-display', workspace_id: 'ws-2',
@@ -241,7 +242,7 @@ test('authoritative snapshot loads workspace and room state without leaking cred
       duration: null, paused: null, muted: null, volume: null, local_asset_ready: null,
       last_ack_at: null, last_heartbeat_at: null, render_state: null, error_state: null,
       wall_id: null, layout_id: null, group_id: null, member_id: null,
-      playback_revision: null, command_revision: null, state_revision: 1,
+      playback_revision: null, command_revision: null, screen_on: 1, state_revision: 1,
       updated_at: 1700000000300,
     });
     db.prepare(`INSERT INTO managed_nodes VALUES
@@ -290,6 +291,7 @@ test('authoritative snapshot loads workspace and room state without leaking cred
     assert.equal(snapshot.serverTimestamp, 1700000005000);
     assert.deepEqual(snapshot.confirmedState.displays.map((display) => display.id), ['display-a']);
     assert.equal(snapshot.confirmedState.displays[0].name, 'Front Left');
+    assert.equal(snapshot.confirmedState.displays[0].screenOn, false);
     assert.deepEqual(snapshot.deviceStates.displays.map((display) => display.id), ['display-a']);
     assert.deepEqual(snapshot.deviceStates.displays[0].capabilities, {
       content: true,

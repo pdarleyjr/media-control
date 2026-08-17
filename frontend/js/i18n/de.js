@@ -1127,7 +1127,7 @@ export default {
   'mc.cc.saver.default': 'MBFD Default',
   'mc.cc.dock.multiview': 'Multiview',
   'mc.cc.dock.blank_selected': 'Blank selected',
-  'mc.cc.dock.blank_all': 'Blank all',
+  'mc.cc.dock.blank_all': 'Blank room',
   'mc.cc.dock.share': 'Share screen',
   'mc.cc.dock.prepare_live': 'Programm vorbereiten',
   'mc.cc.dock.program_ready': 'Programm bereit',

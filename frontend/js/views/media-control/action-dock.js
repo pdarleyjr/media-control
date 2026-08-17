@@ -11,6 +11,7 @@ import {
   LIVE_LADDER,
 } from '../../state/live-stream-ui.js';
 import { isClassroomModeEnabled } from '../../state/feature-flags.js';
+import { BLANK_STATES, blankPresentation } from './blank-state.js';
 
 let liveActive = false;
 let liveStateKnown = false;
@@ -56,7 +57,10 @@ export function mountActionDock(hostEl, opts = {}) {
   hostEl.innerHTML = `
     <div class="mc-action-dock" role="toolbar" aria-label="${esc(t('mc.cc.brand'))}">
       <button type="button" class="mc-dock-btn mc-dock-primary" data-dock="multiview">${esc(t('mc.cc.dock.multiview'))}</button>
-      <button type="button" class="mc-dock-btn mc-dock-default" data-dock="blank-toggle" id="mc-dock-blank-btn">${esc(t('mc.cc.dock.blank_all'))}</button>
+      <div class="mc-blank-control" role="group" aria-label="${esc(t('mc.blank.group'))}" data-blank-control>
+        <span class="mc-blank-status" data-blank-status role="status" aria-live="polite">${esc(t('mc.blank.status.unknown'))}</span>
+        <button type="button" class="mc-dock-btn mc-dock-default" data-dock="blank-toggle" id="mc-dock-blank-btn">${esc(t('mc.blank.action.unblank_wall'))}</button>
+      </div>
       <button type="button" class="mc-dock-btn mc-dock-default" data-dock="whiteboard">${esc(t('mc.wb.dock_open'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-default" data-dock="share">${esc(t('mc.cc.dock.share'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-default" data-dock="record-toggle" id="mc-dock-record-btn">${esc('Start Recording')}</button>
@@ -95,26 +99,33 @@ export function mountActionDock(hostEl, opts = {}) {
   const startBtn = hostEl.querySelector('[data-dock="start-live"]');
   const stopBtn = hostEl.querySelector('[data-dock="stop-live"]');
   const blankBtn = hostEl.querySelector('[data-dock="blank-toggle"]');
+  const blankControl = hostEl.querySelector('[data-blank-control]');
+  const blankStatus = hostEl.querySelector('[data-blank-status]');
   const ladderEl = hostEl.querySelector('#mc-live-ladder');
   const compositionEl = hostEl.querySelector('[data-composition-control]');
 
   function repaintBlank() {
     if (!blankBtn) return;
-    const getIds = typeof cb.getActiveTargetDeviceIds === 'function' ? cb.getActiveTargetDeviceIds : () => [];
-    const getDs  = typeof cb.getDisplayState === 'function' ? cb.getDisplayState : () => null;
-    const ids = getIds();
-    const ds  = getDs();
-    if (!ids.length || !ds) {
-      blankBtn.textContent = t('mc.cc.dock.blank_all');
-      blankBtn.classList.remove('mc-dock-blank-active');
-      return;
+    const stateModel = typeof cb.getBlankState === 'function'
+      ? cb.getBlankState()
+      : { state: BLANK_STATES.UNKNOWN };
+    const scope = typeof cb.getActiveTargetScope === 'function' ? cb.getActiveTargetScope() : 'wall';
+    const presentation = blankPresentation(stateModel?.state || BLANK_STATES.UNKNOWN, scope);
+    const statusText = t(presentation.statusKey);
+    const actionText = t(presentation.actionKey);
+    blankBtn.textContent = actionText;
+    blankBtn.title = `${statusText}. ${actionText}`;
+    blankBtn.setAttribute('aria-label', `${statusText}. ${actionText}`);
+    blankBtn.setAttribute('aria-busy', presentation.disabled ? 'true' : 'false');
+    blankBtn.disabled = presentation.disabled;
+    if (blankStatus) blankStatus.textContent = statusText;
+    if (blankControl) {
+      blankControl.dataset.state = String(stateModel?.state || BLANK_STATES.UNKNOWN)
+        .toLowerCase().replace(/[^a-z]+/g, '-').replace(/^-|-$/g, '');
     }
-    const all = ds.getAll ? ds.getAll() : [];
-    const byId = new Map(all.map((d) => [d.id, d]));
-    const anyBlanked = ids.some((id) => { const d = byId.get(id); return d && d.screen_on === false; });
-    blankBtn.textContent = anyBlanked ? t('mc.cmd.unblank') : t('mc.cc.dock.blank_all');
-    if (anyBlanked) blankBtn.classList.add('mc-dock-blank-active');
-    else blankBtn.classList.remove('mc-dock-blank-active');
+    blankBtn.classList.toggle('mc-dock-blank-active', [BLANK_STATES.BLANKED, BLANK_STATES.MIXED].includes(stateModel?.state));
+    blankBtn.classList.toggle('mc-dock-blank-pending', presentation.disabled);
+    blankBtn.classList.toggle('mc-dock-blank-error', stateModel?.state === BLANK_STATES.ERROR);
   }
 
   function paintLadder(ladder) {
@@ -459,10 +470,8 @@ export function mountActionDock(hostEl, opts = {}) {
         case 'blank-selected': if (typeof cb.onBlankSelected === 'function') cb.onBlankSelected(); break;
         case 'blank-toggle':
           if (typeof cb.onBlankToggle === 'function') await cb.onBlankToggle();
-          else if (typeof cb.onBlankAll === 'function') await cb.onBlankAll();
           repaintBlank();
           break;
-        case 'blank-all': if (typeof cb.onBlankAll === 'function') await cb.onBlankAll(); break;
         case 'whiteboard': if (typeof cb.onWhiteboard === 'function') cb.onWhiteboard(); break;
         case 'share': if (typeof cb.onShare === 'function') cb.onShare(); break;
         case 'record-toggle': await onRecordToggle(); break;
@@ -482,6 +491,8 @@ export function mountActionDock(hostEl, opts = {}) {
   if (compositionRemove) {
     compositionRemove.addEventListener('click', onRemoveContent);
   }
+
+  repaintBlank();
 
   // Live-production health timer. The fixed-camera livestream is independent
   // of the AI Director, so we always poll — Start Livestream is enabled or

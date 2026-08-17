@@ -14,12 +14,17 @@ import { renderToolbox } from './media-control/toolbox.js';
 import { sendToDisplays, sentToast, trackBroadcastDelivery } from './media-control/send.js';
 import { dispatchTransportTransaction, sendTransportCommand } from './media-control/transport.js';
 import { createTransportIntentTracker } from './media-control/transport-intent.js';
+import {
+  BLANK_STATES,
+  blankPresentation,
+  createBlankIntentTracker,
+  deriveBlankState,
+} from './media-control/blank-state.js';
 import { transportContextForTarget } from '../services/region-playback-state.js';
 import { renderInspector, closeInspector } from './media-control/inspector.js';
 import { renderMultiview, teardownMultiview, buildSplitGridUrl } from './media-control/multiview.js';
 import { pickRoutingTargets } from './media-control/routing-picker.js';
 import { mountBroadcastChip } from './media-control/broadcast-chip.js';
-import { renderCommandBar } from './media-control/command-bar.js';
 import { renderRoomPresets } from './media-control/room-presets.js';
 import { renderRecentPanel } from './media-control/recent-panel.js';
 import { openViewModal, closeViewModal } from './media-control/view-modal.js';
@@ -147,6 +152,8 @@ let transportApi = null;    // canvas-level transport row
 let spanSplitApi = null;    // Span | Split toggle
 let screensaverApi = null;  // canvas-level screensaver row
 let dockApi = null;         // bottom action dock
+const blankIntentTracker = createBlankIntentTracker({ timeoutMs: 10000 });
+let blankExpiryTimer = null;
 
 let unsub = null;
 let unsubChip = null;   // broadcast-chip unsubscribe (Task 4.5)
@@ -564,30 +571,6 @@ function paintSummary() {
   el.innerHTML = parts.join('');
 }
 
-// Called when a blank/unblank command ack updates a display's screen_on value.
-// We patch the display-state store client-side so the status dot repaints
-// immediately (the next server push will confirm or correct it).
-function handleScreenOnChange(deviceId, newScreenOn) {
-  // display-state.js does not expose a direct patch() — the store re-merges on
-  // each subscriber notification. We trigger a lightweight re-paint here; the
-  // authoritative value will be confirmed on the next device-status socket event
-  // (which the server emits after writing screen_on per Task 1.4).
-  //
-  // For immediate visual feedback we directly update the cached value by
-  // re-using the store's merge pathway: we fire a synthetic subscriber notify
-  // by calling paintStage() after patching via the private merge API.
-  // Since display-state.js does not export merge(), we instead call paintStage()
-  // with the local knowledge that the card's transport bar already updated its
-  // own button label via the ack callback. The next device-status event from the
-  // server will sync the store fully. This is correct for the "blanked" status
-  // dot rendering — it relies on display.screen_on which comes from the store.
-  //
-  // To avoid a visually jarring "un-update", we also refresh the store
-  // immediately (lightweight GET /api/displays/state).
-  displayState.refresh().catch(() => {});
-  void deviceId; void newScreenOn; // used above
-}
-
 function paintStage() {
   const el = stageEl();
   if (!el) return;
@@ -631,7 +614,6 @@ function paintStage() {
     onSelectGroup: selectLayoutGroupTarget,
     onCalibrateWall: showWallCalibration,
     onAddDisplay: openAddPicker,
-    onScreenOnChange: handleScreenOnChange,
     onTransportAction: (ids) => refreshAfterSend(ids),
     onSetWallMode: setWallMode,
     onScreensaver: applyScreensaver,
@@ -688,6 +670,9 @@ function selectStageDisplayTarget(deviceId) {
 function stageSignature() {
   const byId = new Map(displayState.getAll().map(d => [d.id, d]));
   const parts = [];
+  const screenStateIdentity = (display) => (
+    typeof display?.screen_on === 'boolean' ? (display.screen_on ? 1 : 0) : 'u'
+  );
   const playingSig = (d) => {
     const np = d && d.now_playing;
     if (!np) return '';
@@ -704,14 +689,14 @@ function stageSignature() {
     if (wallMemberIds.has(id)) continue;
     const d = byId.get(id);
     if (!d) continue;
-    parts.push('c:' + id + ':' + (d.online ? 1 : 0) + ':' + (d.screen_on === false ? 0 : 1) +
+    parts.push('c:' + id + ':' + (d.online ? 1 : 0) + ':' + screenStateIdentity(d) +
       ':' + playingSig(d) + ':' + (d.screenshot_url ? 1 : 0));
   }
   for (const w of (walls || [])) {
     parts.push('w:' + w.id + ':' + (w.grid_cols || 0) + 'x' + (w.grid_rows || 0) + ':' + (w.leader_device_id || '') + ':' + (w.layout_mode || 'span'));
     for (const m of (w.devices || [])) {
       const d = byId.get(m.device_id) || {};
-      parts.push('m:' + m.device_id + ':' + (d.online ? 1 : 0) + ':' + (d.screen_on === false ? 0 : 1) +
+      parts.push('m:' + m.device_id + ':' + (d.online ? 1 : 0) + ':' + screenStateIdentity(d) +
         ':' + playingSig(d) + ':' + (d.screenshot_url ? 1 : 0));
     }
   }
@@ -1162,15 +1147,6 @@ function onlineRoomDisplayIds() {
 // onto the live program.
 function effectiveTargets() {
   return [...commandCenterState.physicalResolvedTargets];
-}
-
-// Physical screen-power scope for Blank all: EVERY controllable display PLUS
-// every video-wall member device (each wall screen is a real device that must
-// receive its own screen_off/screen_on — the wall card alone never would).
-function roomCommandIds() {
-  const ids = new Set(roomDisplayIds());
-  for (const id of wallMemberIds) if (id) ids.add(id);
-  return [...ids];
 }
 
 function wallDeviceIds(wall) {
@@ -1904,7 +1880,7 @@ function attachStageDrop(stageContainer) {
 // All canvas-level controls (transport row, Span/Split, screensaver, dock, status
 // chips, target switch) are VIEW-ONLY with respect to other targets: switching the
 // active target never emits a stop/blank to whatever was showing before. Only the
-// explicit dock buttons (Blank selected / Blank all / Stop live ...) issue
+// explicit dock buttons (target-scoped Blank / Stop live ...) issue
 // commands, and only to the active target (or every room target for "all").
 
 // Device ids the active target commands: every member of the active wall, or just
@@ -2488,6 +2464,12 @@ function activePreviewDeviceId() {
 }
 function handleCommandAck(data) {
   if (!data) return;
+  const blankResult = blankIntentTracker.acceptAck(data);
+  if (blankResult.accepted && blankResult.state) {
+    const stateTarget = data.target_id || data.device_id || blankResult.entry?.deviceId;
+    if (stateTarget) displayState.applyConfirmedState(stateTarget, blankResult.state);
+  }
+  if (blankResult.accepted) dockApi?.repaintBlank?.();
   const related = activeTargetIds().includes(data.target_id || data.device_id)
     || (activeTarget && (activeTarget.id === data.target_id || activeTarget.wall_id === data.target_id || activeTarget.device_id === data.target_id));
   if (data.ok === false && related) {
@@ -2539,16 +2521,45 @@ function paintChips() {
 }
 
 // ---- Action-dock command providers (route to existing functionality) ----
-function blankActiveTarget() {
+function currentBlankState() {
+  blankIntentTracker.expire();
+  const ids = activeTargetDeviceIds();
+  return deriveBlankState(ids, displayState.getAll(), blankIntentTracker.pending());
+}
+
+function activeBlankScope() {
+  const target = activeControlTarget || activeTarget;
+  return target?.type === 'display' ? 'display' : 'wall';
+}
+
+function requestActiveTargetScreenState(desiredScreenOn) {
   if (activeControlTarget?.type === 'region') {
     showToast(t('mc.region.blank_unavailable'), 'info');
-    return;
+    return false;
   }
   const ids = activeTargetDeviceIds();
-  if (!ids.length) { showToast(t('mc.cmd.no_displays'), 'error'); return; }
-  ids.forEach((id) => sendCommand(id, COMMAND_TYPES.SCREEN_OFF, {}));
-  showToast(t('mc.cmd.blanked'), 'info');
-  displayState.refresh().catch(() => {});
+  if (!ids.length) { showToast(t('mc.cmd.no_displays'), 'error'); return false; }
+  const type = desiredScreenOn ? COMMAND_TYPES.SCREEN_ON : COMMAND_TYPES.SCREEN_OFF;
+  ids.forEach((id) => {
+    let commandId = null;
+    commandId = sendCommand(id, type, {}, (receipt) => {
+      if (commandId) blankIntentTracker.markDelivery(commandId, receipt || {});
+      dockApi?.repaintBlank?.();
+    });
+    if (commandId) blankIntentTracker.begin(id, commandId, desiredScreenOn);
+  });
+  dockApi?.repaintBlank?.();
+  if (blankExpiryTimer) clearTimeout(blankExpiryTimer);
+  blankExpiryTimer = setTimeout(() => {
+    blankExpiryTimer = null;
+    blankIntentTracker.expire();
+    dockApi?.repaintBlank?.();
+  }, 10100);
+  return true;
+}
+
+function blankActiveTarget() {
+  return requestActiveTargetScreenState(false);
 }
 // Target-scoped blank toggle for the dock "Blank" button.
 // Behaviour:
@@ -2558,40 +2569,10 @@ function blankActiveTarget() {
 // After sending commands it immediately refreshes display state so the status
 // dots and the dock button label repaint without waiting for the next server push.
 function blankToggleActiveTarget() {
-  if (activeControlTarget?.type === 'region') {
-    showToast(t('mc.region.blank_unavailable'), 'info');
-    return;
-  }
-  const ids = activeTargetDeviceIds();
-  if (!ids.length) { showToast(t('mc.cmd.no_displays'), 'error'); return; }
-  const all = displayState.getAll();
-  const byId = new Map(all.map((d) => [d.id, d]));
-  const anyBlanked = ids.some((id) => {
-    const d = byId.get(id);
-    return d && d.screen_on === false;
-  });
-  const type = anyBlanked ? COMMAND_TYPES.SCREEN_ON : COMMAND_TYPES.SCREEN_OFF;
-  const toastKey = anyBlanked ? 'mc.cmd.unblanked' : 'mc.cmd.blanked';
-  ids.forEach((id) => sendCommand(id, type, {}));
-  showToast(t(toastKey), 'info');
-  // Repaint the dock button label after state refreshes.
-  displayState.refresh().then(() => {
-    if (dockApi && typeof dockApi.repaintBlank === 'function') dockApi.repaintBlank();
-  }).catch(() => {});
-}
-async function blankAllTargets() {
-  const ids = roomCommandIds();
-  if (!ids.length) { showToast(t('mc.cmd.no_displays'), 'error'); return; }
-  const ok = await confirmDialog({
-    title: t('mc.cc.dock.blank_all'),
-    message: t('mc.cc.confirm.blank_all'),
-    confirmLabel: t('mc.cc.dock.blank_all'),
-    tone: 'danger',
-  });
-  if (!ok) return;
-  ids.forEach((id) => sendCommand(id, COMMAND_TYPES.SCREEN_OFF, {}));
-  showToast(t('mc.cmd.blanked'), 'info');
-  displayState.refresh().catch(() => {});
+  const state = currentBlankState().state;
+  const presentation = blankPresentation(state, activeBlankScope());
+  if (presentation.disabled) return false;
+  return requestActiveTargetScreenState(presentation.desiredScreenOn);
 }
 // Open the existing screen-share flow. The active logical wall or standalone
 // display is only a preselection hint: capture never starts until the operator
@@ -2841,10 +2822,7 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
   // Command Center shell: a single appliance-style screen — fixed header,
   // left icon rail + center workspace (canvas > playback > span/split+saver >
   // action dock) + right Content Library tab. NO long scrolling dashboard:
-  // the old Room Presets / Recent / Room Setup / command bar (duplicated
-  // "Blank all" + Start Class + YouTube) are removed from the default page.
-  // Those modules stay defined (renderRoomPresets/renderRecentPanel/
-  // renderCommandBar) for future drawers/routes; nothing is deleted.
+  // the old Room Presets / Recent / Room Setup are absent from the default page.
   app.innerHTML = `
     <div class="mc-cc-shell">
       <header class="mc-cc-head">
@@ -3058,7 +3036,6 @@ pruneSelection();
     onMultiview: () => toggleMultiview(),
     onBlankSelected: blankActiveTarget,
     onBlankToggle: blankToggleActiveTarget,
-    onBlankAll: blankAllTargets,
     onWhiteboard: () => window.mcOpenWhiteboard?.(),
     onShare: shareScreenActive,
     onStartLive: startLive,
@@ -3068,6 +3045,8 @@ pruneSelection();
     onLiveChanged: paintChips,
     getLiveCompositionSource: activeLiveCompositionSource,
     getActiveTargetDeviceIds: activeTargetDeviceIds,
+    getActiveTargetScope: activeBlankScope,
+    getBlankState: currentBlankState,
     getDisplayState: () => displayState,
   });
   // A direct Configure layout action takes precedence for this navigation.
@@ -3175,34 +3154,8 @@ pruneSelection();
     }
   }
 
-  // Mount the classroom command bar (Multiview · Blank all · quick-launch
-  // Share screen / YouTube / Library). roomIds() = controllable (non-wall)
-  // displays for content sends; blankIds() ALSO includes every wall member so
-  // "Blank all" darkens the physical video-wall screens too.
-  //
-  // Command Bar (Start Class / YouTube / Blank all toggle) is REMOVED from the
-  // main instructor page — its "Blank all" duplicated the bottom Action Dock,
-  // and Start Class / YouTube belong in an Advanced/Diagnostics drawer (kept
-  // defined in command-bar.js for a future drawer route). The Action Dock now
-  // owns Multiview / Blank / Share / Live-stream on the main surface.
-  // The display-target helpers (roomDisplayIds / roomCommandIds /
-  // routeSourceWithPicker) are still wired into the
-  // Span|Split + Action Dock + target-selector/transport mounts below.
-  // Room Presets + Recent (recent-panel) are likewise removed from the main
-  // page; their components remain in room-presets.js / recent-panel.js for a
-  // future Logs/Diagnostics route. Renders are skipped (host ids gone).
-  const _legacyCmdbarHost = document.getElementById('mc-cmdbar-host');
-  if (_legacyCmdbarHost) {
-    renderCommandBar(_legacyCmdbarHost, {
-      roomIds: roomDisplayIds,
-      blankIds: roomCommandIds,
-      refreshAfterSend,
-      onMultiview: toggleMultiview,
-      onRouteSource: routeSourceWithPicker,
-      onBlankChange: null,
-    });
-  }
-
+  // Room Presets + Recent are intentionally absent from the main instructor
+  // surface. Their host ids do not exist here, so the components stay dormant.
   const _legacyPresetsHost = document.getElementById('mc-presets-host');
   if (_legacyPresetsHost) renderRoomPresets(_legacyPresetsHost, { onAfterApply: refreshAfterSend });
   const _legacyRecentHost = document.getElementById('mc-recent-host');
@@ -3260,6 +3213,7 @@ pruneSelection();
   // Fresh display data repaints the stage. Wall topology has its own scoped
   // socket listener below because the display store does not own wall records.
   unsub = displayState.subscribe((displayList = []) => {
+    blankIntentTracker.reconcile(displayList);
     for (const display of displayList) {
       if (display && display.online === false) screenshotPoller?.markOffline(display.id);
     }
@@ -3278,6 +3232,7 @@ pruneSelection();
     if (transportApi && transportApi.repaint) transportApi.repaint();
     if (spanSplitApi && spanSplitApi.repaint) spanSplitApi.repaint();
     if (screensaverApi && screensaverApi.repaint) screensaverApi.repaint();
+    dockApi?.repaintBlank?.();
     if (targetApi) {
       targetApi.setOptions(
         walls,
@@ -3335,6 +3290,8 @@ export function unmount() {
   document.body.classList.remove('mc-multiview-open');
   if (unsubChip) { unsubChip(); unsubChip = null; }
   if (dockApi && typeof dockApi.destroy === 'function') dockApi.destroy();
+  if (blankExpiryTimer) { clearTimeout(blankExpiryTimer); blankExpiryTimer = null; }
+  blankIntentTracker.reset();
   if (cmdAckHandler) { try { socketOff('command-ack', cmdAckHandler); } catch (_) {} cmdAckHandler = null; }
   if (stateSyncHandler) { try { socketOff('state-sync', stateSyncHandler); } catch (_) {} stateSyncHandler = null; }
   if (screenshotReadyHandler) {

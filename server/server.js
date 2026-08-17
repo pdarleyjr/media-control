@@ -979,7 +979,9 @@ function updateFrontendHash() {
     const files = ['index.html', 'sw-admin.js', 'js/dashboard-bootstrap-v3.js',
       'js/app.js', 'js/api.js', 'js/socket.js', 'css/variables.css', 'css/main.css',
       'js/views/dashboard.js', 'js/views/device-detail.js', 'js/views/content-library.js',
-      'js/views/settings.js', 'js/views/login.js',
+      'js/views/settings.js', 'js/views/login.js', 'js/views/present.js',
+      'js/i18n.js', 'js/i18n/en.js', 'js/i18n/de.js', 'js/i18n/es.js',
+      'js/i18n/fr.js', 'js/i18n/it.js', 'js/i18n/pt.js',
       'js/views/admin.js',
       'js/views/layout-editor.js', 'js/views/schedule.js', 'js/views/widgets.js',
       'js/views/video-wall.js', 'js/views/reports.js', 'js/views/designer.js',
@@ -988,11 +990,13 @@ function updateFrontendHash() {
       // frontend hash so inspector/routing hotfixes force active browsers to
       // reload instead of mixing new modules with stale cached dependencies.
       'css/media-control.css', 'css/console.css', 'js/views/media-control.js',
-      'js/views/media-control/command-bar.js', 'js/views/media-control/inspector.js',
+      'js/views/media-control/action-dock.js', 'js/views/media-control/blank-state.js',
+      'js/views/media-control/inspector.js',
       'js/views/media-control/routing-picker.js', 'js/views/media-control/stage.js',
       'js/views/media-control/toolbox.js', 'js/views/media-control/send.js',
       'js/views/media-control/transport.js', 'js/views/media-control/span-split.js',
-      'js/services/screen-share-engine.js'].map(f => {
+      'js/services/display-state.js', 'js/services/display-state-revision.js',
+      'js/services/room-display-projection.js', 'js/services/screen-share-engine.js'].map(f => {
       try { return fs.readFileSync(path.join(config.frontendDir, f)); } catch { return ''; }
     });
     // Include player files in hash so web players detect code updates
@@ -1000,13 +1004,14 @@ function updateFrontendHash() {
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'doc.html'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'deck.html'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'device-contract.js'))); } catch {}
+    try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'screen-state.js'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'grid.html'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'multiview-core.js'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'screen-share-receiver.js'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'sw.js'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'debug-overlay.js'))); } catch {}
     frontendHash = crypto.createHash('md5').update(Buffer.concat(files.map(f => Buffer.from(f)))).digest('hex').slice(0, 8);
-    const playerFiles = ['index.html', 'doc.html', 'deck.html', 'device-contract.js', 'player-routing.js', 'managed-bootstrap.js']
+    const playerFiles = ['index.html', 'doc.html', 'deck.html', 'device-contract.js', 'screen-state.js', 'player-routing.js', 'managed-bootstrap.js', 'sw.js']
       .map((file) => {
         try { return fs.readFileSync(path.join(__dirname, 'player', file)); } catch { return Buffer.from(''); }
       });

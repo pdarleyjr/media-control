@@ -973,6 +973,7 @@ CREATE TABLE IF NOT EXISTS display_states (
     member_id             TEXT,
     playback_revision     INTEGER,
     command_revision      TEXT,
+    screen_on             INTEGER CHECK(screen_on IN (0, 1)),
     state_revision        INTEGER NOT NULL DEFAULT 0,
     updated_at            INTEGER,
     PRIMARY KEY (target_type, target_id)

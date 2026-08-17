@@ -21,6 +21,10 @@ const WHITE = 'F8FAFC';
 const MUTED = 'CBD5E1';
 const BODY = 'E2E8F0';
 const FONT = 'Segoe UI';
+// Keep parity with the presentation asset uploader. In particular, do not pass
+// ICNS/JXL/HEIF bytes to pptxgenjs' transitive image-size parser: those formats
+// currently have upstream infinite-loop advisories and are not slide formats.
+const PPTX_IMAGE_MIME = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp']);
 
 function pct(v, d) { const n = Number(v); return isFinite(n) ? Math.max(0, Math.min(100, n)) : d; }
 
@@ -30,7 +34,7 @@ function pct(v, d) { const n = Number(v); return isFinite(n) ? Math.max(0, Math.
 async function imageData(contentId) {
   try {
     const c = db.prepare('SELECT filepath, mime_type FROM content WHERE id = ?').get(contentId);
-    if (!c || !c.filepath || !c.mime_type || !c.mime_type.startsWith('image/')) return null;
+    if (!c || !c.filepath || !PPTX_IMAGE_MIME.has(c.mime_type)) return null;
     const safe = path.resolve(config.contentDir, path.basename(c.filepath));
     if (!safe.startsWith(path.resolve(config.contentDir))) return null;
     const buf = await fs.promises.readFile(safe).catch(() => null);

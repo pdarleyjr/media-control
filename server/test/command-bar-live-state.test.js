@@ -3,22 +3,22 @@ const path = require('path');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-test('live stream controls follow the authoritative publisher state', () => {
+test('action dock live stream controls follow the authoritative publisher state', () => {
   const source = fs.readFileSync(
-    path.join(__dirname, '..', '..', 'frontend', 'js', 'views', 'media-control', 'command-bar.js'),
+    path.join(__dirname, '..', '..', 'frontend', 'js', 'views', 'media-control', 'action-dock.js'),
     'utf8'
   );
 
-  assert.match(source, /await api\.liveStream\.operatorState\(\)/);
+  assert.match(source, /status = await api\.liveStream\.operatorState\(\)/);
   assert.match(source, /status\?\.publisher\?\.active === true/);
-  assert.match(source, /liveStartBtn\.hidden = active/);
-  assert.match(source, /liveStopBtn\.hidden = !active/);
+  assert.match(source, /startBtn\.hidden = onAir/);
+  assert.match(source, /stopBtn\.hidden = !onAir/);
 });
 
 test('operator starts in one click and controls only the three fixed compositions', () => {
   const api = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'js', 'api.js'), 'utf8');
   const dock = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'js', 'views', 'media-control', 'action-dock.js'), 'utf8');
-  const commandBar = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'js', 'views', 'media-control', 'command-bar.js'), 'utf8');
+  const mediaControl = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'js', 'views', 'media-control.js'), 'utf8');
   const send = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'js', 'views', 'media-control', 'send.js'), 'utf8');
   assert.doesNotMatch(api, /request\('\/live-stream\/prepare'/);
   assert.match(api, /operatorState: \(\) => request\('\/live-stream\/operator-state'/);
@@ -26,7 +26,7 @@ test('operator starts in one click and controls only the three fixed composition
   // active instructor client surface carries those calls.
   assert.doesNotMatch(api, /request\('\/live-stream\/production-plan'/);
   assert.doesNotMatch(dock, /data-dock="prepare-live"|openPrepareLiveProductionModal|programPrepared/);
-  assert.doesNotMatch(commandBar, /data-launch="live-prepare"|prepareLiveProgram\(/);
+  assert.doesNotMatch(mediaControl, /renderCommandBar|data-launch="live-prepare"|prepareLiveProgram\(/);
   assert.match(dock, /api\.liveStream\.operatorState\(\)/);
   const startHandler = dock.slice(
     dock.indexOf('async function onStartLive()'),

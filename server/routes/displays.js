@@ -43,6 +43,8 @@ function buildLiveState(row) {
     member_id: row.member_id ?? null,
     playback_revision: row.playback_revision ?? null,
     command_revision: row.command_revision ?? null,
+    state_revision: Number(row.state_revision) || 0,
+    screen_on: boolOrNull(row.confirmed_screen_on),
     state_updated_at: row.state_updated_at ?? null,
   };
 }
@@ -110,7 +112,8 @@ router.get('/state', (req, res) => {
            ds.local_asset_ready, ds.last_ack_at, ds.last_heartbeat_at, ds.render_state, ds.error_state,
            ds.idle_screensaver_id, ds.default_screensaver_id, ds.updated_at AS state_updated_at,
            ds.wall_id, ds.layout_id AS state_layout_id, ds.group_id, ds.member_id,
-           ds.playback_revision, ds.command_revision,
+           ds.playback_revision, ds.command_revision, ds.state_revision,
+           ds.screen_on AS confirmed_screen_on,
            t.battery_level, t.battery_charging, t.storage_free_mb, t.storage_total_mb,
            t.ram_free_mb, t.ram_total_mb, t.cpu_usage, t.wifi_ssid, t.wifi_rssi,
            t.uptime_seconds, t.reported_at AS telemetry_reported_at,

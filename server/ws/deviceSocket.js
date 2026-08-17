@@ -224,7 +224,7 @@ function displayStateForDevice(deviceId) {
   const row = db.prepare(`
     SELECT current_content_id, current_asset_id, content_type, layout_mode,
            slide_index, slide_count, current_time, duration, paused, muted, volume,
-           local_asset_ready, render_state, error_state, state_revision, updated_at
+           local_asset_ready, render_state, error_state, screen_on, state_revision, updated_at
            , wall_id, layout_id, group_id, member_id, playback_revision, command_revision
     FROM display_states
     WHERE target_type = 'display' AND target_id = ?
@@ -246,6 +246,7 @@ function displayStateForDevice(deviceId) {
     local_asset_ready: row.local_asset_ready ?? null,
     render_state: row.render_state || null,
     error_state: row.error_state || null,
+    screen_on: row.screen_on == null ? null : row.screen_on !== 0,
     wall_id: row.wall_id || null,
     layout_id: row.layout_id || null,
     group_id: row.group_id || null,

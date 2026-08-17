@@ -815,6 +815,22 @@ function migrateDisplayStateRevision() {
 
 migrateDisplayStateRevision();
 
+// Player-confirmed blank state. Kept in display_states so delivery intent in
+// devices.screen_on cannot be mistaken for physical execution. Schema-driven
+// self-healing makes partially applied production boots safe to retry.
+const DISPLAY_SCREEN_STATE_ID = 'display_screen_state_v1';
+function migrateDisplayScreenState() {
+  let cols = [];
+  try { cols = db.prepare('PRAGMA table_info(display_states)').all().map((column) => column.name); }
+  catch (e) { console.warn(`[${DISPLAY_SCREEN_STATE_ID}] table_info failed:`, e.message); return; }
+  if (!cols.includes('screen_on')) {
+    db.exec('ALTER TABLE display_states ADD COLUMN screen_on INTEGER CHECK(screen_on IN (0, 1))');
+  }
+  db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(DISPLAY_SCREEN_STATE_ID);
+}
+
+migrateDisplayScreenState();
+
 const CONTENT_LIFECYCLE_ID = 'content_asset_lifecycle';
 function migrateContentLifecycle() {
   let cols = [];

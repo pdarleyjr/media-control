@@ -58,7 +58,13 @@ export function projectRoomDisplays(snapshot, priorDisplays = new Map(), options
         ...prior,
         ...display,
         online: display.status === 'online',
-        screen_on: device.screenOn ?? prior.screen_on ?? null,
+        // Blank state belongs to the player's confirmed display-state report.
+        // devices.screenOn is legacy delivery intent and must never be projected
+        // as physical truth. A missing confirmation remains explicitly unknown.
+        screen_on: typeof display.screenOn === 'boolean' ? display.screenOn : null,
+        command_revision: display.commandRevision ?? null,
+        state_revision: Number(display.stateRevision) || 0,
+        error_state: display.errorState ?? null,
         screen_width: device.width ?? prior.screen_width ?? null,
         screen_height: device.height ?? prior.screen_height ?? null,
         wall_id: display.wallId ?? device.wallId ?? prior.wall_id ?? null,
@@ -68,4 +74,3 @@ export function projectRoomDisplays(snapshot, priorDisplays = new Map(), options
       }];
     }));
 }
-

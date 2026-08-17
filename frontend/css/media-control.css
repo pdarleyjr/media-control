@@ -37,7 +37,7 @@
 }
 .mc-control-summary {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   gap: var(--space-2, 8px);
   font-size: var(--font-3, 13px);
   color: var(--mc-text-secondary);
@@ -928,22 +928,6 @@
 .mc-tp-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
 .mc-tp-btn:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .mc-tp-btn:disabled { opacity: 0.45; cursor: default; }
-.mc-tp-blank {
-  min-height: var(--tap-min, 48px); padding: 0 var(--space-3, 12px); font-size: var(--mc-font-size-xs);
-  background: var(--mc-surface-alt); border: 1px solid var(--mc-border-light);
-  border-radius: var(--mc-radius-sm, 8px); color: var(--mc-text-secondary);
-  font-family: var(--mc-font-family-sans); font-weight: 600; cursor: pointer;
-  transition: background var(--mc-transition-base), color var(--mc-transition-base), border-color var(--mc-transition-base);
-}
-.mc-tp-blank:hover { background: var(--warning-dim, #92400e); color: var(--mc-text-on-dark); border-color: var(--warning-dim, #92400e); }
-.mc-tp-blank:focus-visible { outline: 3px solid var(--warning-dim, #92400e); outline-offset: 2px; }
-/* Active = display is blanked (screen_on = false). Darker amber (--warning-dim)
-   so the white label clears WCAG AA (white on #CA8A04 was only 2.94:1). */
-.mc-tp-blank-active {
-  background: var(--warning-dim, #92400e); color: var(--mc-text-on-dark); border-color: var(--warning-dim, #92400e);
-}
-.mc-tp-blank:disabled { opacity: 0.45; cursor: default; }
-
 /* ════════════════════════════════════════════════════════════════════════
    Add-display picker dialog (composed list, replaces window.prompt)
    ════════════════════════════════════════════════════════════════════════ */
@@ -1273,65 +1257,6 @@
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   Command bar — classroom quick actions (folds in the Present surface).
-   A white band under the header: PRIMARY "Start Class" (orange --cta, the one
-   dominant action), a "Blank all" toggle (amber when active), and a right-side
-   group of quick-launch buttons. A full-width amber banner shows while blanked.
-   ════════════════════════════════════════════════════════════════════════ */
-.mc-cmdbar {
-  display: flex; flex-direction: column; gap: var(--space-3, 12px);
-  background: var(--mc-surface); border: 1px solid var(--mc-border-light);
-  border-radius: var(--mc-radius-lg); box-shadow: var(--mc-shadow-card);
-  padding: var(--mc-space-md, 16px);
-}
-.mc-cmd-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3, 12px); }
-/* "Start Class" is the single dominant CTA: push it to the primary touch size. */
-.mc-control .mc-cmd-multiview { min-height: var(--tap-primary, 64px); padding: 0 var(--space-5, 24px); font-size: var(--font-4, 15px); border-radius: var(--radius-lg, 12px); }
-.mc-cmd-launch { display: flex; flex-wrap: wrap; gap: var(--space-2, 8px); margin-left: auto; }
-.mc-cmd-btn-label { white-space: nowrap; }
-.mc-control .mc-cmd-live {
-  background: var(--accent-light, #eff6ff);
-  border-color: rgba(37, 99, 235, 0.32);
-  color: var(--accent, #2563eb);
-  font-weight: 800;
-}
-.mc-control .mc-cmd-live:hover:not(:disabled) {
-  background: var(--accent-light, #dbeafe);
-  border-color: var(--accent, #2563eb);
-}
-.mc-control .mc-cmd-live-busy { opacity: 0.82; }
-.mc-control .mc-cmd-live-prepare.is-prepared {
-  background: var(--success-light, #f0fdf4);
-  border-color: rgba(22,163,74,0.42);
-  color: var(--success, #16a34a);
-}
-.mc-control .mc-cmd-live-stop {
-  background: var(--mc-live-text, #B91C1C);
-  border-color: #991B1B;
-  color: #fff;
-  font-weight: 800;
-}
-.mc-control .mc-cmd-live-stop:hover:not(:disabled) { background: #991B1B; }
-/* Blank-all active = the room is dark. Amber (--warning-dim) clears WCAG AA for
-   white text; paired with the label flip + banner so it is never colour-only. */
-.mc-control .mc-cmd-blank.mc-cmd-blank-active {
-  background: var(--warning-dim, #92400e); border-color: var(--warning-dim, #92400e); color: var(--mc-text-on-dark);
-}
-.mc-control .mc-cmd-blank.mc-cmd-blank-active:hover { background: #7c360b; border-color: #7c360b; }
-.mc-cmd-blank-banner {
-  display: flex; align-items: center; gap: var(--space-2, 8px);
-  padding: var(--space-2, 8px) var(--space-3, 12px);
-  background: #FEF3C7; border: 1px solid var(--warning, #CA8A04); border-radius: var(--radius, 8px);
-  color: var(--warning-dim, #92400e); font-size: var(--font-2, 12px); font-weight: 700; letter-spacing: 0.02em;
-}
-.mc-cmd-blank-banner[hidden] { display: none; }
-.mc-cmd-state { display: flex; align-items: center; gap: var(--space-3, 12px); padding: var(--mc-space-sm, 8px); color: var(--mc-text-secondary); font-size: var(--mc-font-size-sm); }
-.mc-cmd-error { color: var(--danger); }
-.mc-cmd-state-ico { flex: 0 0 auto; color: var(--mc-text-tertiary); }
-.mc-cmd-error .mc-cmd-state-ico { color: var(--danger); }
-.mc-cmd-spin svg { animation: mc-spin 0.8s linear infinite; }
-
-/* ════════════════════════════════════════════════════════════════════════
    Single-column body: the main control column now spans the full width. The
    content LIBRARY moved to a fixed right-side collapsible drawer (overlay, see
    .mc-library-drawer) and the former right-rail panels (Presets · Recent · Room
@@ -1442,6 +1367,7 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
 .mc-badge-live    { background: var(--danger, #DC2626); color: #fff; }
 .mc-badge-blanked { background: var(--warning-dim, #92400e); color: #fff; }
 .mc-badge-standby { background: #E2E8F0; color: #334155; }
+.mc-badge-unknown { background: #FEF3C7; color: #854D0E; }
 .mc-badge-offline { background: #E7E5E4; color: #57534E; }
 /* Reinforce the on-air card with a faint red frame (the only card that gets one). */
 .mc-display-card.mc-status-live { border-color: rgba(220, 38, 38, 0.45); }
@@ -2268,7 +2194,6 @@ img.mc-cc-logo { background: transparent; box-shadow: none; padding: 0; }
 .mc-cc-canvas .mc-wall-cell:last-child { border-right: none; }
 
 /* ---- canvas-level transport row (Prev · Restart · Play/Pause · Next) ---- */
-.mc-cc-cmdbar-host { margin-top: var(--mc-space-md, 16px); }
 .mc-transport-row-host { margin-top: var(--mc-space-sm, 8px); }
 .mc-cc-tp-row {
   display: flex; align-items: center; justify-content: center; gap: var(--mc-space-sm, 8px);
@@ -2340,6 +2265,46 @@ img.mc-cc-logo { background: transparent; box-shadow: none; padding: 0; }
   display: flex; align-items: center; justify-content: center; gap: var(--mc-space-sm, 8px);
   flex-wrap: wrap;
 }
+.mc-blank-control {
+  display: inline-flex;
+  align-items: stretch;
+  min-height: 56px;
+  border: 1px solid var(--mc-border-medium, #d4d0ca);
+  border-radius: var(--mc-radius-lg, 14px);
+  overflow: hidden;
+  background: var(--mc-surface-alt, #f8f6f2);
+}
+.mc-blank-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  color: var(--mc-text-secondary, #57534e);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.mc-blank-control .mc-dock-btn {
+  min-height: 54px;
+  border: 0;
+  border-left: 1px solid var(--mc-border-medium, #d4d0ca);
+  border-radius: 0;
+  box-shadow: none;
+}
+.mc-blank-control[data-state="pending-blank"] .mc-blank-status,
+.mc-blank-control[data-state="pending-on"] .mc-blank-status,
+.mc-blank-control[data-state="unknown"] .mc-blank-status,
+.mc-blank-control[data-state="partial-offline"] .mc-blank-status {
+  color: var(--warning-dim, #92400e);
+  background: #fffbeb;
+}
+.mc-blank-control[data-state="on"] .mc-blank-status { color: var(--success, #15803d); background: #f0fdf4; }
+.mc-blank-control[data-state="blanked"] .mc-blank-status,
+.mc-blank-control[data-state="mixed"] .mc-blank-status { color: #854d0e; background: #fefce8; }
+.mc-blank-control[data-state="error"] .mc-blank-status { color: #991b1b; background: #fef2f2; }
+.mc-dock-blank-pending { cursor: progress; }
+.mc-dock-blank-error { border-color: #fecaca !important; }
 .mc-dock-btn {
   flex: 0 0 auto; min-height: 56px; min-width: 56px; padding: 0 var(--mc-space-lg, 24px);
   display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2, 8px);
@@ -2679,9 +2644,10 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
 /* Center workspace: canvas on top, then playback, then span/split+saver,
    then the bottom action dock. No internal scrolling on normal viewports. */
 .mc-cc-main {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  row-gap: 12px;
+  align-items: stretch;
   justify-content: flex-start;
   min-width: 0; min-height: 0;
   padding: 16px 24px 18px;
@@ -2704,6 +2670,7 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
 .mc-cc-main .mc-stage.mc-cc-canvas {
   width: auto;
   height: 100%;
+  min-height: 0;
   max-width: min(1120px, 86vw);
   max-height: 100%;
   aspect-ratio: 16 / 9;
@@ -2717,7 +2684,7 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
   width: 100%;
   display: flex; flex-direction: column; align-items: center;
   gap: 12px;
-  margin-top: 12px;
+  margin-top: 0;
   flex: 0 0 auto;
 }
 .mc-cc-controls .mc-cc-sub-row {
@@ -2883,6 +2850,14 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
 }
 @media (pointer: coarse) {
   .mc-tile[data-drag-source] { touch-action: none; }
+  .mc-target-wall-btn,
+  .mc-target-customize,
+  .mc-target-select,
+  .mc-cc-tp-btn,
+  .mc-ss-btn,
+  .mc-cc-saver-select,
+  .mc-dock-btn,
+  .mc-library-collapse { min-height: 48px; }
 }
 
 /* Live-stream ladder (Agent 4 capability strip) */
@@ -3380,15 +3355,28 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
    (≥769px) is NEVER altered. Safe-area insets + 100dvh + 44px touch targets.
    ═══════════════════════════════════════════════════════════════════════════ */
 @media (max-width: 768px) {
-  /* ── Shell: full-height dynamic viewport + safe-area ─────────────────── */
-  body { min-height: 100dvh; }
-  .mc-cc-shell { height: 100%; padding-top: env(safe-area-inset-top); }
-
-  /* ── Header: compact, scrollable quick tabs ──────────────────────────── */
-  .mc-cc-header { flex-wrap: wrap; gap: 4px; padding: 4px max(8px, env(safe-area-inset-right)) 4px max(8px, env(safe-area-inset-left)); min-height: 48px; }
-  .mc-cc-title { font-size: 14px; }
-  .mc-cc-title .mc-cc-sub { display: none; } /* hide subtitle on mobile */
-  .mc-target-control { width: 100%; order: 2; justify-content: flex-start; }
+  /* Portrait is a deliberate two-row header + horizontal tool rail. The
+     actual .mc-cc-head grid is changed here; no dead flex declarations. */
+  .mc-cc-shell {
+    height: 100%;
+    grid-template-rows: auto minmax(0, 1fr);
+    padding-top: env(safe-area-inset-top);
+  }
+  .mc-cc-shell .mc-cc-head {
+    height: auto;
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "brand tools" "target target";
+    gap: 6px 8px;
+    padding: 6px max(8px, env(safe-area-inset-right)) 6px max(8px, env(safe-area-inset-left));
+  }
+  .mc-cc-brand { grid-area: brand; }
+  .mc-cc-target { grid-area: target; justify-content: flex-start; overflow: hidden; }
+  .mc-cc-tools { grid-area: tools; }
+  .mc-cc-title { font-size: 14px !important; }
+  .mc-cc-brand-text { display: flex; }
+  .mc-control-summary { display: none; }
+  .mc-target-control { width: 100%; justify-content: flex-start; }
   .mc-target-wall-tabs {
     flex: 1; overflow-x: auto; overflow-y: hidden;
     -webkit-overflow-scrolling: touch;
@@ -3399,84 +3387,135 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
   .mc-target-wall-tabs::-webkit-scrollbar { display: none; }
   .mc-target-wall-btn {
     scroll-snap-align: start;
-    min-height: 40px; padding: 0 12px; font-size: 12px; white-space: nowrap;
+    min-height: 48px; padding: 0 12px; font-size: 12px; white-space: nowrap;
     flex: 0 0 auto;
   }
-  .mc-target-select { min-width: 120px; max-width: 40vw; min-height: 40px; font-size: 12px; padding: 0 28px 0 10px; }
-  .mc-target-customize { min-height: 40px; min-width: 40px; }
+  .mc-target-select { min-width: 120px; max-width: 44vw; min-height: 48px; font-size: 12px; padding: 0 28px 0 10px; }
+  .mc-target-customize { min-height: 48px; min-width: 48px; }
   .mc-target-customize-panel { right: 8px; left: 8px; width: auto; max-height: 60vh; }
-  .mc-cc-tools { gap: 4px; order: 3; }
-  .mc-cc-tools .mc-cc-bell, .mc-cc-tools .mc-cc-avatar { min-width: 40px; min-height: 40px; }
+  .mc-cc-tools { gap: 4px; }
+  .mc-cc-tools .mc-cc-bell, .mc-cc-tools .mc-cc-avatar { min-width: 48px; min-height: 48px; }
 
-  /* ── Focus stage: one large preview, preserve aspect ratio ───────────── */
-  .mc-cc-canvas-area { flex: 1; min-height: 0; }
-  .mc-cc-canvas { height: calc(100dvh - 200px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); }
+  .mc-cc-body {
+    position: relative;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    overflow: hidden;
+  }
+  .mc-cc-rail {
+    flex-direction: row;
+    min-height: 52px;
+    padding: 4px max(56px, calc(4px + env(safe-area-inset-right))) 4px max(4px, env(safe-area-inset-left));
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    border-right: 0;
+    border-bottom: 1px solid var(--mc-border-light, #e8e5e0);
+  }
+  .mc-cc-rail::-webkit-scrollbar { display: none; }
+  .mc-cc-rail-btn { min-width: 48px; min-height: 48px; flex: 0 0 auto; }
+  .mc-cc-rail-spacer { display: none; }
+
+  /* The main column may scroll in portrait. Its two natural tracks prevent
+     clipped actions while the preview keeps a bounded, useful footprint. */
+  .mc-cc-main {
+    grid-template-rows: auto auto;
+    align-content: start;
+    row-gap: 12px;
+    padding: 10px max(10px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .mc-cc-canvas-area { height: clamp(180px, 34dvh, 300px); min-height: 180px; overflow: hidden; }
+  .mc-cc-main .mc-stage.mc-cc-canvas,
+  .mc-cc-canvas { width: 100%; height: 100%; min-height: 0; max-width: 100%; }
   .mc-stage { gap: 4px; }
   .mc-wall { max-width: 100%; }
   .mc-wall-region { flex: 1 1 100%; }
 
-  /* ── Transport: sticky bottom dock with 44px touch targets ────────────── */
   .mc-cc-controls {
-    position: sticky; bottom: 0; z-index: 50;
-    padding-bottom: env(safe-area-inset-bottom);
-    background: rgba(11, 18, 32, 0.95);
-    backdrop-filter: blur(8px);
+    position: static;
+    gap: 10px;
+    padding: 0;
+    background: transparent;
   }
-  .mc-transport-row-host { padding: 8px max(8px, env(safe-area-inset-left)) 8px max(8px, env(safe-area-inset-right)); }
-  .mc-cc-tp-btn { min-height: 44px; min-width: 44px; padding: 8px 14px; font-size: 12px; }
+  .mc-transport-row-host { width: 100%; padding: 0; }
+  .mc-cc-tp-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+  .mc-cc-tp-btn { min-height: 48px; min-width: 48px; padding: 8px; font-size: 12px; }
   .mc-cc-tp-ico { font-size: 18px; }
-  .mc-cc-tp-text { display: none; } /* icons-only on mobile, titles via aria-label */
-  .mc-cc-tp-play { flex: 1; }
-  .mc-cc-sub-row { flex-wrap: wrap; gap: 4px; }
-  .mc-dock-btn { min-height: 44px; min-width: 44px; }
-  .mc-action-dock-host { flex-wrap: wrap; gap: 4px; }
+  .mc-cc-tp-text { display: inline; font-size: 11px; }
+  .mc-cc-controls .mc-cc-sub-row { width: 100%; flex-wrap: wrap; gap: 8px; }
+  .mc-ss-btn, .mc-cc-saver-select { min-height: 48px; }
+  .mc-action-dock-host { width: 100%; margin-top: 0; }
+  .mc-action-dock {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+    gap: 8px;
+  }
+  .mc-action-dock > * { width: 100%; min-width: 0; }
+  .mc-dock-btn { width: 100%; min-width: 0; min-height: 48px; padding: 8px; }
+  .mc-blank-control { min-height: 48px; }
+  .mc-blank-control .mc-dock-btn { min-height: 46px; }
+  .mc-blank-status { padding: 0 7px; font-size: 9px; }
+  .mc-dock-add { flex-direction: row; }
+  .mc-dock-add-text { writing-mode: horizontal-tb; }
+  .mc-live-ladder, .mc-composition-control { grid-column: 1 / -1; }
 
-  /* ── Content Library: full-screen sheet on mobile ─────────────────────── */
-  .mc-library-drawer {
-    position: fixed !important;
+  .mc-cc-body .mc-library-drawer {
+    position: absolute !important;
     inset: 0 !important;
     width: 100% !important;
     max-width: 100% !important;
-    height: 100dvh !important;
-    max-height: 100dvh !important;
+    height: 100% !important;
+    max-height: 100% !important;
     z-index: 100;
-    padding-top: env(safe-area-inset-top);
     padding-bottom: env(safe-area-inset-bottom);
   }
+  .mc-cc-body .mc-library-drawer .mc-library-tab {
+    top: 4px;
+    width: 48px;
+    height: 48px;
+    min-width: 48px;
+    min-height: 48px;
+    padding: 0;
+    border-radius: 10px 0 0 10px;
+  }
+  .mc-cc-body .mc-library-drawer .mc-library-tab-label { display: none; }
+  .mc-cc-body .mc-library-drawer .mc-library-tab-ico svg { width: 20px; height: 20px; }
   .mc-library-inner { height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
-
-  /* ── Rail: compact vertical icons ─────────────────────────────────────── */
-  .mc-cc-rail { flex-direction: row; overflow-x: auto; scrollbar-width: none; gap: 2px; padding: 0 max(4px, env(safe-area-inset-left)); }
-  .mc-cc-rail::-webkit-scrollbar { display: none; }
-  .mc-cc-rail-btn { min-width: 44px; min-height: 44px; flex: 0 0 auto; }
-  .mc-cc-rail-btn span { display: none; } /* icon-only on mobile */
-
-  /* ── Body: column layout (rail → content → controls) ─────────────────── */
-  .mc-cc-body { flex-direction: column; }
-
-  /* ── Multiview: full-screen on mobile ────────────────────────────────── */
   .mc-multiview-host:not([hidden]) {
     inset: 0; width: 100vw; height: 100dvh; border-radius: 0;
   }
-
-  /* ── No horizontal page overflow (targeted, not html/body band-aid) ────── */
-  .mc-cc-main, .mc-cc-canvas, .mc-stage, .mc-wall, .mc-wall-region, .mc-target-wall-tabs, .mc-cc-rail {
-    max-width: 100%; overflow-x: auto; overflow-y: hidden;
-  }
+  .mc-cc-main, .mc-cc-canvas, .mc-stage, .mc-wall, .mc-wall-region { max-width: 100%; }
   .mc-cc-shell, .mc-cc-body { overflow-x: hidden; }
-
-  /* ── Touch targets: ensure 44px minimum for all interactive elements ─── */
   .mc-cc-view-btn, .mc-ss-btn, .mc-cc-saver-select, .mc-target-choice, .mc-route-row-main {
-    min-height: 44px;
+    min-height: 48px;
   }
 }
 
 /* ── Landscape phones (844×390 etc.) ─────────────────────────────────── */
 @media (max-width: 932px) and (orientation: landscape) and (max-height: 500px) {
   .mc-cc-shell { height: 100%; }
-  .mc-cc-canvas { height: calc(100dvh - 120px); }
+  .mc-cc-main { row-gap: 12px; }
   .mc-cc-tp-text { display: inline; font-size: 11px; }
-  .mc-library-drawer { height: 100dvh !important; }
+  .mc-cc-body .mc-library-drawer {
+    top: var(--classroom-banner-height, 0px);
+    height: calc(100dvh - var(--classroom-banner-height, 0px)) !important;
+  }
+  .mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-tab {
+    top: 4px;
+    right: calc(100% + 4px);
+    width: 48px;
+    height: 48px;
+    min-width: 48px;
+    min-height: 48px;
+    padding: 0;
+    border-radius: 10px;
+  }
+  .mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-tab-label { display: none; }
+  .mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-tab-ico svg { width: 20px; height: 20px; }
 }
 
 /* Lenovo Tab One and comparable short landscape tablets. Keep the preview and
@@ -3496,8 +3535,10 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
   .mc-cc-logo { width: 36px; height: 36px; min-width: 36px; min-height: 36px; }
   .mc-cc-title { font-size: 16px !important; }
   .mc-cc-head .mc-control-summary { display: none; }
+  .mc-target-wall-btn, .mc-target-customize { min-height: 48px; }
   .mc-cc-main {
     padding: 6px 10px 8px;
+    row-gap: 12px;
   }
   .mc-cc-canvas-area {
     flex: 1 1 0;
@@ -3514,7 +3555,7 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
   .mc-cc-controls {
     flex: 0 0 auto;
     gap: 4px;
-    margin-top: 4px;
+    margin-top: 0;
   }
   .mc-transport-row-host,
   .mc-cc-controls .mc-action-dock-host {
@@ -3553,11 +3594,17 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
     overflow-x: auto;
     overflow-y: hidden;
     scrollbar-width: thin;
+    scroll-snap-type: x proximity;
+    scroll-padding-inline: 2px;
   }
+  .mc-action-dock > * { scroll-snap-align: start; }
   .mc-dock-btn {
     min-width: 48px;
     padding-inline: 12px;
   }
+  .mc-blank-control { min-height: 48px; flex: 0 0 auto; }
+  .mc-blank-control .mc-dock-btn { min-height: 46px; }
+  .mc-blank-status { padding-inline: 8px; font-size: 9px; }
   .mc-dock-add {
     width: auto;
     flex-direction: row;

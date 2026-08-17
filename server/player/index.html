@@ -255,6 +255,7 @@
   <script src="/socket.io/socket.io.js"></script>
   <script src="/player/managed-bootstrap.js"></script>
   <script src="/player/device-contract.js"></script>
+  <script src="/player/screen-state.js"></script>
   <script src="/player/player-routing.js"></script>
 <script>
 // Expose the player's socket to the screen-share receiver. The player JS
@@ -369,6 +370,7 @@
 
     // ==================== Config ====================
     const STORAGE_KEY = 'rd_web_player';
+    const SCREEN_STATE_STORAGE_KEY = 'rd_screen_state_v1';
     const HEARTBEAT_INTERVAL = 15000;
     const PLAYLIST_REFRESH_INTERVAL = 60000;
 
@@ -494,6 +496,15 @@
     let lastTransportAck = null;
     let lastTransportCommand = null;
     let playerStateRevision = 0;
+    let persistedScreenState = null;
+    try { persistedScreenState = JSON.parse(localStorage.getItem(SCREEN_STATE_STORAGE_KEY) || 'null'); } catch (_) {}
+    const screenStateController = window.MbfdScreenState.createScreenStateController({
+      initialState: persistedScreenState,
+      apply: applyScreenVisual,
+      persist(state) {
+        try { localStorage.setItem(SCREEN_STATE_STORAGE_KEY, JSON.stringify(state)); } catch (_) {}
+      },
+    });
     let pendingDisplayStateRestore = null;
     let displayStateRestoreTimer = null;
     let displayStateRestoreAttempt = 0;
@@ -645,6 +656,9 @@
       return false;
     }
     function primeDisplayStateRestore(state, reason) {
+      if (state && typeof state.screen_on === 'boolean') {
+        screenStateController.restoreConfirmed(state);
+      }
       const restore = normalizeDisplayStateRestore(state);
       if (!restore) {
         clearDisplayStateRestore();
@@ -795,6 +809,7 @@
             action: normalized.value.payload.action,
             payload: normalized.value.payload,
             command_id: normalized.value.command_id,
+            target_revision: normalized.value.target_revision ?? normalized.value.payload.target_revision ?? null,
             type: normalized.value.type,
             version: normalized.value.version,
             issued_at: normalized.value.issued_at,
@@ -818,6 +833,7 @@
         action,
         payload,
         command_id: command.command_id || command.commandId || command.id || null,
+        target_revision: command.target_revision ?? payload.target_revision ?? null,
         type: command.type || 'transport',
         issued_at: command.issued_at || null,
       };
@@ -1713,7 +1729,8 @@
         group_id: wallConfig?.group_id || wallLayoutContext?.group_id || null,
         member_id: wallConfig?.member_id || wallLayoutContext?.member_id || config.deviceId || null,
         playback_revision: playerStateRevision,
-        command_revision: lastTransportCommand?.command_id || null,
+        command_revision: lastTransportCommand?.command_id || screenStateController.snapshot().command_revision || null,
+        screen_on: screenStateController.snapshot().screen_on,
       };
 
       if (child && typeof child === 'object') {
@@ -2078,7 +2095,7 @@
       state.device_id = config.deviceId;
       state.state_revision = playerStateRevision;
       state.playback_revision = playerStateRevision;
-      state.command_revision = lastTransportCommand?.command_id || null;
+      state.command_revision = lastTransportCommand?.command_id || screenStateController.snapshot().command_revision || null;
       state.updated_at = new Date().toISOString();
       state.playback_status = state.render_state || (state.paused ? 'paused' : 'playing');
       socket.emit('device:state-report', {
@@ -2920,8 +2937,10 @@
             if (overlay) { overlay.style.display = overlay.style.display === 'none' ? 'flex' : 'none'; }
             break;
           case 'KEYCODE_POWER':
-            // Toggle screen (show black overlay)
-            toggleScreenOff();
+            // A local power-key transition is reported immediately. It is never
+            // an invisible click target and never masquerades as a server ACK.
+            screenStateController.setLocal(!screenStateController.snapshot().screen_on);
+            publishPlayerState({ force: true });
             break;
         }
       });
@@ -2935,16 +2954,14 @@
           setTimeout(() => location.reload(), 50);
         }
         else if (action === 'launch') {
-          document.getElementById('screenOffOverlay')?.remove();
+          screenStateController.setLocal(true);
           finishTransportCommand(command, true, null, buildPlayerState());
         }
         else if (action === 'screen_off') {
-          toggleScreenOff();
-          finishTransportCommand(command, true, null, buildPlayerState());
+          applyScreenCommand(command, false);
         }
         else if (action === 'screen_on') {
-          document.getElementById('screenOffOverlay')?.remove();
-          finishTransportCommand(command, true, null, buildPlayerState());
+          applyScreenCommand(command, true);
         }
         else {
           _showTransportDebug('recv: ' + action + (command.command_id ? ' #' + String(command.command_id).slice(0, 8) : ''));
@@ -5022,14 +5039,42 @@
       document.getElementById('statusOverlay').style.display = 'none';
     }
 
-    function toggleScreenOff() {
+    function applyScreenVisual(screenOn) {
       let overlay = document.getElementById('screenOffOverlay');
-      if (overlay) { overlay.remove(); return; }
+      if (screenOn) {
+        if (overlay) overlay.remove();
+        return;
+      }
+      if (overlay) return;
       overlay = document.createElement('div');
       overlay.id = 'screenOffOverlay';
-      overlay.style.cssText = 'position:fixed;inset:0;background:#000;z-index:9999;cursor:pointer';
-      overlay.onclick = () => overlay.remove();
+      overlay.setAttribute('aria-hidden', 'true');
+      overlay.style.cssText = 'position:fixed;inset:0;background:#000;z-index:9999;pointer-events:none';
       document.body.appendChild(overlay);
+    }
+
+    function applyScreenCommand(command, desiredScreenOn) {
+      const result = screenStateController.applyCommand({
+        command_id: command.command_id,
+        target_revision: command.target_revision,
+        screen_on: desiredScreenOn,
+      });
+      if (!result.applied) {
+        publishPlayerState({
+          force: true,
+          ack: {
+            command_id: command.command_id,
+            ok: false,
+            error: {
+              code: result.reason,
+              message: 'Screen command rejected because it is older than confirmed player state',
+            },
+          },
+        });
+        return false;
+      }
+      finishTransportCommand(command, true, null, buildPlayerState());
+      return true;
     }
 
     // Create info overlay (toggled by Back button)

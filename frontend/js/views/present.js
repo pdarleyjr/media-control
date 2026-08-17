@@ -15,10 +15,16 @@ import { api } from '../api.js';
 import { esc } from '../utils.js';
 import { showToast } from '../components/toast.js';
 import { sendCommand } from '../socket.js';
+import { t } from '../i18n.js';
+import * as displayState from '../services/display-state.js';
+import { blankPresentation, createBlankIntentTracker, deriveBlankState } from './media-control/blank-state.js';
 
 let devices = [];
 let target = 'all';          // 'all' | <deviceId>
-let blanked = false;         // best-effort UI state for the Blank toggle
+const blankIntentTracker = createBlankIntentTracker({ timeoutMs: 10000 });
+let blankStateUnsubscribe = null;
+let blankExpiryTimer = null;
+let presentRoot = null;
 
 function deviceIdsForTarget() {
   if (target === 'all') return devices.map((d) => d.id);
@@ -29,6 +35,45 @@ function targetLabel() {
   if (target === 'all') return 'All displays';
   const d = devices.find((x) => x.id === target);
   return d ? d.name : 'All displays';
+}
+
+function presentBlankModel() {
+  blankIntentTracker.expire();
+  return deriveBlankState(deviceIdsForTarget(), displayState.getAll(), blankIntentTracker.pending());
+}
+
+function updatePresentBlankUi() {
+  if (!presentRoot) return;
+  const button = presentRoot.querySelector('[data-cmd="blank"]');
+  const status = presentRoot.querySelector('[data-blank-status]');
+  if (!button || !status) return;
+  const presentation = blankPresentation(presentBlankModel().state, target === 'all' ? 'room' : 'display');
+  const statusText = t(presentation.statusKey);
+  const actionText = t(presentation.actionKey);
+  button.textContent = actionText;
+  button.disabled = presentation.disabled;
+  button.setAttribute('aria-busy', presentation.disabled ? 'true' : 'false');
+  button.setAttribute('aria-label', `${statusText}. ${actionText}`);
+  status.textContent = statusText;
+}
+
+function requestPresentScreenState(ids, desiredScreenOn) {
+  const type = desiredScreenOn ? 'screen_on' : 'screen_off';
+  for (const id of ids) {
+    let commandId = null;
+    commandId = sendCommand(id, type, {}, (receipt) => {
+      if (commandId) blankIntentTracker.markDelivery(commandId, receipt || {});
+      updatePresentBlankUi();
+    });
+    if (commandId) blankIntentTracker.begin(id, commandId, desiredScreenOn);
+  }
+  updatePresentBlankUi();
+  if (blankExpiryTimer) clearTimeout(blankExpiryTimer);
+  blankExpiryTimer = setTimeout(() => {
+    blankExpiryTimer = null;
+    blankIntentTracker.expire();
+    updatePresentBlankUi();
+  }, 10100);
 }
 
 // ---- send helpers (instant-Send; reuse /api/broadcast + confirm-all gate) ----
@@ -172,8 +217,8 @@ function render(app) {
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>
           Start Class
         </button>
-        <button type="button" class="mc-btn mc-btn-lg mc-cmd-blank" data-cmd="blank">Blank</button>
-        <span class="mc-blank-banner" hidden>SCREEN IS BLANK — tap Un-blank to resume</span>
+        <button type="button" class="mc-btn mc-btn-lg mc-cmd-blank" data-cmd="blank">${esc(t('mc.blank.action.unblank_room'))}</button>
+        <span class="mc-blank-banner" data-blank-status role="status" aria-live="polite">${esc(t('mc.blank.status.unknown'))}</span>
       </div>
     </div>`;
 
@@ -184,6 +229,7 @@ function render(app) {
       app.querySelectorAll('.mc-target-chip').forEach((c) => c.classList.toggle('active', c === chip));
       const lbl = app.querySelector('.mc-target-label');
       if (lbl) lbl.textContent = targetLabel();
+      updatePresentBlankUi();
     });
   });
 
@@ -200,36 +246,25 @@ function render(app) {
     });
   });
 
-  // Command bar: Start Class (wake/un-blank all) + Blank (same-button toggle on
+  // Command bar: Start Class (wake the room) + Blank (same-button toggle on
   // the current target). Reuses the proven screen_on / screen_off device
   // commands over the dashboard socket — no new server plumbing.
   const blankBtn = app.querySelector('.mc-cmd-blank');
-  const banner = app.querySelector('.mc-blank-banner');
-  const reflectBlank = () => {
-    if (blankBtn) {
-      blankBtn.textContent = blanked ? 'Un-blank' : 'Blank';
-      blankBtn.classList.toggle('mc-btn-danger', blanked);
-    }
-    if (banner) banner.hidden = !blanked;
-  };
   app.querySelector('[data-cmd="start"]')?.addEventListener('click', () => {
     if (!devices.length) { showToast('No displays paired yet — pair one in Setup → Displays.', 'error'); return; }
-    devices.forEach((d) => sendCommand(d.id, 'screen_on', {}));
-    blanked = false; reflectBlank();
-    showToast(`Class started — ${devices.length} display${devices.length === 1 ? '' : 's'} ready.`, 'success');
+    requestPresentScreenState(devices.map((d) => d.id), true);
   });
   blankBtn?.addEventListener('click', () => {
     const ids = deviceIdsForTarget();
     if (!ids.length) { showToast('No displays to blank.', 'error'); return; }
-    blanked = !blanked;
-    ids.forEach((id) => sendCommand(id, blanked ? 'screen_off' : 'screen_on', {}));
-    reflectBlank();
-    showToast(blanked ? `Blanked ${targetLabel()}.` : `Resumed ${targetLabel()}.`, 'info');
+    const presentation = blankPresentation(presentBlankModel().state, target === 'all' ? 'room' : 'display');
+    if (!presentation.disabled) requestPresentScreenState(ids, presentation.desiredScreenOn);
   });
-  reflectBlank();
+  updatePresentBlankUi();
 }
 
 export async function renderView(app) {
+  presentRoot = app;
   render(app); // immediate shell (no spinner flash)
   try {
     devices = await api.getDevices();
@@ -237,21 +272,21 @@ export async function renderView(app) {
   } catch {
     devices = [];
   }
-  // Re-render the dynamic regions now that devices are loaded.
-  const grid = app.querySelector('.mc-display-grid');
-  const bar = app.querySelector('.mc-target-bar');
-  if (grid) grid.innerHTML = renderDisplayGrid();
-  if (bar) {
-    bar.innerHTML = renderTargetChips();
-    bar.querySelectorAll('.mc-target-chip').forEach((chip) => {
-      chip.addEventListener('click', () => {
-        target = chip.dataset.target;
-        bar.querySelectorAll('.mc-target-chip').forEach((c) => c.classList.toggle('active', c === chip));
-        const lbl = app.querySelector('.mc-target-label');
-        if (lbl) lbl.textContent = targetLabel();
-      });
-    });
-  }
+  await displayState.refresh().catch(() => {});
+  render(app);
+  if (blankStateUnsubscribe) blankStateUnsubscribe();
+  blankStateUnsubscribe = displayState.subscribe((list) => {
+    blankIntentTracker.reconcile(list);
+    updatePresentBlankUi();
+  });
+  updatePresentBlankUi();
+}
+
+export function unmount() {
+  if (blankStateUnsubscribe) { blankStateUnsubscribe(); blankStateUnsubscribe = null; }
+  if (blankExpiryTimer) { clearTimeout(blankExpiryTimer); blankExpiryTimer = null; }
+  blankIntentTracker.reset();
+  presentRoot = null;
 }
 
 // app.js calls view.render(app)
