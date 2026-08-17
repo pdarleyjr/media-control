@@ -99,11 +99,41 @@ jobs:
           test -f e2e/real-app/mobile-defect.spec.js
           test -f e2e/real-app/playwright.mobile.config.js
 
+      # Temporary branch-scoped capture: generate baselines on the exact hosted
+      # runner image, upload them, then remove this step before merge so the
+      # release gate returns to comparison-only mode.
+      - name: Capture hosted Linux visual baselines
+        if: github.head_ref == 'fix/authoritative-blank-lenovo-20260817'
+        working-directory: server/e2e/real-app
+        run: npx playwright test --config=playwright.mobile.config.js --update-snapshots --grep "Command Center visual regression"
+        env:
+          CI: true
+
+      - name: Upload hosted Linux visual baselines
+        if: github.head_ref == 'fix/authoritative-blank-lenovo-20260817'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hosted-linux-visual-baselines-${{ github.sha }}
+          path: server/e2e/real-app/mobile-defect.spec.js-snapshots/*-linux.png
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Run mobile acceptance tests (Chromium + WebKit)
         working-directory: server/e2e/real-app
         run: npx playwright test --config=playwright.mobile.config.js
         env:
           CI: true
+
+      - name: Upload mobile failure evidence
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mobile-failure-evidence-${{ github.sha }}
+          path: |
+            server/e2e/real-app/test-results/
+            server/e2e/real-app/playwright-report-mobile/
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Run release test gate
         run: npm run test:release
