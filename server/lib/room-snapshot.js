@@ -29,7 +29,7 @@ const CONFIRMED_DISPLAY_SCHEMA = {
   renderState: PUBLIC_SCALAR, errorState: PUBLIC_SCALAR, wallId: PUBLIC_SCALAR,
   layoutId: PUBLIC_SCALAR, groupId: PUBLIC_SCALAR, memberId: PUBLIC_SCALAR,
   playbackRevision: PUBLIC_SCALAR, commandRevision: PUBLIC_SCALAR,
-  stateRevision: PUBLIC_SCALAR, updatedAt: PUBLIC_SCALAR,
+  screenOn: PUBLIC_SCALAR, stateRevision: PUBLIC_SCALAR, updatedAt: PUBLIC_SCALAR,
 };
 const COMMAND_SCHEMA = {
   commandId: PUBLIC_SCALAR, targetType: PUBLIC_SCALAR, targetId: PUBLIC_SCALAR,
@@ -344,7 +344,7 @@ function loadConfirmedState(db, workspaceId) {
            ds.paused, ds.muted, ds.volume, ds.local_asset_ready, ds.last_ack_at,
            ds.last_heartbeat_at, ds.render_state, ds.error_state, ds.wall_id,
            ds.layout_id, ds.group_id, ds.member_id, ds.playback_revision,
-           ds.command_revision, ds.state_revision, ds.updated_at
+           ds.command_revision, ds.screen_on, ds.state_revision, ds.updated_at
     FROM devices d
     LEFT JOIN display_states ds
       ON ds.target_type = 'display' AND ds.target_id = d.id
@@ -379,6 +379,7 @@ function loadConfirmedState(db, workspaceId) {
       memberId: row.member_id ?? null,
       playbackRevision: row.playback_revision ?? null,
       commandRevision: row.command_revision ?? null,
+      screenOn: boolOrNull(row.screen_on),
       stateRevision: Number(row.state_revision) || 0,
       updatedAt: row.updated_at ?? null,
     })),

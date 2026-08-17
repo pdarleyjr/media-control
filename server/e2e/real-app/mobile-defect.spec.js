@@ -6,7 +6,7 @@
 //
 // Proves:
 //   1. `.mc-cc-target` (target-nav host) is NOT hidden (display:none) on phones.
-//   2. Target wall tabs are visible and tappable.
+//   2. Target wall tabs are visible and 48px-class tappable.
 //   3. Content Library is reachable on mobile (not display:none).
 //   4. No horizontal page overflow.
 //   5. Transport touch targets >= 44px.
@@ -115,12 +115,72 @@ async function registerAndAuth() {
   throw new Error('Server did not restart');
 }
 
+function seedCommandCenterFixture() {
+  const Database = require('better-sqlite3');
+  const database = new Database(path.join(tmpDir, 'test.db'), { timeout: 10000 });
+  database.pragma('busy_timeout = 10000');
+  try {
+    const workspaceId = database.prepare(
+      'SELECT workspace_id FROM workspace_members WHERE user_id = ? LIMIT 1'
+    ).get(userId)?.workspace_id;
+    if (!workspaceId) throw new Error('Mobile fixture workspace was not resolved');
+    // The dual-browser suite is intentionally serial and can run for several
+    // minutes. Keep the synthetic wall inside the online freshness window for
+    // the whole run; no real device heartbeat exists in this isolated fixture.
+    const now = Math.floor(Date.now() / 1000) + 3600;
+    database.transaction(() => {
+      const insertDevice = database.prepare(`
+        INSERT INTO devices (id, user_id, workspace_id, name, pairing_code, status, last_heartbeat, wall_id, screen_on)
+        VALUES (?, ?, ?, ?, ?, 'online', ?, 'mobile-command-wall', 1)
+      `);
+      for (const [index, name] of ['Front Left', 'Front Center', 'Front Right'].entries()) {
+        const id = `mobile-wall-display-${index + 1}`;
+        insertDevice.run(id, userId, workspaceId, name, `82000${index + 1}`, now);
+        database.prepare(`
+          INSERT INTO display_states
+            (target_type, target_id, workspace_id, screen_on, command_revision, state_revision, updated_at)
+          VALUES ('display', ?, ?, 1, 'fixture-on', 1, ?)
+        `).run(id, workspaceId, Date.now());
+      }
+      database.prepare(`
+        INSERT INTO video_walls (id, user_id, workspace_id, name, grid_cols, grid_rows, is_locked, layout_mode)
+        VALUES ('mobile-command-wall', ?, ?, 'Classroom 1 Primary Wall', 3, 1, 1, 'span')
+      `).run(userId, workspaceId);
+      database.prepare(`
+        INSERT INTO video_wall_devices
+          (wall_id, device_id, grid_col, grid_row, canvas_x, canvas_y, canvas_width, canvas_height)
+        VALUES
+          ('mobile-command-wall', 'mobile-wall-display-1', 0, 0, 0, 0, 1920, 1080),
+          ('mobile-command-wall', 'mobile-wall-display-2', 1, 0, 1920, 0, 1920, 1080),
+          ('mobile-command-wall', 'mobile-wall-display-3', 2, 0, 3840, 0, 1920, 1080)
+      `).run();
+    })();
+  } finally {
+    database.close();
+  }
+}
+
+async function openAuthedControl(browser, contextOptions = {}) {
+  const context = await browser.newContext({ serviceWorkers: 'block', ...contextOptions });
+  const page = await context.newPage();
+  await page.addInitScript(({ token, user }) => {
+    localStorage.setItem('token', token);
+    localStorage.setItem('user', JSON.stringify(user));
+    localStorage.setItem('rd_onboarded', '1');
+  }, { token: authToken, user: { id: userId, email: TEST_EMAIL, name: 'Mobile Test', role: 'platform_admin' } });
+  await page.goto(`${BASE_URL}/app#/control`, { waitUntil: 'networkidle' });
+  await expect(page.locator('.mc-cc-shell')).toBeVisible();
+  await expect(page.locator('.mc-target-wall-btn').first()).toBeVisible();
+  return { context, page };
+}
+
 test.describe.configure({ mode: 'serial' });
 
 test.describe('Mobile operator console — defect reproduction + acceptance', () => {
   test.beforeAll(async () => {
     await startServer();
     await registerAndAuth();
+    seedCommandCenterFixture();
   });
   test.afterAll(() => { killServer(); try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {} });
 
@@ -161,7 +221,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
       await context.close();
     });
 
-    test(`[${vp.name}] target wall tabs are visible and >=40px`, async ({ browser }) => {
+    test(`[${vp.name}] target wall tabs are visible and >=48px`, async ({ browser }) => {
       const context = await browser.newContext({
         viewport: { width: vp.width, height: vp.height },
         deviceScaleFactor: 2, isMobile: true, hasTouch: true,
@@ -180,7 +240,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
         const firstTab = tabs.first();
         await expect(firstTab).toBeVisible();
         const box = await firstTab.boundingBox();
-        expect(box.height, `wall tab height at ${vp.width}px`).toBeGreaterThanOrEqual(36);
+        expect(box.height, `wall tab height at ${vp.width}px`).toBeGreaterThanOrEqual(48);
       }
       await context.close();
     });
@@ -787,7 +847,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await context.close();
   });
 
-  test('transport buttons meet 44px touch target on mobile', async ({ browser }) => {
+  test('transport buttons meet 48px touch target on mobile', async ({ browser }) => {
     const context = await browser.newContext({
       viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true,
     });
@@ -803,13 +863,12 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     const count = await transportBtns.count();
     if (count > 0) {
       const box = await transportBtns.first().boundingBox();
-      // Allow a small tolerance; target is 44px but some layouts use 40px min.
-      expect(box.height, 'transport button height').toBeGreaterThanOrEqual(40);
+      expect(box.height, 'transport button height').toBeGreaterThanOrEqual(48);
     }
     await context.close();
   });
 
-  test('Lenovo 838x500 landscape keeps the display canvas above 48px transport controls with app chrome', async ({ browser }) => {
+  test('Lenovo 838x500 landscape keeps the display canvas above 48px transport controls with app chrome', async ({ browser }, testInfo) => {
     const context = await browser.newContext({
       viewport: { width: 838, height: 500 }, deviceScaleFactor: 1, isMobile: false, hasTouch: true,
     });
@@ -833,9 +892,12 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     const shell = await page.locator('.mc-cc-shell').boundingBox();
     const stage = await page.locator('.mc-stage.mc-cc-canvas').boundingBox();
     const controls = await page.locator('.mc-cc-controls').boundingBox();
+    await page.screenshot({ path: testInfo.outputPath('command-center-current.png'), fullPage: true });
     expect(shell.y + shell.height, 'Command Center shell remains inside the usable viewport')
       .toBeLessThanOrEqual(500);
     expect(stage.y + stage.height, 'display canvas must end before controls begin').toBeLessThanOrEqual(controls.y + 1);
+    expect(controls.y - (stage.y + stage.height), 'display canvas needs deliberate finger-safe clearance before controls')
+      .toBeGreaterThanOrEqual(12);
     expect(controls.y + controls.height, 'controls remain inside the viewport').toBeLessThanOrEqual(500);
 
     const transportButtons = page.locator('.mc-cc-tp-btn:visible');
@@ -849,8 +911,193 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
       innerWidth: window.innerWidth,
     }));
     expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.innerWidth);
+
+    const libraryTab = page.locator('.mc-library-tab:visible');
+    const header = await page.locator('.mc-cc-head').boundingBox();
+    const libraryTabBox = await libraryTab.boundingBox();
+    expect(libraryTabBox.width).toBeGreaterThanOrEqual(48);
+    expect(libraryTabBox.height).toBeGreaterThanOrEqual(48);
+    expect(libraryTabBox.y + libraryTabBox.height, 'collapsed Content Library control stays in the header track')
+      .toBeLessThanOrEqual(header.y + header.height + 1);
+
+    const lastDockAction = page.locator('[data-dock="add-display"]');
+    await lastDockAction.scrollIntoViewIfNeeded();
+    const lastDockBox = await lastDockAction.boundingBox();
+    expect(lastDockBox.x + lastDockBox.width).toBeLessThanOrEqual(838 + 1);
+    expect(lastDockBox.height).toBeGreaterThanOrEqual(48);
+    expect(await lastDockAction.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+      return hit === element || element.contains(hit);
+    })).toBe(true);
     await context.close();
   });
+
+  test('Lenovo Android portrait is a scrollable touch layout with truthful blank state', async ({ browser }) => {
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 500, height: 838 },
+      screen: { width: 800, height: 1340 },
+      deviceScaleFactor: 1.6,
+      isMobile: true,
+      hasTouch: true,
+      userAgent: 'Mozilla/5.0 (Linux; Android 14; Lenovo Tab One) AppleWebKit/537.36 Chrome/127 Mobile Safari/537.36',
+    });
+    const layout = await page.evaluate(() => {
+      const body = document.querySelector('.mc-cc-body');
+      const rail = document.querySelector('.mc-cc-rail');
+      const main = document.querySelector('.mc-cc-main');
+      const dock = document.querySelector('.mc-action-dock');
+      return {
+        bodyColumns: getComputedStyle(body).gridTemplateColumns,
+        railDirection: getComputedStyle(rail).flexDirection,
+        mainOverflowY: getComputedStyle(main).overflowY,
+        dockColumns: getComputedStyle(dock).gridTemplateColumns,
+        documentWidth: document.documentElement.scrollWidth,
+        viewportWidth: window.innerWidth,
+      };
+    });
+    expect(layout.bodyColumns.split(' ').length).toBe(1);
+    expect(layout.railDirection).toBe('row');
+    expect(layout.mainOverflowY).toBe('auto');
+    expect(layout.dockColumns.split(' ').length).toBe(2);
+    expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth + 2);
+
+    const stage = await page.locator('.mc-stage.mc-cc-canvas').boundingBox();
+    const controls = await page.locator('.mc-cc-controls').boundingBox();
+    expect(controls.y - (stage.y + stage.height)).toBeGreaterThanOrEqual(12);
+    for (const button of await page.locator('.mc-cc-tp-btn:visible').all()) {
+      const box = await button.boundingBox();
+      expect(box.height).toBeGreaterThanOrEqual(48);
+      expect(box.width).toBeGreaterThanOrEqual(48);
+    }
+
+    const blank = page.locator('#mc-dock-blank-btn');
+    await blank.scrollIntoViewIfNeeded();
+    await expect(page.locator('[data-blank-status]')).toHaveText('On');
+    await expect(blank).toHaveText('Blank wall');
+    await blank.tap();
+    await expect(page.locator('[data-blank-status]')).not.toHaveText('Blanked');
+    await expect(blank).not.toHaveText('Unblank wall');
+    await context.close();
+  });
+
+  test('orientation change preserves target and keeps Content Library usable without reload', async ({ browser }) => {
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 838, height: 500 },
+      screen: { width: 1340, height: 800 },
+      deviceScaleFactor: 1.6,
+      isMobile: true,
+      hasTouch: true,
+    });
+    const activeLabel = await page.locator('.mc-target-wall-btn.is-active').textContent();
+    await page.locator('[data-cc-tp="next"]').tap();
+
+    await page.setViewportSize({ width: 500, height: 838 });
+    await expect(page.locator('.mc-cc-shell')).toBeVisible();
+    await expect(page.locator('.mc-target-wall-btn.is-active')).toHaveText(activeLabel.trim());
+    const headerBox = await page.locator('.mc-cc-head').boundingBox();
+    const closedLibraryTab = await page.locator('.mc-library-tab:visible').boundingBox();
+    expect(closedLibraryTab.width).toBeGreaterThanOrEqual(48);
+    expect(closedLibraryTab.height).toBeGreaterThanOrEqual(48);
+    expect(closedLibraryTab.y).toBeGreaterThanOrEqual(headerBox.y + headerBox.height);
+    await page.locator('[data-library-toggle]').first().tap();
+    const drawer = page.locator('#mc-library-drawer');
+    await expect(drawer).toHaveAttribute('data-open', 'true');
+    const drawerBox = await drawer.boundingBox();
+    expect(drawerBox.width).toBeLessThanOrEqual(501);
+    expect(drawerBox.y).toBeGreaterThanOrEqual(headerBox.y + headerBox.height);
+    await page.locator('.mc-library-collapse').tap();
+    await expect(drawer).toHaveAttribute('data-open', 'false');
+
+    await page.setViewportSize({ width: 838, height: 500 });
+    await expect(page.locator('.mc-target-wall-btn.is-active')).toHaveText(activeLabel.trim());
+    const overflow = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      innerWidth: window.innerWidth,
+    }));
+    expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.innerWidth + 2);
+    await context.close();
+  });
+
+  test('responsive breakpoint and desktop matrix has no overflow, overlap, or occluded transport targets', async ({ browser }) => {
+    const mobileViewports = [
+      [767, 700], [768, 700], [769, 700], [800, 600],
+      [837, 500], [838, 500], [839, 500], [900, 600],
+      [1023, 600], [1024, 600], [768, 1024], [800, 1280], [1024, 768],
+    ];
+    const desktopViewports = [[1025, 600], [1280, 800], [1366, 768], [1440, 900], [1920, 1080]];
+
+    async function audit(page, width, height, touch) {
+      await page.setViewportSize({ width, height });
+      await page.waitForTimeout(80);
+      const geometry = await page.evaluate(() => {
+        const stage = document.querySelector('.mc-stage.mc-cc-canvas')?.getBoundingClientRect();
+        const controls = document.querySelector('.mc-cc-controls')?.getBoundingClientRect();
+        const shell = document.querySelector('.mc-cc-shell')?.getBoundingClientRect();
+        return {
+          documentWidth: document.documentElement.scrollWidth,
+          viewportWidth: window.innerWidth,
+          shellRight: shell?.right,
+          shellBottom: shell?.bottom,
+          gap: stage && controls ? controls.top - stage.bottom : null,
+        };
+      });
+      expect(geometry.documentWidth, `${width}x${height} horizontal overflow`).toBeLessThanOrEqual(geometry.viewportWidth + 2);
+      expect(geometry.shellRight, `${width}x${height} shell right`).toBeLessThanOrEqual(width + 1);
+      expect(geometry.shellBottom, `${width}x${height} shell bottom`).toBeLessThanOrEqual(height + 1);
+      expect(geometry.gap, `${width}x${height} preview clearance`).toBeGreaterThanOrEqual(12);
+
+      const buttons = page.locator('.mc-cc-tp-btn:visible');
+      for (let index = 0; index < await buttons.count(); index += 1) {
+        const button = buttons.nth(index);
+        await button.scrollIntoViewIfNeeded();
+        const box = await button.boundingBox();
+        if (touch) {
+          expect(box.height, `${width}x${height} transport ${index} height`).toBeGreaterThanOrEqual(48);
+          expect(box.width, `${width}x${height} transport ${index} width`).toBeGreaterThanOrEqual(48);
+        }
+        const receivesCenterTap = await button.evaluate((element) => {
+          const box = element.getBoundingClientRect();
+          const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+          return hit === element || element.contains(hit);
+        });
+        expect(receivesCenterTap, `${width}x${height} transport ${index} center hit`).toBe(true);
+      }
+    }
+
+    const mobile = await openAuthedControl(browser, {
+      viewport: { width: 838, height: 500 }, isMobile: true, hasTouch: true, deviceScaleFactor: 1.6,
+    });
+    for (const [width, height] of mobileViewports) await audit(mobile.page, width, height, true);
+    await mobile.context.close();
+
+    const desktop = await openAuthedControl(browser, { viewport: { width: 1280, height: 800 } });
+    for (const [width, height] of desktopViewports) await audit(desktop.page, width, height, false);
+    await desktop.context.close();
+  });
+
+  for (const visual of [
+    { name: 'lenovo-landscape', width: 838, height: 500, mobile: true },
+    { name: 'lenovo-portrait', width: 500, height: 838, mobile: true },
+    { name: 'desktop', width: 1440, height: 900, mobile: false },
+  ]) {
+    test(`Command Center visual regression — ${visual.name}`, async ({ browser }, testInfo) => {
+      const { context, page } = await openAuthedControl(browser, {
+        viewport: { width: visual.width, height: visual.height },
+        isMobile: visual.mobile,
+        hasTouch: visual.mobile,
+        deviceScaleFactor: visual.mobile ? 1.6 : 1,
+      });
+      await page.waitForTimeout(500);
+      await expect(page).toHaveScreenshot(`command-center-${visual.name}-${testInfo.project.name}.png`, {
+        animations: 'disabled',
+        caret: 'hide',
+        mask: [page.locator('#mc-cam-health'), page.locator('#mc-live-ladder')],
+        maxDiffPixelRatio: 0.01,
+      });
+      await context.close();
+    });
+  }
 
   test('desktop baseline 1920x1080 — target nav still visible', async ({ browser }) => {
     const context = await browser.newContext({ viewport: { width: 1920, height: 1080 } });

@@ -12,7 +12,7 @@
 // Usage:
 //   import { confirmDialog } from './confirm.js';
 //   if (await confirmDialog({ title: 'Blank ALL displays?', message: '…',
-//                             confirmLabel: 'Blank all', tone: 'danger',
+//                             confirmLabel: 'Blank room', tone: 'danger',
 //                             hold: true })) { … }
 
 import { esc } from '../utils.js';

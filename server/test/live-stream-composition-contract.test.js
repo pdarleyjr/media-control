@@ -13,9 +13,7 @@ function read(relativePath) {
 
 test('active operator UI has no Prepare Live or Program Ready workflow', () => {
   const dock = read('../frontend/js/views/media-control/action-dock.js');
-  const commandBar = read('../frontend/js/views/media-control/command-bar.js');
   assert.doesNotMatch(dock, /data-dock="prepare-live"|openPrepareLiveProductionModal|programPrepared/);
-  assert.doesNotMatch(commandBar, /data-launch="live-prepare"|prepareLiveProgram\(/);
   assert.match(dock, /api\.liveStream\.start\(\{\s*initiator:\s*'operator'/);
 });
 

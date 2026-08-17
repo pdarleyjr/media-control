@@ -4,6 +4,7 @@
 import { api } from '../api.js';
 import { on as onSocket, roomState } from '../socket.js';
 import { projectRoomDisplays } from './room-display-projection.js';
+import { mergeDisplayList, mergeDisplayRecord } from './display-state-revision.js';
 
 let displays = new Map();          // id -> display state
 const subs = new Set();
@@ -158,7 +159,7 @@ function withToken(url) {
 
 export async function refresh() {
   const { displays: list } = await api.getDisplaysState();   // added in Task 4.1 api.js
-  displays = new Map(list.map(d => [d.id, { ...d, screenshot_url: withToken(d.screenshot_url) }]));
+  displays = mergeDisplayList(displays, list.map(d => ({ ...d, screenshot_url: withToken(d.screenshot_url) })));
   notify();
 }
 
@@ -187,10 +188,9 @@ function ensureWired() {
   roomState.subscribe(hydrateRoomSnapshot);
   if (roomState.getSnapshot()) hydrateRoomSnapshot(roomState.getSnapshot());
   onSocket('device-status', (d) => {
-    // Only patch fields actually present — never clobber screen_on with undefined
-    // when a status event doesn't carry it.
+    // Device status proves connectivity only. Legacy devices.screen_on values
+    // represented delivered intent, not confirmed player execution.
     const patch = { online: d.status === 'online' };
-    if (d.screen_on !== undefined) patch.screen_on = !!d.screen_on;
     if (d.telemetry && typeof d.telemetry === 'object') {
       patch.telemetry = { ...d.telemetry };
     }
@@ -275,8 +275,21 @@ function ensureWired() {
 function merge(id, patch, silent) {
   const cur = displays.get(id);
   if (!cur) return;
-  displays.set(id, { ...cur, ...patch });
+  displays.set(id, mergeDisplayRecord(cur, patch));
   if (!silent) notify();
+}
+
+export function applyConfirmedState(id, state) {
+  if (!id || !state || typeof state !== 'object') return false;
+  const current = displays.get(id);
+  if (!current) return false;
+  const merged = mergeDisplayRecord(current, state);
+  if (merged.state_revision === current.state_revision
+      && merged.command_revision === current.command_revision
+      && merged.screen_on === current.screen_on) return false;
+  displays.set(id, merged);
+  notify();
+  return true;
 }
 
 // High-frequency playback-progress events can fire many times per second per

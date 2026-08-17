@@ -1,5 +1,6 @@
-// transport.js — transport controls (prev / play_pause / next / restart) and
-// blank/unblank toggle for a single display on the unified Media Control stage.
+// transport.js — transport controls (prev / play_pause / next / restart) for
+// the unified Media Control stage. Blank state is owned by blank-state.js and
+// the Action Dock so transport cannot create an optimistic second state model.
 //
 // Renders a compact control bar into `container`. Uses `sendCommand` from
 // socket.js with COMMAND_TYPES / TRANSPORT_ACTIONS constants from
@@ -563,8 +564,6 @@ export async function dispatchTransportTransaction(deviceIds, action, payload = 
 export function renderTransportBar(container, {
   deviceId,
   transportDeviceIds,
-  blankDeviceIds,
-  screenOn = true,
   paused,
   target,
   zoneId,
@@ -573,7 +572,6 @@ export function renderTransportBar(container, {
   wallId,
   contentInstanceId,
   requireSingleTarget = false,
-  onScreenOnChange,
   onTransportAction,
   onCommandLifecycle,
 } = {}) {
@@ -583,9 +581,6 @@ export function renderTransportBar(container, {
     ? [...new Set(transportDeviceIds.filter(Boolean))]
     : (deviceId ? [deviceId] : []);
 
-  const blankIds = (Array.isArray(blankDeviceIds) && blankDeviceIds.length)
-    ? [...new Set(blankDeviceIds.filter(Boolean))]
-    : (deviceId ? [deviceId] : []);
   const intentTracker = createTransportIntentTracker();
   const transportIntentKey = () => {
     let playback = null;
@@ -622,10 +617,6 @@ export function renderTransportBar(container, {
       </label>`
     : '';
 
-  const blankLabel = screenOn ? t('mc.tp.blank') : t('mc.tp.unblank');
-  const blankTitle = screenOn ? t('mc.tp.blank_title') : t('mc.tp.unblank_title');
-  const blankClass = screenOn ? 'mc-tp-blank' : 'mc-tp-blank mc-tp-blank-active';
-
   const lifecycleChip = `<span class="mc-tp-lifecycle" data-tp-lifecycle aria-live="polite"></span>`;
 
   container.innerHTML = `
@@ -636,9 +627,6 @@ export function renderTransportBar(container, {
          data-wall-id="${esc(wallId || '')}">
       <div class="mc-tp-group">${allBtns.join('')}${goToHtml}</div>
       ${lifecycleChip}
-      <button type="button" class="${blankClass}" data-tp-blank
-              title="${esc(blankTitle)}"
-              aria-pressed="${screenOn ? 'false' : 'true'}">${esc(blankLabel)}</button>
     </div>`;
 
   const lifecycleEl = container.querySelector('[data-tp-lifecycle]');
@@ -651,7 +639,7 @@ export function renderTransportBar(container, {
     if (typeof onCommandLifecycle === 'function') onCommandLifecycle(lifecycle, detail);
   };
 
-  container.querySelectorAll('.mc-tp-btn, [data-tp-blank], [data-tp-goto], [data-tp-goto-send]').forEach(btn => {
+  container.querySelectorAll('.mc-tp-btn, [data-tp-goto], [data-tp-goto-send]').forEach(btn => {
     btn.addEventListener('click', e => e.stopPropagation());
   });
 
@@ -752,29 +740,6 @@ export function renderTransportBar(container, {
     });
   }
 
-  const blankBtn = container.querySelector('[data-tp-blank]');
-  if (blankBtn) {
-    blankBtn.addEventListener('click', () => {
-      const turningOn = blankBtn.classList.contains('mc-tp-blank-active');
-      const type = turningOn ? COMMAND_TYPES.SCREEN_ON : COMMAND_TYPES.SCREEN_OFF;
-      blankBtn.disabled = true;
-      blankIds.filter(id => id && id !== deviceId).forEach(id => sendCommand(id, type, {}));
-      sendCommand(deviceId, type, {}, (ack) => {
-        blankBtn.disabled = false;
-        if (!ack || (!ack.delivered && !ack.queued)) {
-          showToast(turningOn ? t('mc.tp.unblank_failed') : t('mc.tp.blank_failed'), 'error');
-          return;
-        }
-        const newScreenOn = turningOn;
-        blankBtn.textContent = newScreenOn ? t('mc.tp.blank') : t('mc.tp.unblank');
-        blankBtn.title = newScreenOn ? t('mc.tp.blank_title') : t('mc.tp.unblank_title');
-        blankBtn.setAttribute('aria-pressed', newScreenOn ? 'false' : 'true');
-        if (newScreenOn) blankBtn.classList.remove('mc-tp-blank-active');
-        else blankBtn.classList.add('mc-tp-blank-active');
-        if (typeof onScreenOnChange === 'function') onScreenOnChange(newScreenOn);
-      });
-    });
-  }
 }
 
 // Keep offSocket referenced so dead-code tooling doesn't drop the import contract.

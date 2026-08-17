@@ -6,6 +6,7 @@ const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
 // Phase 2.2i: workspace-aware access. Same pattern as devices/content/widgets.
 const { accessContext } = require('../lib/tenancy');
 const commandModel = require('../lib/command-model');
+const deviceContract = require('../player/device-contract');
 const { ensureDevicePlaylist: ensureWallAwareDevicePlaylist } = require('../lib/wall-playlists');
 const { assertCanJoinIndependentGroup, TopologyConflictError } = require('../lib/topology-membership');
 const { scheduleRoomSnapshot } = require('../lib/room-state-broadcaster');
@@ -312,21 +313,26 @@ router.post('/:id/command', requireGroupWrite, (req, res) => {
 
   const deviceNs = req.app.get('io').of('/device');
   const results = [];
-  const screenState = type === 'screen_on' ? 1 : type === 'screen_off' ? 0 : null;
-  const updateScreenState = screenState == null
-    ? null
-    : db.prepare("UPDATE devices SET screen_on = ?, updated_at = strftime('%s','now') WHERE id = ?");
 
   for (const device of devices) {
     const room = deviceNs.adapter.rooms.get(device.id);
     if (room && room.size > 0) {
+      const envelope = deviceContract.createCommand({
+        device_id: device.id,
+        target_scope: 'display',
+        payload: { ...(payload || {}), action: type },
+      });
       let cmd = null;
       try { cmd = commandModel.ingestCommand({
         target_type: 'display', target_id: device.id, command_type: type,
-        payload: payload || {}, issued_by: req.user && req.user.id, requires_ack: commandModel.ackRequiredForType(type),
+        payload: envelope.payload, issued_by: req.user && req.user.id, requires_ack: commandModel.ackRequiredForType(type),
+        command_id: envelope.command_id, created_at: Date.parse(envelope.issued_at),
       }); } catch (e) { /* command-model ingest is best-effort */ }
-      deviceNs.to(device.id).emit('device:command', { type, payload: payload || {}, command_id: cmd ? cmd.command_id : null });
-      if (updateScreenState) updateScreenState.run(screenState, device.id);
+      if (cmd) {
+        envelope.target_revision = cmd.revision;
+        envelope.payload.target_revision = cmd.revision;
+      }
+      deviceNs.to(device.id).emit('device:command', envelope);
       results.push({ device_id: device.id, name: device.name, status: 'sent', command_id: cmd ? cmd.command_id : null });
     } else {
       try { commandModel.ingestCommand({

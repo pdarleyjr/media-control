@@ -64,6 +64,7 @@ function freshness(screenshotAt) {
 const BADGE_ICONS = {
   live:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3.5" fill="currentColor" stroke="none"></circle><path d="M5.5 5.5a9 9 0 0 0 0 13M18.5 5.5a9 9 0 0 1 0 13"></path></svg>',
   standby: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8"></circle></svg>',
+  unknown: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M9.8 9a2.4 2.4 0 1 1 3.2 2.3c-.7.3-1 .8-1 1.7"></path><circle cx="12" cy="17" r=".8" fill="currentColor" stroke="none"></circle></svg>',
   blanked: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10 10 0 0 1 12 20C5 20 1 12 1 12a18 18 0 0 1 5.06-5.94M9.9 4.24A9 9 0 0 1 12 4c7 0 11 8 11 8a18 18 0 0 1-2.16 3.19"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>',
   offline: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path><line x1="12" y1="2" x2="12" y2="12"></line></svg>',
 };
@@ -73,6 +74,7 @@ const BADGE_ICONS = {
 // Each state carries a label + icon, never colour alone.
 function statusOf(display) {
   if (!display.online) return { key: 'offline', cls: 'mc-status-offline', label: t('mc.status.offline') };
+  if (typeof display.screen_on !== 'boolean') return { key: 'unknown', cls: 'mc-status-unknown', label: t('mc.blank.status.unknown') };
   if (display.screen_on === false) return { key: 'blanked', cls: 'mc-status-blanked', label: t('mc.status.blanked') };
   const playing = display.now_playing && display.now_playing.kind && display.now_playing.kind !== 'idle';
   if (playing) return { key: 'live', cls: 'mc-status-live', label: t('mc.status.live') };
@@ -612,6 +614,9 @@ function playingIdentity(d) {
   if (!np) return '';
   return [np.kind || '', np.contentId || '', np.poster_url || ''].join('~');
 }
+function screenStateIdentity(display) {
+  return typeof display?.screen_on === 'boolean' ? (display.screen_on ? 1 : 0) : 'u';
+}
 function stageRenderSignature({ displays = [], walls = [], byId = new Map(), selectedIds = [], livePreviewDeviceId = null, activeControlTargetId = null, overviewMode = false }) {
   const parts = [];
   parts.push('sel:' + selectedIds.join(','));
@@ -619,13 +624,13 @@ function stageRenderSignature({ displays = [], walls = [], byId = new Map(), sel
   parts.push('tgt:' + (activeControlTargetId || ''));
   parts.push('ov:' + (overviewMode ? 1 : 0));
   for (const d of displays) {
-    parts.push('d:' + d.id + ':' + (d.online ? 1 : 0) + ':' + (d.screen_on === false ? 0 : 1) + ':' + playingIdentity(d));
+    parts.push('d:' + d.id + ':' + (d.online ? 1 : 0) + ':' + screenStateIdentity(d) + ':' + playingIdentity(d));
   }
   for (const w of (walls || [])) {
     parts.push('w:' + w.id + ':' + (w.grid_cols || 0) + 'x' + (w.grid_rows || 0) + ':' + (w.leader_device_id || '') + ':' + (w.layout_mode || 'span') + ':' + (w.is_locked ? 1 : 0));
     for (const m of (w.devices || [])) {
       const d = byId.get(m.device_id) || {};
-      parts.push('m:' + m.device_id + ':' + (d.online ? 1 : 0) + ':' + (d.screen_on === false ? 0 : 1) + ':' + playingIdentity(d));
+      parts.push('m:' + m.device_id + ':' + (d.online ? 1 : 0) + ':' + screenStateIdentity(d) + ':' + playingIdentity(d));
     }
   }
   return parts.join('|');
@@ -696,15 +701,12 @@ function bumpStageMetric(container, key, n = 1) {
  * @param {(id:string)=>void} opts.onSelect        a display card / wall screen was activated
  * @param {(ids:string[], name:string)=>void} [opts.onCalibrateWall]
  * @param {()=>void}          opts.onAddDisplay     the "+ Add display" tile was activated
- * @param {(id:string, screenOn:boolean)=>void} [opts.onScreenOnChange]
- *   Called when a blank/unblank ack changes a display's screen_on value so the
- *   caller can patch display-state and trigger a re-paint.
  * @param {(ids:string[], action:string)=>void} [opts.onTransportAction]
  *   Called after transport sends so the caller can refresh state/previews.
  * @param {(ids:string[], source:object, label:string)=>void} [opts.onScreensaver]
  *   A screensaver option was chosen on a card; broadcast `source` to `ids`.
  */
-export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], livePreviewDeviceId = null, activeControlTargetId = null, overviewMode = false, onSelect, onSelectGroup, onCalibrateWall, onAddDisplay, onScreenOnChange, onTransportAction, onSetWallMode, onScreensaver } = {}) {
+export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], livePreviewDeviceId = null, activeControlTargetId = null, overviewMode = false, onSelect, onSelectGroup, onCalibrateWall, onAddDisplay, onTransportAction, onSetWallMode, onScreensaver } = {}) {
   if (!container) return;
   const selected = new Set(selectedIds);
 

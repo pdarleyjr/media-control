@@ -54,9 +54,9 @@ const stmts = {
      content_type, layout_mode, slide_index, slide_count, current_time, duration, paused, muted,
      volume, local_asset_ready, last_ack_at, render_state,
      error_state, idle_screensaver_id, default_screensaver_id, wall_id, layout_id,
-     group_id, member_id, playback_revision, command_revision, last_heartbeat_at,
+     group_id, member_id, playback_revision, command_revision, screen_on, last_heartbeat_at,
      state_revision, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
   updateDisplayState: p(`UPDATE display_states SET
      workspace_id = COALESCE(?, workspace_id),
      current_content_id = COALESCE(?, current_content_id),
@@ -82,6 +82,7 @@ const stmts = {
      member_id = COALESCE(?, member_id),
      playback_revision = COALESCE(?, playback_revision),
      command_revision = COALESCE(?, command_revision),
+     screen_on = COALESCE(?, screen_on),
      state_revision = ?,
      updated_at = ?
      WHERE target_type = ? AND target_id = ?`),
@@ -104,13 +105,13 @@ const STATE_COLS = [
   'layout_mode', 'slide_index', 'slide_count', 'current_time', 'duration', 'paused', 'muted',
   'volume', 'local_asset_ready', 'last_ack_at', 'render_state', 'error_state',
   'idle_screensaver_id', 'default_screensaver_id', 'wall_id', 'layout_id',
-  'group_id', 'member_id', 'playback_revision', 'command_revision',
+  'group_id', 'member_id', 'playback_revision', 'command_revision', 'screen_on',
 ];
 const STATE_NUMERIC_COLS = new Set([
   'slide_index', 'slide_count', 'current_time', 'duration', 'volume',
   'last_ack_at', 'playback_revision',
 ]);
-const STATE_BOOLEAN_COLS = new Set(['paused', 'muted', 'local_asset_ready']);
+const STATE_BOOLEAN_COLS = new Set(['paused', 'muted', 'local_asset_ready', 'screen_on']);
 
 // Compute the next per-target revision (monotonic optimistic-lock counter).
 function nextRevision(targetId) {
@@ -442,15 +443,18 @@ function startAckSweep(io) {
             });
             const deviceNs = io.of && io.of('/device');
             if (row && deviceNs) {
-              deviceNs.to(r.target_id).emit('device:command', deviceContract.createCommand({
+              const retryEnvelope = deviceContract.createCommand({
                 command_id: row.command_id,
                 device_id: r.target_id,
                 target_scope: 'display',
                 payload: {
                   ...(r.payload ? JSON.parse(r.payload) : {}),
+                  target_revision: row.revision,
                   action: r.command_type,
                 },
-              }));
+              });
+              retryEnvelope.target_revision = row.revision;
+              deviceNs.to(r.target_id).emit('device:command', retryEnvelope);
             }
           } catch (e) {
             console.warn(`ackSweep re-emit failed for ${r.target_id}/${r.command_type}: ${e.message}`);
@@ -496,7 +500,7 @@ function recordHeartbeat(args) {
 const ACK_ELIGIBLE_TYPES = new Set([
   'play', 'pause', 'prev', 'next', 'restart',
   'play_pause', 'transport',
-  'blank', 'screensaver', 'grid',
+  'blank', 'screen_on', 'screen_off', 'screensaver', 'grid',
 ]);
 function ackRequiredForType(type) {
   return ACK_ELIGIBLE_TYPES.has(String(type || '').toLowerCase()) ? 1 : 0;
