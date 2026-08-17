@@ -3587,6 +3587,8 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
   }
   .mc-action-dock {
     width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
     flex-wrap: nowrap;
     justify-content: flex-start;
     gap: 6px;
@@ -3598,6 +3600,11 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
     scroll-padding-inline: 2px;
   }
   .mc-action-dock > * { scroll-snap-align: start; }
+  .mc-action-dock::after {
+    content: '';
+    flex: 0 0 12px;
+  }
+  .mc-action-dock > :last-child { scroll-snap-align: end; }
   .mc-dock-btn {
     min-width: 48px;
     padding-inline: 12px;
