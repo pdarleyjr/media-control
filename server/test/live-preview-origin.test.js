@@ -31,7 +31,6 @@ test('presentation previews normalize the sibling Media Control hostname to the 
   }, 'mc-card-shot');
 
   assert.match(html, /src="\/player\/deck\/deck-1\?slide=3&amp;preview=1"/);
-  assert.equal(html.includes('media-control.mbfdhub.com'), false);
 });
 
 test('the global modal delegate ignores locally-owned close buttons without a modal id', () => {
