@@ -433,6 +433,83 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     });
   }
 
+  for (const vp of [
+    { name: 'Downloader-desktop', width: 1440, height: 900 },
+    { name: 'Downloader-Lenovo-landscape', width: 838, height: 500 },
+    { name: 'Downloader-phone', width: 390, height: 844 },
+  ]) {
+    test(`[${vp.name}] YouTube Downloader is clear, touch-safe, and submits once`, async ({ browser }, testInfo) => {
+      const context = await browser.newContext({
+        viewport: { width: vp.width, height: vp.height },
+        deviceScaleFactor: 1,
+        isMobile: vp.width < 1025,
+        hasTouch: vp.width < 1025,
+        serviceWorkers: 'block',
+      });
+      const page = await context.newPage();
+      await page.addInitScript(({ token, user }) => {
+        localStorage.setItem('token', token);
+        localStorage.setItem('user', JSON.stringify(user));
+        localStorage.setItem('rd_onboarded', '1');
+      }, { token: authToken, user: { id: userId, email: TEST_EMAIL, name: 'Mobile Test', role: 'platform_admin' } });
+
+      let createCalls = 0;
+      await page.route('**/api/downloads', async (route) => {
+        if (route.request().method() !== 'POST') return route.continue();
+        createCalls += 1;
+        await route.fulfill({
+          status: 202,
+          contentType: 'application/json',
+          body: JSON.stringify({ id: 'download-e2e', status: 'pending', content_id: 'content-e2e', media_job_id: 'job-e2e' }),
+        });
+      });
+
+      await page.goto(`${BASE_URL}/app#/downloads`, { waitUntil: 'networkidle' });
+      await expect(page.getByRole('heading', { name: 'YouTube Downloader' })).toBeVisible();
+      await expect(page.getByText('Paste a YouTube video link below, then select Download.')).toBeVisible();
+      await expect(page.locator('a[data-view="downloads"] span')).toHaveText('YouTube Downloader');
+
+      const logo = page.locator('.mc-downloader-wordmark');
+      await expect(logo).toBeVisible();
+      expect(await logo.evaluate((image) => image.complete && image.naturalWidth > 0)).toBe(true);
+
+      const input = page.getByLabel('YouTube video link');
+      const submit = page.getByRole('button', { name: 'Download' });
+      expect((await input.boundingBox()).height).toBeGreaterThanOrEqual(48);
+      expect((await submit.boundingBox()).height).toBeGreaterThanOrEqual(48);
+
+      const layout = await page.locator('#dlForm').evaluate((form) => ({
+        display: getComputedStyle(form).display,
+        direction: getComputedStyle(form).flexDirection,
+      }));
+      if (vp.width <= 760) {
+        expect(layout.display).toBe('flex');
+        expect(layout.direction).toBe('column');
+      } else {
+        expect(layout.display).toBe('grid');
+      }
+
+      const overflow = await page.evaluate(() => ({
+        scrollW: document.documentElement.scrollWidth,
+        clientW: document.documentElement.clientWidth,
+      }));
+      expect(overflow.scrollW).toBeLessThanOrEqual(overflow.clientW + 2);
+
+      await input.fill('https://www.youtube.com/watch?v=example');
+      await input.press('Enter');
+      await expect.poll(() => createCalls).toBe(1);
+      await expect(page.getByText('Download queued')).toBeVisible();
+
+      if (vp.name === 'Downloader-Lenovo-landscape') {
+        await page.screenshot({
+          path: testInfo.outputPath(`${vp.name}-${testInfo.project.name}.png`),
+          fullPage: true,
+        });
+      }
+      await context.close();
+    });
+  }
+
   test('Lenovo tablet can use advanced filters and persist a saved library view without overflow', async ({ browser }) => {
     const context = await browser.newContext({
       viewport: { width: 838, height: 500 },
