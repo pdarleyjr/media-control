@@ -60,7 +60,7 @@ test('downloads view retries without overlapping intervals and exposes stale ref
   assert.match(source, /setTimeout\(/);
   assert.doesNotMatch(source, /setInterval\(/);
   assert.match(source, /dlRefreshState/);
-  assert.match(source, /Status refresh delayed/);
+  assert.match(source, /t\('downloads\.refresh_delayed'\)/);
   assert.match(source, /addEventListener\('online'/);
   assert.match(source, /removeEventListener\('online'/);
 });

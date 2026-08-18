@@ -3180,6 +3180,132 @@ body.media-library-dialog-open {
 }
 .mc-coming-back:hover { background: var(--mc-accent-hover); }
 
+/* YouTube Downloader — calm, touch-first URL-to-library workflow. */
+.mc-downloader-header { margin-bottom: var(--mc-space-lg); }
+.mc-downloader-title {
+  display: flex;
+  align-items: center;
+  gap: var(--mc-space-md);
+  margin: 0;
+}
+.mc-downloader-wordmark {
+  display: block;
+  width: auto;
+  height: var(--tap-min);
+  object-fit: contain;
+}
+.mc-downloader-guide {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--mc-space-md);
+  max-width: 50rem;
+  margin-bottom: var(--mc-space-lg);
+  padding: var(--mc-space-md);
+  background: var(--mc-surface);
+  border: 1px solid var(--mc-border-light);
+  border-left: var(--mc-space-xs) solid var(--accent);
+  border-radius: var(--mc-radius-sm);
+}
+.mc-downloader-guide-icon {
+  width: var(--mc-space-lg);
+  height: var(--mc-space-lg);
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+.mc-downloader-guide-title {
+  margin: 0 0 var(--mc-space-xs);
+  color: var(--mc-text-primary);
+  font-size: var(--mc-font-size-sm);
+  font-weight: var(--mc-fw-bold);
+}
+.mc-downloader-guide-copy {
+  margin: 0;
+  color: var(--mc-text-secondary);
+  font-size: var(--mc-font-size-sm);
+  line-height: 1.5;
+}
+.mc-downloader-health-slot { min-height: var(--mc-space-xl); margin-bottom: var(--mc-space-sm); }
+.mc-downloader-health {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--mc-space-sm);
+  padding: var(--mc-space-xs) var(--mc-space-md);
+  border-radius: var(--mc-radius-full);
+  font-size: var(--mc-font-size-xs);
+  font-weight: var(--mc-fw-bold);
+}
+.mc-downloader-health::before {
+  content: '';
+  width: var(--mc-space-sm);
+  height: var(--mc-space-sm);
+  flex: 0 0 auto;
+  border-radius: var(--mc-radius-full);
+  background: currentColor;
+}
+.mc-downloader-health--ready { background: var(--success-tint); color: var(--success-text); }
+.mc-downloader-health--disabled { background: var(--mc-bg-secondary); color: var(--mc-text-secondary); }
+.mc-downloader-health--unavailable { background: var(--warning-tint); color: var(--warning-text); }
+.mc-downloader-refresh {
+  max-width: 50rem;
+  margin-bottom: var(--mc-space-sm);
+  color: var(--warning-text);
+  font-size: var(--mc-font-size-sm);
+}
+.mc-downloader-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--mc-space-sm);
+  max-width: 50rem;
+  margin-bottom: var(--mc-space-xl);
+}
+.mc-downloader-label {
+  grid-column: 1 / -1;
+  color: var(--mc-text-primary);
+  font-size: var(--mc-font-size-sm);
+  font-weight: var(--mc-fw-semibold);
+}
+.mc-downloader-control {
+  min-height: var(--tap-min);
+  box-sizing: border-box;
+  border-radius: var(--mc-radius-sm);
+  font-family: var(--mc-font-family-sans);
+  font-size: var(--mc-font-size-base);
+}
+.mc-downloader-input {
+  min-width: 0;
+  padding: 0 var(--mc-space-md);
+  background: var(--mc-surface);
+  color: var(--mc-text-primary);
+  border: 1px solid var(--mc-border-medium);
+}
+.mc-downloader-input:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+  border-color: var(--accent);
+}
+.mc-downloader-submit {
+  min-width: 8rem;
+  padding: 0 var(--mc-space-lg);
+  background: var(--accent);
+  color: var(--mc-text-on-dark);
+  border: 1px solid var(--accent);
+  font-weight: var(--mc-fw-semibold);
+  cursor: pointer;
+  transition: background var(--mc-transition-fast), border-color var(--mc-transition-fast), opacity var(--mc-transition-fast);
+}
+.mc-downloader-submit:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+.mc-downloader-submit:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.mc-downloader-submit:disabled { opacity: 0.62; cursor: wait; }
+.mc-downloader-status--done { color: var(--mc-success); }
+.mc-downloader-status--error, .mc-downloader-error { color: var(--mc-danger); }
+.mc-downloader-status--downloading { color: var(--mc-info); }
+.mc-downloader-status--pending, .mc-downloader-status--unknown { color: var(--mc-text-secondary); }
+.mc-downloader-error { margin-top: var(--mc-space-xs); }
+
 @media (max-width: 760px) {
   .mc-studio-surface { padding: var(--mc-space-lg) var(--mc-space-md); }
+  .mc-downloader-title { align-items: flex-end; gap: var(--mc-space-sm); }
+  .mc-downloader-wordmark { height: 2.5rem; }
+  .mc-downloader-form { display: flex; flex-direction: column; }
+  .mc-downloader-submit { width: 100%; }
 }

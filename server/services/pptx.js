@@ -10,6 +10,12 @@ const path = require('path');
 const config = require('../config');
 const { db } = require('../db/database');
 
+// Defense in depth: pptxgenjs uses image-size internally, so disable every
+// parser named by the upstream infinite-loop advisories before pptxgenjs loads.
+// Media Control only accepts the safe raster formats in PPTX_IMAGE_MIME below.
+const { disableTypes } = require('image-size');
+disableTypes(['heif', 'icns', 'jxl', 'jxl-stream']);
+
 const W = 13.333; // LAYOUT_WIDE inches
 const H = 7.5;
 const MX = 1.0;   // horizontal text margin (~8%)

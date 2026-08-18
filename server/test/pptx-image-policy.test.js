@@ -13,3 +13,11 @@ test('PPTX rendering passes only the presentation raster allowlist to image-size
   assert.match(source, /PPTX_IMAGE_MIME\.has\(c\.mime_type\)/);
   assert.doesNotMatch(source, /c\.mime_type\.startsWith\(['"]image\//);
 });
+
+test('PPTX rendering disables every image-size parser named by the open loop advisories', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'services', 'pptx.js'), 'utf8');
+
+  assert.match(source, /disableTypes\(\['heif', 'icns', 'jxl', 'jxl-stream'\]\)/);
+  assert.match(source, /require\('image-size'\)/);
+  assert.match(source, /disableTypes[\s\S]*require\('pptxgenjs'\)/);
+});
