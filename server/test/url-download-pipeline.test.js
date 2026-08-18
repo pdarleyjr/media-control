@@ -178,6 +178,94 @@ test('failed URL download cleans partial/final files and retains repairable job 
   }
 });
 
+test('YouTube HTTP 403 retries once with the token-free Safari client and removes format fragments', async () => {
+  const db = createDb();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-youtube-fallback-'));
+  db.prepare(`
+    UPDATE content SET remote_url='https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+    WHERE id='content-1'
+  `).run();
+  const youtubeJob = {
+    ...job(),
+    payload: {
+      ...job().payload,
+      url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+    },
+  };
+  const calls = [];
+  try {
+    const pipeline = new MediaPipeline({
+      db,
+      contentDir: dir,
+      urlSafetyCheck: safeUrl,
+      normalizeVideoJob: readyNormalizer(db),
+      execFile: async (command, args) => {
+        calls.push({ command, args });
+        const outputPath = args[args.indexOf('-o') + 1];
+        if (calls.length === 1) {
+          fs.writeFileSync(path.join(dir, 'content-1.download.part.f299.mp4.part'), 'partial-video');
+          fs.writeFileSync(path.join(dir, 'content-1.download.part.f140.m4a.part'), 'partial-audio');
+          const error = new Error('unable to download video data: HTTP Error 403: Forbidden');
+          error.code = 1;
+          throw error;
+        }
+        assert.equal(
+          fs.existsSync(path.join(dir, 'content-1.download.part.f299.mp4.part')),
+          false,
+        );
+        assert.equal(
+          fs.existsSync(path.join(dir, 'content-1.download.part.f140.m4a.part')),
+          false,
+        );
+        fs.writeFileSync(outputPath, 'downloaded-with-fallback');
+      },
+    });
+
+    const result = await pipeline._handleUrlDownload(youtubeJob, context);
+    assert.equal(result.status, 'ready');
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].args.includes('--extractor-args'), false);
+    const extractorIndex = calls[1].args.indexOf('--extractor-args');
+    assert.notEqual(extractorIndex, -1);
+    assert.equal(calls[1].args[extractorIndex + 1], 'youtube:player_client=web_safari');
+    assert.equal(
+      db.prepare("SELECT status FROM download_jobs WHERE id='download-1'").get().status,
+      'done',
+    );
+  } finally {
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('non-YouTube HTTP 403 is not retried with a YouTube extractor client', async () => {
+  const db = createDb();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-url-no-fallback-'));
+  let calls = 0;
+  try {
+    const pipeline = new MediaPipeline({
+      db,
+      contentDir: dir,
+      urlSafetyCheck: safeUrl,
+      normalizeVideoJob: readyNormalizer(db),
+      execFile: async () => {
+        calls += 1;
+        const error = new Error('HTTP Error 403: Forbidden');
+        error.code = 1;
+        throw error;
+      },
+    });
+    await assert.rejects(
+      pipeline._handleUrlDownload(job(), context),
+      /HTTP Error 403/,
+    );
+    assert.equal(calls, 1);
+  } finally {
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('malformed content identity cannot place URL download output outside the content directory', async () => {
   const db = createDb();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-url-path-'));
