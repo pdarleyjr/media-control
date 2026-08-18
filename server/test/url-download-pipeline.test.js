@@ -238,6 +238,73 @@ test('YouTube HTTP 403 retries once with the token-free Safari client and remove
   }
 });
 
+test('YouTube Safari format loss falls through to the embedded client and cleans both attempts', async () => {
+  const db = createDb();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-youtube-client-chain-'));
+  db.prepare(`
+    UPDATE content SET remote_url='https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+    WHERE id='content-1'
+  `).run();
+  const youtubeJob = {
+    ...job(),
+    payload: {
+      ...job().payload,
+      url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+    },
+  };
+  const calls = [];
+  try {
+    const pipeline = new MediaPipeline({
+      db,
+      contentDir: dir,
+      urlSafetyCheck: safeUrl,
+      normalizeVideoJob: readyNormalizer(db),
+      execFile: async (command, args) => {
+        calls.push({ command, args });
+        const outputPath = args[args.indexOf('-o') + 1];
+        if (calls.length === 1) {
+          fs.writeFileSync(path.join(dir, 'content-1.download.part.f299.mp4.part'), 'primary');
+          throw new Error('unable to download video data: HTTP Error 403: Forbidden');
+        }
+        if (calls.length === 2) {
+          assert.equal(
+            fs.existsSync(path.join(dir, 'content-1.download.part.f299.mp4.part')),
+            false,
+          );
+          fs.writeFileSync(path.join(dir, 'content-1.download.part.f140.m4a.part'), 'safari');
+          throw new Error('Requested format is not available. Use --list-formats');
+        }
+        assert.equal(
+          fs.existsSync(path.join(dir, 'content-1.download.part.f140.m4a.part')),
+          false,
+        );
+        fs.writeFileSync(outputPath, 'downloaded-with-embedded-client');
+      },
+    });
+
+    const result = await pipeline._handleUrlDownload(youtubeJob, context);
+    assert.equal(result.status, 'ready');
+    assert.equal(calls.length, 3);
+    assert.equal(calls[0].args.includes('--extractor-args'), false);
+    const clients = calls.slice(1).map(({ args }) => {
+      const extractorIndex = args.indexOf('--extractor-args');
+      assert.notEqual(extractorIndex, -1);
+      return args[extractorIndex + 1];
+    });
+    assert.deepEqual(clients, [
+      'youtube:player_client=web_safari',
+      'youtube:player_client=web_embedded',
+    ]);
+    assert.equal(
+      db.prepare("SELECT status FROM download_jobs WHERE id='download-1'").get().status,
+      'done',
+    );
+  } finally {
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('non-YouTube HTTP 403 is not retried with a YouTube extractor client', async () => {
   const db = createDb();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-url-no-fallback-'));
