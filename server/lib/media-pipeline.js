@@ -29,6 +29,7 @@ const PIPELINES = new WeakMap();
 const YOUTUBE_ID = /^[A-Za-z0-9_-]{11}$/;
 const DEFAULT_DISK_HEADROOM_BYTES = 1024 * 1024 * 1024;
 const DEFAULT_YOUTUBE_RESERVATION_BYTES = 2 * 1024 * 1024 * 1024;
+const YOUTUBE_403_FALLBACK_CLIENT = 'web_safari';
 
 function normalizeYoutubeId(input) {
   const raw = String(input || '').trim();
@@ -59,6 +60,7 @@ function buildYoutubeDownloadArgs({
   outputPath,
   maxHeight = 1080,
   maxBytes = mediaLimits().maxSourceBytes,
+  playerClient = null,
 } = {}) {
   const normalized = normalizeYoutubeId(videoId);
   if (!normalized || !outputPath) throw new Error('invalid_youtube_download');
@@ -69,42 +71,7 @@ function buildYoutubeDownloadArgs({
     `bv*[height<=${height}]+ba`,
     `b[height<=${height}]`,
   ].join('/');
-  return [
-    '-f', format,
-    '-S', `res:${height},vcodec:h264,acodec:aac,ext:mp4`,
-    '--merge-output-format', 'mp4',
-    '--no-playlist',
-    '--no-warnings',
-    '--no-progress',
-    '--concurrent-fragments', '1',
-    '--socket-timeout', '30',
-    '--retries', '3',
-    '--fragment-retries', '3',
-    '--max-filesize', String(Math.max(1, Number(maxBytes) || mediaLimits().maxSourceBytes)),
-    '-o', outputPath,
-    `https://www.youtube.com/watch?v=${normalized}`,
-  ];
-}
-
-function buildUrlDownloadArgs({
-  url,
-  outputPath,
-  maxHeight = 1080,
-  maxBytes = mediaLimits().maxSourceBytes,
-} = {}) {
-  let parsed;
-  try { parsed = new URL(String(url || '')); } catch { throw new Error('invalid_download_url'); }
-  if (!['http:', 'https:'].includes(parsed.protocol) || !outputPath) {
-    throw new Error('invalid_download_url');
-  }
-  const height = Math.max(360, Math.min(Number(maxHeight) || 1080, 1080));
-  const format = [
-    `bv*[height<=${height}][vcodec^=avc1]+ba[acodec^=mp4a]`,
-    `b[height<=${height}][vcodec^=avc1]`,
-    `bv*[height<=${height}]+ba`,
-    `b[height<=${height}]`,
-  ].join('/');
-  return [
+  const args = [
     '--no-config',
     '-f', format,
     '-S', `res:${height},vcodec:h264,acodec:aac,ext:mp4`,
@@ -118,12 +85,99 @@ function buildUrlDownloadArgs({
     '--fragment-retries', '3',
     '--max-filesize', String(Math.max(1, Number(maxBytes) || mediaLimits().maxSourceBytes)),
     '-o', outputPath,
-    parsed.toString(),
   ];
+  if (playerClient) {
+    if (playerClient !== YOUTUBE_403_FALLBACK_CLIENT) {
+      throw new Error('invalid_youtube_player_client');
+    }
+    args.push('--extractor-args', `youtube:player_client=${playerClient}`);
+  }
+  args.push(`https://www.youtube.com/watch?v=${normalized}`);
+  return args;
+}
+
+function buildUrlDownloadArgs({
+  url,
+  outputPath,
+  maxHeight = 1080,
+  maxBytes = mediaLimits().maxSourceBytes,
+  playerClient = null,
+} = {}) {
+  let parsed;
+  try { parsed = new URL(String(url || '')); } catch { throw new Error('invalid_download_url'); }
+  if (!['http:', 'https:'].includes(parsed.protocol) || !outputPath) {
+    throw new Error('invalid_download_url');
+  }
+  const height = Math.max(360, Math.min(Number(maxHeight) || 1080, 1080));
+  const format = [
+    `bv*[height<=${height}][vcodec^=avc1]+ba[acodec^=mp4a]`,
+    `b[height<=${height}][vcodec^=avc1]`,
+    `bv*[height<=${height}]+ba`,
+    `b[height<=${height}]`,
+  ].join('/');
+  const args = [
+    '--no-config',
+    '-f', format,
+    '-S', `res:${height},vcodec:h264,acodec:aac,ext:mp4`,
+    '--merge-output-format', 'mp4',
+    '--no-playlist',
+    '--no-warnings',
+    '--no-progress',
+    '--concurrent-fragments', '1',
+    '--socket-timeout', '30',
+    '--retries', '3',
+    '--fragment-retries', '3',
+    '--max-filesize', String(Math.max(1, Number(maxBytes) || mediaLimits().maxSourceBytes)),
+    '-o', outputPath,
+  ];
+  if (playerClient) {
+    if (playerClient !== YOUTUBE_403_FALLBACK_CLIENT || !normalizeYoutubeId(parsed.toString())) {
+      throw new Error('invalid_youtube_player_client');
+    }
+    args.push('--extractor-args', `youtube:player_client=${playerClient}`);
+  }
+  args.push(parsed.toString());
+  return args;
 }
 
 function safeUnlink(filePath) {
   try { if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch { /* best effort */ }
+}
+
+function cleanupYtDlpArtifacts(contentDir, outputPath) {
+  const safeOutput = safeContentPath(contentDir, outputPath);
+  const outputName = path.basename(safeOutput);
+  const artifactPrefix = `${path.parse(outputName).name}.`;
+  let entries = [];
+  try { entries = fs.readdirSync(path.dirname(safeOutput), { withFileTypes: true }); } catch { return; }
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    if (entry.name !== outputName && !entry.name.startsWith(artifactPrefix)) continue;
+    safeUnlink(safeContentPath(contentDir, path.join(path.dirname(safeOutput), entry.name)));
+  }
+}
+
+function isYoutubeHttp403(error) {
+  const details = [error?.message, error?.stdout, error?.stderr]
+    .filter(Boolean)
+    .join('\n');
+  return /(?:HTTP Error 403|403 Forbidden)/i.test(details);
+}
+
+async function execYoutubeDownloadWithFallback({
+  execFile,
+  primaryArgs,
+  fallbackArgs,
+  cleanup,
+  options,
+}) {
+  try {
+    return await execFile('yt-dlp', primaryArgs, options);
+  } catch (error) {
+    if (!isYoutubeHttp403(error)) throw error;
+    cleanup();
+    return execFile('yt-dlp', fallbackArgs, options);
+  }
 }
 
 function availableDiskBytes(directory, statfs = fs.statfsSync) {
@@ -763,17 +817,26 @@ class MediaPipeline {
     }
     if (!localName || !fs.existsSync(localPath)) {
       this._ensureDiskReservation(job);
-      safeUnlink(partPath);
+      cleanupYtDlpArtifacts(this.contentDir, partPath);
       context.progress('optimizing', 15);
       try {
-        await this.execFile('yt-dlp', buildYoutubeDownloadArgs({
-          videoId: job.payload?.videoId,
-          outputPath: partPath,
-          maxBytes: job.payload?.maxBytes,
-        }), {
+        const options = {
           timeout: Math.max(60_000, Number(process.env.YDLP_TIMEOUT_MS) || 30 * 60_000),
           maxBuffer: 1024 * 1024,
           windowsHide: true,
+        };
+        const downloadArgs = (playerClient = null) => buildYoutubeDownloadArgs({
+          videoId: job.payload?.videoId,
+          outputPath: partPath,
+          maxBytes: job.payload?.maxBytes,
+          playerClient,
+        });
+        await execYoutubeDownloadWithFallback({
+          execFile: this.execFile,
+          primaryArgs: downloadArgs(),
+          fallbackArgs: downloadArgs(YOUTUBE_403_FALLBACK_CLIENT),
+          cleanup: () => cleanupYtDlpArtifacts(this.contentDir, partPath),
+          options,
         });
         if (!fs.existsSync(partPath) || fs.statSync(partPath).size <= 0) {
           throw errorWith('youtube_output_missing', 'YouTube download produced no media');
@@ -783,7 +846,7 @@ class MediaPipeline {
         }
         fs.renameSync(partPath, localPath);
       } catch (error) {
-        safeUnlink(partPath);
+        cleanupYtDlpArtifacts(this.contentDir, partPath);
         safeUnlink(localPath);
         const code = error.code || 'youtube_download_failed';
         this.db.prepare(`
@@ -910,7 +973,7 @@ class MediaPipeline {
       if (!safe?.ok) {
         throw errorWith(safe?.reason || 'download_url_unsafe', safe?.error || 'Download URL is unsafe', false);
       }
-      safeUnlink(partPath);
+      cleanupYtDlpArtifacts(this.contentDir, partPath);
       context.progress('optimizing', 15);
       if (downloadJobId) {
         this.db.prepare(`
@@ -921,15 +984,28 @@ class MediaPipeline {
         `).run(this.now(), downloadJobId);
       }
       try {
-        await this.execFile('yt-dlp', buildUrlDownloadArgs({
-          url: safe.parsed.toString(),
-          outputPath: partPath,
-          maxBytes: job.payload?.maxBytes,
-        }), {
+        const options = {
           timeout: Math.max(60_000, Number(process.env.YDLP_TIMEOUT_MS) || 30 * 60_000),
           maxBuffer: 1024 * 1024,
           windowsHide: true,
+        };
+        const downloadArgs = (playerClient = null) => buildUrlDownloadArgs({
+          url: safe.parsed.toString(),
+          outputPath: partPath,
+          maxBytes: job.payload?.maxBytes,
+          playerClient,
         });
+        if (normalizeYoutubeId(safe.parsed.toString())) {
+          await execYoutubeDownloadWithFallback({
+            execFile: this.execFile,
+            primaryArgs: downloadArgs(),
+            fallbackArgs: downloadArgs(YOUTUBE_403_FALLBACK_CLIENT),
+            cleanup: () => cleanupYtDlpArtifacts(this.contentDir, partPath),
+            options,
+          });
+        } else {
+          await this.execFile('yt-dlp', downloadArgs(), options);
+        }
         const size = sourceSize(this.contentDir, partPath);
         if (size <= 0) throw errorWith('download_output_missing', 'Download produced no media');
         if (size > Number(job.payload?.maxBytes || mediaLimits().maxSourceBytes)) {
@@ -937,7 +1013,7 @@ class MediaPipeline {
         }
         fs.renameSync(partPath, localPath);
       } catch (error) {
-        safeUnlink(partPath);
+        cleanupYtDlpArtifacts(this.contentDir, partPath);
         safeUnlink(localPath);
         const code = error.code || 'url_download_failed';
         if (downloadJobId) {
