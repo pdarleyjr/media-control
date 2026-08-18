@@ -27,8 +27,12 @@ function toRootRelative(url) {
   if (!url.startsWith('http')) return url;
   try {
     const u = new URL(url);
-    // Only strip origin for our OWN player/content paths on the SAME host
-    if (u.host === location.host && (u.pathname.startsWith('/player/') || u.pathname.startsWith('/api/content/'))) {
+    const mediaControlHost = u.host === location.host
+      || ['media.mbfdhub.com', 'media-control.mbfdhub.com'].includes(u.hostname);
+    // Both public Media Control hostnames reach the same application. Stored
+    // player URLs may use either hostname, so load those paths from the current
+    // dashboard origin to preserve the player's same-origin message contract.
+    if (mediaControlHost && (u.pathname.startsWith('/player/') || u.pathname.startsWith('/api/content/'))) {
       return u.pathname + u.search;
     }
     // Different host (wall.mbfdhub.com, youtube-nocookie.com, etc.) — keep full URL

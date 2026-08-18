@@ -1213,6 +1213,7 @@ document.addEventListener('click', (e) => {
   const closer = e.target.closest('[data-close-modal]');
   if (!closer) return;
   const id = closer.dataset.closeModal;
+  if (!id) return;
   const modal = document.getElementById(id);
   if (modal) modal.style.display = 'none';
 });
