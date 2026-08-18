@@ -29,7 +29,7 @@ const PIPELINES = new WeakMap();
 const YOUTUBE_ID = /^[A-Za-z0-9_-]{11}$/;
 const DEFAULT_DISK_HEADROOM_BYTES = 1024 * 1024 * 1024;
 const DEFAULT_YOUTUBE_RESERVATION_BYTES = 2 * 1024 * 1024 * 1024;
-const YOUTUBE_403_FALLBACK_CLIENT = 'web_safari';
+const YOUTUBE_403_FALLBACK_CLIENTS = Object.freeze(['web_safari', 'web_embedded']);
 
 function normalizeYoutubeId(input) {
   const raw = String(input || '').trim();
@@ -87,7 +87,7 @@ function buildYoutubeDownloadArgs({
     '-o', outputPath,
   ];
   if (playerClient) {
-    if (playerClient !== YOUTUBE_403_FALLBACK_CLIENT) {
+    if (!YOUTUBE_403_FALLBACK_CLIENTS.includes(playerClient)) {
       throw new Error('invalid_youtube_player_client');
     }
     args.push('--extractor-args', `youtube:player_client=${playerClient}`);
@@ -131,7 +131,8 @@ function buildUrlDownloadArgs({
     '-o', outputPath,
   ];
   if (playerClient) {
-    if (playerClient !== YOUTUBE_403_FALLBACK_CLIENT || !normalizeYoutubeId(parsed.toString())) {
+    if (!YOUTUBE_403_FALLBACK_CLIENTS.includes(playerClient)
+        || !normalizeYoutubeId(parsed.toString())) {
       throw new Error('invalid_youtube_player_client');
     }
     args.push('--extractor-args', `youtube:player_client=${playerClient}`);
@@ -164,10 +165,18 @@ function isYoutubeHttp403(error) {
   return /(?:HTTP Error 403|403 Forbidden)/i.test(details);
 }
 
+function isYoutubeFallbackClientUnavailable(error) {
+  const details = [error?.message, error?.stdout, error?.stderr]
+    .filter(Boolean)
+    .join('\n');
+  return isYoutubeHttp403(error)
+    || /(?:Requested format is not available|Only images are available)/i.test(details);
+}
+
 async function execYoutubeDownloadWithFallback({
   execFile,
   primaryArgs,
-  fallbackArgs,
+  fallbackArgsList,
   cleanup,
   options,
 }) {
@@ -175,8 +184,17 @@ async function execYoutubeDownloadWithFallback({
     return await execFile('yt-dlp', primaryArgs, options);
   } catch (error) {
     if (!isYoutubeHttp403(error)) throw error;
-    cleanup();
-    return execFile('yt-dlp', fallbackArgs, options);
+    let fallbackError = error;
+    for (const fallbackArgs of fallbackArgsList) {
+      cleanup();
+      try {
+        return await execFile('yt-dlp', fallbackArgs, options);
+      } catch (nextError) {
+        fallbackError = nextError;
+        if (!isYoutubeFallbackClientUnavailable(nextError)) throw nextError;
+      }
+    }
+    throw fallbackError;
   }
 }
 
@@ -834,7 +852,7 @@ class MediaPipeline {
         await execYoutubeDownloadWithFallback({
           execFile: this.execFile,
           primaryArgs: downloadArgs(),
-          fallbackArgs: downloadArgs(YOUTUBE_403_FALLBACK_CLIENT),
+          fallbackArgsList: YOUTUBE_403_FALLBACK_CLIENTS.map(downloadArgs),
           cleanup: () => cleanupYtDlpArtifacts(this.contentDir, partPath),
           options,
         });
@@ -999,7 +1017,7 @@ class MediaPipeline {
           await execYoutubeDownloadWithFallback({
             execFile: this.execFile,
             primaryArgs: downloadArgs(),
-            fallbackArgs: downloadArgs(YOUTUBE_403_FALLBACK_CLIENT),
+            fallbackArgsList: YOUTUBE_403_FALLBACK_CLIENTS.map(downloadArgs),
             cleanup: () => cleanupYtDlpArtifacts(this.contentDir, partPath),
             options,
           });
