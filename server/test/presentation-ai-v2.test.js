@@ -60,13 +60,31 @@ test('v2 Qwen mapping uses schema-constrained local structured output and isolat
   assert.doesNotMatch(requestBody.messages[0].content, new RegExp(ATTACK));
   assert.match(requestBody.messages[1].content, /BEGIN_UNTRUSTED_PRESENTATION_DATA/);
   assert.match(requestBody.messages[1].content, new RegExp(ATTACK));
+  const delimited = requestBody.messages[1].content.match(/<BEGIN_UNTRUSTED_PRESENTATION_DATA>\n([\s\S]+)\n<END_UNTRUSTED_PRESENTATION_DATA>/);
+  assert.ok(delimited);
+  const payload = JSON.parse(delimited[1]);
+  assert.equal(payload.source_slide_number, 1);
+  assert.equal(payload.required_output_contract.source_slide_number, 1);
+  assert.deepEqual(payload.required_output_contract.forbidden_legacy_keys, ['slides', 'regions', 'style']);
+  assert.ok(payload.approved_regions_by_layout.STANDARD_PARAGRAPH.includes('TV1_PARAGRAPH'));
+  assert.ok(payload.approved_regions_by_layout.STANDARD_PARAGRAPH.includes('TV2_TAKEAWAY_TEXT'));
+  assert.equal(payload.approved_regions_by_layout.STANDARD_PARAGRAPH.includes('title'), false);
+  assert.deepEqual(payload.required_source_refs, ['obj-1']);
+  assert.deepEqual(payload.required_output_contract.required_source_refs, ['obj-1']);
+  assert.match(payload.required_output_contract.region_assignment_rule, /at least one exact required_source_refs value/i);
+  assert.match(payload.required_output_contract.source_accounting_rule, /every required_source_refs value/i);
+  assert.match(requestBody.messages[0].content, /required top-level response shape/i);
+  assert.match(requestBody.messages[0].content, /do not return legacy keys/i);
+  assert.match(requestBody.messages[0].content, /"source_slide_number":1/);
 });
 
 test('v2 Qwen mapping rejects model-provided geometry and performs only one bounded repair', async (t) => {
   const originalFetch = global.fetch;
   let calls = 0;
-  global.fetch = async () => {
+  const bodies = [];
+  global.fetch = async (_url, options) => {
     calls += 1;
+    bodies.push(JSON.parse(options.body));
     const bad = validPlan();
     bad.target_slides[0].region_assignments[0].x = 4000;
     return new Response(JSON.stringify({ message: { content: JSON.stringify(bad) } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -77,6 +95,9 @@ test('v2 Qwen mapping rejects model-provided geometry and performs only one boun
     /forbidden geometry/
   );
   assert.equal(calls, 2);
+  assert.match(bodies[1].messages.at(-1).content, /source_slide_number must be exactly 1/i);
+  assert.match(bodies[1].messages.at(-1).content, /never return legacy top-level keys/i);
+  assert.match(bodies[1].messages.at(-1).content, /every region assignment must contain at least one exact source ref/i);
 });
 
 test('faithful structured plan must account for every source object', () => {
