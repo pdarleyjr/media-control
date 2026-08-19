@@ -109,7 +109,9 @@ jobs:
             -v "${{ github.workspace }}:/work" \
             -w /work/server/e2e/real-app \
             mcr.microsoft.com/playwright:v1.61.1-noble \
-            npx playwright test --config=playwright.mobile.config.js
+            npx --yes --package=node@22 node \
+              node_modules/@playwright/test/cli.js test \
+              --config=playwright.mobile.config.js
         env:
           CI: true
 
