@@ -970,11 +970,16 @@ app.use('/api/reports', requireAuth, resolveTenancy, require('./routes/reports')
 app.use('/api/screen-share', requireAuth, require('./routes/screen-share'));  // screen-share REST: ICE/TURN credential issuance, JWT-gated
 app.use('/api/groups', requireAuth, resolveTenancy, require('./routes/device-groups'));
 app.use('/api/playlists', requireAuth, resolveTenancy, require('./routes/playlists'));
-// MBFD Media Control Studio: presentations (mbfd-deck-v1). Same auth+tenancy gate.
+// MBFD Media Control Studio: presentations (v1 + feature-gated v2). Bound
+// authenticated list/save/export/link traffic so file generation and database
+// work cannot be amplified by one client.
+app.use('/api/presentations', rateLimit(rateLimitOptions(60000, 60)));
 app.use('/api/presentations', requireAuth, resolveTenancy, require('./routes/presentations'));
 app.use('/api/presentation-converter', rateLimit(rateLimitOptions(60000, 30)));
 app.use('/api/presentation-converter', requireAuth, resolveTenancy, require('./routes/presentation-converter'));
-// AI Deck Builder (server-side Ollama bridge; async jobs). AI never called from the browser.
+// AI Deck Builder (server-side Ollama bridge; async jobs). Bound both starts
+// and polling at the application edge; AI is never called from the browser.
+app.use('/api/ai', rateLimit(rateLimitOptions(60000, 30)));
 app.use('/api/ai', requireAuth, resolveTenancy, require('./routes/ai'));
 // Files (Nextcloud WebDAV proxy) + media downloads. Feature-flag + env gated.
 app.use('/api/files', rateLimit(rateLimitOptions(60000, 30)));

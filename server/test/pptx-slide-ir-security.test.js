@@ -83,10 +83,10 @@ test('deterministic PPTX extraction preserves order, prose, bullets, hyperlinks,
   assert.equal(ir.slides[1].source_slide_number, 2);
   assert.ok(ir.slides[0].elements.some((element) => element.kind === 'paragraph' && /Paragraph remains/.test(element.text)));
   assert.ok(ir.slides[0].elements.some((element) => element.kind === 'bullets' && element.items.includes('Bullet one')));
-  assert.ok(ir.slides[0].relationships.some((rel) => rel.kind === 'hyperlink' && rel.target.includes('youtube.com')));
+  assert.ok(ir.slides[0].relationships.some((rel) => rel.kind === 'hyperlink' && new URL(rel.target).hostname === 'www.youtube.com'));
   assert.ok(ir.slides[0].elements.some((element) => element.kind === 'video' && element.asset_ref));
   assert.ok(ir.slides[0].elements.some((element) => element.kind === 'audio' && element.asset_ref));
-  assert.ok(ir.slides[0].elements.some((element) => element.kind === 'youtube' && element.url.includes('youtube.com')));
+  assert.ok(ir.slides[0].elements.some((element) => element.kind === 'youtube' && new URL(element.url).hostname === 'www.youtube.com'));
   assert.ok(ir.assets.some((asset) => asset.kind === 'video'));
   assert.ok(ir.assets.some((asset) => asset.kind === 'audio'));
   assert.match(ir.slides[0].speaker_notes, /Speaker note survives/);

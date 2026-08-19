@@ -109,7 +109,7 @@ async function syncPresentation(presId) {
   } catch (e) {
     const msg = String(e.message || e).slice(0, 300);
     try { recordJob(pres, { status: 'error', error_msg: msg }); } catch { /* */ }
-    console.warn(`[nc-sync] ${pres.id} -> ${email} FAILED: ${msg}`);
+    console.warn('[nc-sync] presentation sync failed');
     return { error: msg };
   }
 }

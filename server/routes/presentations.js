@@ -274,7 +274,7 @@ router.get('/:id/export.pptx', requireRead, async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.send(buffer);
   } catch (error) {
-    console.error('[presentations] PPTX export failed:', error.message);
+    console.error('[presentations] PPTX export failed');
     res.status(500).json({ error: 'PowerPoint export failed' });
   }
 });
@@ -340,7 +340,7 @@ router.post('/:id/export-to-library', requireWrite, async (req, res) => {
   } catch (error) {
     if (partialPath) fs.promises.unlink(partialPath).catch(() => {});
     if (newPath) fs.promises.unlink(newPath).catch(() => {});
-    console.error('[presentations] Media Library export failed:', error.message);
+    console.error('[presentations] Media Library export failed');
     res.status(500).json({ error: 'Could not save PowerPoint to Media Library' });
   }
 });
