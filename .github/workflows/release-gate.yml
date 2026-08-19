@@ -83,6 +83,13 @@ jobs:
           # present on the clean runner. Chromium alone made the Firefox project
           # fail with "Executable doesn't exist at .../firefox/firefox".
           # WebKit is required for the mobile-defect acceptance suite (iPhone emulation).
+          # The Azure Ubuntu mirror can become severely throttled while fetching
+          # WebKit's media dependencies. Keep the host rendering environment (and
+          # its committed visual baselines) but use Ubuntu's standard archive.
+          sudo sed -i \
+            -e 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
+            -e 's|https://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+            /etc/apt/sources.list.d/ubuntu.sources
           npx playwright install --with-deps chromium firefox webkit
 
       - name: Verify release gate scripts exist

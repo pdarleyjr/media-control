@@ -35,6 +35,7 @@ const { contentUseDecision, contextFromRequest } = require('../lib/content-visib
 const { contentBroadcastReadiness } = require('../lib/content-readiness');
 const { buildBroadcastPreflight } = require('../lib/broadcast-preflight');
 const cameraControl = require('../lib/camera-control-client');
+const { ELEVATED_ROLES } = require('../middleware/auth');
 
 function sourceIdentity({ contentId, playlistId, presentationId, remoteUrl }) {
   if (contentId) return { type: 'content', id: String(contentId) };
@@ -42,6 +43,36 @@ function sourceIdentity({ contentId, playlistId, presentationId, remoteUrl }) {
   if (presentationId) return { type: 'presentation', id: String(presentationId) };
   const digest = crypto.createHash('sha256').update(String(remoteUrl || '')).digest('hex').slice(0, 32);
   return { type: 'remote_url', id: `sha256:${digest}` };
+}
+
+function loadPresentationForBroadcast(req) {
+  const pres = db.prepare('SELECT id, workspace_id, user_id, deck_json FROM presentations WHERE id = ?').get(String(req.body.presentation_id));
+  if (!pres) return { status: 404, error: `Presentation ${req.body.presentation_id} not found` };
+  if (pres.workspace_id !== req.workspaceId) return { status: 403, error: `Presentation ${req.body.presentation_id} is not in this workspace` };
+  if (!req.actingAs && !ELEVATED_ROLES.includes(req.user.role) && pres.user_id && pres.user_id !== req.user.id) {
+    return { status: 403, error: 'You can only broadcast your own presentations' };
+  }
+  const dependencyIds = new Set(
+    db.prepare('SELECT content_id FROM presentation_assets WHERE presentation_id=? AND content_id IS NOT NULL')
+      .all(pres.id).map((row) => row.content_id)
+  );
+  try {
+    const deck = JSON.parse(pres.deck_json || '{}');
+    for (const asset of Array.isArray(deck.assets) ? deck.assets : []) if (asset.content_id) dependencyIds.add(String(asset.content_id));
+    for (const slide of Array.isArray(deck.slides) ? deck.slides : []) {
+      for (const value of Object.values(slide.slots || {})) if (value && typeof value === 'object' && value.content_id) dependencyIds.add(String(value.content_id));
+    }
+  } catch { return { status: 422, error: 'Presentation document is invalid' }; }
+  const dependencies = [];
+  for (const contentId of dependencyIds) {
+    const decision = contentUseDecision(db, contentId, req.workspaceId, contextFromRequest(req));
+    if (!decision.content) return { status: 409, error: `Presentation dependency ${contentId} is missing` };
+    if (!decision.allowed) return { status: 403, error: `Presentation dependency ${contentId} is not available in this workspace` };
+    const readiness = contentBroadcastReadiness(db, decision.content);
+    if (!readiness.ready) return { status: readiness.status, body: { ...readiness, presentation_id: pres.id, dependency_content_id: contentId } };
+    dependencies.push(decision.content);
+  }
+  return { presentation: pres, dependencies };
 }
 
 // A workspace viewer is normally read-only. Classroom operation is the narrow
@@ -196,12 +227,12 @@ router.post('/', async (req, res) => {
   // what the "Present this deck" buttons already broadcast). The presentation
   // must exist and live in the caller's workspace.
   let effectiveRemoteUrl = remote_url;
+  let presentationDependencies = [];
   if (presentation_id) {
-    const pres = db.prepare('SELECT id, workspace_id FROM presentations WHERE id = ?').get(String(presentation_id));
-    if (!pres) return res.status(404).json({ error: `Presentation ${presentation_id} not found` });
-    if (pres.workspace_id !== req.workspaceId) {
-      return res.status(403).json({ error: `Presentation ${presentation_id} is not in this workspace` });
-    }
+    const decision = loadPresentationForBroadcast(req);
+    if (!decision.presentation) return res.status(decision.status).json(decision.body || { error: decision.error });
+    const pres = decision.presentation;
+    presentationDependencies = decision.dependencies;
     const publicBase = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
     effectiveRemoteUrl = deckPlayerUrl(publicBase, pres.id);
   }
@@ -455,9 +486,20 @@ router.post('/', async (req, res) => {
   }
   // Reinforce the upload/finalization prewarm after routing. Node delivery stays
   // workspace-scoped, and this event makes the selected asset priority.
-  const cachePrewarm = content_id
-    ? nodeRegistry.requestContentPrewarm(io, db, { deviceIds: targets, contentId: content_id })
-    : { requested: false, reason: 'not_local_content' };
+  const prewarmContentIds = content_id
+    ? [String(content_id)]
+    : presentationDependencies.map((content) => String(content.id));
+  const prewarmResults = prewarmContentIds.map((contentId) => ({
+    content_id: contentId,
+    ...nodeRegistry.requestContentPrewarm(io, db, { deviceIds: targets, contentId }),
+  }));
+  const cachePrewarm = prewarmResults.length
+    ? {
+      requested: prewarmResults.some((result) => result.requested === true),
+      dependencies: prewarmResults,
+      dependency_count: prewarmResults.length,
+    }
+    : { requested: false, reason: 'not_local_content', dependency_count: 0 };
 
   // Log the broadcast (activityLogger middleware only captures a single
   // device_id; broadcasts touch many, so log an explicit summary here).
@@ -532,3 +574,4 @@ router.post('/', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.loadPresentationForBroadcast = loadPresentationForBroadcast;

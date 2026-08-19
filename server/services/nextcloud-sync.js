@@ -91,7 +91,9 @@ async function syncPresentation(presId) {
   const relPath = `${relDir}/${fileBase}.pptx`;
 
   try {
-    const buffer = await renderDeckToPptxBuffer(deck);
+    const allowedContentIds = new Set(db.prepare(`SELECT content_id FROM presentation_assets
+      WHERE presentation_id=? AND content_id IS NOT NULL`).all(pres.id).map((row) => String(row.content_id)));
+    const buffer = await renderDeckToPptxBuffer(deck, { allowedContentIds });
     await ncfs.createFolder(email, relDir);
 
     // If the title changed since last sync, remove the stale file.
@@ -107,7 +109,7 @@ async function syncPresentation(presId) {
   } catch (e) {
     const msg = String(e.message || e).slice(0, 300);
     try { recordJob(pres, { status: 'error', error_msg: msg }); } catch { /* */ }
-    console.warn(`[nc-sync] ${pres.id} -> ${email} FAILED: ${msg}`);
+    console.warn('[nc-sync] presentation sync failed');
     return { error: msg };
   }
 }

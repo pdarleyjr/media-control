@@ -1,0 +1,37 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const player = fs.readFileSync(path.join(__dirname, '..', 'player', 'deck.html'), 'utf8');
+const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+
+test('v2 player consumes the server-compiled canonical registry plan and scales without reflow', () => {
+  assert.match(server, /buildRenderPlan\(parsed, \{ mode: 'production' \}\)/);
+  assert.match(server, /window\.__deckRenderPlan/);
+  assert.match(player, /deck\.version === 'mbfd-deck-v2'/);
+  assert.match(player, /renderPlan\.profile\.canvas_px/);
+  assert.match(player, /Math\.min\(window\.innerWidth\/canvas\.w,window\.innerHeight\/canvas\.h\)/);
+  assert.match(player, /translate\(-50%,-50%\) scale/);
+  assert.match(player, /\/player\/template-asset\//);
+  assert.doesNotMatch(player, /seam-guide|safe-area-guide/);
+});
+
+test('v2 player keeps the absolute rapid transport and command-correlation state machine', () => {
+  assert.match(player, /appliedCommandIds/);
+  assert.match(player, /command_id/);
+  assert.match(player, /go_to_slide/);
+  assert.match(player, /if \(!paused\) togglePause\(\)/);
+  assert.match(player, /if \(paused\) togglePause\(\)/);
+  assert.doesNotMatch(player, /inFlight|controlsDisabled|disabled\s*=\s*true/);
+});
+
+test('v2 local video has explicit media play pause and optional end advance', () => {
+  assert.match(player, /querySelector\('video,audio'\)/);
+  assert.match(player, /media\.play\(\)/);
+  assert.match(player, /media\.pause\(\)/);
+  assert.match(player, /auto_advance_on_media_end===true/);
+  assert.match(player, /media_state:/);
+});

@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mbfd:videowall:slide-ir:v1",
+  "title": "MBFD Source Slide Intermediate Representation",
+  "type": "object",
+  "required": ["source_slide_number", "source_dimensions", "objects", "reading_order", "speaker_notes"],
+  "additionalProperties": false,
+  "properties": {
+    "source_slide_number": {"type": "integer", "minimum": 1},
+    "source_dimensions": {
+      "type": "object",
+      "required": ["width_emu", "height_emu"],
+      "additionalProperties": false,
+      "properties": {
+        "width_emu": {"type": "integer", "minimum": 1},
+        "height_emu": {"type": "integer", "minimum": 1}
+      }
+    },
+    "slide_title": {"type": ["string", "null"]},
+    "section_hint": {"type": ["string", "null"]},
+    "speaker_notes": {"type": "string"},
+    "reading_order": {"type": "array", "items": {"type": "string"}},
+    "objects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "bbox", "z_index"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "kind": {
+            "type": "string",
+            "enum": ["title", "subtitle", "paragraph", "bullet_list", "text", "caption", "image", "svg", "video", "audio", "online_video", "table", "chart", "smartart", "diagram", "ole", "shape_group", "hyperlink_object", "unknown"]
+          },
+          "bbox": {
+            "type": "object",
+            "required": ["x", "y", "w", "h"],
+            "additionalProperties": false,
+            "properties": {
+              "x": {"type": "number"}, "y": {"type": "number"}, "w": {"type": "number"}, "h": {"type": "number"}
+            }
+          },
+          "z_index": {"type": "integer"},
+          "text": {"type": ["string", "null"]},
+          "paragraphs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["text", "level", "is_bullet"],
+              "additionalProperties": false,
+              "properties": {
+                "text": {"type": "string"},
+                "level": {"type": "integer", "minimum": 0},
+                "is_bullet": {"type": "boolean"}
+              }
+            }
+          },
+          "font_summary": {"type": ["object", "null"]},
+          "media_id": {"type": ["string", "null"]},
+          "media_mime": {"type": ["string", "null"]},
+          "media_filename": {"type": ["string", "null"]},
+          "media_sha256": {"type": ["string", "null"]},
+          "poster_media_id": {"type": ["string", "null"]},
+          "url": {"type": ["string", "null"]},
+          "hyperlinks": {"type": "array", "items": {"type": "string"}},
+          "alt_text": {"type": ["string", "null"]},
+          "native_transfer_supported": {"type": ["boolean", "null"]},
+          "render_fallback_path": {"type": ["string", "null"]}
+        }
+      }
+    }
+  }
+}

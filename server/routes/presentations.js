@@ -11,6 +11,16 @@ const upload = require('../middleware/upload');
 const config = require('../config');
 const { sanitizeString } = require('../middleware/sanitize');
 const ncSync = require('../services/nextcloud-sync');
+const { renderDeckToPptxBuffer } = require('../services/pptx');
+const {
+  SOURCE_SPEC,
+  DECK_VERSIONS,
+  PROFILE_IDS,
+  listProfiles,
+  listLayouts,
+  validateDeck,
+} = require('../lib/presentation-template-registry');
+const { contentUseDecision, contextFromRequest } = require('../lib/content-visibility');
 
 // MBFD Media Control Studio — Presentations CRUD. Mirrors the workspace-scoped
 // access idiom from routes/playlists.js: list/create scope by req.workspaceId,
@@ -19,7 +29,7 @@ const ncSync = require('../services/nextcloud-sync');
 // document in `deck_json`; slides/assets relational rows back the visual editor
 // (Phase 3). No platform_admin cross-workspace bypass (matches the other routes).
 
-const CANVAS_PROFILES = ['16x9', '4x3', 'wall-12372x2160', 'wall-3zone'];
+const CANVAS_PROFILES = ['16x9', '4x3', 'wall-12372x2160', 'wall-3zone', ...Object.values(PROFILE_IDS)];
 
 function emptyDeck(id, title, theme, canvasProfile) {
   return {
@@ -31,6 +41,25 @@ function emptyDeck(id, title, theme, canvasProfile) {
     slides: [],
     assets: [],
   };
+}
+
+function emptyV2Deck(id, title, wallProfile) {
+  return {
+    version: DECK_VERSIONS.V2,
+    deck_id: id,
+    title,
+    theme_id: 'mbfd-videowall-v2',
+    wall_profile: wallProfile,
+    template_system_version: SOURCE_SPEC.spec_version,
+    slides: [],
+    assets: [],
+  };
+}
+
+function allowV2(res) {
+  if (config.features.presentationStudioV2) return true;
+  res.status(404).json({ error: 'Presentation Studio v2 is disabled' });
+  return false;
 }
 
 function slideCount(deckJson) {
@@ -67,6 +96,11 @@ function shape(p) {
   return { ...p, slide_count: slideCount(p.deck_json) };
 }
 
+function presentationAssetIds(presentationId) {
+  return new Set(db.prepare(`SELECT content_id FROM presentation_assets
+    WHERE presentation_id=? AND content_id IS NOT NULL`).all(presentationId).map((row) => String(row.content_id)));
+}
+
 // List — scoped to the caller's current workspace AND their own rows.
 // Phase 2.5: presentations are private per-user; platform templates
 // (workspace_id IS NULL) stay visible to all via the shared scope helper.
@@ -79,6 +113,25 @@ router.get('/', (req, res) => {
     FROM presentations WHERE ${scope.clause} ORDER BY updated_at DESC
   `).all(...scope.params);
   res.json(rows.map(shape));
+});
+
+// Canonical browser/editor registry. Geometry comes from the same checked-in
+// template package consumed by server validation/player/export; local template
+// filesystem paths are deliberately omitted from the response.
+router.get('/templates/registry', (_req, res) => {
+  if (!allowV2(res)) return;
+  const profiles = listProfiles().map(({ production_template_path: _path, ...profile }) => ({
+    ...profile,
+    layouts: listLayouts(profile.id),
+  }));
+  res.setHeader('Cache-Control', 'private, max-age=300');
+  res.json({
+    version: SOURCE_SPEC.spec_version,
+    template_system: SOURCE_SPEC.template_system,
+    theme: SOURCE_SPEC.theme,
+    global_rules: SOURCE_SPEC.global_rules,
+    profiles,
+  });
 });
 
 // Create — stamps workspace_id + user_id, initializes an empty mbfd-deck-v1.
@@ -97,13 +150,26 @@ router.post('/', (req, res) => {
   let canvas = (req.body.canvas_profile || '16x9').trim();
   if (!CANVAS_PROFILES.includes(canvas)) canvas = '16x9';
   const id = uuidv4();
-  // Use the caller-supplied deck_json if it's valid mbfd-deck-v1, else seed empty.
+  // Use a caller-supplied versioned deck when valid. V2 is an additive path
+  // behind its own feature flag; v1 creation behavior is unchanged.
   let deckJson;
   if (req.body.deck_json) {
     try {
       const d = typeof req.body.deck_json === 'string' ? JSON.parse(req.body.deck_json) : req.body.deck_json;
-      if (d && d.version === 'mbfd-deck-v1') { d.deck_id = id; d.title = title; deckJson = JSON.stringify(d); }
+      if (d && d.version === DECK_VERSIONS.V2 && !config.features.presentationStudioV2) return res.status(404).json({ error: 'Presentation Studio v2 is disabled' });
+      d.deck_id = id;
+      d.title = title;
+      const valid = validateDeck(d);
+      if (valid.valid) {
+        if (d.version === DECK_VERSIONS.V2) canvas = d.wall_profile;
+        deckJson = JSON.stringify(d);
+      }
     } catch { /* fall through to empty */ }
+  }
+  if (!deckJson && req.body.deck_version === DECK_VERSIONS.V2) {
+    if (!allowV2(res)) return;
+    if (!Object.values(PROFILE_IDS).includes(canvas)) canvas = PROFILE_IDS.THREE_DISPLAY;
+    deckJson = JSON.stringify(emptyV2Deck(id, title, canvas));
   }
   if (!deckJson) deckJson = JSON.stringify(emptyDeck(id, title, theme, canvas));
   db.prepare(`
@@ -150,9 +216,16 @@ router.put('/:id', requireWrite, (req, res) => {
     let str;
     try {
       const d = typeof deck_json === 'string' ? JSON.parse(deck_json) : deck_json;
-      if (!d || d.version !== 'mbfd-deck-v1') throw new Error('bad version');
+      if (d && d.version === DECK_VERSIONS.V2 && !config.features.presentationStudioV2) return res.status(404).json({ error: 'Presentation Studio v2 is disabled' });
+      const valid = validateDeck(d);
+      if (!valid.valid) throw new Error(valid.errors.join('; '));
+      d.deck_id = req.params.id;
+      if (d.version === DECK_VERSIONS.V2 && canvas_profile === undefined) {
+        updates.push('canvas_profile = ?');
+        values.push(d.wall_profile);
+      }
       str = JSON.stringify(d);
-    } catch { return res.status(400).json({ error: 'deck_json must be a valid mbfd-deck-v1 document' }); }
+    } catch (error) { return res.status(400).json({ error: `deck_json must be a valid mbfd-deck-v1 or mbfd-deck-v2 document: ${error.message}` }); }
     updates.push('deck_json = ?'); values.push(str);
   }
   if (status !== undefined) {
@@ -188,6 +261,106 @@ router.post('/:id/duplicate', requireWrite, (req, res) => {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft')
   `).run(id, src.workspace_id, req.user.id, req.user.id, `${src.title} (copy)`, src.description, src.theme, src.canvas_profile, deckJson);
   res.status(201).json(shape(db.prepare('SELECT * FROM presentations WHERE id = ?').get(id)));
+});
+
+router.get('/:id/export.pptx', requireRead, async (req, res) => {
+  try {
+    const deck = JSON.parse(req.presentation.deck_json);
+    const buffer = await renderDeckToPptxBuffer(deck, { allowedContentIds: presentationAssetIds(req.params.id) });
+    const fallback = String(req.presentation.title || 'presentation').replace(/[^A-Za-z0-9._ -]+/g, '').slice(0, 100) || 'presentation';
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+    res.setHeader('Content-Disposition', `attachment; filename="${fallback.replace(/"/g, '')}.pptx"`);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(buffer);
+  } catch (error) {
+    console.error('[presentations] PPTX export failed');
+    res.status(500).json({ error: 'PowerPoint export failed' });
+  }
+});
+
+// Refresh one linked Media Library artifact while keeping the presentation row
+// as the only editable source of truth.
+router.post('/:id/export-to-library', requireWrite, async (req, res) => {
+  let newPath = null;
+  let partialPath = null;
+  try {
+    const deck = JSON.parse(req.presentation.deck_json);
+    const buffer = await renderDeckToPptxBuffer(deck, { allowedContentIds: presentationAssetIds(req.params.id) });
+    const revision = Number(req.presentation.updated_at) || Math.floor(Date.now() / 1000);
+    const storedName = `presentation_export_${req.params.id}_${revision}.pptx`;
+    newPath = path.resolve(config.contentDir, path.basename(storedName));
+    if (path.dirname(newPath) !== path.resolve(config.contentDir)) throw new Error('invalid export path');
+    partialPath = `${newPath}.partial-${process.pid}-${uuidv4()}`;
+    await fs.promises.writeFile(partialPath, buffer, { flag: 'wx' });
+    await fs.promises.rename(partialPath, newPath);
+    partialPath = null;
+    const existing = db.prepare(`
+      SELECT pe.id AS export_id, pe.content_id, c.filepath AS old_filepath
+      FROM presentation_exports pe LEFT JOIN content c ON c.id=pe.content_id
+      WHERE pe.presentation_id=? AND pe.export_format='pptx' AND pe.user_id=?
+      ORDER BY pe.created_at DESC LIMIT 1
+    `).get(req.params.id, req.user.id);
+    const now = Math.floor(Date.now() / 1000);
+    let contentId = existing && existing.content_id;
+    const exportId = existing ? existing.export_id : uuidv4();
+    const metadata = JSON.stringify({ presentation_id: req.params.id, source_revision: revision, wall_profile: deck.wall_profile || req.presentation.canvas_profile });
+    const commit = db.transaction(() => {
+      if (contentId) {
+        db.prepare(`UPDATE content SET filename=?, filepath=?, mime_type=?, file_size=?, content_type='presentation_export',
+          metadata_json=?, processing_status='ready', processing_error=NULL, version=COALESCE(version,1)+1, updated_at=?
+          WHERE id=? AND workspace_id=? AND user_id=?`)
+          .run(`${req.presentation.title}.pptx`, storedName, 'application/vnd.openxmlformats-officedocument.presentationml.presentation', buffer.length, metadata, now, contentId, req.presentation.workspace_id, req.user.id);
+      } else {
+        contentId = uuidv4();
+        db.prepare(`INSERT INTO content
+          (id,user_id,workspace_id,filename,filepath,mime_type,file_size,content_type,metadata_json,processing_status,access_level,updated_at)
+          VALUES (?,?,?,?,?,?,?,'presentation_export',?,'ready','private',?)`)
+          .run(contentId, req.user.id, req.presentation.workspace_id, `${req.presentation.title}.pptx`, storedName,
+            'application/vnd.openxmlformats-officedocument.presentationml.presentation', buffer.length, metadata, now);
+      }
+      if (existing) {
+        db.prepare(`UPDATE presentation_exports SET content_id=?, workspace_id=?, user_id=?, file_path=?, wall_profile=?,
+          source_revision=?, status='completed', error_msg=NULL, generated_at=?, completed_at=? WHERE id=?`)
+          .run(contentId, req.presentation.workspace_id, req.user.id, storedName, deck.wall_profile || req.presentation.canvas_profile,
+            revision, now, now, exportId);
+      } else {
+        db.prepare(`INSERT INTO presentation_exports
+          (id,presentation_id,content_id,workspace_id,user_id,export_format,file_path,wall_profile,source_revision,status,generated_at,completed_at)
+          VALUES (?,?,?,?,?,'pptx',?,?,?,'completed',?,?)`)
+          .run(exportId, req.params.id, contentId, req.presentation.workspace_id, req.user.id, storedName,
+            deck.wall_profile || req.presentation.canvas_profile, revision, now, now);
+      }
+    });
+    commit();
+    if (existing && existing.old_filepath && existing.old_filepath !== storedName) {
+      fs.promises.unlink(path.resolve(config.contentDir, path.basename(existing.old_filepath))).catch(() => {});
+    }
+    res.status(existing ? 200 : 201).json({ export_id: exportId, content_id: contentId, source_revision: revision, filename: `${req.presentation.title}.pptx` });
+  } catch (error) {
+    if (partialPath) fs.promises.unlink(partialPath).catch(() => {});
+    if (newPath) fs.promises.unlink(newPath).catch(() => {});
+    console.error('[presentations] Media Library export failed');
+    res.status(500).json({ error: 'Could not save PowerPoint to Media Library' });
+  }
+});
+
+// Link an existing safe Media Library item instead of creating a competing
+// presentation-only asset store.
+router.post('/:id/assets/link', requireWrite, (req, res) => {
+  const contentId = String(req.body.content_id || '').trim();
+  if (!contentId) return res.status(400).json({ error: 'content_id required' });
+  const decision = contentUseDecision(db, contentId, req.presentation.workspace_id, contextFromRequest(req));
+  if (!decision.allowed) return res.status(403).json({ error: decision.reason || 'Content is not available in this workspace' });
+  const mime = String(decision.content.mime_type || '');
+  if (!/^(image\/(?:jpeg|png|gif|webp|bmp)|video\/(?:mp4|webm|quicktime)|audio\/(?:mpeg|mp4|wav|ogg))$/i.test(mime)) {
+    return res.status(400).json({ error: 'Only safe image, video, or audio Media Library items can be linked' });
+  }
+  const existing = db.prepare('SELECT id FROM presentation_assets WHERE presentation_id=? AND content_id=?').get(req.params.id, contentId);
+  const assetId = existing ? existing.id : uuidv4();
+  if (!existing) db.prepare(`INSERT INTO presentation_assets (id,presentation_id,content_id,position_json,fit_mode)
+    VALUES (?,?,?,'{}','contain')`).run(assetId, req.params.id, contentId);
+  res.status(existing ? 200 : 201).json({ asset_id: assetId, content_id: contentId, url: `/player/asset/${contentId}`, mime_type: mime });
 });
 
 // ── Slide image upload ──────────────────────────────────────────────────────

@@ -544,12 +544,27 @@ CREATE TABLE IF NOT EXISTS presentation_assets (
 CREATE TABLE IF NOT EXISTS presentation_exports (
     id              TEXT PRIMARY KEY,
     presentation_id TEXT NOT NULL REFERENCES presentations(id) ON DELETE CASCADE,
+    content_id      TEXT REFERENCES content(id) ON DELETE SET NULL,
+    workspace_id    TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+    user_id         TEXT REFERENCES users(id) ON DELETE SET NULL,
     export_format   TEXT NOT NULL,                         -- pdf | pptx | png | json | package
     file_path       TEXT,
+    wall_profile    TEXT,
+    source_revision INTEGER,
     status          TEXT NOT NULL DEFAULT 'pending',
     error_msg       TEXT,
     created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    generated_at    INTEGER,
     completed_at    INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS presentation_conversion_runs (
+    job_id            TEXT PRIMARY KEY REFERENCES media_jobs(id) ON DELETE CASCADE,
+    presentation_id   TEXT UNIQUE REFERENCES presentations(id) ON DELETE SET NULL,
+    source_content_id TEXT REFERENCES content(id) ON DELETE SET NULL,
+    workspace_id      TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    user_id           TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at        INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
 
 CREATE TABLE IF NOT EXISTS asset_variants (
@@ -613,6 +628,10 @@ CREATE TABLE IF NOT EXISTS download_jobs (
 CREATE INDEX IF NOT EXISTS idx_presentations_workspace ON presentations(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_presentation_slides_presentation ON presentation_slides(presentation_id, sort_order);
 CREATE INDEX IF NOT EXISTS idx_presentation_assets_slide ON presentation_assets(slide_id);
+CREATE INDEX IF NOT EXISTS idx_presentation_exports_presentation ON presentation_exports(presentation_id, export_format, created_at DESC);
+-- Indexes that depend on v2-added columns are created by the additive
+-- presentation-studio-v2 migration after it has healed older table shapes.
+CREATE INDEX IF NOT EXISTS idx_presentation_conversion_runs_owner ON presentation_conversion_runs(workspace_id, user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_asset_variants_content ON asset_variants(content_id);
 CREATE INDEX IF NOT EXISTS idx_ai_jobs_workspace ON ai_generation_jobs(workspace_id, status);
 CREATE INDEX IF NOT EXISTS idx_nextcloud_sync_workspace ON nextcloud_sync_jobs(workspace_id, status);

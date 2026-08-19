@@ -10,7 +10,7 @@ test('PPTX rendering passes only the presentation raster allowlist to image-size
   for (const mime of ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp']) {
     assert.match(source, new RegExp(`['"]${mime.replace('/', '\\/')}['"]`));
   }
-  assert.match(source, /PPTX_IMAGE_MIME\.has\(c\.mime_type\)/);
+  assert.match(source, /PPTX_IMAGE_MIME\.has\(asset\.mime\)/);
   assert.doesNotMatch(source, /c\.mime_type\.startsWith\(['"]image\//);
 });
 

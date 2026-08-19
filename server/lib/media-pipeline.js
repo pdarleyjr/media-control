@@ -23,6 +23,7 @@ const {
   createPeerTubeAssetHandler,
   peerTubeSourceIdentity,
 } = require('./peertube-asset-adapter');
+const { createPresentationConversionHandler } = require('../services/presentation-conversion-job');
 
 const pexecFile = promisify(execFile);
 const PIPELINES = new WeakMap();
@@ -269,6 +270,12 @@ class MediaPipeline {
       normalizeVideoJob: this.normalizeVideoJob,
       getIo: () => this.io,
     });
+    this.presentationConversionHandler = options.presentationConversionHandler
+      || createPresentationConversionHandler({
+        db: this.db,
+        contentDir: this.contentDir,
+        enqueueVideo: (input) => this.enqueueVideo(input),
+      });
     this.worker = new MediaJobWorker({
       store: this.store,
       workerId: options.workerId || `media-pipeline:${process.pid}`,
@@ -282,6 +289,7 @@ class MediaPipeline {
         url_download: (job, context) => this._handleUrlDownload(job, context),
         remote_validate: (job, context) => this._handleRemote(job, context),
         peertube_localize: (job, context) => this._handlePeerTube(job, context),
+        presentation_convert: (job, context) => this.presentationConversionHandler(job, context),
       },
     });
     this._drainFlight = null;
@@ -512,6 +520,23 @@ class MediaPipeline {
         maxBytes,
       },
       maxAttempts: 5,
+    });
+  }
+
+  enqueuePresentationConversion({ contentId, workspaceId, userId, wallProfile, mode, useAi = true, title }) {
+    return this.enqueue({
+      contentId,
+      workspaceId,
+      userId,
+      jobType: 'presentation_convert',
+      sourceType: 'presentation_converter',
+      maxAttempts: 2,
+      payload: {
+        wall_profile: wallProfile,
+        mode,
+        use_ai: useAi !== false,
+        title: title ? String(title).slice(0, 200) : null,
+      },
     });
   }
 

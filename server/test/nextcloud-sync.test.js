@@ -54,6 +54,9 @@ function makeDb({ presentation, owner, priorPath = null } = {}) {
       if (/FROM users WHERE id = \?/.test(sql)) {
         return { get: () => owner || null };
       }
+      if (/SELECT content_id FROM presentation_assets/.test(sql)) {
+        return { all: () => [] };
+      }
       if (/SELECT id FROM nextcloud_sync_jobs WHERE presentation_id = \?/.test(sql)) {
         return { get: () => (priorJob ? { id: priorJob.id } : null) };
       }
