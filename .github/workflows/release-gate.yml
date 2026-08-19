@@ -82,11 +82,15 @@ jobs:
           # runs projects in BOTH chromium AND firefox, so both browsers must be
           # present on the clean runner. Chromium alone made the Firefox project
           # fail with "Executable doesn't exist at .../firefox/firefox".
-          # Chromium's host dependencies were installed by the enterprise harness
-          # above and also satisfy Firefox. The WebKit mobile gate runs in the
-          # version-matched Playwright image below so it does not depend on a slow
-          # hosted-runner apt mirror for WebKit's much larger media stack.
-          npx playwright install chromium firefox
+          # WebKit is required for the mobile-defect acceptance suite (iPhone emulation).
+          # The Azure Ubuntu mirror can become severely throttled while fetching
+          # WebKit's media dependencies. Keep the host rendering environment (and
+          # its committed visual baselines) but use Ubuntu's standard archive.
+          sudo sed -i \
+            -e 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
+            -e 's|https://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+            /etc/apt/sources.list.d/ubuntu.sources
+          npx playwright install --with-deps chromium firefox webkit
 
       - name: Verify release gate scripts exist
         run: |
@@ -103,15 +107,8 @@ jobs:
           test -f e2e/real-app/playwright.mobile.config.js
 
       - name: Run mobile acceptance tests (Chromium + WebKit)
-        run: |
-          docker run --rm --ipc=host \
-            -e CI=true \
-            -v "${{ github.workspace }}:/work" \
-            -w /work/server/e2e/real-app \
-            mcr.microsoft.com/playwright:v1.61.1-noble \
-            npx --yes --package=node@22 node \
-              node_modules/@playwright/test/cli.js test \
-              --config=playwright.mobile.config.js
+        working-directory: server/e2e/real-app
+        run: npx playwright test --config=playwright.mobile.config.js
         env:
           CI: true
 
