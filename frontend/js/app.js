@@ -21,6 +21,8 @@ import * as presentations from './views/presentations.js';
 import * as aiDeck from './views/ai-deck-builder.js';
 import * as auditLog from './views/audit-log.js';
 import * as slideEditor from './views/slide-editor.js';
+import * as presentationStudio from './views/presentation-studio.js';
+import * as presentationConverter from './views/presentation-converter.js';
 import * as filesView from './views/files.js';
 import * as downloadsView from './views/downloads.js';
 import * as broadcastCenter from './views/broadcast-center.js';
@@ -28,7 +30,12 @@ import * as schedules from './views/schedules.js';
 import * as workspaceMembers from './views/workspace-members.js';
 import * as mediaControl from './views/media-control.js';
 import * as operatorConsole from './views/media-control-enterprise/operator-console.js';
-import { isEnterpriseUiEnabled, isClassroomModeEnabled } from './state/feature-flags.js';
+import {
+  isEnterpriseUiEnabled,
+  isClassroomModeEnabled,
+  isPresentationStudioV2Enabled,
+  isPresentationConverterEnabled,
+} from './state/feature-flags.js';
 import * as peertubeReplays from './views/peertube-replays.js';
 import { applyBranding } from './branding.js';
 import { t } from './i18n.js';
@@ -215,6 +222,8 @@ const NAV_LABEL_KEYS = {
   dashboard: 'nav.displays',
   home: 'nav.home',
   presentations: 'nav.presentations',
+  'presentation-studio': 'nav.presentation_studio',
+  'presentation-converter': 'nav.presentation_converter',
   'ai-deck': 'nav.ai_deck',
   'slide-editor': 'nav.slide_editor',
   content: 'nav.media_library',
@@ -772,6 +781,8 @@ async function route() {
     else if (hash === '#/home' && link.dataset.view === 'home') link.classList.add('active');
     else if ((hash === '#/' || hash === '#/displays') && link.dataset.view === 'dashboard') link.classList.add('active');
     else if (hash === '#/presentations' && link.dataset.view === 'presentations') link.classList.add('active');
+    else if ((hash.startsWith('#/presentation-studio') || hash === '#/presentations' || hash === '#/ai-deck' || hash.startsWith('#/slide-editor')) && link.dataset.view === 'presentation-studio') link.classList.add('active');
+    else if (hash.startsWith('#/presentation-converter') && link.dataset.view === 'presentation-converter') link.classList.add('active');
     else if (hash === '#/ai-deck' && link.dataset.view === 'ai-deck') link.classList.add('active');
     else if (hash.startsWith('#/slide-editor') && link.dataset.view === 'slide-editor') link.classList.add('active');
     else if (hash === '#/downloads' && link.dataset.view === 'downloads') link.classList.add('active');
@@ -866,15 +877,39 @@ async function route() {
   } else if (hash === '#/settings') {
     currentView = settings;
     settings.render(app);
-  } else if (hash === '#/presentations') {
-    currentView = presentations;
-    presentations.render(app);
-  } else if (hash === '#/ai-deck') {
-    currentView = aiDeck;
-    aiDeck.render(app);
-  } else if (hash.startsWith('#/slide-editor')) {
+  } else if (hash.startsWith('#/presentation-studio')) {
+    if (await isPresentationStudioV2Enabled()) {
+      currentView = presentationStudio;
+      await presentationStudio.render(app);
+    } else {
+      currentView = presentations;
+      presentations.render(app);
+    }
+  } else if (hash.startsWith('#/presentation-converter')) {
+    if (await isPresentationConverterEnabled()) {
+      currentView = presentationConverter;
+      await presentationConverter.render(app);
+    } else {
+      currentView = presentations;
+      presentations.render(app);
+    }
+  } else if (hash.startsWith('#/slide-editor') && hash.includes('legacy=1')) {
     currentView = slideEditor;
     slideEditor.render(app);
+  } else if (hash === '#/presentations' || hash === '#/ai-deck' || hash.startsWith('#/slide-editor')) {
+    if (await isPresentationStudioV2Enabled()) {
+      currentView = presentationStudio;
+      await presentationStudio.render(app);
+    } else if (hash === '#/presentations') {
+      currentView = presentations;
+      presentations.render(app);
+    } else if (hash === '#/ai-deck') {
+      currentView = aiDeck;
+      aiDeck.render(app);
+    } else {
+      currentView = slideEditor;
+      slideEditor.render(app);
+    }
   } else if (hash === '#/downloads') {
     currentView = downloadsView;
     downloadsView.render(app);
@@ -933,6 +968,16 @@ function updateSidebarUser() {
   isEnterpriseUiEnabled().then((ok) => {
     const nav = document.getElementById('operatorConsoleNavItem');
     if (nav) nav.style.display = ok ? '' : 'none';
+  }).catch(() => {});
+
+  Promise.all([isPresentationStudioV2Enabled(), isPresentationConverterEnabled()]).then(([studioOn, converterOn]) => {
+    const studioNav = document.getElementById('presentationStudioNavItem');
+    const converterNav = document.getElementById('presentationConverterNavItem');
+    if (studioNav) studioNav.style.display = studioOn ? '' : 'none';
+    if (converterNav) converterNav.style.display = studioOn && converterOn ? '' : 'none';
+    document.querySelectorAll('.legacy-presentation-nav').forEach((item) => {
+      item.style.display = studioOn ? 'none' : '';
+    });
   }).catch(() => {});
 
   // Classroom Mode was a blanket flag that hid livestream/AI/camera nav items

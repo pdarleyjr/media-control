@@ -1,7 +1,7 @@
 const path = require('path');
 const os = require('os');
 const { localContentBaseUrlFromEnv } = require('./lib/local-asset-url');
-const { buildEnterpriseOperatorUiFlag } = require('./lib/feature-flags');
+const { buildEnterpriseOperatorUiFlag, parseEnabledFlag } = require('./lib/feature-flags');
 
 // Parse a human-friendly cache-quota string ("60G", "60GB", "6000000000", 60).
 // Used by roomAgentCacheQuotaBytes below + the backfill/agent scripts. Returns
@@ -234,6 +234,10 @@ module.exports = {
   // explicit ENTERPRISE_OPERATOR_UI_USERS allowlist (or "*") to canary it.
   features: {
     presentationStudio: process.env.ENABLE_PRESENTATION_STUDIO !== 'false',
+    // Additive v2 surfaces default OFF for safe image/feature rollback. The v1
+    // routes/player remain available underneath when either flag is disabled.
+    presentationStudioV2: parseEnabledFlag(process.env.ENABLE_PRESENTATION_STUDIO_V2),
+    presentationConverter: parseEnabledFlag(process.env.ENABLE_PRESENTATION_CONVERTER),
     aiDeckBuilder: process.env.ENABLE_AI_DECK_BUILDER !== 'false',
     mediaDownloader: process.env.ENABLE_MEDIA_DOWNLOADER !== 'false',
     nextcloudSync: process.env.ENABLE_NEXTCLOUD_SYNC !== 'false',

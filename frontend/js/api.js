@@ -665,12 +665,35 @@ export const api = {
   // ==================== MBFD Media Control Studio: Presentations ====================
   presentations: {
     list: () => request('/presentations'),
+    registry: () => request('/presentations/templates/registry'),
     get: (id) => request(`/presentations/${id}`),
     create: (data) => request('/presentations', { method: 'POST', body: JSON.stringify(data) }),
     update: (id, data) => request(`/presentations/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     remove: (id) => request(`/presentations/${id}`, { method: 'DELETE' }),
     publish: (id) => request(`/presentations/${id}/publish`, { method: 'POST' }),
     duplicate: (id) => request(`/presentations/${id}/duplicate`, { method: 'POST' }),
+    linkAsset: (id, contentId) => request(`/presentations/${encodeURIComponent(id)}/assets/link`, {
+      method: 'POST', body: JSON.stringify({ content_id: contentId }),
+    }),
+    exportToLibrary: (id) => request(`/presentations/${encodeURIComponent(id)}/export-to-library`, { method: 'POST' }),
+    downloadPptx: async (id) => {
+      const res = await fetch(normalizeApiPath(`/presentations/${encodeURIComponent(id)}/export.pptx`), {
+        headers: getAuthHeaders(),
+      });
+      if (res.status === 401) {
+        localStorage.removeItem('token'); localStorage.removeItem('user');
+        window.location.hash = '#/login'; window.location.reload();
+        throw new Error('Session expired');
+      }
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(body.error || 'PowerPoint export failed');
+      }
+      const blob = await res.blob();
+      const disposition = res.headers.get('content-disposition') || '';
+      const match = disposition.match(/filename\*?=(?:UTF-8'')?["']?([^"';]+)/i);
+      return { blob, filename: match ? decodeURIComponent(match[1]) : 'presentation.pptx' };
+    },
     // Upload an image for use on a slide. Returns { content_id, url, thumbnail_url, width, height, filename }.
     // url is the public /player/asset/:id path the deck player loads. Multipart via XHR for progress.
     uploadAsset: (presId, file, onProgress) => new Promise((resolve, reject) => {
@@ -692,6 +715,15 @@ export const api = {
       xhr.onerror = () => reject(new Error('Upload failed'));
       xhr.send(fd);
     }),
+  },
+
+  presentationConverter: {
+    start: (data) => request('/presentation-converter/jobs', { method: 'POST', body: JSON.stringify(data) }),
+    job: (id) => request(`/presentation-converter/jobs/${encodeURIComponent(id)}`, {
+      headers: { 'Cache-Control': 'no-store' },
+    }),
+    cancel: (id) => request(`/presentation-converter/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
+    retry: (id) => request(`/presentation-converter/jobs/${encodeURIComponent(id)}/retry`, { method: 'POST' }),
   },
 
   // Schedules (content/playlist windows per display or group; RRULE recurrence).
@@ -734,6 +766,8 @@ export const api = {
   ai: {
     health: () => request('/ai/health'),
     generateDeck: (data) => request('/ai/generate-deck', { method: 'POST', body: JSON.stringify(data) }),
+    generateDeckV2: (data) => request('/ai/generate-deck-v2', { method: 'POST', body: JSON.stringify(data) }),
+    assistSlideV2: (data) => request('/ai/assist-slide-v2', { method: 'POST', body: JSON.stringify(data) }),
     job: (id) => request(`/ai/jobs/${id}`),
   },
 

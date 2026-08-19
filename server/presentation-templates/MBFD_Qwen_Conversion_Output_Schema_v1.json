@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mbfd:videowall:qwen-conversion-plan:v1",
+  "title": "MBFD Qwen Conversion Plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["source_slide_number", "wall_mode", "transfer_mode", "layout_id", "target_slides", "source_accounting", "requires_review", "confidence"],
+  "properties": {
+    "source_slide_number": {"type": "integer", "minimum": 1},
+    "wall_mode": {"type": "string", "enum": ["2-display", "3-display"]},
+    "transfer_mode": {"type": "string", "enum": ["faithful", "instructor_optimized"]},
+    "layout_id": {
+      "type": "string",
+      "enum": ["STANDARD_BULLETS", "STANDARD_PARAGRAPH", "DUAL_MEDIA", "FULL_IMAGE", "VIDEO_FOCUS", "COMPARISON", "DIAGRAM_PROCESS", "SECTION_DIVIDER", "TABLE_DATA", "QUOTE_TAKEAWAY", "GALLERY", "THREE_COLUMN_TEXT", "CONTINUATION"]
+    },
+    "reason": {"type": "string"},
+    "target_slides": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["layout_id", "region_assignments"],
+        "additionalProperties": false,
+        "properties": {
+          "layout_id": {
+            "type": "string",
+            "enum": ["STANDARD_BULLETS", "STANDARD_PARAGRAPH", "DUAL_MEDIA", "FULL_IMAGE", "VIDEO_FOCUS", "COMPARISON", "DIAGRAM_PROCESS", "SECTION_DIVIDER", "TABLE_DATA", "QUOTE_TAKEAWAY", "GALLERY", "THREE_COLUMN_TEXT", "CONTINUATION"]
+          },
+          "continuation_index": {"type": "integer", "minimum": 0},
+          "region_assignments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["region_id", "source_refs", "content_type", "transform"],
+              "additionalProperties": false,
+              "properties": {
+                "region_id": {"type": "string", "minLength": 1},
+                "source_refs": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+                "content_type": {"type": "string", "enum": ["text", "paragraph", "bullets", "image", "video", "audio", "table", "chart", "diagram", "link", "caption", "takeaway", "mixed"]},
+                "transform": {"type": "string", "enum": ["copy_exact", "preserve_paragraph", "preserve_bullets", "condense", "split", "native_transfer", "render_fallback", "linked_poster"]},
+                "text": {"type": ["string", "null"]},
+                "media_id": {"type": ["string", "null"]},
+                "fit": {"type": ["string", "null"], "enum": ["contain", "cover", null]},
+                "preserve_hyperlink": {"type": "boolean", "default": true}
+              }
+            }
+          }
+        }
+      }
+    },
+    "media_actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source_ref", "action"],
+        "additionalProperties": false,
+        "properties": {
+          "source_ref": {"type": "string"},
+          "action": {"type": "string", "enum": ["copy_binary", "native_transfer", "preserve_url", "linked_poster", "render_fallback", "package_sidecar", "manual_review"]},
+          "reason": {"type": "string"}
+        }
+      }
+    },
+    "source_accounting": {
+      "type": "object",
+      "required": ["accounted_source_refs", "unaccounted_source_refs"],
+      "additionalProperties": false,
+      "properties": {
+        "accounted_source_refs": {"type": "array", "items": {"type": "string"}},
+        "unaccounted_source_refs": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "requires_review": {"type": "boolean"},
+    "review_reasons": {"type": "array", "items": {"type": "string"}},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+  }
+}

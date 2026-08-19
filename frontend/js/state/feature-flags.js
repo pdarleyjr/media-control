@@ -55,6 +55,27 @@ export async function isClassroomModeEnabled() {
   return !!(features.classroomMode && features.classroomMode.authorized);
 }
 
+async function isAuthorizedFeature(key) {
+  if (_cache) return !!(_cache[key] && _cache[key].authorized);
+  if (!_fetching) _fetching = fetchFeatures();
+  const features = await _fetching;
+  return !!(features[key] && features[key].authorized);
+}
+
+export function isPresentationStudioV2Enabled() {
+  return isAuthorizedFeature('presentationStudioV2');
+}
+
+export function isPresentationConverterEnabled() {
+  return isAuthorizedFeature('presentationConverter');
+}
+
 export function clearFeatureCache() { _cache = null; _fetching = null; }
 
-export default { isEnterpriseUiEnabled, isClassroomModeEnabled, clearFeatureCache };
+export default {
+  isEnterpriseUiEnabled,
+  isClassroomModeEnabled,
+  isPresentationStudioV2Enabled,
+  isPresentationConverterEnabled,
+  clearFeatureCache,
+};

@@ -882,6 +882,7 @@ require('./migrations/live-sources').migrateLiveSourcesSchema(db);
 // so a partial upgrade never masquerades as a usable queue.
 require('./migrations/media-pipeline').migrateMediaPipeline(db);
 require('./migrations/media-operations').ensureMediaOperationsSchema(db);
+require('./migrations/presentation-studio-v2').migratePresentationStudioV2(db);
 
 // Phase 3: Operational Activities ("Scenes") + asset placements.
 // A scene is a named snapshot of which content/playlist shows on which display;

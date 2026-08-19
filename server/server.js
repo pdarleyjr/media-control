@@ -226,6 +226,24 @@ app.get(['/player', '/player/', '/player/index.html'], (req, res) => {
   });
 });
 
+// Exact approved MBFD logo/watermark bytes are read from the checked-in donor
+// PPTX for the requested wall profile. Only two fixed inert raster names are
+// exposed; arbitrary archive paths are never accepted.
+app.get('/player/template-asset/:profile/:name', async (req, res) => {
+  try {
+    const { getTemplateAsset } = require('./lib/presentation-template-assets');
+    const asset = await getTemplateAsset(String(req.params.profile || ''), String(req.params.name || ''));
+    if (!asset) return res.status(404).type('text/plain').send('not found');
+    res.setHeader('Content-Type', asset.mime);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'public, max-age=2592000, immutable');
+    res.setHeader('ETag', `"${asset.sha256}"`);
+    return res.send(asset.buffer);
+  } catch {
+    return res.status(404).type('text/plain').send('not found');
+  }
+});
+
 // MBFD Media Control Studio — public deck player. Served UNDER /player/* so it
 // inherits the existing Cloudflare-Access + CSP bypass (displays load it with
 // no OTP). The mbfd-deck-v1 document is inlined into the HTML (no authenticated
@@ -239,12 +257,21 @@ app.get('/player/deck/:id', (req, res) => {
   fs.readFile(deckHtmlPath, 'utf8', (err, html) => {
     if (err) return res.status(500).type('text/plain').send('deck player unavailable');
     let deckJson = 'null';
+    let renderPlanJson = 'null';
     if (p) {
       const raw = p.published_snapshot || p.deck_json || 'null';
-      try { JSON.parse(raw); deckJson = raw; } catch { deckJson = 'null'; }
+      try {
+        const parsed = JSON.parse(raw);
+        deckJson = raw;
+        if (parsed && parsed.version === 'mbfd-deck-v2') {
+          const { buildRenderPlan } = require('./lib/presentation-template-registry');
+          renderPlanJson = JSON.stringify(buildRenderPlan(parsed, { mode: 'production' }));
+        }
+      } catch { deckJson = 'null'; renderPlanJson = 'null'; }
     }
     const safe = deckJson.replace(/</g, '\\u003c');
-    const inject = '<script>window.__deck = ' + safe + ';</script>\n';
+    const safePlan = renderPlanJson.replace(/</g, '\\u003c');
+    const inject = '<script>window.__deck = ' + safe + ';window.__deckRenderPlan = ' + safePlan + ';</script>\n';
     res.type('html').setHeader('Cache-Control', 'no-cache').send(html.replace('</head>', inject + '</head>'));
   });
 });
@@ -418,10 +445,10 @@ app.get('/player/canvas-asset/:endpointId/:contentId/:width/:height/:signature',
   res.sendFile(filePath);
 });
 
-// MBFD Media Control Studio — public slide-image serving. Under /player/* so it
+// MBFD Media Control Studio — public presentation-asset serving. Under /player/* so it
 // inherits the Cloudflare-Access + CSP bypass: deck images load on unattended
 // displays with no OTP, exactly like the deck HTML itself. ONLY rows that are
-// (a) an image and (b) linked by a presentation_assets row are served — so this
+// (a) an explicitly safe raster/media MIME and (b) linked by a presentation_assets row are served — so this
 // can't be used to enumerate arbitrary private content. UUIDs are unguessable,
 // matching the public deck threat model (anyone with a deck URL can already see
 // the deck + its images). Path-traversal guarded; CORS-open + long cache.
@@ -429,7 +456,12 @@ app.get('/player/asset/:id', (req, res) => {
   const { db } = require('./db/database');
   const c = db.prepare('SELECT id, filepath, mime_type FROM content WHERE id = ?').get(req.params.id);
   if (!c || !c.filepath) return res.status(404).type('text/plain').send('not found');
-  if (!c.mime_type || !c.mime_type.startsWith('image/')) return res.status(404).type('text/plain').send('not found');
+  const safePresentationMimes = new Set([
+    'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp',
+    'video/mp4', 'video/webm', 'video/quicktime',
+    'audio/mpeg', 'audio/mp4', 'audio/wav', 'audio/ogg',
+  ]);
+  if (!safePresentationMimes.has(String(c.mime_type || '').toLowerCase())) return res.status(404).type('text/plain').send('not found');
   const linked = db.prepare('SELECT 1 FROM presentation_assets WHERE content_id = ? LIMIT 1').get(req.params.id);
   if (!linked) return res.status(403).type('text/plain').send('not a presentation asset');
   const safePath = path.resolve(config.contentDir, path.basename(c.filepath));
@@ -437,7 +469,7 @@ app.get('/player/asset/:id', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   res.setHeader('Cache-Control', 'public, max-age=2592000, immutable');
-  // Force the stored (image/*) MIME — never let the on-disk extension drive the
+  // Force the stored allowlisted MIME — never let the on-disk extension drive the
   // Content-Type (an attacker could upload a raster file named ".html"). nosniff
   // stops browsers MIME-sniffing the bytes into something executable.
   res.setHeader('Content-Type', c.mime_type);
@@ -940,6 +972,8 @@ app.use('/api/groups', requireAuth, resolveTenancy, require('./routes/device-gro
 app.use('/api/playlists', requireAuth, resolveTenancy, require('./routes/playlists'));
 // MBFD Media Control Studio: presentations (mbfd-deck-v1). Same auth+tenancy gate.
 app.use('/api/presentations', requireAuth, resolveTenancy, require('./routes/presentations'));
+app.use('/api/presentation-converter', rateLimit(rateLimitOptions(60000, 30)));
+app.use('/api/presentation-converter', requireAuth, resolveTenancy, require('./routes/presentation-converter'));
 // AI Deck Builder (server-side Ollama bridge; async jobs). AI never called from the browser.
 app.use('/api/ai', requireAuth, resolveTenancy, require('./routes/ai'));
 // Files (Nextcloud WebDAV proxy) + media downloads. Feature-flag + env gated.

@@ -7,6 +7,7 @@ const { ELEVATED_ROLES } = require('../middleware/auth');
 const config = require('../config');
 const ai = require('../services/ai');
 const ncSync = require('../services/nextcloud-sync');
+const { PROFILE_IDS } = require('../lib/presentation-template-registry');
 
 // MBFD Media Control Studio — AI Deck Builder API (server-side Ollama bridge).
 // Generation is ASYNCHRONOUS: a 35B model can take longer than Cloudflare's
@@ -59,6 +60,84 @@ router.post('/generate-deck', (req, res) => {
     } catch (e) {
       db.prepare(`UPDATE ai_generation_jobs SET status = 'error', error_msg = ?, completed_at = strftime('%s','now') WHERE id = ?`)
         .run(String(e.message || e).slice(0, 500), jobId);
+    }
+  })();
+});
+
+// Unified Presentation Studio topic generation. Qwen authors semantic prose /
+// bullets under a JSON Schema; deterministic code maps that content into the
+// canonical v2 registry. The browser still polls the same async job endpoint.
+router.post('/generate-deck-v2', (req, res) => {
+  if (!workspaceWriteCtx(req, res)) return;
+  if (!config.features.presentationStudioV2) return res.status(404).json({ error: 'Presentation Studio v2 is disabled' });
+  const prompt = String(req.body.prompt || '').trim();
+  if (!prompt) return res.status(400).json({ error: 'prompt required' });
+  const title = req.body.title ? String(req.body.title).trim() : '';
+  const audience = req.body.audience ? String(req.body.audience).trim() : '';
+  const slideCount = Math.min(20, Math.max(3, parseInt(req.body.slide_count) || 8));
+  const wallProfile = Object.values(PROFILE_IDS).includes(req.body.wall_profile)
+    ? req.body.wall_profile : PROFILE_IDS.THREE_DISPLAY;
+  const jobId = uuidv4();
+  db.prepare(`INSERT INTO ai_generation_jobs (id, workspace_id, user_id, job_type, model, prompt, status)
+              VALUES (?, ?, ?, 'deck_v2', ?, ?, 'pending')`)
+    .run(jobId, req.workspaceId, req.user.id, config.ollamaModel, prompt.slice(0, 2000));
+  res.status(202).json({ job_id: jobId, status: 'pending' });
+  const wsId = req.workspaceId, userId = req.user.id;
+  (async () => {
+    try {
+      db.prepare("UPDATE ai_generation_jobs SET status='running' WHERE id=?").run(jobId);
+      const deck = await ai.generateDeckV2({ prompt, title, audience, slideCount, wallProfile });
+      const presId = uuidv4();
+      deck.deck_id = presId;
+      db.prepare(`INSERT INTO presentations (id, workspace_id, user_id, created_by, title, description, theme, canvas_profile, deck_json, status)
+                  VALUES (?, ?, ?, ?, ?, ?, 'mbfd-videowall-v2', ?, ?, 'draft')`)
+        .run(presId, wsId, userId, userId, deck.title, `AI-assisted · ${prompt.slice(0, 140)}`, wallProfile, JSON.stringify(deck));
+      db.prepare(`UPDATE ai_generation_jobs SET status='done', presentation_id=?, result_json=?, completed_at=strftime('%s','now') WHERE id=?`)
+        .run(presId, JSON.stringify({ presentation_id: presId, title: deck.title, slides: deck.slides.length, version: deck.version }), jobId);
+      ncSync.syncSoon(presId);
+    } catch (error) {
+      db.prepare(`UPDATE ai_generation_jobs SET status='error', error_msg=?, completed_at=strftime('%s','now') WHERE id=?`)
+        .run(String(error.message || error).slice(0, 500), jobId);
+    }
+  })();
+});
+
+// Selected-slide assistance is suggestion-only. The worker stores a semantic
+// patch on the caller-owned async job; it never mutates the presentation row.
+// The Studio applies the patch locally after first recording an undo snapshot.
+router.post('/assist-slide-v2', (req, res) => {
+  const ctx = workspaceWriteCtx(req, res);
+  if (!ctx) return;
+  if (!config.features.presentationStudioV2) return res.status(404).json({ error: 'Presentation Studio v2 is disabled' });
+  const presentationId = String(req.body.presentation_id || '');
+  const slideId = String(req.body.slide_id || '');
+  const action = String(req.body.action || '');
+  if (!ai.SLIDE_ASSIST_ACTIONS.includes(action)) return res.status(400).json({ error: 'unsupported slide assistance action' });
+  const presentation = db.prepare('SELECT * FROM presentations WHERE id=? AND workspace_id=?').get(presentationId, req.workspaceId);
+  if (!presentation) return res.status(404).json({ error: 'presentation not found' });
+  if (!ctx.actingAs && !ELEVATED_ROLES.includes(req.user.role) && presentation.user_id && presentation.user_id !== req.user.id) {
+    return res.status(403).json({ error: 'You can only edit your own presentations' });
+  }
+  let deck;
+  try { deck = JSON.parse(presentation.deck_json); } catch { return res.status(422).json({ error: 'Presentation document is invalid' }); }
+  if (deck.version !== 'mbfd-deck-v2' || !Object.values(PROFILE_IDS).includes(deck.wall_profile)) return res.status(422).json({ error: 'Slide assistance requires an mbfd-deck-v2 presentation' });
+  const slide = deck.slides.find((candidate) => candidate.id === slideId);
+  if (!slide) return res.status(404).json({ error: 'slide not found' });
+  const instruction = String(req.body.instruction || '').slice(0, 1200);
+  const jobId = uuidv4();
+  db.prepare(`INSERT INTO ai_generation_jobs (id, workspace_id, user_id, job_type, model, prompt, presentation_id, status)
+              VALUES (?, ?, ?, 'slide_assist_v2', ?, ?, ?, 'pending')`)
+    .run(jobId, req.workspaceId, req.user.id, config.ollamaModel, `${action}: ${instruction}`.slice(0, 2000), presentationId);
+  res.status(202).json({ job_id: jobId, status: 'pending' });
+  (async () => {
+    try {
+      db.prepare("UPDATE ai_generation_jobs SET status='running' WHERE id=?").run(jobId);
+      const suggestion = await ai.assistSlideV2({ slide, wallProfile: deck.wall_profile, action, instruction });
+      db.prepare(`UPDATE ai_generation_jobs SET status='done', result_json=?, completed_at=strftime('%s','now') WHERE id=?`)
+        .run(JSON.stringify({ presentation_id: presentationId, slide_id: slideId, action, suggestion }), jobId);
+    } catch (error) {
+      db.prepare(`UPDATE ai_generation_jobs SET status='error', error_msg=?, completed_at=strftime('%s','now') WHERE id=?`)
+        .run(String(error.message || error).slice(0, 500), jobId);
     }
   })();
 });
