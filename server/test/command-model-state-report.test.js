@@ -133,3 +133,32 @@ test('mergeDisplayState rejects malformed numeric and boolean telemetry', () => 
       .run('display', targetId);
   }
 });
+
+test('mergeDisplayState clears a recovered renderer error without erasing it when omitted', () => {
+  const targetId = `test-state-error-${crypto.randomUUID()}`;
+  try {
+    mergeDisplayState('display', targetId, {
+      render_state: 'error',
+      error_state: 'The YouTube owner does not allow embedded playback (code 150).',
+    });
+    mergeDisplayState('display', targetId, { render_state: 'loading' });
+
+    const preserved = db.prepare(`
+      SELECT render_state, error_state FROM display_states
+      WHERE target_type = ? AND target_id = ?
+    `).get('display', targetId);
+    assert.equal(preserved.render_state, 'loading');
+    assert.match(preserved.error_state, /code 150/);
+
+    mergeDisplayState('display', targetId, { render_state: 'playing', error_state: null });
+    const recovered = db.prepare(`
+      SELECT render_state, error_state FROM display_states
+      WHERE target_type = ? AND target_id = ?
+    `).get('display', targetId);
+    assert.equal(recovered.render_state, 'playing');
+    assert.equal(recovered.error_state, null);
+  } finally {
+    db.prepare('DELETE FROM display_states WHERE target_type = ? AND target_id = ?')
+      .run('display', targetId);
+  }
+});
