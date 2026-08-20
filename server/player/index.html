@@ -4058,6 +4058,18 @@
       } catch { return null; }
     }
 
+    function youtubePlaybackError(errorCode) {
+      const code = Number(errorCode);
+      const messages = {
+        2: 'YouTube rejected the video ID or playback parameters (code 2).',
+        5: 'YouTube could not play this video in the HTML5 player (code 5).',
+        100: 'This YouTube video is unavailable, private, or removed (code 100).',
+        101: 'The YouTube owner does not allow embedded playback (code 101).',
+        150: 'The YouTube owner does not allow embedded playback (code 150).',
+      };
+      return messages[code] || `YouTube playback failed (${errorCode}).`;
+    }
+
     // Load YouTube IFrame API once. (ytApiReady / ytApiCallbacks are declared at the
     // top of the script alongside the other player state.)
     function loadYoutubeApi(cb) {
@@ -4197,7 +4209,9 @@
             onError: (event) => {
               if (!isCurrent()) return;
               console.error('YouTube error', event.data, 'for:', item.filename);
-              failPendingBroadcastRender(`YouTube render failed (${event.data})`);
+              currentMediaError = youtubePlaybackError(event.data);
+              publishPlayerState();
+              failPendingBroadcastRender(currentMediaError);
               if (playlist.length > 1) {
                 console.log('Skipping unplayable YouTube video');
                 setTimeout(nextItem, 2000);
