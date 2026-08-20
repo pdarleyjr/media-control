@@ -57,6 +57,19 @@ test('player distinguishes receipt from confirmed rendering', () => {
   );
 });
 
+test('YouTube failures remain visible in authoritative player state', () => {
+  const player = source('player/index.html');
+  const youtube = player.slice(
+    player.indexOf('function youtubePlaybackError'),
+    player.indexOf('// Note: YouTube advancement'),
+  );
+  assert.match(youtube, /101|150/);
+  assert.match(youtube, /does not allow embedded playback/);
+  assert.match(youtube, /currentMediaError\s*=\s*youtubePlaybackError\(event\.data\)/);
+  assert.match(youtube, /publishPlayerState\(\)/);
+  assert.match(youtube, /failPendingBroadcastRender\(currentMediaError\)/);
+});
+
 test('detached media cannot confirm or fail a newer pending broadcast', () => {
   const player = source('player/index.html');
   const readiness = player.slice(

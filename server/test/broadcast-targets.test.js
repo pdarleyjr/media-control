@@ -156,6 +156,42 @@ test('typed targets resolve current display, wall, device-group, and wall-group 
   assert.deepEqual(result.targets, ['d1', 'd2', 'd3']);
 });
 
+test('typed classroom walls preserve 3-display, 2-display, and standalone isolation', () => {
+  const devices = Object.fromEntries(
+    ['tv1', 'tv2', 'tv3', 'tv4', 'tv5', 'podium'].map((id) => [
+      id,
+      { id, workspace_id: 'classroom' },
+    ]),
+  );
+  const db = makeTopologyDb({
+    devices,
+    walls: {
+      primary: { id: 'primary', workspace_id: 'classroom', layout_revision: 21, layout_json: null },
+      secondary: { id: 'secondary', workspace_id: 'classroom', layout_revision: 8, layout_json: null },
+    },
+    wallMembers: {
+      primary: ['tv1', 'tv2', 'tv3'],
+      secondary: ['tv4', 'tv5'],
+    },
+  });
+
+  const resolve = (ref) => resolveTypedBroadcastTargets({
+    db,
+    workspaceId: 'classroom',
+    refs: [ref],
+  });
+
+  assert.deepEqual(
+    resolve({ type: 'wall', id: 'primary', layout_revision: 21 }).targets,
+    ['tv1', 'tv2', 'tv3'],
+  );
+  assert.deepEqual(
+    resolve({ type: 'wall', id: 'secondary', layout_revision: 8 }).targets,
+    ['tv4', 'tv5'],
+  );
+  assert.deepEqual(resolve({ type: 'display', id: 'podium' }).targets, ['podium']);
+});
+
 test('typed wall targets reject stale revisions with a conflict before returning any membership', () => {
   const db = makeTopologyDb({
     devices: { current: { id: 'current', workspace_id: 'ws1' } },
