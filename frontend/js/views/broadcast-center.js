@@ -13,16 +13,18 @@
 
 import { api } from '../api.js';
 import { showToast } from '../components/toast.js';
-import { sendCommand } from '../socket.js';
+import { roomState, sendCommand } from '../socket.js';
 import { openTargetPicker } from '../components/target-picker.js';
 import { waitForTargetCatalog } from '../services/target-catalog-runtime.js';
 import { expandTargetsToDeviceIds, findCatalogTarget } from '../services/target-catalog.js';
+import { createTransportIntentTracker } from './media-control/transport-intent.js';
 
 let data = { catalog: null, presentations: [], playlists: [], content: [], ncFiles: [], ncPath: '' };
 let sel = { type: 'presentation', id: null, label: '' };
 let targets = new Set();
 let targetReferences = [];
 let blanked = false;
+const transportIntentTracker = createTransportIntentTracker();
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
@@ -39,6 +41,15 @@ function selectedTypedTargets() {
 }
 function liveProgramSelected() {
   return [...targets].some((key) => key.startsWith('live-program:'));
+}
+function transportIntentKey(ids) {
+  return `${ids.slice().sort().join(',')}:${sel.type}:${sel.id || 'no-source'}`;
+}
+function seedPlayingIntent(ids) {
+  if (!ids.length) return;
+  const intentKey = transportIntentKey(ids);
+  const intent = transportIntentTracker.resolve(intentKey, 'play', { paused: false });
+  transportIntentTracker.settle(intentKey, intent.sequence);
 }
 
 const ROW = 'display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:var(--mc-radius-sm);cursor:pointer;border:1px solid var(--mc-border-light);background:var(--mc-surface);margin-bottom:6px';
@@ -215,6 +226,7 @@ async function broadcast() {
     // server-side — never sent from the client.
     if (sel.type === 'nc_file') {
       const r = await api.files.broadcast(sel.id, undefined, { targets: selectedTypedTargets() });
+      if (Number(r.sent ?? device_ids.length) > 0) seedPlayingIntent(device_ids);
       showToast(`Broadcasting "${esc(sel.label)}" to ${r.sent != null ? r.sent : device_ids.length} display(s)`, 'success');
       return;
     }
@@ -228,6 +240,7 @@ async function broadcast() {
     else if (sel.type === 'playlist') payload.playlist_id = sel.id;
     else payload.content_id = sel.id;
     const r = await api.broadcast(payload);
+    if (Number(r.sent ?? device_ids.length) > 0) seedPlayingIntent(device_ids);
     showToast(`Broadcasting "${esc(sel.label)}" to ${r.sent != null ? r.sent : device_ids.length} display(s)`, 'success');
   } catch (e) {
     showToast(e.message || 'Broadcast failed', 'error');
@@ -240,6 +253,7 @@ export async function render(app) {
   sel = { type: 'presentation', id: null, label: '' };
   targets = new Set();
   targetReferences = [];
+  transportIntentTracker.clear();
   app.innerHTML = `
     <div class="mc-studio-surface">
       <div class="mc-studio-wrap" style="max-width:1200px">
@@ -357,10 +371,18 @@ export async function render(app) {
       showToast(`${blanked ? 'Blanked' : 'Unblanked'} ${ids.length} display(s)`, 'success');
       return;
     }
-    ids.forEach((id) => sendCommand(id, 'transport', { action: ctl }));
-    showToast(`Sent ${ctl.replace('_', '/')} to ${ids.length} display(s)`, 'success');
+    const playback = roomState.getDisplay(ids[0])?.now_playing || {};
+    const intentKey = transportIntentKey(ids);
+    const intent = transportIntentTracker.resolve(intentKey, ctl, playback);
+    if (intent.noOp) {
+      transportIntentTracker.settle(intentKey, intent.sequence);
+      return;
+    }
+    ids.forEach((id) => sendCommand(id, 'transport', { ...intent.payload, action: intent.action }));
+    transportIntentTracker.settle(intentKey, intent.sequence);
+    showToast(`Sent ${intent.action.replace('_', '/')} to ${ids.length} display(s)`, 'success');
   });
   updateBar();
 }
 
-export function cleanup() { /* in-memory only */ }
+export function cleanup() { transportIntentTracker.clear(); }

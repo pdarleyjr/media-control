@@ -28,3 +28,11 @@ test('Broadcast Center sends presentations through the canonical presentation id
   assert.match(source, /payload\.presentation_id = sel\.id/);
   assert.doesNotMatch(source, /payload\.remote_url = `\$\{location\.origin\}\/player\/deck\/\$\{sel\.id\}`/);
 });
+
+test('Broadcast Center preserves rapid transport intent while player state catches up', () => {
+  assert.match(source, /createTransportIntentTracker/);
+  assert.match(source, /roomState\.getDisplay\(ids\[0\]\)\?\.now_playing/);
+  assert.match(source, /transportIntentTracker\.resolve\(intentKey, ctl, playback\)/);
+  assert.match(source, /sendCommand\(id, 'transport', \{ \.\.\.intent\.payload, action: intent\.action \}\)/);
+  assert.match(source, /transportIntentTracker\.settle\(intentKey, intent\.sequence/);
+});
