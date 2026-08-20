@@ -23,3 +23,8 @@ test('Broadcast Center shows and transmits Live Program only through explicit se
   assert.match(source, /allowLiveProgram: sel\.type !== 'nc_file'/);
   assert.match(source, /Live Program explicitly selected/);
 });
+
+test('Broadcast Center sends presentations through the canonical presentation id contract', () => {
+  assert.match(source, /payload\.presentation_id = sel\.id/);
+  assert.doesNotMatch(source, /payload\.remote_url = `\$\{location\.origin\}\/player\/deck\/\$\{sel\.id\}`/);
+});

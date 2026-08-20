@@ -2,8 +2,9 @@
 // Pick a source (a presentation, a playlist, or a media item), pick target
 // displays (individually, by group, or all), and push it live to those screens
 // via POST /api/broadcast (the same path Present-to-displays uses). A
-// presentation is broadcast as its public deck-player URL; playlists/media use
-// their ids. Routine routing follows the saved no-confirmation policy.
+// presentation is broadcast by its canonical server-authorized ID;
+// playlists/media use their IDs. Routine routing follows the saved
+// no-confirmation policy.
 //
 // Honest scope: /api/broadcast is a one-shot push (the player loops decks/
 // playlists on its own), so there is no fake Loop/Schedule toggle here —
@@ -223,7 +224,7 @@ async function broadcast() {
       ...(typedTargets.length ? { targets: typedTargets } : { device_ids }),
       include_live_stream,
     };
-    if (sel.type === 'presentation') payload.remote_url = `${location.origin}/player/deck/${sel.id}`;
+    if (sel.type === 'presentation') payload.presentation_id = sel.id;
     else if (sel.type === 'playlist') payload.playlist_id = sel.id;
     else payload.content_id = sel.id;
     const r = await api.broadcast(payload);
