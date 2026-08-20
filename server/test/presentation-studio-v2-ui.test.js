@@ -71,6 +71,17 @@ test('Converter is asynchronous, review-first, cancelable and never auto-broadca
   assert.doesNotMatch(source, /api\.broadcast\s*\(/);
 });
 
+test('Converter status polling stays within the route limit and retries transient throttling', () => {
+  const source = read('frontend/js/views/presentation-converter.js');
+  const interval = Number(source.match(/const POLL_INTERVAL_MS = (\d+);/)?.[1]);
+  assert.ok(Number.isFinite(interval), 'Converter poll interval must be explicit');
+  assert.ok(
+    Math.ceil(60000 / interval) + 1 <= 30,
+    `Converter polling would exceed the 30 request/minute route limit: ${interval}ms`,
+  );
+  assert.match(source, /if \(error\.status === 429\) return;/);
+});
+
 test('Studio CSS preserves a fixed logical wall stage and accessible touch geometry', () => {
   const css = read('frontend/css/presentation-studio.css');
   assert.match(css, /--studio-stage-width/);

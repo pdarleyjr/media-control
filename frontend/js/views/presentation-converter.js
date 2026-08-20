@@ -5,6 +5,7 @@ import { showToast } from '../components/toast.js';
 
 const PROFILE_TWO = 'wall-2x4k-7680x2160';
 const PROFILE_THREE = 'wall-3x4k-11520x2160';
+const POLL_INTERVAL_MS = 2500;
 let pollTimer = null;
 let activeJobId = null;
 let sourceContentId = '';
@@ -74,7 +75,10 @@ async function pollJob(id) {
       setStatus(`${t('converter.failed')}: ${job.error?.message || ''}`, true);
       const retry = document.getElementById('converterRetry'); if (retry) retry.hidden = false;
     } else setStatus(job.status);
-  } catch (error) { cleanupPoll(); setStatus(error.message, true); }
+  } catch (error) {
+    if (error.status === 429) return;
+    cleanupPoll(); setStatus(error.message, true);
+  }
 }
 
 async function startConversion() {
@@ -96,7 +100,7 @@ async function startConversion() {
     document.getElementById('converterCancel').hidden = false;
     setProgress(queued.progress_pct || 0);
     setStatus(t('converter.progress', { stage: queued.stage || queued.status, percent: queued.progress_pct || 0 }));
-    cleanupPoll(); pollTimer = setInterval(() => pollJob(activeJobId), 1500); await pollJob(activeJobId);
+    cleanupPoll(); pollTimer = setInterval(() => pollJob(activeJobId), POLL_INTERVAL_MS); await pollJob(activeJobId);
   } catch (error) { button.disabled = false; setStatus(error.message, true); }
 }
 
@@ -126,7 +130,7 @@ function bind() {
     if (!activeJobId) return;
     try {
       await api.presentationConverter.retry(activeJobId); document.getElementById('converterRetry').hidden = true;
-      document.getElementById('converterCancel').hidden = false; cleanupPoll(); pollTimer = setInterval(() => pollJob(activeJobId), 1500);
+      document.getElementById('converterCancel').hidden = false; cleanupPoll(); pollTimer = setInterval(() => pollJob(activeJobId), POLL_INTERVAL_MS);
     } catch (error) { setStatus(error.message, true); }
   });
 }
