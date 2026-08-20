@@ -88,6 +88,8 @@ const stmts = {
      WHERE target_type = ? AND target_id = ?`),
   updateHeartbeat: p(`UPDATE display_states
     SET last_heartbeat_at = ?, updated_at = ? WHERE target_type = ? AND target_id = ?`),
+  clearDisplayErrorState: p(`UPDATE display_states
+    SET error_state = NULL WHERE target_type = ? AND target_id = ?`),
 
   upsertHeartbeatState: p(`INSERT INTO display_states (target_type, target_id, last_heartbeat_at, updated_at)
     VALUES (?, ?, ?, ?)
@@ -235,6 +237,8 @@ function mergeDisplayState(target_type, target_id, state) {
   if (!state || typeof state !== 'object') return { applied: false, reason: 'invalid_state' };
   if (!target_type || !target_id) return { applied: false, reason: 'invalid_target' };
   state = enforceAudioAuthorityOnState(target_type, target_id, state);
+  const clearsErrorState = Object.prototype.hasOwnProperty.call(state, 'error_state')
+    && state.error_state === null;
   const tx = db.transaction(() => {
     const now = Date.now();
     const vals = STATE_COLS.map((key) => toStateScalar(key, state[key]));
@@ -250,6 +254,9 @@ function mergeDisplayState(target_type, target_id, state) {
       stmts.insertDisplayState.run(target_type, target_id, ...vals, null, stateRevision, now);
     } else {
       stmts.updateDisplayState.run(...vals, stateRevision, now, target_type, target_id);
+      // Most nulls retain the prior partial-state value, but renderer recovery
+      // must explicitly clear a previously persisted playback error.
+      if (clearsErrorState) stmts.clearDisplayErrorState.run(target_type, target_id);
     }
     return { applied: true, state_revision: stateRevision };
   });
