@@ -80,7 +80,7 @@ async function waitForPhysicalState(memberIds, contentId, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const rows = db.prepare(`
-      SELECT target_id, current_content_id, current_time, render_state
+      SELECT target_id, current_content_id, "current_time" AS current_time, render_state
       FROM display_states
       WHERE target_type = 'display' AND target_id IN (${placeholders})
     `).all(...memberIds);
@@ -98,7 +98,7 @@ async function waitForTimeAdvance(memberIds, contentId, initialState, timeoutMs 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const rows = db.prepare(`
-      SELECT target_id, current_content_id, current_time, render_state
+      SELECT target_id, current_content_id, "current_time" AS current_time, render_state
       FROM display_states
       WHERE target_type = 'display' AND target_id IN (${placeholders})
     `).all(...memberIds);

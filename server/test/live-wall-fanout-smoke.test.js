@@ -23,3 +23,8 @@ test('live wall smoke requires every member to confirm probe and restore', () =>
   assert.match(source, /waitForPhysicalState/);
   assert.match(source, /waitForTimeAdvance/);
 });
+
+test('live wall smoke reads the persisted media clock instead of SQLite CURRENT_TIME', () => {
+  const quotedClockReads = source.match(/"current_time" AS current_time/g) || [];
+  assert.equal(quotedClockReads.length, 2);
+});
