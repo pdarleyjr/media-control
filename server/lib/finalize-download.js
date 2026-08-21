@@ -110,11 +110,6 @@ function finalizeDownload({ db, contentDir, jobId, pipeline }) {
   const job = db.prepare('SELECT * FROM download_jobs WHERE id = ?').get(jobId);
   if (!job) return null;
 
-  // Idempotency: already finalized → return the existing content row, don't re-insert.
-  if (job.content_id) {
-    return db.prepare('SELECT * FROM content WHERE id = ?').get(job.content_id) || null;
-  }
-
   const filename = resolveDownloadedFile(contentDir, jobId);
   if (!filename) return null;
 
@@ -145,61 +140,74 @@ function finalizeDownload({ db, contentDir, jobId, pipeline }) {
   const mediaPipeline = pipeline || getMediaPipeline({ db, contentDir });
   let queued;
 
-  // Single synchronous transaction: insert the content row + link it back onto
-  // the job. The job-side guard (content_id IS NULL) keeps a concurrent/replayed
-  // call from double-inserting; if it didn't take, roll back the content insert.
   const tx = db.transaction(() => {
-    db.prepare(`
-      INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, access_level)
-      VALUES (@id, @user_id, @workspace_id, @filename, @filepath, @mime_type, @file_size, 'private')
-    `).run(row);
-    const res = db.prepare('UPDATE download_jobs SET content_id = ?, local_path = ? WHERE id = ? AND content_id IS NULL')
-      .run(row.id, filename, jobId);
-    if (res.changes === 0) {
-      // Lost the race — another finalize already linked a row. Undo ours.
-      db.prepare('DELETE FROM content WHERE id = ?').run(row.id);
-      return null;
+    if (job.content_id) {
+      const existing = db.prepare('SELECT processing_status FROM content WHERE id = ?').get(job.content_id);
+      if (existing && existing.processing_status === 'uploaded') {
+        return job.content_id;
+      }
+      db.prepare(`
+        UPDATE content SET
+          filename = COALESCE(?, filename),
+          filepath = ?,
+          mime_type = ?,
+          file_size = ?,
+          remote_url = NULL,
+          processing_status = 'uploaded'
+        WHERE id = ?
+      `).run(row.filename, row.filepath, row.mime_type, row.file_size, job.content_id);
+    } else {
+      db.prepare(`
+        INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, access_level)
+        VALUES (@id, @user_id, @workspace_id, @filename, @filepath, @mime_type, @file_size, 'private')
+      `).run(row);
+      db.prepare('UPDATE download_jobs SET content_id = ?, local_path = ? WHERE id = ? AND content_id IS NULL')
+        .run(row.id, filename, jobId);
     }
     try {
-      db.prepare(`
-        UPDATE content SET processing_status='uploaded' WHERE id=?
-      `).run(row.id);
       db.prepare(`
         INSERT INTO content_media_metadata (
           content_id, workspace_id, source_type, source_identity, source_url,
           detected_mime_type, remote_health_status, remote_source_kind,
           created_at, updated_at
-        ) VALUES (?, ?, 'legacy_url_download', ?, ?, ?, 'localized',
+        ) VALUES (?, ?, 'url_download', ?, ?, ?, 'localized',
           'imported_local', strftime('%s','now'), strftime('%s','now'))
-      `).run(row.id, row.workspace_id, job.source_url, job.source_url, row.mime_type);
+        ON CONFLICT(content_id) DO UPDATE SET
+          source_type='url_download',
+          source_identity=excluded.source_identity,
+          source_url=excluded.source_url,
+          detected_mime_type=excluded.detected_mime_type,
+          remote_health_status='localized',
+          remote_source_kind='imported_local',
+          updated_at=strftime('%s','now')
+      `).run(job.content_id || row.id, row.workspace_id, job.source_url, job.source_url, row.mime_type);
     } catch (error) {
       if (!/no such table|no such column/i.test(error.message)) throw error;
     }
     queued = row.mime_type.startsWith('video/')
       ? mediaPipeline.enqueueVideo({
-        contentId: row.id,
+        contentId: job.content_id || row.id,
         workspaceId: row.workspace_id,
         userId: row.user_id,
         absolutePath,
         expectedVersion: 1,
         expectedFilepath: row.filepath,
-        sourceType: 'legacy_url_download',
+        sourceType: 'url_download',
       })
       : mediaPipeline.enqueueThumbnailFinalize({
-        contentId: row.id,
+        contentId: job.content_id || row.id,
         workspaceId: row.workspace_id,
         userId: row.user_id,
         absolutePath,
         expectedVersion: 1,
         expectedFilepath: row.filepath,
         mimeType: row.mime_type,
-        sourceType: 'legacy_url_download',
+        sourceType: 'url_download',
       });
-    return row.id;
+    return job.content_id || row.id;
   });
 
-  const insertedId = tx();
-  const finalId = insertedId || db.prepare('SELECT content_id FROM download_jobs WHERE id = ?').get(jobId)?.content_id;
+  const finalId = tx();
   if (!finalId) return null;
   const content = db.prepare('SELECT * FROM content WHERE id = ?').get(finalId);
   return queued ? {

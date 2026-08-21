@@ -24,6 +24,7 @@ function makeDb() {
       filepath TEXT NOT NULL DEFAULT '',
       mime_type TEXT NOT NULL,
       file_size INTEGER NOT NULL DEFAULT 0,
+      remote_url TEXT,
       processing_status TEXT NOT NULL DEFAULT 'uploaded',
       version INTEGER NOT NULL DEFAULT 1,
       access_level TEXT NOT NULL DEFAULT 'private',
@@ -202,4 +203,30 @@ test('finalizeDownload rejects corrupt completed bytes without publishing or del
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM content').get().n, 0);
   assert.equal(db.prepare('SELECT status FROM download_jobs WHERE id=?').get(job.id).status, 'error');
   assert.equal(fs.existsSync(file), true, 'failed source remains available for diagnosis/repair');
+});
+
+test('finalizeDownload: completed download clears remote_url and produces a local ready content row', () => {
+  const db = makeDb();
+  const job = seedJob(db, { content_id: 'content-1' });
+  db.prepare(`INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, remote_url, processing_status)
+              VALUES (?, ?, ?, ?, '', 'video/mp4', 0, ?, 'processing')`).run('content-1', 'u-7', 'ws-9', 'Untitled', 'https://www.youtube.com/watch?v=abc123');
+  db.prepare(`UPDATE download_jobs SET content_id = ? WHERE id = ?`).run('content-1', job.id);
+  const contentDir = makeContentDir(job.id, 'mp4');
+  const pipeline = makePipeline();
+
+  const first = finalizeDownload({ db, contentDir, jobId: job.id, pipeline });
+
+  assert.ok(first, 'content row returned');
+  assert.equal(first.id, 'content-1');
+  assert.equal(first.remote_url, null, 'remote_url must be cleared for localized asset');
+  assert.equal(first.processing_status, 'uploaded');
+  assert.equal(first.mime_type, 'video/mp4');
+  assert.equal(first.file_size, 1234);
+  assert.equal(pipeline.queued.length, 1, 'should enqueue normalization once');
+  assert.equal(pipeline.queued[0].kind, 'video_normalize');
+
+  const second = finalizeDownload({ db, contentDir, jobId: job.id, pipeline: makePipeline() });
+  assert.equal(second.id, 'content-1');
+  assert.equal(second.remote_url, null);
+  assert.equal(pipeline.queued.length, 1, 're-poll must not enqueue duplicate');
 });
