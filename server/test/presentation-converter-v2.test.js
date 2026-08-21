@@ -98,6 +98,39 @@ test('Instructor Optimized applies a complete validated semantic plan and retain
   assert.match(JSON.stringify(deck.conversion.source_slide_mappings[0].source_snapshot), /Original detailed explanation/);
 });
 
+test('optimized conversion disambiguates text and media elements that share a source ref', async () => {
+  const source = sourceSlide([
+    { id: 'title', kind: 'paragraph', text: 'Embedded training' },
+    { id: 'shared', kind: 'paragraph', text: 'Keep this explanatory paragraph.' },
+    { id: 'shared', kind: 'image', asset_ref: 'asset-poster' },
+    { id: 'video', kind: 'video', asset_ref: 'asset-video' },
+  ], { title: 'Embedded training' });
+  const converted = await convertSlideIr(source, {
+    wallProfile: PROFILE_IDS.TWO_DISPLAY,
+    mode: 'instructor_optimized',
+    ai: { mapSlide: async () => ({
+      template_id: 'DUAL_MEDIA',
+      requires_review: true,
+      review_reasons: ['Duplicate package object identity preserved by content type.'],
+      raw_plan: {
+        target_slides: [{
+          layout_id: 'DUAL_MEDIA',
+          region_assignments: [
+            { region_id: 'TV1_TITLE', source_refs: ['title'], content_type: 'text', transform: 'copy_exact', text: null, media_id: null },
+            { region_id: 'TV1_BODY', source_refs: ['shared'], content_type: 'paragraph', transform: 'preserve_paragraph', text: null, media_id: null },
+            { region_id: 'TV2_MEDIA_A', source_refs: ['shared'], content_type: 'image', transform: 'native_transfer', text: null, media_id: 'asset-poster' },
+            { region_id: 'TV2_MEDIA_B', source_refs: ['video'], content_type: 'video', transform: 'native_transfer', text: null, media_id: 'asset-video' },
+          ],
+        }],
+      },
+    }) },
+  });
+  assert.equal(converted.classification.optimization_applied, true);
+  assert.equal(converted.slides[0].slots.TV1_BODY, 'Keep this explanatory paragraph.');
+  assert.equal(converted.slides[0].slots.TV2_MEDIA_A.asset_ref, 'asset-poster');
+  assert.equal(converted.slides[0].slots.TV2_MEDIA_B.asset_ref, 'asset-video');
+});
+
 test('mixed text and two videos use a media-capable layout without losing either clip', async () => {
   const source = sourceSlide([
     { id: 'p1', kind: 'paragraph', text: 'Keep the explanatory paragraph.' },

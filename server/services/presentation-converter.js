@@ -167,9 +167,12 @@ function singleMediaTemplate(profileId, element) {
 }
 
 function optimizedValue(assignment, byId) {
-  const sourceElements = assignment.source_refs.map((id) => byId.get(id)).filter(Boolean);
-  const media = sourceElements.find((element) => ['image', 'video', 'audio', 'youtube'].includes(element.kind)
-    && (!assignment.media_id || assignment.media_id === element.id || assignment.media_id === element.asset_ref));
+  const sourceElements = assignment.source_refs.flatMap((id) => byId.get(id) || []);
+  const wantsMedia = Boolean(assignment.media_id)
+    || ['image', 'video', 'audio'].includes(assignment.content_type)
+    || /(?:MEDIA|VIDEO|DIAGRAM)/.test(assignment.region_id);
+  const media = wantsMedia ? sourceElements.find((element) => ['image', 'video', 'audio', 'youtube'].includes(element.kind)
+    && (!assignment.media_id || assignment.media_id === element.id || assignment.media_id === element.asset_ref)) : null;
   if (media) {
     return {
       type: media.kind,
@@ -190,7 +193,11 @@ function optimizedConversionFromPlan(sourceSlide, classification, wallProfile) {
   const plan = classification.raw_plan;
   if (!plan || !Array.isArray(plan.target_slides) || !plan.target_slides.length) return null;
   const elements = elementsOf(sourceSlide);
-  const byId = new Map(elements.map((element) => [element.id, element]));
+  const byId = new Map();
+  for (const element of elements) {
+    if (!byId.has(element.id)) byId.set(element.id, []);
+    byId.get(element.id).push(element);
+  }
   const outputIdsBySource = new Map(elements.map((element) => [element.id, []]));
   const transformsBySource = new Map(elements.map((element) => [element.id, []]));
   const reviewBase = [
