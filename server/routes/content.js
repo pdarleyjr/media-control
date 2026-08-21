@@ -41,6 +41,7 @@ const {
 } = require('../lib/content-thumbnail-cache');
 const { normalizePosterRequest } = require('../lib/thumbnail-studio');
 const { logActivity, getClientIp } = require('../services/activity');
+const { previewPermanentErase, permanentlyEraseContent } = require('../lib/permanent-erase');
 
 function visibilityContext(req, overrides = {}) {
   return {
@@ -1990,6 +1991,43 @@ router.post('/:id/promote-to-library', requireContentWriteRole, (req, res) => {
     WHERE id = ? AND library_scope = 'internal'
   `).run(req.params.id);
   res.json(decorateContent(getContentRow(req, req.params.id), req));
+});
+
+// Permanent erase preview: show what will be detached/cancelled/erased before
+// the user confirms. Does not mutate anything.
+router.post('/:id/permanent-erase-preview', requireContentWriteRole, (req, res) => {
+  const content = checkContentWrite(req, res);
+  if (!content) return;
+  const preview = previewPermanentErase(db, content.id);
+  if (!preview.found) return res.status(404).json({ error: 'Content not found' });
+  res.json(preview);
+});
+
+// Permanent erase: safe transactional detach-and-erase. Cancels in-flight jobs,
+// removes DB references, erases files, and deletes the content row.
+router.post('/:id/permanent-erase', requireContentWriteRole, (req, res) => {
+  const content = checkContentWrite(req, res);
+  if (!content) return;
+  const result = permanentlyEraseContent(db, content.id);
+  if (!result.erased) return res.status(404).json({ error: result.reason || 'Content not found' });
+  res.json({ success: true, files_erased: result.files_erased });
+});
+
+// Bulk permanent erase. Accepts an array of content IDs and erases each in its
+// own transaction so one failure does not abort the entire batch.
+router.post('/bulk-permanent-erase', requireContentWriteRole, (req, res) => {
+  const ids = Array.isArray(req.body.ids) ? req.body.ids.filter(Boolean) : [];
+  if (!ids.length) return res.status(400).json({ error: 'ids array is required' });
+  const results = ids.map((id) => {
+    const content = db.prepare('SELECT * FROM content WHERE id = ?').get(id);
+    if (!content) return { id, erased: false, reason: 'not_found' };
+    const canWrite = ctx => ctx.isPlatformAdmin || ctx.orgRole === 'org_owner' || ctx.orgRole === 'org_admin' || ctx.workspaceRole === 'workspace_admin' || ctx.workspaceRole === 'workspace_editor';
+    const ctx = { isPlatformAdmin: req.isPlatformAdmin, orgRole: req.orgRole, workspaceRole: req.workspaceRole };
+    if (!canWrite(ctx)) return { id, erased: false, reason: 'access_denied' };
+    const result = permanentlyEraseContent(db, id);
+    return { id, erased: result.erased, files_erased: result.files_erased };
+  });
+  res.json({ results });
 });
 
 module.exports = router;
