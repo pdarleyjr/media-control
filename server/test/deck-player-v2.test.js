@@ -38,4 +38,9 @@ test('auto-advance-on-media-end is bound to the originating slide and deck so a 
   assert.match(player, /advanceFromIdx/);
   assert.match(player, /idx !== advanceFromIdx/);
   assert.match(player, /advanceDeckId/);
+  // The generation the slide was rendered under must also be captured and
+  // re-checked, so a late 'ended' from a navigated-away or replaced deck whose
+  // generation advanced cannot advance the newly loaded presentation.
+  assert.match(player, /advanceGen/);
+  assert.match(player, /!== advanceGen/);
 });
