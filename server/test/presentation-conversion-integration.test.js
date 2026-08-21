@@ -27,7 +27,8 @@ function createDb() {
     CREATE TABLE content (
       id TEXT PRIMARY KEY, user_id TEXT, workspace_id TEXT, filename TEXT, filepath TEXT,
       mime_type TEXT, file_size INTEGER DEFAULT 0, content_type TEXT, access_level TEXT,
-      original_sha256 TEXT, processing_status TEXT DEFAULT 'uploaded'
+      original_sha256 TEXT, processing_status TEXT DEFAULT 'uploaded',
+      library_scope TEXT NOT NULL DEFAULT 'library' CHECK (library_scope IN ('library','internal'))
     );
     CREATE TABLE presentations (
       id TEXT PRIMARY KEY, workspace_id TEXT, user_id TEXT, created_by TEXT, title TEXT,

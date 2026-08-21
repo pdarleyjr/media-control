@@ -513,6 +513,9 @@ router.get('/', (req, res) => {
     sql += ' AND (c.content_type = ? OR c.mime_type LIKE ?)';
     params.push(req.query.type, `${req.query.type}/%`);
   }
+  if (req.query.scope !== 'internal') {
+    sql += ' AND COALESCE(c.library_scope, \'library\') = \'library\'';
+  }
   if (req.query.search) {
     const ftsQuery = contentFtsQuery(req.query.search);
     if (ftsQuery && contentFtsAvailable(db)) {
@@ -1956,6 +1959,37 @@ router.delete('/:id', requireContentWriteRole, (req, res) => {
   } catch (e) { /* silent */ }
 
   res.json({ success: true, affectedDevices: affectedDevices.map(d => d.device_id) });
+});
+
+// Presentation Studio internal dependency resolver. Internal assets are hidden
+// from the normal Media Library but must remain reachable by the Studio.
+router.get('/internal/:id', (req, res) => {
+  const content = db.prepare(`
+    SELECT c.*, w.organization_id, u.name AS owner_name, u.email AS owner_email
+    FROM content c
+    LEFT JOIN workspaces w ON w.id = c.workspace_id
+    LEFT JOIN users u ON u.id = c.user_id
+    WHERE c.id = ? AND COALESCE(c.library_scope, 'library') = 'internal'
+  `).get(req.params.id);
+  if (!content) return res.status(404).json({ error: 'Internal asset not found' });
+  res.json(decorateContent(content, req));
+});
+
+// Promote an internal asset to the normal Media Library. Presentation Studio
+// uses this for "Save Copy to Media Library" so dependencies become first-class
+// content without duplicating the underlying file.
+router.post('/:id/promote-to-library', requireContentWriteRole, (req, res) => {
+  const content = checkContentWrite(req, res);
+  if (!content) return;
+  const scope = String(content.library_scope || 'library');
+  if (scope !== 'internal') {
+    return res.status(400).json({ error: 'Only internal assets can be promoted to the Media Library' });
+  }
+  db.prepare(`
+    UPDATE content SET library_scope = 'library', updated_at = strftime('%s','now')
+    WHERE id = ? AND library_scope = 'internal'
+  `).run(req.params.id);
+  res.json(decorateContent(getContentRow(req, req.params.id), req));
 });
 
 module.exports = router;

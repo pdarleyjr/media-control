@@ -193,6 +193,7 @@ const migrations = [
   "ALTER TABLE content ADD COLUMN metadata_json TEXT",
   "ALTER TABLE content ADD COLUMN tags_json TEXT",
   "ALTER TABLE content ADD COLUMN access_level TEXT DEFAULT 'private'",
+  "ALTER TABLE content ADD COLUMN library_scope TEXT NOT NULL DEFAULT 'library' CHECK (library_scope IN ('library','internal'))",
   // Audit-log extension (reuse activity_log instead of a new table): capture
   // resource type + before/after state for the Audit Log view.
   "ALTER TABLE activity_log ADD COLUMN resource_type TEXT",

@@ -255,13 +255,13 @@ function createPresentationConversionHandler({ db, contentDir = config.contentDi
     const presentationId = deck.deck_id;
     const transaction = db.transaction(() => {
       for (const asset of extracted) {
-        db.prepare(`
-          INSERT INTO content
-            (id, user_id, workspace_id, filename, filepath, mime_type, file_size,
-             content_type, access_level, original_sha256, processing_status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'presentation_asset', 'private', ?, ?)
-        `).run(asset.contentId, job.user_id, job.workspace_id, asset.filename, asset.storedName, asset.mime, asset.size,
-          asset.sha256, asset.kind === 'video' ? 'uploaded' : 'ready');
+      db.prepare(`
+        INSERT INTO content
+          (id, user_id, workspace_id, filename, filepath, mime_type, file_size,
+           content_type, access_level, library_scope, original_sha256, processing_status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'presentation_asset', 'private', 'internal', ?, ?)
+      `).run(asset.contentId, job.user_id, job.workspace_id, asset.filename, asset.storedName, asset.mime, asset.size,
+        asset.sha256, asset.kind === 'video' ? 'uploaded' : 'ready');
       }
       db.prepare(`
         INSERT INTO presentations
