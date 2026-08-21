@@ -223,14 +223,14 @@ function createPresentationConversionHandler({ db, contentDir = config.contentDi
     context.progress('validating', 10, { step: 'package-security' });
     const slideIr = await extractPptxToSlideIr(sourcePath);
     if (context.isCancellationRequested()) return null;
-    context.progress('preparing', 35, { step: 'extracting-media', slides: slideIr.slides.length });
+    context.progress('extracting', 25, { step: 'source-analysis', slides: slideIr.slides.length });
     const extracted = await extractSafeAssets(sourcePath, slideIr, contentDir);
     extracted.push(...await renderComplexSlideFallbacks(sourcePath, slideIr, contentDir, { execFile }));
     if (context.isCancellationRequested()) {
       await Promise.allSettled(extracted.map((asset) => fs.promises.unlink(asset.finalPath)));
       return null;
     }
-    context.progress('optimizing', 55, { step: 'semantic-mapping', ai_requested: payload.use_ai !== false });
+    context.progress('planning', 45, { step: 'composition-planning', ai_requested: payload.use_ai !== false });
     const aiAdapter = payload.use_ai === false ? null : { mapSlide: ai.mapSlideToV2 };
     let deck;
     try {
@@ -248,6 +248,7 @@ function createPresentationConversionHandler({ db, contentDir = config.contentDi
       await Promise.allSettled(extracted.map((asset) => fs.promises.unlink(asset.finalPath)));
       return null;
     }
+    context.progress('compiling', 70, { step: 'rendering-validation' });
     deck.conversion.job_id = job.id;
     deck.conversion.source_content_id = source.id;
     resolveDeckAssetContent(deck);
@@ -307,7 +308,8 @@ function createPresentationConversionHandler({ db, contentDir = config.contentDi
         console.warn('[presentation-converter] embedded video normalization enqueue failed:', error.message);
       }
     }
-    context.progress('preparing', 90, { step: 'saved', presentation_id: presentationId });
+    context.progress('saving', 90, { step: 'saved', presentation_id: presentationId });
+    const now = Date.now();
     return {
       presentation_id: presentationId,
       source_content_id: source.id,
@@ -320,6 +322,17 @@ function createPresentationConversionHandler({ db, contentDir = config.contentDi
       review: conciseReview(slideIr, deck),
       extracted_assets: extracted.map((asset) => ({ content_id: asset.contentId, kind: asset.kind, filename: asset.filename })),
       warnings: (slideIr.assets || []).filter((asset) => asset.review_flag).map((asset) => asset.review_flag),
+      status: {
+        current_stage: 'saving',
+        slide_ratio: `${deck.slides.length}/${slideIr.slides.length}`,
+        overall_percent: 100,
+        elapsed_seconds: Math.round((Date.now() - now) / 1000),
+        last_activity: new Date().toISOString(),
+        qwen_status: payload.use_ai === false ? 'disabled' : (aiAdapter ? 'available' : 'fallback'),
+        fallback_status: extracted.some((asset) => asset.kind === 'image' && asset.rendered_fallback) ? 'rendered_fallback_used' : 'none',
+        retry: job.attempts,
+        cancel_requested: job.cancel_requested === 1,
+      },
     };
   };
 }

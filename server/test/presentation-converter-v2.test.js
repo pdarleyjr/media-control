@@ -9,6 +9,8 @@ const {
   convertDeckIr,
   isolateSourceContent,
   validateConversionAccounting,
+  validateConversionQuality,
+  QUALITY_LIMITS,
 } = require('../services/presentation-converter');
 const { PROFILE_IDS } = require('../lib/presentation-template-registry');
 
@@ -149,4 +151,38 @@ test('native tables and exact hyperlinks remain structured and editable', async 
   assert.ok(values.some((value) => value?.type === 'table' && value.rows[1][0] === 'Value A'));
   assert.ok(values.some((value) => value?.url === 'https://www.youtube.com/watch?v=abc123'));
   assert.deepEqual(validateConversionAccounting(source, converted.accounting, 'faithful'), { valid: true, missing: [] });
+});
+
+test('quality validator warns when continuation count exceeds faithful limit', async () => {
+  const paragraphs = Array.from({ length: 25 }, (_, index) => ({
+    id: `p${index + 1}`,
+    kind: 'paragraph',
+    text: `Paragraph ${index + 1}: ${'operational detail '.repeat(35)}`,
+  }));
+  const converted = await convertSlideIr(sourceSlide(paragraphs), {
+    wallProfile: PROFILE_IDS.THREE_DISPLAY,
+    mode: 'faithful',
+    ai: null,
+  });
+  const quality = validateConversionQuality(sourceSlide(paragraphs), converted.slides, 'faithful');
+  assert.ok(quality.valid, 'quality should not hard-reject the existing faithful overflow behavior');
+  assert.ok(quality.issues.some((issue) => /continuation slides/.test(issue)), 'should warn about continuation slide count');
+  assert.ok(quality.issues.some((issue) => /output slides/.test(issue)), 'should warn about total output slide count');
+  assert.equal(quality.continuation_count, converted.slides.filter((s) => ['CONTINUATION', 'FULL_IMAGE'].includes(s.template_id)).length);
+});
+
+test('quality validator reports deck-level warnings in conversion mapping', async () => {
+  const paragraphs = Array.from({ length: 25 }, (_, index) => ({
+    id: `p${index + 1}`,
+    kind: 'paragraph',
+    text: `Paragraph ${index + 1}: ${'operational detail '.repeat(35)}`,
+  }));
+  const deck = await convertDeckIr({
+    source: { filename: 'dense.pptx' },
+    slides: [sourceSlide(paragraphs)],
+    assets: [],
+  }, { wallProfile: PROFILE_IDS.THREE_DISPLAY, mode: 'faithful', ai: null, title: 'Dense' });
+  const mapping = deck.conversion.source_slide_mappings[0];
+  assert.ok(mapping.warnings.some((warning) => /continuation slides/.test(warning)), 'deck mapping should include quality warnings');
+  assert.ok(mapping.warnings.some((warning) => /output slides/.test(warning)), 'deck mapping should include total slide warnings');
 });

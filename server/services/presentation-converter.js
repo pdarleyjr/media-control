@@ -92,10 +92,11 @@ function sourceDisposition(element, outputSlideIds) {
   return outputSlideIds.length > 1 ? 'split_across_continuations' : 'preserved';
 }
 
-function makeSlide(sourceSlide, templateId, index, slots, sourceRefs, reviewFlags) {
+function makeSlide(sourceSlide, templateId, index, slots, sourceRefs, reviewFlags, wallProfile) {
   return {
     id: `slide_${String(index).padStart(3, '0')}_${randomUUID().slice(0, 8)}`,
     template_id: templateId,
+    wall_profile: wallProfile,
     slots,
     speaker_notes: String(sourceSlide.speaker_notes || ''),
     duration_seconds: Number(sourceSlide.duration_seconds) > 0 ? Number(sourceSlide.duration_seconds) : 12,
@@ -162,7 +163,7 @@ function optimizedConversionFromPlan(sourceSlide, classification, wallProfile) {
         transformsBySource.get(ref)?.push(assignment.transform);
       }
     }
-    const output = makeSlide(sourceSlide, target.layout_id, index + 1, slots, Array.from(sourceRefs), [...new Set(reviewBase)]);
+    const output = makeSlide(sourceSlide, target.layout_id, index + 1, slots, Array.from(sourceRefs), [...new Set(reviewBase)], wallProfile);
     for (const ref of sourceRefs) outputIdsBySource.get(ref)?.push(output.id);
     return output;
   });
@@ -255,7 +256,7 @@ async function convertSlideIr(sourceSlide, options = {}) {
     if (element.external === true) reviewFlags.push('External linked media unavailable — source file required');
   }
 
-  const slides = [makeSlide(sourceSlide, classification.template_id, 1, slots, elements.map((element) => element.id), reviewFlags)];
+  const slides = [makeSlide(sourceSlide, classification.template_id, 1, slots, elements.map((element) => element.id), reviewFlags, wallProfile)];
   for (const element of elements) {
     if (!pending.some((item) => item.element === element)) elementSlideIds.get(element.id).push(slides[0].id);
     else if (Object.values(slots).some((value) => typeof value === 'string' && value && elementText(element).includes(value))) elementSlideIds.get(element.id).push(slides[0].id);
@@ -273,7 +274,7 @@ async function convertSlideIr(sourceSlide, options = {}) {
         const mediaSlide = makeSlide(sourceSlide, 'FULL_IMAGE', slides.length + 1, mediaSlots, [item.element.id], [
           ...reviewFlags,
           item.element.external ? 'External linked media unavailable — source file required' : 'Media preserved on a continuation slide',
-        ]);
+        ], wallProfile);
         slides.push(mediaSlide);
         elementSlideIds.get(item.element.id).push(mediaSlide.id);
       }
@@ -284,7 +285,7 @@ async function convertSlideIr(sourceSlide, options = {}) {
       if (!current) {
         const continuationSlots = {};
         if (continuation.title) continuationSlots[continuation.title] = String(sourceSlide.title || 'Continued');
-        current = makeSlide(sourceSlide, 'CONTINUATION', slides.length + 1, continuationSlots, [item.element.id], reviewFlags.slice());
+        current = makeSlide(sourceSlide, 'CONTINUATION', slides.length + 1, continuationSlots, [item.element.id], reviewFlags.slice(), wallProfile);
         slides.push(current);
       }
       const freeBody = continuation.body.find((name) => current.slots[name] === undefined);
@@ -300,7 +301,7 @@ async function convertSlideIr(sourceSlide, options = {}) {
         current = null;
         const continuationSlots = {};
         if (continuation.title) continuationSlots[continuation.title] = String(sourceSlide.title || 'Continued');
-        const next = makeSlide(sourceSlide, 'CONTINUATION', slides.length + 1, continuationSlots, [item.element.id], reviewFlags.slice());
+        const next = makeSlide(sourceSlide, 'CONTINUATION', slides.length + 1, continuationSlots, [item.element.id], reviewFlags.slice(), wallProfile);
         next.slots[continuation.body[0]] = String(chunk);
         slides.push(next);
         current = next;
@@ -330,6 +331,48 @@ function validateConversionAccounting(sourceSlide, accounting, mode = MODES.FAIT
     if (mode === MODES.FAITHFUL && item && item.disposition === 'condensed_with_provenance') missing.push(element.id);
   }
   return { valid: missing.length === 0, missing: Array.from(new Set(missing)) };
+}
+
+const QUALITY_LIMITS = Object.freeze({
+  maxContinuationSlidesFaithful: 2,
+  maxContinuationSlidesOptimized: 4,
+  maxTotalOutputSlidesPerSource: 4,
+  maxTotalOutputSlidesOptimized: 8,
+});
+
+function validateConversionQuality(sourceSlide, outputSlides, mode = MODES.FAITHFUL) {
+  const issues = [];
+  const hardRejects = [];
+  const sourceElements = elementsOf(sourceSlide);
+  const outputCount = outputSlides.length;
+  const maxContinuations = mode === MODES.OPTIMIZED ? QUALITY_LIMITS.maxContinuationSlidesOptimized : QUALITY_LIMITS.maxContinuationSlidesFaithful;
+  const maxTotal = mode === MODES.OPTIMIZED ? QUALITY_LIMITS.maxTotalOutputSlidesOptimized : QUALITY_LIMITS.maxTotalOutputSlidesPerSource;
+  const continuationSlides = outputSlides.filter((slide) => ['CONTINUATION', 'FULL_IMAGE'].includes(slide.template_id));
+  if (continuationSlides.length > maxContinuations) {
+    issues.push(`Source slide ${sourceSlide.source_slide_number} produced ${continuationSlides.length} continuation slides (limit ${maxContinuations}); content may be fragmented.`);
+  }
+  if (outputCount > maxTotal) {
+    issues.push(`Source slide ${sourceSlide.source_slide_number} produced ${outputCount} output slides (limit ${maxTotal}); content may be fragmented.`);
+  }
+  const requiredSlotPatterns = /TITLE|SUBTITLE|BODY|BULLET|TEXT|MEDIA|VIDEO|IMAGE/;
+  for (const slide of outputSlides) {
+    const layout = getLayout(slide.wall_profile || PROFILE_IDS.THREE_DISPLAY, slide.template_id);
+    const slotNames = Object.keys(slide.slots || {});
+    for (const [name, object] of Object.entries(layout.named_objects || {})) {
+      if (!requiredSlotPatterns.test(name) || !object.bbox_px) continue;
+      const hasValue = slotNames.includes(name) && slide.slots[name] !== undefined && slide.slots[name] !== null && slide.slots[name] !== '';
+      if (!hasValue && /TITLE|BODY|BULLET/.test(name)) {
+        issues.push(`Slide ${slide.id} missing required content in ${name}.`);
+      }
+    }
+  }
+  return {
+    valid: hardRejects.length === 0,
+    issues,
+    hard_rejects: hardRejects,
+    continuation_count: continuationSlides.length,
+    output_slide_count: outputCount,
+  };
 }
 
 function isolateSourceContent(sourceData) {
@@ -365,6 +408,10 @@ async function convertDeckIr(ir, options = {}) {
     });
     const check = validateConversionAccounting(sourceSlide, converted.accounting, mode);
     if (!check.valid) throw new Error(`Faithful content accounting failed for source slide ${sourceSlide.source_slide_number}: ${check.missing.join(', ')}`);
+    const quality = validateConversionQuality(sourceSlide, converted.slides, mode);
+    if (quality.issues.length) {
+      mappings[mappings.length - 1].warnings.push(...quality.issues);
+    }
   }
   const count = accounting.length;
   const accounted = accounting.filter((item) => SAFE_DISPOSITIONS.has(item.disposition)).length;
@@ -401,6 +448,8 @@ module.exports = {
   textCapacity,
   isolateSourceContent,
   validateConversionAccounting,
+  validateConversionQuality,
+  QUALITY_LIMITS,
   convertSlideIr,
   convertDeckIr,
 };
