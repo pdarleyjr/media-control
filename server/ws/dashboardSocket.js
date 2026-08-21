@@ -570,10 +570,28 @@ module.exports = function setupDashboardSocket(io) {
         if (typeof ack === 'function') ack({ ok: false, reason: 'forbidden', targets: [] });
         return;
       }
-      const firstDevice = db.prepare(
-        'SELECT workspace_id FROM devices WHERE id = ?',
-      ).get(deviceIds[0]);
-      const workspaceId = firstDevice?.workspace_id || null;
+      // Resolve every target independently and require one shared workspace.
+      // Do not derive the transaction workspace from deviceIds[0] alone: a
+      // mixed or unknown target set must be rejected before any command is
+      // built or the room snapshot / Live Program mirror is published.
+      const resolvedDevices = deviceIds.map((deviceId) => {
+        try {
+          return db.prepare('SELECT id, workspace_id FROM devices WHERE id = ?').get(deviceId);
+        } catch (_) {
+          return null;
+        }
+      });
+      const unknownIndex = resolvedDevices.findIndex((device) => !device);
+      if (unknownIndex !== -1) {
+        if (typeof ack === 'function') ack({ ok: false, reason: 'device_not_found', device_id: deviceIds[unknownIndex], targets: [] });
+        return;
+      }
+      const workspaces = [...new Set(resolvedDevices.map((device) => device.workspace_id))];
+      if (workspaces.length !== 1 || !workspaces[0]) {
+        if (typeof ack === 'function') ack({ ok: false, reason: 'workspace_mismatch', targets: [] });
+        return;
+      }
+      const workspaceId = workspaces[0];
       const payload = data?.payload && typeof data.payload === 'object'
         ? { ...data.payload }
         : {};

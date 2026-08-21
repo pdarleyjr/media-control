@@ -16,6 +16,7 @@ import { api } from '../../api.js';
 import { t, tn } from '../../i18n.js';
 import { showToast } from '../../components/toast.js';
 import { performanceMetrics } from '../../services/ui-runtime-v1.js';
+import { isYouTubeContentBroadcastReady } from './youtube-readiness.js';
 
 // YouTube URL detection (same regex as present.js).
 const YT_RE = /^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//i;
@@ -100,6 +101,13 @@ async function materializeYouTube(url) {
     return null;
   }
   if (!content || !content.id) {
+    showToast(t('mc.send.yt_unavailable'), 'error');
+    return null;
+  }
+  // Fail-closed: only broadcast a YouTube source that already has a usable local
+  // asset. A content row without a ready local path/asset must not be treated as
+  // broadcast-ready — that would ship a stale iframe and leave a black wall.
+  if (!isYouTubeContentBroadcastReady(content)) {
     showToast(t('mc.send.yt_unavailable'), 'error');
     return null;
   }

@@ -250,6 +250,8 @@
     var slideDuration = media&&isFinite(media.duration)&&media.duration>0?media.duration:(dur > 0 ? dur / 1000 : (Number(slide && slide.duration_seconds) > 0 ? Number(slide.duration_seconds) : 12));
     return {
       content_id: deck.deck_id || deck.id || null,
+      content_instance_id: deck.content_instance_id || deck.deck_id || deck.id || null,
+      generation: Number.isFinite(Number(deck.generation)) ? Number(deck.generation) : 1,
       content_type: 'presentation',
       kind: 'presentation',
       title: deck.title || 'Presentation',
@@ -298,7 +300,20 @@
       t0=performance.now();
       try{var playPromise=media.play();if(playPromise&&playPromise.catch)playPromise.catch(function(){});}catch(_){}
       (function mediaTick(){var total=isFinite(media.duration)&&media.duration>0?media.duration:0;fill.style.width=(total?Math.min(100,media.currentTime/total*100):0)+'%';if(!paused&&media===activeMedia())raf=requestAnimationFrame(mediaTick);})();
-      if(slides[idx]&&slides[idx].auto_advance_on_media_end===true){media.onended=function(){show(idx+1);};}else{media.onended=null;}
+      if(slides[idx]&&slides[idx].auto_advance_on_media_end===true){
+        var advanceFromIdx = idx;
+        var advanceDeckId = deck.deck_id || deck.id || null;
+        var advanceGen = Number.isFinite(Number(deck.generation)) ? Number(deck.generation) : 1;
+        media.onended = function(){
+          // Only advance if this media's slide/deck is still the active one. A
+          // late 'ended' from a replaced or navigated-away slide must never
+          // advance a different (newly loaded) presentation.
+          if (idx !== advanceFromIdx) return;
+          if ((deck.deck_id || deck.id || null) !== advanceDeckId) return;
+          if ((Number.isFinite(Number(deck.generation)) ? Number(deck.generation) : 1) !== advanceGen) return;
+          show(idx + 1);
+        };
+      }else{media.onended=null;}
       return;
     }
     dur = ((Number(slides[idx] && slides[idx].duration_seconds)>0?Number(slides[idx].duration_seconds):12))*1000;

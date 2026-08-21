@@ -67,7 +67,7 @@ test('presentation intent safely falls back when authoritative slide state is un
   );
 });
 
-test('rapid presentation clicks advance an optimistic absolute cursor without waiting for state sync', () => {
+test('rapid presentation clicks only advance as far as authoritative state permits', () => {
   const tracker = createTransportIntentTracker();
   const playback = {
     kind: 'document',
@@ -76,19 +76,22 @@ test('rapid presentation clicks advance an optimistic absolute cursor without wa
     slideCount: 51,
   };
 
+  // Until the player confirms, authoritative slideIndex stays at 1, so every
+  // click resolves to the same idempotent go_to_slide 2 target. The UI must
+  // NOT manufacture slide 3/4 from a local optimistic cursor.
   const first = tracker.resolve('wall-1:deck-1', 'next', playback);
   const second = tracker.resolve('wall-1:deck-1', 'next', playback);
   const third = tracker.resolve('wall-1:deck-1', 'next', playback);
   const back = tracker.resolve('wall-1:deck-1', 'prev', playback);
 
   assert.deepEqual(first.payload, { slide: 2 });
-  assert.deepEqual(second.payload, { slide: 3 });
-  assert.deepEqual(third.payload, { slide: 4 });
-  assert.deepEqual(back.payload, { slide: 3 });
+  assert.deepEqual(second.payload, { slide: 2 });
+  assert.deepEqual(third.payload, { slide: 2 });
+  assert.deepEqual(back.payload, { slide: 1 });
   assert.ok(first.sequence < second.sequence && second.sequence < third.sequence);
 });
 
-test('rapid play pause clicks alternate explicit idempotent actions from optimistic state', () => {
+test('rapid play pause clicks resolve from authoritative paused state, not a local guess', () => {
   const tracker = createTransportIntentTracker();
   const playback = { kind: 'video', contentId: 'video-1', paused: false };
 
@@ -96,12 +99,14 @@ test('rapid play pause clicks alternate explicit idempotent actions from optimis
   const play = tracker.resolve('display-1:video-1', 'play_pause', playback);
   const pauseAgain = tracker.resolve('display-1:video-1', 'play_pause', playback);
 
+  // Authoritative paused is false for every call until the player reports back,
+  // so each play_pause resolves to 'pause'. No optimistic flip to 'play'.
   assert.equal(pause.action, 'pause');
-  assert.equal(play.action, 'play');
+  assert.equal(play.action, 'pause');
   assert.equal(pauseAgain.action, 'pause');
 });
 
-test('an older failed command cannot rewind a newer optimistic intent', () => {
+test('a failed command is forgotten and the next intent uses authoritative state', () => {
   const tracker = createTransportIntentTracker();
   const playback = { kind: 'document', contentId: 'deck-1', slideIndex: 5, slideCount: 51 };
 
@@ -109,11 +114,11 @@ test('an older failed command cannot rewind a newer optimistic intent', () => {
   const second = tracker.resolve('wall-1:deck-1', 'next', playback);
 
   assert.equal(tracker.settle('wall-1:deck-1', first.sequence, { ok: false }), false);
-  assert.deepEqual(tracker.resolve('wall-1:deck-1', 'next', playback).payload, { slide: 8 });
+  assert.deepEqual(tracker.resolve('wall-1:deck-1', 'next', playback).payload, { slide: 6 });
   assert.equal(tracker.settle('wall-1:deck-1', second.sequence, { ok: false }), false);
 });
 
-test('the latest successful intent survives a stale display-state repaint', () => {
+test('a successful intent does not manufacture extra advance on a stale repaint', () => {
   const tracker = createTransportIntentTracker();
   const stalePlayback = {
     kind: 'document', contentId: 'deck-1', slideIndex: 10, slideCount: 51,
@@ -122,8 +127,10 @@ test('the latest successful intent survives a stale display-state repaint', () =
   const first = tracker.resolve('wall-1:deck-1', 'next', stalePlayback);
   assert.equal(tracker.settle('wall-1:deck-1', first.sequence, { ok: true }), true);
 
+  // The stale authoritative state still reports slide 10, so the next click is
+  // slide 11, not 12. No optimistic carry-forward from the previous intent.
   const second = tracker.resolve('wall-1:deck-1', 'next', stalePlayback);
-  assert.deepEqual(second.payload, { slide: 12 });
+  assert.deepEqual(second.payload, { slide: 11 });
 });
 
 test('the latest failed intent falls back to authoritative state', () => {
@@ -137,4 +144,15 @@ test('the latest failed intent falls back to authoritative state', () => {
 
   const retry = tracker.resolve('wall-1:deck-1', 'next', playback);
   assert.deepEqual(retry.payload, { slide: 11 });
+});
+
+test('out-of-order confirmations are ignored', () => {
+  const tracker = createTransportIntentTracker();
+  const playback = { kind: 'document', contentId: 'deck-1', slideIndex: 3, slideCount: 51 };
+
+  const a = tracker.resolve('wall-1:deck-1', 'next', playback);
+  const b = tracker.resolve('wall-1:deck-1', 'next', playback);
+  // Confirming the older intent after a newer one exists must be ignored.
+  assert.equal(tracker.settle('wall-1:deck-1', a.sequence, { ok: true }), false);
+  assert.equal(tracker.settle('wall-1:deck-1', b.sequence, { ok: true }), true);
 });

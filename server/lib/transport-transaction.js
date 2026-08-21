@@ -411,6 +411,13 @@ function createTransportTransactionCoordinator(dependencies = {}) {
       contentInstanceId: context.contentInstanceId,
       expectedRevision: context.expectedRevision,
       expectedGeneration: context.expectedGeneration,
+      requestPayload: clonePayload(request.payload),
+      requestOverrides: {
+        contentId: request.contentId,
+        contentInstanceId: request.contentInstanceId,
+        expectedRevision: request.expectedRevision,
+        expectedGeneration: request.expectedGeneration,
+      },
       authorityDeviceId: audioAuthority(request.workspaceId),
       targets: new Map(),
       liveConsidered: false,
@@ -423,6 +430,20 @@ function createTransportTransactionCoordinator(dependencies = {}) {
   function targetPayload(transaction, deviceId, targetRole) {
     const audioAllowed = targetRole === 'physical'
       && transaction.authorityDeviceId === deviceId;
+    const state = (typeof getDisplayState === 'function' ? getDisplayState(deviceId) : null) || {};
+    const incoming = clonePayload(transaction.requestPayload || {});
+    const overrides = transaction.requestOverrides || {};
+    const contentId = present(overrides.contentId) ? overrides.contentId
+      : incoming.content_id ?? state.current_content_id ?? state.content_id ?? transaction.contentId ?? null;
+    const contentInstanceId = present(overrides.contentInstanceId) ? overrides.contentInstanceId
+      : incoming.content_instance_id ?? state.content_instance_id ?? state.current_asset_id ?? contentId;
+    const expectedGeneration = present(overrides.expectedGeneration) ? overrides.expectedGeneration
+      : incoming.expected_generation
+        ?? state.expected_generation
+        ?? state.generation
+        ?? (typeof getContentGeneration === 'function'
+          ? getContentGeneration(contentId, state.current_asset_id ?? null)
+          : null);
     return {
       ...transaction.payload,
       action: transaction.action,
@@ -431,15 +452,15 @@ function createTransportTransactionCoordinator(dependencies = {}) {
       transport_transaction_id: transaction.id,
       idempotency_key: transaction.idempotencyKey,
       ...(present(transaction.roomId) ? { room_id: transaction.roomId } : {}),
-      ...(present(transaction.contentId) ? { content_id: transaction.contentId } : {}),
-      ...(present(transaction.contentInstanceId)
-        ? { content_instance_id: transaction.contentInstanceId }
+      ...(present(contentId) ? { content_id: contentId } : {}),
+      ...(present(contentInstanceId)
+        ? { content_instance_id: contentInstanceId }
         : {}),
       ...(present(transaction.expectedRevision)
         ? { expected_revision: transaction.expectedRevision }
         : {}),
-      ...(present(transaction.expectedGeneration)
-        ? { expected_generation: transaction.expectedGeneration }
+      ...(present(expectedGeneration)
+        ? { expected_generation: expectedGeneration }
         : {}),
       audio_authority_device_id: transaction.authorityDeviceId,
       audio_allowed: audioAllowed,

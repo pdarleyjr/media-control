@@ -63,10 +63,11 @@ export function resolveTransportIntent(action, playback) {
 }
 
 /**
- * Keep the instructor's latest intent ahead of delayed display-state reports.
- * Every click still becomes an explicit, idempotent command; this tracker only
- * supplies the next absolute slide / paused destination while earlier commands
- * are waiting for physical confirmation.
+ * Track the latest intent per target so a command can be confirmed exactly
+ * once and out-of-order confirmations are ignored. The computed command is
+ * ALWAYS derived from the authoritative playback state passed in by the caller;
+ * a prior optimistic guess is never fed back into the next command. The UI must
+ * wait for the player/server to confirm a result before advancing again.
  */
 export function createTransportIntentTracker({ maxEntries = 64, retentionMs = 2500 } = {}) {
   const entries = new Map();
@@ -79,33 +80,14 @@ export function createTransportIntentTracker({ maxEntries = 64, retentionMs = 25
   return {
     resolve(targetKey, action, playback = {}) {
       const key = String(targetKey || 'default');
-      let previous = entries.get(key) || {};
-      if (previous.retainedUntil && Date.now() > previous.retainedUntil) {
-        entries.delete(key);
-        previous = {};
-      }
-      const effectivePlayback = {
-        ...(playback || {}),
-        ...(previous.slideIndex != null ? { slideIndex: previous.slideIndex } : {}),
-        ...(previous.paused != null ? { paused: previous.paused } : {}),
-      };
       const requestedAction = String(action || '').trim();
       const explicitAction = requestedAction === 'play_pause'
-        ? (effectivePlayback.paused === true ? 'play' : 'pause')
+        ? ((playback?.paused === true) ? 'play' : 'pause')
         : requestedAction;
-      const intent = resolveTransportIntent(explicitAction, effectivePlayback);
+      const intent = resolveTransportIntent(explicitAction, playback || {});
       const nextSequence = ++sequence;
-      const nextEntry = {
-        ...previous,
-        sequence: nextSequence,
-      };
-      if (intent.action === 'go_to_slide' && Number.isInteger(Number(intent.payload?.slide))) {
-        nextEntry.slideIndex = Number(intent.payload.slide);
-      }
-      if (intent.action === 'pause') nextEntry.paused = true;
-      else if (intent.action === 'play') nextEntry.paused = false;
       entries.delete(key);
-      entries.set(key, nextEntry);
+      entries.set(key, { sequence: nextSequence });
       prune();
       return {
         ...intent,
