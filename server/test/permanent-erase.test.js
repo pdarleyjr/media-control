@@ -43,6 +43,19 @@ function response() {
   return res;
 }
 
+function fakeIo(events) {
+  return {
+    of(namespace) {
+      assert.equal(namespace, '/device');
+      return {
+        to(room) {
+          return { emit(event, payload) { events.push({ room, event, payload }); } };
+        },
+      };
+    },
+  };
+}
+
 function ownerReq(overrides = {}) {
   return {
     user: { id: 'erase-owner', role: 'user', email: 'owner@example.test' },
@@ -51,6 +64,7 @@ function ownerReq(overrides = {}) {
     workspaceRole: 'workspace_admin',
     orgRole: 'org_admin',
     isPlatformAdmin: false,
+    app: { get: () => undefined },
     query: {},
     params: {},
     body: {},
@@ -90,4 +104,17 @@ test('permanent erase route deletes content and returns success', () => {
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.success, true);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM content WHERE id=?').get('erase-route').n, 0);
+});
+
+test('permanent erase notifies the P3 node to purge its cache when io is provided', () => {
+  db.exec(`INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, content_type, library_scope, processing_status, thumbnail_path)
+    VALUES ('erase-io', 'erase-owner', 'erase-ws', 'io.mp4', 'io.mp4', 'video/mp4', 'video', 'library', 'ready', 'io-thumb.jpg')`);
+  const events = [];
+  const result = permanentlyEraseContent(db, 'erase-io', fakeIo(events));
+  assert.equal(result.erased, true);
+  assert.ok(
+    events.some((e) => e.event === 'node:purge-cache' && e.payload.content_id === 'erase-io'),
+    'P3 node should receive a purge-cache event for the erased content',
+  );
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM content WHERE id=?').get('erase-io').n, 0);
 });

@@ -119,7 +119,7 @@ function invalidateCaches(db, contentId) {
   db.prepare('DELETE FROM content_favorites WHERE content_id = ?').run(contentId);
 }
 
-function permanentlyEraseContent(db, contentId) {
+function permanentlyEraseContent(db, contentId, io) {
   const preview = previewPermanentErase(db, contentId);
   if (!preview.found) return { erased: false, reason: 'not_found' };
   const tx = db.transaction(() => {
@@ -130,6 +130,12 @@ function permanentlyEraseContent(db, contentId) {
     db.prepare('DELETE FROM content WHERE id = ?').run(contentId);
   });
   tx();
+  if (io) {
+    try {
+      const { purgeNodeCache } = require('../lib/node-registry');
+      purgeNodeCache(io, db, { contentId });
+    } catch (_) {}
+  }
   return { erased: true, preview, files_erased: preview.files.length };
 }
 

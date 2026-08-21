@@ -2008,7 +2008,8 @@ router.post('/:id/permanent-erase-preview', requireContentWriteRole, (req, res) 
 router.post('/:id/permanent-erase', requireContentWriteRole, (req, res) => {
   const content = checkContentWrite(req, res);
   if (!content) return;
-  const result = permanentlyEraseContent(db, content.id);
+  const io = req.app.get('io');
+  const result = permanentlyEraseContent(db, content.id, io);
   if (!result.erased) return res.status(404).json({ error: result.reason || 'Content not found' });
   res.json({ success: true, files_erased: result.files_erased });
 });
