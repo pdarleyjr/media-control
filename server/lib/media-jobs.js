@@ -55,6 +55,13 @@ class MediaJobStore {
     return shapeJob(this.db.prepare('SELECT * FROM media_jobs WHERE id=?').get(jobId));
   }
 
+  latestEvent(jobId) {
+    const row = this.db.prepare(`SELECT status,stage,progress_pct,detail_json,created_at
+      FROM media_job_events WHERE job_id=? ORDER BY id DESC LIMIT 1`).get(jobId);
+    if (!row) return null;
+    return { ...row, detail: parseJson(row.detail_json) };
+  }
+
   list({ workspaceId, contentId, limit = 100 } = {}) {
     const clauses = [];
     const params = [];
@@ -185,20 +192,22 @@ class MediaJobStore {
     const now = this.now();
     const result = this.db.prepare(`
       UPDATE media_jobs SET lease_expires_at=?, updated_at=?
-      WHERE id=? AND status='running' AND lease_owner=? AND cancel_requested=0
+      WHERE id=? AND status='running' AND lease_owner=?
     `).run(now + Math.max(5, Number(leaseSeconds) || 300), now, jobId, workerId);
     return result.changes > 0;
   }
 
   complete(jobId, workerId, resultValue = null) {
     const now = this.now();
+    const mediaPreparing = resultValue?.media_preparing === true;
     const result = this.db.prepare(`
       UPDATE media_jobs
-      SET status='completed', stage='ready', progress_pct=100,
+      SET status='completed', stage=?, progress_pct=?,
           result_json=?, error_code=NULL, error_message=NULL, retryable=0,
           lease_owner=NULL, lease_expires_at=NULL, completed_at=?, updated_at=?
       WHERE id=? AND status='running' AND lease_owner=? AND cancel_requested=0
-    `).run(json(resultValue), now, now, jobId, workerId);
+    `).run(mediaPreparing ? 'preparing' : 'ready', mediaPreparing ? 99 : 100,
+      json(resultValue), now, now, jobId, workerId);
     if (!result.changes) return null;
     this._event(jobId, { completed: true });
     return this.get(jobId);
@@ -334,6 +343,7 @@ class MediaJobWorker {
     this.concurrency = Math.max(1, Math.min(Number(options.concurrency) || 1, 8));
     this.handlers = options.handlers || {};
     this.leaseSeconds = Math.max(30, Number(options.leaseSeconds) || 300);
+    this.artifactStore = options.artifactStore || null;
   }
 
   async _run(job) {
@@ -361,6 +371,8 @@ class MediaJobWorker {
         ),
         heartbeat: () => this.store.heartbeat(job.id, this.workerId, this.leaseSeconds),
         isCancellationRequested: () => this.store.get(job.id)?.cancel_requested === 1,
+        registerArtifact: (filePath) => this.artifactStore?.register(job, filePath),
+        releaseArtifact: (filePath) => this.artifactStore?.release(job.id, filePath),
       });
       if (this.store.get(job.id)?.cancel_requested === 1) {
         this.store.markCancelled(job.id, this.workerId);
@@ -380,6 +392,7 @@ class MediaJobWorker {
       });
     } finally {
       clearInterval(heartbeatTimer);
+      if (this.artifactStore) await this.artifactStore.cleanupJob(job.id);
     }
   }
 

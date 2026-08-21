@@ -98,7 +98,7 @@ test('Instructor Optimized applies a complete validated semantic plan and retain
   assert.match(JSON.stringify(deck.conversion.source_slide_mappings[0].source_snapshot), /Original detailed explanation/);
 });
 
-test('media that does not fit the primary layout is preserved on an approved FULL_IMAGE continuation', async () => {
+test('mixed text and two videos use a media-capable layout without losing either clip', async () => {
   const source = sourceSlide([
     { id: 'p1', kind: 'paragraph', text: 'Keep the explanatory paragraph.' },
     { id: 'video-primary', kind: 'video', asset_ref: 'asset-video-primary', caption: 'Primary training clip' },
@@ -109,8 +109,12 @@ test('media that does not fit the primary layout is preserved on an approved FUL
     mode: 'faithful',
     ai: null,
   });
-  const mediaSlide = converted.slides.find((slide) => slide.template_id === 'FULL_IMAGE');
-  assert.ok(mediaSlide, 'embedded media must move to a media-capable continuation');
+  const mediaSlide = converted.slides.find((slide) => Object.values(slide.slots)
+    .some((value) => value?.type === 'video' && value.asset_ref === 'asset-video-overflow'));
+  assert.ok(mediaSlide, 'every embedded clip must remain on a media-capable slide');
+  assert.ok(['DUAL_MEDIA', 'GALLERY', 'FULL_IMAGE'].includes(mediaSlide.template_id));
+  assert.ok(converted.slides.some((slide) => Object.values(slide.slots)
+    .some((value) => value?.type === 'video' && value.asset_ref === 'asset-video-primary')));
   assert.ok(Object.values(mediaSlide.slots).some((value) => value?.type === 'video' && value.asset_ref === 'asset-video-overflow'));
   const mediaAccounting = converted.accounting.find((item) => item.source_element_id === 'video-overflow');
   assert.equal(mediaAccounting.disposition, 'native_media_preserved');

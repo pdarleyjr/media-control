@@ -156,6 +156,14 @@ async function runFinalization(options) {
   let item;
   try {
     const commit = db.transaction(() => {
+      try {
+        const erasing = db.prepare(`SELECT 1 FROM content_erase_operations
+          WHERE content_id=? AND state IN ('prepared','staged','catalog_committed','cleanup_pending','recovery_failed')
+          LIMIT 1`).get(contentId);
+        if (erasing) return null;
+      } catch (error) {
+        if (!/no such table/i.test(error.message)) throw error;
+      }
       const result = db.prepare(`
         UPDATE content
         SET filepath=?, mime_type=?, file_size=?, duration_sec=?, width=?, height=?,

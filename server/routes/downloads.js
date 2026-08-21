@@ -7,7 +7,7 @@ const { db } = require('../db/database');
 const { accessContext } = require('../lib/tenancy');
 const { ownedContentScope } = require('../lib/content-scope');
 const { finalizeDownload } = require('../lib/finalize-download');
-const { getMediaPipeline } = require('../lib/media-pipeline');
+const { getMediaPipeline, finalizeUrlDownloadInvariant } = require('../lib/media-pipeline');
 const { assertRemoteUrlSafe } = require('../lib/ssrf-policy');
 const { sanitizeString } = require('../middleware/sanitize');
 const config = require('../config');
@@ -60,8 +60,51 @@ router.get('/', (req, res) => {
     if (j.status === 'done' && !j.content_id) {
       try { finalizeDownload({ db, contentDir: config.contentDir, jobId: j.id }); } catch (e) { console.error('downloads.js finalize (poll):', e.message); }
     }
+    if (j.status === 'done' && j.content_id) {
+      const finalized = finalizeUrlDownloadInvariant({
+        db,
+        contentDir: config.contentDir,
+        contentId: j.content_id,
+        downloadJobId: j.id,
+      });
+      if (!finalized.ok) {
+        db.prepare(`UPDATE download_jobs SET status=?, progress_pct=?, error_msg=? WHERE id=?`)
+          .run(
+            finalized.reason === 'content_not_ready' ? 'downloading' : 'error',
+            finalized.reason === 'content_not_ready' ? 90 : Number(j.progress_pct) || 0,
+            finalized.reason === 'content_not_ready' ? null : finalized.reason,
+            j.id,
+          );
+      }
+    }
   }
-  res.json(db.prepare(`SELECT * FROM download_jobs WHERE ${scope.clause} ORDER BY created_at DESC LIMIT 100`).all(...scope.params));
+  const scopedClause = scope.clause.replace(/\b(workspace_id|user_id)\b/g, 'dj.$1');
+  const shaped = db.prepare(`SELECT dj.*, c.filename AS content_title, c.filepath AS content_filepath,
+      c.file_size AS content_file_size, c.processing_status AS content_processing_status,
+      c.remote_url AS content_remote_url
+    FROM download_jobs dj LEFT JOIN content c ON c.id=dj.content_id
+    WHERE ${scopedClause} ORDER BY dj.created_at DESC LIMIT 100`).all(...scope.params)
+    .map((job) => {
+      const ready = job.status === 'done'
+        && job.content_id
+        && job.content_processing_status === 'ready'
+        && job.content_filepath
+        && Number(job.content_file_size) > 0
+        && job.content_remote_url == null;
+      const status = ready ? 'done'
+        : job.status === 'error' ? 'error'
+          : job.status === 'pending' ? 'pending'
+            : Number(job.progress_pct) >= 85 ? 'processing' : 'downloading';
+      return {
+        ...job,
+        title: job.content_title || job.title,
+        status,
+        ready,
+        media_library_url: ready ? `#/content?focus=${encodeURIComponent(job.content_id)}` : null,
+        preview_url: ready ? `#/content?focus=${encodeURIComponent(job.content_id)}&preview=1` : null,
+      };
+    });
+  res.json(shaped);
 });
 
 router.post('/', async (req, res) => {

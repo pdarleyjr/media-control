@@ -95,7 +95,10 @@ function profileRows() {
 }
 
 function contentCounts(workspaceId, userId) {
-  const content = db.prepare('SELECT COUNT(*) AS n FROM content WHERE ((workspace_id = ? AND user_id = ?) OR workspace_id IS NULL)').get(workspaceId, userId)?.n || 0;
+  const content = db.prepare(`SELECT COUNT(*) AS n FROM content
+    WHERE library_scope = 'library'
+      AND ((workspace_id = ? AND user_id = ?) OR workspace_id IS NULL)`)
+    .get(workspaceId, userId)?.n || 0;
   const playlists = db.prepare('SELECT COUNT(*) AS n FROM playlists WHERE workspace_id = ? AND user_id = ?').get(workspaceId, userId)?.n || 0;
   const presentations = db.prepare('SELECT COUNT(*) AS n FROM presentations WHERE workspace_id = ? AND user_id = ?').get(workspaceId, userId)?.n || 0;
   return { content, playlists, presentations };

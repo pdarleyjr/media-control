@@ -694,6 +694,20 @@ CREATE TABLE IF NOT EXISTS media_job_events (
 );
 CREATE INDEX IF NOT EXISTS idx_media_job_events_job ON media_job_events(job_id, id);
 
+-- Files created by an in-flight media job are registered before the first
+-- write. Intentionally no content/job foreign key: an erase or job-row cascade
+-- must not destroy the cleanup evidence before orphan bytes are removed.
+CREATE TABLE IF NOT EXISTS media_job_artifacts (
+    id         TEXT PRIMARY KEY,
+    job_id     TEXT NOT NULL,
+    content_id TEXT NOT NULL,
+    file_path  TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE(job_id, file_path)
+);
+CREATE INDEX IF NOT EXISTS idx_media_job_artifacts_content
+ON media_job_artifacts(content_id, created_at);
+
 -- One technical record per catalog item. User-facing category/name remains on
 -- content; detected MIME, codecs, source identity, poster provenance, and remote
 -- dependency health are server-owned facts and are not editable metadata.

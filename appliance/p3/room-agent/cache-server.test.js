@@ -416,6 +416,8 @@ test('authoritative manifest revocation stops serving previously cached bytes', 
 
     archived = true;
     await cache.prewarmManifest([]);
+    assert.equal(fs.existsSync(path.join(cacheDir, 'content', 'archived-video')), false);
+    assert.equal(fs.existsSync(path.join(cacheDir, 'content', 'archived-video.meta')), false);
     const cachePort = await listen(cache.server);
     const response = await requestBytes(
       `http://127.0.0.1:${cachePort}/content/archived-video/file`,
@@ -425,6 +427,114 @@ test('authoritative manifest revocation stops serving previously cached bytes', 
     assert.equal(response.headers['x-mc-cache'], 'miss');
     assert.equal(originRequests, 2);
     assert.notEqual(response.body.toString(), bytes.toString());
+    assert.equal(cache.getStats().manifest_count, 0);
+  } finally {
+    if (cache) await close(cache.server);
+    await close(origin);
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test('fresh agent sweeps stale disk entries on its first authoritative manifest', async () => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-cache-restart-sweep-'));
+  const contentDir = path.join(cacheDir, 'content');
+  const id = 'erased-while-offline';
+  const bytes = Buffer.from('stale-offline-generation');
+  const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+  fs.mkdirSync(contentDir, { recursive: true });
+  fs.writeFileSync(path.join(contentDir, id), bytes);
+  fs.writeFileSync(path.join(contentDir, `${id}.meta`), JSON.stringify({
+    sha256, size: bytes.length, generation: 7, checksum_verified: true,
+  }));
+
+  const cache = createCacheServer({ originBaseUrl: 'http://127.0.0.1:9', cacheDir, maxRetries: 0 });
+  try {
+    await cache.prewarmManifest([]);
+    assert.equal(fs.existsSync(path.join(contentDir, id)), false);
+    assert.equal(fs.existsSync(path.join(contentDir, `${id}.meta`)), false);
+    assert.equal(cache.getStats().manifest_count, 0);
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test('fresh agent never serves cached bytes before an authoritative manifest arrives', async () => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-cache-startup-gate-'));
+  const contentDir = path.join(cacheDir, 'content');
+  const id = 'stale-before-manifest';
+  const bytes = Buffer.from('must-not-be-served');
+  const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+  fs.mkdirSync(contentDir, { recursive: true });
+  fs.writeFileSync(path.join(contentDir, id), bytes);
+  fs.writeFileSync(path.join(contentDir, `${id}.meta`), JSON.stringify({
+    sha256, size: bytes.length, generation: 1, checksum_verified: true,
+  }));
+  const origin = http.createServer((_req, res) => {
+    res.writeHead(410, { 'Content-Type': 'application/json' });
+    res.end('{"error":"erased"}');
+  });
+  let cache;
+  try {
+    const originPort = await listen(origin);
+    cache = createCacheServer({ originBaseUrl: `http://127.0.0.1:${originPort}`, cacheDir, maxRetries: 0 });
+    const cachePort = await listen(cache.server);
+    const response = await requestBytes(`http://127.0.0.1:${cachePort}/content/${id}/file`);
+    assert.equal(response.status, 410);
+    assert.equal(response.headers['x-mc-cache'], 'miss');
+    assert.notEqual(response.body.toString(), bytes.toString());
+  } finally {
+    if (cache) await close(cache.server);
+    await close(origin);
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test('explicit purge removes every cache generation and is idempotent', async () => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-cache-explicit-purge-'));
+  const contentDir = path.join(cacheDir, 'content');
+  const id = 'erase-me';
+  fs.mkdirSync(contentDir, { recursive: true });
+  for (const suffix of ['', '.meta', '.part', '.meta.part', '.previous', '.meta.previous']) {
+    fs.writeFileSync(path.join(contentDir, id + suffix), 'bytes');
+  }
+  const cache = createCacheServer({ originBaseUrl: 'http://127.0.0.1:9', cacheDir });
+  try {
+    const first = cache.purgeContent({ content_id: id, generation: 4 });
+    const second = cache.purgeContent({ content_id: id, generation: 4 });
+    assert.deepEqual(first, { ok: true, content_id: id, generation: 4, removed: true });
+    assert.deepEqual(second, { ok: true, content_id: id, generation: 4, removed: false });
+    for (const suffix of ['', '.meta', '.part', '.meta.part', '.previous', '.meta.previous']) {
+      assert.equal(fs.existsSync(path.join(contentDir, id + suffix)), false, suffix || 'content bytes');
+    }
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test('purge during an active fill prevents the erased generation from publishing', async () => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-cache-purge-race-'));
+  const bytes = Buffer.alloc(128 * 1024, 0x45);
+  const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+  let releaseOrigin;
+  const requestStarted = new Promise((resolve) => { releaseOrigin = resolve; });
+  const origin = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': bytes.length });
+    releaseOrigin();
+    setTimeout(() => res.end(bytes), 40);
+  });
+  let cache;
+  try {
+    const originPort = await listen(origin);
+    cache = createCacheServer({ originBaseUrl: `http://127.0.0.1:${originPort}`, cacheDir, maxRetries: 0 });
+    const fill = cache.prewarmManifest([{
+      content_id: 'racing-video', generation: 9, sha256, size: bytes.length,
+    }]);
+    await requestStarted;
+    const result = cache.purgeContent({ content_id: 'racing-video', generation: 9 });
+    assert.equal(result.ok, true);
+    assert.equal(await fill, undefined);
+    assert.equal(fs.existsSync(path.join(cacheDir, 'content', 'racing-video')), false);
+    assert.equal(fs.existsSync(path.join(cacheDir, 'content', 'racing-video.meta')), false);
     assert.equal(cache.getStats().manifest_count, 0);
   } finally {
     if (cache) await close(cache.server);

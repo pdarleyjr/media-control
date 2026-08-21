@@ -17,6 +17,7 @@ const {
   validateDeck,
 } = require('../lib/presentation-template-registry');
 const { getTemplateAssets } = require('../lib/presentation-template-assets');
+const { pptxTextStyle } = require('../lib/presentation-style-contract');
 
 // Defense in depth: pptxgenjs uses image-size internally, so disable every
 // parser named by the upstream infinite-loop advisories before pptxgenjs loads.
@@ -97,25 +98,7 @@ function hex(color, fallback) {
 }
 
 function v2TextStyle(name) {
-  const heading = SOURCE_SPEC.theme.font_heading;
-  const body = SOURCE_SPEC.theme.font_body;
-  const colors = SOURCE_SPEC.theme.colors;
-  const base = {
-    fontFace: body,
-    color: hex(colors.white, WHITE),
-    margin: 0.05,
-    breakLine: false,
-    valign: 'mid',
-    fit: 'shrink',
-  };
-  if (/SECTION_TITLE/.test(name)) return { ...base, fontFace: heading, fontSize: 40, bold: true, color: hex(colors.gold, 'E8B33D'), align: 'center' };
-  if (/(?:^|_)TITLE$/.test(name)) return { ...base, fontFace: heading, fontSize: 30, bold: true };
-  if (/SUBTITLE|CAPTION|COURSE_SECTION|PRESENTATION_TITLE|SLIDE_LABEL/.test(name)) return { ...base, fontSize: 15, color: hex(colors.white, WHITE) };
-  if (/BULLET/.test(name)) return { ...base, fontSize: 18 };
-  if (/PARAGRAPH|_BODY|TABLE_TEXT|QUOTE_TEXT/.test(name)) return { ...base, fontSize: 17, valign: 'top', breakLine: true };
-  if (/TAKEAWAY_TEXT/.test(name)) return { ...base, fontSize: 17, bold: true };
-  if (/SLIDE_NUMBER|SECTION_NUMBER/.test(name)) return { ...base, fontFace: heading, fontSize: 22, bold: true, align: 'center' };
-  return { ...base, fontSize: 16 };
+  return pptxTextStyle(name);
 }
 
 function addV2StaticObjects(slide, namedObjects, deck, slideNumber, templateAssets) {
@@ -168,8 +151,7 @@ async function addV2Value(slide, name, object, value, resolveContentAsset) {
     if (value.type === 'table' && Array.isArray(value.rows) && value.rows.length) {
       slide.addTable(value.rows.map((row) => (Array.isArray(row) ? row.map(String) : [String(row)])), {
         ...box,
-        fontFace: SOURCE_SPEC.theme.font_body,
-        fontSize: 15,
+        ...v2TextStyle(name),
         color: hex(SOURCE_SPEC.theme.colors.white, WHITE),
         border: { type: 'solid', color: hex(SOURCE_SPEC.theme.colors.blue, '0B385E'), pt: 1 },
         fill: hex(SOURCE_SPEC.theme.colors.panel, '041F39'),

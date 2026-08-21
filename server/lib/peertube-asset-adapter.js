@@ -157,6 +157,8 @@ function createPeerTubeAssetHandler(options = {}) {
       }
 
       if (!resumeExisting) {
+        context.registerArtifact?.(partialPath);
+        context.registerArtifact?.(finalPath);
         context.progress?.('validating', 5, { source_type: 'peertube' });
         let response;
         try {
@@ -226,6 +228,9 @@ function createPeerTubeAssetHandler(options = {}) {
         if (bytes <= 0) {
           throw adapterError('peertube_asset_empty', 'PeerTube replay is empty.', true);
         }
+        if (context.isCancellationRequested?.()) {
+          throw adapterError('media_job_cancelled', 'PeerTube import cancelled.', false);
+        }
         try {
           await fs.promises.unlink(finalPath);
         } catch (caught) {
@@ -244,6 +249,8 @@ function createPeerTubeAssetHandler(options = {}) {
           await fs.promises.unlink(finalPath).catch(() => {});
           return { status: 'stale', reason: 'content_changed' };
         }
+        context.releaseArtifact?.(partialPath);
+        context.releaseArtifact?.(finalPath);
         upsertSourceMetadata(db, {
           contentId,
           workspaceId: job.workspace_id,
@@ -263,6 +270,9 @@ function createPeerTubeAssetHandler(options = {}) {
         expectedFilepath: filename,
         contentDir,
         staleAbsolutePaths: [],
+        registerArtifact: context.registerArtifact,
+        releaseArtifact: context.releaseArtifact,
+        isCancellationRequested: context.isCancellationRequested,
       });
       if (result?.status === 'failed') {
         throw adapterError(

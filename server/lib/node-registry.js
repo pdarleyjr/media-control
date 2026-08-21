@@ -169,6 +169,7 @@ function normalizeNodeTelemetry(payload) {
     kiosk_version: boundedText(p.kiosk_version, 128),
     build_hash: boundedText(p.build_hash, 128),
     configuration_schema_version: boundedNumber(p.configuration_schema_version),
+    cache_protocol_version: boundedNumber(p.cache_protocol_version),
     cache_health: boundedText(p.cache_health, 32),
     current_asset_readiness: boundedText(p.current_asset_readiness, 32),
     current_renderer: boundedText(p.current_renderer, 64),
@@ -282,13 +283,15 @@ function recordHeartbeat(db, nodeId, payload) {
 // filepath (so "existing content" is staged) — new uploads are added by a
 // re-push on upload and are also cached on first broadcast via read-through.
 function buildContentManifest(db, options = {}) {
-  if (!db) return [];
   try {
+    if (!db) throw new Error('content manifest database is unavailable');
     const workspaces = nodeWorkspaceIds(db, {
       ...options,
       classroomCache: options.classroomCache || config.classroomCache || {},
     });
-    if (!workspaces.length && options.allowUnscoped !== true) return [];
+    if (!workspaces.length && options.allowUnscoped !== true) {
+      throw new Error('content manifest workspace scope is unavailable');
+    }
     const rows = db.prepare(`
       SELECT c.id AS content_id, c.file_size AS size_bytes, c.mime_type,
              c.processing_status, c.version, c.created_at, c.updated_at, a.computed_at,
@@ -337,10 +340,20 @@ function buildContentManifest(db, options = {}) {
       });
     }
     return manifest;
-  } catch (e) {
-    console.warn('[node-registry] manifest build failed:', e.message);
+  } catch (error) {
+    if (options.throwOnUnavailable === true) throw error;
+    console.warn('[node-registry] manifest build failed:', error.message);
     return [];
   }
+}
+
+function buildContentManifestEnvelope(db, options = {}) {
+  return {
+    protocol_version: 2,
+    authoritative: true,
+    generated_at: Math.floor(Date.now() / 1000),
+    items: buildContentManifest(db, { ...options, throwOnUnavailable: true }),
+  };
 }
 
 function emitContentPrewarm(io, db, options = {}) {
@@ -381,6 +394,67 @@ function emitContentPrewarm(io, db, options = {}) {
 
   io.of('/device').to(`node:${nodeId}`).emit('node:prewarm-content', item);
   return { requested: true, node_id: nodeId, content_id: contentId, item };
+}
+
+async function emitContentPurge(io, options = {}) {
+  const contentId = String(options.contentId || '');
+  const generation = Math.max(1, Number(options.generation) || 1);
+  const cc = options.classroomCache || config.classroomCache || {};
+  if (!cc.enabled || !contentId) {
+    return { requested: false, reason: 'cache_disabled', nodes: [] };
+  }
+  if (!io || typeof io.of !== 'function') {
+    return { requested: false, reason: 'socket_unavailable', nodes: [] };
+  }
+
+  const nodeIds = [...new Set((options.nodeIds || [cc.nodeId || 'classroom-1-p3'])
+    .filter(Boolean)
+    .map(String))];
+  const payload = {
+    content_id: contentId,
+    asset_id: String(options.assetId || contentId),
+    generation,
+    reason: String(options.reason || 'permanent_erase'),
+  };
+  const namespace = io.of('/device');
+  const nodes = await Promise.all(nodeIds.map((nodeId) => new Promise((resolve) => {
+    try {
+      const room = namespace.to(`node:${nodeId}`);
+      const emitter = typeof room.timeout === 'function' ? room.timeout(5000) : room;
+      let settled = false;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        resolve({ node_id: nodeId, ...result });
+      };
+      const fallback = setTimeout(() => finish({ acknowledged: false, offline: true }), 5500);
+      if (fallback.unref) fallback.unref();
+      emitter.emit('node:purge-content', payload, (error, responses) => {
+        clearTimeout(fallback);
+        const response = Array.isArray(responses) ? responses[0] : responses;
+        if (error) finish({ acknowledged: false, purged: false, offline: true, error: error.message || String(error) });
+        else {
+          const purged = response?.ok === true
+            && response?.purged === true
+            && response?.absent_verified === true;
+          finish({
+            acknowledged: true,
+            purged,
+            offline: false,
+            error: purged ? null : String(response?.error || 'cache_purge_not_confirmed'),
+            result: response || null,
+          });
+        }
+      });
+      if (typeof room.timeout !== 'function') {
+        clearTimeout(fallback);
+        finish({ acknowledged: false, offline: null });
+      }
+    } catch (error) {
+      resolve({ node_id: nodeId, acknowledged: false, offline: null, error: error.message });
+    }
+  })));
+  return { requested: true, content_id: contentId, generation, nodes };
 }
 
 function requestContentPrewarm(io, db, options = {}) {
@@ -446,6 +520,8 @@ async function prewarmUploadedContent(io, db, options = {}) {
 
 module.exports = {
   buildContentManifest,
+  buildContentManifestEnvelope,
+  emitContentPurge,
   emitContentPrewarm,
   nodeAuthOk,
   nodeHttpAuthOk,

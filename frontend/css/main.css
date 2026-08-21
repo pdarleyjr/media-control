@@ -1397,6 +1397,9 @@ body.has-classroom-banner.cc-fullscreen .content { height: calc(100vh - var(--cl
   outline-offset: -3px;
 }
 
+.content-item.is-focus-target { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-tint); }
+.content-item.is-focus-target:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+
 .content-type-fallback,
 .media-youtube-preview {
   position: relative;
@@ -1534,6 +1537,15 @@ body.media-library-dialog-open {
   padding-inline: 0;
   padding-bottom: 0;
 }
+
+.content-erase-dialog { max-width: 620px; }
+.content-erase-warning { border-left: 4px solid var(--danger, #dc2626); padding: 12px 14px; background: #fef2f2; color: #7f1d1d; }
+.content-erase-impact { border: 1px solid var(--border, #d6d3d1); border-radius: 10px; padding: 12px 14px; background: #fafaf9; }
+.content-erase-impact h4 { margin: 0 0 8px; }
+.content-erase-impact ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.content-erase-impact li { display: flex; justify-content: space-between; gap: 16px; text-transform: capitalize; }
+.content-erase-confirm-check { display: flex; align-items: flex-start; gap: 10px; min-height: 48px; padding: 12px; border: 1px solid var(--border, #d6d3d1); border-radius: 10px; font-weight: 600; }
+.content-erase-confirm-check input { width: 22px; height: 22px; flex: 0 0 auto; }
 
 .media-library-edit-dialog {
   width: min(520px, 95vw);
@@ -3299,8 +3311,13 @@ body.media-library-dialog-open {
 .mc-downloader-status--done { color: var(--mc-success); }
 .mc-downloader-status--error, .mc-downloader-error { color: var(--mc-danger); }
 .mc-downloader-status--downloading { color: var(--mc-info); }
+.mc-downloader-status--processing { color: #7c3aed; }
 .mc-downloader-status--pending, .mc-downloader-status--unknown { color: var(--mc-text-secondary); }
 .mc-downloader-error { margin-top: var(--mc-space-xs); }
+.mc-downloader-row { align-items: flex-start; gap: var(--mc-space-md); }
+.mc-downloader-progress { width: min(24rem, 100%); height: 8px; margin-top: var(--mc-space-sm); accent-color: var(--accent); }
+.mc-downloader-actions { display: flex; flex-wrap: wrap; gap: var(--mc-space-sm); margin-top: var(--mc-space-sm); }
+.mc-downloader-actions .btn { min-height: var(--tap-min); }
 
 @media (max-width: 760px) {
   .mc-studio-surface { padding: var(--mc-space-lg) var(--mc-space-md); }

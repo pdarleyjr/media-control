@@ -83,10 +83,21 @@ function requireAuth(req, res, next) {
 
 // Optional auth - sets req.user if token present, continues either way
 function optionalAuth(req, res, next) {
+  let token = null;
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.split(' ')[1];
+  }
+  if (!token && req.headers.cookie) {
+    const cookies = req.headers.cookie.split(';').reduce((acc, item) => {
+      const [key, ...value] = item.trim().split('=');
+      if (key) acc[key] = value.join('=');
+      return acc;
+    }, {});
+    if (cookies.mc_token) token = cookies.mc_token;
+  }
+  if (token) {
     try {
-      const token = authHeader.split(' ')[1];
       const decoded = verifyToken(token);
       req.user = decoded.recovery
         ? recoveryUser(decoded)

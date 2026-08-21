@@ -106,6 +106,42 @@ test('faithful structured plan must account for every source object', () => {
   assert.match(ai.validateConversionPlan(bad, SOURCE, PROFILE_IDS.TWO_DISPLAY, 'faithful'), /omits source content/);
 });
 
+test('deck-level Qwen planning accounts for every source slide and emits no geometry', async (t) => {
+  const originalFetch = global.fetch;
+  let requestBody;
+  global.fetch = async (_url, options) => {
+    requestBody = JSON.parse(options.body);
+    return new Response(JSON.stringify({ message: { content: JSON.stringify({
+      narrative_title: 'High-rise operations',
+      sections: [{ title: 'Operations', source_slide_numbers: [1, 2] }],
+      slide_directives: [
+        { source_slide_number: 1, intent: 'Establish priorities', layout_family: 'STANDARD_PARAGRAPH', condensation: 'light' },
+        { source_slide_number: 2, intent: 'Compare assignments', layout_family: 'COMPARISON', condensation: 'none' },
+      ],
+      plan_notes: 'Keep technical values verbatim.',
+    }) } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  t.after(() => { global.fetch = originalFetch; });
+  const ir = {
+    source: { filename: 'deck.pptx' },
+    slides: [SOURCE, { ...SOURCE, source_slide_number: 2, title: 'Assignments', elements: [{ id: 'obj-2', kind: 'paragraph', text: 'Maintain 150 psi.' }] }],
+  };
+  const plan = await ai.planDeckToV2(ir, { wallProfile: PROFILE_IDS.THREE_DISPLAY });
+  assert.deepEqual(plan.slide_directives.map((item) => item.source_slide_number), [1, 2]);
+  assert.equal(requestBody.format.additionalProperties, false);
+  assert.match(requestBody.messages[0].content, /untrusted data/i);
+  assert.doesNotMatch(requestBody.messages[0].content, new RegExp(ATTACK));
+  assert.match(requestBody.messages[1].content, new RegExp(ATTACK));
+});
+
+test('Instructor Optimized validation rejects omission of exact technical values', () => {
+  const source = { ...SOURCE, elements: [{ id: 'obj-1', kind: 'paragraph', text: 'Maintain 150 psi for 10 minutes.' }] };
+  const plan = validPlan();
+  plan.transfer_mode = 'instructor_optimized';
+  plan.target_slides[0].region_assignments[0].text = 'Maintain pressure for several minutes.';
+  assert.match(ai.validateConversionPlan(plan, source, PROFILE_IDS.TWO_DISPLAY, 'instructor_optimized'), /technical value/i);
+});
+
 test('selected-slide assistance is schema-constrained, geometry-free, and returns a reversible semantic patch', async (t) => {
   const originalFetch = global.fetch;
   let requestBody;

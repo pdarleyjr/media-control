@@ -243,7 +243,15 @@ export const api = {
     method: 'PUT',
     body: JSON.stringify({ enabled: enabled === true, expected_version: expectedVersion }),
   }),
-  deleteContent: (id) => request(`/content/${id}`, { method: 'DELETE' }),
+  getContentEraseImpact: (id) => request(`/content/${encodeURIComponent(id)}/erase-impact`),
+  permanentlyEraseContent: (id) => request(`/content/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    body: JSON.stringify({ confirm_permanent_erase: true }),
+  }),
+  permanentlyEraseContentBulk: (ids) => request('/content/permanent-erase', {
+    method: 'POST',
+    body: JSON.stringify({ content_ids: ids, confirm_permanent_erase: true }),
+  }),
   updateContent: (id, data) => reconcileContentMutation(
     id,
     data,
@@ -672,8 +680,12 @@ export const api = {
     remove: (id) => request(`/presentations/${id}`, { method: 'DELETE' }),
     publish: (id) => request(`/presentations/${id}/publish`, { method: 'POST' }),
     duplicate: (id) => request(`/presentations/${id}/duplicate`, { method: 'POST' }),
+    assets: (id) => request(`/presentations/${encodeURIComponent(id)}/assets`),
     linkAsset: (id, contentId) => request(`/presentations/${encodeURIComponent(id)}/assets/link`, {
       method: 'POST', body: JSON.stringify({ content_id: contentId }),
+    }),
+    saveAssetCopy: (id, contentId) => request(`/presentations/${encodeURIComponent(id)}/assets/${encodeURIComponent(contentId)}/save-copy`, {
+      method: 'POST',
     }),
     exportToLibrary: (id) => request(`/presentations/${encodeURIComponent(id)}/export-to-library`, { method: 'POST' }),
     downloadPptx: async (id) => {
@@ -718,12 +730,36 @@ export const api = {
   },
 
   presentationConverter: {
+    sources: () => request('/presentation-converter/sources', { headers: { 'Cache-Control': 'no-store' } }),
+    uploadSource: (file, onProgress) => new Promise((resolve, reject) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${API_BASE}/presentation-converter/sources`);
+      const token = localStorage.getItem('token');
+      if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+      if (onProgress) xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try { resolve(JSON.parse(xhr.responseText)); } catch { reject(new Error('Bad response')); }
+        } else {
+          let message = 'Upload failed';
+          try { message = JSON.parse(xhr.responseText).error || message; } catch { /* fallback */ }
+          reject(new Error(message));
+        }
+      };
+      xhr.onerror = () => reject(new Error('Upload failed'));
+      xhr.send(fd);
+    }),
     start: (data) => request('/presentation-converter/jobs', { method: 'POST', body: JSON.stringify(data) }),
     job: (id) => request(`/presentation-converter/jobs/${encodeURIComponent(id)}`, {
       headers: { 'Cache-Control': 'no-store' },
     }),
     cancel: (id) => request(`/presentation-converter/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
     retry: (id) => request(`/presentation-converter/jobs/${encodeURIComponent(id)}/retry`, { method: 'POST' }),
+    retryFaithful: (id) => request(`/presentation-converter/jobs/${encodeURIComponent(id)}/retry-faithful`, { method: 'POST' }),
   },
 
   // Schedules (content/playlist windows per display or group; RRULE recurrence).

@@ -169,6 +169,34 @@ test('finalizeDownload: idempotent on re-poll — second call does NOT insert a 
   assert.equal(pipeline.queued.length, 1, 'restart/re-poll does not enqueue a duplicate');
 });
 
+test('finalizeDownload: re-poll after normalization never downgrades a ready generation', () => {
+  const db = makeDb();
+  const job = seedJob(db);
+  const contentDir = makeContentDir(job.id, 'mp4');
+  const pipeline = makePipeline();
+  const first = finalizeDownload({ db, contentDir, jobId: job.id, pipeline });
+  db.prepare("UPDATE content SET processing_status='ready', version=2 WHERE id=?").run(first.id);
+
+  const repeated = finalizeDownload({ db, contentDir, jobId: job.id, pipeline });
+
+  assert.equal(repeated.id, first.id);
+  assert.equal(repeated.processing_status, 'ready');
+  assert.equal(repeated.version, 2);
+  assert.equal(pipeline.queued.length, 1);
+});
+
+test('finalizeDownload: missing linked content is fail-closed and is never recreated', () => {
+  const db = makeDb();
+  const job = seedJob(db);
+  db.prepare('UPDATE download_jobs SET content_id=? WHERE id=?').run('missing-content', job.id);
+  const contentDir = makeContentDir(job.id, 'mp4');
+  const pipeline = makePipeline();
+
+  assert.equal(finalizeDownload({ db, contentDir, jobId: job.id, pipeline }), null);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM content').get().n, 0);
+  assert.equal(pipeline.queued.length, 0);
+});
+
 test('finalizeDownload: returns null when no finished file is on disk (nothing inserted)', () => {
   const db = makeDb();
   const job = seedJob(db);
@@ -184,6 +212,20 @@ test('finalizeDownload: unknown job id is a safe no-op', () => {
   const db = makeDb();
   const contentDir = makeContentDir(null);
   assert.equal(finalizeDownload({ db, contentDir, jobId: 'nope', pipeline: makePipeline() }), null);
+});
+
+test('finalizeDownload cannot resurrect bytes from an erased download tombstone', () => {
+  const db = makeDb();
+  const job = seedJob(db);
+  const contentDir = makeContentDir(job.id, 'mp4');
+  db.prepare(`UPDATE download_jobs SET status='error',error_msg='Content permanently erased',
+    content_id=NULL WHERE id=?`).run(job.id);
+  const pipeline = makePipeline();
+
+  assert.equal(finalizeDownload({ db, contentDir, jobId: job.id, pipeline }), null);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM content').get().n, 0);
+  assert.equal(pipeline.queued.length, 0);
+  assert.equal(fs.existsSync(path.join(contentDir, `${job.id}.mp4`)), true);
 });
 
 test('finalizeDownload rejects corrupt completed bytes without publishing or deleting evidence', () => {

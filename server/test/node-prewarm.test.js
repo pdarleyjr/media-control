@@ -5,6 +5,7 @@ const path = require('node:path');
 
 const {
   nodeHttpAuthOk,
+  emitContentPurge,
   normalizeNodeTelemetry,
   prewarmUploadedContent,
   requestContentPrewarm,
@@ -37,20 +38,64 @@ function fakeDb({ member = true } = {}) {
   };
 }
 
-function fakeIo(events) {
+function fakeIo(events, purgeResponse = { ok: true, purged: true, absent_verified: true }) {
   return {
     of(namespace) {
       assert.equal(namespace, '/device');
       return {
         to(room) {
           return {
-            emit(event, payload) { events.push({ room, event, payload }); },
+            emit(event, payload, acknowledge) {
+              events.push({ room, event, payload });
+              if (typeof acknowledge === 'function') acknowledge(null, [purgeResponse]);
+            },
+            timeout() { return this; },
           };
         },
       };
     },
   };
 }
+
+test('permanent erase immediately purges the matching generation from the P3 cache', async () => {
+  const events = [];
+  const result = await emitContentPurge(fakeIo(events), {
+    contentId: 'video-id',
+    generation: 3,
+    classroomCache: { enabled: true, nodeId: 'classroom-1-p3' },
+  });
+
+  assert.equal(result.requested, true);
+  assert.equal(result.nodes[0].acknowledged, true);
+  assert.equal(result.nodes[0].purged, true);
+  assert.deepEqual(events, [{
+    room: 'node:classroom-1-p3',
+    event: 'node:purge-content',
+    payload: {
+      content_id: 'video-id',
+      asset_id: 'video-id',
+      generation: 3,
+      reason: 'permanent_erase',
+    },
+  }]);
+});
+
+test('a transport acknowledgement never masquerades as a successful P3 purge', async () => {
+  const events = [];
+  const result = await emitContentPurge(fakeIo(events, {
+    ok: false,
+    purged: false,
+    error: 'failed_files_remain',
+  }), {
+    contentId: 'video-id',
+    generation: 3,
+    classroomCache: { enabled: true, nodeId: 'classroom-1-p3' },
+  });
+
+  assert.equal(result.nodes[0].acknowledged, true);
+  assert.equal(result.nodes[0].purged, false);
+  assert.equal(result.nodes[0].error, 'failed_files_remain');
+});
 
 test('classroom content broadcast sends a priority prewarm to the configured P3 node', () => {
   const events = [];
@@ -164,6 +209,7 @@ test('node telemetry persists only bounded diagnostics fields and excludes secre
     kiosk_version: 'kiosk-2',
     build_hash: 'abc123',
     configuration_schema_version: 1,
+    cache_protocol_version: 2,
     cache_health: 'degraded',
     current_renderer: 'video',
     audio_track_present: true,
@@ -200,6 +246,7 @@ test('node telemetry persists only bounded diagnostics fields and excludes secre
   assert.equal(telemetry.agent_uptime_sec, 120);
   assert.equal(telemetry.kiosk_uptime_sec, 3600);
   assert.equal(telemetry.configuration_schema_version, 1);
+  assert.equal(telemetry.cache_protocol_version, 2);
   assert.equal(telemetry.current_renderer, 'video');
   assert.equal(telemetry.audio_track_present, true);
   assert.equal(telemetry.last_command_error.length, 256);
@@ -240,6 +287,9 @@ test('P3 agent reconciles manifests slowly but keeps priority and LAN tests even
   assert.match(agent, /10 \* 60 \* 1000/);
   assert.match(agent, /Math\.min\(15 \* 60 \* 1000, Math\.max\(5 \* 60 \* 1000/);
   assert.match(agent, /node:prewarm-content/);
+  assert.match(agent, /node:purge-content/);
+  assert.match(agent, /cache\.purgeContent/);
+  assert.match(agent, /cache_protocol_version: CACHE_PROTOCOL_VERSION/);
   assert.match(agent, /node:run-lan-health-test/);
   assert.match(agent, /cacheStats: cache\.getStats\(\)/);
 });

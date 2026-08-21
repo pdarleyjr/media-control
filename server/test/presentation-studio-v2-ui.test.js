@@ -32,6 +32,7 @@ test('Studio exposes required authoring, export, preview, media and presentation
     'api.presentations.linkAsset',
     'api.presentations.downloadPptx',
     'api.presentations.exportToLibrary',
+    'api.presentations.saveAssetCopy',
     'api.ai.generateDeckV2',
     'api.ai.assistSlideV2',
     'openTargetPicker',
@@ -50,6 +51,7 @@ test('Studio exposes required authoring, export, preview, media and presentation
     'data-guide="seamSafe"',
     'data-studio-validation',
     'continuations',
+    'data-save-asset-copy',
   ]) assert.ok(source.includes(contract), `missing Studio contract: ${contract}`);
   assert.doesNotMatch(source, /localhost:11434|\/api\/generate\b/);
   assert.doesNotMatch(source, /slide\.slots\s*=\s*Object\.fromEntries\([^;]*filter/, 'layout changes must not silently filter away slot content');
@@ -58,15 +60,28 @@ test('Studio exposes required authoring, export, preview, media and presentation
 test('Converter is asynchronous, review-first, cancelable and never auto-broadcasts', () => {
   const source = read('frontend/js/views/presentation-converter.js');
   for (const contract of [
-    'api.uploadContent',
+    'api.presentationConverter.uploadSource',
+    'api.presentationConverter.sources',
     'api.presentationConverter.start',
     'api.presentationConverter.job',
     'api.presentationConverter.cancel',
     'api.presentationConverter.retry',
+    'api.presentationConverter.retryFaithful',
     'faithful',
     'optimized',
     "t('converter.review')",
     '#/presentation-studio?id=',
+    'converterActivity',
+    'slide_current',
+    'sessionStorage',
+    'elapsedTimer',
+    "t('converter.refresh_delayed')",
+    'converterRetryFaithful',
+    'activeJob.completed_at',
+    'activeJob.mode',
+    'result?.optimization_status',
+    "t('converter.optimization_partial')",
+    "t('converter.optimization_fallback')",
   ]) assert.ok(source.includes(contract), `missing Converter contract: ${contract}`);
   assert.doesNotMatch(source, /api\.broadcast\s*\(/);
 });
@@ -79,7 +94,8 @@ test('Converter status polling stays within the route limit and retries transien
     Math.ceil(60000 / interval) + 1 <= 30,
     `Converter polling would exceed the 30 request/minute route limit: ${interval}ms`,
   );
-  assert.match(source, /if \(error\.status === 429\) return;/);
+  assert.match(source, /if \(error\.status === 429\)[\s\S]*refresh_delayed[\s\S]*schedulePoll/);
+  assert.doesNotMatch(source, /setInterval\(\(\) => pollJob/, 'server polling must use bounded setTimeout backoff');
 });
 
 test('Studio CSS preserves a fixed logical wall stage and accessible touch geometry', () => {
@@ -98,6 +114,16 @@ test('frontend API keeps authenticated downloads and durable conversion jobs sam
   assert.match(source, /downloadPptx/);
   assert.match(source, /normalizeApiPath\(`\/presentations\/\$\{encodeURIComponent\(id\)\}\/export\.pptx`\)/);
   assert.match(source, /presentationConverter:\s*\{/);
+  assert.match(source, /presentation-converter\/sources/);
   assert.match(source, /\/presentation-converter\/jobs/);
   assert.match(source, /generateDeckV2/);
+  assert.match(source, /saveAssetCopy/);
+});
+
+test('Save Copy is presentation-scoped and never promotes the internal dependency in place', () => {
+  const route = read('server/routes/presentations.js');
+  assert.match(route, /\/:id\/assets\/:contentId\/save-copy/);
+  assert.match(route, /copyPresentationAssetToLibrary/);
+  assert.doesNotMatch(route, /UPDATE content SET library_scope='library'/);
+  assert.doesNotMatch(read('server/routes/content.js'), /promote-to-library/);
 });

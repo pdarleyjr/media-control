@@ -296,13 +296,15 @@ function defaultTranscode(inputPath, outputPath, classification) {
   return run;
 }
 
-async function defaultThumbnail(inputPath, outputName, contentDir) {
+async function defaultThumbnail(inputPath, outputName, contentDir, options = {}) {
   const thumbnailName = `thumb_${outputName.replace(/\.[^.]+$/, '.jpg')}`;
+  const thumbnailPath = path.join(contentDir, thumbnailName);
   try {
+    if (typeof options.registerArtifact === 'function') options.registerArtifact(thumbnailPath);
     await pexecFile('ffmpeg', [
       '-y', '-i', inputPath, '-vframes', '1',
       '-vf', `scale=${config.thumbnailWidth}:-1`,
-      path.join(contentDir, thumbnailName),
+      thumbnailPath,
     ], { timeout: 30000, maxBuffer: 1024 * 1024, windowsHide: true });
     return thumbnailName;
   } catch (_) {
@@ -325,6 +327,11 @@ async function normalizeVideoJob(job = {}) {
   const createThumbnail = job.createThumbnail || defaultThumbnail;
   const finalize = job.finalizeContentAsset || finalizeContentAsset;
   const makeUuid = job.uuid || uuidv4;
+  const registerArtifact = typeof job.registerArtifact === 'function' ? job.registerArtifact : () => {};
+  const releaseArtifact = typeof job.releaseArtifact === 'function' ? job.releaseArtifact : () => {};
+  const isCancellationRequested = typeof job.isCancellationRequested === 'function'
+    ? job.isCancellationRequested
+    : () => false;
   const expectedFilepath = String(job.expectedFilepath || path.basename(absPath || ''));
   let stagedPath = null;
   let thumbnailPath = null;
@@ -370,11 +377,12 @@ async function normalizeVideoJob(job = {}) {
       // poster rather than attaching it to replacement bytes.
       let webSafeThumbnail = null;
       try {
-        webSafeThumbnail = await createThumbnail(absPath, expectedFilepath, contentDir);
+        webSafeThumbnail = await createThumbnail(absPath, expectedFilepath, contentDir, { registerArtifact });
       } catch (_) {
         webSafeThumbnail = null;
       }
-      return await finalize({
+      if (isCancellationRequested()) throw new Error('media_job_cancelled');
+      const result = await finalize({
         db,
         io: job.io,
         contentId,
@@ -402,6 +410,10 @@ async function normalizeVideoJob(job = {}) {
         prewarmContent: job.prewarmContent,
         sha256File: job.sha256File,
       });
+      if (result?.status === 'ready' && webSafeThumbnail) {
+        releaseArtifact(path.join(contentDir, webSafeThumbnail));
+      }
+      return result;
     }
 
     if (!setProcessingState(
@@ -412,6 +424,8 @@ async function normalizeVideoJob(job = {}) {
     const outputName = `${outputBase}.mp4`;
     stagedPath = path.join(contentDir, `${outputBase}.part.mp4`);
     const finalPath = path.join(contentDir, outputName);
+    registerArtifact(stagedPath);
+    registerArtifact(finalPath);
     console.log(`[transcode] ${contentId}: ${classification.needsReencode
       ? (classification.tonemap ? 're-encode+tonemap' : 're-encode')
       : 'remux'} -> ${outputName}`);
@@ -420,10 +434,11 @@ async function normalizeVideoJob(job = {}) {
       sourceWidth: sourceProbe.width,
       sourceHeight: sourceProbe.height,
     });
+    if (isCancellationRequested()) throw new Error('media_job_cancelled');
 
     const outputProbe = await Promise.resolve(probe(stagedPath));
     if (!outputProbe || !classify(outputProbe).webSafe) throw new Error('normalized_output_not_web_safe');
-    const thumbnailName = await createThumbnail(stagedPath, outputName, contentDir);
+    const thumbnailName = await createThumbnail(stagedPath, outputName, contentDir, { registerArtifact });
     thumbnailPath = thumbnailName ? path.join(contentDir, thumbnailName) : null;
     // Preserve the current original/master bytes. They are retained through
     // original_filepath/original_sha256 unless an explicit retention policy
@@ -434,6 +449,7 @@ async function normalizeVideoJob(job = {}) {
       stalePaths.push(path.join(contentDir, initial.thumbnail_path));
     }
 
+    if (isCancellationRequested()) throw new Error('media_job_cancelled');
     const result = await finalize({
       db,
       io: job.io,
@@ -462,6 +478,9 @@ async function normalizeVideoJob(job = {}) {
     });
     stagedPath = null;
     if (result.status === 'ready') {
+      releaseArtifact(path.join(contentDir, `${outputBase}.part.mp4`));
+      releaseArtifact(finalPath);
+      if (thumbnailPath) releaseArtifact(thumbnailPath);
       console.log(`[transcode] ${contentId} -> ${outputName} (${outputProbe.width}x${outputProbe.height}, ${outputProbe.duration_seconds}s)`);
     }
     return result;

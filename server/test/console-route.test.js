@@ -92,6 +92,38 @@ test('console session rejects an invalid trusted-device token', async (t) => {
   assert.equal(body.error, 'Console device token rejected');
 });
 
+test('console content count excludes presentation sources and extracted internal assets', async (t) => {
+  const server = await createConsoleServer(t);
+  const session = async () => {
+    const res = await fetch(`${baseUrl(server)}/api/console/session`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-MBFD-Device-Token': 'test-console-token',
+      },
+      body: JSON.stringify({ profile_id: 'guest' }),
+    });
+    assert.equal(res.status, 200);
+    return res.json();
+  };
+  const before = await session();
+  db.prepare(`INSERT INTO content
+    (id,user_id,workspace_id,filename,filepath,mime_type,library_scope)
+    VALUES (?,?,?,?,?,'image/png',?)`).run(
+    'console-visible-content', before.user.id, before.current_workspace_id,
+    'Visible.png', '', 'library',
+  );
+  db.prepare(`INSERT INTO content
+    (id,user_id,workspace_id,filename,filepath,mime_type,library_scope)
+    VALUES (?,?,?,?,?,'image/png',?)`).run(
+    'console-internal-content', before.user.id, before.current_workspace_id,
+    'Extracted.png', '', 'internal',
+  );
+
+  const after = await session();
+  assert.equal(after.context.content, before.context.content + 1);
+});
+
 test('console can select a local profile by username', async (t) => {
   db.prepare(`
     INSERT INTO users (id, email, username, name, auth_provider, role, plan_id)

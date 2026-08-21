@@ -85,6 +85,8 @@ function createCacheServer(opts = {}) {
   let lastSuccessfulFill = null;
   const activeTransfers = new Map();
   const waitingPlayers = new Map();
+  const revocationEpochs = new Map();
+  const revokedGenerations = new Map();
 
   try { fs.mkdirSync(contentDir, { recursive: true }); } catch (_) { /* ignore */ }
 
@@ -112,12 +114,53 @@ function createCacheServer(opts = {}) {
   }
 
   function removeCacheEntry(id) {
-    try { fs.unlinkSync(fileFor(id)); } catch (_) {}
-    try { fs.unlinkSync(metaFor(id)); } catch (_) {}
-    try { fs.unlinkSync(fileFor(id) + '.part'); } catch (_) {}
-    try { fs.unlinkSync(metaFor(id) + '.part'); } catch (_) {}
-    try { fs.unlinkSync(fileFor(id) + '.previous'); } catch (_) {}
-    try { fs.unlinkSync(metaFor(id) + '.previous'); } catch (_) {}
+    const candidates = [
+      fileFor(id), metaFor(id),
+      fileFor(id) + '.part', metaFor(id) + '.part',
+      fileFor(id) + '.previous', metaFor(id) + '.previous',
+    ];
+    for (const candidate of candidates) {
+      try { fs.unlinkSync(candidate); } catch (_) {}
+    }
+    return candidates.every((candidate) => !fs.existsSync(candidate));
+  }
+
+  function diskContentIds() {
+    const ids = new Set();
+    const suffixes = ['.meta.previous', '.meta.part', '.previous', '.part', '.meta'];
+    try {
+      for (const name of fs.readdirSync(contentDir)) {
+        let id = name;
+        const suffix = suffixes.find((candidate) => name.endsWith(candidate));
+        if (suffix) id = name.slice(0, -suffix.length);
+        if (ID_RE.test(id)) ids.add(id);
+      }
+    } catch (_) { /* an unreadable cache directory is reported by normal health telemetry */ }
+    return ids;
+  }
+
+  function purgeContent(item) {
+    const normalizedId = String(item && (item.content_id || item.id) || '');
+    if (!ID_RE.test(normalizedId)) {
+      return { ok: false, content_id: normalizedId || null, generation: null, removed: false };
+    }
+    const generation = Math.max(0, Number(item && item.generation) || 0);
+    const candidates = [
+      fileFor(normalizedId), metaFor(normalizedId),
+      fileFor(normalizedId) + '.part', metaFor(normalizedId) + '.part',
+      fileFor(normalizedId) + '.previous', metaFor(normalizedId) + '.previous',
+    ];
+    const removed = candidates.some((candidate) => fs.existsSync(candidate));
+    revocationEpochs.set(normalizedId, (revocationEpochs.get(normalizedId) || 0) + 1);
+    revokedGenerations.set(
+      normalizedId,
+      Math.max(revokedGenerations.get(normalizedId) || 0, generation),
+    );
+    desiredManifestIds.delete(normalizedId);
+    manifestById.delete(normalizedId);
+    pendingManifest.delete(normalizedId);
+    const absent = removeCacheEntry(normalizedId);
+    return { ok: absent, content_id: normalizedId, generation, removed };
   }
 
   function publishVerifiedEntry(id, partPath, metaPartPath) {
@@ -272,6 +315,7 @@ function createCacheServer(opts = {}) {
     const expectedSha = String(expected && expected.sha256 || '').toLowerCase();
     const expectedSize = Number(expected && (expected.size || expected.size_bytes)) || null;
     const expectedGeneration = Math.max(1, Number(expected && expected.generation) || 1);
+    const fillEpoch = revocationEpochs.get(normalizedId) || 0;
     const originUrl = `${originBaseUrl}/api/content/${encodeURIComponent(normalizedId)}/file`;
     let u;
     try { u = new URL(originUrl); } catch { return Promise.resolve(false); }
@@ -433,7 +477,8 @@ function createCacheServer(opts = {}) {
           output.on('finish', () => {
             if (attemptDone || settled) return;
             try {
-              if (manifestAuthoritative && !desiredManifestIds.has(normalizedId)) {
+              if ((revocationEpochs.get(normalizedId) || 0) !== fillEpoch
+                || (manifestAuthoritative && !desiredManifestIds.has(normalizedId))) {
                 attemptDone = true;
                 clearTimers();
                 try { fs.unlinkSync(partPath); } catch (_) {}
@@ -501,6 +546,7 @@ function createCacheServer(opts = {}) {
 
   function prewarmManifest(items) {
     if (!Array.isArray(items)) return Promise.resolve();
+    const previousDesiredIds = new Set(desiredManifestIds);
     manifestAuthoritative = true;
     desiredManifestIds.clear();
     pendingManifest.clear();
@@ -509,12 +555,30 @@ function createCacheServer(opts = {}) {
       const id = it && (it.content_id || it.id);
       if (id) {
         const normalizedId = String(id);
+        const generation = Math.max(1, Number(it && it.generation) || 1);
+        const revokedGeneration = revokedGenerations.get(normalizedId) || 0;
+        if (generation <= revokedGeneration) continue;
+        revokedGenerations.delete(normalizedId);
         nextManifestIds.add(normalizedId);
         desiredManifestIds.add(normalizedId);
         manifestById.set(normalizedId, it);
         if (!cacheEntryMatches(normalizedId, it) && !downloads.has(normalizedId)) {
           pendingManifest.set(normalizedId, it);
         }
+      }
+    }
+    for (const id of previousDesiredIds) {
+      if (!nextManifestIds.has(id)) {
+        purgeContent({ content_id: id, generation: Number(manifestById.get(id)?.generation) || 0 });
+      }
+    }
+    // A fresh agent has no in-memory previous manifest. Reconcile the actual
+    // disk inventory against the first authoritative manifest so content erased
+    // while this node was offline cannot survive a process or machine restart.
+    for (const id of diskContentIds()) {
+      if (!nextManifestIds.has(id)) {
+        const result = purgeContent({ content_id: id, generation: Number(readMeta(id)?.generation) || 0 });
+        if (!result.ok) warn(`[cache] could not remove revoked disk entry ${id}`);
       }
     }
     for (const id of manifestById.keys()) {
@@ -527,6 +591,8 @@ function createCacheServer(opts = {}) {
     const id = item && (item.content_id || item.id);
     if (!id) return Promise.resolve(false);
     const normalizedId = String(id);
+    const generation = Math.max(1, Number(item && item.generation) || 1);
+    if (generation <= (revokedGenerations.get(normalizedId) || 0)) return Promise.resolve(false);
     desiredManifestIds.add(normalizedId);
     manifestById.set(normalizedId, item);
     pendingManifest.delete(normalizedId);
@@ -624,6 +690,10 @@ function createCacheServer(opts = {}) {
     if (m) {
       const id = decodeURIComponent(m[1]);
       if (!ID_RE.test(id)) { res.writeHead(400); return res.end('bad id'); }
+      // Disk state is not trusted until the server has supplied an authoritative
+      // manifest after this process start. Proxying preserves availability while
+      // preventing stale bytes from being served after an offline erase.
+      if (!manifestAuthoritative) return proxyOrigin(req, res, id, 0);
       if (manifestAuthoritative && !desiredManifestIds.has(id)) {
         return proxyOrigin(req, res, id, 0);
       }
@@ -641,7 +711,7 @@ function createCacheServer(opts = {}) {
   }
   function close() { try { server.close(); } catch (_) {} }
 
-  return { listen, close, prewarm, prewarmManifest, prewarmPriority, getStats, server };
+  return { listen, close, prewarm, prewarmManifest, prewarmPriority, purgeContent, getStats, server };
 }
 
 module.exports = { calculateTransferDeadlineMs, checksumMatches, classifyOrigin, createCacheServer };

@@ -109,6 +109,7 @@ function resolveDownloadedFile(contentDir, jobId) {
 function finalizeDownload({ db, contentDir, jobId, pipeline }) {
   const job = db.prepare('SELECT * FROM download_jobs WHERE id = ?').get(jobId);
   if (!job) return null;
+  if (job.status !== 'done' || job.error_msg) return null;
 
   // Idempotency: already finalized → return the existing content row, don't re-insert.
   if (job.content_id) {
@@ -153,7 +154,8 @@ function finalizeDownload({ db, contentDir, jobId, pipeline }) {
       INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, access_level)
       VALUES (@id, @user_id, @workspace_id, @filename, @filepath, @mime_type, @file_size, 'private')
     `).run(row);
-    const res = db.prepare('UPDATE download_jobs SET content_id = ?, local_path = ? WHERE id = ? AND content_id IS NULL')
+    const res = db.prepare(`UPDATE download_jobs SET content_id = ?, local_path = ?
+      WHERE id = ? AND content_id IS NULL AND status='done' AND error_msg IS NULL`)
       .run(row.id, filename, jobId);
     if (res.changes === 0) {
       // Lost the race — another finalize already linked a row. Undo ours.

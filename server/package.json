@@ -8,7 +8,7 @@
     "dev": "node --watch --env-file-if-exists=.env server.js",
     "test": "npm run test:release",
     "test:node": "node scripts/run-node-tests.mjs",
-    "test:p3": "node --test --test-concurrency=1 ../appliance/p3/room-agent/cache-server.test.js ../appliance/p3/room-agent/common-loader.test.js ../appliance/p3/room-agent/lan-health-test.test.js",
+    "test:p3": "node --test --test-concurrency=1 ../appliance/p3/room-agent/cache-manifest-protocol.test.js ../appliance/p3/room-agent/cache-server.test.js ../appliance/p3/room-agent/common-loader.test.js ../appliance/p3/room-agent/lan-health-test.test.js",
     "test:ui-contract": "node --test --test-concurrency=1 test/ui-contract/enterprise-api.test.js test/ui-contract/enterprise-i18n.test.js test/ui-contract/error-recovery.test.js test/ui-contract/operator-state.test.js test/ui-contract/operator-store.test.js",
     "test:playwright": "npm --prefix e2e/enterprise-ui test",
     "test:real-app": "npm --prefix e2e/real-app test",

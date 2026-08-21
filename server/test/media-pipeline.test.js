@@ -121,7 +121,13 @@ test('claim recovers an expired lease, progress never reports false 100, and ret
     assert.equal(claimed.id, job.id);
     assert.equal(claimed.status, 'running');
     assert.equal(claimed.attempts, 1);
-    assert.equal(store.updateProgress(job.id, 'worker-a', { stage: 'optimizing', progressPct: 100 }).progress_pct, 99);
+    assert.equal(store.updateProgress(job.id, 'worker-a', {
+      stage: 'optimizing', progressPct: 100,
+      detail: { step: 'qwen-semantic-design', slide_current: 7, slide_total: 23, ai_active: true },
+    }).progress_pct, 99);
+    assert.deepEqual(store.latestEvent(job.id).detail, {
+      step: 'qwen-semantic-design', slide_current: 7, slide_total: 23, ai_active: true,
+    });
 
     now = 111;
     const recovered = store.claimNext({ workerId: 'worker-b', leaseSeconds: 10 });
@@ -295,6 +301,23 @@ test('worker heartbeats keep a long-running lease owned until completion', async
     });
     await worker.drain();
     assert.equal(store.get('job-heartbeat').status, 'completed');
+  } finally {
+    db.close();
+  }
+});
+
+test('a cancellation-requested worker keeps heartbeating until its handler exits', () => {
+  const db = createDb();
+  let now = 100;
+  try {
+    migrateMediaPipeline(db);
+    const store = new MediaJobStore(db, { now: () => now, uuid: () => 'job-cancel-heartbeat' });
+    store.enqueue({ contentId: 'content-1', workspaceId: 'workspace-1', jobType: 'thumbnail' });
+    store.claimNext({ workerId: 'worker-a', leaseSeconds: 30 });
+    store.requestCancel('job-cancel-heartbeat');
+    now = 120;
+    assert.equal(store.heartbeat('job-cancel-heartbeat', 'worker-a', 30), true);
+    assert.equal(store.get('job-cancel-heartbeat').lease_expires_at, 150);
   } finally {
     db.close();
   }

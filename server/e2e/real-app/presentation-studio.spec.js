@@ -117,6 +117,13 @@ function refreshSafeTargetHeartbeat() {
 }
 
 async function authPage(page) {
+  await page.context().addCookies([{
+    name: 'mc_token',
+    value: token,
+    url: BASE_URL,
+    httpOnly: true,
+    sameSite: 'Strict',
+  }]);
   await page.addInitScript(({ authToken, authUser }) => {
     localStorage.setItem('token', authToken);
     localStorage.setItem('user', JSON.stringify(authUser));
