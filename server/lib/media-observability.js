@@ -179,6 +179,24 @@ function mediaObservabilitySnapshot(db, options = {}) {
   }
   const cacheRequests = cacheHits + cacheMisses;
 
+  const scopeRows = safeAll(
+    db,
+    `SELECT COALESCE(library_scope, 'library') AS scope, COUNT(*) AS count
+      FROM content
+      WHERE workspace_id=? AND archived_at IS NULL
+      GROUP BY scope`,
+    workspaceId,
+  );
+  const libraryScopes = { library: 0, internal: 0 };
+  let scopedTotal = 0;
+  for (const row of scopeRows) {
+    const count = boundedNumber(row.count);
+    if (row.scope === 'internal') libraryScopes.internal = count;
+    else libraryScopes.library += count;
+    scopedTotal += count;
+  }
+  libraryScopes.total = scopedTotal;
+
   const stuck = safeAll(
     db,
     `SELECT id, content_id, job_type, stage, progress_pct, updated_at
@@ -261,6 +279,7 @@ function mediaObservabilitySnapshot(db, options = {}) {
       hit_ratio: cacheRequests > 0 ? round(cacheHits / cacheRequests) : null,
       source: 'latest managed-node telemetry counters',
     },
+    library_scopes: libraryScopes,
     sources,
     alerts,
   };

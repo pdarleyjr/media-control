@@ -32,6 +32,7 @@ function fixtureDb() {
       file_size INTEGER,
       processing_status TEXT,
       thumbnail_path TEXT,
+      library_scope TEXT,
       archived_at INTEGER
     );
     CREATE TABLE media_jobs (
@@ -137,9 +138,9 @@ test('workspace media observability reports queues, manifest coverage, cache rat
   const now = 10_000;
   db.exec(`
     INSERT INTO content VALUES
-      ('c1','ws','ready.mp4','ready.mp4',1000,'ready','ready.jpg',NULL),
-      ('c2','ws','missing.mp4','missing.mp4',2000,'ready',NULL,NULL),
-      ('c3','other','other.mp4','other.mp4',3000,'ready',NULL,NULL);
+      ('c1','ws','ready.mp4','ready.mp4',1000,'ready','ready.jpg',NULL,NULL),
+      ('c2','ws','missing.mp4','missing.mp4',2000,'ready',NULL,NULL,NULL),
+      ('c3','other','other.mp4','other.mp4',3000,'ready',NULL,NULL,NULL);
     INSERT INTO asset_checksums VALUES ('a1','c1',1,'${'a'.repeat(64)}',1000);
     INSERT INTO media_jobs VALUES
       ('j1','c1','ws','video_normalize','upload','completed','ready',100,1000,9000,9010,9001,9010),
@@ -171,6 +172,28 @@ test('workspace media observability reports queues, manifest coverage, cache rat
   assert.equal(snapshot.sources.upload.failed, 1);
   assert.equal(snapshot.processing.completed_samples, 1);
   assert.ok(snapshot.alerts.some((alert) => alert.code === 'MEDIA_JOB_STUCK'));
+  assert.equal(snapshot.library_scopes.library, 2);
+  assert.equal(snapshot.library_scopes.internal, 0);
+  assert.equal(snapshot.library_scopes.total, 2);
+  db.close();
+});
+
+test('media observability breaks content down by library scope', () => {
+  const db = fixtureDb();
+  db.exec(`
+    INSERT INTO content (id, workspace_id, filename, filepath, file_size, processing_status, library_scope, archived_at)
+      VALUES
+        ('lib-1','ws','a.mp4','a.mp4',1000,'ready','library',NULL),
+        ('lib-2','ws','b.mp4','b.mp4',1000,'ready','library',NULL),
+        ('int-1','ws','c.png','c.png',1000,'ready','internal',NULL),
+        ('int-2','ws','d.png','d.png',1000,'ready','internal',NULL),
+        ('int-3','ws','e.png','e.png',1000,'ready',NULL,NULL),
+        ('arch-1','ws','f.mp4','f.mp4',1000,'ready','internal',1000);
+  `);
+  const snapshot = mediaObservabilitySnapshot(db, { workspaceId: 'ws', now: 10_000 });
+  assert.equal(snapshot.library_scopes.library, 3);
+  assert.equal(snapshot.library_scopes.internal, 2);
+  assert.equal(snapshot.library_scopes.total, 5);
   db.close();
 });
 
