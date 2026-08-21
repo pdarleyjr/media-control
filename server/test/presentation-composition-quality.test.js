@@ -97,6 +97,36 @@ test('six related photos compile to two gallery slides instead of six orphan ful
   assert.equal(deck.conversion.quality.orphan_continuation_count, 0);
 });
 
+test('captioned mixed-aspect galleries do not masquerade as comparisons or strand portrait media in an unsafe full-bleed slot', async () => {
+  const ir = {
+    source: { filename: 'mixed-gallery.pptx' },
+    source_dimensions_emu: { w: 13.333 * EMU, h: 7.5 * EMU },
+    assets: [],
+    slides: [{
+      source_slide_number: 1,
+      title: 'Multi-image review',
+      elements: [
+        paragraph('source-title', 'Multi-image review', box(0.7, 0.5, 8, 0.6)),
+        paragraph('caption', 'Wide panel / portrait detail / apparatus context', box(0.7, 4.8, 11, 0.6)),
+        image('wide-one', 0.7, 1.35, 3.7, 2.1),
+        image('portrait', 4.75, 1.15, 2.4, 3.2),
+        image('wide-two', 7.55, 1.35, 4.2, 2.8),
+      ],
+    }],
+  };
+  const composition = buildSlideCompositionIr(ir.slides[0], ir.source_dimensions_emu);
+  const candidates = rankCandidateLayouts(composition, PROFILE_IDS.TWO_DISPLAY);
+  assert.equal(composition.semantic_shape, 'gallery');
+  assert.equal(candidates.find((candidate) => candidate.layout_id === 'COMPARISON').valid, false);
+
+  const deck = await convertDeckIr(ir, { wallProfile: PROFILE_IDS.TWO_DISPLAY, mode: MODES.FAITHFUL });
+  assert.deepEqual(deck.slides.map((slide) => slide.template_id), ['DUAL_MEDIA', 'VIDEO_FOCUS']);
+  const firstAssets = Object.values(deck.slides[0].slots).filter((value) => value?.asset_ref).map((value) => value.asset_ref);
+  assert.deepEqual(firstAssets, ['asset:wide-one', 'asset:wide-two']);
+  assert.ok(Object.values(deck.slides[1].slots).some((value) => value?.asset_ref === 'asset:portrait'));
+  assert.equal(deck.conversion.quality.valid, true);
+});
+
 test('a rendered fallback replaces covered complex placeholders without duplicate continuation slides', async () => {
   const ir = {
     source: { filename: 'rendered-complex.pptx' },

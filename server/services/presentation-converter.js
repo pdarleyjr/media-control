@@ -124,6 +124,48 @@ function assignMedia(slots, mediaNames, element) {
   return true;
 }
 
+function mediaAspect(element) {
+  const box = element?.bbox_emu;
+  const width = Number(box?.w);
+  const height = Number(box?.h);
+  return width > 0 && height > 0 ? width / height : null;
+}
+
+function primaryMediaElements(elements, mediaNames, objects) {
+  const media = elements.filter((element) => ['image', 'video', 'audio', 'youtube'].includes(element.kind));
+  if (media.length <= mediaNames.length) return new Set(media);
+  if (media.some((element) => !mediaAspect(element))) return new Set(media.slice(0, mediaNames.length));
+  const remaining = media.slice();
+  const selected = [];
+  for (const name of mediaNames) {
+    const box = objects[name]?.bbox_px;
+    const targetAspect = Number(box?.w) > 0 && Number(box?.h) > 0 ? Number(box.w) / Number(box.h) : null;
+    if (!targetAspect || !remaining.length) break;
+    remaining.sort((a, b) => {
+      const aAspect = mediaAspect(a); const bAspect = mediaAspect(b);
+      const aDelta = Math.max(aAspect / targetAspect, targetAspect / aAspect);
+      const bDelta = Math.max(bAspect / targetAspect, targetAspect / bAspect);
+      return aDelta - bDelta || elements.indexOf(a) - elements.indexOf(b);
+    });
+    selected.push(remaining.shift());
+  }
+  return new Set(selected);
+}
+
+function singleMediaTemplate(profileId, element) {
+  const aspect = mediaAspect(element);
+  if (!aspect) return 'FULL_IMAGE';
+  const candidates = ['FULL_IMAGE', 'VIDEO_FOCUS', 'DIAGRAM_PROCESS'].map((templateId) => {
+    const slots = contentSlots(profileId, templateId);
+    const box = slots.objects[slots.media[0]]?.bbox_px;
+    const target = Number(box?.w) > 0 && Number(box?.h) > 0 ? Number(box.w) / Number(box.h) : Infinity;
+    return { templateId, delta: Math.max(aspect / target, target / aspect) };
+  });
+  const fullImage = candidates[0];
+  if (fullImage.delta <= 4) return fullImage.templateId;
+  return candidates.sort((a, b) => a.delta - b.delta)[0].templateId;
+}
+
 function optimizedValue(assignment, byId) {
   const sourceElements = assignment.source_refs.map((id) => byId.get(id)).filter(Boolean);
   const media = sourceElements.find((element) => ['image', 'video', 'audio', 'youtube'].includes(element.kind)
@@ -227,6 +269,7 @@ async function convertSlideIr(sourceSlide, options = {}) {
 
   const elements = elementsOf(sourceSlide);
   const primary = contentSlots(wallProfile, classification.template_id);
+  const primaryMedia = primaryMediaElements(elements, primary.media, primary.objects);
   const slots = {};
   if (primary.title && sourceSlide.title) slots[primary.title] = String(sourceSlide.title);
   if (primary.subtitle && sourceSlide.subtitle) slots[primary.subtitle] = String(sourceSlide.subtitle);
@@ -241,7 +284,7 @@ async function convertSlideIr(sourceSlide, options = {}) {
     if (element === titleElement && primary.title) continue;
     if (element.rendered_fallback_covered === true) continue;
     if (['image', 'video', 'audio', 'youtube'].includes(element.kind)) {
-      if (!assignMedia(slots, primary.media, element)) pending.push({ element, chunks: [element] });
+      if (!primaryMedia.has(element) || !assignMedia(slots, primary.media, element)) pending.push({ element, chunks: [element] });
       if (element.external === true) reviewFlags.push('External linked media unavailable — source file required');
       continue;
     }
@@ -295,7 +338,8 @@ async function convertSlideIr(sourceSlide, options = {}) {
   const mediaPending = pending.filter((item) => ['image', 'video', 'audio', 'youtube'].includes(item.element.kind));
   const remainingMedia = mediaPending.flatMap((item) => item.chunks.map((chunk) => ({ element: item.element, chunk })));
   while (remainingMedia.length) {
-    const galleryLayout = contentSlots(wallProfile, remainingMedia.length > 1 ? 'GALLERY' : 'FULL_IMAGE');
+    const templateId = remainingMedia.length > 1 ? 'GALLERY' : singleMediaTemplate(wallProfile, remainingMedia[0].element);
+    const galleryLayout = contentSlots(wallProfile, templateId);
     const batch = remainingMedia.splice(0, Math.max(1, galleryLayout.media.length));
     const mediaSlots = {};
     if (galleryLayout.title) mediaSlots[galleryLayout.title] = String(sourceSlide.title || 'Continued media');
@@ -304,7 +348,6 @@ async function convertSlideIr(sourceSlide, options = {}) {
       if (!assignMedia(mediaSlots, galleryLayout.media, chunk)) throw new Error('Media registry is missing an expected media slot');
       refs.push(element.id);
     }
-    const templateId = batch.length > 1 ? 'GALLERY' : 'FULL_IMAGE';
     const mediaSlide = makeSlide(sourceSlide, templateId, slides.length + 1, mediaSlots, refs, [
       ...reviewFlags,
       ...(batch.some(({ element }) => element.external) ? ['External linked media unavailable — source file required'] : []),

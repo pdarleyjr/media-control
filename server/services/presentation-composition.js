@@ -115,6 +115,7 @@ function rankCandidateLayouts(composition, profileId) {
     if (needsMedia && capacity.media === 0) hardReasons.push('missing_media_region');
     if (needsText && capacity.text === 0 && capacity.bullets === 0) hardReasons.push('missing_text_region');
     if (composition.semantic_shape === 'comparison' && layoutId !== 'COMPARISON') hardReasons.push('breaks_parallel_groups');
+    if (composition.semantic_shape !== 'comparison' && layoutId === 'COMPARISON') hardReasons.push('requires_parallel_groups');
     const continuationCount = capacity.media > 0 ? Math.max(0, Math.ceil(composition.counts.media / capacity.media) - 1) : composition.counts.media;
     let score = layoutId === preferred ? 100 : 35;
     score += Math.min(composition.counts.media, capacity.media) * 8;
