@@ -28,10 +28,14 @@ test('v2 player keeps the absolute rapid transport and command-correlation state
   assert.doesNotMatch(player, /inFlight|controlsDisabled|disabled\s*=\s*true/);
 });
 
-test('v2 local video has explicit media play pause and optional end advance', () => {
-  assert.match(player, /querySelector\('video,audio'\)/);
-  assert.match(player, /media\.play\(\)/);
-  assert.match(player, /media\.pause\(\)/);
+test('deck player publishes content instance id and generation so stale slide commands bind to the loaded deck', () => {
+  assert.match(player, /content_instance_id:\s*deck\.content_instance_id/);
+  assert.match(player, /generation:\s*Number\.isFinite\(Number\(deck\.generation\)\)/);
+});
+
+test('auto-advance-on-media-end is bound to the originating slide and deck so a stale ended event cannot advance a replaced presentation', () => {
   assert.match(player, /auto_advance_on_media_end===true/);
-  assert.match(player, /media_state:/);
+  assert.match(player, /advanceFromIdx/);
+  assert.match(player, /idx !== advanceFromIdx/);
+  assert.match(player, /advanceDeckId/);
 });

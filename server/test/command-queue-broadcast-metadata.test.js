@@ -86,3 +86,25 @@ test('offline replay retains the latest request metadata and rebuilds the payloa
   assert.equal(commandQueue.getQueueDepth('front-left'), 0);
   assert.equal(builds.length, 3, 'both offline preparations plus one reconnect rebuild');
 });
+
+test('queued device commands retain authoritative content-instance/generation metadata through reconnect flush', () => {
+  const deviceNs = namespace();
+  commandQueue.queueCommand('front-left', 'device:command', {
+    type: 'device:command',
+    command_id: 'cmd-1',
+    payload: {
+      action: 'pause',
+      content_instance_id: 'instance-A',
+      expected_generation: 7,
+    },
+  });
+  assert.equal(commandQueue.getQueueDepth('front-left'), 1);
+
+  deviceNs.adapter.rooms.set('front-left', new Set(['socket-front-left']));
+  const flushed = commandQueue.flushQueue(deviceNs, 'front-left', () => null);
+  assert.equal(flushed.commands, 1);
+  const emitted = deviceNs.emitted.find((e) => e.event === 'device:command');
+  assert.equal(emitted.payload.payload.content_instance_id, 'instance-A');
+  assert.equal(emitted.payload.payload.expected_generation, 7);
+  assert.equal(commandQueue.getQueueDepth('front-left'), 0);
+});
