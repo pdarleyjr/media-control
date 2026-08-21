@@ -22,8 +22,33 @@ test('package guards reject traversal, unsafe links, and active XML declarations
   }
   assert.throws(() => validateRelationshipTarget('file:///etc/passwd', 'External'), /unsafe|protocol/i);
   assert.throws(() => validateRelationshipTarget('javascript:alert(1)', 'External'), /unsafe|protocol/i);
+  assert.throws(() => validateRelationshipTarget('//server/share/file.xml', 'Internal'), /unsafe|target/i);
   assert.doesNotThrow(() => validateRelationshipTarget('https://www.youtube.com/watch?v=test', 'External'));
   assert.throws(() => validateXml('<!DOCTYPE x [<!ENTITY boom SYSTEM "file:///etc/passwd">]><x>&boom;</x>'), /DOCTYPE|ENTITY|unsafe/i);
+});
+
+test('package-root relationship targets emitted by real PowerPoint charts stay inside the archive', async (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-slide-ir-root-target-'));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const file = path.join(temp, 'chart.pptx');
+  const pptx = new PptxGenJS();
+  pptx.addSlide().addChart(pptx.ChartType.bar, [
+    { name: 'Flow', labels: ['First', 'Second'], values: [500, 750] },
+  ], { x: 1, y: 1, w: 6, h: 3 });
+  await pptx.writeFile({ fileName: file });
+
+  assert.equal(validateRelationshipTarget('/ppt/charts/chart1.xml', 'Internal'), '/ppt/charts/chart1.xml');
+  const ir = await extractPptxToSlideIr(file);
+  assert.ok(ir.slides[0].elements.some((element) => element.kind === 'chart'));
+
+  const JSZip = require('jszip');
+  const zip = await JSZip.loadAsync(fs.readFileSync(file));
+  const relPath = 'ppt/slides/_rels/slide1.xml.rels';
+  const relationships = await zip.file(relPath).async('string');
+  zip.file(relPath, relationships.replace('/ppt/charts/chart1.xml', '/../../escape.xml'));
+  const hostile = path.join(temp, 'hostile-chart.pptx');
+  fs.writeFileSync(hostile, await zip.generateAsync({ type: 'nodebuffer' }));
+  await assert.rejects(() => extractPptxToSlideIr(hostile), /unsafe resolved relationship path/i);
 });
 
 test('linked local media is inert, path-redacted, and review-flagged instead of aborting conversion', async (t) => {

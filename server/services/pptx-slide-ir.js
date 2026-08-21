@@ -48,8 +48,9 @@ function validateRelationshipTarget(target, targetMode = 'Internal') {
   }
   const normalized = value.replace(/\\/g, '/');
   // OOXML legitimately uses relative targets such as ../media/image1.png.
+  // It also permits package-root targets such as /ppt/charts/chart1.xml.
   // resolveInternalTarget performs the decisive package-root containment check.
-  if (normalized.startsWith('/') || /^[A-Za-z]:/.test(normalized)) {
+  if (normalized.startsWith('//') || /^[A-Za-z]:/.test(normalized)) {
     throw new Error('Unsafe internal relationship target');
   }
   return normalized;
@@ -77,7 +78,9 @@ function relsPath(partPath) {
 
 function resolveInternalTarget(partPath, target) {
   const validated = validateRelationshipTarget(target, 'Internal');
-  const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(partPath), validated));
+  const resolved = validated.startsWith('/')
+    ? path.posix.normalize(validated.slice(1))
+    : path.posix.normalize(path.posix.join(path.posix.dirname(partPath), validated));
   if (resolved.startsWith('../') || path.posix.isAbsolute(resolved)) throw new Error('Unsafe resolved relationship path');
   return validateEntryName(resolved);
 }
