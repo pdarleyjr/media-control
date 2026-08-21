@@ -295,20 +295,25 @@ function createCacheServer(opts = {}) {
   // Pre-warm one content id with a single shared Promise. It also supports a
   // request arriving before the checksum manifest: bytes are hashed locally,
   // then revalidated against the manifest when it arrives.
-  function prewarm(id, manifestItem) {
+  function prewarm(id, manifestItem, options = {}) {
     const normalizedId = String(id || '');
+    const nonAuthoritative = options.nonAuthoritative === true;
     if (!ID_RE.test(normalizedId)) return Promise.resolve(false);
-    if (manifestAuthoritative && !desiredManifestIds.has(normalizedId)) {
+    if (nonAuthoritative) {
+      const generation = Math.max(1, Number(manifestItem && manifestItem.generation) || 1);
+      if (generation <= (revokedGenerations.get(normalizedId) || 0)) return Promise.resolve(false);
+    }
+    if (!nonAuthoritative && manifestAuthoritative && !desiredManifestIds.has(normalizedId)) {
       return Promise.resolve(false);
     }
-    if (manifestItem) manifestById.set(normalizedId, manifestItem);
+    if (manifestItem && !nonAuthoritative) manifestById.set(normalizedId, manifestItem);
     const expected = manifestItem || manifestById.get(normalizedId) || null;
     if (cacheEntryMatches(normalizedId, expected)) return Promise.resolve(true);
     if (downloads.has(normalizedId)) {
       return downloads.get(normalizedId).then(() => {
-        const latest = manifestById.get(normalizedId) || expected;
+        const latest = nonAuthoritative ? expected : (manifestById.get(normalizedId) || expected);
         if (cacheEntryMatches(normalizedId, latest)) return true;
-        return prewarm(normalizedId, latest);
+        return prewarm(normalizedId, latest, options);
       });
     }
 
@@ -478,7 +483,7 @@ function createCacheServer(opts = {}) {
             if (attemptDone || settled) return;
             try {
               if ((revocationEpochs.get(normalizedId) || 0) !== fillEpoch
-                || (manifestAuthoritative && !desiredManifestIds.has(normalizedId))) {
+                || (!nonAuthoritative && manifestAuthoritative && !desiredManifestIds.has(normalizedId))) {
                 attemptDone = true;
                 clearTimers();
                 try { fs.unlinkSync(partPath); } catch (_) {}
@@ -585,6 +590,17 @@ function createCacheServer(opts = {}) {
       if (!nextManifestIds.has(id)) manifestById.delete(id);
     }
     return startManifestSweep();
+  }
+
+  async function prewarmLegacyManifest(items) {
+    if (!Array.isArray(items)) return;
+    for (const item of items.slice(0, 10_000)) {
+      const id = item && (item.content_id || item.id);
+      if (!id) continue;
+      try {
+        await prewarm(String(id), item, { nonAuthoritative: true });
+      } catch (_) { /* legacy prewarm is best effort and never authorizes deletion */ }
+    }
   }
 
   function prewarmPriority(item) {
@@ -711,7 +727,17 @@ function createCacheServer(opts = {}) {
   }
   function close() { try { server.close(); } catch (_) {} }
 
-  return { listen, close, prewarm, prewarmManifest, prewarmPriority, purgeContent, getStats, server };
+  return {
+    listen,
+    close,
+    prewarm,
+    prewarmLegacyManifest,
+    prewarmManifest,
+    prewarmPriority,
+    purgeContent,
+    getStats,
+    server,
+  };
 }
 
 module.exports = { calculateTransferDeadlineMs, checksumMatches, classifyOrigin, createCacheServer };

@@ -11,6 +11,9 @@
 // env at runtime; nothing is hard-coded or committed.
 'use strict';
 
+const { installFatalProcessLogging } = require('./fatal-process');
+installFatalProcessLogging('cache-agent');
+
 const fs = require('fs');
 const crypto = require('crypto');
 const path = require('path');
@@ -18,6 +21,7 @@ const { createCacheServer } = require('./cache-server');
 const {
   CACHE_PROTOCOL_VERSION,
   authoritativeManifestItems,
+  legacyManifestItems,
   purgeAcknowledgement,
 } = require('./cache-manifest-protocol');
 const { loadCommonModule } = require('./common-loader');
@@ -168,7 +172,13 @@ function connect() {
     reconnectionAttempts: Infinity,
     reconnectionDelay: 2000,
     reconnectionDelayMax: 5 * 60 * 1000,
-    auth: { token: MC_NODE_TOKEN, node_id: MC_NODE_ID, node_type: NODE_TYPE, role: 'node' },
+    auth: {
+      token: MC_NODE_TOKEN,
+      node_id: MC_NODE_ID,
+      node_type: NODE_TYPE,
+      role: 'node',
+      cache_protocol_version: CACHE_PROTOCOL_VERSION,
+    },
   });
 
   io.on('connect', () => {
@@ -189,13 +199,19 @@ function connect() {
   io.on('node:auth-error', (e) => warn('[cache-agent] node auth error:', e && e.error));
   io.on('node:sync-manifest', (manifest) => {
     const items = authoritativeManifestItems(manifest);
-    if (!items) {
-      warn('[cache-agent] ignored non-authoritative manifest payload');
+    if (items) {
+      log(`[cache-agent] authoritative v${CACHE_PROTOCOL_VERSION} manifest received: ${items.length} items — reconciling`);
+      cache.prewarmManifest(items).catch((err) => warn('[cache-agent] prewarm error:', err && err.message));
       return;
     }
-    const n = items.length;
-    log(`[cache-agent] manifest received: ${n} items — pre-warming`);
-    cache.prewarmManifest(items).catch((err) => warn('[cache-agent] prewarm error:', err && err.message));
+    const legacyItems = legacyManifestItems(manifest);
+    if (legacyItems) {
+      log(`[cache-agent] legacy manifest received: ${legacyItems.length} items — non-destructive prewarm only`);
+      cache.prewarmLegacyManifest(legacyItems)
+        .catch((err) => warn('[cache-agent] legacy prewarm error:', err && err.message));
+      return;
+    }
+    warn('[cache-agent] ignored malformed or non-authoritative manifest payload');
   });
   io.on('node:prewarm-content', async (item, acknowledge) => {
     const contentId = item && (item.content_id || item.id);
@@ -278,7 +294,5 @@ function shutdown(sig) {
 }
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('uncaughtException', (e) => console.error('[cache-agent] uncaughtException:', e && e.stack));
-process.on('unhandledRejection', (e) => console.error('[cache-agent] unhandledRejection:', e && e.message));
 
 connect();

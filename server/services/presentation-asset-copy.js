@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { sha256File, upsertAssetManifest } = require('../lib/asset-manifest');
+const { resolveStoredContentFile } = require('../lib/trusted-content-file');
 
 function fail(code, message) {
   const error = new Error(message);
@@ -16,16 +17,8 @@ function resolveExistingContentFile(contentDir, storedPath) {
     throw fail('PRESENTATION_ASSET_NOT_LOCAL', 'This presentation asset does not have local bytes to copy.');
   }
   const root = fs.realpathSync(path.resolve(contentDir));
-  const candidate = path.isAbsolute(String(storedPath))
-    ? path.resolve(String(storedPath))
-    : path.resolve(root, String(storedPath));
-  const relative = path.relative(root, candidate);
-  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
-    throw fail('PRESENTATION_ASSET_PATH_INVALID', 'The presentation asset path is outside the media store.');
-  }
-  const real = fs.realpathSync(candidate);
-  const realRelative = path.relative(root, real);
-  if (!realRelative || realRelative.startsWith('..') || path.isAbsolute(realRelative) || !fs.statSync(real).isFile()) {
+  const real = resolveStoredContentFile(root, String(storedPath));
+  if (!real) {
     throw fail('PRESENTATION_ASSET_PATH_INVALID', 'The presentation asset path is outside the media store.');
   }
   return { root, path: real };

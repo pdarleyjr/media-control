@@ -1300,11 +1300,50 @@ function updateBulkToolbar() {
   if (count) count.textContent = t('content.selected_count', { count: state.selectedIds.size });
 }
 
+function reconcileBulkEraseProgress(selectedIds, attemptedIds, completedContentIds) {
+  const attempted = [...new Set((Array.isArray(attemptedIds) ? attemptedIds : []).map(String))];
+  const attemptedSet = new Set(attempted);
+  const completedIds = [...new Set((Array.isArray(completedContentIds) ? completedContentIds : []).map(String).filter(id => attemptedSet.has(id)))];
+  completedIds.forEach(id => selectedIds.delete(id));
+  return { completedIds, remainingIds: attempted.filter(id => selectedIds.has(id)) };
+}
+
+function bulkEraseFailureReason(error) {
+  if (error?.code === 'ERASE_JOB_QUIESCENCE_REQUIRED') {
+    return 'An active media job must stop safely before the failed item can be erased.';
+  }
+  if (error?.code === 'ERASE_DEPENDENCY_BLOCKED') {
+    return 'The failed item has a dependency that cannot be detached safely.';
+  }
+  if (error?.code === 'ERASE_BYTE_CLEANUP_FAILED') {
+    return 'The failed item still has server bytes that could not be removed safely.';
+  }
+  const blocker = Array.isArray(error?.impact?.blockers) ? error.impact.blockers[0] : null;
+  return blocker?.reason || blocker?.error || error?.message || friendlyErrorMessage(error, 'content.error_erase_failed');
+}
+
+function bulkEraseCompletedMessage(count) {
+  return Number(count) === 1
+    ? '1 media item was permanently erased.'
+    : t('content.toast.bulk_erased', { count });
+}
+
+function partialBulkEraseMessage(error, progress) {
+  const failedId = String(error?.failed_content_id || '');
+  const failedItem = failedId ? findContentItem(failedId) : null;
+  const remainingCount = progress.remainingIds.length;
+  const remaining = remainingCount === 1
+    ? `1 media item${failedItem?.filename ? `, “${failedItem.filename}”,` : ''} was not erased.`
+    : `${remainingCount} media items were not erased${failedItem?.filename ? `; “${failedItem.filename}” was the first unfinished item.` : '.'}`;
+  const retry = `Retry will apply only to the ${remainingCount} remaining item${remainingCount === 1 ? '' : 's'}; already-erased media will not be retried.`;
+  return `${bulkEraseCompletedMessage(progress.completedIds.length)} ${remaining} ${bulkEraseFailureReason(error)} ${retry}`;
+}
+
 function renderContentResults() {
   loadContent({ renderOnly: true });
 }
 
-async function loadContent({ append = false, renderOnly = false } = {}) {
+async function loadContent({ append = false, renderOnly = false, preserveSelectedIds = false } = {}) {
   const requestGeneration = renderOnly ? state.contentRequestGeneration : ++state.contentRequestGeneration;
   if (!renderOnly) state.contentLoading = true;
   const grid = document.getElementById('contentGrid');
@@ -1350,7 +1389,7 @@ async function loadContent({ append = false, renderOnly = false } = {}) {
         if (focused && requestGeneration === state.contentRequestGeneration) storeContentPage([focused]);
       }
       state.contentHasMore = content.length >= CONTENT_PAGE_SIZE;
-      state.selectedIds = new Set([...state.selectedIds].filter(id => state.contentById.has(id)));
+      if (!preserveSelectedIds) state.selectedIds = new Set([...state.selectedIds].filter(id => state.contentById.has(id)));
     }
 
     // Breadcrumb path: walk parent_id chain from current folder up to root.
@@ -2044,11 +2083,22 @@ async function bulkEraseSelection() {
     });
     if (!accepted) return;
     await api.permanentlyEraseContentBulk(ids);
-    state.selectedIds.clear();
-    showToast(t('content.toast.bulk_erased', { count: ids.length }), 'success');
+    reconcileBulkEraseProgress(state.selectedIds, ids, ids);
+    updateBulkToolbar();
+    showToast(bulkEraseCompletedMessage(ids.length), 'success');
     await loadLibrarySummary();
     await loadContent();
   } catch (error) {
+    const completedContentIds = error?.completed_content_ids || error?.details?.completed_content_ids || [];
+    const progress = reconcileBulkEraseProgress(state.selectedIds, ids, completedContentIds);
+    if (progress.completedIds.length) {
+      updateBulkToolbar();
+      const summaryReload = loadLibrarySummary();
+      const contentReload = loadContent({ preserveSelectedIds: true });
+      showToast(partialBulkEraseMessage(error, progress), 'error');
+      await Promise.all([summaryReload, contentReload]);
+      return;
+    }
     showToast(friendlyErrorMessage(error, 'content.error_erase_failed'), 'error');
   }
 }

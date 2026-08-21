@@ -271,6 +271,52 @@ test('expired media-job lease does not block permanent erase (crashed worker is 
   }
 });
 
+test('a renewed live lease remains quiescing and cannot be erased underneath its worker', () => {
+  const db = buildDb();
+  const contentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'media-control-renewed-lease-'));
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    db.prepare(`INSERT INTO content (id,filename,filepath,mime_type,workspace_id)
+      VALUES ('target','Target.mp4','','video/mp4','ws')`).run();
+    db.prepare(`INSERT INTO media_jobs VALUES
+      ('writer','target','running','optimizing',0,'worker-a',?,NULL,1)`).run(now + 30);
+
+    assert.throws(
+      () => eraseContent(db, 'target', { contentDir, operationId: 'erase-renewed-lease' }),
+      { code: 'ERASE_JOB_QUIESCENCE_REQUIRED' },
+    );
+    db.prepare("UPDATE media_jobs SET lease_expires_at=? WHERE id='writer'").run(now + 120);
+    assert.throws(
+      () => eraseContent(db, 'target', { contentDir, operationId: 'erase-renewed-lease' }),
+      { code: 'ERASE_JOB_QUIESCENCE_REQUIRED' },
+    );
+    assert.equal(db.prepare("SELECT COUNT(*) count FROM content WHERE id='target'").get().count, 1);
+    assert.equal(db.prepare("SELECT cancel_requested FROM media_jobs WHERE id='writer'").get().cancel_requested, 1);
+  } finally {
+    db.close();
+    fs.rmSync(contentDir, { recursive: true, force: true });
+  }
+});
+
+test('retry-wait media work is cancelled before permanent erase commits', () => {
+  const db = buildDb();
+  const contentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'media-control-retry-wait-'));
+  try {
+    db.prepare(`INSERT INTO content (id,filename,filepath,mime_type,workspace_id)
+      VALUES ('target','Target.mp4','','video/mp4','ws')`).run();
+    db.prepare(`INSERT INTO media_jobs VALUES
+      ('retrying','target','retry_wait','queued',0,NULL,NULL,NULL,1)`).run();
+
+    const result = eraseContent(db, 'target', { contentDir, operationId: 'erase-retry-wait' });
+    assert.equal(result.success, true);
+    assert.equal(db.prepare("SELECT COUNT(*) count FROM content WHERE id='target'").get().count, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) count FROM media_jobs WHERE id='retrying'").get().count, 0);
+  } finally {
+    db.close();
+    fs.rmSync(contentDir, { recursive: true, force: true });
+  }
+});
+
 test('unknown restrictive content foreign keys block erase before any mutation', () => {
   const db = buildDb();
   db.exec('CREATE TABLE mystery (id TEXT PRIMARY KEY, content_id TEXT REFERENCES content(id))');
@@ -418,19 +464,18 @@ test('a symlinked ancestor cannot escape the content root', (t) => {
 test('file staging failures use a stable redacted error contract', () => {
   const db = buildDb();
   const contentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'media-control-stage-error-'));
-  const originalRename = fs.renameSync;
   try {
     const storedPath = path.join(contentDir, 'target.mp4');
     fs.writeFileSync(storedPath, 'keep-me');
     db.prepare("INSERT INTO content (id,filename,filepath,mime_type) VALUES ('target','Target','target.mp4','video/mp4')").run();
-    fs.renameSync = (source, destination) => {
+    const renameFile = (source, destination) => {
       const error = new Error(`EACCES staging ${source} to ${destination}`);
       error.code = 'EACCES';
       throw error;
     };
 
     assert.throws(
-      () => eraseContent(db, 'target', { contentDir }),
+      () => eraseContent(db, 'target', { contentDir, renameFile }),
       (error) => error.code === 'ERASE_FILE_STAGE_FAILED'
         && error.message === 'Media bytes could not be staged safely for permanent erase.'
         && !error.message.includes(contentDir),
@@ -438,7 +483,6 @@ test('file staging failures use a stable redacted error contract', () => {
     assert.equal(fs.readFileSync(storedPath, 'utf8'), 'keep-me');
     assert.equal(db.prepare("SELECT COUNT(*) count FROM content WHERE id='target'").get().count, 1);
   } finally {
-    fs.renameSync = originalRename;
     db.close();
     fs.rmSync(contentDir, { recursive: true, force: true });
   }
@@ -470,36 +514,28 @@ test('database failure restores staged bytes at their exact nested path', () => 
 test('a failed rename-back remains recoverable and is never recorded as rolled back', () => {
   const db = buildDb();
   const contentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'media-control-recovery-failure-'));
-  const originalRename = fs.renameSync;
   try {
     const storedPath = path.join(contentDir, 'target.mp4');
     fs.writeFileSync(storedPath, 'recover-later');
     db.prepare("INSERT INTO content (id,filename,filepath,mime_type) VALUES ('target','Target','target.mp4','video/mp4')").run();
-    let staged = false;
-    fs.renameSync = (source, destination) => {
-      if (String(source).includes('.erasing-') && destination === storedPath) {
-        const error = new Error('forced restore failure');
-        error.code = 'EACCES';
-        throw error;
-      }
-      staged = true;
-      return originalRename(source, destination);
+    const restoreFile = () => {
+      const error = new Error('forced restore failure');
+      error.code = 'EACCES';
+      throw error;
     };
     assert.throws(() => eraseContent(db, 'target', {
       contentDir,
+      restoreFile,
       audit: () => { throw new Error('forced database rollback'); },
     }), /forced database rollback/);
-    assert.equal(staged, true);
     const operation = db.prepare('SELECT id,state FROM content_erase_operations').get();
     assert.equal(operation.state, 'recovery_failed');
     assert.equal(fs.existsSync(storedPath), false);
 
-    fs.renameSync = originalRename;
     const result = reconcileEraseOperations(db, contentDir);
     assert.equal(result[0].state, 'rolled_back');
     assert.equal(fs.readFileSync(storedPath, 'utf8'), 'recover-later');
   } finally {
-    fs.renameSync = originalRename;
     db.close();
     fs.rmSync(contentDir, { recursive: true, force: true });
   }
@@ -607,4 +643,41 @@ test('public erase responses never disclose server or staged filesystem paths', 
   assert.equal(serialized.includes('content_dir'), false);
   assert.deepEqual(publicImpact.files, ['target.mp4']);
   assert.deepEqual(publicImpact.dependencies.widgets, [{ id: 'widget', name: 'Clock' }]);
+});
+
+test('public erase result preserves deferred reconciliation for a connected legacy cache node', () => {
+  const result = publicEraseResult({
+    success: true,
+    operation_id: 'legacy-cache-erase',
+    content_id: 'target',
+    impact: {},
+    detachments: {},
+    files: [],
+    cache_purge: {
+      requested: false,
+      content_id: 'target',
+      generation: 4,
+      reason: 'protocol_unsupported',
+      deferred_reconciliation: true,
+      nodes: [{
+        node_id: 'classroom-1-p3',
+        requested: false,
+        acknowledged: false,
+        purged: false,
+        offline: false,
+        protocol_unsupported: true,
+        reason: 'protocol_unsupported',
+        deferred_reconciliation: true,
+      }],
+    },
+  });
+
+  assert.equal(result.cache_purge.requested, false);
+  assert.equal(result.cache_purge.reason, 'protocol_unsupported');
+  assert.equal(result.cache_purge.deferred_reconciliation, true);
+  assert.equal(result.cache_purge.nodes[0].requested, false);
+  assert.equal(result.cache_purge.nodes[0].offline, false);
+  assert.equal(result.cache_purge.nodes[0].protocol_unsupported, true);
+  assert.equal(result.cache_purge.nodes[0].reason, 'protocol_unsupported');
+  assert.equal(result.cache_purge.nodes[0].deferred_reconciliation, true);
 });

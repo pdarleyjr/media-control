@@ -22,6 +22,23 @@ function normalizeApiPath(value) {
   return `${candidate.pathname}${candidate.search}`;
 }
 
+function createApiError(body, status, fallbackMessage = 'Request failed') {
+  const details = body && typeof body === 'object' ? body : {};
+  const error = new Error(details.error || fallbackMessage);
+  error.status = status;
+  error.details = details;
+  for (const field of [
+    'code',
+    'completed_content_ids',
+    'failed_content_id',
+    'impact',
+    'result',
+  ]) {
+    if (Object.prototype.hasOwnProperty.call(details, field)) error[field] = details[field];
+  }
+  return error;
+}
+
 async function request(url, options = {}) {
   const { headers: optionHeaders = {}, ...requestOptions } = options;
   const res = await fetch(normalizeApiPath(url), {
@@ -38,11 +55,7 @@ async function request(url, options = {}) {
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    const error = new Error(err.error || 'Request failed');
-    error.status = res.status;
-    error.code = err.code;
-    error.details = err;
-    throw error;
+    throw createApiError(err, res.status);
   }
   return res.json();
 }
@@ -62,11 +75,7 @@ async function requestForm(url, formData, options = {}) {
   }
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
-    const error = new Error(body.error || 'Request failed');
-    error.status = res.status;
-    error.code = body.code;
-    error.details = body;
-    throw error;
+    throw createApiError(body, res.status);
   }
   return res.json();
 }
@@ -95,11 +104,7 @@ async function requestBroadcast(payload, endpoint = '/broadcast') {
   }
   const body = await res.json().catch(() => ({ error: res.statusText }));
   if (!res.ok) {
-    const error = new Error(body.error || 'Request failed');
-    error.status = res.status;
-    error.code = body.code;
-    error.details = body;
-    throw error;
+    throw createApiError(body, res.status);
   }
   return body;
 }
@@ -278,10 +283,7 @@ export const api = {
     }
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: res.statusText }));
-      const error = new Error(err.error || 'Download failed');
-      error.status = res.status;
-      error.code = err.code;
-      throw error;
+      throw createApiError(err, res.status, 'Download failed');
     }
     const blob = await res.blob();
     let filename = '';

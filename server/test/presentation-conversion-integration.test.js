@@ -122,8 +122,9 @@ function assertSeamSafe(deck) {
 
 test('one source fixture converts end-to-end to both wall profiles with accounting, continuations, media, notes, and editable PPTX', async (t) => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-conversion-integration-'));
-  const sourceName = 'representative-source.pptx';
+  const sourceName = path.join('nested', 'representative-source.pptx');
   const sourcePath = path.join(temp, sourceName);
+  fs.mkdirSync(path.dirname(sourcePath));
   await createFixture(sourcePath);
   const db = createDb();
   t.after(() => { db.close(); fs.rmSync(temp, { recursive: true, force: true }); });

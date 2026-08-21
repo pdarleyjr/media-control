@@ -18,11 +18,12 @@ const {
 } = require('../lib/presentation-template-registry');
 const { getTemplateAssets } = require('../lib/presentation-template-assets');
 const { pptxTextStyle } = require('../lib/presentation-style-contract');
+const { resolveStoredContentFile } = require('../lib/trusted-content-file');
 
 // Defense in depth: pptxgenjs uses image-size internally, so disable every
 // parser named by the upstream infinite-loop advisories before pptxgenjs loads.
 // Media Control only accepts the safe raster formats in PPTX_IMAGE_MIME below.
-const { disableTypes } = require('image-size');
+const { disableTypes, imageSize } = require('image-size');
 disableTypes(['heif', 'icns', 'jxl', 'jxl-stream']);
 
 const W = 13.333; // LAYOUT_WIDE inches
@@ -40,6 +41,13 @@ const FONT = 'Segoe UI';
 // ICNS/JXL/HEIF bytes to pptxgenjs' transitive image-size parser: those formats
 // currently have upstream infinite-loop advisories and are not slide formats.
 const PPTX_IMAGE_MIME = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp']);
+const PPTX_IMAGE_TYPE = new Map([
+  ['image/jpeg', 'jpg'],
+  ['image/png', 'png'],
+  ['image/gif', 'gif'],
+  ['image/webp', 'webp'],
+  ['image/bmp', 'bmp'],
+]);
 const PPTX_VIDEO_MIME = new Set(['video/mp4', 'video/quicktime', 'video/webm']);
 const PPTX_AUDIO_MIME = new Set(['audio/mpeg', 'audio/mp4', 'audio/wav', 'audio/ogg']);
 const PPTX_READY_STATES = new Set(['uploaded', 'ready', 'completed']);
@@ -54,10 +62,8 @@ async function contentAsset(contentId, allowedContentIds) {
     if (!(allowedContentIds instanceof Set) || !allowedContentIds.has(String(contentId))) return null;
     const c = db.prepare('SELECT filepath, mime_type, processing_status FROM content WHERE id = ?').get(contentId);
     if (!c || !c.filepath || !PPTX_READY_STATES.has(String(c.processing_status || 'uploaded').toLowerCase())) return null;
-    const root = path.resolve(config.contentDir);
-    const safe = path.resolve(root, path.basename(c.filepath));
-    if (path.dirname(safe) !== root) return null;
-    await fs.promises.access(safe, fs.constants.R_OK);
+    const safe = resolveStoredContentFile(config.contentDir, c.filepath);
+    if (!safe) return null;
     return { path: safe, mime: String(c.mime_type || '').toLowerCase() };
   } catch { return null; }
 }
@@ -65,7 +71,12 @@ async function contentAsset(contentId, allowedContentIds) {
 async function imageData(asset) {
   if (!asset || !PPTX_IMAGE_MIME.has(asset.mime)) return null;
   const buf = await fs.promises.readFile(asset.path).catch(() => null);
-  return buf ? `data:${asset.mime};base64,${buf.toString('base64')}` : null;
+  if (!buf) return null;
+  const detected = imageSize(buf);
+  if (detected.type !== PPTX_IMAGE_TYPE.get(asset.mime)) {
+    throw new Error(`Presentation image bytes do not match ${asset.mime}`);
+  }
+  return `data:${asset.mime};base64,${buf.toString('base64')}`;
 }
 
 async function addImages(slide, images, layer, resolveContentAsset) {

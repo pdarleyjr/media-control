@@ -13,6 +13,9 @@
 // ============================================================
 'use strict';
 
+const { installFatalProcessLogging } = require('./fatal-process');
+installFatalProcessLogging('room-agent');
+
 const fs = require('fs');
 
 const syncWorker = require('./sync-worker');
@@ -254,11 +257,5 @@ function shutdown(signal) {
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('uncaughtException', (e) => {
-  console.error('[room-agent] uncaughtException:', e && e.stack);
-});
-process.on('unhandledRejection', (e) => {
-  console.error('[room-agent] unhandledRejection:', e && e.message);
-});
 
 connect();

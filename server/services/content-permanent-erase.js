@@ -440,11 +440,16 @@ function publicEraseResult(result) {
       content_id: cachePurge.content_id,
       generation: cachePurge.generation,
       reason: cachePurge.reason,
+      deferred_reconciliation: cachePurge.deferred_reconciliation,
       nodes: (cachePurge.nodes || []).map((node) => ({
         node_id: node.node_id,
+        requested: node.requested,
         acknowledged: node.acknowledged,
         purged: node.purged,
         offline: node.offline,
+        protocol_unsupported: node.protocol_unsupported,
+        reason: node.reason,
+        deferred_reconciliation: node.deferred_reconciliation,
         error: node.error || null,
       })),
     } : null,
@@ -480,7 +485,7 @@ function setEraseOperationState(db, operationId, state, error = null) {
     .run(state, error ? String(error).slice(0, 1000) : null, now, committedAt, completedAt, operationId);
 }
 
-function restoreStagedFiles(stagedFiles) {
+function restoreStagedFiles(stagedFiles, renameFile = fs.renameSync) {
   const errors = [];
   for (const staged of [...stagedFiles].reverse()) {
     if (!fs.existsSync(staged.stagedPath)) continue;
@@ -489,7 +494,7 @@ function restoreStagedFiles(stagedFiles) {
         errors.push(`original_exists:${staged.originalPath}`);
         continue;
       }
-      fs.renameSync(staged.stagedPath, staged.originalPath);
+      renameFile(staged.stagedPath, staged.originalPath);
     } catch (error) {
       errors.push(`${error.code || error.message}:${staged.originalPath}`);
     }
@@ -533,7 +538,8 @@ function recoveryEntryIsSafe(entry, realRoot) {
   return true;
 }
 
-function reconcileEraseOperations(db, contentDir) {
+function reconcileEraseOperations(db, contentDir, options = {}) {
+  const renameFile = options.renameFile || fs.renameSync;
   migrateContentEraseLedger(db);
   let realRoot = null;
   try { realRoot = fs.realpathSync(path.resolve(contentDir)); } catch { /* handled per operation */ }
@@ -561,7 +567,7 @@ function reconcileEraseOperations(db, contentDir) {
           recoveryError = 'Both original and staged erase files exist; automatic overwrite refused';
           break;
         }
-        try { fs.renameSync(entry.stagedPath, entry.originalPath); } catch (error) { recoveryError = error.code || error.message; break; }
+        try { renameFile(entry.stagedPath, entry.originalPath); } catch (error) { recoveryError = error.code || error.message; break; }
       }
       const state = recoveryError ? 'recovery_failed' : 'rolled_back';
       setEraseOperationState(db, operation.id, state, recoveryError);
@@ -586,6 +592,8 @@ function reconcileEraseOperations(db, contentDir) {
 }
 
 function eraseContent(db, contentId, options = {}) {
+  const renameFile = options.renameFile || fs.renameSync;
+  const restoreFile = options.restoreFile || fs.renameSync;
   migrateContentEraseLedger(db);
   let impact = eraseImpact(db, contentId, options);
   if (!impact) return null;
@@ -656,12 +664,12 @@ function eraseContent(db, contentId, options = {}) {
   const stagedFiles = [];
   try {
     for (const { originalPath, stagedPath } of fileManifest) {
-      fs.renameSync(originalPath, stagedPath);
+      renameFile(originalPath, stagedPath);
       stagedFiles.push({ originalPath, stagedPath });
     }
     setEraseOperationState(db, operationId, 'staged');
   } catch (error) {
-    const recoveryErrors = restoreStagedFiles(stagedFiles);
+    const recoveryErrors = restoreStagedFiles(stagedFiles, restoreFile);
     setEraseOperationState(
       db,
       operationId,
@@ -772,7 +780,7 @@ function eraseContent(db, contentId, options = {}) {
   try {
     commit();
   } catch (error) {
-    const recoveryErrors = restoreStagedFiles(stagedFiles);
+    const recoveryErrors = restoreStagedFiles(stagedFiles, restoreFile);
     setEraseOperationState(
       db,
       operationId,

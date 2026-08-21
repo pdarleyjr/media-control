@@ -39,20 +39,27 @@ function fakeDb({ member = true } = {}) {
 }
 
 function fakeIo(events, purgeResponse = { ok: true, purged: true, absent_verified: true }) {
+  const socketId = 'socket-classroom-1-p3';
+  const deviceNamespace = {
+    sockets: new Map([[socketId, {
+      id: socketId,
+      connected: true,
+      data: { nodeId: 'classroom-1-p3', cacheProtocolVersion: 2 },
+    }]]),
+    to(room) {
+      return {
+        emit(event, payload, acknowledge) {
+          events.push({ room, event, payload });
+          if (typeof acknowledge === 'function') acknowledge(null, [purgeResponse]);
+        },
+        timeout() { return this; },
+      };
+    },
+  };
   return {
     of(namespace) {
       assert.equal(namespace, '/device');
-      return {
-        to(room) {
-          return {
-            emit(event, payload, acknowledge) {
-              events.push({ room, event, payload });
-              if (typeof acknowledge === 'function') acknowledge(null, [purgeResponse]);
-            },
-            timeout() { return this; },
-          };
-        },
-      };
+      return deviceNamespace;
     },
   };
 }
@@ -69,7 +76,7 @@ test('permanent erase immediately purges the matching generation from the P3 cac
   assert.equal(result.nodes[0].acknowledged, true);
   assert.equal(result.nodes[0].purged, true);
   assert.deepEqual(events, [{
-    room: 'node:classroom-1-p3',
+    room: 'socket-classroom-1-p3',
     event: 'node:purge-content',
     payload: {
       content_id: 'video-id',
@@ -290,6 +297,8 @@ test('P3 agent reconciles manifests slowly but keeps priority and LAN tests even
   assert.match(agent, /node:purge-content/);
   assert.match(agent, /cache\.purgeContent/);
   assert.match(agent, /cache_protocol_version: CACHE_PROTOCOL_VERSION/);
+  assert.match(agent, /auth:\s*\{[\s\S]*cache_protocol_version: CACHE_PROTOCOL_VERSION/);
+  assert.match(agent, /cache\.prewarmLegacyManifest/);
   assert.match(agent, /node:run-lan-health-test/);
   assert.match(agent, /cacheStats: cache\.getStats\(\)/);
 });

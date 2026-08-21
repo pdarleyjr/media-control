@@ -20,6 +20,7 @@ const {
 } = require('../lib/content-visibility');
 const { contentRowsWithThumbnailUrls } = require('../lib/content-response');
 const { gridUrlReferencesContent } = require('../lib/public-content-access');
+const { resolveStoredContentFile } = require('../lib/trusted-content-file');
 const { checkRemoteUrlShape, assertRemoteUrlSafe } = require('../lib/ssrf-policy');
 const {
   inspectMediaFile,
@@ -1602,22 +1603,8 @@ router.get('/internal/:id', (req, res) => {
     return res.status(403).json({ error: 'Access denied' });
   }
   if (!content.filepath) return res.status(404).json({ error: 'Internal presentation asset file is missing' });
-  const root = path.resolve(config.contentDir);
-  const candidate = path.resolve(root, path.basename(String(content.filepath)));
-  let realRoot;
-  let realCandidate;
-  try {
-    realRoot = fs.realpathSync(root);
-    const stat = fs.lstatSync(candidate);
-    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('unsafe_internal_asset');
-    realCandidate = fs.realpathSync(candidate);
-  } catch {
-    return res.status(404).json({ error: 'Internal presentation asset file is missing' });
-  }
-  const relative = path.relative(realRoot, realCandidate);
-  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
-    return res.status(403).json({ error: 'Invalid internal presentation asset path' });
-  }
+  const realCandidate = resolveStoredContentFile(config.contentDir, String(content.filepath));
+  if (!realCandidate) return res.status(404).json({ error: 'Internal presentation asset file is missing' });
   res.setHeader('Content-Type', content.mime_type || 'application/octet-stream');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Cache-Control', 'private, no-store');

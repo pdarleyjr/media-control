@@ -380,3 +380,24 @@ test('an expired cancelled lease is terminally reconciled after worker restart',
     db.close();
   }
 });
+
+test('a stale worker cannot complete or fail after its cancelled lease is settled', () => {
+  const db = createDb();
+  let now = 100;
+  try {
+    migrateMediaPipeline(db);
+    const store = new MediaJobStore(db, { now: () => now, uuid: () => 'job-late-terminal' });
+    store.enqueue({ contentId: 'content-1', workspaceId: 'workspace-1', jobType: 'thumbnail' });
+    store.claimNext({ workerId: 'stale-worker', leaseSeconds: 10 });
+    store.requestCancel('job-late-terminal');
+    now = 111;
+    assert.equal(store.settleExpiredCancellations(), 1);
+    assert.equal(store.complete('job-late-terminal', 'stale-worker', { late: true }), null);
+    assert.equal(store.fail('job-late-terminal', 'stale-worker', {
+      code: 'late_failure', message: 'late', retryable: false,
+    }), null);
+    assert.equal(store.get('job-late-terminal').status, 'cancelled');
+  } finally {
+    db.close();
+  }
+});

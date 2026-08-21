@@ -135,12 +135,12 @@ test('generic content routes and summary do not resolve presentation-internal de
 });
 
 test('internal presentation asset bytes are owner/admin scoped and never cross workspace', (t) => {
-  const filename = `cv-internal-route-${process.pid}.png`;
+  const filename = path.join(`cv-internal-route-${process.pid}`, 'nested.png');
   const file = path.join(config.contentDir, filename);
-  fs.mkdirSync(config.contentDir, { recursive: true });
+  fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, Buffer.from('internal-fixture'));
   t.after(() => {
-    try { fs.unlinkSync(file); } catch {}
+    try { fs.rmSync(path.dirname(file), { recursive: true, force: true }); } catch {}
     db.prepare("UPDATE content SET filepath='' WHERE id='cv-internal'").run();
   });
   db.prepare("UPDATE content SET filepath=? WHERE id='cv-internal'").run(filename);

@@ -598,16 +598,42 @@ module.exports = function setupDeviceSocket(io) {
         try { socket.disconnect(true); } catch (_) {}
         return;
       }
+      socket.data.nodeId = nodeId;
+      socket.data.cacheProtocolVersion = nodeRegistry.normalizeCacheProtocolVersion(
+        hsAuth.cache_protocol_version,
+      );
+      const emitManifest = () => socket.emit(
+        'node:sync-manifest',
+        nodeRegistry.manifestPayloadForNode(db, {
+          nodeId,
+          cacheProtocolVersion: socket.data.cacheProtocolVersion,
+        }),
+      );
       try { socket.join('node:' + nodeId); } catch (_) {}
       console.log(`Node connected: ${nodeId} (${hsAuth.node_type || 'node'})`);
-      socket.emit('node:joined', { node_id: nodeId });
+      socket.emit('node:joined', {
+        node_id: nodeId,
+        cache_protocol_version: socket.data.cacheProtocolVersion,
+      });
       // Push the initial pre-warm manifest so the cache fills ahead of use.
       try {
-        socket.emit('node:sync-manifest', nodeRegistry.buildContentManifestEnvelope(db, { nodeId }));
+        emitManifest();
       } catch (error) {
         console.warn(`[node-manifest] initial sync withheld for ${nodeId}: ${error.message}`);
       }
       socket.on('node:heartbeat', (payload) => {
+        const heartbeatProtocolVersion = nodeRegistry.normalizeCacheProtocolVersion(
+          payload?.cache_protocol_version,
+        );
+        if (heartbeatProtocolVersion >= nodeRegistry.CACHE_PROTOCOL_VERSION
+          && heartbeatProtocolVersion > socket.data.cacheProtocolVersion) {
+          socket.data.cacheProtocolVersion = heartbeatProtocolVersion;
+          try {
+            emitManifest();
+          } catch (error) {
+            console.warn(`[node-manifest] v2 capability refresh withheld for ${nodeId}: ${error.message}`);
+          }
+        }
         let recorded = false;
         try { recorded = nodeRegistry.recordHeartbeat(db, nodeId, payload); } catch (_) {}
         try {
@@ -639,7 +665,7 @@ module.exports = function setupDeviceSocket(io) {
       });
       socket.on('node:request-manifest', () => {
         try {
-          socket.emit('node:sync-manifest', nodeRegistry.buildContentManifestEnvelope(db, { nodeId }));
+          emitManifest();
         } catch (error) {
           console.warn(`[node-manifest] requested sync withheld for ${nodeId}: ${error.message}`);
         }

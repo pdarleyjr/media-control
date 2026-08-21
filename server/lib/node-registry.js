@@ -20,6 +20,16 @@ const {
   visibilityAllowsWorkspace,
 } = require('./public-content-access');
 
+const CACHE_PROTOCOL_VERSION = 2;
+const MAX_CACHE_PROTOCOL_VERSION = 255;
+
+function normalizeCacheProtocolVersion(value) {
+  if (value == null || value === '') return 0;
+  const version = Number(value);
+  if (!Number.isSafeInteger(version) || version < 0 || version > MAX_CACHE_PROTOCOL_VERSION) return 0;
+  return version;
+}
+
 function nodeTokenMatches(givenValue, expectedValue) {
   const expected = String(expectedValue || '');
   if (!expected) return false; // no token configured => nodes disabled
@@ -356,6 +366,25 @@ function buildContentManifestEnvelope(db, options = {}) {
   };
 }
 
+function manifestPayloadForNode(db, options = {}) {
+  const cacheProtocolVersion = normalizeCacheProtocolVersion(options.cacheProtocolVersion);
+  if (cacheProtocolVersion >= CACHE_PROTOCOL_VERSION) {
+    return buildContentManifestEnvelope(db, options);
+  }
+  return buildContentManifest(db, { ...options, throwOnUnavailable: true });
+}
+
+function liveNodeSocket(namespace, nodeId) {
+  if (!namespace || !namespace.sockets || typeof namespace.sockets.values !== 'function') return null;
+  const sockets = [...namespace.sockets.values()];
+  for (let index = sockets.length - 1; index >= 0; index -= 1) {
+    const socket = sockets[index];
+    if (socket?.connected === false) continue;
+    if (String(socket?.data?.nodeId || '') === String(nodeId)) return socket;
+  }
+  return null;
+}
+
 function emitContentPrewarm(io, db, options = {}) {
   const item = options.item;
   const contentId = String(options.contentId || item && item.content_id || '');
@@ -419,20 +448,57 @@ async function emitContentPurge(io, options = {}) {
   const namespace = io.of('/device');
   const nodes = await Promise.all(nodeIds.map((nodeId) => new Promise((resolve) => {
     try {
-      const room = namespace.to(`node:${nodeId}`);
+      const liveSocket = liveNodeSocket(namespace, nodeId);
+      if (!liveSocket) {
+        resolve({
+          node_id: nodeId,
+          requested: false,
+          acknowledged: false,
+          purged: false,
+          offline: true,
+          protocol_unsupported: false,
+          reason: 'offline',
+        });
+        return;
+      }
+      const cacheProtocolVersion = normalizeCacheProtocolVersion(liveSocket.data?.cacheProtocolVersion);
+      if (cacheProtocolVersion < CACHE_PROTOCOL_VERSION) {
+        resolve({
+          node_id: nodeId,
+          requested: false,
+          acknowledged: false,
+          purged: false,
+          offline: false,
+          protocol_unsupported: true,
+          deferred_reconciliation: true,
+          reason: 'protocol_unsupported',
+        });
+        return;
+      }
+      const room = namespace.to(liveSocket.id);
       const emitter = typeof room.timeout === 'function' ? room.timeout(5000) : room;
       let settled = false;
       const finish = (result) => {
         if (settled) return;
         settled = true;
-        resolve({ node_id: nodeId, ...result });
+        resolve({ node_id: nodeId, requested: true, ...result });
       };
-      const fallback = setTimeout(() => finish({ acknowledged: false, offline: true }), 5500);
+      const fallback = setTimeout(() => finish({
+        acknowledged: false,
+        purged: false,
+        offline: false,
+        error: 'purge_ack_timeout',
+      }), 5500);
       if (fallback.unref) fallback.unref();
       emitter.emit('node:purge-content', payload, (error, responses) => {
         clearTimeout(fallback);
         const response = Array.isArray(responses) ? responses[0] : responses;
-        if (error) finish({ acknowledged: false, purged: false, offline: true, error: error.message || String(error) });
+        if (error) finish({
+          acknowledged: false,
+          purged: false,
+          offline: false,
+          error: error.message || String(error),
+        });
         else {
           const purged = response?.ok === true
             && response?.purged === true
@@ -454,7 +520,18 @@ async function emitContentPurge(io, options = {}) {
       resolve({ node_id: nodeId, acknowledged: false, offline: null, error: error.message });
     }
   })));
-  return { requested: true, content_id: contentId, generation, nodes };
+  const requested = nodes.some((node) => node.requested === true);
+  const reason = requested
+    ? undefined
+    : (nodes.some((node) => node.protocol_unsupported === true) ? 'protocol_unsupported' : 'offline');
+  return {
+    requested,
+    content_id: contentId,
+    generation,
+    ...(reason ? { reason } : {}),
+    ...(reason === 'protocol_unsupported' ? { deferred_reconciliation: true } : {}),
+    nodes,
+  };
 }
 
 function requestContentPrewarm(io, db, options = {}) {
@@ -519,14 +596,17 @@ async function prewarmUploadedContent(io, db, options = {}) {
 }
 
 module.exports = {
+  CACHE_PROTOCOL_VERSION,
   buildContentManifest,
   buildContentManifestEnvelope,
   emitContentPurge,
   emitContentPrewarm,
+  manifestPayloadForNode,
   nodeAuthOk,
   nodeHttpAuthOk,
   nodeCanAccessContent,
   nodeWorkspaceIds,
+  normalizeCacheProtocolVersion,
   normalizeNodeTelemetry,
   prewarmUploadedContent,
   recordHeartbeat,

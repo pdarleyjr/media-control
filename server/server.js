@@ -8,18 +8,12 @@ const path = require('path');
 const fs = require('fs');
 const config = require('./config');
 const { resolveFeatureFlags } = require('./lib/feature-flags');
+const { installFatalProcessHandlers } = require('./lib/fatal-process-handlers');
+const { resolveStoredContentFile } = require('./lib/trusted-content-file');
 
-// 2026-05-28: top-level safety nets. A single unhandled throw inside a
-// Socket.IO listener used to kill the entire Node process, putting the
-// container into a restart loop that broke playback for every device. We
-// fix the root causes per-handler, but also log + survive any future
-// regression so a single bad payload can't take production down again.
-process.on('uncaughtException', (err) => {
-  console.error('[uncaughtException]', err && err.stack || err);
-});
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('[unhandledRejection]', reason && reason.stack || reason);
-});
+// Fatal runtime failures leave Node in an undefined state. Record them
+// synchronously, exit non-zero, and let Docker's restart policy recover.
+installFatalProcessHandlers();
 
 // Ensure upload directories exist
 [config.contentDir, config.screenshotsDir].forEach(dir => {
@@ -469,8 +463,8 @@ app.get('/player/asset/:id', rateLimit(rateLimitOptions(60000, 600)), require('.
   if (!assetAccess.allowed) {
     return res.status(404).type('text/plain').send('not found');
   }
-  const safePath = path.resolve(config.contentDir, path.basename(c.filepath));
-  if (!safePath.startsWith(path.resolve(config.contentDir))) return res.status(403).type('text/plain').send('invalid path');
+  const safePath = resolveStoredContentFile(config.contentDir, c.filepath);
+  if (!safePath) return res.status(404).type('text/plain').send('not found');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   res.setHeader('Cache-Control', assetAccess.public

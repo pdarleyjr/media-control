@@ -343,6 +343,47 @@ test('single-flight completion increments one generation and emits one handoff',
   }
 });
 
+test('late finalization cannot publish during or after permanent erase', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-finalize-erase-barrier-'));
+  const db = createDb('source.mp4');
+  db.exec(`CREATE TABLE content_erase_operations (
+    id TEXT PRIMARY KEY, content_id TEXT NOT NULL, state TEXT NOT NULL
+  )`);
+  const finalize = (candidatePath, finalPath) => finalizeContentAsset({
+    db,
+    contentId: 'video-id',
+    expectedFilepath: 'source.mp4',
+    candidatePath,
+    finalPath,
+    finalFilepath: path.basename(finalPath),
+    metadata: { mimeType: 'video/mp4', probe: safeProbe() },
+  });
+
+  try {
+    db.prepare("INSERT INTO content_erase_operations VALUES ('erase','video-id','prepared')").run();
+    const preparedCandidate = path.join(dir, 'prepared.part');
+    const preparedFinal = path.join(dir, 'prepared.mp4');
+    fs.writeFileSync(preparedCandidate, 'late-prepared');
+    assert.deepEqual(await finalize(preparedCandidate, preparedFinal), { status: 'stale', content_id: 'video-id' });
+    assert.equal(fs.existsSync(preparedCandidate), false);
+    assert.equal(fs.existsSync(preparedFinal), false);
+    assert.equal(db.prepare("SELECT filepath FROM content WHERE id='video-id'").get().filepath, 'source.mp4');
+
+    db.prepare("DELETE FROM content WHERE id='video-id'").run();
+    db.prepare("UPDATE content_erase_operations SET state='completed' WHERE id='erase'").run();
+    const completedCandidate = path.join(dir, 'completed.part');
+    const completedFinal = path.join(dir, 'completed.mp4');
+    fs.writeFileSync(completedCandidate, 'late-completed');
+    assert.deepEqual(await finalize(completedCandidate, completedFinal), { status: 'stale', content_id: 'video-id' });
+    assert.equal(fs.existsSync(completedCandidate), false);
+    assert.equal(fs.existsSync(completedFinal), false);
+    assert.equal(db.prepare("SELECT COUNT(*) count FROM content WHERE id='video-id'").get().count, 0);
+  } finally {
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('an offline P3 still receives the final generation through periodic manifest recovery', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-offline-p3-'));
   const source = path.join(dir, 'safe.mp4');

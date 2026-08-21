@@ -458,6 +458,110 @@ test('fresh agent sweeps stale disk entries on its first authoritative manifest'
   }
 });
 
+test('legacy non-empty manifests prewarm without replacing authoritative desired state', async () => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-cache-legacy-prewarm-'));
+  const assets = new Map([
+    ['authoritative-video', Buffer.from('authoritative-generation')],
+    ['legacy-video', Buffer.from('legacy-prewarm-only')],
+  ]);
+  const origin = http.createServer((req, res) => {
+    const match = /^\/api\/content\/([^/]+)\/file$/.exec(req.url);
+    const bytes = assets.get(match && decodeURIComponent(match[1]));
+    if (!bytes) {
+      res.writeHead(404);
+      return res.end();
+    }
+    res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': bytes.length });
+    res.end(bytes);
+  });
+  let cache;
+  try {
+    const originPort = await listen(origin);
+    cache = createCacheServer({ originBaseUrl: `http://127.0.0.1:${originPort}`, cacheDir, maxRetries: 0 });
+    const item = (contentId) => ({
+      content_id: contentId,
+      generation: 1,
+      sha256: crypto.createHash('sha256').update(assets.get(contentId)).digest('hex'),
+      size: assets.get(contentId).length,
+    });
+
+    await cache.prewarmManifest([item('authoritative-video')]);
+    await cache.prewarmLegacyManifest([item('legacy-video')]);
+
+    assert.equal(fs.existsSync(path.join(cacheDir, 'content', 'authoritative-video')), true);
+    assert.equal(fs.existsSync(path.join(cacheDir, 'content', 'legacy-video')), true);
+    assert.equal(cache.getStats().manifest_count, 1);
+    await cache.prewarmLegacyManifest([]);
+    assert.equal(fs.existsSync(path.join(cacheDir, 'content', 'authoritative-video')), true);
+    assert.equal(fs.existsSync(path.join(cacheDir, 'content', 'legacy-video')), true);
+    await cache.prewarmManifest([]);
+    assert.equal(fs.existsSync(path.join(cacheDir, 'content', 'authoritative-video')), false);
+    assert.equal(fs.existsSync(path.join(cacheDir, 'content', 'legacy-video')), false);
+  } finally {
+    if (cache) await close(cache.server);
+    await close(origin);
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test('legacy empty and malformed manifests never delete cache bytes', async () => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-cache-legacy-empty-'));
+  const contentDir = path.join(cacheDir, 'content');
+  const contentId = 'legacy-stale-video';
+  fs.mkdirSync(contentDir, { recursive: true });
+  fs.writeFileSync(path.join(contentDir, contentId), 'cached-bytes');
+  fs.writeFileSync(path.join(contentDir, `${contentId}.meta`), JSON.stringify({
+    sha256: crypto.createHash('sha256').update('cached-bytes').digest('hex'),
+    size: Buffer.byteLength('cached-bytes'),
+    generation: 1,
+    checksum_verified: true,
+  }));
+  const cache = createCacheServer({ originBaseUrl: 'http://127.0.0.1:9', cacheDir, maxRetries: 0 });
+  try {
+    await cache.prewarmLegacyManifest([]);
+    await cache.prewarmLegacyManifest({ items: [] });
+    assert.equal(fs.existsSync(path.join(contentDir, contentId)), true);
+    assert.equal(fs.existsSync(path.join(contentDir, `${contentId}.meta`)), true);
+    assert.equal(cache.getStats().manifest_count, 0);
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test('legacy prewarm cannot resurrect a generation revoked by explicit v2 purge', async () => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-cache-legacy-revoked-'));
+  const bytes = Buffer.from('revoked-generation');
+  const contentId = 'legacy-revoked-video';
+  let originRequests = 0;
+  const origin = http.createServer((_req, res) => {
+    originRequests += 1;
+    res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': bytes.length });
+    res.end(bytes);
+  });
+  let cache;
+  try {
+    const originPort = await listen(origin);
+    cache = createCacheServer({ originBaseUrl: `http://127.0.0.1:${originPort}`, cacheDir, maxRetries: 0 });
+    const item = {
+      content_id: contentId,
+      generation: 3,
+      sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+      size: bytes.length,
+    };
+    await cache.prewarmManifest([item]);
+    assert.equal(originRequests, 1);
+    assert.equal(cache.purgeContent(item).ok, true);
+
+    await cache.prewarmLegacyManifest([item]);
+    assert.equal(originRequests, 1);
+    assert.equal(fs.existsSync(path.join(cacheDir, 'content', contentId)), false);
+  } finally {
+    if (cache) await close(cache.server);
+    await close(origin);
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
 test('fresh agent never serves cached bytes before an authoritative manifest arrives', async () => {
   const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-cache-startup-gate-'));
   const contentDir = path.join(cacheDir, 'content');

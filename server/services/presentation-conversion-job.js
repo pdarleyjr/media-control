@@ -12,6 +12,7 @@ const { extractPptxToSlideIr, extractAssetBuffer } = require('./pptx-slide-ir');
 const { convertDeckIr, MODES } = require('./presentation-converter');
 const ai = require('./ai');
 const { PROFILE_IDS } = require('../lib/presentation-template-registry');
+const { resolveStoredContentFile } = require('../lib/trusted-content-file');
 const defaultExecFile = promisify(execFileCallback);
 
 const PPTX_MIME = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
@@ -262,8 +263,13 @@ function createPresentationConversionHandler({ db, contentDir = config.contentDi
       const error = new Error('Presentation Converter currently accepts PPTX source files');
       error.code = 'presentation_source_type_unsupported'; error.retryable = false; throw error;
     }
-    const sourcePath = safeContentPath(contentDir, source.filepath);
-    await fs.promises.access(sourcePath, fs.constants.R_OK);
+    const sourcePath = resolveStoredContentFile(contentDir, source.filepath);
+    if (!sourcePath) {
+      const error = new Error('Source presentation bytes are unavailable or outside the media store');
+      error.code = 'presentation_source_missing';
+      error.retryable = false;
+      throw error;
+    }
     context.progress('validating', 10, { step: 'package-security', mode, wall_profile: wallProfile });
     const slideIr = await extractPptxToSlideIr(sourcePath);
     if (context.isCancellationRequested()) return null;
@@ -434,14 +440,23 @@ function reconcileRecoveredPresentationVideos({ db, contentDir, presentationId, 
     JOIN content c ON c.id=pa.content_id
     WHERE pa.presentation_id=? AND p.workspace_id=? AND p.user_id=?
       AND LOWER(c.mime_type) LIKE 'video/%'
-  `).all(presentationId, job.workspace_id, job.user_id).map((content) => ({
-    contentId: content.id,
-    filename: content.filename,
-    storedName: content.filepath,
-    finalPath: safeContentPath(contentDir, content.filepath),
-    version: Math.max(1, Number(content.version) || 1),
-    processing_status: content.processing_status,
-  }));
+  `).all(presentationId, job.workspace_id, job.user_id).map((content) => {
+    const finalPath = resolveStoredContentFile(contentDir, content.filepath);
+    if (!finalPath) {
+      const error = new Error(`Embedded video ${content.id} is unavailable or outside the media store`);
+      error.code = 'presentation_video_source_missing';
+      error.retryable = false;
+      throw error;
+    }
+    return {
+      contentId: content.id,
+      filename: content.filename,
+      storedName: content.filepath,
+      finalPath,
+      version: Math.max(1, Number(content.version) || 1),
+      processing_status: content.processing_status,
+    };
+  });
   enqueuePresentationVideoAssets(
     videos.filter((asset) => asset.processing_status !== 'ready'),
     enqueueVideo,
