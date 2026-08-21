@@ -118,20 +118,36 @@ function addV2StaticObjects(slide, namedObjects, deck, slideNumber, templateAsse
     const box = object.bbox_in;
     if (!box) continue;
     if (/BACKGROUND$/.test(name)) {
-      slide.addShape('rect', { ...box, line: { color: hex(colors.navy_1, '031A33'), transparency: 100 }, fill: { color: hex(colors.navy_1, '031A33') } });
-    } else if (/PANEL$/.test(name)) {
-      slide.addShape('roundRect', { ...box, rectRadius: 0.06, line: { color: hex(colors.blue, '0B385E'), transparency: 35 }, fill: { color: hex(colors.panel, '041F39') } });
-    } else if (/TAKEAWAY_BOX|SLIDE_NUMBER_BLOCK/.test(name)) {
-      slide.addShape('roundRect', { ...box, line: { color: hex(colors.gold, 'E8B33D'), transparency: 25 }, fill: { color: hex(colors.blue, '0B385E') } });
+      slide.addShape('rect', { ...box, objectName: name, line: { color: hex(colors.navy_1, '031A33'), transparency: 100 }, fill: { color: hex(colors.navy_1, '031A33') } });
     }
   }
-  for (const name of ['GLOBAL_MBFD_LOGO', 'GLOBAL_MBFD_WATERMARK']) {
+  for (const name of ['GLOBAL_MBFD_WATERMARK']) {
     const object = namedObjects[name];
     const asset = templateAssets && templateAssets.get(name);
     if (!object?.bbox_in || !asset) continue;
     slide.addImage({
       data: `data:${asset.mime};base64,${asset.buffer.toString('base64')}`,
       ...object.bbox_in,
+      objectName: name,
+    });
+  }
+  for (const [name, object] of Object.entries(namedObjects)) {
+    const box = object.bbox_in;
+    if (!box) continue;
+    if (/PANEL$/.test(name)) {
+      slide.addShape('roundRect', { ...box, objectName: name, rectRadius: 0.06, line: { color: hex(colors.blue, '0B385E'), transparency: 35 }, fill: { color: hex(colors.panel, '041F39') } });
+    } else if (/TAKEAWAY_BOX|SLIDE_NUMBER_BLOCK/.test(name)) {
+      slide.addShape('roundRect', { ...box, objectName: name, line: { color: hex(colors.gold, 'E8B33D'), transparency: 25 }, fill: { color: hex(colors.blue, '0B385E') } });
+    }
+  }
+  for (const name of ['GLOBAL_MBFD_LOGO']) {
+    const object = namedObjects[name];
+    const asset = templateAssets && templateAssets.get(name);
+    if (!object?.bbox_in || !asset) continue;
+    slide.addImage({
+      data: `data:${asset.mime};base64,${asset.buffer.toString('base64')}`,
+      ...object.bbox_in,
+      objectName: name,
     });
   }
   const globals = {

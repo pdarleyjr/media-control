@@ -49,6 +49,21 @@ test('v2 PPTX exports exact three-display EMU dimensions', async () => {
   assert.match(output.presentation, /<p:sldSz[^>]*cx="48768000"[^>]*cy="9144000"/);
 });
 
+test('the decorative watermark stays behind opaque panels and editable content', async () => {
+  const continuation = deck(PROFILE_IDS.TWO_DISPLAY);
+  continuation.slides[0].template_id = 'CONTINUATION';
+  continuation.slides[0].slots = { TV2_BODY: 'Readable continuation body' };
+  const buffer = await renderDeckToPptxBuffer(continuation);
+  const zip = await unzipper.Open.buffer(buffer);
+  const slide = (await zip.files.find((entry) => entry.path === 'ppt/slides/slide1.xml').buffer()).toString('utf8');
+  const watermarkIndex = slide.indexOf('GLOBAL_MBFD_WATERMARK');
+  const panelIndex = slide.indexOf('TV2_CONTINUATION_PANEL');
+  const bodyIndex = slide.indexOf('Readable continuation body');
+  assert.ok(watermarkIndex >= 0);
+  assert.ok(panelIndex > watermarkIndex, 'the continuation panel must cover the decorative watermark');
+  assert.ok(bodyIndex > panelIndex, 'editable body text must render above its panel');
+});
+
 test('v2 PPTX embeds approved local video and audio as native package media', async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-pptx-media-'));
   const videoPath = path.join(temp, 'clip.mp4');
