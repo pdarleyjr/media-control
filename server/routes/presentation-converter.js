@@ -2,7 +2,6 @@
 
 const express = require('express');
 const router = express.Router();
-const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const config = require('../config');
@@ -66,11 +65,13 @@ router.get('/sources', requireConverterWrite, (req, res) => {
 
 router.post('/sources', requireConverterWrite, upload.single('file'), (req, res) => {
   const file = req.file;
+  const uploadedPath = upload.resolveUploadedFilePath(file);
   const isPptx = file
+    && uploadedPath
     && (file.mimetype === PPTX_MIME || /\.pptx$/i.test(file.originalname || ''))
     && Number(file.size) > 0;
   if (!isPptx) {
-    if (file?.path) fs.promises.unlink(file.path).catch(() => {});
+    upload.discardUploadedFile(file);
     return res.status(400).json({ error: 'Presentation Converter currently accepts non-empty PPTX source files' });
   }
   const id = randomUUID();
@@ -83,7 +84,7 @@ router.post('/sources', requireConverterWrite, upload.single('file'), (req, res)
       .run(id, req.user.id, req.workspaceId, filename, file.filename, PPTX_MIME, file.size);
     return res.status(201).json({ id, content_id: id, filename, library_scope: 'internal' });
   } catch (error) {
-    fs.promises.unlink(file.path).catch(() => {});
+    upload.discardUploadedFile(file);
     console.warn('[presentation-converter] internal source upload failed:', error.message);
     return res.status(500).json({ error: 'Could not store presentation source' });
   }

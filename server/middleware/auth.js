@@ -19,6 +19,17 @@ function verifyToken(token) {
   return jwt.verify(token, config.jwtSecret, { algorithms: ['HS256'] });
 }
 
+function tokenFromCookieHeader(cookieHeader) {
+  if (typeof cookieHeader !== 'string') return null;
+  for (const item of cookieHeader.split(';')) {
+    const separator = item.indexOf('=');
+    if (separator < 1) continue;
+    const key = item.slice(0, separator).trim();
+    if (key === 'mc_token') return item.slice(separator + 1);
+  }
+  return null;
+}
+
 // Synthetic user record for recovery tokens (scripts/reset-admin.js). Not
 // persisted; only exists for the lifetime of the request.
 function recoveryUser(decoded) {
@@ -50,14 +61,7 @@ function requireAuth(req, res, next) {
   // 2. httpOnly cookie (for <img>, <video>, and other browser-initiated GETs
   //    that cannot set Authorization headers). Parse manually since
   //    cookie-parser is not installed.
-  if (!token && req.headers.cookie) {
-    const cookies = req.headers.cookie.split(';').reduce((acc, c) => {
-      const [k, ...v] = c.trim().split('=');
-      if (k) acc[k] = v.join('=');
-      return acc;
-    }, {});
-    if (cookies.mc_token) token = cookies.mc_token;
-  }
+  if (!token) token = tokenFromCookieHeader(req.headers.cookie);
 
   if (!token) {
     return res.status(401).json({ error: 'Authentication required' });
@@ -88,24 +92,18 @@ function optionalAuth(req, res, next) {
   if (authHeader && authHeader.startsWith('Bearer ')) {
     token = authHeader.split(' ')[1];
   }
-  if (!token && req.headers.cookie) {
-    const cookies = req.headers.cookie.split(';').reduce((acc, item) => {
-      const [key, ...value] = item.trim().split('=');
-      if (key) acc[key] = value.join('=');
-      return acc;
-    }, {});
-    if (cookies.mc_token) token = cookies.mc_token;
-  }
-  if (token) {
-    try {
-      const decoded = verifyToken(token);
-      req.user = decoded.recovery
-        ? recoveryUser(decoded)
-        : db.prepare('SELECT id, email, username, name, role, auth_provider, avatar_url, plan_id FROM users WHERE id = ?').get(decoded.id);
-      req.jwtWorkspaceId = decoded.current_workspace_id || null;
-    } catch (err) {
-      // Token invalid, continue without user
-    }
+  if (!token) token = tokenFromCookieHeader(req.headers.cookie);
+  try {
+    // Optional auth deliberately permits an absent/invalid credential, but the
+    // verification call itself is unconditional so request input cannot bypass
+    // a security-sensitive branch.
+    const decoded = verifyToken(token || '');
+    req.user = decoded.recovery
+      ? recoveryUser(decoded)
+      : db.prepare('SELECT id, email, username, name, role, auth_provider, avatar_url, plan_id FROM users WHERE id = ?').get(decoded.id);
+    req.jwtWorkspaceId = decoded.current_workspace_id || null;
+  } catch (err) {
+    // Token absent or invalid: continue anonymously.
   }
   next();
 }

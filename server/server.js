@@ -250,7 +250,7 @@ app.get('/player/template-asset/:profile/:name', async (req, res) => {
 // API call needed). Published snapshot is preferred; falls back to the working
 // deck. The deck JSON is `<`-escaped so AI/user content containing "</script>"
 // can't break out of the inline script tag.
-app.get('/player/deck/:id', require('./middleware/auth').optionalAuth, (req, res) => {
+app.get('/player/deck/:id', rateLimit(rateLimitOptions(60000, 120)), require('./middleware/auth').optionalAuth, (req, res) => {
   const { db } = require('./db/database');
   const { deckForPlayer } = require('./lib/presentation-player-access');
   const selected = deckForPlayer(db, req.params.id, req.user || null);
@@ -454,7 +454,7 @@ app.get('/player/canvas-asset/:endpointId/:contentId/:width/:height/:signature',
 // can't be used to enumerate arbitrary private content. UUIDs are unguessable,
 // matching the public deck threat model (anyone with a deck URL can already see
 // the deck + its images). Path-traversal guarded; CORS-open + long cache.
-app.get('/player/asset/:id', require('./middleware/auth').optionalAuth, (req, res) => {
+app.get('/player/asset/:id', rateLimit(rateLimitOptions(60000, 600)), require('./middleware/auth').optionalAuth, (req, res) => {
   const { db } = require('./db/database');
   const c = db.prepare('SELECT id, filepath, mime_type FROM content WHERE id = ?').get(req.params.id);
   if (!c || !c.filepath) return res.status(404).type('text/plain').send('not found');
@@ -992,11 +992,13 @@ app.use('/api/ai', requireAuth, resolveTenancy, require('./routes/ai'));
 // Files (Nextcloud WebDAV proxy) + media downloads. Feature-flag + env gated.
 app.use('/api/files', rateLimit(rateLimitOptions(60000, 30)));
 app.use('/api/files', requireAuth, resolveTenancy, require('./routes/files'));
+app.use('/api/downloads', rateLimit(rateLimitOptions(60000, 60)));
 app.use('/api/downloads', requireAuth, resolveTenancy, require('./routes/downloads'));
 // Phase 3: Operational Activities ("Scenes") + Fast Broadcast. Same
 // requireAuth + resolveTenancy gating as the other resource routes; handlers
 // scope by req.workspaceId and reuse the existing device-content-push path.
 app.use('/api/scenes', requireAuth, resolveTenancy, require('./routes/scenes'));
+app.use('/api/broadcast', rateLimit(rateLimitOptions(60000, 60)));
 app.use('/api/broadcast', requireAuth, resolveTenancy, require('./routes/broadcast'));
 app.use('/api/classroom-preparation', rateLimit(rateLimitOptions(60000, 60)));
 app.use('/api/classroom-preparation', requireAuth, resolveTenancy, require('./routes/classroom-preparation'));

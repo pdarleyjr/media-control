@@ -6,6 +6,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const config = require('../config');
+const upload = require('../middleware/upload');
 const { PLATFORM_ROLES } = require('../middleware/auth');
 const nodeRegistry = require('../lib/node-registry');
 const performanceMetrics = require('../lib/performance-metrics');
@@ -378,7 +379,7 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
       fs.mkdirSync(extractDir, { recursive: true });
 
       await new Promise((resolve, reject) => {
-        fs.createReadStream(req.file.path)
+        fs.createReadStream(upload.resolveUploadedFilePath(req.file))
           .pipe(unzipper.Extract({ path: extractDir }))
           .on('close', resolve)
           .on('error', reject);
@@ -387,7 +388,7 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
       // Read the JSON manifest
       const jsonPath = path.join(extractDir, 'export.json');
       if (!fs.existsSync(jsonPath)) {
-        fs.unlinkSync(req.file.path);
+        upload.discardUploadedFile(req.file);
         return res.status(400).json({ error: 'ZIP does not contain export.json' });
       }
       data = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
@@ -412,9 +413,9 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
       }
 
       // Cleanup uploaded zip
-      fs.unlinkSync(req.file.path);
+      upload.discardUploadedFile(req.file);
     } catch (err) {
-      if (req.file?.path) try { fs.unlinkSync(req.file.path); } catch {}
+      if (req.file) try { upload.discardUploadedFile(req.file); } catch {}
       return res.status(400).json({ error: 'Failed to extract ZIP: ' + err.message });
     }
   } else {

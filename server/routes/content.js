@@ -399,7 +399,7 @@ function validateUploadedFile(req, res) {
   let integrity;
   try {
     integrity = inspectMediaFile({
-      filePath: req.file.path,
+      filePath: upload.resolveUploadedFilePath(req.file),
       contentDir: config.contentDir,
       claimedMime: req.file.mimetype,
       filename: req.file.originalname,
@@ -891,8 +891,10 @@ router.post('/', requireContentWriteRole, checkStorageLimit, upload.single('file
   try {
     if (!req.workspaceId) return res.status(403).json({ error: 'No workspace context. Switch to a workspace before uploading.' });
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const uploadedPath = upload.resolveUploadedFilePath(req.file);
+    if (!uploadedPath) return res.status(400).json({ error: 'Invalid upload path' });
     if (!upload.uploadedFileHasBytes(req.file)) {
-      try { fs.unlinkSync(req.file.path); } catch {}
+      upload.discardUploadedFile(req.file);
       return res.status(400).json({
         code: 'EMPTY_UPLOAD',
         error: 'Uploaded file is empty. Select the original file and try again.',
@@ -924,7 +926,7 @@ router.post('/', requireContentWriteRole, checkStorageLimit, upload.single('file
           contentId: id,
           workspaceId: req.workspaceId,
           userId: req.user.id,
-          absolutePath: req.file.path,
+          absolutePath: uploadedPath,
           expectedVersion: 1,
           expectedFilepath: filepath,
           sourceType: 'multipart_upload',
@@ -933,7 +935,7 @@ router.post('/', requireContentWriteRole, checkStorageLimit, upload.single('file
           contentId: id,
           workspaceId: req.workspaceId,
           userId: req.user.id,
-          absolutePath: req.file.path,
+          absolutePath: uploadedPath,
           expectedVersion: 1,
           expectedFilepath: filepath,
           mimeType: req.file.mimetype,
@@ -1259,7 +1261,7 @@ router.post(
         expectedFilepath: content.filepath,
         timestampSeconds: request.timestampSeconds,
         position: request.position,
-        customPosterPath: req.file?.path || null,
+        customPosterPath: upload.resolveUploadedFilePath(req.file),
         sourceType: req.file ? 'custom_poster' : 'thumbnail_studio',
         idempotencyKey: `thumbnail-studio:${content.id}:v${content.version}:${uuidv4()}`,
       });
@@ -1791,8 +1793,10 @@ router.put('/:id/replace', requireContentWriteRole, upload.single('file'), async
   const content = checkContentWrite(req, res);
   if (!content) return;
   if (!req.file) return res.status(400).json({ error: 'No file provided' });
+  const uploadedPath = upload.resolveUploadedFilePath(req.file);
+  if (!uploadedPath) return res.status(400).json({ error: 'Invalid upload path' });
   if (!upload.uploadedFileHasBytes(req.file)) {
-    try { fs.unlinkSync(req.file.path); } catch {}
+    upload.discardUploadedFile(req.file);
     return res.status(400).json({
       code: 'EMPTY_UPLOAD',
       error: 'Uploaded file is empty. Select the original file and try again.',
@@ -1800,7 +1804,7 @@ router.put('/:id/replace', requireContentWriteRole, upload.single('file'), async
   }
   if (req.body.expected_version !== undefined
       && Number(req.body.expected_version) !== Number(content.version || 1)) {
-    try { fs.unlinkSync(req.file.path); } catch {}
+    upload.discardUploadedFile(req.file);
     return res.status(409).json({ code: 'CONTENT_VERSION_CONFLICT', error: 'Content changed; reload before replacing the file.' });
   }
   if (!validateUploadedFile(req, res)) return;
@@ -1837,7 +1841,7 @@ router.put('/:id/replace', requireContentWriteRole, upload.single('file'), async
             contentId: req.params.id,
             workspaceId: content.workspace_id || '__platform__',
             userId: req.user.id,
-            absolutePath: req.file.path,
+            absolutePath: uploadedPath,
             expectedVersion: nextVersion,
             expectedFilepath: filepath,
             staleAbsolutePaths,
@@ -1847,7 +1851,7 @@ router.put('/:id/replace', requireContentWriteRole, upload.single('file'), async
             contentId: req.params.id,
             workspaceId: content.workspace_id || '__platform__',
             userId: req.user.id,
-            absolutePath: req.file.path,
+            absolutePath: uploadedPath,
             expectedVersion: nextVersion,
             expectedFilepath: filepath,
             mimeType: req.file.mimetype,

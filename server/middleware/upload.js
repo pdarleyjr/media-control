@@ -24,7 +24,8 @@ const storage = multer.diskStorage({
     if (file.originalname) {
       file.originalname = Buffer.from(file.originalname, 'latin1').toString('utf8');
     }
-    const ext = path.extname(file.originalname);
+    const candidateExt = path.extname(file.originalname).toLowerCase();
+    const ext = /^\.[a-z0-9]{1,10}$/.test(candidateExt) ? candidateExt : '';
     cb(null, `${uuidv4()}${ext}`);
   }
 });
@@ -84,10 +85,33 @@ function isAllowedUploadMime(mimetype) {
   return ALLOWED_IMAGE_TYPES.has(mimetype) || ALLOWED_VIDEO_TYPES.has(mimetype) || ALLOWED_DOC_TYPES.has(mimetype);
 }
 
-function uploadedFileHasBytes(file, statFile = fs.statSync) {
-  if (!file?.path || !Number.isFinite(Number(file.size)) || Number(file.size) <= 0) return false;
+const GENERATED_UPLOAD_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:\.[a-z0-9]{1,10})?$/i;
+
+function resolveUploadedFilePath(file) {
+  const filename = typeof file?.filename === 'string' ? file.filename : '';
+  if (!GENERATED_UPLOAD_NAME.test(filename)) return null;
+  const root = path.resolve(config.contentDir);
+  const candidate = path.resolve(root, filename);
+  return path.dirname(candidate) === root ? candidate : null;
+}
+
+function discardUploadedFile(file) {
+  const uploadedPath = resolveUploadedFilePath(file);
+  if (!uploadedPath) return false;
   try {
-    const stat = statFile(file.path);
+    fs.unlinkSync(uploadedPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function uploadedFileHasBytes(file, statFile = fs.statSync) {
+  if (!Number.isFinite(Number(file?.size)) || Number(file.size) <= 0) return false;
+  const uploadedPath = resolveUploadedFilePath(file);
+  if (!uploadedPath) return false;
+  try {
+    const stat = statFile(uploadedPath);
     return stat.isFile() && stat.size > 0;
   } catch {
     return false;
@@ -171,5 +195,7 @@ module.exports.ALLOWED_IMAGE_TYPES = ALLOWED_IMAGE_TYPES;
 module.exports.ALLOWED_VIDEO_TYPES = ALLOWED_VIDEO_TYPES;
 module.exports.isAllowedUploadMime = isAllowedUploadMime;
 module.exports.uploadedFileHasBytes = uploadedFileHasBytes;
+module.exports.resolveUploadedFilePath = resolveUploadedFilePath;
+module.exports.discardUploadedFile = discardUploadedFile;
 module.exports.resolveUploadMime = resolveUploadMime;
 module.exports.EXT_TO_MIME = EXT_TO_MIME;

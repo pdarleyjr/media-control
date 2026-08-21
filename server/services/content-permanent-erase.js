@@ -616,10 +616,21 @@ function eraseContent(db, contentId, options = {}) {
       WHERE content_id=? AND status IN ('queued','running','retry_wait')`, contentId);
     run(db, `UPDATE download_jobs SET status='error',error_msg='Content permanently erased',
       completed_at=strftime('%s','now') WHERE content_id=?`, contentId);
+    // Reconcile a crashed worker's stale lease: a `running` job whose lease has
+    // already expired was never going to heartbeat again, so cancel it now using
+    // the same clock units (Unix seconds) and cancellation semantics as
+    // MediaJobStore.settleExpiredCancellations. This prevents a dead row from
+    // blocking permanent erase forever.
+    run(db, `UPDATE media_jobs SET status='cancelled', stage='cancelled', retryable=0,
+        error_code='media_job_cancelled', error_message='Media job cancelled after expired lease during permanent erase',
+        lease_owner=NULL, lease_expires_at=NULL, completed_at=?, updated_at=?
+      WHERE content_id=? AND status='running' AND cancel_requested=1
+        AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?`, now, now, contentId, now);
   });
   beginBarrier();
   const activeJobs = rows(db, `SELECT id,lease_owner,lease_expires_at FROM media_jobs
-    WHERE content_id=? AND status='running'`, contentId);
+    WHERE content_id=? AND status='running'
+      AND (lease_expires_at IS NULL OR lease_expires_at > ?)`, contentId, now);
   if (activeJobs.length) {
     const error = new Error('Permanent erase is waiting for active media processing to stop safely.');
     error.code = 'ERASE_JOB_QUIESCENCE_REQUIRED';

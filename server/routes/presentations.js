@@ -443,21 +443,24 @@ const PRESENTATION_MEDIA_MIME = new Set([
 function safeName(name) { return sanitizeString((name || 'image').normalize('NFC')); }
 
 router.post('/:id/assets', requireWrite, upload.single('file'), async (req, res) => {
+  let uploadedPath = null;
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    uploadedPath = upload.resolveUploadedFilePath(req.file);
+    if (!uploadedPath) return res.status(400).json({ error: 'Invalid upload path' });
     if (!upload.uploadedFileHasBytes(req.file)) {
-      try { fs.unlinkSync(req.file.path); } catch { /* already gone */ }
+      upload.discardUploadedFile(req.file);
       return res.status(400).json({ code: 'EMPTY_UPLOAD', error: 'The presentation media file is empty.' });
     }
     const integrity = inspectMediaFile({
-      filePath: req.file.path,
+      filePath: uploadedPath,
       contentDir: config.contentDir,
       claimedMime: req.file.mimetype,
       filename: req.file.originalname,
     });
     if (!integrity.ok || !PRESENTATION_MEDIA_MIME.has(integrity.detectedMime)) {
       // Drop the rejected upload multer wrote to disk before bailing.
-      try { fs.unlinkSync(req.file.path); } catch { /* best effort */ }
+      upload.discardUploadedFile(req.file);
       return res.status(415).json({ error: 'Only inspected raster images, MP4/WebM/QuickTime video, or common audio files can be added to slides' });
     }
     req.file.mimetype = integrity.detectedMime;
@@ -469,11 +472,11 @@ router.post('/:id/assets', requireWrite, upload.single('file'), async (req, res)
     try {
       const sharp = require('sharp');
       const sharpOpts = { limitInputPixels: false, failOn: 'none' };
-      try { const m = await sharp(req.file.path, sharpOpts).metadata(); width = m.width; height = m.height; }
+      try { const m = await sharp(uploadedPath, sharpOpts).metadata(); width = m.width; height = m.height; }
       catch (e) { console.warn('[pres-asset] sharp metadata failed:', e.message); }
       try {
         thumbnailPath = `thumb_${filepath}`;
-        await sharp(req.file.path, sharpOpts).resize(config.thumbnailWidth).jpeg({ quality: 70 })
+        await sharp(uploadedPath, sharpOpts).resize(config.thumbnailWidth).jpeg({ quality: 70 })
           .toFile(path.join(config.contentDir, thumbnailPath));
       } catch (e) { console.warn('[pres-asset] sharp thumbnail failed:', e.message); thumbnailPath = null; }
     } catch (e) { console.warn('[pres-asset] sharp unavailable:', e.message); }
@@ -499,7 +502,7 @@ router.post('/:id/assets', requireWrite, upload.single('file'), async (req, res)
         contentId,
         workspaceId: req.presentation.workspace_id,
         userId: req.user.id,
-        absolutePath: req.file.path,
+        absolutePath: uploadedPath,
         expectedVersion: 1,
         expectedFilepath: filepath,
         sourceType: 'presentation_studio_upload',
@@ -508,7 +511,7 @@ router.post('/:id/assets', requireWrite, upload.single('file'), async (req, res)
         contentId,
         workspaceId: req.presentation.workspace_id,
         userId: req.user.id,
-        absolutePath: req.file.path,
+        absolutePath: uploadedPath,
         expectedVersion: 1,
         expectedFilepath: filepath,
         mimeType: req.file.mimetype,
@@ -530,7 +533,7 @@ router.post('/:id/assets', requireWrite, upload.single('file'), async (req, res)
     console.error('[pres-asset] upload error:', err);
     // Don't leak the uploaded file (or its thumbnail) on a failed insert.
     if (req.file) {
-      if (req.file.path) { try { fs.unlinkSync(req.file.path); } catch { /* */ } }
+      if (uploadedPath) upload.discardUploadedFile(req.file);
       if (req.file.filename) { try { fs.unlinkSync(path.join(config.contentDir, 'thumb_' + req.file.filename)); } catch { /* */ } }
     }
     res.status(500).json({ error: 'Presentation media upload failed' });

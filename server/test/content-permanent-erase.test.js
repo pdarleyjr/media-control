@@ -239,6 +239,38 @@ test('permanent erase stays prepared until a leased writer exits, then removes i
   }
 });
 
+test('expired media-job lease does not block permanent erase (crashed worker is reconciled)', () => {
+  const db = buildDb();
+  const contentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'media-control-stale-lease-'));
+  const latePath = path.join(contentDir, 'late-output.mp4');
+  const expired = Math.floor(Date.now() / 1000) - 100;
+  try {
+    db.prepare(`INSERT INTO content (id,filename,filepath,mime_type,workspace_id)
+      VALUES ('target','Target.mp4','target.mp4','video/mp4','ws')`).run();
+    // A running job whose lease already expired: the worker crashed and will never
+    // heartbeat again. It must be reconciled (cancelled) and must NOT block erase.
+    db.prepare(`INSERT INTO media_jobs VALUES
+      ('writer','target','running','optimizing',0,'worker-a',?,NULL,1)`).run(expired);
+    db.prepare(`INSERT INTO media_job_artifacts VALUES
+      ('artifact','writer','target',?,1)`).run(latePath);
+
+    // No quiescence error: an expired lease is treated as stale, not active, so a
+    // crashed worker never blocks erase forever.
+    const result = eraseContent(db, 'target', { contentDir, operationId: 'erase-stale-lease' });
+    assert.equal(result.success, true);
+    assert.equal(db.prepare("SELECT state FROM content_erase_operations WHERE id='erase-stale-lease'").get().state, 'completed');
+    assert.equal(db.prepare("SELECT COUNT(*) count FROM content WHERE id='target'").get().count, 0);
+    // The reconciled job row is removed with its content (ON DELETE CASCADE), which
+    // proves the staled job did not block the erase.
+    assert.equal(db.prepare("SELECT COUNT(*) count FROM media_jobs WHERE id='writer'").get().count, 0);
+    // The crashed worker's deferred bytes are still removed on erase.
+    assert.equal(fs.existsSync(latePath), false);
+  } finally {
+    db.close();
+    fs.rmSync(contentDir, { recursive: true, force: true });
+  }
+});
+
 test('unknown restrictive content foreign keys block erase before any mutation', () => {
   const db = buildDb();
   db.exec('CREATE TABLE mystery (id TEXT PRIMARY KEY, content_id TEXT REFERENCES content(id))');
