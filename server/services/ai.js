@@ -587,7 +587,7 @@ function normalizeDeckPlan(plan, ir) {
       source_slide_numbers: expectedSourceSlideNumbers,
     }],
     slide_directives: slideDirectives.map((item) => ({
-      source_slide_number: Number(item.source_slide_number),
+      source_slide_number: Number(item.source_slide_number ?? item.slide_number),
       intent: String(item.intent || item.narrative_intent || item.content_summary || item.title || '').trim().slice(0, 400),
       layout_family: String(item.layout_family || item.approved_layout_family || ''),
       condensation: ['none', 'light', 'moderate'].includes(item.condensation) ? item.condensation : 'none',

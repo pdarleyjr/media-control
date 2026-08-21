@@ -764,7 +764,7 @@ test('deck-level Qwen planning canonicalizes the live semantic aliases without r
       narrative_title: 'Pump operations',
       sections: [{ section_title: 'Command', slide_indices: [0] }],
       slide_directives: [{
-        source_slide_number: 1,
+        slide_number: 1,
         layout_family: 'STANDARD_PARAGRAPH',
         content_summary: 'Establish command without changing source facts.',
         media_handling: 'None',
