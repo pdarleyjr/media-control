@@ -444,6 +444,35 @@ async function prewarmUploadedContent(io, db, options = {}) {
   });
 }
 
+// Tell a connected P3 to purge its local cache for a specific content ID
+// (or the entire cache when contentId is omitted). The agent should respond
+// with node:cache-purged so the server can clear the preparation queue.
+function purgeNodeCache(io, db, options = {}) {
+  const contentId = String(options.contentId || '');
+  const nodeId = String(options.nodeId || (config.classroomCache || {}).nodeId || '');
+  if (!nodeId) return { purged: false, reason: 'no_node_id' };
+  const payload = contentId ? { content_id: contentId } : {};
+  try {
+    io.of('/device').to(`node:${nodeId}`).emit('node:purge-cache', payload);
+  } catch (_) {}
+  return { purged: true, node_id: nodeId, content_id: contentId || null };
+}
+
+// Force the node to rebuild its in-memory manifest from scratch. Used after
+// a cache purge so the agent re-fills from the authoritative server manifest
+// instead of relying on stale in-memory state.
+function resyncNodeManifest(io, db, options = {}) {
+  const nodeId = String(options.nodeId || (config.classroomCache || {}).nodeId || '');
+  if (!nodeId) return { resynced: false, reason: 'no_node_id' };
+  try {
+    io.of('/device').to(`node:${nodeId}`).emit('node:resync-manifest', {
+      node_id: nodeId,
+      manifest: buildContentManifest(db, { nodeId }),
+    });
+  } catch (_) {}
+  return { resynced: true, node_id: nodeId };
+}
+
 module.exports = {
   buildContentManifest,
   emitContentPrewarm,
@@ -453,6 +482,8 @@ module.exports = {
   nodeWorkspaceIds,
   normalizeNodeTelemetry,
   prewarmUploadedContent,
+  purgeNodeCache,
   recordHeartbeat,
   requestContentPrewarm,
+  resyncNodeManifest,
 };

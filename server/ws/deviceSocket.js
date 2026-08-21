@@ -661,6 +661,43 @@ module.exports = function setupDeviceSocket(io) {
           console.warn(`Node prewarm result rejected for ${nodeId}: ${error.message}`);
         }
       });
+      socket.on('node:purge-cache', (payload) => {
+        try {
+          const contentId = String(payload?.content_id || '');
+          if (contentId) {
+            db.prepare('DELETE FROM node_assets WHERE asset_id IN (SELECT asset_id FROM asset_checksums WHERE content_id = ?) AND node_id = ?')
+              .run(contentId, nodeId);
+          } else {
+            db.prepare('DELETE FROM node_assets WHERE node_id = ?').run(nodeId);
+          }
+        } catch (error) {
+          console.warn(`Node purge cache failed for ${nodeId}: ${error.message}`);
+        }
+      });
+      socket.on('node:cache-purged', (payload) => {
+        try {
+          const contentId = String(payload?.content_id || '');
+          const node = db.prepare(
+            'SELECT workspace_id, room_id FROM managed_nodes WHERE node_id = ?',
+          ).get(nodeId);
+          if (!node?.workspace_id) return;
+          dashboardNs.to(workspaceRoom(node.workspace_id)).emit('dashboard:content-preparation', {
+            node_id: nodeId,
+            content_id: contentId,
+            generation: Number(payload?.generation) || null,
+            state: 'cache_purged',
+          });
+        } catch (error) {
+          console.warn(`Node cache-purged handler failed for ${nodeId}: ${error.message}`);
+        }
+      });
+      socket.on('node:resync-manifest', () => {
+        try {
+          socket.emit('node:sync-manifest', nodeRegistry.buildContentManifest(db, { nodeId }));
+        } catch (error) {
+          console.warn(`Node resync manifest failed for ${nodeId}: ${error.message}`);
+        }
+      });
       socket.on('join', (data) => {
         try { if (data && data.room) socket.join(String(data.room)); } catch (_) {}
       });

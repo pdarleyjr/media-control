@@ -3,12 +3,25 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
+const config = require('../config');
 const {
   nodeHttpAuthOk,
   normalizeNodeTelemetry,
   prewarmUploadedContent,
+  purgeNodeCache,
   requestContentPrewarm,
+  resyncNodeManifest,
 } = require('../lib/node-registry');
+
+function withClearedNodeId(fn) {
+  const original = config.classroomCache.nodeId;
+  config.classroomCache.nodeId = '';
+  try {
+    return fn();
+  } finally {
+    config.classroomCache.nodeId = original;
+  }
+}
 
 function fakeDb({ member = true } = {}) {
   return {
@@ -242,4 +255,63 @@ test('P3 agent reconciles manifests slowly but keeps priority and LAN tests even
   assert.match(agent, /node:prewarm-content/);
   assert.match(agent, /node:run-lan-health-test/);
   assert.match(agent, /cacheStats: cache\.getStats\(\)/);
+});
+
+test('purgeNodeCache emits a targeted purge for a specific content id', () => {
+  const events = [];
+  const result = purgeNodeCache(fakeIo(events), fakeDb(), {
+    nodeId: 'classroom-1-p3',
+    contentId: 'video-id',
+  });
+  assert.equal(result.purged, true);
+  assert.equal(result.node_id, 'classroom-1-p3');
+  assert.equal(result.content_id, 'video-id');
+  assert.deepEqual(events, [{
+    room: 'node:classroom-1-p3',
+    event: 'node:purge-cache',
+    payload: { content_id: 'video-id' },
+  }]);
+});
+
+test('purgeNodeCache emits a full cache purge when contentId is omitted', () => {
+  const events = [];
+  const result = purgeNodeCache(fakeIo(events), fakeDb(), {
+    nodeId: 'classroom-1-p3',
+  });
+  assert.equal(result.purged, true);
+  assert.equal(result.content_id, null);
+  assert.deepEqual(events, [{
+    room: 'node:classroom-1-p3',
+    event: 'node:purge-cache',
+    payload: {},
+  }]);
+});
+
+test('purgeNodeCache fails closed when no node id is available', () => {
+  const events = [];
+  const result = withClearedNodeId(() => purgeNodeCache(fakeIo(events), fakeDb(), { nodeId: '' }));
+  assert.equal(result.purged, false);
+  assert.equal(result.reason, 'no_node_id');
+  assert.deepEqual(events, []);
+});
+
+test('resyncNodeManifest emits the authoritative manifest after a purge', () => {
+  const events = [];
+  const result = resyncNodeManifest(fakeIo(events), fakeDb(), {
+    nodeId: 'classroom-1-p3',
+  });
+  assert.equal(result.resynced, true);
+  assert.equal(result.node_id, 'classroom-1-p3');
+  assert.ok(Array.isArray(events));
+  assert.equal(events[0].room, 'node:classroom-1-p3');
+  assert.equal(events[0].event, 'node:resync-manifest');
+  assert.ok(Array.isArray(events[0].payload.manifest));
+});
+
+test('resyncNodeManifest fails closed when no node id is available', () => {
+  const events = [];
+  const result = withClearedNodeId(() => resyncNodeManifest(fakeIo(events), fakeDb(), { nodeId: '' }));
+  assert.equal(result.resynced, false);
+  assert.equal(result.reason, 'no_node_id');
+  assert.deepEqual(events, []);
 });
