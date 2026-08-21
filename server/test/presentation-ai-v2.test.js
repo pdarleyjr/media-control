@@ -786,6 +786,30 @@ test('deck-level Qwen planning canonicalizes the live semantic aliases without r
   assert.equal(JSON.stringify(plan).includes('media_handling'), false);
 });
 
+test('deck-level Qwen planning canonicalizes slide_number when the remaining fields are canonical', async (t) => {
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ message: { content: JSON.stringify({
+      narrative_title: 'Pump operations',
+      sections: [{ title: 'Command', source_slide_numbers: [1] }],
+      slide_directives: [{
+        slide_number: 1,
+        intent: 'Establish command without changing source facts.',
+        layout_family: 'STANDARD_PARAGRAPH',
+        condensation: 'none',
+      }],
+      plan_notes: 'Semantic plan only.',
+    }) } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  t.after(() => { global.fetch = originalFetch; });
+
+  const plan = await ai.planDeckToV2({ source: { filename: 'deck.pptx' }, slides: [SOURCE] }, { wallProfile: PROFILE_IDS.TWO_DISPLAY });
+  assert.equal(calls, 1);
+  assert.equal(plan.slide_directives[0].source_slide_number, 1);
+});
+
 test('deck-level Qwen planning canonicalizes the observed presentation_plan wrapper', async (t) => {
   const originalFetch = global.fetch;
   let calls = 0;

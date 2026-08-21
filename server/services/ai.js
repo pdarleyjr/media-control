@@ -575,7 +575,7 @@ function normalizeDeckPlan(plan, ir) {
     : (Array.isArray(wrapped?.slide_sequence) ? wrapped.slide_sequence : []);
   const hasLiveSemanticAliases = slideDirectives.some((item) => item
     && (typeof item.content_summary === 'string' || typeof item.narrative_intent === 'string'
-      || typeof item.approved_layout_family === 'string'));
+      || typeof item.approved_layout_family === 'string' || item.slide_number != null));
   if (!hasLiveSemanticAliases) return plan;
   const expectedSourceSlideNumbers = (ir?.slides || []).map((slide) => Number(slide.source_slide_number));
   const narrativeTitle = String(plan.narrative_title || wrapped?.narrative_title
