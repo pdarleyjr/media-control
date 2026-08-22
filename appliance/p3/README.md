@@ -19,8 +19,13 @@ is by the owner; nothing here commits a real token.
 - `healthcheck.ps1` — prints `{players, audio, network, agent}` JSON for watchdogs.
 - `config.example.json` — placeholders only. Copy to `config.local.json`
   (gitignored) and populate on-box.
-- `install/update.ps1` — registers `MBFD_RoomAgent` + `MBFD_AudioEnforce`
-  Scheduled Tasks.
+- `install/update.ps1` — registers `MBFD_RoomAgent`, `MBFD_AudioEnforce` and
+  `MBFD_NetworkEnforce` Scheduled Tasks, then calls
+  `install/ensure-cache-agent-supervision.ps1`.
+- `install/ensure-cache-agent-supervision.ps1` — idempotently repairs the
+  restart-on-failure settings of the existing `MBFD_RoomCacheAgent` task. It
+  never unregisters the task and never rewrites its action/trigger/principal,
+  because the on-box `run-agent.cmd` launcher carries the per-node secret.
 
 ## Install / update
 1. `cd appliance/p3/room-agent && npm install --omit=dev`
@@ -53,8 +58,21 @@ is by the owner; nothing here commits a real token.
   script logs the chosen endpoint but cannot change it (graceful degradation).
   Front Left is the sole display audio authority because it feeds the soundbar
   through eARC; missing or unrecognized display names fail muted.
-- **Restart loop**: agent emits stack traces to Task Scheduler output; the 60s
-  watchdog restart re-attempts with exponential backoff.
+- **Fatal exit / restart supervision**: both agents are **fail-fast** — an
+  uncaught exception or unhandled rejection is logged to stderr (Task Scheduler
+  output) and the Node process terminates with a nonzero exit code
+  (`room-agent/fatal-process.js`). Recovery is therefore entirely the
+  supervisor's job. Windows Task Scheduler restarts a failed task on a **fixed
+  interval** (`RestartInterval`, minimum one minute) for up to `RestartCount`
+  attempts — there is **no exponential backoff** at the Task Scheduler layer.
+  The managed tasks use a fixed **60s** restart interval with 999 attempts and
+  `ExecutionTimeLimit = PT0S` (never force-terminate a healthy long-running
+  agent; the Task Scheduler default of PT72H would kill it after three days).
+  Socket.IO reconnection *inside* `agent.js` / `cache-agent.js` does use
+  exponential backoff (`reconnectionDelayMax`) — that is a different layer and
+  only covers a reachable process, not a dead one. Verify supervision with
+  `Get-ScheduledTask -TaskName MBFD_RoomCacheAgent | Select-Object -ExpandProperty Settings`
+  and confirm `RestartCount`/`RestartInterval` are non-zero.
 - **Firewall**: Windows Firewall stays ENABLED (constraint). Do not disable it;
   the agent only needs outbound LAN access to the GMKtec host.
 
@@ -80,7 +98,13 @@ Only `socket.io-client` is required (no native build). On-box install:
    `windows-network-probe.js`); run
    `npm install --omit=dev` in `C:\MBFD\RoomAgent`.
 3. `run-agent.cmd` sets env and launches the agent; a Scheduled Task
-   `MBFD_RoomCacheAgent` runs it as SYSTEM at startup.
+   `MBFD_RoomCacheAgent` runs it as SYSTEM at startup (BootTrigger). The
+   launcher stays on-box because it holds `MC_NODE_TOKEN`; repo automation only
+   repairs the task's restart settings via
+   `install/ensure-cache-agent-supervision.ps1`. Because `cache-agent.js` is
+   fail-fast, that task MUST have a non-zero `RestartCount` +
+   `RestartInterval` — otherwise a single fatal exception silently ends local
+   caching until the next reboot.
 
 Env (read by `cache-agent.js`):
 | Env | Example | Notes |
