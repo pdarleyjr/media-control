@@ -101,12 +101,15 @@ Only `socket.io-client` is required (no native build). On-box install:
    `npm install --omit=dev` in `C:\MBFD\RoomAgent`.
 3. `run-agent.cmd` sets env and launches the agent; a Scheduled Task
    `MBFD_RoomCacheAgent` runs it as SYSTEM at startup (BootTrigger). The
-   launcher stays on-box because it holds `MC_NODE_TOKEN`; repo automation only
-   repairs the task's restart settings via
-   `install/ensure-cache-agent-supervision.ps1`. Because `cache-agent.js` is
-   fail-fast, that task MUST have a non-zero `RestartCount` +
-   `RestartInterval` — otherwise a single fatal exception silently ends local
-   caching until the next reboot.
+   launcher stays on-box because it holds `MC_NODE_TOKEN`;
+   `install/ensure-cache-agent-supervision.ps1` preserves those assignments and
+   creates a verified on-box rollback copy before adding a fixed one-minute
+   child-retry loop. It also repairs the task's non-zero `RestartCount` +
+   `RestartInterval`. Both layers are required: live P3 proof showed Windows can
+   record a child exit code of 1 yet leave this batch task Ready without invoking
+   `RestartOnFailure`. The launcher loop is therefore the proven recovery path,
+   while Task Scheduler remains defense in depth. Neither layer uses exponential
+   backoff.
 
 Env (read by `cache-agent.js`):
 | Env | Example | Notes |

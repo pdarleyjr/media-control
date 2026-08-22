@@ -12,13 +12,14 @@
 #                          (`cache-agent.js`). This script does NOT create or
 #                          re-register it, because the on-box launcher
 #                          `run-agent.cmd` carries the per-node secret in ENV.
-#                          Instead `ensure-cache-agent-supervision.ps1` fixes
-#                          only its SETTINGS so a fail-fast fatal exit is
-#                          recovered on a fixed 60s restart interval.
+#                          Instead `ensure-cache-agent-supervision.ps1` safely
+#                          adds a fixed 60s child-retry loop to that launcher
+#                          (preserving its secret assignments and a verified
+#                          on-box backup) and repairs the task SETTINGS.
 #
-# Restart semantics: Windows Task Scheduler restarts a failed task on a FIXED
-# interval (RestartInterval) for up to RestartCount attempts. There is no
-# exponential backoff at the Task Scheduler layer.
+# Restart semantics: the cache launcher's proven child retry and Windows Task
+# Scheduler's outer restart policy both use a FIXED interval. There is no
+# exponential backoff at either layer.
 #
 # Constraint: does NOT disable the Windows Firewall. Room-agent <-> GMKtec comms
 #  use the LAN path when configured; the on-box SSH inbound rule, if any, is
@@ -70,10 +71,11 @@ New-ManagedTask -Name 'MBFD_NetworkEnforce' -Cmd 'powershell.exe' -Args @('-NoPr
 # The cache agent runs fail-fast (see room-agent/fatal-process.js): a fatal
 # uncaught exception intentionally terminates Node with a nonzero exit code.
 # That is only safe when Task Scheduler restarts it, so establish the
-# supervision settings of the existing MBFD_RoomCacheAgent task WITHOUT touching
-# its secret-bearing launcher, principal, or trigger. A fail-fast agent with no
-# working supervisor is a production defect, so any failure here MUST abort the
-# install/update (fail closed). We deliberately do NOT catch and continue.
+# supervision of the existing MBFD_RoomCacheAgent task WITHOUT replacing its
+# secret-bearing launcher, principal, or trigger. The helper preserves the
+# launcher's existing environment assignments and makes a verified on-box
+# backup before adding the bounded child retry. A fail-fast agent with no working
+# supervisor is a production defect, so any failure here MUST abort the update.
 $cacheSupervision = Join-Path $PSScriptRoot 'ensure-cache-agent-supervision.ps1'
 if (-not (Test-Path -LiteralPath $cacheSupervision)) {
   throw "MBFD_RoomCacheAgent supervision script is missing at '$cacheSupervision'. Refusing to install a fail-fast cache agent with no confirmed supervisor."

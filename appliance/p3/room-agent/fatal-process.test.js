@@ -101,6 +101,28 @@ test('the cache-agent supervision script never destroys the secret-bearing task 
   assert.match(source, /Refusing to continue: task triggers changed/);
 });
 
+test('the cache-agent supervisor repairs the on-box launcher so child failures really retry', () => {
+  const source = fs.readFileSync(supervisionScript, 'utf8');
+  // The live P3 proved that Task Scheduler can record a child exit code of 1
+  // yet leave this long-lived batch task Ready instead of invoking
+  // RestartOnFailure. The secret-bearing launcher therefore needs its own
+  // bounded retry loop while the scheduler settings remain a second layer.
+  assert.match(source, /MBFD_CACHE_AGENT_SUPERVISION_BEGIN/);
+  assert.match(source, /MBFD_CACHE_AGENT_SUPERVISION_END/);
+  assert.match(source, /timeout \/t \$IntervalSeconds \/nobreak >nul/);
+  assert.match(source, /goto MBFD_CACHE_AGENT_SUPERVISE/);
+  assert.match(source, /Expected exactly one cache-agent\.js command/);
+  assert.match(source, /Copy-Item -LiteralPath \$Path -Destination \$backupPath/);
+  assert.match(source, /Get-FileHash -LiteralPath \$backupPath/);
+  assert.match(source, /launcher backup verification failed/i);
+  assert.match(source, /launcher supervision is active/i);
+  assert.match(source, /\$launcherChanged = Ensure-CacheAgentLauncherSupervision/);
+  assert.match(source, /if \(\$launcherChanged\)[\s\S]{0,800}Stop-ScheduledTask/,
+    'a repaired launcher must be activated by restarting only its cache task');
+  assert.match(source, /Start-ScheduledTask -TaskName \$TaskName/);
+  assert.match(source, /launcher repair activation failed/i);
+});
+
 test('the cache-agent supervision script embeds no secret material', () => {
   const source = fs.readFileSync(supervisionScript, 'utf8');
   // Only the *names* of secret-bearing env vars may be mentioned in comments;
