@@ -65,6 +65,12 @@ function createFixtureDb() {
       updated_at INTEGER,
       PRIMARY KEY (target_type, target_id)
     );
+    CREATE TABLE screenshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_id TEXT,
+      filepath TEXT,
+      captured_at INTEGER
+    );
     CREATE TABLE managed_nodes (
       node_id TEXT PRIMARY KEY,
       node_name TEXT,
@@ -261,6 +267,8 @@ test('authoritative snapshot loads workspace and room state without leaking cred
     db.prepare(`INSERT INTO device_groups VALUES
       ('group-a', 'ws-1', 'Independent Podium', '#fff', NULL)`).run();
     db.prepare(`INSERT INTO device_group_members VALUES ('display-a', 'group-a')`).run();
+    db.prepare(`INSERT INTO screenshots (device_id, filepath, captured_at)
+      VALUES ('display-a', 'display-a-latest.jpg', 1700000004)`).run();
     db.prepare(`INSERT INTO command_logs VALUES
       ('cmd-1', 'display', 'display-a', 'play', 1, NULL, 'operator', 1700000000000,
        1, 1700000008000, 'sent', NULL, NULL, '{"device_token":"must-not-leak"}'),
@@ -293,6 +301,7 @@ test('authoritative snapshot loads workspace and room state without leaking cred
     assert.equal(snapshot.confirmedState.displays[0].name, 'Front Left');
     assert.equal(snapshot.confirmedState.displays[0].screenOn, false);
     assert.deepEqual(snapshot.deviceStates.displays.map((display) => display.id), ['display-a']);
+    assert.equal(snapshot.deviceStates.displays[0].screenshotAt, 1700000004);
     assert.deepEqual(snapshot.deviceStates.displays[0].capabilities, {
       content: true,
       screen_share: true,

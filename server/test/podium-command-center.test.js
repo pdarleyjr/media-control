@@ -67,6 +67,45 @@ test('podium library drag and drop preserves the source contract through physica
   assert.match(smoke, /restoreDragDropContent\(db, dragConfig\)/);
 });
 
+test('grouped wall regions accept an exact typed drop instead of falling through to the room', () => {
+  const stage = read('frontend/js/views/media-control/stage.js');
+  const view = read('frontend/js/views/media-control.js');
+  const smoke = read('scripts/live-console-ui-smoke.js');
+
+  assert.match(stage, /class="mc-wall-region[\s\S]*?data-layout-group-id=[\s\S]*?data-wall-id=/);
+  assert.match(view, /\.mc-wall-region\[data-layout-group-id\]\[data-wall-id\]/);
+  assert.match(view, /const group = layoutGroupById\(region\.dataset\.layoutGroupId, region\.dataset\.wallId\)/);
+  assert.match(view, /sendToPhysicalScope\([\s\S]*?group\.member_ids/);
+  assert.match(view, /e\.stopPropagation\(\)/);
+  assert.match(smoke, /\.mc-wall-region\[data-layout-group-id\]/);
+});
+
+test('target switching yields one paint so the selected wall responds before heavy preview work', () => {
+  const view = read('frontend/js/views/media-control.js');
+  assert.match(view, /function scheduleTargetPaint\(/);
+  assert.match(view, /requestAnimationFrame\(/);
+  assert.match(view, /aria-busy/);
+  assert.match(view, /mc-stage-target-loading/);
+});
+
+test('Multiview contains its own mouse, touch, and keyboard content picker', () => {
+  const multiview = read('frontend/js/views/media-control/multiview.js');
+  const css = read('frontend/css/media-control.css');
+  const smoke = read('scripts/live-console-ui-smoke.js');
+
+  assert.match(multiview, /function sourceLibraryHtml\(/);
+  assert.match(multiview, /data-mv-source/);
+  assert.match(multiview, /data-mv-add/);
+  assert.match(multiview, /sourceButton\.addEventListener\('click'/);
+  assert.match(multiview, /sourceButton\.addEventListener\('dragstart'/);
+  assert.match(multiview, /selectedSlot/);
+  assert.match(multiview, /if \(source\.playlist_id\) return/);
+  assert.match(multiview, /Object\.entries\(contentIndex \|\| \{\}\)\.forEach/);
+  assert.match(css, /\.mc-mv-library/);
+  assert.match(css, /\.mc-mv-slot-add\s*\{[^}]*min-height:\s*48px/);
+  assert.match(smoke, /multiview_content_added/);
+});
+
 test('podium touch drag uses pointer events while preserving desktop drag and drop', () => {
   const toolbox = read('frontend/js/views/media-control/toolbox.js');
   const view = read('frontend/js/views/media-control.js');

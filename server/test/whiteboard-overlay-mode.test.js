@@ -57,6 +57,22 @@ test('overlay mode paints over the physical display screenshot and refreshes it 
   assert.match(i18n, /'mc\.wb\.mode_blank': 'Replace Mode'/);
 });
 
+test('whiteboard fits the calibrated target inside a viewport-bounded drawing frame', () => {
+  const board = read('frontend/js/views/media-control/whiteboard.js');
+  const css = read('frontend/css/media-control.css');
+  const smoke = read('scripts/live-console-ui-smoke.js');
+
+  assert.match(board, /class="mc-wb-canvas-viewport"/);
+  assert.match(css, /\.mc-wb-canvas-viewport\s*\{[\s\S]*?display:\s*grid;[\s\S]*?place-items:\s*center/);
+  assert.match(css, /\.mc-wb-canvas-wrap\s*\{[\s\S]*?max-width:\s*100%;[\s\S]*?max-height:\s*100%/);
+  assert.doesNotMatch(css, /\.mc-wb-background\s*\{[^}]*object-fit:\s*fill/);
+  assert.match(board, /class="mc-wb-toolbar-strip"/);
+  assert.match(board, /getComputedStyle\(viewport\)/);
+  assert.match(css, /\.mc-wb-toolbar-strip\s*\{[^}]*overflow-x:\s*auto/);
+  assert.match(css, /\.mc-wb-swatch\s*\{[^}]*min-width:\s*48px;[^}]*min-height:\s*48px/);
+  assert.match(smoke, /aspect_error:\s*modeResult\.aspectError/);
+});
+
 test('whiteboard start fans out to every resolved wall target and carries mode to players', () => {
   const socket = read('server/ws/dashboardSocket.js');
   const player = read('server/player/index.html');
