@@ -755,6 +755,35 @@ test('deck-level Qwen planning repairs a required-shape response with a malforme
   assert.equal(calls, 2);
 });
 
+test('deck-level Qwen planning canonicalizes section aliases when slide directives are already canonical', async (t) => {
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ message: { content: JSON.stringify({
+      narrative_title: 'Pump operations',
+      sections: [{
+        section_title: 'Command and pump operations',
+        slide_indices: [0],
+        narrative_intent: 'Establish command priorities.',
+      }],
+      slide_directives: [{
+        source_slide_number: 1,
+        intent: 'Establish command without changing source facts.',
+        layout_family: 'STANDARD_PARAGRAPH',
+        condensation: 'none',
+      }],
+      plan_notes: 'Semantic plan only.',
+    }) } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  t.after(() => { global.fetch = originalFetch; });
+
+  const plan = await ai.planDeckToV2({ source: { filename: 'deck.pptx' }, slides: [SOURCE] }, { wallProfile: PROFILE_IDS.TWO_DISPLAY });
+  assert.equal(calls, 1);
+  assert.deepEqual(plan.sections, [{ title: 'Pump operations', source_slide_numbers: [1] }]);
+  assert.equal(plan.slide_directives[0].source_slide_number, 1);
+});
+
 test('deck-level Qwen planning canonicalizes the live semantic aliases without retaining extra model fields', async (t) => {
   const originalFetch = global.fetch;
   let calls = 0;
