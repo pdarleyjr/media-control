@@ -65,9 +65,11 @@ is by the owner; nothing here commits a real token.
   supervisor's job. Windows Task Scheduler restarts a failed task on a **fixed
   interval** (`RestartInterval`, minimum one minute) for up to `RestartCount`
   attempts — there is **no exponential backoff** at the Task Scheduler layer.
-  The managed tasks use a fixed **60s** restart interval with 999 attempts and
-  `ExecutionTimeLimit = PT0S` (never force-terminate a healthy long-running
-  agent; the Task Scheduler default of PT72H would kill it after three days).
+  The managed tasks use a fixed **60s** restart interval with up to 255 restart
+  attempts (`RestartCount` is an unsigned byte in the Task Scheduler schema, so
+  255 is the maximum) and `ExecutionTimeLimit = PT0S` (never force-terminate a
+  healthy long-running agent; the Task Scheduler default of PT72H would kill it
+  after three days).
   Socket.IO reconnection *inside* `agent.js` / `cache-agent.js` does use
   exponential backoff (`reconnectionDelayMax`) — that is a different layer and
   only covers a reachable process, not a dead one. Verify supervision with

@@ -73,7 +73,7 @@ test('the cache-agent supervision script enables fixed-interval restart on failu
   assert.match(source, /-RestartCount \$RestartCount/);
   assert.match(source, /-RestartInterval \(New-TimeSpan -Seconds \$RestartIntervalSeconds\)/);
   assert.match(source, /\[int\]\$RestartIntervalSeconds = 60/, 'default restart interval must be 60 seconds');
-  assert.match(source, /\[int\]\$RestartCount = 999/, 'default restart attempts must survive realistic faults');
+  assert.match(source, /\[int\]\$RestartCount = 255/, 'default restart attempts must be the schema maximum (255)');
   // A healthy long-running agent must never be force-terminated by the default
   // PT72H execution time limit.
   assert.match(source, /-ExecutionTimeLimit \(\[TimeSpan\]::Zero\)/);

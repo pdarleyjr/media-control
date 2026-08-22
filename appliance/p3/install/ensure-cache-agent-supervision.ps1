@@ -5,9 +5,11 @@ param(
   # minimum accepted interval is one minute; 60s is the proven value already
   # used by the other MBFD watchdog tasks.
   [int]$RestartIntervalSeconds = 60,
-  # Enough attempts to ride out realistic transient faults (e.g. the observed
-  # `uv_interface_addresses` Windows quirk) across a multi-day classroom run.
-  [int]$RestartCount = 999,
+  # Task Scheduler's RestartOnFailure Count is an unsigned byte: valid range is
+  # 1..255. 255 (the schema maximum) is more than enough to ride out realistic
+  # transient faults (e.g. the observed `uv_interface_addresses` Windows quirk)
+  # across a multi-day classroom run without ever silently ending local caching.
+  [int]$RestartCount = 255,
   # Fall back to creating the task only when the trusted launcher exists.
   [string]$LauncherPath = 'C:\MBFD\RoomAgent\run-agent.cmd',
   [switch]$WhatIfOnly

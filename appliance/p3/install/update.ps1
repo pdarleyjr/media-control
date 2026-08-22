@@ -56,7 +56,7 @@ function New-ManagedTask([string]$Name, [string]$Cmd, [string[]]$Args, [int]$Res
   $trig = New-ScheduledTaskTrigger -AtLogOn
   # ExecutionTimeLimit 0 (PT0S) so a healthy long-running watchdog is never
   # force-terminated; the Task Scheduler default is PT72H.
-  $settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Seconds $RestartSec) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+  $settings = New-ScheduledTaskSettingsSet -RestartCount 255 -RestartInterval (New-TimeSpan -Seconds $RestartSec) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
   $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel $RunLevel
   Register-ScheduledTask -TaskName $Name -Action $action -Trigger $trig -Settings $settings -Principal $principal -Force | Out-Null
   Start-ScheduledTask -TaskName $Name
@@ -69,21 +69,21 @@ New-ManagedTask -Name 'MBFD_NetworkEnforce' -Cmd 'powershell.exe' -Args @('-NoPr
 
 # The cache agent runs fail-fast (see room-agent/fatal-process.js): a fatal
 # uncaught exception intentionally terminates Node with a nonzero exit code.
-# That is only safe when Task Scheduler restarts it, so repair the supervision
-# settings of the existing MBFD_RoomCacheAgent task without touching its
-# secret-bearing launcher, principal, or trigger.
+# That is only safe when Task Scheduler restarts it, so establish the
+# supervision settings of the existing MBFD_RoomCacheAgent task WITHOUT touching
+# its secret-bearing launcher, principal, or trigger. A fail-fast agent with no
+# working supervisor is a production defect, so any failure here MUST abort the
+# install/update (fail closed). We deliberately do NOT catch and continue.
 $cacheSupervision = Join-Path $PSScriptRoot 'ensure-cache-agent-supervision.ps1'
-if (Test-Path -LiteralPath $cacheSupervision) {
-  Write-Host 'ensuring MBFD_RoomCacheAgent restart-on-failure supervision...'
-  try {
-    & $cacheSupervision -TaskName 'MBFD_RoomCacheAgent' -RestartIntervalSeconds 60 -RestartCount 999
-  } catch {
-    Write-Warning "MBFD_RoomCacheAgent supervision could not be applied: $($_.Exception.Message)"
-    Write-Warning 'Fix this before relying on the fail-fast cache agent — an unsupervised fatal exit will NOT be recovered.'
-  }
-} else {
-  Write-Warning "missing $cacheSupervision — MBFD_RoomCacheAgent supervision was NOT verified."
+if (-not (Test-Path -LiteralPath $cacheSupervision)) {
+  throw "MBFD_RoomCacheAgent supervision script is missing at '$cacheSupervision'. Refusing to install a fail-fast cache agent with no confirmed supervisor."
 }
+Write-Host 'establishing MBFD_RoomCacheAgent restart-on-failure supervision...'
+& $cacheSupervision -TaskName 'MBFD_RoomCacheAgent' -RestartIntervalSeconds 60 -RestartCount 255
+# If the line above returns, supervision is verified active. If it throws
+# (missing+uncreatable task, invalid settings, or post-apply verification
+# failure) the script terminates here with a non-zero exit and the later
+# "install/update complete" message is never printed.
 
 Write-Host 'install/update complete.'
 Write-Host 'Firewall note: Windows Firewall is left ENABLED (constraint). The agent reaches GMKtec over the LAN URL when configured; no inbound rule is added.'
