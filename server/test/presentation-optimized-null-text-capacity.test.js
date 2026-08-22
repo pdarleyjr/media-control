@@ -242,11 +242,11 @@ test('G) regression: forbidden geometry, media-region, and source-accounting gua
   assert.match(String(ai.validateConversionPlan(omit, source, PID_TWO, 'instructor_optimized')), /omits source content/);
 });
 
-test('H) end-to-end: mapSlideToV2 refuses to compile a null-text label overflow and fails deterministically', async (t) => {
+test('H) end-to-end: mapSlideToV2 refuses to split a null-text paragraph through a label region', async (t) => {
   const originalFetch = global.fetch;
   const badRaw = comparisonPlan(PID_TWO, 'instructor_optimized', 'TV1_A_LABEL', 'TV2_B_LABEL', 'TV1_A_LABEL', 'TV2_B_LABEL');
   badRaw.target_slides[0].region_assignments = [
-    assignment('TV1_A_LABEL', ['a-body'], 'text'),
+    assignment('TV1_A_LABEL', ['a-body'], 'paragraph'),
     assignment('TV1_A_BODY', ['a-head'], 'text'),
     assignment('TV2_B_LABEL', ['b-head'], 'text'),
     assignment('TV2_B_BODY', ['b-body'], 'paragraph'),
@@ -256,5 +256,91 @@ test('H) end-to-end: mapSlideToV2 refuses to compile a null-text label overflow 
   await assert.rejects(
     ai.mapSlideToV2(comparisonSource(), { wallProfile: PID_TWO, mode: 'instructor_optimized' }),
     /exceeds deterministic capacity/
+  );
+});
+
+test('I) bounded continuation normalization rejects content it cannot preserve in full', async (t) => {
+  const originalFetch = global.fetch;
+  const hugeText = 'Operational detail '.repeat(5000).trim();
+  const source = {
+    source_slide_number: 1,
+    title: '',
+    elements: [{ id: 'body', kind: 'paragraph', text: hugeText }],
+    speaker_notes: '', relationships: [], warnings: [],
+  };
+  const rawPlan = {
+    source_slide_number: 1,
+    wall_mode: getProfile(PID_TWO).source_key,
+    transfer_mode: 'instructor_optimized',
+    layout_id: 'STANDARD_PARAGRAPH',
+    target_slides: [{
+      layout_id: 'STANDARD_PARAGRAPH',
+      region_assignments: [assignment('TV1_PARAGRAPH', ['body'], 'paragraph')],
+    }],
+    media_actions: [],
+    source_accounting: { accounted_source_refs: ['body'], unaccounted_source_refs: [] },
+    requires_review: false,
+    review_reasons: [],
+    confidence: 1,
+  };
+  global.fetch = async () => new Response(JSON.stringify({ message: { content: JSON.stringify(rawPlan) } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  t.after(() => { global.fetch = originalFetch; });
+  await assert.rejects(
+    ai.mapSlideToV2(source, { wallProfile: PID_TWO, mode: 'instructor_optimized' }),
+    /exceeds deterministic capacity/
+  );
+});
+
+test('J) an invalid paragraph region receives the bounded repair attempt instead of crashing normalization', async (t) => {
+  const originalFetch = global.fetch;
+  const badPlan = comparisonPlan(PID_TWO, 'instructor_optimized', 'TV1_A_BODY', 'TV2_B_BODY', 'TV1_A_LABEL', 'TV2_B_LABEL');
+  badPlan.target_slides[0].region_assignments[1].region_id = 'NOT_A_REAL_REGION';
+  const repairedPlan = comparisonPlan(PID_TWO, 'instructor_optimized', 'TV1_A_BODY', 'TV2_B_BODY', 'TV1_A_LABEL', 'TV2_B_LABEL');
+  const responses = [badPlan, repairedPlan];
+  global.fetch = async () => new Response(JSON.stringify({ message: { content: JSON.stringify(responses.shift()) } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  t.after(() => { global.fetch = originalFetch; });
+  const mapping = await ai.mapSlideToV2(comparisonSource(), { wallProfile: PID_TWO, mode: 'instructor_optimized' });
+  assert.equal(mapping.template_id, 'COMPARISON');
+  assert.equal(mapping.raw_plan.target_slides[0].region_assignments[1].region_id, 'TV1_A_BODY');
+});
+
+test('K) an explicit empty string cannot falsely account for non-empty source text', () => {
+  const plan = comparisonPlan(PID_TWO, 'instructor_optimized', 'TV1_A_BODY', 'TV2_B_BODY', 'TV1_A_LABEL', 'TV2_B_LABEL');
+  plan.target_slides[0].region_assignments[1].text = '';
+  assert.match(
+    String(ai.validateConversionPlan(plan, comparisonSource(), PID_TWO, 'instructor_optimized')),
+    /renders no source text for TV1_A_BODY/
+  );
+});
+
+test('L) table capacity validation measures the compiled rows even when assignment.text is empty', () => {
+  const rows = Array.from({ length: 80 }, (_, index) => [`Row ${index}`, 'Operational data '.repeat(20)]);
+  const source = {
+    source_slide_number: 1,
+    title: '',
+    elements: [{ id: 'table', kind: 'table', rows }],
+    speaker_notes: '', relationships: [], warnings: [],
+  };
+  const plan = {
+    source_slide_number: 1,
+    wall_mode: getProfile(PID_TWO).source_key,
+    transfer_mode: 'instructor_optimized',
+    layout_id: 'TABLE_DATA',
+    target_slides: [{
+      layout_id: 'TABLE_DATA',
+      region_assignments: [{
+        region_id: 'TV1_TABLE_TEXT', source_refs: ['table'], content_type: 'table',
+        transform: 'native_transfer', text: '', media_id: null, fit: null, preserve_hyperlink: true,
+      }],
+    }],
+    media_actions: [],
+    source_accounting: { accounted_source_refs: ['table'], unaccounted_source_refs: [] },
+    requires_review: false,
+    review_reasons: [],
+    confidence: 1,
+  };
+  assert.match(
+    String(ai.validateConversionPlan(plan, source, PID_TWO, 'instructor_optimized')),
+    /exceeds deterministic capacity for TV1_TABLE_TEXT/
   );
 });

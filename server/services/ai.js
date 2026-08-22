@@ -166,6 +166,22 @@ function sourceTextForAssignment(slide, assignment) {
   }).filter(Boolean).join('\n');
 }
 
+function projectedTextForAssignment(slide, assignment) {
+  const sourceElements = (assignment?.source_refs || []).flatMap((ref) => (
+    elementsOfSlide(slide).filter((element) => String(element.id) === String(ref))
+  ));
+  const table = sourceElements.find((element) => element.kind === 'table' && Array.isArray(element.rows));
+  if (assignment?.content_type === 'table' && table) {
+    return table.rows.flat().map(String).join(' ');
+  }
+  if (assignment?.text != null) return String(assignment.text);
+  return sourceTextForAssignment(slide, assignment);
+}
+
+function isShortTextRegion(regionId) {
+  return /(?:^|_)(?:TITLE|SUBTITLE|LABEL|SLIDE_LABEL|CAPTION)$/.test(String(regionId || ''));
+}
+
 function normalizeConversionPlan(plan, slide, profileId) {
   if (!plan || typeof plan !== 'object' || Array.isArray(plan) || findForbiddenGeometry(plan)) return plan;
   const targetSlides = Array.isArray(plan.target_slides) ? plan.target_slides : [];
@@ -254,7 +270,7 @@ function normalizeConversionPlan(plan, slide, profileId) {
   const occurrencesByRef = new Map();
   for (const target of normalized.target_slides) {
     for (const assignment of target.region_assignments) {
-      if (assignment.source_refs.length !== 1 || assignment.text || assignment.content_type !== 'paragraph') continue;
+      if (assignment.source_refs.length !== 1 || assignment.text != null || assignment.content_type !== 'paragraph') continue;
       const ref = assignment.source_refs[0];
       if (!occurrencesByRef.has(ref)) occurrencesByRef.set(ref, []);
       occurrencesByRef.get(ref).push({ assignment, target });
@@ -271,11 +287,25 @@ function normalizeConversionPlan(plan, slide, profileId) {
   for (const [ref, occurrences] of occurrencesByRef.entries()) {
     const sourceText = String(elementsById.get(ref)?.text || '');
     if (!sourceText || !profileId || !continuationLayout || continuationBodyRegions.length === 0) continue;
-    const capacities = occurrences.map(({ target, assignment }) => estimatedCapacity(
-      getLayout(profileId, target.layout_id).named_objects[assignment.region_id].bbox_px,
-      styleForObject(assignment.region_id)
-    )).filter((capacity) => capacity > 0);
+    const originalTargetCount = normalized.target_slides.length;
+    const regions = occurrences.map(({ target, assignment }) => {
+      if (!listLayoutIds(profileId).includes(target.layout_id)) return null;
+      const object = getLayout(profileId, target.layout_id).named_objects[assignment.region_id];
+      if (!object?.bbox_px) return null;
+      return {
+        assignment,
+        capacity: estimatedCapacity(object.bbox_px, styleForObject(assignment.region_id)),
+      };
+    });
+    // Invalid model-owned layout/region names belong in deterministic validation and
+    // the bounded repair loop. Normalization must never turn them into a TypeError.
+    if (regions.some((entry) => !entry)) continue;
+    const capacities = regions.map((entry) => entry.capacity).filter((capacity) => capacity > 0);
     if (!capacities.length) continue;
+    // Short semantic regions are not continuation fragments. Reject long prose routed
+    // to one so the repair/canonicalization path can place it in a body region.
+    if (regions.some(({ assignment, capacity }) => isShortTextRegion(assignment.region_id)
+      && sourceText.length > capacity)) continue;
     let minimumCapacity = Math.min(...capacities);
     let chunks = splitText(sourceText, minimumCapacity);
     if (chunks.length <= 1) continue;
@@ -317,8 +347,22 @@ function normalizeConversionPlan(plan, slide, profileId) {
       )));
       chunks = splitText(sourceText, minimumCapacity);
     }
-    occurrences.forEach(({ assignment }, index) => {
-      assignment.text = chunks[index] || '';
+    // Never assign only the prefix of a source element when the bounded continuation
+    // budget is exhausted. Leave the original hydrated assignment intact so validation
+    // rejects it and the normal repair/fallback path can preserve all source content.
+    if (chunks.length > occurrences.length) {
+      normalized.target_slides.splice(originalTargetCount);
+      continue;
+    }
+    for (let index = occurrences.length - 1; index >= chunks.length; index -= 1) {
+      const { assignment, target } = occurrences[index];
+      target.region_assignments = target.region_assignments.filter((candidate) => candidate !== assignment);
+    }
+    normalized.target_slides = normalized.target_slides.filter((target, index) => (
+      index < originalTargetCount || target.region_assignments.some((assignment) => /_BODY$/.test(assignment.region_id))
+    ));
+    occurrences.slice(0, chunks.length).forEach(({ assignment }, index) => {
+      assignment.text = chunks[index];
       assignment.transform = 'split';
     });
   }
@@ -497,9 +541,10 @@ function validateConversionPlan(plan, slide, profileId, mode) {
       const rendersMediaObject = (assignment.media_id || ['image', 'video', 'audio'].includes(assignment.content_type) || isMediaRegion)
         && assignment.source_refs.some((ref) => sourceMediaRefs.has(String(ref)));
       if (!rendersMediaObject && regionObject && regionObject.bbox_px) {
-        const projectedText = (assignment.text != null)
-          ? String(assignment.text)
-          : sourceTextForAssignment(slide, assignment);
+        const projectedText = projectedTextForAssignment(slide, assignment);
+        if (!projectedText && sourceTextForAssignment(slide, assignment)) {
+          return `region assignment renders no source text for ${assignment.region_id}`;
+        }
         if (projectedText && projectedText.length > estimatedCapacity(regionObject.bbox_px, styleForObject(assignment.region_id))) {
           return `region assignment text exceeds deterministic capacity for ${assignment.region_id}`;
         }
@@ -507,7 +552,7 @@ function validateConversionPlan(plan, slide, profileId, mode) {
     }
     const occupiedAssignments = target.region_assignments.filter((assignment) => (
       assignment.source_refs.some((ref) => sourceMediaRefs.has(String(ref)))
-      || String(assignment.text || sourceTextForAssignment(slide, assignment)).trim()
+      || String(projectedTextForAssignment(slide, assignment)).trim()
     ));
     for (let index = 0; index < occupiedAssignments.length; index += 1) {
       const first = layout.named_objects[occupiedAssignments[index].region_id]?.bbox_px;
@@ -559,7 +604,7 @@ function validateConversionPlan(plan, slide, profileId, mode) {
     const technicalValues = elementsOfSlide(slide).flatMap((element) => [element.text, ...(element.items || []), ...(element.rows || []).flat()])
       .flatMap((text) => String(text || '').match(/\b\d+(?:\.\d+)?(?:%|\s?(?:psi|gpm|ft|in|mph|minutes?|seconds?))?\b/gi) || []);
     const projected = (plan.target_slides || []).flatMap((target) => target.region_assignments || [])
-      .map((assignment) => String(assignment.text || sourceTextForAssignment(slide, assignment))).join(' ');
+      .map((assignment) => String(projectedTextForAssignment(slide, assignment))).join(' ');
     if (technicalValues.some((value) => !projected.includes(value))) return 'optimized plan modified or omitted a technical value';
   }
   if (typeof plan.requires_review !== 'boolean') return 'requires_review missing';
@@ -695,7 +740,7 @@ function planToMapping(plan, slide) {
   for (const assignment of first.region_assignments || []) {
     assignments[assignment.region_id] = assignment.media_id
       ? { type: assignment.content_type, asset_ref: assignment.media_id, fit: assignment.fit || 'contain' }
-      : String(assignment.text || sourceTextForAssignment(slide, assignment));
+      : String(projectedTextForAssignment(slide, assignment));
   }
   return {
     template_id: first.layout_id || plan.layout_id,
