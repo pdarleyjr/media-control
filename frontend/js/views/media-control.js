@@ -2104,7 +2104,21 @@ function handleTargetChange(tgt) {
   } catch { /* session storage is best effort */ }
   activePreviewCursor = 0;
   syncSocketTarget(activeControlTarget || activeTarget);
-  scheduleTargetPaint(tgt);
+  if (restoringTarget) {
+    // Startup preference reconciliation is not an operator-requested switch.
+    // Paint it immediately so the loading veil cannot race visual readiness or
+    // obscure an already-rendered wall while the preference request settles.
+    targetPaintGeneration += 1;
+    if (targetPaintFrame != null) {
+      cancelAnimationFrame(targetPaintFrame);
+      targetPaintFrame = null;
+    }
+    stageEl()?.querySelector('.mc-stage-target-loading')?.remove();
+    stageEl()?.removeAttribute('aria-busy');
+    paintStage();
+  } else {
+    scheduleTargetPaint(tgt);
+  }
   paintSummary();
   paintChips();
   if (transportApi && transportApi.repaint) transportApi.repaint();

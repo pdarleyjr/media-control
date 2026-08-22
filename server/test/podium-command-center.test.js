@@ -86,6 +86,7 @@ test('target switching yields one paint so the selected wall responds before hea
   assert.match(view, /requestAnimationFrame\(/);
   assert.match(view, /aria-busy/);
   assert.match(view, /mc-stage-target-loading/);
+  assert.match(view, /if \(restoringTarget\) \{[\s\S]*?paintStage\(\);[\s\S]*?\} else \{[\s\S]*?scheduleTargetPaint\(tgt\);/);
 });
 
 test('Multiview contains its own mouse, touch, and keyboard content picker', () => {

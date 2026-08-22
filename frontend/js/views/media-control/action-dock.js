@@ -65,7 +65,7 @@ export function mountActionDock(hostEl, opts = {}) {
       </div>
       <button type="button" class="mc-dock-btn mc-dock-default" data-dock="whiteboard">${esc(t('mc.wb.dock_open'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-default" data-dock="share">${esc(t('mc.cc.dock.share'))}</button>
-      <button type="button" class="mc-dock-btn mc-dock-default" data-dock="record-toggle" id="mc-dock-record-btn">${esc('Start Recording')}</button>
+      <button type="button" class="mc-dock-btn mc-dock-default" data-dock="record-toggle" id="mc-dock-record-btn" disabled aria-disabled="true" title="${esc(t('mc.cc.record.status_unavailable'))}">${esc('Start Recording')}</button>
       <button type="button" class="mc-dock-btn mc-dock-live" data-dock="start-live">${esc(t('mc.cc.dock.start_live'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-danger" data-dock="stop-live" hidden>${esc(t('mc.cc.dock.stop_live'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-add" data-dock="add-display" aria-label="${esc(t('mc.cc.dock.add_display'))}">

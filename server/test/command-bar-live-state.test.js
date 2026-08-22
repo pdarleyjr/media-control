@@ -13,6 +13,11 @@ test('action dock live stream controls follow the authoritative publisher state'
   assert.match(source, /status\?\.publisher\?\.active === true/);
   assert.match(source, /startBtn\.hidden = onAir/);
   assert.match(source, /stopBtn\.hidden = !onAir/);
+  assert.match(
+    source,
+    /data-dock="record-toggle" id="mc-dock-record-btn" disabled aria-disabled="true"/,
+    'recording must fail closed before the first camera-edge status response',
+  );
 });
 
 test('operator starts in one click and controls only the three fixed compositions', () => {
