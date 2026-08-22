@@ -164,35 +164,37 @@ export function mount(containerEl, options) {
       <div class="mc-wb-panel">
         <header class="mc-wb-bar">
           <h2 class="mc-wb-title">${esc(t('mc.wb.title'))}</h2>
-          <div class="mc-wb-tools" role="group" aria-label="${esc(t('mc.wb.tools'))}">
-            <button type="button" class="mc-wb-tool" data-tool="pen"      aria-pressed="true">${esc(toolLabel('pen'))}</button>
-            <button type="button" class="mc-wb-tool" data-tool="highlighter">${esc(toolLabel('highlighter'))}</button>
-            <button type="button" class="mc-wb-tool" data-tool="eraser">${esc(toolLabel('eraser'))}</button>
-            <button type="button" class="mc-wb-tool" data-tool="text">${esc(toolLabel('text'))}</button>
-            <button type="button" class="mc-wb-tool" data-tool="line">${esc(toolLabel('line'))}</button>
-            <button type="button" class="mc-wb-tool" data-tool="rect">${esc(toolLabel('rect'))}</button>
-            <button type="button" class="mc-wb-tool" data-tool="ellipse">${esc(toolLabel('ellipse'))}</button>
-          </div>
-          <div class="mc-wb-swatches" role="group" aria-label="${esc(t('mc.wb.color'))}">
-            ${COLORS.map(c => `<button type="button" class="mc-wb-swatch" data-color="${esc(c)}" style="background:${esc(c)}" aria-label="${esc(c)}"></button>`).join('')}
-            <label class="mc-wb-hex">
-              <span>${esc(t('mc.wb.color_hex'))}</span>
-              <input type="text" id="mc-wb-hex" value="${esc(currentColor)}" maxlength="9" spellcheck="false" />
+          <div class="mc-wb-toolbar-strip">
+            <div class="mc-wb-tools" role="group" aria-label="${esc(t('mc.wb.tools'))}">
+              <button type="button" class="mc-wb-tool" data-tool="pen"      aria-pressed="true">${esc(toolLabel('pen'))}</button>
+              <button type="button" class="mc-wb-tool" data-tool="highlighter">${esc(toolLabel('highlighter'))}</button>
+              <button type="button" class="mc-wb-tool" data-tool="eraser">${esc(toolLabel('eraser'))}</button>
+              <button type="button" class="mc-wb-tool" data-tool="text">${esc(toolLabel('text'))}</button>
+              <button type="button" class="mc-wb-tool" data-tool="line">${esc(toolLabel('line'))}</button>
+              <button type="button" class="mc-wb-tool" data-tool="rect">${esc(toolLabel('rect'))}</button>
+              <button type="button" class="mc-wb-tool" data-tool="ellipse">${esc(toolLabel('ellipse'))}</button>
+            </div>
+            <div class="mc-wb-swatches" role="group" aria-label="${esc(t('mc.wb.color'))}">
+              ${COLORS.map(c => `<button type="button" class="mc-wb-swatch" data-color="${esc(c)}" style="background:${esc(c)}" aria-label="${esc(c)}"></button>`).join('')}
+              <label class="mc-wb-hex">
+                <span>${esc(t('mc.wb.color_hex'))}</span>
+                <input type="text" id="mc-wb-hex" value="${esc(currentColor)}" maxlength="9" spellcheck="false" />
+              </label>
+            </div>
+            <label class="mc-wb-size">
+              <span>${esc(t('mc.wb.size'))}</span>
+              <input type="range" id="mc-wb-size" min="1" max="96" value="${currentSize}" />
             </label>
+            <div class="mc-wb-actions" role="group" aria-label="${esc(t('mc.wb.actions'))}">
+              <button type="button" class="mc-wb-btn" id="mc-wb-undo" title="${esc(t('mc.wb.undo'))}">${esc(t('mc.wb.undo'))}</button>
+              <button type="button" class="mc-wb-btn" id="mc-wb-redo" title="${esc(t('mc.wb.redo'))}">${esc(t('mc.wb.redo'))}</button>
+              <button type="button" class="mc-wb-btn" id="mc-wb-clear" title="${esc(t('mc.wb.clear'))}">${esc(t('mc.wb.clear'))}</button>
+              <button type="button" class="mc-wb-btn" id="mc-wb-png" title="${esc(t('mc.wb.export_png'))}">${esc(t('mc.wb.export_png'))}</button>
+              <button type="button" class="mc-wb-btn mc-wb-coming" disabled aria-disabled="true"
+                title="${esc(t('mc.wb.coming_soon'))}" id="mc-wb-pdf">${esc(t('mc.wb.export_pdf'))}</button>
+            </div>
           </div>
-          <label class="mc-wb-size">
-            <span>${esc(t('mc.wb.size'))}</span>
-            <input type="range" id="mc-wb-size" min="1" max="96" value="${currentSize}" />
-          </label>
-          <div class="mc-wb-actions" role="group" aria-label="${esc(t('mc.wb.actions'))}">
-            <button type="button" class="mc-wb-btn" id="mc-wb-undo" title="${esc(t('mc.wb.undo'))}">${esc(t('mc.wb.undo'))}</button>
-            <button type="button" class="mc-wb-btn" id="mc-wb-redo" title="${esc(t('mc.wb.redo'))}">${esc(t('mc.wb.redo'))}</button>
-            <button type="button" class="mc-wb-btn" id="mc-wb-clear" title="${esc(t('mc.wb.clear'))}">${esc(t('mc.wb.clear'))}</button>
-            <button type="button" class="mc-wb-btn" id="mc-wb-png" title="${esc(t('mc.wb.export_png'))}">${esc(t('mc.wb.export_png'))}</button>
-            <button type="button" class="mc-wb-btn mc-wb-coming" disabled aria-disabled="true"
-              title="${esc(t('mc.wb.coming_soon'))}" id="mc-wb-pdf">${esc(t('mc.wb.export_pdf'))}</button>
-            <button type="button" class="mc-wb-btn mc-wb-close" id="mc-wb-close" title="${esc(t('mc.wb.close'))}">${esc(t('mc.wb.close'))}</button>
-          </div>
+          <button type="button" class="mc-wb-btn mc-wb-close" id="mc-wb-close" title="${esc(t('mc.wb.close'))}">${esc(t('mc.wb.close'))}</button>
         </header>
         <div class="mc-wb-scope">
           <label for="mc-wb-target-select">${esc(t('mc.wb.target'))}</label>
@@ -205,9 +207,11 @@ export function mount(containerEl, options) {
           </div>
           <span class="mc-wb-live-truth">${esc(t('mc.wb.live_truth'))}</span>
         </div>
-        <div class="mc-wb-canvas-wrap" id="mc-wb-canvas-wrap">
-          <div class="mc-wb-background-grid" aria-hidden="true"></div>
-          <canvas id="mc-wb-canvas" tabindex="0"></canvas>
+        <div class="mc-wb-canvas-viewport">
+          <div class="mc-wb-canvas-wrap" id="mc-wb-canvas-wrap">
+            <div class="mc-wb-background-grid" aria-hidden="true"></div>
+            <canvas id="mc-wb-canvas" tabindex="0"></canvas>
+          </div>
         </div>
       </div>`;
 
@@ -397,7 +401,34 @@ export function mount(containerEl, options) {
     const width = Math.max(1, Number(target && target.width) || 1920);
     const height = Math.max(1, Number(target && target.height) || 1080);
     surface.style.aspectRatio = `${width} / ${height}`;
-    requestAnimationFrame(() => sizeCanvas());
+    requestAnimationFrame(() => fitCanvasToViewport());
+  }
+
+  function fitCanvasToViewport() {
+    const surface = wrap && wrap.querySelector('.mc-wb-canvas-wrap');
+    const viewport = surface?.parentElement;
+    if (!surface || !viewport) return;
+    const width = Math.max(1, Number(target && target.width) || 1920);
+    const height = Math.max(1, Number(target && target.height) || 1080);
+    const bounds = viewport.getBoundingClientRect();
+    const viewportStyle = getComputedStyle(viewport);
+    const horizontalPadding = (parseFloat(viewportStyle.paddingLeft) || 0)
+      + (parseFloat(viewportStyle.paddingRight) || 0);
+    const verticalPadding = (parseFloat(viewportStyle.paddingTop) || 0)
+      + (parseFloat(viewportStyle.paddingBottom) || 0);
+    const availableWidth = Math.max(1, bounds.width - horizontalPadding);
+    const availableHeight = Math.max(1, bounds.height - verticalPadding);
+    if (availableWidth <= 0 || availableHeight <= 0) return;
+    const ratio = width / height;
+    let fittedWidth = availableWidth;
+    let fittedHeight = fittedWidth / ratio;
+    if (fittedHeight > availableHeight) {
+      fittedHeight = availableHeight;
+      fittedWidth = fittedHeight * ratio;
+    }
+    surface.style.width = `${Math.max(1, Math.floor(fittedWidth))}px`;
+    surface.style.height = `${Math.max(1, Math.floor(fittedHeight))}px`;
+    sizeCanvas();
   }
 
   function renderCompositeBackground() {
@@ -959,7 +990,7 @@ export function mount(containerEl, options) {
   // Listeners
   // ------------------------------------------------------------------
   function attachAll() {
-    bound.resize = () => sizeCanvas();
+    bound.resize = () => fitCanvasToViewport();
     bound.visibility = () => {
       if (document.visibilityState === 'hidden') stopScreenshotRefresh();
       else startScreenshotRefresh();

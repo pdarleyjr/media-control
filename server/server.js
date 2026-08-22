@@ -753,9 +753,15 @@ app.get('/api/devices/:id/screenshot', (req, res) => {
     return res.send(buffer);
   }
   const screenshot = sdb.prepare('SELECT * FROM screenshots WHERE device_id = ? ORDER BY captured_at DESC LIMIT 1').get(req.params.id);
-  if (!screenshot) return res.status(404).json({ error: 'No screenshot available' });
+  // A paired display may not have uploaded its first screenshot yet. That is a
+  // normal empty state, not a broken API request; returning 404 makes Chromium
+  // emit a console error every time the room view is opened.
+  if (!screenshot) return res.set('Cache-Control', 'no-store').status(204).end();
   const safePath = path.resolve(config.screenshotsDir, path.basename(screenshot.filepath));
   if (!safePath.startsWith(path.resolve(config.screenshotsDir))) return res.status(403).json({ error: 'Invalid path' });
+  // Database cleanup and interrupted writes can briefly leave a stale row.
+  // Treat that the same as an authorized display with no preview available.
+  if (!fs.existsSync(safePath)) return res.set('Cache-Control', 'no-store').status(204).end();
   res.sendFile(safePath);
 });
 

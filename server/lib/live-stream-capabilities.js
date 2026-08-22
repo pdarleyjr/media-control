@@ -22,6 +22,7 @@ const ERROR_CODES = Object.freeze({
   PEERTUBE_NOT_CONFIGURED: 'PEERTUBE_NOT_CONFIGURED',
   PEERTUBE_UNREACHABLE: 'PEERTUBE_UNREACHABLE',
   OBS_UNAVAILABLE: 'OBS_UNAVAILABLE',
+  PUBLISHER_UNAVAILABLE: 'PUBLISHER_UNAVAILABLE',
   MANAGED_RECEIVER_OFFLINE: 'MANAGED_RECEIVER_OFFLINE',
   PROGRAM_NOT_PREPARED: 'PROGRAM_NOT_PREPARED',
   PROGRAM_SCENE_UNSAFE: 'PROGRAM_SCENE_UNSAFE',
@@ -322,10 +323,25 @@ function startGateFailure(capabilities, { directorMode, confirmAutoCanary }) {
       httpStatus: 503,
     };
   }
-  if (!capabilities.obs_available) {
+  if (capabilities.publisher_mode === 'direct_camera' && capabilities.publisher_available === false) {
+    return {
+      code: ERROR_CODES.PUBLISHER_UNAVAILABLE,
+      error: 'Camera and room-microphone program source is unavailable',
+      httpStatus: 503,
+    };
+  }
+  if (capabilities.publisher_mode === 'fixed_compositor' && capabilities.obs_available === false) {
     return {
       code: ERROR_CODES.OBS_UNAVAILABLE,
-      error: 'OBS is not available through the AI Director',
+      error: 'OBS fixed compositor is unavailable',
+      httpStatus: 503,
+    };
+  }
+  // Rolling compatibility for older capability payloads without a publisher mode.
+  if (!capabilities.publisher_mode && capabilities.obs_available === false) {
+    return {
+      code: ERROR_CODES.OBS_UNAVAILABLE,
+      error: 'OBS is unavailable',
       httpStatus: 503,
     };
   }

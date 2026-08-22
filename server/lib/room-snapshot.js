@@ -43,7 +43,7 @@ const DEVICE_DISPLAY_SCHEMA = {
   lastHeartbeat: PUBLIC_SCALAR, screenOn: PUBLIC_SCALAR, width: PUBLIC_SCALAR,
   height: PUBLIC_SCALAR, wallId: PUBLIC_SCALAR, layoutId: PUBLIC_SCALAR,
   playlistId: PUBLIC_SCALAR, capabilities: PUBLIC_CAPABILITIES,
-  updatedAt: PUBLIC_SCALAR,
+  screenshotAt: PUBLIC_SCALAR, updatedAt: PUBLIC_SCALAR,
 };
 const NETWORK_STATE_SCHEMA = {
   adapter_name: PUBLIC_SCALAR, adapter_description: PUBLIC_SCALAR,
@@ -389,7 +389,10 @@ function loadConfirmedState(db, workspaceId) {
 function loadDeviceStates(db, workspaceId, roomId) {
   const displays = db.prepare(`
     SELECT id, name, status, last_heartbeat, screen_on, screen_width, screen_height,
-           wall_id, layout_id, playlist_id, capabilities_json, updated_at
+           wall_id, layout_id, playlist_id, capabilities_json, updated_at,
+           (SELECT s.captured_at FROM screenshots s
+              WHERE s.device_id = devices.id
+              ORDER BY s.captured_at DESC LIMIT 1) AS screenshot_at
     FROM devices
     WHERE workspace_id = ? AND id NOT LIKE ?
     ORDER BY name COLLATE NOCASE, id
@@ -405,6 +408,7 @@ function loadDeviceStates(db, workspaceId, roomId) {
     layoutId: row.layout_id ?? null,
     playlistId: row.playlist_id ?? null,
     capabilities: parsePublicJson(row.capabilities_json, {}, PUBLIC_CAPABILITIES),
+    screenshotAt: row.screenshot_at ?? null,
     updatedAt: row.updated_at ?? null,
   }));
 

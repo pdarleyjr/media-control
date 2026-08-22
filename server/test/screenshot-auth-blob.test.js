@@ -19,6 +19,7 @@ test('screenshot route accepts Bearer and httpOnly cookie, never query tokens', 
 });
 
 test('authenticated screenshot loading uses fetch Blob object URLs', () => {
+  const server = read('server', 'server.js');
   const displayState = read('frontend', 'js', 'services', 'display-state.js');
   const mediaControl = read('frontend', 'js', 'views', 'media-control.js');
   const stage = read('frontend', 'js', 'views', 'media-control', 'stage.js');
@@ -27,6 +28,8 @@ test('authenticated screenshot loading uses fetch Blob object URLs', () => {
   assert.match(displayState, /URL\.revokeObjectURL/);
   assert.match(displayState, /Authorization: `Bearer \$\{token\}`/);
   assert.match(displayState, /AbortController/);
+  assert.match(server, /if \(!screenshot\)[\s\S]{0,160}status\(204\)[\s\S]{0,80}end\(\)/);
+  assert.match(displayState, /res\.status === 204/);
   assert.match(mediaControl, /displayState\.secureScreenshotUrl/);
   assert.match(stage, /data-mc-shot-api/);
   assert.match(stage, /function shotImg/);

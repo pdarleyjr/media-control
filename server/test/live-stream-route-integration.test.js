@@ -32,6 +32,9 @@ test('prepare, manual start, auto gate, disabled start, and stop preserve safety
   const cameraState = {
     camera_online: true,
     preview_online: true,
+    microphone_connected: true,
+    audio_online: true,
+    synchronization_status: 'locked',
     recording: false,
     livestreaming: false,
     session_id: null,
@@ -245,6 +248,9 @@ test('start accepted but not confirmed issues STREAM_START_NOT_CONFIRMED and saf
   const cameraState = {
     camera_online: true,
     preview_online: true,
+    microphone_connected: true,
+    audio_online: true,
+    synchronization_status: 'locked',
     recording: false,
     livestreaming: false,
     session_id: null,

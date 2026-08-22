@@ -52,7 +52,9 @@ export function projectRoomDisplays(snapshot, priorDisplays = new Map(), options
         currentTime: display.currentTime ?? prior.now_playing?.currentTime ?? null,
         duration: display.duration ?? prior.now_playing?.duration ?? null,
       };
-      const fallbackScreenshot = screenshotUrlForId(display.id);
+      const fallbackScreenshot = device.screenshotAt != null
+        ? screenshotUrlForId(display.id, device.screenshotAt)
+        : null;
 
       return [display.id, {
         ...prior,
@@ -70,6 +72,7 @@ export function projectRoomDisplays(snapshot, priorDisplays = new Map(), options
         wall_id: display.wallId ?? device.wallId ?? prior.wall_id ?? null,
         layout_id: display.layoutId ?? device.layoutId ?? prior.layout_id ?? null,
         screenshot_url: prior.screenshot_url || fallbackScreenshot,
+        screenshot_at: prior.screenshot_at ?? device.screenshotAt ?? null,
         now_playing: nowPlaying,
       }];
     }));

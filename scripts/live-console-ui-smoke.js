@@ -182,7 +182,7 @@ async function waitForHybridPreset(cdp, preset) {
   return waitFor(cdp, `(async () => {
     const active = document.querySelector('[data-layout-preset="${preset}"]');
     const overview = document.querySelector('.mc-wall-groups-overview');
-    const regions = [...(overview?.querySelectorAll('[data-layout-group-id]') || [])];
+    const regions = [...(overview?.querySelectorAll('.mc-wall-region[data-layout-group-id][data-wall-id]') || [])];
     const response = await fetch('/api/walls', {
       headers: { Authorization: 'Bearer ' + localStorage.getItem('token') },
     });
@@ -555,11 +555,31 @@ async function main() {
         const overlay = document.querySelector('.mc-wb-overlay');
         const blank = overlay?.querySelector('[data-wb-mode="blank"]');
         const canvas = overlay?.querySelector('#mc-wb-canvas');
-        if (!blank || !canvas) return { ok: false };
+        const surface = overlay?.querySelector('.mc-wb-canvas-wrap');
+        const viewport = overlay?.querySelector('.mc-wb-canvas-viewport');
+        if (!blank || !canvas || !surface || !viewport) return { ok: false };
         blank.click();
-        return { ok: true, width: canvas.width, height: canvas.height };
+        const surfaceRect = surface.getBoundingClientRect();
+        const viewportRect = viewport.getBoundingClientRect();
+        const ratioParts = surface.style.aspectRatio.split('/').map(Number);
+        const expectedRatio = ratioParts.length === 2 && ratioParts[1] > 0
+          ? ratioParts[0] / ratioParts[1]
+          : canvas.width / canvas.height;
+        const actualRatio = surfaceRect.width / surfaceRect.height;
+        return {
+          ok: true,
+          width: canvas.width,
+          height: canvas.height,
+          aspectError: Math.abs(actualRatio - expectedRatio) / expectedRatio,
+          viewportBounded: surfaceRect.left >= viewportRect.left - 1
+            && surfaceRect.right <= viewportRect.right + 1
+            && surfaceRect.top >= viewportRect.top - 1
+            && surfaceRect.bottom <= viewportRect.bottom + 1,
+        };
       })()`);
       assert(modeResult?.ok, 'Whiteboard Blank mode control is missing');
+      assert(modeResult.viewportBounded, `Whiteboard drawing frame exceeds its viewport: ${JSON.stringify(modeResult)}`);
+      assert(modeResult.aspectError <= 0.02, `Whiteboard target aspect ratio is distorted: ${JSON.stringify(modeResult)}`);
       await waitFor(cdp, `document.querySelector('[data-wb-mode="blank"]')?.getAttribute('aria-pressed') === 'true'`, 'whiteboard Blank mode');
       await evaluate(cdp, `document.querySelector('[data-wb-mode="overlay"]')?.click()`);
       await waitFor(cdp, `document.querySelector('[data-wb-mode="overlay"]')?.getAttribute('aria-pressed') === 'true'`, 'whiteboard Overlay mode');
@@ -604,6 +624,7 @@ async function main() {
         overlay_mode: true,
         drawing_changed: drawingChanged,
         canvas: { width: modeResult.width, height: modeResult.height },
+        aspect_error: modeResult.aspectError,
       };
       await evaluate(cdp, `document.querySelector('.mc-wb-overlay #mc-wb-clear')?.click()`);
     } finally {
@@ -633,9 +654,19 @@ async function main() {
     assert(viewport.htmlScrollHeight <= viewport.innerHeight + 2, `command center has page-level vertical overflow: ${JSON.stringify(viewport)}`);
     assert(viewport.shell && viewport.shell.bottom <= viewport.innerHeight + 2, 'command center shell exceeds the viewport');
 
-    await evaluate(cdp, `localStorage.setItem('mc_multiview_cells_v1', JSON.stringify({
-      L1: { cellUrl: '/assets/mbfd-logo.png', monitorUrl: null, kind: 'm', label: 'UI smoke source', thumb: '/assets/mbfd-logo.png', category: 'image' }
-    }))`);
+    await evaluate(cdp, `(() => {
+      localStorage.removeItem('mc_multiview_cells_v1');
+      const toolbox = document.querySelector('#mc-toolbox');
+      if (toolbox && !toolbox.querySelector('.mc-tile[data-drag-source]')) {
+        const source = document.createElement('button');
+        source.type = 'button';
+        source.className = 'mc-tile';
+        source.dataset.dragSource = JSON.stringify({ remote_url: '/player/site.html?id=multiview-smoke' });
+        source.dataset.label = 'Multiview smoke source';
+        source.textContent = 'Multiview smoke source';
+        toolbox.appendChild(source);
+      }
+    })()`);
     const opened = await evaluate(cdp, `(() => {
       const button = document.querySelector('[data-dock="multiview"]');
       if (!button) return false;
@@ -644,6 +675,22 @@ async function main() {
     })()`);
     assert(opened, 'Multiview action is missing');
     await waitFor(cdp, `!!document.querySelector('.mc-multiview-host:not([hidden]) .mc-mv-stage')`, 'Multiview overlay');
+
+    const multiviewContentAdded = await evaluate(cdp, `(() => {
+      const add = document.querySelector('.mc-multiview-host:not([hidden]) [data-mv-add="C1"]')
+        || document.querySelector('.mc-multiview-host:not([hidden]) [data-mv-add]');
+      if (!add) return { ok: false, reason: 'no empty-frame add control' };
+      const slot = add.dataset.mvAdd;
+      add.click();
+      const source = document.querySelector('.mc-multiview-host:not([hidden]) .mc-mv-source[data-source]');
+      if (!source) return { ok: false, reason: 'no built-in source choices', slot };
+      const label = source.dataset.label;
+      source.click();
+      const filled = document.querySelector('.mc-multiview-host:not([hidden]) .mc-mv-cell[data-mv-cell="' + slot + '"].filled');
+      const send = document.querySelector('.mc-multiview-host:not([hidden]) .mc-mv-send');
+      return { ok: !!filled && !send?.disabled, slot, label, filled: !!filled, send_disabled: !!send?.disabled };
+    })()`);
+    assert(multiviewContentAdded?.ok, `Multiview built-in content selection failed: ${JSON.stringify(multiviewContentAdded)}`);
 
     const multiview = await evaluate(cdp, `(() => {
       const host = document.querySelector('.mc-multiview-host:not([hidden])');
@@ -718,6 +765,7 @@ async function main() {
       wall_targets: ready.map((item) => item.text),
       viewport,
       multiview,
+      multiview_content_added: multiviewContentAdded,
       route_dialog: routeDialog,
       live_sources: liveSources,
       upload_dialog: uploadDialog,

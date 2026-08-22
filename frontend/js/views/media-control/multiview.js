@@ -93,6 +93,9 @@ let monitorSlot = null;       // slot id currently being monitored locally
 let monitorRenderedKey = null;// guard so a re-render doesn't restart the monitor stream
 let unsubShare = null;        // screen-share engine onChange unsubscribe
 let rootEl = null;
+let selectedSlot = null;      // click/touch/keyboard destination for the built-in source shelf
+
+const SLOT_PICK_ORDER = ['C1', 'C2', 'L1', 'R1', 'L2', 'R2', 'L3', 'R3', 'L4', 'R4'];
 
 // ---------- geometry helpers (MIRROR of multiview-core.js — keep in sync) ----------
 function clampPct(v) { return Math.max(0, Math.min(100, v)); }
@@ -377,11 +380,72 @@ function shareControlsHtml(slotId) {
   </div>`;
 }
 
+function availableLibrarySources() {
+  const found = [];
+  const seen = new Set();
+  // Reuse the already-authorized Command Center library. Cloned descriptors do
+  // not inherit its click handlers, so selecting one here can only fill a
+  // Multiview frame; it cannot accidentally broadcast to the room.
+  document.querySelectorAll('#mc-toolbox .mc-tile[data-drag-source]:not([disabled])').forEach((tile) => {
+    let source = null;
+    try { source = JSON.parse(tile.dataset.dragSource || ''); } catch { /* malformed tile stays hidden */ }
+    if (!source) return;
+    // The Multiview compiler accepts a single playable source per frame. Keep
+    // playlist tiles out of this shelf instead of letting operators select a
+    // source that can only fail later during Send.
+    if (source.playlist_id) return;
+    const key = JSON.stringify(source);
+    if (seen.has(key)) return;
+    seen.add(key);
+    const image = tile.querySelector('img');
+    found.push({
+      source,
+      label: tile.dataset.label || tile.textContent?.trim() || t('mc.tile.content_fallback'),
+      thumb: image?.currentSrc || image?.src || '',
+    });
+  });
+  // Always include authorized uploaded media too. The toolbox only renders its
+  // active tab, so treating this as a fallback would make most content vanish
+  // from the composer whenever Camera Feeds or Presentations was selected.
+  Object.entries(contentIndex || {}).forEach(([id, item]) => {
+    const source = { content_id: id };
+    const key = JSON.stringify(source);
+    if (seen.has(key)) return;
+    seen.add(key);
+    found.push({
+      source,
+      label: item.filename || t('mc.tile.content_fallback'),
+      thumb: item.thumbnail_url || '',
+    });
+  });
+  return found;
+}
+
+function sourceLibraryHtml() {
+  const sources = availableLibrarySources();
+  const destination = selectedSlot && !cells[selectedSlot]
+    ? t('mc.mv.adding_to', { frame: slotName(SLOT_BY_ID[selectedSlot]) })
+    : t('mc.mv.choose_frame');
+  const buttons = sources.map((item, index) => {
+    const payload = JSON.stringify(item.source);
+    const visual = item.thumb
+      ? `<img src="${esc(item.thumb)}" alt="" loading="lazy">`
+      : `<span aria-hidden="true">${IC.generic}</span>`;
+    return `<button type="button" class="mc-mv-source" draggable="true" data-mv-source="${index}"
+      data-source="${esc(payload)}" data-label="${esc(item.label)}" data-thumb="${esc(item.thumb)}"
+      title="${esc(t('mc.mv.add_source', { name: item.label }))}">${visual}<span>${esc(item.label)}</span></button>`;
+  }).join('');
+  return `<aside class="mc-mv-library" aria-label="${esc(t('mc.mv.library'))}">
+    <div class="mc-mv-library-head"><strong>${esc(t('mc.mv.library'))}</strong><span role="status">${esc(destination)}</span></div>
+    <div class="mc-mv-source-list">${buttons || `<p class="mc-mv-library-empty">${esc(t('mc.mv.no_sources'))}</p>`}</div>
+  </aside>`;
+}
+
 function cellInner(slot) {
   const c = cells[slot.id];
   if (!c) {
     return `<span class="mc-mv-slot-name">${esc(slotName(slot))}</span>
-            <span class="mc-mv-slot-hint">${esc(t('mc.mv.drop_here'))}</span>`;
+            <button type="button" class="mc-mv-slot-add" data-mv-add="${esc(slot.id)}">${esc(t('mc.mv.add_content'))}</button>`;
   }
   // Screen-share frame — placeholder + share/stop controls (no thumbnail/monitor).
   if (c.kind === 'share') {
@@ -443,8 +507,9 @@ function render() {
     // data-fit drives the preview thumbnail's object-fit so the composer mirrors
     // what the wall will show (cover = fill, contain = letterbox).
     const fitAttr = (c && c.kind !== 'share') ? ` data-fit="${cellFit(c)}"` : '';
-    return `<div class="mc-mv-cell${c ? ' filled' : ''}${shareCls}${monitorSlot === slot.id ? ' monitoring' : ''}"
+    return `<div class="mc-mv-cell${c ? ' filled' : ''}${shareCls}${monitorSlot === slot.id ? ' monitoring' : ''}${selectedSlot === slot.id ? ' is-selected' : ''}"
       data-mv-cell="${esc(slot.id)}" data-side="${slot.side}"${fitAttr}
+      aria-selected="${selectedSlot === slot.id ? 'true' : 'false'}"
       style="left:${r.x}%;top:${r.y}%;width:${r.w}%;height:${r.h}%"
       aria-label="${esc(slotName(slot))}">${cellInner(slot)}</div>`;
   }).join('');
@@ -463,8 +528,11 @@ function render() {
           <button type="button" class="mc-btn mc-btn-ghost mc-mv-close" aria-label="${esc(t('mc.mv.close'))}" title="${esc(t('mc.mv.close'))}">✕</button>
         </div>
       </div>
-      <div class="mc-mv-stage" role="application" aria-label="${esc(t('mc.mv.canvas_aria'))}">
-        ${cellsHtml}
+      <div class="mc-mv-workspace">
+        ${sourceLibraryHtml()}
+        <div class="mc-mv-stage" role="application" aria-label="${esc(t('mc.mv.canvas_aria'))}">
+          ${cellsHtml}
+        </div>
       </div>
       <div class="mc-mv-monitor" hidden>
         <div class="mc-mv-monitor-head">
@@ -510,6 +578,7 @@ function dropIntoSlot(slotId, parsed) {
     resolved.fit = COVER_CATEGORIES.has(resolved.category) ? 'cover' : 'contain';
   }
   cells[slotId] = resolved;
+  selectedSlot = SLOT_PICK_ORDER.find((id) => !cells[id]) || null;
   saveStore();
   if (monitorSlot && monitorSlot !== slotId && !cells[monitorSlot]) monitorSlot = null;
   render();
@@ -522,6 +591,7 @@ function clearCell(slotId) {
     delete shareDevice[slotId];
   }
   delete cells[slotId];
+  selectedSlot = slotId;
   if (monitorSlot === slotId) monitorSlot = null;
   saveStore();
   render();
@@ -532,7 +602,7 @@ function clearAll() {
     for (const deviceId of shareDevice[id].deviceIds) screenShareEngine.stopBroadcastTo(deviceId).catch(() => {});
   }
   shareDevice = {};
-  cells = {}; geoms = {}; monitorSlot = null;
+  cells = {}; geoms = {}; monitorSlot = null; selectedSlot = 'C1';
   saveStore(); render();
 }
 
@@ -556,6 +626,44 @@ function attachHandlers() {
     // Resize handles (only present on filled cells).
     cellEl.querySelectorAll('[data-mv-handle]').forEach((h) => {
       h.addEventListener('pointerdown', (ev) => startResize(ev, cellEl, slotId, h.dataset.mvHandle));
+    });
+  });
+
+  rootEl.querySelectorAll('[data-mv-add]').forEach((button) => {
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      selectedSlot = button.dataset.mvAdd;
+      render();
+    });
+  });
+
+  rootEl.querySelectorAll('.mc-mv-source[data-source]').forEach((sourceButton) => {
+    const parsed = () => {
+      try {
+        return {
+          source: JSON.parse(sourceButton.dataset.source || ''),
+          label: sourceButton.dataset.label || t('mc.tile.content_fallback'),
+          thumb: sourceButton.dataset.thumb || null,
+        };
+      } catch { return null; }
+    };
+    sourceButton.addEventListener('click', () => {
+      const target = selectedSlot && !cells[selectedSlot]
+        ? selectedSlot
+        : SLOT_PICK_ORDER.find((id) => !cells[id]);
+      if (!target) { showToast(t('mc.mv.err_no_empty'), 'error'); return; }
+      const source = parsed();
+      if (source) dropIntoSlot(target, source);
+    });
+    sourceButton.addEventListener('dragstart', (event) => {
+      const source = parsed();
+      if (!source || !event.dataTransfer) return;
+      const payload = JSON.stringify(source.source);
+      event.dataTransfer.effectAllowed = 'copy';
+      event.dataTransfer.setData('text/plain', payload);
+      event.dataTransfer.setData('application/x-mc-source', payload);
+      event.dataTransfer.setData('application/x-mc-label', source.label);
+      if (source.thumb) event.dataTransfer.setData('application/x-mc-thumb', source.thumb);
     });
   });
 
@@ -584,8 +692,8 @@ function attachHandlers() {
     });
     // Click = drop into the first empty frame (center first), for non-drag users.
     sharechip.addEventListener('click', () => {
-      const order = ['C1', 'C2', 'L1', 'R1', 'L2', 'R2', 'L3', 'R3', 'L4', 'R4'];
-      const target = order.find((id) => !cells[id]);
+      const target = (selectedSlot && !cells[selectedSlot] ? selectedSlot : null)
+        || SLOT_PICK_ORDER.find((id) => !cells[id]);
       if (!target) { showToast(t('mc.mv.err_no_empty'), 'error'); return; }
       dropIntoSlot(target, { source: { screen_share: true }, label: t('mc.mv.screen_share'), thumb: null });
     });
@@ -902,6 +1010,7 @@ export async function renderMultiview(container, { routeSource, onClose } = {}) 
   routeSourceFn = routeSource;
   onCloseFn = onClose || null;
   loadStore();
+  selectedSlot = SLOT_PICK_ORDER.find((id) => !cells[id]) || null;
   // React to screen-share connect/fail/preempt so the frame's Share/Stop button
   // reflects reality (targeted update — does not restart the audio monitor).
   if (unsubShare) { unsubShare(); unsubShare = null; }
