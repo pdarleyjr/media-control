@@ -56,6 +56,8 @@ test('podium library drag and drop preserves the source contract through physica
   assert.match(smoke, /new DragEvent\('dragstart'/);
   assert.match(smoke, /new DragEvent\('drop'/);
   assert.match(smoke, /SMOKE_DRAG_CONTENT_ID/);
+  assert.match(smoke, /SMOKE_DRAG_SOURCE_LABEL/);
+  assert.match(smoke, /SMOKE_DRAG_GROUP_ID/);
   assert.match(smoke, /dragConfig\.contentId\.toLowerCase\(\) === 'auto'/);
   assert.match(smoke, /configured drag source is not visible/);
   assert.match(smoke, /pointerType: 'touch'/);
@@ -64,6 +66,7 @@ test('podium library drag and drop preserves the source contract through physica
   assert.match(smoke, /convergence_ms: Date\.now\(\) - dragStartedAt/);
   assert.match(smoke, /touch_convergence_ms: Date\.now\(\) - touchStartedAt/);
   assert.match(smoke, /waitForPhysicalContent\(db, dragConfig\.deviceIds, dragConfig\.contentId\)/);
+  assert.match(smoke, /waitForPhysicalSource\(db, dragConfig\.deviceIds/);
   assert.match(smoke, /restoreDragDropContent\(db, dragConfig\)/);
 });
 
@@ -89,6 +92,15 @@ test('target switching yields one paint so the selected wall responds before hea
   assert.match(view, /if \(restoringTarget\) \{[\s\S]*?paintStage\(\);[\s\S]*?\} else \{[\s\S]*?scheduleTargetPaint\(tgt\);/);
 });
 
+test('a late startup preference response cannot overwrite an operator target click', () => {
+  const view = read('frontend/js/views/media-control.js');
+
+  assert.match(view, /let targetIntentGeneration = 0/);
+  assert.match(view, /if \(!restoringTarget\) targetIntentGeneration \+= 1/);
+  assert.match(view, /const restoreGeneration = targetIntentGeneration/);
+  assert.match(view, /targetIntentGeneration !== restoreGeneration/);
+});
+
 test('Multiview contains its own mouse, touch, and keyboard content picker', () => {
   const multiview = read('frontend/js/views/media-control/multiview.js');
   const css = read('frontend/css/media-control.css');
@@ -105,6 +117,9 @@ test('Multiview contains its own mouse, touch, and keyboard content picker', () 
   assert.match(css, /\.mc-mv-library/);
   assert.match(css, /\.mc-mv-slot-add\s*\{[^}]*min-height:\s*48px/);
   assert.match(smoke, /multiview_content_added/);
+  assert.match(smoke, /dialog\.mc-target-picker\[open\]/);
+  assert.match(smoke, /\.mc-target-picker-scroll/);
+  assert.match(smoke, /\[data-target-cancel\]/);
 });
 
 test('podium touch drag uses pointer events while preserving desktop drag and drop', () => {
@@ -255,6 +270,7 @@ test('podium browser smoke follows authorized wall targets without hardcoded roo
   assert.match(smoke, /SMOKE_EXPECT_WALL_TARGETS/);
   assert.match(smoke, /ready\.length < 2/);
   assert.match(smoke, /button\.dataset\.targetValue === \$\{JSON\.stringify\(targetValue\)\}/);
+  assert.match(smoke, /button\.getAttribute\('aria-selected'\) === 'true'/);
   assert.doesNotMatch(smoke, /Video Wall 1 target is missing/);
   assert.doesNotMatch(smoke, /Video Wall 2 target is missing/);
 });

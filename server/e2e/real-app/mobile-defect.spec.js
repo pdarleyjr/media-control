@@ -1417,4 +1417,78 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     expect(display).not.toBe('none');
     await context.close();
   });
+
+  test('an operator wall click wins over a delayed startup preference response', async ({ browser }) => {
+    const Database = require('better-sqlite3');
+    const dbPath = path.join(tmpDir, 'test.db');
+    const database = new Database(dbPath, { timeout: 10000 });
+    const workspaceId = database.prepare(
+      'SELECT workspace_id FROM workspace_members WHERE user_id = ? LIMIT 1'
+    ).get(userId)?.workspace_id;
+    const now = Math.floor(Date.now() / 1000) + 3600;
+    database.transaction(() => {
+      database.prepare(`
+        INSERT INTO devices (id, user_id, workspace_id, name, pairing_code, status, last_heartbeat, wall_id, screen_on)
+        VALUES ('mobile-secondary-display', ?, ?, 'Secondary Display', '820099', 'online', ?, 'mobile-secondary-wall', 1)
+      `).run(userId, workspaceId, now);
+      database.prepare(`
+        INSERT INTO display_states
+          (target_type, target_id, workspace_id, screen_on, command_revision, state_revision, updated_at)
+        VALUES ('display', 'mobile-secondary-display', ?, 1, 'fixture-on', 1, ?)
+      `).run(workspaceId, Date.now());
+      database.prepare(`
+        INSERT INTO video_walls (id, user_id, workspace_id, name, grid_cols, grid_rows, is_locked, layout_mode)
+        VALUES ('mobile-secondary-wall', ?, ?, 'Classroom 1 Secondary Wall', 1, 1, 1, 'span')
+      `).run(userId, workspaceId);
+      database.prepare(`
+        INSERT INTO video_wall_devices
+          (wall_id, device_id, grid_col, grid_row, canvas_x, canvas_y, canvas_width, canvas_height)
+        VALUES ('mobile-secondary-wall', 'mobile-secondary-display', 0, 0, 0, 0, 1920, 1080)
+      `).run();
+    })();
+    database.close();
+
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const page = await context.newPage();
+    try {
+      await page.route('**/api/displays/control-preferences', async (route) => {
+        if (route.request().method() !== 'GET') return route.continue();
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            room_id: 'classroom-1',
+            last_focused_target_ref: 'wall:mobile-command-wall',
+            pinned_target_refs: [],
+            revision: 1,
+          }),
+        });
+      });
+      await page.addInitScript(({ token, user }) => {
+        localStorage.setItem('token', token);
+        localStorage.setItem('user', JSON.stringify(user));
+        localStorage.setItem('rd_onboarded', '1');
+      }, { token: authToken, user: { id: userId, email: TEST_EMAIL, name: 'Mobile Test', role: 'platform_admin' } });
+      await page.goto(`${BASE_URL}/app#/control`, { waitUntil: 'domcontentloaded' });
+      const secondary = page.locator('.mc-target-wall-btn', { hasText: 'Classroom 1 Secondary Wall' });
+      await expect(secondary).toBeVisible();
+      await secondary.click();
+      await expect(secondary).toHaveAttribute('aria-selected', 'true');
+      await expect(secondary).toHaveClass(/is-active/);
+      await page.waitForTimeout(2000);
+      await expect(secondary).toHaveAttribute('aria-selected', 'true');
+      await expect(secondary).toHaveClass(/is-active/);
+    } finally {
+      await context.close();
+      const cleanup = new Database(dbPath, { timeout: 10000 });
+      cleanup.transaction(() => {
+        cleanup.prepare("DELETE FROM video_wall_devices WHERE wall_id='mobile-secondary-wall'").run();
+        cleanup.prepare("DELETE FROM display_states WHERE target_id='mobile-secondary-display'").run();
+        cleanup.prepare("DELETE FROM video_walls WHERE id='mobile-secondary-wall'").run();
+        cleanup.prepare("DELETE FROM devices WHERE id='mobile-secondary-display'").run();
+      })();
+      cleanup.close();
+    }
+  });
 });

@@ -133,10 +133,21 @@ function csv(value) {
 
 function dragDropConfig() {
   const contentId = String(process.env.SMOKE_DRAG_CONTENT_ID || '').trim();
-  if (!contentId) return null;
+  const sourceLabel = String(process.env.SMOKE_DRAG_SOURCE_LABEL || '').trim();
+  if (!contentId && !sourceLabel) return null;
+  if (contentId && sourceLabel) throw new Error('set only one of SMOKE_DRAG_CONTENT_ID or SMOKE_DRAG_SOURCE_LABEL');
+  const wallId = required('SMOKE_DRAG_WALL_ID');
+  const groupId = String(process.env.SMOKE_DRAG_GROUP_ID || '').trim();
   const config = {
     contentId,
-    wallId: required('SMOKE_DRAG_WALL_ID'),
+    sourceLabel,
+    sourceMarker: String(process.env.SMOKE_DRAG_SOURCE_MARKER || sourceLabel.toLowerCase().replace(/\s+/g, '-')).trim(),
+    expectedContentType: String(process.env.SMOKE_DRAG_EXPECT_CONTENT_TYPE || 'web').trim(),
+    wallId,
+    groupId,
+    targetSelector: groupId
+      ? `.mc-wall-region[data-wall-id="${wallId}"][data-layout-group-id="${groupId}"]`
+      : `.mc-wall[data-wall-id="${wallId}"] .mc-wall-all`,
     deviceIds: csv(required('SMOKE_DRAG_DEVICE_IDS')),
     restoreContentId: required('SMOKE_DRAG_RESTORE_CONTENT_ID'),
     restoreUserEmail: String(process.env.SMOKE_DRAG_RESTORE_USER_EMAIL || 'peterdarley@miamibeachfl.gov').trim().toLowerCase(),
@@ -286,6 +297,65 @@ async function waitForPhysicalContent(db, deviceIds, contentId, timeoutMs = 2000
   throw new Error(`display state did not converge to ${contentId}: ${JSON.stringify(rows)}`);
 }
 
+function physicalDisplayStates(db, deviceIds) {
+  const placeholders = deviceIds.map(() => '?').join(',');
+  return db.prepare(`
+    SELECT target_id, current_content_id, current_asset_id, content_type,
+           render_state, error_state, state_revision, command_revision
+    FROM display_states
+    WHERE target_type = 'display' AND target_id IN (${placeholders})
+    ORDER BY target_id
+  `).all(...deviceIds);
+}
+
+async function waitForPhysicalSource(db, deviceIds, config, beforeStates, startedAt, timeoutMs = 20000) {
+  const placeholders = deviceIds.map(() => '?').join(',');
+  const beforeRevision = new Map(beforeStates.map((row) => [row.target_id, Number(row.state_revision) || 0]));
+  const deadline = Date.now() + timeoutMs;
+  let commands = [];
+  let states = [];
+  while (Date.now() < deadline) {
+    const candidates = db.prepare(`
+      SELECT target_id, command_id, command_type, payload, status, ack_at, ack_error, created_at
+      FROM command_logs
+      WHERE target_type = 'display'
+        AND target_id IN (${placeholders})
+        AND created_at >= ?
+        AND payload LIKE ?
+      ORDER BY created_at DESC
+    `).all(...deviceIds, startedAt - 1000, `%${config.sourceMarker}%`);
+    const latestByTarget = new Map();
+    for (const row of candidates) {
+      if (!latestByTarget.has(row.target_id)) latestByTarget.set(row.target_id, row);
+    }
+    commands = deviceIds.map((id) => latestByTarget.get(id)).filter(Boolean);
+    states = physicalDisplayStates(db, deviceIds);
+    const commandsAcked = commands.length === deviceIds.length
+      && commands.every((row) => row.status === 'acked' && row.ack_at && !row.ack_error);
+    const statesAdvanced = states.length === deviceIds.length && states.every((row) => (
+      (Number(row.state_revision) || 0) > (beforeRevision.get(row.target_id) || 0)
+      && row.render_state === 'playing'
+      && !row.error_state
+      && (!config.expectedContentType || row.content_type === config.expectedContentType)
+    ));
+    if (commandsAcked && statesAdvanced) {
+      return {
+        commands: commands.map((row) => ({
+          target_id: row.target_id,
+          command_id: row.command_id,
+          command_type: row.command_type,
+          status: row.status,
+          acknowledged_at: row.ack_at,
+          source_marker_confirmed: String(row.payload || '').includes(config.sourceMarker),
+        })),
+        states,
+      };
+    }
+    await sleep(250);
+  }
+  throw new Error(`physical source did not converge to ${config.sourceLabel}: ${JSON.stringify({ commands, states })}`);
+}
+
 async function restoreDragDropContent(db, config) {
   const { generateToken } = require('../server/middleware/auth');
   const user = db.prepare('SELECT * FROM users WHERE lower(email) = ?').get(config.restoreUserEmail);
@@ -391,7 +461,7 @@ async function main() {
       await waitFor(cdp, `(() => {
         const button = [...document.querySelectorAll('.mc-target-wall-btn')]
           .find((button) => button.dataset.targetValue === ${JSON.stringify(targetValue)});
-        return !!button && button.getAttribute('aria-pressed') === 'true' && button.classList.contains('is-active');
+        return !!button && button.getAttribute('aria-selected') === 'true' && button.classList.contains('is-active');
       })()`, `${targetValue} selection`);
     }
 
@@ -420,20 +490,34 @@ async function main() {
     let dragDrop = null;
     if (dragConfig) {
       const { db } = require('../server/db/database');
+      if (dragConfig.sourceLabel) {
+        const opened = await evaluate(cdp, `(() => {
+          const tab = document.querySelector('.mc-tb-tab[data-tab="camerafeeds"]');
+          if (!tab) return false;
+          tab.click();
+          return true;
+        })()`);
+        assert(opened, 'Live Sources tab is missing for configured drag source');
+        await waitFor(cdp, `!![...document.querySelectorAll('.mc-live-source-tile[data-label]')]
+          .find((item) => item.dataset.label === ${JSON.stringify(dragConfig.sourceLabel)})`, 'configured live drag source', 30000);
+      }
       const inventory = await waitFor(cdp, `(() => {
-        const wallId = ${JSON.stringify(dragConfig.wallId)};
-        const target = document.querySelector('.mc-wall[data-wall-id="' + wallId + '"] .mc-wall-all');
+        const target = document.querySelector(${JSON.stringify(dragConfig.targetSelector)});
         const sources = [...document.querySelectorAll('.mc-tile[data-drag-source]')].map((item) => {
           try {
             const source = JSON.parse(item.dataset.dragSource || '{}');
-            return { content_id: source.content_id || null, label: item.textContent.trim().slice(0, 120) };
+            return {
+              content_id: source.content_id || null,
+              label: item.dataset.label || item.textContent.trim().slice(0, 120),
+              live_source_id: source.live_source_id || null,
+            };
           } catch { return null; }
         }).filter(Boolean);
         if (!target || !sources.length) return false;
         return { target: true, sources };
       })()`, 'podium drag inventory', 30000);
 
-      if (dragConfig.contentId.toLowerCase() === 'auto') {
+      if (dragConfig.contentId && dragConfig.contentId.toLowerCase() === 'auto') {
         const selected = inventory.sources.find((source) => (
           source.content_id && source.content_id !== dragConfig.restoreContentId
         ));
@@ -441,27 +525,38 @@ async function main() {
         dragConfig.contentId = selected.content_id;
       }
 
-      const configuredSource = inventory.sources.find((source) => source.content_id === dragConfig.contentId);
-      assert(configuredSource, `configured drag source is not visible: ${dragConfig.contentId}; visible=${JSON.stringify(inventory.sources)}`);
+      const configuredSource = inventory.sources.find((source) => dragConfig.sourceLabel
+        ? source.label === dragConfig.sourceLabel
+        : source.content_id === dragConfig.contentId);
+      assert(configuredSource, `configured drag source is not visible: ${dragConfig.sourceLabel || dragConfig.contentId}; visible=${JSON.stringify(inventory.sources)}`);
       await waitFor(cdp, `(() => {
         const contentId = ${JSON.stringify(dragConfig.contentId)};
-        const wallId = ${JSON.stringify(dragConfig.wallId)};
+        const sourceLabel = ${JSON.stringify(dragConfig.sourceLabel)};
         const tile = [...document.querySelectorAll('.mc-tile[data-drag-source]')].find((item) => {
-          try { return JSON.parse(item.dataset.dragSource || '{}').content_id === contentId; } catch { return false; }
+          try {
+            return sourceLabel
+              ? item.dataset.label === sourceLabel
+              : JSON.parse(item.dataset.dragSource || '{}').content_id === contentId;
+          } catch { return false; }
         });
-        return !!tile && !!document.querySelector('.mc-wall[data-wall-id="' + wallId + '"] .mc-wall-all');
+        return !!tile && !!document.querySelector(${JSON.stringify(dragConfig.targetSelector)});
       })()`, 'podium drag source and wall target', 30000);
 
       let dispatched = false;
       try {
         const dragStartedAt = Date.now();
+        const beforeState = physicalDisplayStates(db, dragConfig.deviceIds);
         const browserResult = await evaluate(cdp, `(() => {
           const contentId = ${JSON.stringify(dragConfig.contentId)};
-          const wallId = ${JSON.stringify(dragConfig.wallId)};
+          const sourceLabel = ${JSON.stringify(dragConfig.sourceLabel)};
           const tile = [...document.querySelectorAll('.mc-tile[data-drag-source]')].find((item) => {
-            try { return JSON.parse(item.dataset.dragSource || '{}').content_id === contentId; } catch { return false; }
+            try {
+              return sourceLabel
+                ? item.dataset.label === sourceLabel
+                : JSON.parse(item.dataset.dragSource || '{}').content_id === contentId;
+            } catch { return false; }
           });
-          const target = document.querySelector('.mc-wall[data-wall-id="' + wallId + '"] .mc-wall-all');
+          const target = document.querySelector(${JSON.stringify(dragConfig.targetSelector)});
           if (!tile || !target) return { ok: false, reason: 'source or target missing' };
           const dataTransfer = new DataTransfer();
           tile.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer }));
@@ -474,7 +569,9 @@ async function main() {
         assert(browserResult?.ok, `podium drag event failed: ${JSON.stringify(browserResult)}`);
         assert(browserResult.types.includes('application/x-mc-source'), 'podium drag event omitted the media-control source MIME');
         dispatched = true;
-        const probeState = await waitForPhysicalContent(db, dragConfig.deviceIds, dragConfig.contentId);
+        const probeState = dragConfig.sourceLabel
+          ? await waitForPhysicalSource(db, dragConfig.deviceIds, dragConfig, beforeState, dragStartedAt)
+          : await waitForPhysicalContent(db, dragConfig.deviceIds, dragConfig.contentId);
         dragDrop = {
           browser: browserResult,
           probe_state: probeState,
@@ -490,13 +587,18 @@ async function main() {
       let touchDispatched = false;
       try {
         const touchStartedAt = Date.now();
+        const beforeTouchState = physicalDisplayStates(db, dragConfig.deviceIds);
         const touchResult = await evaluate(cdp, `(() => {
           const contentId = ${JSON.stringify(dragConfig.contentId)};
-          const wallId = ${JSON.stringify(dragConfig.wallId)};
+          const sourceLabel = ${JSON.stringify(dragConfig.sourceLabel)};
           const tile = [...document.querySelectorAll('.mc-tile[data-drag-source]')].find((item) => {
-            try { return JSON.parse(item.dataset.dragSource || '{}').content_id === contentId; } catch { return false; }
+            try {
+              return sourceLabel
+                ? item.dataset.label === sourceLabel
+                : JSON.parse(item.dataset.dragSource || '{}').content_id === contentId;
+            } catch { return false; }
           });
-          const target = document.querySelector('.mc-wall[data-wall-id="' + wallId + '"] .mc-wall-all');
+          const target = document.querySelector(${JSON.stringify(dragConfig.targetSelector)});
           if (!tile || !target) return { ok: false, reason: 'touch source or target missing' };
           const from = tile.getBoundingClientRect();
           const to = target.getBoundingClientRect();
@@ -520,7 +622,9 @@ async function main() {
         assert(touchResult?.ok, `podium touch drag failed: ${JSON.stringify(touchResult)}`);
         assert(touchResult.ghost_visible, 'podium touch drag did not enter dragging state');
         touchDispatched = true;
-        const touchProbeState = await waitForPhysicalContent(db, dragConfig.deviceIds, dragConfig.contentId);
+        const touchProbeState = dragConfig.sourceLabel
+          ? await waitForPhysicalSource(db, dragConfig.deviceIds, dragConfig, beforeTouchState, touchStartedAt)
+          : await waitForPhysicalContent(db, dragConfig.deviceIds, dragConfig.contentId);
         dragDrop = {
           ...(dragDrop || {}),
           touch_browser: touchResult,
@@ -713,11 +817,11 @@ async function main() {
     assert(!multiview.sendDisabled, 'Multiview Send remained disabled with a valid source');
 
     await evaluate(cdp, `document.querySelector('.mc-mv-send').click()`);
-    await waitFor(cdp, `!!document.querySelector('dialog.mc-route-dialog[open]')`, 'routing picker');
+    await waitFor(cdp, `!!document.querySelector('dialog.mc-target-picker[open]')`, 'routing picker');
     const routeDialog = await evaluate(cdp, `(() => {
-      const dialog = document.querySelector('dialog.mc-route-dialog[open]');
-      const card = dialog?.querySelector('.mc-route-card');
-      const list = dialog?.querySelector('.mc-route-list');
+      const dialog = document.querySelector('dialog.mc-target-picker[open]');
+      const card = dialog?.querySelector('.mc-target-picker-card');
+      const list = dialog?.querySelector('.mc-target-picker-scroll');
       const actions = dialog?.querySelector('.mc-dialog-actions');
       const box = (node) => node ? (() => { const r = node.getBoundingClientRect(); return { top:r.top, right:r.right, bottom:r.bottom, left:r.left, width:r.width, height:r.height }; })() : null;
       return {
@@ -731,8 +835,8 @@ async function main() {
 
     const shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
     fs.writeFileSync(screenshotPath, Buffer.from(shot.data, 'base64'));
-    await evaluate(cdp, `document.querySelector('[data-route-cancel]')?.click()`);
-    await waitFor(cdp, `!document.querySelector('dialog.mc-route-dialog[open]')`, 'routing picker close');
+    await evaluate(cdp, `document.querySelector('[data-target-cancel]')?.click()`);
+    await waitFor(cdp, `!document.querySelector('dialog.mc-target-picker[open]')`, 'routing picker close');
     await evaluate(cdp, `document.querySelector('.mc-mv-close')?.click()`);
     await waitFor(cdp, `document.querySelector('.mc-multiview-host')?.hidden === true`, 'Multiview close');
 
