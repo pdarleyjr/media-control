@@ -11,6 +11,24 @@ import {
 } from '../../frontend/js/services/screenshot-poll.js';
 
 describe('live-stream-ui ladder', () => {
+  it('reports a direct-camera source failure without claiming OBS is unavailable', () => {
+    const ladder = deriveLiveLadder({
+      capabilities: {
+        publisher_mode: 'direct_camera',
+        publisher_ready: false,
+        publisher_available: false,
+        obs_available: null,
+        peertube_configured: true,
+        peertube_reachable: true,
+        managed_receiver_required_for_start: false,
+      },
+      camera_edge: { microphone_connected: false, camera_online: false },
+    });
+    assert.equal(ladder.state, LIVE_LADDER.CAMERA_SOURCE_UNAVAILABLE);
+    assert.match(ladder.reason, /microphone/i);
+    assert.doesNotMatch(ladder.reason, /OBS/i);
+  });
+
   it('blocks start when operator_start_allowed is false', () => {
     const ladder = deriveLiveLadder({
       capabilities: {

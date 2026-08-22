@@ -67,7 +67,28 @@ test('snapshot membership is authoritative while sparse fields preserve known pr
   assert.equal(projected.get('tv-2').screen_on, null);
   assert.equal(projected.get('tv-2').screen_width, 1920);
   assert.equal(projected.get('tv-2').now_playing.kind, 'web');
-  assert.equal(projected.get('tv-2').screenshot_url, '/screen/tv-2');
+  assert.equal(projected.get('tv-2').screenshot_url, null);
+});
+
+test('a snapshot advertises a screenshot URL only when capture metadata exists', async () => {
+  const { projectRoomDisplays } = await loadProjection();
+  const requested = [];
+  const projected = projectRoomDisplays({
+    confirmedState: { displays: [{ id: 'empty' }, { id: 'captured' }] },
+    deviceStates: { displays: [
+      { id: 'empty', screenshotAt: null },
+      { id: 'captured', screenshotAt: 1700000000 },
+    ] },
+  }, new Map(), {
+    screenshotUrlForId: (id, capturedAt) => {
+      requested.push([id, capturedAt]);
+      return `/screen/${id}?t=${capturedAt}`;
+    },
+  });
+
+  assert.equal(projected.get('empty').screenshot_url, null);
+  assert.equal(projected.get('captured').screenshot_url, '/screen/captured?t=1700000000');
+  assert.deepEqual(requested, [['captured', 1700000000]]);
 });
 
 test('a new confirmed content identity cannot inherit the previous source URL or poster', async () => {

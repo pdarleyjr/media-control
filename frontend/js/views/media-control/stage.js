@@ -446,7 +446,7 @@ function wallGroupsCard(wall, byId, livePreviewDeviceId, activeControlTargetId, 
       is_locked: false,
     };
     return `<div class="mc-wall-region${group.id === activeControlTargetId ? ' is-active' : ''}"
-      data-layout-group-id="${esc(group.id)}" role="button" tabindex="0"
+      data-layout-group-id="${esc(group.id)}" data-wall-id="${esc(wall.id)}" role="button" tabindex="0"
       style="--mc-region-cols:${regionWall.grid_cols}"
       aria-label="${esc(`Control ${regionWall.name}`)}">
       ${wallCard(regionWall, byId, livePreviewDeviceId, overviewMode)}

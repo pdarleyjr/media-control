@@ -102,3 +102,21 @@ test('route teardown aborts fetches and revokes every cached Blob URL', async ()
   assert.equal(getScreenshotBlobMetrics().cachedObjectUrls, 0);
   assert.deepEqual(revoked.sort(), ['blob:test-1', 'blob:test-2']);
 });
+
+test('an authorized display with no screenshot is a quiet empty state', async () => {
+  globalThis.fetch = async (url, options) => {
+    fetchCalls.push({ url, options });
+    return {
+      ok: true,
+      status: 204,
+      blob: async () => { throw new Error('a 204 response must not be converted to a Blob URL'); },
+    };
+  };
+
+  const result = await secureScreenshotUrl('/api/devices/new-display/screenshot');
+
+  assert.equal(result, null);
+  assert.equal(fetchCalls.length, 1);
+  assert.deepEqual(created, []);
+  assert.equal(getScreenshotBlobMetrics().fails, 0);
+});

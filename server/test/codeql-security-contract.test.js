@@ -43,6 +43,14 @@ test('public presentation player resources are bounded before database or filesy
   assert.match(server, /app\.get\('\/player\/asset\/:id',\s*rateLimit\(rateLimitOptions\(/);
 });
 
+test('authenticated screenshot reads are rate limited before authorization and resource work', () => {
+  const server = source('server/server.js');
+  assert.match(
+    server,
+    /app\.get\('\/api\/devices\/:id\/screenshot',\s*rateLimit\(rateLimitOptions\(60000,\s*600\)\)/,
+  );
+});
+
 test('optional authentication parses only the fixed session-cookie name', () => {
   const auth = source('server/middleware/auth.js');
   assert.doesNotMatch(auth, /acc\[key\]\s*=/);

@@ -168,6 +168,9 @@ async function getCameraDirectorState(workspaceId) {
   const s = (result.data && typeof result.data === 'object') ? result.data : {};
   const cameraOnline = s.camera_online === true;
   const previewOnline = s.preview_online === true;
+  const microphoneConnected = s.microphone_connected === true;
+  const audioOnline = s.audio_online === true;
+  const programSourceReady = cameraOnline && microphoneConnected && audioOnline;
   const recording = s.recording === true;
   const programState = liveStreamProgramState(workspaceId);
   const contentActive = programState.content_active === true;
@@ -187,7 +190,7 @@ async function getCameraDirectorState(workspaceId) {
     status: 'ok',
     obs: publisherMode === PUBLISHER_MODES.FIXED_COMPOSITOR
       ? compositorHealth?.available === true
-      : cameraOnline,
+      : programSourceReady,
     obs_message: compositorHealth?.available === false
       ? compositorHealth.message
       : null,
@@ -198,7 +201,7 @@ async function getCameraDirectorState(workspaceId) {
     peertube_configured: !!config.liveStream.peerTubeWatchUrl,
     current_scene: publisherMode === PUBLISHER_MODES.FIXED_COMPOSITOR
       ? (compositorState?.compositor_state?.scene || compositorHealth?.currentProgramSceneName || null)
-      : (cameraOnline ? FIXED_SCENES.CAMERA_ONLY : null),
+      : (programSourceReady ? FIXED_SCENES.CAMERA_ONLY : null),
     actual_obs_scene: publisherMode === PUBLISHER_MODES.FIXED_COMPOSITOR
       ? (compositorHealth?.currentProgramSceneName || null)
       : null,
@@ -210,16 +213,16 @@ async function getCameraDirectorState(workspaceId) {
     autoswitch_runtime_enabled: false,
     media_control_available: cameraOnline,
     media_control_content_active: contentActive,
-    anpviz_stream: cameraOnline,
+    anpviz_stream: programSourceReady,
     camera_online: cameraOnline,
     preview_online: previewOnline,
     director: {
-      active_source: cameraOnline ? 'anpviz' : null,
+      active_source: programSourceReady ? 'anpviz' : null,
       content_active: contentActive,
     },
     operator_stream_start_allowed: true,
     automatic_stream_start_allowed: false,
-    stream_start_allowed: cameraOnline,
+    stream_start_allowed: programSourceReady,
     peertube_watch_url: config.liveStream.peerTubeWatchUrl || null,
     last_recording: s.last_recording || null,
     session_id: s.session_id || null,
@@ -236,11 +239,14 @@ async function getCameraDirectorState(workspaceId) {
       available: true,
       camera_online: cameraOnline,
       preview_online: previewOnline,
+      microphone_connected: microphoneConnected,
+      audio_online: audioOnline,
+      synchronization_status: s.synchronization_status || null,
       recording_active: recording,
       recording_state: recording ? 'active' : 'standby',
       livestreaming: s.livestreaming === true,
-      anpviz_stream: cameraOnline,
-      active_source: cameraOnline ? 'anpviz' : null,
+      anpviz_stream: programSourceReady,
+      active_source: programSourceReady ? 'anpviz' : null,
       publisher_mode: publisherMode,
       errors: Array.isArray(s.errors) ? s.errors : [],
     },
@@ -259,7 +265,7 @@ async function getCameraDirectorState(workspaceId) {
           rollback_mode: true,
           scene: FIXED_SCENES.CAMERA_ONLY,
           revision: 0,
-          confirmed: cameraOnline,
+          confirmed: programSourceReady,
           audio_policy: AUDIO_POLICIES.CAMERA,
         },
     program: {
@@ -304,10 +310,12 @@ async function buildStatusContract(req, directorResult, requestId) {
   const publisher = directorResult?.data?.publisher || {};
   const compositor = directorResult?.data?.compositor || {};
   const cameraReady = directorResult?.data?.anpviz_stream === true;
-  const fixedMode = publisher.mode === PUBLISHER_MODES.FIXED_COMPOSITOR;
+  const publisherMode = publisher.mode || config.liveStream.publisherMode;
+  const fixedMode = publisherMode === PUBLISHER_MODES.FIXED_COMPOSITOR;
   // Camera Only is a complete program. Live content is optional and must not
   // make Start depend on the managed receiver being online or pre-populated.
-  capabilities.publisher_mode = publisher.mode || config.liveStream.publisherMode;
+  capabilities.publisher_mode = publisherMode;
+  capabilities.publisher_available = cameraReady;
   capabilities.publisher_ready = cameraReady
     && !!config.liveStream.peerTubeWatchUrl
     && (!fixedMode || compositor.available === true);
@@ -316,7 +324,15 @@ async function buildStatusContract(req, directorResult, requestId) {
     ? compositor.scene === FIXED_SCENES.CAMERA_ONLY
       || Object.values(FIXED_SCENES).includes(compositor.scene)
     : cameraReady;
-  capabilities.obs_available = fixedMode ? compositor.available === true : cameraReady;
+  // OBS is not part of direct-camera production. Keep its state nullable in
+  // that mode so operator clients never mislabel a camera/microphone outage as
+  // an OBS outage. `publisher_available` is the mode-neutral start gate.
+  capabilities.obs_available = fixedMode ? compositor.available === true : null;
+  capabilities.publisher_failure_reason = !cameraReady && !fixedMode
+    ? (directorResult?.data?.camera_edge?.microphone_connected === false
+      ? 'ROOM_MICROPHONE_DISCONNECTED'
+      : 'CAMERA_PROGRAM_UNAVAILABLE')
+    : null;
   capabilities.operator_start_allowed = capabilities.publisher_ready;
   capabilities.managed_receiver_required_for_start = false;
   if (lastError && lastError.code === ERROR_CODES.OPERATOR_STREAM_START_DISABLED) {

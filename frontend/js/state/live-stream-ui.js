@@ -5,6 +5,7 @@ export const LIVE_LADDER = Object.freeze({
   NOT_CONFIGURED: 'Not configured',
   RECEIVER_OFFLINE: 'Receiver offline',
   OBS_UNAVAILABLE: 'OBS unavailable',
+  CAMERA_SOURCE_UNAVAILABLE: 'Camera source unavailable',
   PROGRAM_NOT_PREPARED: 'Program not prepared',
   SCENE_UNSAFE: 'Scene unsafe',
   READY: 'Ready',
@@ -78,7 +79,18 @@ export function deriveLiveLadder(status, { phase = null } = {}) {
     return { state: LIVE_LADDER.RECEIVER_OFFLINE, canStart: false, reason: 'Managed receiver is offline' };
   }
 
-  if (c.obs_available === false || (data && data.obs === false)) {
+  const publisherMode = c.publisher_mode || status?.publisher?.mode || data?.publisher?.mode || null;
+  const cameraEdge = status?.camera_edge || data?.camera_edge || {};
+  const directCameraUnavailable = publisherMode === 'direct_camera'
+    && (c.publisher_available === false || c.publisher_ready === false || c.obs_available === false);
+  if (directCameraUnavailable) {
+    const reason = cameraEdge.microphone_connected === false
+      ? 'Camera program is unavailable because the room microphone is disconnected'
+      : 'Camera and microphone program source is unavailable';
+    return { state: LIVE_LADDER.CAMERA_SOURCE_UNAVAILABLE, canStart: false, reason };
+  }
+
+  if (publisherMode !== 'direct_camera' && (c.obs_available === false || (data && data.obs === false))) {
     return { state: LIVE_LADDER.OBS_UNAVAILABLE, canStart: false, reason: 'OBS is unavailable' };
   }
 

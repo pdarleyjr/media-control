@@ -21,6 +21,8 @@ let lastLadder = { state: LIVE_LADDER.UNKNOWN, canStart: false, reason: null };
 let startInFlight = false;
 let recordingActive = false;
 let recordingSessionId = null;
+let recordingAvailable = false;
+let recordingUnavailableReason = null;
 let compositionRevision = 0;
 let compositionLayout = 'camera_only';
 let compositionContentInstanceId = null;
@@ -63,7 +65,7 @@ export function mountActionDock(hostEl, opts = {}) {
       </div>
       <button type="button" class="mc-dock-btn mc-dock-default" data-dock="whiteboard">${esc(t('mc.wb.dock_open'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-default" data-dock="share">${esc(t('mc.cc.dock.share'))}</button>
-      <button type="button" class="mc-dock-btn mc-dock-default" data-dock="record-toggle" id="mc-dock-record-btn">${esc('Start Recording')}</button>
+      <button type="button" class="mc-dock-btn mc-dock-default" data-dock="record-toggle" id="mc-dock-record-btn" disabled aria-disabled="true" title="${esc(t('mc.cc.record.status_unavailable'))}">${esc('Start Recording')}</button>
       <button type="button" class="mc-dock-btn mc-dock-live" data-dock="start-live">${esc(t('mc.cc.dock.start_live'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-danger" data-dock="stop-live" hidden>${esc(t('mc.cc.dock.stop_live'))}</button>
       <button type="button" class="mc-dock-btn mc-dock-add" data-dock="add-display" aria-label="${esc(t('mc.cc.dock.add_display'))}">
@@ -163,7 +165,10 @@ export function mountActionDock(hostEl, opts = {}) {
     if (recordBtn) {
       recordBtn.textContent = recordingActive ? 'Stop Recording' : 'Start Recording';
       recordBtn.classList.toggle('is-recording', recordingActive);
-      recordBtn.disabled = livePhase === 'starting' || livePhase === 'stopping';
+      recordBtn.disabled = livePhase === 'starting' || livePhase === 'stopping'
+        || (!recordingActive && !recordingAvailable);
+      recordBtn.title = recordingUnavailableReason || recordBtn.textContent;
+      recordBtn.setAttribute('aria-disabled', recordBtn.disabled ? 'true' : 'false');
     }
     if (compositionEl) {
       compositionEl.hidden = !onAir || !liveCompositionAvailable;
@@ -215,13 +220,14 @@ export function mountActionDock(hostEl, opts = {}) {
         ? `<span class="mc-cam-detail-row"><b>Audio</b><em>${esc(String(audioMode))}</em></span>`
         : '';
       const publisherLine = `<span class="mc-cam-detail-row"><b>Publisher</b><em>${esc(String(data.publisher_mode || 'direct_camera'))}</em></span>`;
+      const microphoneLine = `<span class="mc-cam-detail-row"><b>${esc(t('mc.cc.camera.microphone'))}</b><em>${esc(data.microphone_connected ? t('mc.cc.camera.connected') : t('mc.cc.camera.disconnected'))}</em></span>`;
       detail.innerHTML = cams.map((cam) => {
         const selected = active === cam.id;
         const state = selected && cam.online         
           ? t('mc.cc.camera.selected')
           : (cam.online ? t('mc.cc.camera.ready') : t('mc.cc.camera.offline'));
         return `<span class="mc-cam-detail-row${selected ? ' is-active' : ''}"><b>${esc(cam.name)}</b><em>${esc(state)}</em></span>`;
-      }).join('') + audioLine + publisherLine;
+      }).join('') + microphoneLine + audioLine + publisherLine;
     }
   }
 
@@ -260,6 +266,12 @@ export function mountActionDock(hostEl, opts = {}) {
         compositionContentInstanceId = authoritativeComposition.content_instance_id || null;
         compositionAudioPolicy = authoritativeComposition.compositor_state?.audio_policy || 'camera';
       }
+      recordingAvailable = cameraEdge?.anpviz_stream === true;
+      recordingUnavailableReason = recordingAvailable
+        ? null
+        : (cameraEdge?.microphone_connected === false
+          ? t('mc.cc.record.requires_microphone')
+          : t('mc.cc.record.requires_camera'));
       recordingActive = cameraEdge?.recording_active === true
         || status?.recording_state === 'active'
         || status?.recording_active === true;
@@ -267,6 +279,8 @@ export function mountActionDock(hostEl, opts = {}) {
     } catch {
       if (!startInFlight) liveActive = false;
       liveCompositionAvailable = false;
+      recordingAvailable = false;
+      recordingUnavailableReason = t('mc.cc.record.status_unavailable');
       lastLadder = { state: LIVE_LADDER.UNKNOWN, canStart: false, reason: 'Status unavailable' };
     } finally {
       liveStateKnown = true;

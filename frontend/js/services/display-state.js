@@ -113,6 +113,9 @@ export async function secureScreenshotUrl(baseUrl, { signal } = {}) {
         credentials: 'same-origin',
         signal: controller ? controller.signal : signal,
       });
+      // A known, authorized display can legitimately have no captured frame yet.
+      // Keep the current preview (if any) and avoid manufacturing an empty Blob.
+      if (res.status === 204) return entry.url;
       if (!res.ok) {
         blobDebug.fails += 1;
         if (res.status === 401 && typeof localStorage !== 'undefined') {
@@ -168,7 +171,9 @@ export function get(id) { return displays.get(id) || null; }
 
 function hydrateRoomSnapshot(snapshot) {
   const projected = projectRoomDisplays(snapshot, displays, {
-    screenshotUrlForId: (id) => withToken(`/api/devices/${encodeURIComponent(id)}/screenshot`),
+    screenshotUrlForId: (id, capturedAt) => withToken(
+      `/api/devices/${encodeURIComponent(id)}/screenshot?t=${encodeURIComponent(capturedAt)}`,
+    ),
   });
   if (!projected) return;
   displays = projected;

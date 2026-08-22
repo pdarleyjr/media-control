@@ -137,6 +137,24 @@ test('start gates surface specific offline/unconfigured codes', () => {
     ERROR_CODES.OBS_UNAVAILABLE,
   );
   assert.equal(
+    startGateFailure({
+      ...base,
+      publisher_mode: 'direct_camera',
+      publisher_available: false,
+      obs_available: null,
+    }, { directorMode: 'manual' }).code,
+    ERROR_CODES.PUBLISHER_UNAVAILABLE,
+  );
+  assert.equal(
+    startGateFailure({
+      ...base,
+      publisher_mode: 'fixed_compositor',
+      publisher_available: true,
+      obs_available: false,
+    }, { directorMode: 'manual' }).code,
+    ERROR_CODES.OBS_UNAVAILABLE,
+  );
+  assert.equal(
     startGateFailure({ ...base, managed_receiver_online: false }, { directorMode: 'manual' }).code,
     ERROR_CODES.MANAGED_RECEIVER_OFFLINE,
   );

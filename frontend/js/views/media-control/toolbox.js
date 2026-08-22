@@ -580,6 +580,7 @@ async function renderScenesTab(container, { onAfterSend }) {
 // Exported so the Camera Feeds tab (camera-feeds.js) reuses the identical
 // tap-to-route + drag-to-card wiring instead of duplicating it.
 const TOUCH_DROP_SELECTOR = [
+  '.mc-wall-region[data-layout-group-id][data-wall-id]',
   '.mc-display-card[data-device-id]',
   '.mc-wall-cell[data-device-id]',
   '.mc-wall-split-half[data-device-id][data-split-half]',
@@ -590,6 +591,8 @@ const TOUCH_DROP_SELECTOR = [
 function touchDropTargetAt(x, y) {
   const hit = document.elementFromPoint(x, y);
   if (!hit) return null;
+  const groupedRegion = hit.closest('.mc-wall-region[data-layout-group-id][data-wall-id]');
+  if (groupedRegion) return groupedRegion;
   const target = hit.closest(TOUCH_DROP_SELECTOR);
   if (!target) return null;
   if (target.classList.contains('mc-wall-cell') &&

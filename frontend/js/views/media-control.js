@@ -364,8 +364,10 @@ function commandCenterControlTargets() {
   return [...layoutGroupTargets(), ...wallRegionTargets()];
 }
 
-function layoutGroupById(groupId) {
-  return layoutGroupTargets().find((group) => group.id === groupId) || null;
+function layoutGroupById(groupId, wallId = null) {
+  return layoutGroupTargets().find((group) => (
+    group.id === groupId && (!wallId || group.wall_id === wallId)
+  )) || null;
 }
 
 function layoutGroupForDevice(deviceId) {
@@ -1694,6 +1696,41 @@ function forcesSingleScreen(source) {
 }
 
 function attachStageDrop(stageContainer) {
+  // A grouped wall is presented as independently routable regions. Wire the
+  // region wrapper itself before its nested span cells so a drop stays scoped
+  // to the exact revisioned wall-group and never bubbles into the room target.
+  stageContainer.querySelectorAll('.mc-wall-region[data-layout-group-id][data-wall-id]').forEach((region) => {
+    if (region.__mcDropWired) return;
+    region.__mcDropWired = true;
+    region.addEventListener('dragover', (e) => {
+      if (!dragHasSource(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'copy';
+      region.classList.add('mc-card-dragover');
+    });
+    region.addEventListener('dragleave', (e) => {
+      if (!region.contains(e.relatedTarget)) region.classList.remove('mc-card-dragover');
+    });
+    const handleDrop = async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      region.classList.remove('mc-card-dragover');
+      const parsed = parseDragSource(e);
+      const group = layoutGroupById(region.dataset.layoutGroupId, region.dataset.wallId);
+      if (!parsed || !group?.member_ids?.length) return;
+      const ok = await sendToPhysicalScope(
+        parsed.source,
+        group.member_ids,
+        parsed.label,
+        DROP_DELIVERY_OPTIONS,
+      );
+      if (ok) refreshAfterSend(group.member_ids);
+    };
+    region.addEventListener('drop', handleDrop);
+    region.addEventListener('mc:source-drop', handleDrop);
+  });
+
   // Per-card drop → that ONE display. stopPropagation so the stage-level handler
   // below does not also fire and fan the source out to everyone.
   stageContainer.querySelectorAll('.mc-display-card[data-device-id], .mc-wall-cell[data-device-id]').forEach(card => {
@@ -2003,6 +2040,32 @@ function syncSocketTarget(tgt) {
 // The active target changed — re-point the canvas + refresh the canvas-level
 // controls. This is view-only; the socket target join only selects the live
 // ack/state stream for the web/Electron controller.
+let targetPaintFrame = null;
+let targetPaintGeneration = 0;
+
+function scheduleTargetPaint(tgt) {
+  const generation = ++targetPaintGeneration;
+  if (targetPaintFrame != null) cancelAnimationFrame(targetPaintFrame);
+  const stage = stageEl();
+  if (stage) {
+    stage.setAttribute('aria-busy', 'true');
+    stage.querySelector('.mc-stage-target-loading')?.remove();
+    const loading = document.createElement('div');
+    loading.className = 'mc-stage-target-loading';
+    loading.setAttribute('role', 'status');
+    loading.textContent = t('mc.cc.target.loading', { target: tgt?.name || targetLabelOf(tgt?.id) || '' });
+    stage.appendChild(loading);
+  }
+  // Yield once so the selected tab, busy state, and loading feedback paint
+  // before live video/iframe preview markup is rebuilt.
+  targetPaintFrame = requestAnimationFrame(() => {
+    targetPaintFrame = null;
+    if (generation !== targetPaintGeneration) return;
+    paintStage();
+    stageEl()?.removeAttribute('aria-busy');
+  });
+}
+
 function handleTargetChange(tgt) {
   if (!tgt) {
     // Room Overview is removed (task §5). A null target falls back to the
@@ -2041,7 +2104,21 @@ function handleTargetChange(tgt) {
   } catch { /* session storage is best effort */ }
   activePreviewCursor = 0;
   syncSocketTarget(activeControlTarget || activeTarget);
-  paintStage();
+  if (restoringTarget) {
+    // Startup preference reconciliation is not an operator-requested switch.
+    // Paint it immediately so the loading veil cannot race visual readiness or
+    // obscure an already-rendered wall while the preference request settles.
+    targetPaintGeneration += 1;
+    if (targetPaintFrame != null) {
+      cancelAnimationFrame(targetPaintFrame);
+      targetPaintFrame = null;
+    }
+    stageEl()?.querySelector('.mc-stage-target-loading')?.remove();
+    stageEl()?.removeAttribute('aria-busy');
+    paintStage();
+  } else {
+    scheduleTargetPaint(tgt);
+  }
   paintSummary();
   paintChips();
   if (transportApi && transportApi.repaint) transportApi.repaint();
