@@ -11,6 +11,7 @@ const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-content-visibility-rou
 process.env.DB_PATH = path.join(tempDir, 'test.db');
 
 const { db } = require('../db/database');
+const config = require('../config');
 const { applyContentVisibilityMigration, VISIBILITY } = require('../lib/content-visibility');
 applyContentVisibilityMigration(db);
 
@@ -43,7 +44,9 @@ db.exec(`
     ('cv-workspace', 'cv-owner', 'cv-ws-a', 'workspace.png', '', 'image/png', 'workspace_shared'),
     ('cv-org-shared', 'cv-owner', 'cv-ws-b', 'organization.png', '', 'image/png', 'organization_shared'),
     ('cv-other-private', 'cv-other', 'cv-ws-other', 'other.png', '', 'image/png', 'private'),
-    ('cv-template', 'cv-admin', NULL, 'template.png', '', 'image/png', 'platform_template');
+    ('cv-template', 'cv-admin', NULL, 'template.png', '', 'image/png', 'platform_template'),
+    ('cv-internal', 'cv-owner', 'cv-ws-a', 'extracted.png', '', 'image/png', 'workspace_shared');
+  UPDATE content SET library_scope='internal' WHERE id='cv-internal';
   INSERT INTO content_template_assignments (content_id, workspace_id, assigned_by)
   VALUES ('cv-template', 'cv-ws-a', 'cv-admin');
 `);
@@ -71,8 +74,12 @@ function response() {
   const res = {
     statusCode: 200,
     body: undefined,
+    headers: {},
+    sentFile: null,
     status(code) { res.statusCode = code; return res; },
     json(body) { res.body = body; return res; },
+    setHeader(name, value) { res.headers[String(name).toLowerCase()] = value; return res; },
+    sendFile(file) { res.sentFile = file; return res; },
   };
   return res;
 }
@@ -100,6 +107,120 @@ test('content list follows all four visibility levels without cross-organization
   const workspace = res.body.find((row) => row.id === 'cv-workspace');
   assert.equal(workspace.visibility.access_level, VISIBILITY.WORKSPACE_SHARED);
   assert.equal(workspace.permissions.can_duplicate, false);
+});
+
+test('normal Media Library pagination and search never expose internal presentation dependencies', () => {
+  for (const query of [{}, { search: 'extracted' }, { pagination: 'cursor', limit: '20' }]) {
+    const res = response();
+    handler('GET', '/')(peerReq({ query }), res);
+    const rows = Array.isArray(res.body) ? res.body : res.body.items;
+    assert.equal(rows.some((row) => row.id === 'cv-internal'), false);
+  }
+});
+
+test('generic content routes and summary do not resolve presentation-internal dependencies', () => {
+  const owner = peerReq({
+    user: { id: 'cv-owner', role: 'user' },
+    workspaceRole: 'workspace_editor',
+    params: { id: 'cv-internal' },
+  });
+  const metadata = response();
+  handler('GET', '/:id')(owner, metadata);
+  assert.equal(metadata.statusCode, 404);
+
+  const summary = response();
+  handler('GET', '/library-summary')(peerReq(), summary);
+  assert.equal(summary.statusCode, 200);
+  assert.equal(summary.body.total_items, 3);
+});
+
+test('internal presentation asset bytes are owner/admin scoped and never cross workspace', (t) => {
+  const filename = path.join(`cv-internal-route-${process.pid}`, 'nested.png');
+  const file = path.join(config.contentDir, filename);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, Buffer.from('internal-fixture'));
+  t.after(() => {
+    try { fs.rmSync(path.dirname(file), { recursive: true, force: true }); } catch {}
+    db.prepare("UPDATE content SET filepath='' WHERE id='cv-internal'").run();
+  });
+  db.prepare("UPDATE content SET filepath=? WHERE id='cv-internal'").run(filename);
+
+  const owner = response();
+  handler('GET', '/internal/:id')(peerReq({
+    user: { id: 'cv-owner', role: 'user' },
+    workspaceRole: 'workspace_editor',
+    params: { id: 'cv-internal' },
+  }), owner);
+  assert.equal(owner.statusCode, 200);
+  assert.equal(owner.sentFile, fs.realpathSync(file));
+  assert.equal(owner.headers['cache-control'], 'private, no-store');
+
+  const peer = response();
+  handler('GET', '/internal/:id')(peerReq({ params: { id: 'cv-internal' } }), peer);
+  assert.equal(peer.statusCode, 403);
+
+  const admin = response();
+  handler('GET', '/internal/:id')(peerReq({
+    user: { id: 'cv-admin', role: 'user' },
+    workspaceRole: 'workspace_admin',
+    orgRole: 'org_admin',
+    params: { id: 'cv-internal' },
+  }), admin);
+  assert.equal(admin.statusCode, 200);
+
+  const crossWorkspace = response();
+  handler('GET', '/internal/:id')(peerReq({
+    user: { id: 'cv-owner', role: 'user' },
+    workspaceId: 'cv-ws-b',
+    workspaceRole: 'workspace_admin',
+    params: { id: 'cv-internal' },
+  }), crossWorkspace);
+  assert.equal(crossWorkspace.statusCode, 403);
+});
+
+test('bulk permanent erase preauthorizes every item before mutating any content', async () => {
+  db.prepare(`INSERT INTO content
+    (id,user_id,workspace_id,filename,filepath,mime_type,access_level)
+    VALUES ('cv-bulk-owned','cv-owner','cv-ws-a','bulk.png','','image/png','private')`).run();
+  const req = peerReq({
+    user: { id: 'cv-owner', role: 'user' },
+    workspaceRole: 'workspace_editor',
+    body: {
+      content_ids: ['cv-bulk-owned', 'cv-other-private'],
+      confirm_permanent_erase: true,
+    },
+    app: { get: () => null },
+  });
+  const res = response();
+  await handler('POST', '/permanent-erase')(req, res);
+  assert.equal(res.statusCode, 403);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM content WHERE id='cv-bulk-owned'").get().count, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM content WHERE id='cv-other-private'").get().count, 1);
+  db.prepare("DELETE FROM content WHERE id='cv-bulk-owned'").run();
+});
+
+test('wallpaper menu and duplicate summary exclude internal presentation dependencies', () => {
+  const before = response();
+  handler('GET', '/library-summary')(peerReq(), before);
+  db.prepare(`UPDATE content SET filepath='internal-wallpaper.png',processing_status='ready',
+    original_sha256='internal-duplicate-hash',version=1 WHERE id='cv-internal'`).run();
+  db.prepare("UPDATE content SET original_sha256='internal-duplicate-hash' WHERE id='cv-workspace'").run();
+  db.prepare(`INSERT INTO asset_checksums
+    (asset_id,content_id,generation,sha256,size_bytes,canonical_path,canonical_url,
+     is_screensaver,screensaver_category,computed_at)
+    VALUES ('cv-internal','cv-internal',1,?,10,'internal-wallpaper.png','/api/content/cv-internal/file',1,'wallpaper',1)
+    ON CONFLICT(content_id) DO UPDATE SET is_screensaver=1,screensaver_category='wallpaper'`).run('a'.repeat(64));
+
+  const wallpaper = response();
+  handler('GET', '/wallpaper-menu')(peerReq(), wallpaper);
+  assert.equal(wallpaper.body.some((item) => item.id === 'cv-internal'), false);
+  const after = response();
+  handler('GET', '/library-summary')(peerReq(), after);
+  assert.equal(after.body.duplicate_items, before.body.duplicate_items);
+
+  db.prepare("DELETE FROM asset_checksums WHERE content_id='cv-internal'").run();
+  db.prepare("UPDATE content SET filepath='',processing_status='uploaded',original_sha256=NULL WHERE id='cv-internal'").run();
+  db.prepare("UPDATE content SET original_sha256=NULL WHERE id='cv-workspace'").run();
 });
 
 test('direct metadata access denies a private-content IDOR to a peer', () => {

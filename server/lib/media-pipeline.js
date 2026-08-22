@@ -80,6 +80,7 @@ function buildYoutubeDownloadArgs({
     '--no-playlist',
     '--no-warnings',
     '--no-progress',
+    '--print', 'after_move:__MBFD_TITLE__%(title)s',
     '--concurrent-fragments', '1',
     '--socket-timeout', '30',
     '--retries', '3',
@@ -124,6 +125,7 @@ function buildUrlDownloadArgs({
     '--no-playlist',
     '--no-warnings',
     '--no-progress',
+    '--print', 'after_move:__MBFD_TITLE__%(title)s',
     '--concurrent-fragments', '1',
     '--socket-timeout', '30',
     '--retries', '3',
@@ -144,6 +146,88 @@ function buildUrlDownloadArgs({
 
 function safeUnlink(filePath) {
   try { if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch { /* best effort */ }
+}
+
+function downloadedTitle(stdout) {
+  const lines = String(stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const marked = [...lines].reverse().find((line) => line.startsWith('__MBFD_TITLE__'));
+  if (!marked) return null;
+  const title = marked.slice('__MBFD_TITLE__'.length)
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 240);
+  return title || null;
+}
+
+function finalizeUrlDownloadInvariant({
+  db,
+  contentDir,
+  contentId,
+  downloadJobId,
+  discoveredTitle = null,
+  now = Math.floor(Date.now() / 1000),
+} = {}) {
+  const content = db.prepare('SELECT * FROM content WHERE id=?').get(contentId);
+  const download = db.prepare('SELECT * FROM download_jobs WHERE id=? AND content_id=?').get(downloadJobId, contentId);
+  if (!content || !download) return { ok: false, reason: 'catalog_link_missing' };
+  if (content.processing_status !== 'ready' || !content.filepath) return { ok: false, reason: 'content_not_ready' };
+  let absolutePath;
+  let size = 0;
+  try {
+    absolutePath = safeContentPath(contentDir, path.join(contentDir, content.filepath));
+    size = fs.statSync(absolutePath).size;
+  } catch { return { ok: false, reason: 'localized_bytes_missing' }; }
+  if (size <= 0) return { ok: false, reason: 'localized_bytes_empty' };
+  const title = String(download.title || discoveredTitle || content.filename || path.basename(content.filepath))
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 240);
+
+  if (download.status === 'done'
+      && Number(download.progress_pct) === 100
+      && download.local_path === content.filepath
+      && content.remote_url == null
+      && Number(content.file_size) === size
+      && content.filename === title
+      && content.content_type === 'video') {
+    return { ok: true, reason: null, title, filepath: content.filepath, size, unchanged: true };
+  }
+
+  db.transaction(() => {
+    db.prepare(`UPDATE content
+      SET filename=?, file_size=?, mime_type='video/mp4', content_type='video',
+          remote_url=NULL, processing_status='ready', processing_error=NULL,
+          version=COALESCE(version,1)+1, updated_at=?
+      WHERE id=?`).run(title, size, now, contentId);
+    db.prepare(`UPDATE content_media_metadata
+      SET detected_mime_type='video/mp4', remote_health_status='localized',
+          remote_source_kind='imported_local', updated_at=?
+      WHERE content_id=?`).run(now, contentId);
+    db.prepare(`UPDATE download_jobs
+      SET title=?, status='done', progress_pct=100, local_path=?,
+          error_msg=NULL, completed_at=COALESCE(completed_at, ?)
+      WHERE id=? AND content_id=?`).run(title, content.filepath, now, downloadJobId, contentId);
+  })();
+  const verified = db.prepare(`SELECT dj.status, dj.progress_pct, dj.content_id,
+      c.filepath, c.processing_status, c.remote_url
+    FROM download_jobs dj JOIN content c ON c.id=dj.content_id
+    WHERE dj.id=?`).get(downloadJobId);
+  const ok = Boolean(verified
+      && verified.status === 'done'
+      && Number(verified.progress_pct) === 100
+      && verified.content_id === contentId
+      && verified.processing_status === 'ready'
+      && verified.filepath
+      && verified.remote_url == null);
+  return {
+    ok,
+    reason: ok ? null : 'ready_invariant_failed',
+    title,
+    filepath: content.filepath,
+    size,
+  };
 }
 
 function cleanupYtDlpArtifacts(contentDir, outputPath) {
@@ -247,6 +331,18 @@ function errorWith(code, message, retryable = true) {
   return error;
 }
 
+function durableJobContext(context = {}) {
+  return {
+    progress: typeof context.progress === 'function' ? context.progress : () => {},
+    heartbeat: typeof context.heartbeat === 'function' ? context.heartbeat : () => false,
+    isCancellationRequested: typeof context.isCancellationRequested === 'function'
+      ? context.isCancellationRequested
+      : () => false,
+    registerArtifact: typeof context.registerArtifact === 'function' ? context.registerArtifact : () => {},
+    releaseArtifact: typeof context.releaseArtifact === 'function' ? context.releaseArtifact : () => {},
+  };
+}
+
 class MediaPipeline {
   constructor(options = {}) {
     this.db = options.db;
@@ -260,6 +356,14 @@ class MediaPipeline {
     this.now = options.now || (() => Math.floor(Date.now() / 1000));
     this.uuid = options.uuid || randomUUID;
     migrateMediaPipeline(this.db);
+    const { MediaJobArtifactStore } = require('./media-job-artifacts');
+    this.artifactStore = new MediaJobArtifactStore(this.db, this.contentDir, {
+      now: this.now,
+      uuid: this.uuid,
+    });
+    this.artifactStore.cleanupOrphans().catch((error) => {
+      console.warn(`[media-job-artifacts] orphan cleanup failed: ${error.message}`);
+    });
     this.store = options.store || new MediaJobStore(this.db, {
       now: this.now,
       uuid: this.uuid,
@@ -281,6 +385,7 @@ class MediaPipeline {
       workerId: options.workerId || `media-pipeline:${process.pid}`,
       concurrency: Math.max(1, Math.min(Number(process.env.MEDIA_JOB_CONCURRENCY) || 1, 4)),
       leaseSeconds: Math.max(60, Number(process.env.MEDIA_JOB_LEASE_SECONDS) || 600),
+      artifactStore: this.artifactStore,
       handlers: {
         video_normalize: (job, context) => this._handleVideo(job, context),
         thumbnail_finalize: (job, context) => this._handleThumbnailFinalize(job, context),
@@ -523,13 +628,16 @@ class MediaPipeline {
     });
   }
 
-  enqueuePresentationConversion({ contentId, workspaceId, userId, wallProfile, mode, useAi = true, title }) {
+  enqueuePresentationConversion({
+    contentId, workspaceId, userId, wallProfile, mode, useAi = true, title, idempotencyKey,
+  }) {
     return this.enqueue({
       contentId,
       workspaceId,
       userId,
       jobType: 'presentation_convert',
       sourceType: 'presentation_converter',
+      idempotencyKey,
       maxAttempts: 2,
       payload: {
         wall_profile: wallProfile,
@@ -605,6 +713,7 @@ class MediaPipeline {
   }
 
   async _handleVideo(job, context) {
+    context = durableJobContext(context);
     const row = this.db.prepare('SELECT * FROM content WHERE id=?').get(job.content_id);
     if (!row) return { status: 'stale', reason: 'content_missing' };
     if (Number(row.version) !== Number(job.expected_version)
@@ -632,6 +741,9 @@ class MediaPipeline {
       expectedFilepath: row.filepath,
       contentDir: this.contentDir,
       staleAbsolutePaths: job.payload?.staleAbsolutePaths || [],
+      registerArtifact: context.registerArtifact,
+      releaseArtifact: context.releaseArtifact,
+      isCancellationRequested: context.isCancellationRequested,
     });
     if (result.status === 'failed') {
       throw errorWith(
@@ -644,11 +756,13 @@ class MediaPipeline {
   }
 
   async _handlePeerTube(job, context) {
+    context = durableJobContext(context);
     this._ensureDiskReservation(job);
     return this.peerTubeAssetHandler(job, context);
   }
 
   async _handleThumbnailStudio(job, context) {
+    context = durableJobContext(context);
     const row = this.db.prepare('SELECT * FROM content WHERE id=?').get(job.content_id);
     const customPosterPath = job.payload?.customPosterPath || null;
     const cleanupCustom = () => safeUnlink(customPosterPath);
@@ -698,8 +812,13 @@ class MediaPipeline {
         durationSeconds: row.duration_sec,
         timestampSeconds: request.timestampSeconds,
         position: request.position,
+        registerArtifact: context.registerArtifact,
       });
       context.progress('preparing', 80);
+      if (context.isCancellationRequested()) {
+        safeUnlink(candidate.thumbnailPath);
+        return { status: 'cancelled', reason: 'media_job_cancelled' };
+      }
       const result = await commitThumbnail({
         db: this.db,
         io: this.io,
@@ -713,6 +832,7 @@ class MediaPipeline {
         provenance: candidate.provenance,
         now: this.now,
       });
+      if (result?.status === 'ready') context.releaseArtifact(candidate.thumbnailPath);
       cleanupCustom();
       return result;
     } catch (error) {
@@ -727,6 +847,7 @@ class MediaPipeline {
   }
 
   async _handleThumbnailFinalize(job, context) {
+    context = durableJobContext(context);
     const row = this.db.prepare('SELECT * FROM content WHERE id=?').get(job.content_id);
     if (!row || Number(row.version) !== Number(job.expected_version)
         || String(row.filepath) !== String(job.expected_filepath)) {
@@ -750,6 +871,11 @@ class MediaPipeline {
     if (['image/heic', 'image/heif', 'image/heic-sequence', 'image/heif-sequence'].includes(mimeType.toLowerCase())) {
       context.progress('optimizing', 20);
       const { heicToJpeg } = require('./media-transcode');
+      const expectedConvertedPath = path.join(
+        this.contentDir,
+        `${path.basename(absolutePath).replace(/\.[^.]+$/, '')}.jpg`,
+      );
+      context.registerArtifact(expectedConvertedPath);
       const converted = await heicToJpeg(absolutePath, this.contentDir);
       if (!converted) throw errorWith('heic_conversion_failed', 'HEIC conversion failed', true);
       candidatePath = converted.absPath;
@@ -763,6 +889,10 @@ class MediaPipeline {
     let provenance = null;
     context.progress('thumbnail', 35);
     if (isDocThumbnailMime(candidateMimeType)) {
+      context.registerArtifact(path.join(
+        this.contentDir,
+        `thumb_${path.basename(candidatePath).replace(/\.[^.]+$/, '')}.jpg`,
+      ));
       thumbnailName = await generateDocThumbnail({
         srcPath: candidatePath,
         mimeType: candidateMimeType,
@@ -781,6 +911,7 @@ class MediaPipeline {
       width = metadata.width || null;
       height = metadata.height || null;
       thumbnailName = `thumb_${path.basename(candidateFilepath).replace(/\.[^.]+$/, '')}.jpg`;
+      context.registerArtifact(path.join(this.contentDir, thumbnailName));
       await image.resize(config.thumbnailWidth).jpeg({ quality: 70 })
         .toFile(path.join(this.contentDir, thumbnailName));
       provenance = 'image_scaled';
@@ -796,7 +927,8 @@ class MediaPipeline {
       : await sha256File(candidatePath);
     context.progress('checksum', 75);
     try {
-      return await finalizeContentAsset({
+      if (context.isCancellationRequested()) throw errorWith('media_job_cancelled', 'Media job cancelled', false);
+      const result = await finalizeContentAsset({
         db: this.db,
         io: this.io,
         contentId: row.id,
@@ -822,6 +954,11 @@ class MediaPipeline {
         ],
         staleAbsolutePaths: job.payload?.staleAbsolutePaths || [],
       });
+      if (result?.status === 'ready') {
+        if (thumbnailName) context.releaseArtifact(path.join(this.contentDir, thumbnailName));
+        if (convertedPath) context.releaseArtifact(convertedPath);
+      }
+      return result;
     } catch (error) {
       safeUnlink(thumbnailName && path.join(this.contentDir, thumbnailName));
       safeUnlink(convertedPath);
@@ -830,6 +967,7 @@ class MediaPipeline {
   }
 
   async _handleYoutube(job, context) {
+    context = durableJobContext(context);
     let row = this.db.prepare('SELECT * FROM content WHERE id=?').get(job.content_id);
     if (!row) {
       return { status: 'stale', reason: 'content_changed' };
@@ -860,6 +998,8 @@ class MediaPipeline {
     }
     if (!localName || !fs.existsSync(localPath)) {
       this._ensureDiskReservation(job);
+      context.registerArtifact(partPath);
+      context.registerArtifact(localPath);
       cleanupYtDlpArtifacts(this.contentDir, partPath);
       context.progress('optimizing', 15);
       try {
@@ -881,6 +1021,7 @@ class MediaPipeline {
           cleanup: () => cleanupYtDlpArtifacts(this.contentDir, partPath),
           options,
         });
+        if (context.isCancellationRequested()) throw errorWith('media_job_cancelled', 'Media job cancelled', false);
         if (!fs.existsSync(partPath) || fs.statSync(partPath).size <= 0) {
           throw errorWith('youtube_output_missing', 'YouTube download produced no media');
         }
@@ -931,6 +1072,8 @@ class MediaPipeline {
         safeUnlink(localPath);
         return { status: 'stale', reason: 'content_changed' };
       }
+      context.releaseArtifact(partPath);
+      context.releaseArtifact(localPath);
     }
     row = this.db.prepare('SELECT * FROM content WHERE id=?').get(job.content_id);
     if (String(row.filepath || '') !== localName) {
@@ -950,6 +1093,7 @@ class MediaPipeline {
         safeUnlink(localPath);
         return { status: 'stale', reason: 'content_changed' };
       }
+      context.releaseArtifact(localPath);
       row = this.db.prepare('SELECT * FROM content WHERE id=?').get(job.content_id);
     }
     context.progress('probing', 55);
@@ -962,6 +1106,9 @@ class MediaPipeline {
       absPath: localPath,
       expectedFilepath: localName,
       contentDir: this.contentDir,
+      registerArtifact: context.registerArtifact,
+      releaseArtifact: context.releaseArtifact,
+      isCancellationRequested: context.isCancellationRequested,
     });
     if (result.status === 'failed') {
       throw errorWith(
@@ -983,18 +1130,20 @@ class MediaPipeline {
   }
 
   async _handleUrlDownload(job, context) {
+    context = durableJobContext(context);
     let row = this.db.prepare('SELECT * FROM content WHERE id=?').get(job.content_id);
     const downloadJobId = job.payload?.downloadJobId || null;
     if (!row) return { status: 'stale', reason: 'content_missing' };
     if (Number(row.version) !== Number(job.expected_version)) {
       if (downloadJobId && row.processing_status === 'ready' && row.filepath) {
-        this.db.prepare(`
-          UPDATE download_jobs
-          SET status='done', progress_pct=100, local_path=?,
-              error_msg=NULL, completed_at=COALESCE(completed_at, ?)
-          WHERE id=?
-        `).run(row.filepath, this.now(), downloadJobId);
-        return { status: 'ready', recovered: true, content_id: row.id };
+        const recovered = finalizeUrlDownloadInvariant({
+          db: this.db,
+          contentDir: this.contentDir,
+          contentId: row.id,
+          downloadJobId,
+          now: this.now(),
+        });
+        if (recovered.ok) return { status: 'ready', recovered: true, content_id: row.id };
       }
       return { status: 'stale', reason: 'content_changed' };
     }
@@ -1017,6 +1166,8 @@ class MediaPipeline {
         throw errorWith(safe?.reason || 'download_url_unsafe', safe?.error || 'Download URL is unsafe', false);
       }
       cleanupYtDlpArtifacts(this.contentDir, partPath);
+      context.registerArtifact(partPath);
+      context.registerArtifact(localPath);
       context.progress('optimizing', 15);
       if (downloadJobId) {
         this.db.prepare(`
@@ -1026,6 +1177,7 @@ class MediaPipeline {
           WHERE id=?
         `).run(this.now(), downloadJobId);
       }
+      let downloadResult = null;
       try {
         const options = {
           timeout: Math.max(60_000, Number(process.env.YDLP_TIMEOUT_MS) || 30 * 60_000),
@@ -1039,7 +1191,7 @@ class MediaPipeline {
           playerClient,
         });
         if (normalizeYoutubeId(safe.parsed.toString())) {
-          await execYoutubeDownloadWithFallback({
+          downloadResult = await execYoutubeDownloadWithFallback({
             execFile: this.execFile,
             primaryArgs: downloadArgs(),
             fallbackArgsList: YOUTUBE_403_FALLBACK_CLIENTS.map(downloadArgs),
@@ -1047,14 +1199,16 @@ class MediaPipeline {
             options,
           });
         } else {
-          await this.execFile('yt-dlp', downloadArgs(), options);
+          downloadResult = await this.execFile('yt-dlp', downloadArgs(), options);
         }
+        if (context.isCancellationRequested()) throw errorWith('media_job_cancelled', 'Media job cancelled', false);
         const size = sourceSize(this.contentDir, partPath);
         if (size <= 0) throw errorWith('download_output_missing', 'Download produced no media');
         if (size > Number(job.payload?.maxBytes || mediaLimits().maxSourceBytes)) {
           throw errorWith('download_output_too_large', 'Downloaded media exceeded the import limit', false);
         }
         fs.renameSync(partPath, localPath);
+        job.discovered_title = downloadedTitle(downloadResult?.stdout);
       } catch (error) {
         cleanupYtDlpArtifacts(this.contentDir, partPath);
         safeUnlink(localPath);
@@ -1088,6 +1242,8 @@ class MediaPipeline {
         safeUnlink(localPath);
         return { status: 'stale', reason: 'content_changed' };
       }
+      context.releaseArtifact(partPath);
+      context.releaseArtifact(localPath);
       if (downloadJobId) {
         this.db.prepare(`
           UPDATE download_jobs SET local_path=?, progress_pct=85 WHERE id=?
@@ -1112,6 +1268,7 @@ class MediaPipeline {
         safeUnlink(localPath);
         return { status: 'stale', reason: 'content_changed' };
       }
+      context.releaseArtifact(localPath);
       row = this.db.prepare('SELECT * FROM content WHERE id=?').get(job.content_id);
     }
     context.progress('probing', 55);
@@ -1124,6 +1281,9 @@ class MediaPipeline {
       absPath: localPath,
       expectedFilepath: localName,
       contentDir: this.contentDir,
+      registerArtifact: context.registerArtifact,
+      releaseArtifact: context.releaseArtifact,
+      isCancellationRequested: context.isCancellationRequested,
     });
     if (result.status === 'failed') {
       if (downloadJobId) {
@@ -1134,13 +1294,19 @@ class MediaPipeline {
       throw errorWith(result.error || 'download_normalization_failed', result.error, false);
     }
     if (result.status === 'ready' && downloadJobId) {
-      const ready = this.db.prepare('SELECT filepath FROM content WHERE id=?').get(row.id);
-      this.db.prepare(`
-        UPDATE download_jobs
-        SET status='done', progress_pct=100, local_path=?,
-            error_msg=NULL, completed_at=?
-        WHERE id=?
-      `).run(ready?.filepath || localName, this.now(), downloadJobId);
+      const finalized = finalizeUrlDownloadInvariant({
+        db: this.db,
+        contentDir: this.contentDir,
+        contentId: row.id,
+        downloadJobId,
+        discoveredTitle: job.discovered_title,
+        now: this.now(),
+      });
+      if (!finalized.ok) {
+        this.db.prepare(`UPDATE download_jobs SET status='error', error_msg=?, completed_at=? WHERE id=?`)
+          .run(finalized.reason, this.now(), downloadJobId);
+        throw errorWith('download_ready_invariant_failed', finalized.reason, false);
+      }
     }
     return result;
   }
@@ -1243,6 +1409,8 @@ module.exports = {
   availableDiskBytes,
   buildUrlDownloadArgs,
   buildYoutubeDownloadArgs,
+  downloadedTitle,
+  finalizeUrlDownloadInvariant,
   getMediaPipeline,
   normalizeYoutubeId,
   youtubeSourceIdentity,

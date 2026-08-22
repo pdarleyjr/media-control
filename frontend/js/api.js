@@ -22,6 +22,23 @@ function normalizeApiPath(value) {
   return `${candidate.pathname}${candidate.search}`;
 }
 
+function createApiError(body, status, fallbackMessage = 'Request failed') {
+  const details = body && typeof body === 'object' ? body : {};
+  const error = new Error(details.error || fallbackMessage);
+  error.status = status;
+  error.details = details;
+  for (const field of [
+    'code',
+    'completed_content_ids',
+    'failed_content_id',
+    'impact',
+    'result',
+  ]) {
+    if (Object.prototype.hasOwnProperty.call(details, field)) error[field] = details[field];
+  }
+  return error;
+}
+
 async function request(url, options = {}) {
   const { headers: optionHeaders = {}, ...requestOptions } = options;
   const res = await fetch(normalizeApiPath(url), {
@@ -38,11 +55,7 @@ async function request(url, options = {}) {
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    const error = new Error(err.error || 'Request failed');
-    error.status = res.status;
-    error.code = err.code;
-    error.details = err;
-    throw error;
+    throw createApiError(err, res.status);
   }
   return res.json();
 }
@@ -62,11 +75,7 @@ async function requestForm(url, formData, options = {}) {
   }
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
-    const error = new Error(body.error || 'Request failed');
-    error.status = res.status;
-    error.code = body.code;
-    error.details = body;
-    throw error;
+    throw createApiError(body, res.status);
   }
   return res.json();
 }
@@ -95,11 +104,7 @@ async function requestBroadcast(payload, endpoint = '/broadcast') {
   }
   const body = await res.json().catch(() => ({ error: res.statusText }));
   if (!res.ok) {
-    const error = new Error(body.error || 'Request failed');
-    error.status = res.status;
-    error.code = body.code;
-    error.details = body;
-    throw error;
+    throw createApiError(body, res.status);
   }
   return body;
 }
@@ -243,7 +248,15 @@ export const api = {
     method: 'PUT',
     body: JSON.stringify({ enabled: enabled === true, expected_version: expectedVersion }),
   }),
-  deleteContent: (id) => request(`/content/${id}`, { method: 'DELETE' }),
+  getContentEraseImpact: (id) => request(`/content/${encodeURIComponent(id)}/erase-impact`),
+  permanentlyEraseContent: (id) => request(`/content/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    body: JSON.stringify({ confirm_permanent_erase: true }),
+  }),
+  permanentlyEraseContentBulk: (ids) => request('/content/permanent-erase', {
+    method: 'POST',
+    body: JSON.stringify({ content_ids: ids, confirm_permanent_erase: true }),
+  }),
   updateContent: (id, data) => reconcileContentMutation(
     id,
     data,
@@ -270,10 +283,7 @@ export const api = {
     }
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: res.statusText }));
-      const error = new Error(err.error || 'Download failed');
-      error.status = res.status;
-      error.code = err.code;
-      throw error;
+      throw createApiError(err, res.status, 'Download failed');
     }
     const blob = await res.blob();
     let filename = '';
@@ -672,8 +682,12 @@ export const api = {
     remove: (id) => request(`/presentations/${id}`, { method: 'DELETE' }),
     publish: (id) => request(`/presentations/${id}/publish`, { method: 'POST' }),
     duplicate: (id) => request(`/presentations/${id}/duplicate`, { method: 'POST' }),
+    assets: (id) => request(`/presentations/${encodeURIComponent(id)}/assets`),
     linkAsset: (id, contentId) => request(`/presentations/${encodeURIComponent(id)}/assets/link`, {
       method: 'POST', body: JSON.stringify({ content_id: contentId }),
+    }),
+    saveAssetCopy: (id, contentId) => request(`/presentations/${encodeURIComponent(id)}/assets/${encodeURIComponent(contentId)}/save-copy`, {
+      method: 'POST',
     }),
     exportToLibrary: (id) => request(`/presentations/${encodeURIComponent(id)}/export-to-library`, { method: 'POST' }),
     downloadPptx: async (id) => {
@@ -718,12 +732,36 @@ export const api = {
   },
 
   presentationConverter: {
+    sources: () => request('/presentation-converter/sources', { headers: { 'Cache-Control': 'no-store' } }),
+    uploadSource: (file, onProgress) => new Promise((resolve, reject) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${API_BASE}/presentation-converter/sources`);
+      const token = localStorage.getItem('token');
+      if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+      if (onProgress) xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try { resolve(JSON.parse(xhr.responseText)); } catch { reject(new Error('Bad response')); }
+        } else {
+          let message = 'Upload failed';
+          try { message = JSON.parse(xhr.responseText).error || message; } catch { /* fallback */ }
+          reject(new Error(message));
+        }
+      };
+      xhr.onerror = () => reject(new Error('Upload failed'));
+      xhr.send(fd);
+    }),
     start: (data) => request('/presentation-converter/jobs', { method: 'POST', body: JSON.stringify(data) }),
     job: (id) => request(`/presentation-converter/jobs/${encodeURIComponent(id)}`, {
       headers: { 'Cache-Control': 'no-store' },
     }),
     cancel: (id) => request(`/presentation-converter/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
     retry: (id) => request(`/presentation-converter/jobs/${encodeURIComponent(id)}/retry`, { method: 'POST' }),
+    retryFaithful: (id) => request(`/presentation-converter/jobs/${encodeURIComponent(id)}/retry-faithful`, { method: 'POST' }),
   },
 
   // Schedules (content/playlist windows per display or group; RRULE recurrence).

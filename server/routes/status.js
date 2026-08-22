@@ -6,7 +6,8 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const config = require('../config');
-const { PLATFORM_ROLES } = require('../middleware/auth');
+const { createTrustedUploadStorage } = require('../lib/trusted-upload-storage');
+const { PLATFORM_ROLES, requireAuth } = require('../middleware/auth');
 const nodeRegistry = require('../lib/node-registry');
 const performanceMetrics = require('../lib/performance-metrics');
 
@@ -332,27 +333,26 @@ router.get('/export', (req, res) => {
 
 // User data import (JSON or ZIP with files)
 const multer = require('multer');
-const importUpload = multer({ dest: path.join(os.tmpdir(), 'screentinker-import'), limits: { fileSize: config.maxFileSize } }); // env-configurable (MAX_FILE_SIZE_BYTES), default 20GB
+const importStorage = createTrustedUploadStorage({
+  root: path.join(os.tmpdir(), 'screentinker-import'),
+  createFilename: () => `${crypto.randomUUID()}.upload`,
+});
+const importUpload = multer({ storage: importStorage.storage, limits: { fileSize: config.maxFileSize } }); // env-configurable (MAX_FILE_SIZE_BYTES), default 20GB
 
-router.post('/import', importUpload.single('file'), async (req, res) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader?.startsWith('Bearer ')) return res.status(401).json({ error: 'Token required' });
+router.post('/import', requireAuth, importUpload.single('file'), async (req, res) => {
+  let extractDir = null;
+  let artifactsCleaned = false;
+  const cleanupImportArtifacts = () => {
+    if (artifactsCleaned) return;
+    artifactsCleaned = true;
+    if (req.file) importStorage.discardUploadedFile(req.file);
+    if (extractDir) fs.rmSync(extractDir, { recursive: true, force: true });
+  };
+  res.once('finish', cleanupImportArtifacts);
+  res.once('close', cleanupImportArtifacts);
 
-  let userId;
-  let workspaceId;
-  try {
-    const jwt = require('jsonwebtoken');
-    const jwtConfig = require('../config');
-    const decoded = jwt.verify(authHeader.split(' ')[1], jwtConfig.jwtSecret);
-    userId = decoded.id;
-    workspaceId = decoded.current_workspace_id || null;
-    if (!userId) return res.status(401).json({ error: 'Invalid token' });
-  } catch {
-    return res.status(401).json({ error: 'Invalid token' });
-  }
-
-  const user = db.prepare('SELECT id, role FROM users WHERE id = ?').get(userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
+  const userId = req.user.id;
+  let workspaceId = req.jwtWorkspaceId || null;
 
   // Phase 2.2b: imports stamp workspace_id on devices and content so the
   // rows are visible to the workspace-filtered list endpoints. Fall back to
@@ -374,11 +374,14 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
     // ZIP upload — extract export.json and files/
     try {
       const unzipper = require('unzipper');
-      const extractDir = path.join(os.tmpdir(), `screentinker-import-${Date.now()}`);
-      fs.mkdirSync(extractDir, { recursive: true });
+      const uploadedPath = importStorage.resolveUploadedFilePath(req.file);
+      if (!uploadedPath) {
+        return res.status(400).json({ error: 'Uploaded import file is not a trusted regular file' });
+      }
+      extractDir = fs.mkdtempSync(path.join(os.tmpdir(), 'screentinker-import-extract-'));
 
       await new Promise((resolve, reject) => {
-        fs.createReadStream(req.file.path)
+        fs.createReadStream(uploadedPath)
           .pipe(unzipper.Extract({ path: extractDir }))
           .on('close', resolve)
           .on('error', reject);
@@ -387,7 +390,6 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
       // Read the JSON manifest
       const jsonPath = path.join(extractDir, 'export.json');
       if (!fs.existsSync(jsonPath)) {
-        fs.unlinkSync(req.file.path);
         return res.status(400).json({ error: 'ZIP does not contain export.json' });
       }
       data = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
@@ -410,11 +412,7 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
           }).filter(Boolean);
         }
       }
-
-      // Cleanup uploaded zip
-      fs.unlinkSync(req.file.path);
     } catch (err) {
-      if (req.file?.path) try { fs.unlinkSync(req.file.path); } catch {}
       return res.status(400).json({ error: 'Failed to extract ZIP: ' + err.message });
     }
   } else {

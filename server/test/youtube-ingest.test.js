@@ -30,6 +30,7 @@ test('generic URL downloads use the same bounded classroom profile without a she
   assert.match(args[args.indexOf('-f') + 1], /height<=1080/);
   assert.equal(args[args.indexOf('--concurrent-fragments') + 1], '1');
   assert.equal(args[args.indexOf('--max-filesize') + 1], '2048');
+  assert.equal(args[args.indexOf('--print') + 1], 'after_move:__MBFD_TITLE__%(title)s');
   assert.equal(args.at(-1), 'https://media.example.test/training?id=1');
   assert.throws(
     () => buildUrlDownloadArgs({ url: 'file:///etc/passwd', outputPath: '/tmp/out.mp4' }),

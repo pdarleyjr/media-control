@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { sha256File, canonicalAssetPath } = require('../lib/asset-manifest');
-const { buildContentManifest } = require('../lib/node-registry');
+const { buildContentManifest, buildContentManifestEnvelope } = require('../lib/node-registry');
 
 test('sha256File records immutable content bytes', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-asset-'));
@@ -81,4 +81,19 @@ test('node manifest stages videos first and newest content first within a media 
 
   const manifest = buildContentManifest(fakeDb, { queueMissing: false, allowUnscoped: true });
   assert.deepEqual(manifest.map((item) => item.content_id), ['video', 'new-image', 'old-image']);
+});
+
+test('only a successfully built manifest is marked authoritative', () => {
+  const emptyDb = { prepare: () => ({ all: () => [] }) };
+  const envelope = buildContentManifestEnvelope(emptyDb, { queueMissing: false, allowUnscoped: true });
+  assert.equal(envelope.protocol_version, 2);
+  assert.equal(envelope.authoritative, true);
+  assert.deepEqual(envelope.items, []);
+
+  const failedDb = { prepare: () => { throw new Error('database unavailable'); } };
+  assert.throws(
+    () => buildContentManifestEnvelope(failedDb, { queueMissing: false, allowUnscoped: true }),
+    /database unavailable/,
+  );
+  assert.throws(() => buildContentManifestEnvelope(null), /database is unavailable/);
 });

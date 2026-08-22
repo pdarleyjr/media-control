@@ -78,6 +78,9 @@ async function createThumbnailCandidate(options = {}) {
   const partPath = path.join(contentDir, `thumb_${contentId}_${token}.part.jpg`);
   const thumbnailFilename = `thumb_${contentId}_${token}.jpg`;
   const thumbnailPath = path.join(contentDir, thumbnailFilename);
+  for (const artifact of [framePath, partPath, thumbnailPath]) {
+    if (typeof options.registerArtifact === 'function') options.registerArtifact(artifact);
+  }
   let imageSource = customPosterPath || sourcePath;
   try {
     if (!customPosterPath && options.isVideo === true) {
@@ -172,7 +175,19 @@ async function commitThumbnail(options = {}) {
     return { status: 'stale', reason: 'content_changed', content_id: contentId };
   }
   let generation = 1;
+  let rejectedReason = 'content_changed';
   const committed = db.transaction(() => {
+    try {
+      const erasing = db.prepare(`SELECT 1 FROM content_erase_operations
+        WHERE content_id=? AND state IN ('prepared','staged','catalog_committed','cleanup_pending','recovery_failed')
+        LIMIT 1`).get(contentId);
+      if (erasing) {
+        rejectedReason = 'erase_in_progress';
+        return false;
+      }
+    } catch (error) {
+      if (!/no such table/i.test(error.message)) throw error;
+    }
     const currentMetadata = db.prepare(
       'SELECT thumbnail_generation FROM content_media_metadata WHERE content_id=?',
     ).get(contentId);
@@ -220,7 +235,7 @@ async function commitThumbnail(options = {}) {
   })();
   if (!committed) {
     safeUnlink(candidate);
-    return { status: 'stale', reason: 'content_changed', content_id: contentId };
+    return { status: 'stale', reason: rejectedReason, content_id: contentId };
   }
   if (before.thumbnail_path && before.thumbnail_path !== thumbnailFilename) {
     safeUnlink(safeContentPath(

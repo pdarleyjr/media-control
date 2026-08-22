@@ -121,16 +121,29 @@
     if(/CAPTION/.test(name)) return 'v2-caption';
     return 'v2-global';
   }
+  function applyV2Style(element,style){
+    if(!style)return;
+    element.style.fontFamily=String(style.font_face||'');
+    element.style.fontSize=Number(style.font_size_px||45)+'px';
+    element.style.fontWeight=style.bold?'700':'400';
+    element.style.color='#'+String(style.color||'F7FAFD').replace(/^#/,'');
+    element.style.textAlign=String(style.align||'left');
+    element.style.justifyContent=style.align==='center'?'center':(style.align==='right'?'flex-end':'flex-start');
+    element.style.alignItems=style.valign==='top'?'flex-start':(style.valign==='bottom'?'flex-end':'center');
+    element.style.lineHeight=String(style.line_height||1.22);
+    var p=style.padding_px||{};
+    element.style.padding=[Number(p.top||0),Number(p.right||0),Number(p.bottom||0),Number(p.left||0)].join('px ')+'px';
+  }
   function safePresentationAsset(value){
     if(value && value.content_id) return '/player/asset/'+encodeURIComponent(String(value.content_id));
     var url=String(value&&value.url||'');
     return /^\/player\/asset\/[A-Za-z0-9_-]+$/.test(url)?url:'';
   }
-  function appendV2Value(host,name,value){
+  function appendV2Value(host,name,value,style){
     if(value==null||value==='') return;
     if(value&&typeof value==='object'&&!Array.isArray(value)){
       if(value.type==='table'&&Array.isArray(value.rows)){
-        var table=document.createElement('table'); table.className='v2-table';
+        var table=document.createElement('table'); table.className='v2-table'; applyV2Style(table,style);
         value.rows.forEach(function(row){var tr=document.createElement('tr');(Array.isArray(row)?row:[row]).forEach(function(cell){var td=document.createElement('td');td.textContent=String(cell==null?'':cell);tr.appendChild(td);});table.appendChild(tr);});
         host.appendChild(table); return;
       }
@@ -146,7 +159,7 @@
       if(value.url&&/^https?:\/\//i.test(String(value.url))){var link=document.createElement('a');link.className='v2-link';link.href=String(value.url);link.rel='noopener noreferrer';link.textContent=value.caption||(/youtu(?:\.be|be\.com)/i.test(value.url)?'YouTube video link':'External media link');host.appendChild(link);return;}
       value=value.caption||('['+String(value.type||'media')+']');
     }
-    var text=document.createElement('div'); text.className='v2-text '+v2TextClass(name); text.textContent=String(value); host.appendChild(text);
+    var text=document.createElement('div'); text.className='v2-text '+v2TextClass(name); applyV2Style(text,style); text.textContent=String(value); host.appendChild(text);
   }
   function buildV2Slide(planSlide,slideIndex){
     var el=document.createElement('div'); el.className='slide v2-slide';
@@ -165,8 +178,8 @@
       host.appendChild(image);el.appendChild(host);
     });
     var globals={GLOBAL_HEADER_MIAMI_BEACH:'MIAMI BEACH',GLOBAL_HEADER_FIRE_DEPARTMENT:'FIRE DEPARTMENT',GLOBAL_FOOTER_MARK:'✦',GLOBAL_COURSE_SECTION:deck.course_section||'COURSE / SECTION',GLOBAL_PRESENTATION_TITLE:deck.title||'',GLOBAL_SLIDE_LABEL:'SLIDE #',GLOBAL_SLIDE_NUMBER:String(slideIndex+1).padStart(2,'0')};
-    Object.keys(globals).forEach(function(name){var object=planSlide.objects&&planSlide.objects[name];if(!object||!object.bbox_px||assigned[name])return;var host=document.createElement('div');host.className='v2-object';pxBox(host,object.bbox_px);appendV2Value(host,name,globals[name]);el.appendChild(host);});
-    (planSlide.slots||[]).forEach(function(slot){if(!slot.geometry||!slot.geometry.bbox_px)return;var host=document.createElement('div');host.className='v2-object';pxBox(host,slot.geometry.bbox_px);appendV2Value(host,slot.name,slot.value);el.appendChild(host);});
+    Object.keys(globals).forEach(function(name){var object=planSlide.objects&&planSlide.objects[name];if(!object||!object.bbox_px||assigned[name])return;var host=document.createElement('div');host.className='v2-object';pxBox(host,object.bbox_px);appendV2Value(host,name,globals[name],object.style);el.appendChild(host);});
+    (planSlide.slots||[]).forEach(function(slot){if(!slot.geometry||!slot.geometry.bbox_px)return;var host=document.createElement('div');host.className='v2-object';pxBox(host,slot.geometry.bbox_px);appendV2Value(host,slot.name,slot.value,slot.style||slot.geometry.style);el.appendChild(host);});
     return el;
   }
   function fitV2Stage(){

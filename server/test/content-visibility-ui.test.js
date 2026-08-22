@@ -16,12 +16,19 @@ test('content library exposes governed filters and capability-driven actions', (
     'permissions?.can_edit',
     'permissions?.can_duplicate',
     'permissions?.can_archive',
+    'permissions?.can_delete',
     'permissions?.can_transfer',
     'permissions?.can_request_organization',
     'allowed_visibilities',
     'publication_request_status',
     'data-review-publications',
   ]) assert.match(source, new RegExp(marker.replace(/[?.]/g, '\\$&')));
+  assert.match(source, /data-archive-content/);
+  assert.match(source, /data-bulk-archive/);
+  assert.match(source, /data-bulk-restore/);
+  assert.match(source, /requestPermanentEraseConfirmation/);
+  assert.match(source, /getContentEraseImpact/);
+  assert.match(source, /permanentlyEraseContentBulk/);
 });
 
 test('content API exposes visibility lifecycle operations and retains conflict details', () => {

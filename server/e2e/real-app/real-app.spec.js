@@ -688,7 +688,7 @@ test.describe('Phase 2 — Feature flag ON: enterprise operator console', () => 
     assertNoErrors(errors, 'Command Center session landing');
   });
 
-  test('2b3. rapid presentation Next/Previous taps preserve every absolute slide intent', async ({ page }) => {
+  test('2b3. rapid presentation Next/Previous taps resolve from authoritative slide state', async ({ page }) => {
     setOperatorFixturePlaybackState('document');
     try {
       const errors = attachErrorCollectors(page);
@@ -702,8 +702,8 @@ test.describe('Phase 2 — Feature flag ON: enterprise operator console', () => 
       await expect(next.locator('.mc-cc-tp-text')).toHaveText('Next slide');
       await expect(previous.locator('.mc-cc-tp-text')).toHaveText('Previous slide');
 
-      // The display-state fixture remains on slide 2 while these clicks run.
-      // The optimistic cursor must preserve all three intentions as 3, 4, 3.
+      // The display-state fixture remains on authoritative slide 2 while these
+      // clicks run. Each intent resolves from that state: next=3, previous=1.
       await page.evaluate(() => {
         const nextButton = document.querySelector('[data-cc-tp="next"]');
         const previousButton = document.querySelector('[data-cc-tp="prev"]');
@@ -752,7 +752,8 @@ test.describe('Phase 2 — Feature flag ON: enterprise operator console', () => 
       const payloads = commands.map((row) => JSON.parse(row.payload));
       expect(new Set(commands.map((row) => row.command_type))).toEqual(new Set(['go_to_slide']));
       expect(payloads.filter((payload) => payload.slide === 3)).toHaveLength(6);
-      expect(payloads.filter((payload) => payload.slide === 4)).toHaveLength(3);
+      expect(payloads.filter((payload) => payload.slide === 1)).toHaveLength(3);
+      expect(payloads.filter((payload) => payload.slide === 4)).toHaveLength(0);
       expect(new Set(payloads.map((payload) => payload.transport_transaction_id)).size).toBe(3);
       expect(errors.page).toHaveLength(0);
       expect(errors.console.filter((message) => /uncaught|unhandled/i.test(message))).toHaveLength(0);
@@ -761,7 +762,7 @@ test.describe('Phase 2 — Feature flag ON: enterprise operator console', () => 
     }
   });
 
-  test('2b4. rapid video Play/Pause taps preserve both explicit intents', async ({ page }) => {
+  test('2b4. rapid video Play/Pause taps resolve from authoritative paused state', async ({ page }) => {
     const Database = require('better-sqlite3');
     const dbPath = path.join(tmpDir, 'test.db');
     setOperatorFixturePlaybackState('video');
@@ -815,8 +816,8 @@ test.describe('Phase 2 — Feature flag ON: enterprise operator console', () => 
       } finally {
         database.close();
       }
-      expect(transactions.filter((row) => row.command_type === 'pause')).toHaveLength(3);
-      expect(transactions.filter((row) => row.command_type === 'play')).toHaveLength(3);
+      expect(transactions.filter((row) => row.command_type === 'pause')).toHaveLength(6);
+      expect(transactions.filter((row) => row.command_type === 'play')).toHaveLength(0);
       expect(new Set(transactions.map((row) => JSON.parse(row.payload).transport_transaction_id)).size).toBe(2);
       expect(errors.page).toHaveLength(0);
       expect(errors.console.filter((message) => /uncaught|unhandled/i.test(message))).toHaveLength(0);

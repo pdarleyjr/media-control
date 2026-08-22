@@ -883,6 +883,23 @@ require('./migrations/live-sources').migrateLiveSourcesSchema(db);
 require('./migrations/media-pipeline').migrateMediaPipeline(db);
 require('./migrations/media-operations').ensureMediaOperationsSchema(db);
 require('./migrations/presentation-studio-v2').migratePresentationStudioV2(db);
+require('./migrations/presentation-asset-scope').migratePresentationAssetScope(db);
+require('./migrations/content-erase-ledger').migrateContentEraseLedger(db);
+require('./migrations/presentation-cleanup-ledger').migratePresentationCleanupLedger(db);
+{
+  const { reconcileEraseOperations } = require('../services/content-permanent-erase');
+  const eraseRecovery = reconcileEraseOperations(db, require('../config').contentDir);
+  const failed = eraseRecovery.filter((result) => result.state === 'recovery_failed');
+  if (failed.length) throw new Error(`content erase recovery failed for ${failed.length} operation(s)`);
+  if (eraseRecovery.length) console.log(`[content_erase_ledger_v1] reconciled ${eraseRecovery.length} operation(s)`);
+}
+{
+  const { reconcilePresentationCleanupOperations } = require('../services/presentation-cleanup');
+  const cleanupRecovery = reconcilePresentationCleanupOperations(db, { contentDir: config.contentDir });
+  const pending = cleanupRecovery.filter((result) => result?.state === 'cleanup_pending');
+  if (pending.length) console.warn(`[presentation_cleanup_ledger_v1] ${pending.length} operation(s) remain pending`);
+  else if (cleanupRecovery.length) console.log(`[presentation_cleanup_ledger_v1] reconciled ${cleanupRecovery.length} operation(s)`);
+}
 
 // Phase 3: Operational Activities ("Scenes") + asset placements.
 // A scene is a named snapshot of which content/playlist shows on which display;

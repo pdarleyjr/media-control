@@ -9,7 +9,8 @@ const player = fs.readFileSync(path.join(__dirname, '..', 'player', 'deck.html')
 const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 
 test('v2 player consumes the server-compiled canonical registry plan and scales without reflow', () => {
-  assert.match(server, /buildRenderPlan\(parsed, \{ mode: 'production' \}\)/);
+  assert.match(server, /deckForPlayer\(db, req\.params\.id/);
+  assert.match(server, /buildRenderPlan\(selected\.deck, \{ mode: 'production' \}\)/);
   assert.match(server, /window\.__deckRenderPlan/);
   assert.match(player, /deck\.version === 'mbfd-deck-v2'/);
   assert.match(player, /renderPlan\.profile\.canvas_px/);

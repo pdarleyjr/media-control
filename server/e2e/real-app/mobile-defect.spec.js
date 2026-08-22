@@ -869,6 +869,231 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await context.close();
   });
 
+  test('bulk permanent erase preserves zero-complete selection and retries only unfinished IDs after partial completion', async ({ browser }) => {
+    const context = await browser.newContext({
+      viewport: { width: 838, height: 500 },
+      hasTouch: true,
+      serviceWorkers: 'block',
+    });
+    const page = await context.newPage();
+    await page.addInitScript(({ token, user }) => {
+      localStorage.setItem('token', token);
+      localStorage.setItem('user', JSON.stringify(user));
+      localStorage.setItem('rd_onboarded', '1');
+    }, { token: authToken, user: { id: userId, email: TEST_EMAIL, name: 'Mobile Test', role: 'platform_admin' } });
+
+    const allItems = [
+      { id: 'erase-alpha', filename: 'Alpha', file_size: 1 },
+      { id: 'erase-bravo', filename: 'Bravo', file_size: 2 },
+      { id: 'erase-charlie', filename: 'Charlie', file_size: 3 },
+    ].map(item => ({
+      ...item,
+      mime_type: 'image/png',
+      created_at: '2026-01-01T00:00:00.000Z',
+      processing_status: 'ready',
+      visibility: { access_level: 'private', owner_name: 'Mobile Test' },
+      permissions: { can_delete: true },
+      workspace_id: 'workspace-test',
+      user_id: userId,
+    }));
+    let visibleIds = allItems.map(item => item.id);
+    let listCalls = 0;
+    let summaryCalls = 0;
+    const eraseRequests = [];
+    await page.route('**/api/content**', async route => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (url.pathname === '/api/content' && request.method() === 'GET') {
+        listCalls += 1;
+        const rows = allItems.filter(item => visibleIds.includes(item.id));
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(rows) });
+        return;
+      }
+      if (url.pathname === '/api/content/library-summary' && request.method() === 'GET') {
+        summaryCalls += 1;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ total_items: visibleIds.length, storage_bytes: visibleIds.length }),
+        });
+        return;
+      }
+      if (/^\/api\/content\/[^/]+\/erase-impact$/.test(url.pathname) && request.method() === 'GET') {
+        const contentId = decodeURIComponent(url.pathname.split('/')[3]);
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ content_id: contentId, blockers: [], categories: {}, files: [] }),
+        });
+        return;
+      }
+      if (url.pathname === '/api/content/permanent-erase' && request.method() === 'POST') {
+        const payload = request.postDataJSON();
+        eraseRequests.push(payload.content_ids);
+        if (eraseRequests.length === 1) {
+          await route.fulfill({
+            status: 409,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              code: 'ERASE_JOB_QUIESCENCE_REQUIRED',
+              error: 'Permanent erase could not be completed safely.',
+              completed_content_ids: [],
+              failed_content_id: 'erase-alpha',
+              impact: { blockers: [{ reason: 'The active job has not stopped.' }] },
+            }),
+          });
+          return;
+        }
+        if (eraseRequests.length === 2) {
+          visibleIds = ['erase-charlie'];
+          await route.fulfill({
+            status: 409,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              code: 'ERASE_DEPENDENCY_BLOCKED',
+              error: 'Permanent erase could not be completed safely.',
+              completed_content_ids: ['erase-alpha', 'erase-bravo'],
+              failed_content_id: 'erase-charlie',
+              impact: { blockers: [{ reason: 'A protected dependency remains.' }] },
+            }),
+          });
+          return;
+        }
+        visibleIds = [];
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ success: true, results: [{ content_id: 'erase-charlie', success: true }] }),
+        });
+        return;
+      }
+      await route.fallback();
+    });
+
+    const confirmBulkErase = async () => {
+      await page.locator('[data-bulk-erase]').click();
+      const dialog = page.locator('.content-erase-dialog');
+      await expect(dialog).toBeVisible();
+      await dialog.locator('[data-erase-ack]').check();
+      await dialog.locator('[data-confirm-erase]').click();
+    };
+
+    await page.goto(`${BASE_URL}/app#/content`, { waitUntil: 'networkidle' });
+    for (const item of allItems) {
+      await page.locator(`[data-select-content="${item.id}"]`).check({ force: true });
+    }
+    const initialListCalls = listCalls;
+    const initialSummaryCalls = summaryCalls;
+
+    await confirmBulkErase();
+    await expect(page.locator('.toast.error').last()).toContainText('The media could not be permanently erased.');
+    await expect(page.locator('#contentSelectedCount')).toHaveText('3 selected');
+    expect(eraseRequests[0]).toEqual(['erase-alpha', 'erase-bravo', 'erase-charlie']);
+    expect(listCalls).toBe(initialListCalls);
+    expect(summaryCalls).toBe(initialSummaryCalls);
+    await expect(page.locator('.toast.success').filter({ hasText: '3 media items were permanently erased.' })).toHaveCount(0);
+
+    await confirmBulkErase();
+    await expect(page.locator('.toast.error').last()).toContainText('2 media items were permanently erased.');
+    await expect(page.locator('.toast.error').last()).toContainText('1 media item, “Charlie”, was not erased.');
+    await expect(page.locator('.toast.error').last()).toContainText('The failed item has a dependency that cannot be detached safely.');
+    await expect(page.locator('.toast.error').last()).toContainText('Retry will apply only to the 1 remaining item; already-erased media will not be retried.');
+    await expect(page.locator('#contentSelectedCount')).toHaveText('1 selected');
+    await expect(page.locator('[data-select-content="erase-charlie"]')).toBeChecked();
+    await expect(page.locator('[data-content-id="erase-alpha"]')).toHaveCount(0);
+    expect(eraseRequests[1]).toEqual(['erase-alpha', 'erase-bravo', 'erase-charlie']);
+    expect(listCalls).toBeGreaterThan(initialListCalls);
+    expect(summaryCalls).toBeGreaterThan(initialSummaryCalls);
+    await expect(page.locator('.toast.success').filter({ hasText: '3 media items were permanently erased.' })).toHaveCount(0);
+
+    await confirmBulkErase();
+    await expect(page.locator('.toast.success').last()).toContainText('1 media item was permanently erased.');
+    expect(eraseRequests[2]).toEqual(['erase-charlie']);
+    await expect(page.locator('#contentBulkToolbar')).toBeHidden();
+    await expect(page.locator('.content-item')).toHaveCount(0);
+    await context.close();
+  });
+
+  test('bulk permanent erase keeps the failed item and untouched tail selected when the first item succeeds', async ({ browser }) => {
+    const context = await browser.newContext({
+      viewport: { width: 838, height: 500 },
+      hasTouch: true,
+      serviceWorkers: 'block',
+    });
+    const page = await context.newPage();
+    await page.addInitScript(({ token, user }) => {
+      localStorage.setItem('token', token);
+      localStorage.setItem('user', JSON.stringify(user));
+      localStorage.setItem('rd_onboarded', '1');
+    }, { token: authToken, user: { id: userId, email: TEST_EMAIL, name: 'Mobile Test', role: 'platform_admin' } });
+
+    const items = ['Alpha', 'Bravo', 'Charlie'].map(name => ({
+      id: `quiesce-${name.toLowerCase()}`,
+      filename: name,
+      mime_type: 'image/png',
+      file_size: 1,
+      created_at: '2026-01-01T00:00:00.000Z',
+      processing_status: 'ready',
+      visibility: { access_level: 'private', owner_name: 'Mobile Test' },
+      permissions: { can_delete: true },
+      workspace_id: 'workspace-test',
+      user_id: userId,
+    }));
+    let visibleIds = items.map(item => item.id);
+    let eraseRequest = null;
+    await page.route('**/api/content**', async route => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (url.pathname === '/api/content' && request.method() === 'GET') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(items.filter(item => visibleIds.includes(item.id))),
+        });
+        return;
+      }
+      if (/^\/api\/content\/[^/]+\/erase-impact$/.test(url.pathname) && request.method() === 'GET') {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ blockers: [], categories: {}, files: [] }) });
+        return;
+      }
+      if (url.pathname === '/api/content/permanent-erase' && request.method() === 'POST') {
+        eraseRequest = request.postDataJSON().content_ids;
+        visibleIds = ['quiesce-bravo', 'quiesce-charlie'];
+        await route.fulfill({
+          status: 409,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            code: 'ERASE_JOB_QUIESCENCE_REQUIRED',
+            error: 'Permanent erase could not be completed safely.',
+            completed_content_ids: ['quiesce-alpha'],
+            failed_content_id: 'quiesce-bravo',
+          }),
+        });
+        return;
+      }
+      await route.fallback();
+    });
+
+    await page.goto(`${BASE_URL}/app#/content`, { waitUntil: 'networkidle' });
+    for (const item of items) {
+      await page.locator(`[data-select-content="${item.id}"]`).check({ force: true });
+    }
+    await page.locator('[data-bulk-erase]').click();
+    const dialog = page.locator('.content-erase-dialog');
+    await dialog.locator('[data-erase-ack]').check();
+    await dialog.locator('[data-confirm-erase]').click();
+
+    expect(eraseRequest).toEqual(['quiesce-alpha', 'quiesce-bravo', 'quiesce-charlie']);
+    await expect(page.locator('#contentSelectedCount')).toHaveText('2 selected');
+    await expect(page.locator('[data-select-content="quiesce-bravo"]')).toBeChecked();
+    await expect(page.locator('[data-select-content="quiesce-charlie"]')).toBeChecked();
+    await expect(page.locator('.toast.error').last()).toContainText('1 media item was permanently erased.');
+    await expect(page.locator('.toast.error').last()).toContainText('2 media items were not erased; “Bravo” was the first unfinished item.');
+    await expect(page.locator('.toast.error').last()).toContainText('An active media job must stop safely before the failed item can be erased.');
+    await expect(page.locator('.toast.success').filter({ hasText: '3 media items were permanently erased.' })).toHaveCount(0);
+    await context.close();
+  });
+
   test('Media Library ignores a slow stale search response after a newer search', async ({ browser }) => {
     const context = await browser.newContext({
       viewport: { width: 838, height: 500 },

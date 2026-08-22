@@ -7,6 +7,11 @@ const {
   PROFILE_IDS,
   getLayout,
 } = require('../lib/presentation-template-registry');
+const {
+  buildSlideCompositionIr,
+  rankCandidateLayouts,
+  validatePresentationQuality,
+} = require('./presentation-composition');
 
 const MODES = Object.freeze({ FAITHFUL: 'faithful', OPTIMIZED: 'instructor_optimized' });
 const SAFE_DISPOSITIONS = new Set([
@@ -60,10 +65,10 @@ function splitText(text, maximum) {
 function textCapacity(object) {
   const box = object && object.bbox_px;
   if (!box) return 900;
-  const minimumFontPx = SOURCE_SPEC.global_rules.minimum_body_font_pt * 3;
-  const lineHeight = minimumFontPx * 1.22;
+  const minimumFontPx = Math.max(17, SOURCE_SPEC.global_rules.minimum_body_font_pt) * 3;
+  const lineHeight = minimumFontPx * 1.3;
   const approximateCharWidth = minimumFontPx * 0.52;
-  return Math.max(120, Math.floor((box.w / approximateCharWidth) * (box.h / lineHeight)));
+  return Math.max(120, Math.floor((Math.max(1, box.w - 36) / approximateCharWidth) * (Math.max(1, box.h - 24) / lineHeight)));
 }
 
 function contentSlots(profileId, templateId) {
@@ -85,6 +90,7 @@ function elementText(element) {
 }
 
 function sourceDisposition(element, outputSlideIds) {
+  if (element.rendered_fallback_covered === true) return 'rendered_fallback';
   if (element.external === true) return 'unrecoverable_external_link';
   if (element.kind === 'image' || element.kind === 'video' || element.kind === 'audio') return 'native_media_preserved';
   if (element.kind === 'hyperlink' || element.kind === 'youtube') return 'link_preserved';
@@ -118,10 +124,55 @@ function assignMedia(slots, mediaNames, element) {
   return true;
 }
 
+function mediaAspect(element) {
+  const box = element?.bbox_emu;
+  const width = Number(box?.w);
+  const height = Number(box?.h);
+  return width > 0 && height > 0 ? width / height : null;
+}
+
+function primaryMediaElements(elements, mediaNames, objects) {
+  const media = elements.filter((element) => ['image', 'video', 'audio', 'youtube'].includes(element.kind));
+  if (media.length <= mediaNames.length) return new Set(media);
+  if (media.some((element) => !mediaAspect(element))) return new Set(media.slice(0, mediaNames.length));
+  const remaining = media.slice();
+  const selected = [];
+  for (const name of mediaNames) {
+    const box = objects[name]?.bbox_px;
+    const targetAspect = Number(box?.w) > 0 && Number(box?.h) > 0 ? Number(box.w) / Number(box.h) : null;
+    if (!targetAspect || !remaining.length) break;
+    remaining.sort((a, b) => {
+      const aAspect = mediaAspect(a); const bAspect = mediaAspect(b);
+      const aDelta = Math.max(aAspect / targetAspect, targetAspect / aAspect);
+      const bDelta = Math.max(bAspect / targetAspect, targetAspect / bAspect);
+      return aDelta - bDelta || elements.indexOf(a) - elements.indexOf(b);
+    });
+    selected.push(remaining.shift());
+  }
+  return new Set(selected);
+}
+
+function singleMediaTemplate(profileId, element) {
+  const aspect = mediaAspect(element);
+  if (!aspect) return 'FULL_IMAGE';
+  const candidates = ['FULL_IMAGE', 'VIDEO_FOCUS', 'DIAGRAM_PROCESS'].map((templateId) => {
+    const slots = contentSlots(profileId, templateId);
+    const box = slots.objects[slots.media[0]]?.bbox_px;
+    const target = Number(box?.w) > 0 && Number(box?.h) > 0 ? Number(box.w) / Number(box.h) : Infinity;
+    return { templateId, delta: Math.max(aspect / target, target / aspect) };
+  });
+  const fullImage = candidates[0];
+  if (fullImage.delta <= 4) return fullImage.templateId;
+  return candidates.sort((a, b) => a.delta - b.delta)[0].templateId;
+}
+
 function optimizedValue(assignment, byId) {
-  const sourceElements = assignment.source_refs.map((id) => byId.get(id)).filter(Boolean);
-  const media = sourceElements.find((element) => ['image', 'video', 'audio', 'youtube'].includes(element.kind)
-    && (!assignment.media_id || assignment.media_id === element.id || assignment.media_id === element.asset_ref));
+  const sourceElements = assignment.source_refs.flatMap((id) => byId.get(id) || []);
+  const wantsMedia = Boolean(assignment.media_id)
+    || ['image', 'video', 'audio'].includes(assignment.content_type)
+    || /(?:MEDIA|VIDEO|DIAGRAM)/.test(assignment.region_id);
+  const media = wantsMedia ? sourceElements.find((element) => ['image', 'video', 'audio', 'youtube'].includes(element.kind)
+    && (!assignment.media_id || assignment.media_id === element.id || assignment.media_id === element.asset_ref)) : null;
   if (media) {
     return {
       type: media.kind,
@@ -142,7 +193,11 @@ function optimizedConversionFromPlan(sourceSlide, classification, wallProfile) {
   const plan = classification.raw_plan;
   if (!plan || !Array.isArray(plan.target_slides) || !plan.target_slides.length) return null;
   const elements = elementsOf(sourceSlide);
-  const byId = new Map(elements.map((element) => [element.id, element]));
+  const byId = new Map();
+  for (const element of elements) {
+    if (!byId.has(element.id)) byId.set(element.id, []);
+    byId.get(element.id).push(element);
+  }
   const outputIdsBySource = new Map(elements.map((element) => [element.id, []]));
   const transformsBySource = new Map(elements.map((element) => [element.id, []]));
   const reviewBase = [
@@ -184,10 +239,28 @@ function optimizedConversionFromPlan(sourceSlide, classification, wallProfile) {
 async function convertSlideIr(sourceSlide, options = {}) {
   const wallProfile = options.wallProfile || PROFILE_IDS.THREE_DISPLAY;
   const mode = options.mode === MODES.OPTIMIZED ? MODES.OPTIMIZED : MODES.FAITHFUL;
-  let classification = classifySlide(sourceSlide);
+  const composition = options.composition
+    || buildSlideCompositionIr(sourceSlide, options.sourceDimensions);
+  const candidates = rankCandidateLayouts(composition, wallProfile);
+  const proseWithMedia = candidates.find((candidate) => candidate.layout_id === 'STANDARD_PARAGRAPH');
+  let classification = composition.semantic_shape === 'prose_with_media' && proseWithMedia
+    ? {
+      template_id: 'STANDARD_PARAGRAPH',
+      reason: proseWithMedia.valid
+        ? 'highest fidelity prose-with-media composition'
+        : 'readable prose composition with media preserved on a follow-up slide',
+      candidate_score: proseWithMedia.score,
+    }
+    : candidates[0]?.valid
+      ? { template_id: candidates[0].layout_id, reason: `highest valid deterministic candidate for ${composition.semantic_shape}`, candidate_score: candidates[0].score }
+      : classifySlide(sourceSlide);
   if ((classification.ambiguous || mode === MODES.OPTIMIZED) && options.ai && typeof options.ai.mapSlide === 'function') {
     try {
-      const proposed = await options.ai.mapSlide(sourceSlide, { wallProfile, mode });
+      options.onProgress?.({
+        step: 'qwen-semantic-design', source_slide_number: sourceSlide.source_slide_number,
+        slide_current: options.slideCurrent, slide_total: options.slideTotal, ai_active: true,
+      });
+      const proposed = await options.ai.mapSlide(sourceSlide, { wallProfile, mode, deckPlan: options.deckPlan || null });
       getLayout(wallProfile, proposed.template_id);
       classification = { ...proposed, reason: 'schema-validated Qwen mapping' };
     } catch (error) {
@@ -203,16 +276,22 @@ async function convertSlideIr(sourceSlide, options = {}) {
 
   const elements = elementsOf(sourceSlide);
   const primary = contentSlots(wallProfile, classification.template_id);
+  const primaryMedia = primaryMediaElements(elements, primary.media, primary.objects);
   const slots = {};
   if (primary.title && sourceSlide.title) slots[primary.title] = String(sourceSlide.title);
   if (primary.subtitle && sourceSlide.subtitle) slots[primary.subtitle] = String(sourceSlide.subtitle);
   const pending = [];
   const elementSlideIds = new Map(elements.map((element) => [element.id, []]));
   const reviewFlags = classification.ai_warning ? [classification.ai_warning] : [];
+  const titleElement = elements.find((element) => ['title', 'ctrTitle'].includes(element.semantic_role))
+    || elements.find((element) => ['paragraph', 'text'].includes(element.kind)
+      && elementText(element) === String(sourceSlide.title || '').trim());
 
   for (const element of elements) {
+    if (element === titleElement && primary.title) continue;
+    if (element.rendered_fallback_covered === true) continue;
     if (['image', 'video', 'audio', 'youtube'].includes(element.kind)) {
-      if (!assignMedia(slots, primary.media, element)) pending.push({ element, chunks: [element] });
+      if (!primaryMedia.has(element) || !assignMedia(slots, primary.media, element)) pending.push({ element, chunks: [element] });
       if (element.external === true) reviewFlags.push('External linked media unavailable — source file required');
       continue;
     }
@@ -263,48 +342,62 @@ async function convertSlideIr(sourceSlide, options = {}) {
   }
 
   const continuation = contentSlots(wallProfile, 'CONTINUATION');
-  for (const item of pending) {
-    if (['image', 'video', 'audio', 'youtube'].includes(item.element.kind)) {
-      for (const chunk of item.chunks) {
-        const mediaLayout = contentSlots(wallProfile, 'FULL_IMAGE');
-        const mediaSlots = {};
-        if (mediaLayout.title) mediaSlots[mediaLayout.title] = String(sourceSlide.title || 'Continued media');
-        if (!assignMedia(mediaSlots, mediaLayout.media, chunk)) throw new Error('FULL_IMAGE registry is missing its media slot');
-        const mediaSlide = makeSlide(sourceSlide, 'FULL_IMAGE', slides.length + 1, mediaSlots, [item.element.id], [
-          ...reviewFlags,
-          item.element.external ? 'External linked media unavailable — source file required' : 'Media preserved on a continuation slide',
-        ]);
-        slides.push(mediaSlide);
-        elementSlideIds.get(item.element.id).push(mediaSlide.id);
+  const mediaPending = pending.filter((item) => ['image', 'video', 'audio', 'youtube'].includes(item.element.kind));
+  const remainingMedia = mediaPending.flatMap((item) => item.chunks.map((chunk) => ({ element: item.element, chunk })));
+  while (remainingMedia.length) {
+    const templateId = remainingMedia.length > 1 ? 'GALLERY' : singleMediaTemplate(wallProfile, remainingMedia[0].element);
+    const galleryLayout = contentSlots(wallProfile, templateId);
+    const batch = remainingMedia.splice(0, Math.max(1, galleryLayout.media.length));
+    const mediaSlots = {};
+    if (galleryLayout.title) mediaSlots[galleryLayout.title] = String(sourceSlide.title || 'Continued media');
+    const refs = [];
+    for (const { element, chunk } of batch) {
+      if (!assignMedia(mediaSlots, galleryLayout.media, chunk)) throw new Error('Media registry is missing an expected media slot');
+      refs.push(element.id);
+    }
+    const mediaSlide = makeSlide(sourceSlide, templateId, slides.length + 1, mediaSlots, refs, [
+      ...reviewFlags,
+      ...(batch.some(({ element }) => element.external) ? ['External linked media unavailable — source file required'] : []),
+    ]);
+    slides.push(mediaSlide);
+    for (const { element } of batch) elementSlideIds.get(element.id).push(mediaSlide.id);
+  }
+
+  let sharedContinuation = null;
+  for (const item of pending.filter((candidate) => !mediaPending.includes(candidate))) {
+    if (item.element.kind === 'bullets') {
+      const bulletLayout = contentSlots(wallProfile, 'STANDARD_BULLETS');
+      let remaining = item.chunks.slice();
+      while (remaining.length) {
+        const bulletSlots = {};
+        if (bulletLayout.title) bulletSlots[bulletLayout.title] = String(sourceSlide.title || 'Continued');
+        for (const name of bulletLayout.bullets) {
+          if (!remaining.length) break;
+          bulletSlots[name] = String(remaining.shift());
+        }
+        const bulletSlide = makeSlide(sourceSlide, 'STANDARD_BULLETS', slides.length + 1, bulletSlots, [item.element.id], reviewFlags.slice());
+        slides.push(bulletSlide);
+        elementSlideIds.get(item.element.id).push(bulletSlide.id);
       }
       continue;
     }
-    let current = null;
+    let current = sharedContinuation;
     for (const chunk of item.chunks) {
-      if (!current) {
+      if (!current || !continuation.body.some((name) => current.slots[name] === undefined)) {
         const continuationSlots = {};
         if (continuation.title) continuationSlots[continuation.title] = String(sourceSlide.title || 'Continued');
-        current = makeSlide(sourceSlide, 'CONTINUATION', slides.length + 1, continuationSlots, [item.element.id], reviewFlags.slice());
+        current = makeSlide(sourceSlide, 'CONTINUATION', slides.length + 1, continuationSlots, [], reviewFlags.slice());
         slides.push(current);
+        sharedContinuation = current;
       }
+      if (!current.source_refs.includes(item.element.id)) current.source_refs.push(item.element.id);
       const freeBody = continuation.body.find((name) => current.slots[name] === undefined);
       if (typeof chunk === 'object' && ['table', 'linked_text'].includes(chunk.type)) {
-        const body = freeBody || continuation.body[0];
-        current.slots[body] = JSON.parse(JSON.stringify(chunk));
+        current.slots[freeBody] = JSON.parse(JSON.stringify(chunk));
       } else if (typeof chunk === 'object') {
         current.review_flags.push(`${chunk.kind || 'unsupported'} requires review`);
-        const body = freeBody || continuation.body[0];
-        current.slots[body] = `[${chunk.kind || 'unsupported'} preserved for review]`;
-      } else if (freeBody) current.slots[freeBody] = String(chunk);
-      else {
-        current = null;
-        const continuationSlots = {};
-        if (continuation.title) continuationSlots[continuation.title] = String(sourceSlide.title || 'Continued');
-        const next = makeSlide(sourceSlide, 'CONTINUATION', slides.length + 1, continuationSlots, [item.element.id], reviewFlags.slice());
-        next.slots[continuation.body[0]] = String(chunk);
-        slides.push(next);
-        current = next;
-      }
+        current.slots[freeBody] = `[${chunk.kind || 'unsupported'} preserved for review]`;
+      } else current.slots[freeBody] = String(chunk);
       elementSlideIds.get(item.element.id).push(current.id);
     }
   }
@@ -318,7 +411,7 @@ async function convertSlideIr(sourceSlide, options = {}) {
       output_slide_ids: outputSlideIds,
     };
   });
-  return { slides, accounting, classification };
+  return { slides, accounting, classification: { ...classification, composition, candidate_layouts: candidates.slice(0, 4) } };
 }
 
 function validateConversionAccounting(sourceSlide, accounting, mode = MODES.FAITHFUL) {
@@ -350,8 +443,27 @@ async function convertDeckIr(ir, options = {}) {
   const outputSlides = [];
   const accounting = [];
   const mappings = [];
-  for (const sourceSlide of (Array.isArray(ir && ir.slides) ? ir.slides : [])) {
-    const converted = await convertSlideIr(sourceSlide, { ...options, wallProfile, mode });
+  let deckPlan = null;
+  let deckPlanWarning = null;
+  let aiAdapter = options.ai;
+  if (mode === MODES.OPTIMIZED && aiAdapter && typeof aiAdapter.planDeck === 'function') {
+    options.onProgress?.({ step: 'qwen-deck-plan', slide_current: 0, slide_total: Array.isArray(ir?.slides) ? ir.slides.length : 0, ai_active: true });
+    try {
+      deckPlan = await aiAdapter.planDeck(ir, { wallProfile, mode });
+    } catch (error) {
+      deckPlanWarning = `AI deck plan unavailable; Faithful layout used: ${String(error.message || error).slice(0, 300)}`;
+      aiAdapter = null;
+    }
+  }
+  const sourceSlides = Array.isArray(ir && ir.slides) ? ir.slides : [];
+  for (let index = 0; index < sourceSlides.length; index += 1) {
+    const sourceSlide = sourceSlides[index];
+    options.onProgress?.({ step: 'analyzing-source-slide', slide_current: index + 1, slide_total: sourceSlides.length, source_slide_number: sourceSlide.source_slide_number, mode, ai_active: mode === MODES.OPTIMIZED });
+    const composition = buildSlideCompositionIr(sourceSlide, ir?.source_dimensions_emu);
+    const converted = await convertSlideIr(sourceSlide, {
+      ...options, ai: aiAdapter, wallProfile, mode, composition, deckPlan, sourceDimensions: ir?.source_dimensions_emu,
+      slideCurrent: index + 1, slideTotal: sourceSlides.length,
+    });
     outputSlides.push(...converted.slides);
     accounting.push(...converted.accounting);
     mappings.push({
@@ -362,12 +474,17 @@ async function convertDeckIr(ir, options = {}) {
       optimization_applied: converted.classification.optimization_applied === true,
       semantic_plan: converted.classification.raw_plan || null,
       source_snapshot: JSON.parse(JSON.stringify(sourceSlide)),
+      composition,
+      candidate_layouts: converted.classification.candidate_layouts,
+      deck_plan_directive: deckPlan?.slide_directives?.find((item) => Number(item.source_slide_number) === Number(sourceSlide.source_slide_number)) || null,
     });
+    options.onProgress?.({ step: 'source-slide-mapped', slide_current: index + 1, slide_total: sourceSlides.length, source_slide_number: sourceSlide.source_slide_number, chosen_layout: converted.classification.template_id, optimization_applied: converted.classification.optimization_applied === true, ai_active: false });
     const check = validateConversionAccounting(sourceSlide, converted.accounting, mode);
     if (!check.valid) throw new Error(`Faithful content accounting failed for source slide ${sourceSlide.source_slide_number}: ${check.missing.join(', ')}`);
   }
   const count = accounting.length;
   const accounted = accounting.filter((item) => SAFE_DISPOSITIONS.has(item.disposition)).length;
+  options.onProgress?.({ step: 'compiling-layouts', slide_current: sourceSlides.length, slide_total: sourceSlides.length, ai_active: false });
   const deck = {
     version: DECK_VERSIONS.V2,
     deck_id: options.deckId || randomUUID(),
@@ -383,6 +500,8 @@ async function convertDeckIr(ir, options = {}) {
       source_slide_mappings: mappings,
       accounting,
       source_accounting_percent: count === 0 ? 100 : Math.round((accounted / count) * 100),
+      deck_plan: deckPlan,
+      deck_plan_warning: deckPlanWarning,
     },
   };
   const assetContent = new Map(deck.assets.filter((asset) => asset.id && asset.content_id).map((asset) => [asset.id, asset.content_id]));
@@ -390,6 +509,18 @@ async function convertDeckIr(ir, options = {}) {
     for (const value of Object.values(slide.slots || {})) {
       if (value && typeof value === 'object' && value.asset_ref && assetContent.has(value.asset_ref)) value.content_id = assetContent.get(value.asset_ref);
     }
+  }
+  options.onProgress?.({ step: 'validating-fit', slide_current: sourceSlides.length, slide_total: sourceSlides.length, ai_active: false });
+  deck.conversion.optimization_status = mode === MODES.FAITHFUL
+    ? 'not_requested'
+    : mappings.every((mapping) => mapping.optimization_applied) ? 'optimized'
+      : mappings.some((mapping) => mapping.optimization_applied) ? 'partial' : 'fallback_faithful';
+  deck.conversion.quality = validatePresentationQuality(deck, ir);
+  if (!deck.conversion.quality.valid) {
+    const error = new Error(`Presentation quality gate failed: ${deck.conversion.quality.review_required.concat(deck.conversion.quality.structural_errors, deck.conversion.quality.hard_rejects || []).join(', ') || 'measurable layout defect'}; overflow=${deck.conversion.quality.overflow_count}[${deck.conversion.quality.overflow_slots.join(',')}]; seams=${deck.conversion.quality.seam_violation_count}; expansion=${deck.conversion.quality.slide_expansion_ratio}`);
+    error.code = 'presentation_quality_gate_failed';
+    error.quality = deck.conversion.quality;
+    throw error;
   }
   return deck;
 }

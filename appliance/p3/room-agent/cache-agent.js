@@ -11,10 +11,19 @@
 // env at runtime; nothing is hard-coded or committed.
 'use strict';
 
+const { installFatalProcessLogging } = require('./fatal-process');
+installFatalProcessLogging('cache-agent');
+
 const fs = require('fs');
 const crypto = require('crypto');
 const path = require('path');
 const { createCacheServer } = require('./cache-server');
+const {
+  CACHE_PROTOCOL_VERSION,
+  authoritativeManifestItems,
+  legacyManifestItems,
+  purgeAcknowledgement,
+} = require('./cache-manifest-protocol');
 const { loadCommonModule } = require('./common-loader');
 const { resolveServerUrl } = loadCommonModule('server-url');
 const { applyLinkTelemetry, detectNetworkState } = loadCommonModule('network-state');
@@ -29,7 +38,7 @@ const MC_NODE_ID = process.env.MC_NODE_ID || '';
 const MC_NODE_TOKEN = process.env.MC_NODE_TOKEN || '';
 const NODE_TYPE = process.env.MC_NODE_TYPE || 'p3';
 const PACKAGE_VERSION = (() => {
-  try { return require('./package.json').version; } catch { return '1.1.0'; }
+  try { return require('./package.json').version; } catch { return '1.2.0'; }
 })();
 const SOFTWARE_VERSION = process.env.MC_SOFTWARE_VERSION || `p3-cache-agent-${PACKAGE_VERSION}`;
 const AGENT_PORT = parseInt(process.env.MC_AGENT_PORT, 10) || 8097;
@@ -53,7 +62,11 @@ function packageVersion(filePath) {
 function agentBuildHash() {
   try {
     const hash = crypto.createHash('sha256');
-    for (const file of [__filename, path.join(__dirname, 'cache-server.js')]) {
+    for (const file of [
+      __filename,
+      path.join(__dirname, 'cache-server.js'),
+      path.join(__dirname, 'cache-manifest-protocol.js'),
+    ]) {
       hash.update(fs.readFileSync(file));
     }
     return `sha256:${hash.digest('hex').slice(0, 16)}`;
@@ -131,6 +144,7 @@ function heartbeat() {
     kiosk_version: KIOSK_VERSION,
     build_hash: AGENT_BUILD_HASH,
     configuration_schema_version: 1,
+    cache_protocol_version: CACHE_PROTOCOL_VERSION,
     cache_health: stats.failed > 0 ? 'degraded' : 'ok',
     cache: stats,
     lan_health_test: lastLanHealthTest,
@@ -158,7 +172,13 @@ function connect() {
     reconnectionAttempts: Infinity,
     reconnectionDelay: 2000,
     reconnectionDelayMax: 5 * 60 * 1000,
-    auth: { token: MC_NODE_TOKEN, node_id: MC_NODE_ID, node_type: NODE_TYPE, role: 'node' },
+    auth: {
+      token: MC_NODE_TOKEN,
+      node_id: MC_NODE_ID,
+      node_type: NODE_TYPE,
+      role: 'node',
+      cache_protocol_version: CACHE_PROTOCOL_VERSION,
+    },
   });
 
   io.on('connect', () => {
@@ -178,9 +198,20 @@ function connect() {
   io.on('node:joined', () => log('[cache-agent] node join acked'));
   io.on('node:auth-error', (e) => warn('[cache-agent] node auth error:', e && e.error));
   io.on('node:sync-manifest', (manifest) => {
-    const n = Array.isArray(manifest) ? manifest.length : 0;
-    log(`[cache-agent] manifest received: ${n} items — pre-warming`);
-    cache.prewarmManifest(manifest).catch((err) => warn('[cache-agent] prewarm error:', err && err.message));
+    const items = authoritativeManifestItems(manifest);
+    if (items) {
+      log(`[cache-agent] authoritative v${CACHE_PROTOCOL_VERSION} manifest received: ${items.length} items — reconciling`);
+      cache.prewarmManifest(items).catch((err) => warn('[cache-agent] prewarm error:', err && err.message));
+      return;
+    }
+    const legacyItems = legacyManifestItems(manifest);
+    if (legacyItems) {
+      log(`[cache-agent] legacy manifest received: ${legacyItems.length} items — non-destructive prewarm only`);
+      cache.prewarmLegacyManifest(legacyItems)
+        .catch((err) => warn('[cache-agent] legacy prewarm error:', err && err.message));
+      return;
+    }
+    warn('[cache-agent] ignored malformed or non-authoritative manifest payload');
   });
   io.on('node:prewarm-content', async (item, acknowledge) => {
     const contentId = item && (item.content_id || item.id);
@@ -199,6 +230,30 @@ function connect() {
     log(`[cache-agent] priority prewarm ${contentId || 'unknown'} ${ok ? 'ready' : 'failed'} in ${result.elapsed_ms}ms`);
     if (typeof acknowledge === 'function') acknowledge(result);
     try { io.emit('node:prewarm-result', result); } catch (_) {}
+  });
+  io.on('node:purge-content', (item, acknowledge) => {
+    const contentId = item && (item.content_id || item.id);
+    const startedAt = Date.now();
+    let result;
+    try {
+      result = purgeAcknowledgement(cache.purgeContent(item || {}), {
+        content_id: contentId || null,
+        generation: Number(item && item.generation) || null,
+        elapsed_ms: Date.now() - startedAt,
+        cache: cache.getStats(),
+      });
+      log(`[cache-agent] permanent purge ${contentId || 'unknown'} completed in ${result.elapsed_ms}ms`);
+    } catch (error) {
+      result = {
+        ok: false,
+        content_id: contentId || null,
+        error: error && error.message ? error.message : String(error),
+        elapsed_ms: Date.now() - startedAt,
+      };
+      warn('[cache-agent] permanent purge failed:', result.error);
+    }
+    if (typeof acknowledge === 'function') acknowledge(result);
+    try { io.emit('node:purge-result', result); } catch (_) {}
   });
   io.on('node:run-lan-health-test', async (request, acknowledge) => {
     const requestedAt = Math.floor(Date.now() / 1000);
@@ -239,7 +294,5 @@ function shutdown(sig) {
 }
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('uncaughtException', (e) => console.error('[cache-agent] uncaughtException:', e && e.stack));
-process.on('unhandledRejection', (e) => console.error('[cache-agent] unhandledRejection:', e && e.message));
 
 connect();

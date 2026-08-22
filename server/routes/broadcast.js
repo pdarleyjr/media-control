@@ -33,6 +33,7 @@ const {
 const nodeRegistry = require('../lib/node-registry');
 const { contentUseDecision, contextFromRequest } = require('../lib/content-visibility');
 const { contentBroadcastReadiness } = require('../lib/content-readiness');
+const { presentationDependencyDecision } = require('../services/presentation-dependency-access');
 const { buildBroadcastPreflight } = require('../lib/broadcast-preflight');
 const cameraControl = require('../lib/camera-control-client');
 const { ELEVATED_ROLES } = require('../middleware/auth');
@@ -46,7 +47,8 @@ function sourceIdentity({ contentId, playlistId, presentationId, remoteUrl }) {
 }
 
 function loadPresentationForBroadcast(req) {
-  const pres = db.prepare('SELECT id, workspace_id, user_id, deck_json FROM presentations WHERE id = ?').get(String(req.body.presentation_id));
+  const pres = db.prepare(`SELECT id, workspace_id, user_id, deck_json, status, published_snapshot
+    FROM presentations WHERE id = ?`).get(String(req.body.presentation_id));
   if (!pres) return { status: 404, error: `Presentation ${req.body.presentation_id} not found` };
   if (pres.workspace_id !== req.workspaceId) return { status: 403, error: `Presentation ${req.body.presentation_id} is not in this workspace` };
   if (!req.actingAs && !ELEVATED_ROLES.includes(req.user.role) && pres.user_id && pres.user_id !== req.user.id) {
@@ -65,7 +67,13 @@ function loadPresentationForBroadcast(req) {
   } catch { return { status: 422, error: 'Presentation document is invalid' }; }
   const dependencies = [];
   for (const contentId of dependencyIds) {
-    const decision = contentUseDecision(db, contentId, req.workspaceId, contextFromRequest(req));
+    const decision = presentationDependencyDecision(
+      db,
+      pres,
+      contentId,
+      req.workspaceId,
+      contextFromRequest(req),
+    );
     if (!decision.content) return { status: 409, error: `Presentation dependency ${contentId} is missing` };
     if (!decision.allowed) return { status: 403, error: `Presentation dependency ${contentId} is not available in this workspace` };
     const readiness = contentBroadcastReadiness(db, decision.content);
@@ -228,10 +236,12 @@ router.post('/', async (req, res) => {
   // must exist and live in the caller's workspace.
   let effectiveRemoteUrl = remote_url;
   let presentationDependencies = [];
+  let presentationForBroadcast = null;
   if (presentation_id) {
     const decision = loadPresentationForBroadcast(req);
     if (!decision.presentation) return res.status(decision.status).json(decision.body || { error: decision.error });
     const pres = decision.presentation;
+    presentationForBroadcast = pres;
     presentationDependencies = decision.dependencies;
     const publicBase = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
     effectiveRemoteUrl = deckPlayerUrl(publicBase, pres.id);
@@ -337,6 +347,9 @@ router.post('/', async (req, res) => {
     source: sourceRef,
     remote_url: effectiveRemoteUrl || null,
     fit_mode: fit_mode || null,
+    presentation_snapshot_sha256: presentationForBroadcast
+      ? crypto.createHash('sha256').update(presentationForBroadcast.deck_json).digest('hex')
+      : null,
     routes: dispatchRoutes.map((route) => ({
       type: route.type,
       device_id: route.device_id,
@@ -391,6 +404,27 @@ router.post('/', async (req, res) => {
       status_url: `/api/broadcast/${encodeURIComponent(deliveryRequest.id)}`,
       delivery: deliveryRequest,
     });
+  }
+  // A presentation broadcast is also its publication boundary. Snapshot only
+  // after every authorization, topology, readiness, confirmation, and
+  // idempotency check has passed, so the unauthenticated player never sees a
+  // draft and a rejected request cannot publish one as a side effect.
+  if (presentationForBroadcast
+      && (presentationForBroadcast.status !== 'published'
+        || presentationForBroadcast.published_snapshot !== presentationForBroadcast.deck_json)) {
+    const published = db.prepare(`UPDATE presentations
+      SET status='published', published_snapshot=deck_json,
+          published_at=strftime('%s','now'), updated_at=strftime('%s','now')
+      WHERE id=? AND deck_json=?`).run(
+      presentationForBroadcast.id,
+      presentationForBroadcast.deck_json,
+    );
+    if (published.changes !== 1) {
+      return res.status(409).json({
+        code: 'PRESENTATION_CHANGED',
+        error: 'Presentation changed before broadcast; review and send again.',
+      });
+    }
   }
   const deliveryByTarget = new Map(
     deliveryRequest.devices.map((entry) => [entry.target_key, entry])

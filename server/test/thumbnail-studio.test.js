@@ -85,6 +85,11 @@ test('thumbnail commit is version, path, and source-hash guarded and records pro
         content_id TEXT,
         poster_path TEXT
       );
+      CREATE TABLE content_erase_operations (
+        id TEXT PRIMARY KEY,
+        content_id TEXT,
+        state TEXT
+      );
       INSERT INTO content VALUES
         ('c1', 'w1', 'source.mp4', 7, 'ready', 'thumb_old.jpg', 1);
       INSERT INTO asset_checksums VALUES ('a1', 'c1', 'thumb_old.jpg');
@@ -141,6 +146,24 @@ test('thumbnail commit is version, path, and source-hash guarded and records pro
     });
     assert.equal(rejected.status, 'stale');
     assert.equal(fs.existsSync(staleCandidate), false);
+
+    const eraseCandidate = path.join(tmp, 'thumb_erase_race.jpg');
+    fs.writeFileSync(eraseCandidate, 'must-not-commit');
+    db.prepare("INSERT INTO content_erase_operations VALUES ('erase-c1','c1','prepared')").run();
+    const eraseRejected = await commitThumbnail({
+      db,
+      contentDir: tmp,
+      contentId: 'c1',
+      expectedFilepath: 'source.mp4',
+      expectedVersion: 7,
+      expectedSourceSha256: sourceHash,
+      thumbnailPath: eraseCandidate,
+      thumbnailFilename: path.basename(eraseCandidate),
+      provenance: 'video_timestamp:center',
+    });
+    assert.deepEqual(eraseRejected, { status: 'stale', reason: 'erase_in_progress', content_id: 'c1' });
+    assert.equal(fs.existsSync(eraseCandidate), false);
+    assert.equal(db.prepare("SELECT thumbnail_path FROM content WHERE id='c1'").get().thumbnail_path, 'thumb_c1_custom.jpg');
   } finally {
     db.close();
     fs.rmSync(tmp, { recursive: true, force: true });

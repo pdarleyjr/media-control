@@ -46,6 +46,8 @@ function validateMediaPipelineSchema(db) {
     'id', 'content_id', 'workspace_id', 'job_type', 'status', 'stage',
     'progress_pct', 'attempts', 'max_attempts', 'lease_owner',
     'lease_expires_at', 'reserved_bytes', 'expected_version', 'expected_filepath',
+  ]) && hasRequiredColumns(db, 'media_job_artifacts', [
+    'id', 'job_id', 'content_id', 'file_path', 'created_at',
   ]) && hasRequiredColumns(db, 'content_media_metadata', [
     'content_id', 'source_type', 'source_identity', 'detected_mime_type',
     'thumbnail_generation', 'remote_health_status', 'remote_source_kind',
@@ -223,6 +225,18 @@ function migrateMediaPipeline(db) {
 
       CREATE INDEX IF NOT EXISTS idx_media_job_events_job
       ON media_job_events(job_id, id);
+
+      CREATE TABLE IF NOT EXISTS media_job_artifacts (
+        id         TEXT PRIMARY KEY,
+        job_id     TEXT NOT NULL,
+        content_id TEXT NOT NULL,
+        file_path  TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        UNIQUE(job_id, file_path)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_media_job_artifacts_content
+      ON media_job_artifacts(content_id, created_at);
 
       CREATE TABLE IF NOT EXISTS content_media_metadata (
         content_id                TEXT PRIMARY KEY REFERENCES content(id) ON DELETE CASCADE,

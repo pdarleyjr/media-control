@@ -17,11 +17,13 @@ const {
   validateDeck,
 } = require('../lib/presentation-template-registry');
 const { getTemplateAssets } = require('../lib/presentation-template-assets');
+const { pptxTextStyle } = require('../lib/presentation-style-contract');
+const { resolveStoredContentFile } = require('../lib/trusted-content-file');
 
 // Defense in depth: pptxgenjs uses image-size internally, so disable every
 // parser named by the upstream infinite-loop advisories before pptxgenjs loads.
 // Media Control only accepts the safe raster formats in PPTX_IMAGE_MIME below.
-const { disableTypes } = require('image-size');
+const { disableTypes, imageSize } = require('image-size');
 disableTypes(['heif', 'icns', 'jxl', 'jxl-stream']);
 
 const W = 13.333; // LAYOUT_WIDE inches
@@ -39,6 +41,13 @@ const FONT = 'Segoe UI';
 // ICNS/JXL/HEIF bytes to pptxgenjs' transitive image-size parser: those formats
 // currently have upstream infinite-loop advisories and are not slide formats.
 const PPTX_IMAGE_MIME = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp']);
+const PPTX_IMAGE_TYPE = new Map([
+  ['image/jpeg', 'jpg'],
+  ['image/png', 'png'],
+  ['image/gif', 'gif'],
+  ['image/webp', 'webp'],
+  ['image/bmp', 'bmp'],
+]);
 const PPTX_VIDEO_MIME = new Set(['video/mp4', 'video/quicktime', 'video/webm']);
 const PPTX_AUDIO_MIME = new Set(['audio/mpeg', 'audio/mp4', 'audio/wav', 'audio/ogg']);
 const PPTX_READY_STATES = new Set(['uploaded', 'ready', 'completed']);
@@ -53,10 +62,8 @@ async function contentAsset(contentId, allowedContentIds) {
     if (!(allowedContentIds instanceof Set) || !allowedContentIds.has(String(contentId))) return null;
     const c = db.prepare('SELECT filepath, mime_type, processing_status FROM content WHERE id = ?').get(contentId);
     if (!c || !c.filepath || !PPTX_READY_STATES.has(String(c.processing_status || 'uploaded').toLowerCase())) return null;
-    const root = path.resolve(config.contentDir);
-    const safe = path.resolve(root, path.basename(c.filepath));
-    if (path.dirname(safe) !== root) return null;
-    await fs.promises.access(safe, fs.constants.R_OK);
+    const safe = resolveStoredContentFile(config.contentDir, c.filepath);
+    if (!safe) return null;
     return { path: safe, mime: String(c.mime_type || '').toLowerCase() };
   } catch { return null; }
 }
@@ -64,7 +71,12 @@ async function contentAsset(contentId, allowedContentIds) {
 async function imageData(asset) {
   if (!asset || !PPTX_IMAGE_MIME.has(asset.mime)) return null;
   const buf = await fs.promises.readFile(asset.path).catch(() => null);
-  return buf ? `data:${asset.mime};base64,${buf.toString('base64')}` : null;
+  if (!buf) return null;
+  const detected = imageSize(buf);
+  if (detected.type !== PPTX_IMAGE_TYPE.get(asset.mime)) {
+    throw new Error(`Presentation image bytes do not match ${asset.mime}`);
+  }
+  return `data:${asset.mime};base64,${buf.toString('base64')}`;
 }
 
 async function addImages(slide, images, layer, resolveContentAsset) {
@@ -97,25 +109,7 @@ function hex(color, fallback) {
 }
 
 function v2TextStyle(name) {
-  const heading = SOURCE_SPEC.theme.font_heading;
-  const body = SOURCE_SPEC.theme.font_body;
-  const colors = SOURCE_SPEC.theme.colors;
-  const base = {
-    fontFace: body,
-    color: hex(colors.white, WHITE),
-    margin: 0.05,
-    breakLine: false,
-    valign: 'mid',
-    fit: 'shrink',
-  };
-  if (/SECTION_TITLE/.test(name)) return { ...base, fontFace: heading, fontSize: 40, bold: true, color: hex(colors.gold, 'E8B33D'), align: 'center' };
-  if (/(?:^|_)TITLE$/.test(name)) return { ...base, fontFace: heading, fontSize: 30, bold: true };
-  if (/SUBTITLE|CAPTION|COURSE_SECTION|PRESENTATION_TITLE|SLIDE_LABEL/.test(name)) return { ...base, fontSize: 15, color: hex(colors.white, WHITE) };
-  if (/BULLET/.test(name)) return { ...base, fontSize: 18 };
-  if (/PARAGRAPH|_BODY|TABLE_TEXT|QUOTE_TEXT/.test(name)) return { ...base, fontSize: 17, valign: 'top', breakLine: true };
-  if (/TAKEAWAY_TEXT/.test(name)) return { ...base, fontSize: 17, bold: true };
-  if (/SLIDE_NUMBER|SECTION_NUMBER/.test(name)) return { ...base, fontFace: heading, fontSize: 22, bold: true, align: 'center' };
-  return { ...base, fontSize: 16 };
+  return pptxTextStyle(name);
 }
 
 function addV2StaticObjects(slide, namedObjects, deck, slideNumber, templateAssets) {
@@ -124,20 +118,36 @@ function addV2StaticObjects(slide, namedObjects, deck, slideNumber, templateAsse
     const box = object.bbox_in;
     if (!box) continue;
     if (/BACKGROUND$/.test(name)) {
-      slide.addShape('rect', { ...box, line: { color: hex(colors.navy_1, '031A33'), transparency: 100 }, fill: { color: hex(colors.navy_1, '031A33') } });
-    } else if (/PANEL$/.test(name)) {
-      slide.addShape('roundRect', { ...box, rectRadius: 0.06, line: { color: hex(colors.blue, '0B385E'), transparency: 35 }, fill: { color: hex(colors.panel, '041F39') } });
-    } else if (/TAKEAWAY_BOX|SLIDE_NUMBER_BLOCK/.test(name)) {
-      slide.addShape('roundRect', { ...box, line: { color: hex(colors.gold, 'E8B33D'), transparency: 25 }, fill: { color: hex(colors.blue, '0B385E') } });
+      slide.addShape('rect', { ...box, objectName: name, line: { color: hex(colors.navy_1, '031A33'), transparency: 100 }, fill: { color: hex(colors.navy_1, '031A33') } });
     }
   }
-  for (const name of ['GLOBAL_MBFD_LOGO', 'GLOBAL_MBFD_WATERMARK']) {
+  for (const name of ['GLOBAL_MBFD_WATERMARK']) {
     const object = namedObjects[name];
     const asset = templateAssets && templateAssets.get(name);
     if (!object?.bbox_in || !asset) continue;
     slide.addImage({
       data: `data:${asset.mime};base64,${asset.buffer.toString('base64')}`,
       ...object.bbox_in,
+      objectName: name,
+    });
+  }
+  for (const [name, object] of Object.entries(namedObjects)) {
+    const box = object.bbox_in;
+    if (!box) continue;
+    if (/PANEL$/.test(name)) {
+      slide.addShape('roundRect', { ...box, objectName: name, rectRadius: 0.06, line: { color: hex(colors.blue, '0B385E'), transparency: 35 }, fill: { color: hex(colors.panel, '041F39') } });
+    } else if (/TAKEAWAY_BOX|SLIDE_NUMBER_BLOCK/.test(name)) {
+      slide.addShape('roundRect', { ...box, objectName: name, line: { color: hex(colors.gold, 'E8B33D'), transparency: 25 }, fill: { color: hex(colors.blue, '0B385E') } });
+    }
+  }
+  for (const name of ['GLOBAL_MBFD_LOGO']) {
+    const object = namedObjects[name];
+    const asset = templateAssets && templateAssets.get(name);
+    if (!object?.bbox_in || !asset) continue;
+    slide.addImage({
+      data: `data:${asset.mime};base64,${asset.buffer.toString('base64')}`,
+      ...object.bbox_in,
+      objectName: name,
     });
   }
   const globals = {
@@ -168,8 +178,7 @@ async function addV2Value(slide, name, object, value, resolveContentAsset) {
     if (value.type === 'table' && Array.isArray(value.rows) && value.rows.length) {
       slide.addTable(value.rows.map((row) => (Array.isArray(row) ? row.map(String) : [String(row)])), {
         ...box,
-        fontFace: SOURCE_SPEC.theme.font_body,
-        fontSize: 15,
+        ...v2TextStyle(name),
         color: hex(SOURCE_SPEC.theme.colors.white, WHITE),
         border: { type: 'solid', color: hex(SOURCE_SPEC.theme.colors.blue, '0B385E'), pt: 1 },
         fill: hex(SOURCE_SPEC.theme.colors.panel, '041F39'),

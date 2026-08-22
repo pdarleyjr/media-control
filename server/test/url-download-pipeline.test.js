@@ -22,6 +22,7 @@ function createDb() {
       filepath TEXT NOT NULL DEFAULT '',
       mime_type TEXT,
       file_size INTEGER DEFAULT 0,
+      content_type TEXT,
       remote_url TEXT,
       processing_status TEXT,
       processing_error TEXT,
@@ -31,6 +32,7 @@ function createDb() {
     CREATE TABLE download_jobs (
       id TEXT PRIMARY KEY,
       content_id TEXT,
+      title TEXT,
       status TEXT,
       progress_pct INTEGER,
       local_path TEXT,
@@ -94,6 +96,7 @@ test('URL download uses bounded args, canonical normalization, and removes parti
       execFile: async (command, args) => {
         calls.push({ command, args });
         fs.writeFileSync(args[args.indexOf('-o') + 1], 'downloaded-master');
+        return { stdout: '__MBFD_TITLE__Pump Operations: Drafting & Supply\n' };
       },
     });
     const result = await pipeline._handleUrlDownload(job(), context);
@@ -106,6 +109,13 @@ test('URL download uses bounded args, canonical normalization, and removes parti
     const download = db.prepare("SELECT * FROM download_jobs WHERE id='download-1'").get();
     assert.equal(download.status, 'done');
     assert.equal(download.progress_pct, 100);
+    const content = db.prepare("SELECT filename, filepath, file_size, processing_status, remote_url, content_type FROM content WHERE id='content-1'").get();
+    assert.equal(content.filename, 'Pump Operations: Drafting & Supply');
+    assert.equal(content.remote_url, null);
+    assert.equal(content.processing_status, 'ready');
+    assert.equal(content.content_type, 'video');
+    assert.ok(content.file_size > 0);
+    assert.ok(content.filepath);
   } finally {
     db.close();
     fs.rmSync(dir, { recursive: true, force: true });
@@ -361,5 +371,32 @@ test('malformed content identity cannot place URL download output outside the co
   } finally {
     db.close();
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('an in-flight download cannot resurrect catalog rows or bytes after permanent erase wins the race', async () => {
+  const db = createDb();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-url-erased-race-'));
+  try {
+    const pipeline = new MediaPipeline({
+      db,
+      contentDir: dir,
+      urlSafetyCheck: safeUrl,
+      normalizeVideoJob: async () => assert.fail('normalization must not run after erase'),
+      execFile: async (_command, args) => {
+        db.prepare("UPDATE download_jobs SET status='error', error_msg='Content permanently erased' WHERE id='download-1'").run();
+        db.prepare("DELETE FROM content WHERE id='content-1'").run();
+        fs.writeFileSync(args[args.indexOf('-o') + 1], 'completed-after-erase');
+      },
+    });
+
+    const result = await pipeline._handleUrlDownload(job(), context);
+    assert.deepEqual(result, { status: 'stale', reason: 'content_changed' });
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM content WHERE id='content-1'").get().count, 0);
+    assert.deepEqual(fs.readdirSync(dir), []);
+    assert.equal(db.prepare("SELECT status FROM download_jobs WHERE id='download-1'").get().status, 'error');
+  } finally {
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -8,6 +8,7 @@ import { readDownloadJobs } from '../services/download-status.js';
 
 let pollTimer = null;
 let onlineHandler = null;
+let seenStatuses = new Map();
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
 export function cleanup() {
@@ -25,6 +26,7 @@ const STATUS_CLASS = {
   done: 'mc-downloader-status--done',
   error: 'mc-downloader-status--error',
   downloading: 'mc-downloader-status--downloading',
+  processing: 'mc-downloader-status--processing',
   pending: 'mc-downloader-status--pending',
 };
 
@@ -36,11 +38,20 @@ function jobRow(j) {
   const errorDetail = j.error_msg
     ? `<div class="mc-row-sub mc-downloader-error">${esc(t('downloads.failed_detail'))}</div>`
     : '';
-  return `<div class="mc-row">
+  const progress = ['pending', 'downloading', 'processing'].includes(j.status)
+    ? `<progress class="mc-downloader-progress" max="100" value="${Math.max(0, Math.min(100, Number(j.progress_pct) || 0))}"></progress>`
+    : '';
+  const actions = j.ready ? `<div class="mc-downloader-actions">
+    <a class="btn btn-primary btn-sm" href="${esc(j.media_library_url)}">${esc(t('downloads.open_library'))}</a>
+    <a class="btn btn-secondary btn-sm" href="${esc(j.preview_url)}">${esc(t('downloads.preview'))}</a>
+  </div>` : '';
+  return `<div class="mc-row mc-downloader-row">
     <div class="mc-row-main">
       <div class="mc-row-name">${esc(j.title || j.source_url)}</div>
       <div class="mc-row-sub">${esc(j.source_url)}</div>
       ${errorDetail}
+      ${progress}
+      ${actions}
     </div>
     <span class="mc-row-status ${statusClass}">${esc(statusLabel)}</span>
   </div>`;
@@ -71,7 +82,14 @@ async function refresh() {
   list.innerHTML = jobs.length
     ? jobs.map(jobRow).join('')
     : `<div class="mc-panel-empty">${esc(t('downloads.empty'))}</div>`;
-  return jobs.some((j) => j.status === 'pending' || j.status === 'downloading');
+  for (const job of jobs) {
+    const prior = seenStatuses.get(job.id);
+    if (job.status === 'done' && prior && prior !== 'done') {
+      showToast(t('downloads.completed_named', { name: job.title || job.source_url }), 'success');
+    }
+    seenStatuses.set(job.id, job.status);
+  }
+  return jobs.some((j) => ['pending', 'downloading', 'processing'].includes(j.status));
 }
 
 function scheduleRefresh(delayMs = 3000) {
@@ -85,6 +103,7 @@ function scheduleRefresh(delayMs = 3000) {
 
 export async function render(app) {
   cleanup();
+  seenStatuses = new Map();
   app.innerHTML = `
     <div class="mc-studio-surface">
       <div class="mc-studio-wrap">

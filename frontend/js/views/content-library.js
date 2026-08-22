@@ -167,6 +167,57 @@ function requestConfirmation({ title, message, confirmLabel, destructive = false
   });
 }
 
+function requestPermanentEraseConfirmation({ title, itemLabel, impacts }) {
+  return new Promise(resolve => {
+    const restoreFocus = document.activeElement;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay media-library-dialog-overlay';
+    const totals = {};
+    for (const impact of impacts) {
+      for (const [category, count] of Object.entries(impact?.categories || {})) {
+        totals[category] = (totals[category] || 0) + Number(count || 0);
+      }
+    }
+    const dependencyRows = Object.entries(totals)
+      .filter(([, count]) => count > 0)
+      .map(([category, count]) => `<li><span>${esc(category.replaceAll('_', ' '))}</span><strong>${count}</strong></li>`)
+      .join('');
+    overlay.innerHTML = `
+      <div class="modal media-library-confirm content-erase-dialog" role="dialog" aria-modal="true" aria-labelledby="contentEraseTitle" aria-describedby="contentEraseWarning">
+        <div class="modal-header">
+          <h3 id="contentEraseTitle">${esc(title)}</h3>
+          <button type="button" class="btn-icon" data-close-dialog aria-label="${t('common.close')}">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p id="contentEraseWarning" class="content-erase-warning">${esc(t('content.erase_irreversible_warning', { name: itemLabel }))}</p>
+          ${dependencyRows ? `<div class="content-erase-impact"><h4>${t('content.erase_detach_heading')}</h4><ul>${dependencyRows}</ul></div>` : `<p>${t('content.erase_unused')}</p>`}
+          <p>${esc(t('content.erase_file_count', { count: impacts.reduce((sum, impact) => sum + Number(impact?.files?.length || 0), 0) }))}</p>
+          <label class="content-erase-confirm-check">
+            <input type="checkbox" data-erase-ack>
+            <span>${t('content.erase_acknowledge')}</span>
+          </label>
+        </div>
+        <div class="modal-footer media-library-dialog-actions">
+          <button type="button" class="btn btn-secondary" data-close-dialog>${t('common.cancel')}</button>
+          <button type="button" class="btn btn-danger" data-confirm-erase disabled>${t('content.btn_permanent_erase')}</button>
+        </div>
+      </div>`;
+    let settled = false;
+    let close = () => {};
+    const finish = result => {
+      if (settled) return;
+      settled = true;
+      close({ notify: false });
+      resolve(result);
+    };
+    close = mountTransientDialog(overlay, restoreFocus, () => finish(false));
+    const acknowledge = overlay.querySelector('[data-erase-ack]');
+    const confirm = overlay.querySelector('[data-confirm-erase]');
+    acknowledge.addEventListener('change', () => { confirm.disabled = !acknowledge.checked; });
+    confirm.addEventListener('click', () => finish(true), { once: true });
+  });
+}
+
 // Document classification for the tile fallback. A PDF/Office/ODF row without a
 // thumbnail must NOT render <img src=/file> (that points an image element at
 // raw document bytes → broken image); show a type glyph + label instead. Once a
@@ -312,7 +363,7 @@ function governedActions(content) {
     ${permissions?.can_transfer ? `<button type="button" class="btn btn-secondary btn-sm" data-transfer-content="${content.id}">${t('content.btn_transfer')}</button>` : ''}
     ${permissions?.can_change_visibility && content.visibility?.access_level === 'platform_template' ? `<button type="button" class="btn btn-secondary btn-sm" data-template-assignments="${content.id}">${t('content.btn_assign_workspaces')}</button>` : ''}
     ${permissions?.can_archive ? `<button type="button" class="btn btn-secondary btn-sm" data-archive-content="${content.id}" data-archived="${content.visibility?.archived_at ? 'true' : 'false'}">${content.visibility?.archived_at ? t('content.btn_restore') : t('content.btn_archive')}</button>` : ''}
-    ${permissions?.can_delete ? `<button type="button" class="btn btn-danger btn-sm" data-delete-content="${content.id}">${t('content.btn_delete')}</button>` : ''}
+    ${permissions?.can_delete ? `<button type="button" class="btn btn-danger btn-sm" data-delete-content="${content.id}">${t('content.btn_permanent_erase')}</button>` : ''}
   `;
 }
 
@@ -540,6 +591,16 @@ function ensureContentPreparationListener() {
 
 export function render(container) {
   viewMounted = true;
+  const hashQuery = new URLSearchParams((window.location.hash.split('?')[1] || ''));
+  state.focusContentId = hashQuery.get('focus') || null;
+  state.focusPreview = hashQuery.get('preview') === '1';
+  state.focusHandled = false;
+  if (state.focusContentId) {
+    state.currentFolderId = null;
+    state.filters = defaultContentFilters();
+    state.sort = 'newest';
+    state.selectedIds.clear();
+  }
   ensureContentUpdatedListener();
   ensureContentPreparationListener();
   let currentUser = {};
@@ -671,6 +732,7 @@ export function render(container) {
       <button type="button" class="btn btn-secondary btn-sm" data-bulk-tags>${t('content.bulk_tags')}</button>
       <button type="button" class="btn btn-secondary btn-sm" data-bulk-archive>${t('content.bulk_archive')}</button>
       <button type="button" class="btn btn-secondary btn-sm" data-bulk-restore>${t('content.bulk_restore')}</button>
+      <button type="button" class="btn btn-danger btn-sm" data-bulk-erase>${t('content.bulk_permanent_erase')}</button>
       <button type="button" class="btn btn-secondary btn-sm" data-clear-selection>${t('content.clear_selection')}</button>
     </div>
 
@@ -936,6 +998,7 @@ export function render(container) {
   container.querySelector('[data-bulk-tags]').addEventListener('click', bulkTagSelection);
   container.querySelector('[data-bulk-archive]').addEventListener('click', bulkArchiveSelection);
   container.querySelector('[data-bulk-restore]').addEventListener('click', bulkRestoreSelection);
+  container.querySelector('[data-bulk-erase]').addEventListener('click', bulkEraseSelection);
 
   const savedViewSelect = container.querySelector('[data-saved-view]');
   savedViewSelect.addEventListener('change', () => {
@@ -1050,6 +1113,9 @@ const state = {
   contentLoading: false,
   contentRequestGeneration: 0,
   selectedIds: new Set(),
+  focusContentId: null,
+  focusPreview: false,
+  focusHandled: false,
   viewMode: 'grid',
   sort: 'newest',
 };
@@ -1234,11 +1300,50 @@ function updateBulkToolbar() {
   if (count) count.textContent = t('content.selected_count', { count: state.selectedIds.size });
 }
 
+function reconcileBulkEraseProgress(selectedIds, attemptedIds, completedContentIds) {
+  const attempted = [...new Set((Array.isArray(attemptedIds) ? attemptedIds : []).map(String))];
+  const attemptedSet = new Set(attempted);
+  const completedIds = [...new Set((Array.isArray(completedContentIds) ? completedContentIds : []).map(String).filter(id => attemptedSet.has(id)))];
+  completedIds.forEach(id => selectedIds.delete(id));
+  return { completedIds, remainingIds: attempted.filter(id => selectedIds.has(id)) };
+}
+
+function bulkEraseFailureReason(error) {
+  if (error?.code === 'ERASE_JOB_QUIESCENCE_REQUIRED') {
+    return 'An active media job must stop safely before the failed item can be erased.';
+  }
+  if (error?.code === 'ERASE_DEPENDENCY_BLOCKED') {
+    return 'The failed item has a dependency that cannot be detached safely.';
+  }
+  if (error?.code === 'ERASE_BYTE_CLEANUP_FAILED') {
+    return 'The failed item still has server bytes that could not be removed safely.';
+  }
+  const blocker = Array.isArray(error?.impact?.blockers) ? error.impact.blockers[0] : null;
+  return blocker?.reason || blocker?.error || error?.message || friendlyErrorMessage(error, 'content.error_erase_failed');
+}
+
+function bulkEraseCompletedMessage(count) {
+  return Number(count) === 1
+    ? '1 media item was permanently erased.'
+    : t('content.toast.bulk_erased', { count });
+}
+
+function partialBulkEraseMessage(error, progress) {
+  const failedId = String(error?.failed_content_id || '');
+  const failedItem = failedId ? findContentItem(failedId) : null;
+  const remainingCount = progress.remainingIds.length;
+  const remaining = remainingCount === 1
+    ? `1 media item${failedItem?.filename ? `, “${failedItem.filename}”,` : ''} was not erased.`
+    : `${remainingCount} media items were not erased${failedItem?.filename ? `; “${failedItem.filename}” was the first unfinished item.` : '.'}`;
+  const retry = `Retry will apply only to the ${remainingCount} remaining item${remainingCount === 1 ? '' : 's'}; already-erased media will not be retried.`;
+  return `${bulkEraseCompletedMessage(progress.completedIds.length)} ${remaining} ${bulkEraseFailureReason(error)} ${retry}`;
+}
+
 function renderContentResults() {
   loadContent({ renderOnly: true });
 }
 
-async function loadContent({ append = false, renderOnly = false } = {}) {
+async function loadContent({ append = false, renderOnly = false, preserveSelectedIds = false } = {}) {
   const requestGeneration = renderOnly ? state.contentRequestGeneration : ++state.contentRequestGeneration;
   if (!renderOnly) state.contentLoading = true;
   const grid = document.getElementById('contentGrid');
@@ -1279,8 +1384,12 @@ async function loadContent({ append = false, renderOnly = false } = {}) {
     const folders = state.folders;
     if (!renderOnly) {
       storeContentPage(content, { replace: !append });
+      if (state.focusContentId && !state.contentById.has(String(state.focusContentId))) {
+        const focused = await api.getContentItem(state.focusContentId).catch(() => null);
+        if (focused && requestGeneration === state.contentRequestGeneration) storeContentPage([focused]);
+      }
       state.contentHasMore = content.length >= CONTENT_PAGE_SIZE;
-      state.selectedIds = new Set([...state.selectedIds].filter(id => state.contentById.has(id)));
+      if (!preserveSelectedIds) state.selectedIds = new Set([...state.selectedIds].filter(id => state.contentById.has(id)));
     }
 
     // Breadcrumb path: walk parent_id chain from current folder up to root.
@@ -1422,7 +1531,7 @@ async function loadContent({ append = false, renderOnly = false } = {}) {
     }
 
     grid.innerHTML = visibleContent.map(c => `
-      <article class="content-item ${c.visibility?.archived_at ? 'is-archived' : ''} ${state.selectedIds.has(String(c.id)) ? 'is-selected' : ''}" draggable="${c.permissions?.can_edit ? 'true' : 'false'}" data-content-id="${c.id}" data-folder="${c.folder || ''}">
+      <article class="content-item ${c.visibility?.archived_at ? 'is-archived' : ''} ${state.selectedIds.has(String(c.id)) ? 'is-selected' : ''} ${String(c.id) === String(state.focusContentId) ? 'is-focus-target' : ''}" tabindex="-1" draggable="${c.permissions?.can_edit ? 'true' : 'false'}" data-content-id="${c.id}" data-folder="${c.folder || ''}">
         <label class="content-select-control" aria-label="${esc(t('content.select_named', { name: c.filename }))}">
           <input type="checkbox" data-select-content="${esc(c.id)}" ${state.selectedIds.has(String(c.id)) ? 'checked' : ''}>
           <span aria-hidden="true"></span>
@@ -1490,6 +1599,20 @@ async function loadContent({ append = false, renderOnly = false } = {}) {
         </div>
       </article>
     `).join('');
+    if (state.focusContentId && !state.focusHandled) {
+      const focused = grid.querySelector(`[data-content-id="${CSS.escape(String(state.focusContentId))}"]`);
+      if (focused) {
+        state.focusHandled = true;
+        requestAnimationFrame(() => {
+          focused.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          focused.focus({ preventScroll: true });
+          if (state.focusPreview) {
+            const content = findContentItem(state.focusContentId);
+            if (content) showPreview(content);
+          }
+        });
+      }
+    }
     syncQueuedAutoSendControls();
     updateBulkToolbar();
 
@@ -1721,23 +1844,25 @@ async function loadContent({ append = false, renderOnly = false } = {}) {
       const id = btn.dataset.deleteContent;
 
       const contentItem = findContentItem(id);
-      const accepted = await requestConfirmation({
-        title: t('content.delete_title'),
-        message: t('content.confirm_delete_named', { name: contentItem?.filename || '' }),
-        confirmLabel: t('content.btn_delete'),
-        destructive: true,
+      let impact;
+      try { impact = await api.getContentEraseImpact(id); }
+      catch (err) { showToast(friendlyErrorMessage(err, 'content.error_erase_impact_failed'), 'error'); return; }
+      const accepted = await requestPermanentEraseConfirmation({
+        title: t('content.erase_title'),
+        itemLabel: contentItem?.filename || '',
+        impacts: [impact],
       });
       if (!accepted) return;
       try {
         btn.disabled = true;
-        btn.textContent = t('content.btn_deleting');
-        await api.deleteContent(id);
-        showToast(t('content.toast.deleted'), 'success');
+        btn.textContent = t('content.btn_erasing');
+        await api.permanentlyEraseContent(id);
+        showToast(t('content.toast.erased'), 'success');
         await loadContent();
       } catch (err) {
-        showToast(friendlyErrorMessage(err, 'content.error_delete_failed'), 'error');
+        showToast(friendlyErrorMessage(err, 'content.error_erase_failed'), 'error');
         btn.disabled = false;
-        btn.textContent = t('content.btn_delete');
+        btn.textContent = t('content.btn_permanent_erase');
       }
       return;
 
@@ -1942,6 +2067,39 @@ async function bulkRestoreSelection() {
     await loadContent();
   } catch (error) {
     showToast(friendlyErrorMessage(error, 'content.error_archive_failed'), 'error');
+  }
+}
+
+async function bulkEraseSelection() {
+  if (!state.selectedIds.size) return;
+  const ids = [...state.selectedIds];
+  const impacts = [];
+  try {
+    for (const id of ids) impacts.push(await api.getContentEraseImpact(id));
+    const accepted = await requestPermanentEraseConfirmation({
+      title: t('content.bulk_erase_title'),
+      itemLabel: t('content.selected_count', { count: ids.length }),
+      impacts,
+    });
+    if (!accepted) return;
+    await api.permanentlyEraseContentBulk(ids);
+    reconcileBulkEraseProgress(state.selectedIds, ids, ids);
+    updateBulkToolbar();
+    showToast(bulkEraseCompletedMessage(ids.length), 'success');
+    await loadLibrarySummary();
+    await loadContent();
+  } catch (error) {
+    const completedContentIds = error?.completed_content_ids || error?.details?.completed_content_ids || [];
+    const progress = reconcileBulkEraseProgress(state.selectedIds, ids, completedContentIds);
+    if (progress.completedIds.length) {
+      updateBulkToolbar();
+      const summaryReload = loadLibrarySummary();
+      const contentReload = loadContent({ preserveSelectedIds: true });
+      showToast(partialBulkEraseMessage(error, progress), 'error');
+      await Promise.all([summaryReload, contentReload]);
+      return;
+    }
+    showToast(friendlyErrorMessage(error, 'content.error_erase_failed'), 'error');
   }
 }
 
@@ -2902,4 +3060,3 @@ function folderPath(folder, all) {
   }
   return parts.join(' / ');
 }
-

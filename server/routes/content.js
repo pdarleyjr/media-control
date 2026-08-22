@@ -15,10 +15,12 @@ const {
   normalizeVisibility,
   contentVisibilityScope,
   canReadContent,
+  canReadInternalContent,
   contentCapabilities,
 } = require('../lib/content-visibility');
 const { contentRowsWithThumbnailUrls } = require('../lib/content-response');
 const { gridUrlReferencesContent } = require('../lib/public-content-access');
+const { resolveStoredContentFile } = require('../lib/trusted-content-file');
 const { checkRemoteUrlShape, assertRemoteUrlSafe } = require('../lib/ssrf-policy');
 const {
   inspectMediaFile,
@@ -40,6 +42,13 @@ const {
   thumbnailCacheIdentity,
 } = require('../lib/content-thumbnail-cache');
 const { normalizePosterRequest } = require('../lib/thumbnail-studio');
+const {
+  eraseContent,
+  eraseImpact,
+  publicEraseImpact,
+  publicEraseResult,
+} = require('../services/content-permanent-erase');
+const { emitContentPurge } = require('../lib/node-registry');
 const { logActivity, getClientIp } = require('../services/activity');
 
 function visibilityContext(req, overrides = {}) {
@@ -122,6 +131,7 @@ function contentSelect(req) {
             ON duplicate_media.content_id = duplicate_content.id
           WHERE duplicate_content.id <> c.id
             AND duplicate_content.workspace_id IS c.workspace_id
+            AND duplicate_content.library_scope = 'library'
             AND duplicate_content.archived_at IS NULL
             AND COALESCE(c.original_sha256, cmm.source_sha256) IS NOT NULL
             AND COALESCE(duplicate_content.original_sha256, duplicate_media.source_sha256)
@@ -390,7 +400,7 @@ function validateUploadedFile(req, res) {
   let integrity;
   try {
     integrity = inspectMediaFile({
-      filePath: req.file.path,
+      filePath: upload.resolveUploadedFilePath(req.file),
       contentDir: config.contentDir,
       claimedMime: req.file.mimetype,
       filename: req.file.originalname,
@@ -484,6 +494,7 @@ router.get('/', (req, res) => {
   const select = contentSelect(req);
   let sql = `${select.sql} WHERE ${scope.clause}`;
   const params = [...select.params, ...scope.params];
+  sql += " AND c.library_scope = 'library'";
   if (includeArchived && !ctx.isPlatformAdmin && ctx.orgRole !== 'org_owner' && ctx.orgRole !== 'org_admin' && ctx.workspaceRole !== 'workspace_admin') {
     sql += ' AND (c.archived_at IS NULL OR c.user_id = ?)';
     params.push(req.user.id);
@@ -645,6 +656,7 @@ router.get('/wallpaper-menu', (req, res) => {
     JOIN asset_checksums ac ON ac.content_id = c.id
     WHERE c.workspace_id = ?
       AND ${scope.clause}
+      AND c.library_scope = 'library'
       AND c.archived_at IS NULL
       AND c.filepath IS NOT NULL AND TRIM(c.filepath) <> ''
       AND LOWER(c.mime_type) LIKE 'image/%'
@@ -783,6 +795,7 @@ router.get('/library-summary', (req, res) => {
   const scope = contentVisibilityScope(ctx, { alias: 'c', includeArchived: true });
   let where = scope.clause;
   const params = [...scope.params];
+  where += " AND c.library_scope = 'library'";
   if (!ctx.isPlatformAdmin && ctx.orgRole !== 'org_owner' && ctx.orgRole !== 'org_admin' && ctx.workspaceRole !== 'workspace_admin') {
     where += ' AND (c.archived_at IS NULL OR c.user_id = ?)';
     params.push(req.user.id);
@@ -804,6 +817,7 @@ router.get('/library-summary', (req, res) => {
           ON summary_media.content_id = summary_duplicate.id
         WHERE summary_duplicate.id <> c.id
           AND summary_duplicate.workspace_id IS c.workspace_id
+          AND summary_duplicate.library_scope = 'library'
           AND summary_duplicate.archived_at IS NULL
           AND COALESCE(c.original_sha256, cmm.source_sha256) IS NOT NULL
           AND COALESCE(summary_duplicate.original_sha256, summary_media.source_sha256)
@@ -868,7 +882,7 @@ router.get('/folders', (req, res) => {
   if (!req.workspaceId) return res.json([]);
   const scope = contentVisibilityScope(visibilityContext(req), { alias: 'content' });
   const folders = db.prepare(
-    `SELECT folder, COUNT(*) as count FROM content WHERE folder IS NOT NULL AND ${scope.clause} GROUP BY folder ORDER BY folder`
+    `SELECT folder, COUNT(*) as count FROM content WHERE folder IS NOT NULL AND library_scope = 'library' AND ${scope.clause} GROUP BY folder ORDER BY folder`
   ).all(...scope.params);
   res.json(folders);
 });
@@ -878,8 +892,10 @@ router.post('/', requireContentWriteRole, checkStorageLimit, upload.single('file
   try {
     if (!req.workspaceId) return res.status(403).json({ error: 'No workspace context. Switch to a workspace before uploading.' });
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const uploadedPath = upload.resolveUploadedFilePath(req.file);
+    if (!uploadedPath) return res.status(400).json({ error: 'Invalid upload path' });
     if (!upload.uploadedFileHasBytes(req.file)) {
-      try { fs.unlinkSync(req.file.path); } catch {}
+      upload.discardUploadedFile(req.file);
       return res.status(400).json({
         code: 'EMPTY_UPLOAD',
         error: 'Uploaded file is empty. Select the original file and try again.',
@@ -911,7 +927,7 @@ router.post('/', requireContentWriteRole, checkStorageLimit, upload.single('file
           contentId: id,
           workspaceId: req.workspaceId,
           userId: req.user.id,
-          absolutePath: req.file.path,
+          absolutePath: uploadedPath,
           expectedVersion: 1,
           expectedFilepath: filepath,
           sourceType: 'multipart_upload',
@@ -920,7 +936,7 @@ router.post('/', requireContentWriteRole, checkStorageLimit, upload.single('file
           contentId: id,
           workspaceId: req.workspaceId,
           userId: req.user.id,
-          absolutePath: req.file.path,
+          absolutePath: uploadedPath,
           expectedVersion: 1,
           expectedFilepath: filepath,
           mimeType: req.file.mimetype,
@@ -1246,7 +1262,7 @@ router.post(
         expectedFilepath: content.filepath,
         timestampSeconds: request.timestampSeconds,
         position: request.position,
-        customPosterPath: req.file?.path || null,
+        customPosterPath: upload.resolveUploadedFilePath(req.file),
         sourceType: req.file ? 'custom_poster' : 'thumbnail_studio',
         idempotencyKey: `thumbnail-studio:${content.id}:v${content.version}:${uuidv4()}`,
       });
@@ -1492,6 +1508,15 @@ router.get('/:id/usage', (req, res) => {
   res.json(contentUsage(content.id));
 });
 
+router.get('/:id/erase-impact', requireContentWriteRole, (req, res) => {
+  const content = checkContentWrite(req, res);
+  if (!content) return;
+  let impact;
+  try { impact = eraseImpact(db, content.id, { contentDir: config.contentDir }); }
+  catch { return res.status(409).json({ code: 'ERASE_PREVIEW_FAILED', error: 'Permanent erase safety checks could not be completed.' }); }
+  return res.json(publicEraseImpact(impact));
+});
+
 router.put('/:id/template-assignments', requireContentWriteRole, (req, res) => {
   const ctx = visibilityContext(req);
   if (!ctx.isPlatformAdmin) return res.status(403).json({ error: 'Platform admin required' });
@@ -1547,6 +1572,7 @@ router.get('/:id/template-assignments', (req, res) => {
 function checkContentRead(req, res) {
   const content = getContentRow(req, req.params.id);
   if (!content) { res.status(404).json({ error: 'Content not found' }); return null; }
+  if (content.library_scope === 'internal') { res.status(404).json({ error: 'Content not found' }); return null; }
   const ctx = visibilityContext(req);
   if (content.archived_at != null) {
     const caps = contentCapabilities(content, { ...ctx, includeArchived: true });
@@ -1560,10 +1586,31 @@ function checkContentRead(req, res) {
 function checkContentWrite(req, res) {
   const content = getContentRow(req, req.params.id);
   if (!content) { res.status(404).json({ error: 'Content not found' }); return null; }
+  if (content.library_scope === 'internal') { res.status(404).json({ error: 'Content not found' }); return null; }
   const caps = contentCapabilities(content, visibilityContext(req, { includeArchived: true }));
   if (!caps.canEditMetadata) { res.status(403).json({ error: 'Access denied' }); return null; }
   return content;
 }
+
+// Presentation-converter dependencies stay out of every normal library route.
+// This narrow authenticated endpoint is the only direct byte path for them.
+router.get('/internal/:id', (req, res) => {
+  const content = getContentRow(req, req.params.id);
+  if (!content || content.library_scope !== 'internal') {
+    return res.status(404).json({ error: 'Internal presentation asset not found' });
+  }
+  if (!canReadInternalContent(content, visibilityContext(req))) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+  if (!content.filepath) return res.status(404).json({ error: 'Internal presentation asset file is missing' });
+  const realCandidate = resolveStoredContentFile(config.contentDir, String(content.filepath));
+  if (!realCandidate) return res.status(404).json({ error: 'Internal presentation asset file is missing' });
+  res.setHeader('Content-Type', content.mime_type || 'application/octet-stream');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.setHeader('Vary', 'Authorization, Cookie');
+  return res.sendFile(realCandidate);
+});
 
 // Get content metadata
 router.get('/:id', (req, res) => {
@@ -1733,8 +1780,10 @@ router.put('/:id/replace', requireContentWriteRole, upload.single('file'), async
   const content = checkContentWrite(req, res);
   if (!content) return;
   if (!req.file) return res.status(400).json({ error: 'No file provided' });
+  const uploadedPath = upload.resolveUploadedFilePath(req.file);
+  if (!uploadedPath) return res.status(400).json({ error: 'Invalid upload path' });
   if (!upload.uploadedFileHasBytes(req.file)) {
-    try { fs.unlinkSync(req.file.path); } catch {}
+    upload.discardUploadedFile(req.file);
     return res.status(400).json({
       code: 'EMPTY_UPLOAD',
       error: 'Uploaded file is empty. Select the original file and try again.',
@@ -1742,7 +1791,7 @@ router.put('/:id/replace', requireContentWriteRole, upload.single('file'), async
   }
   if (req.body.expected_version !== undefined
       && Number(req.body.expected_version) !== Number(content.version || 1)) {
-    try { fs.unlinkSync(req.file.path); } catch {}
+    upload.discardUploadedFile(req.file);
     return res.status(409).json({ code: 'CONTENT_VERSION_CONFLICT', error: 'Content changed; reload before replacing the file.' });
   }
   if (!validateUploadedFile(req, res)) return;
@@ -1779,7 +1828,7 @@ router.put('/:id/replace', requireContentWriteRole, upload.single('file'), async
             contentId: req.params.id,
             workspaceId: content.workspace_id || '__platform__',
             userId: req.user.id,
-            absolutePath: req.file.path,
+            absolutePath: uploadedPath,
             expectedVersion: nextVersion,
             expectedFilepath: filepath,
             staleAbsolutePaths,
@@ -1789,7 +1838,7 @@ router.put('/:id/replace', requireContentWriteRole, upload.single('file'), async
             contentId: req.params.id,
             workspaceId: content.workspace_id || '__platform__',
             userId: req.user.id,
-            absolutePath: req.file.path,
+            absolutePath: uploadedPath,
             expectedVersion: nextVersion,
             expectedFilepath: filepath,
             mimeType: req.file.mimetype,
@@ -1887,75 +1936,117 @@ router.get('/:id/thumbnail', (req, res) => {
   res.sendFile(safePath);
 });
 
-// Delete content
-router.delete('/:id', requireContentWriteRole, (req, res) => {
-  const content = checkContentWrite(req, res);
-  if (!content) return;
-  if (content.archived_at == null) {
-    return res.status(409).json({ code: 'CONTENT_NOT_ARCHIVED', error: 'Archive content before permanently deleting it.' });
-  }
-  const usage = contentUsage(content.id);
-  if (usage.usage_count > 0) {
-    return res.status(409).json({
-      code: 'CONTENT_IN_USE',
-      error: 'Remove every active route before deleting content.',
-      ...usage,
-    });
-  }
+async function permanentlyErase(req, content) {
+  const result = await eraseContent(db, content.id, {
+    contentDir: config.contentDir,
+    audit: (_summary, impact) => auditContent(
+      req,
+      'content:permanent_erase',
+      content,
+      null,
+      JSON.stringify({ dependencies_detached: impact.categories }),
+    ),
+  });
+  const io = req.app.get('io');
+  result.cache_purge = await emitContentPurge(io, {
+    contentId: content.id,
+    assetId: result.impact.cache.asset_id,
+    generation: result.impact.cache.generation,
+    nodeIds: result.impact.cache.node_ids.length ? result.impact.cache.node_ids : undefined,
+  });
 
-  // Get devices that have this content in their playlist (via playlist_items)
-  const affectedDevices = db.prepare(`
-    SELECT DISTINCT d.id as device_id FROM devices d
-    JOIN playlists p ON d.playlist_id = p.id
-    JOIN playlist_items pi ON pi.playlist_id = p.id
-    WHERE pi.content_id = ?
-  `).all(req.params.id);
-
-  // Scrub published snapshots that reference this content
-  // Validate UUID format to prevent LIKE wildcard injection
-  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!UUID_RE.test(req.params.id)) return res.status(400).json({ error: 'Invalid content ID format' });
-  // Phase 2.2k: scope snapshot scrubbing by content.workspace_id (was content.user_id).
-  // Playlists referencing this content live in the same workspace; user_id-keying missed
-  // cross-user playlists in the same workspace once playlists became workspace-scoped.
-  const snapshotPlaylists = db.prepare(
-    "SELECT id, published_snapshot FROM playlists WHERE workspace_id = ? AND published_snapshot LIKE ?"
-  ).all(content.workspace_id, `%${req.params.id}%`);
-  db.transaction(() => {
-    for (const pl of snapshotPlaylists) {
-      try {
-        const items = JSON.parse(pl.published_snapshot);
-        const filtered = items.filter(item => item.content_id !== req.params.id);
-        if (filtered.length !== items.length) {
-          db.prepare('UPDATE playlists SET published_snapshot = ? WHERE id = ?')
-            .run(JSON.stringify(filtered), pl.id);
-        }
-      } catch (e) { /* corrupt snapshot, skip */ }
-    }
-    auditContent(req, 'content:delete', content, null);
-    db.prepare('DELETE FROM content WHERE id = ?').run(req.params.id);
-  })();
-
-  // Database/ref cleanup committed successfully; disk cleanup is now safe and
-  // idempotent if a process restart occurs between individual removals.
-  for (const localPath of new Set([content.filepath, content.original_filepath, content.thumbnail_path])) {
-    removeLocalContentFile(localPath);
-  }
-
-  // Push updated snapshots to affected devices
   try {
-    const io = req.app.get('io');
     if (io) {
       const { buildPlaylistPayload } = require('../ws/deviceSocket');
       const commandQueue = require('../lib/command-queue');
+      const { getEndpoint } = require('../lib/advanced-canvas');
       const deviceNs = io.of('/device');
-      for (const d of affectedDevices) {
-        commandQueue.queueOrEmitPlaylistUpdate(deviceNs, d.device_id, buildPlaylistPayload);
+      for (const deviceId of result.impact.affected_device_ids) {
+        commandQueue.queueOrEmitPlaylistUpdate(deviceNs, deviceId, buildPlaylistPayload);
+      }
+      const canvasNs = io.of('/canvas');
+      for (const endpointId of result.impact.affected_canvas_endpoint_ids || []) {
+        canvasNs.to(endpointId).emit('canvas:scene', getEndpoint(endpointId));
       }
     }
-  } catch (e) { /* silent */ }
+  } catch (error) {
+    result.device_refresh_warning = 'Affected displays could not be refreshed automatically.';
+  }
+  if (!result.success) {
+    const error = new Error('Catalog dependencies were detached, but one or more staged byte files could not be removed.');
+    error.code = 'ERASE_BYTE_CLEANUP_FAILED';
+    error.result = result;
+    throw error;
+  }
+  return result;
+}
 
-  res.json({ success: true, affectedDevices: affectedDevices.map(d => d.device_id) });
+router.post('/permanent-erase', requireContentWriteRole, async (req, res) => {
+  if (req.body?.confirm_permanent_erase !== true) {
+    return res.status(400).json({ code: 'ERASE_CONFIRMATION_REQUIRED', error: 'Explicit permanent erase confirmation is required.' });
+  }
+  const ids = Array.isArray(req.body?.content_ids)
+    ? [...new Set(req.body.content_ids.map(String).filter(Boolean))]
+    : [];
+  if (!ids.length || ids.length > 100) {
+    return res.status(400).json({ error: 'Choose between 1 and 100 media items.' });
+  }
+  const authorized = [];
+  for (const id of ids) {
+    const content = getContentRow(req, id);
+    if (!content) return res.status(404).json({ error: `Content not found: ${id}` });
+    const caps = contentCapabilities(content, visibilityContext(req, { includeArchived: true }));
+    if (!caps.canDelete) return res.status(403).json({ error: `Permanent erase is not allowed for: ${id}` });
+    let impact;
+    try { impact = eraseImpact(db, id, { contentDir: config.contentDir }); }
+    catch { return res.status(409).json({ code: 'ERASE_PREVIEW_FAILED', error: 'Permanent erase safety checks could not be completed.' }); }
+    if (impact.blockers.length) {
+      return res.status(409).json({
+        code: 'ERASE_DEPENDENCY_BLOCKED',
+        error: 'A dependency cannot be detached safely.',
+        impact: publicEraseImpact(impact),
+      });
+    }
+    authorized.push(content);
+  }
+  const results = [];
+  for (const content of authorized) {
+    try {
+      results.push(await permanentlyErase(req, content));
+    } catch (error) {
+      return res.status(409).json({
+        code: error.code || 'PERMANENT_ERASE_FAILED',
+        error: 'Permanent erase could not be completed safely.',
+        completed_content_ids: results.map((result) => result.content_id),
+        failed_content_id: content.id,
+        impact: publicEraseImpact(error.impact),
+        result: publicEraseResult(error.result),
+      });
+    }
+  }
+  return res.json({ success: true, results: results.map(publicEraseResult) });
+});
+
+// Explicit, irreversible catalog and byte erasure. Archive and restore remain
+// API-compatible for existing automation, but are no longer prerequisites.
+router.delete('/:id', requireContentWriteRole, async (req, res) => {
+  const content = checkContentWrite(req, res);
+  if (!content) return;
+  const caps = contentCapabilities(content, visibilityContext(req, { includeArchived: true }));
+  if (!caps.canDelete) return res.status(403).json({ error: 'Permanent erase is not allowed for this item.' });
+  if (req.body?.confirm_permanent_erase !== true) {
+    return res.status(400).json({ code: 'ERASE_CONFIRMATION_REQUIRED', error: 'Explicit permanent erase confirmation is required.' });
+  }
+  try {
+    return res.json(publicEraseResult(await permanentlyErase(req, content)));
+  } catch (error) {
+    return res.status(409).json({
+      code: error.code || 'PERMANENT_ERASE_FAILED',
+      error: 'Permanent erase could not be completed safely.',
+      impact: publicEraseImpact(error.impact),
+      result: publicEraseResult(error.result),
+    });
+  }
 });
 
 module.exports = router;

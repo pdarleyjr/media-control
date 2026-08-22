@@ -215,6 +215,7 @@ function sameOrganization(content, ctx) {
 
 function canReadContent(content, ctx) {
   if (!content || !ctx) return false;
+  if (content.library_scope === 'internal') return false;
   if (content.archived_at != null && ctx.includeArchived !== true) return false;
   if (isPlatform(ctx)) return true;
   const visibility = normalizeVisibility(content.access_level) || VISIBILITY.PRIVATE;
@@ -227,8 +228,19 @@ function canReadContent(content, ctx) {
   return false;
 }
 
+function canReadInternalContent(content, ctx) {
+  if (!content || !ctx || content.library_scope !== 'internal') return false;
+  if (content.archived_at != null && ctx.includeArchived !== true) return false;
+  if (isPlatform(ctx)) return true;
+  if (!sameWorkspace(content, ctx)) return false;
+  if (content.user_id === ctx.userId) return true;
+  if (isWorkspaceAdmin(ctx)) return true;
+  return isOrgAdmin(ctx) && sameOrganization(content, ctx);
+}
+
 function canUseContentInWorkspace(content, ctx) {
   if (!content || !ctx?.workspaceId || content.archived_at != null) return false;
+  if (content.library_scope === 'internal') return false;
   if (isPlatform(ctx)) return true;
   const visibility = normalizeVisibility(content.access_level) || VISIBILITY.PRIVATE;
   if (visibility === VISIBILITY.PLATFORM_TEMPLATE) {
@@ -275,10 +287,13 @@ function contentCapabilities(content, ctx) {
     || ctx?.workspaceRole === 'workspace_editor';
   const ownerWriter = owner && workspaceWriter;
   const template = content?.access_level === VISIBILITY.PLATFORM_TEMPLATE;
-  const canManage = platform || orgAdmin || workspaceAdmin || ownerWriter;
+  const internal = content?.library_scope === 'internal';
+  const canManage = !internal && (platform || orgAdmin || workspaceAdmin || ownerWriter);
 
   let allowedVisibilities = [];
-  if (platform) {
+  if (internal) {
+    allowedVisibilities = [];
+  } else if (platform) {
     allowedVisibilities = [...VISIBILITY_VALUES];
   } else if (orgAdmin) {
     allowedVisibilities = [VISIBILITY.PRIVATE, VISIBILITY.WORKSPACE_SHARED, VISIBILITY.ORGANIZATION_SHARED];
@@ -295,11 +310,11 @@ function contentCapabilities(content, ctx) {
     canRequestOrganization: ownerWriter && !platform && !orgAdmin && !template,
     canDuplicate: canReadContent(content, ctx) && (platform || orgAdmin || workspaceWriter),
     canArchive: canManage && (!template || platform),
-    // Permanent removal is a second, explicit lifecycle step after archive.
-    // This keeps an operator from destroying an active asset with one click.
-    canDelete: canManage && content.archived_at != null && (!template || platform),
+    // The UI presents a dependency preview and a separate irreversible
+    // confirmation. Archiving is optional and never masquerades as deletion.
+    canDelete: canManage && (!template || platform),
     canTransfer: (platform || orgAdmin || workspaceAdmin) && !template,
-    canReviewPublicationRequests: platform || orgAdmin,
+    canReviewPublicationRequests: !internal && (platform || orgAdmin),
   };
 }
 
@@ -312,6 +327,7 @@ module.exports = {
   applyContentVisibilityMigration,
   contentVisibilityScope,
   canReadContent,
+  canReadInternalContent,
   canUseContentInWorkspace,
   contentUseDecision,
   contentCapabilities,

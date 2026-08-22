@@ -22,8 +22,33 @@ test('package guards reject traversal, unsafe links, and active XML declarations
   }
   assert.throws(() => validateRelationshipTarget('file:///etc/passwd', 'External'), /unsafe|protocol/i);
   assert.throws(() => validateRelationshipTarget('javascript:alert(1)', 'External'), /unsafe|protocol/i);
+  assert.throws(() => validateRelationshipTarget('//server/share/file.xml', 'Internal'), /unsafe|target/i);
   assert.doesNotThrow(() => validateRelationshipTarget('https://www.youtube.com/watch?v=test', 'External'));
   assert.throws(() => validateXml('<!DOCTYPE x [<!ENTITY boom SYSTEM "file:///etc/passwd">]><x>&boom;</x>'), /DOCTYPE|ENTITY|unsafe/i);
+});
+
+test('package-root relationship targets emitted by real PowerPoint charts stay inside the archive', async (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-slide-ir-root-target-'));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const file = path.join(temp, 'chart.pptx');
+  const pptx = new PptxGenJS();
+  pptx.addSlide().addChart(pptx.ChartType.bar, [
+    { name: 'Flow', labels: ['First', 'Second'], values: [500, 750] },
+  ], { x: 1, y: 1, w: 6, h: 3 });
+  await pptx.writeFile({ fileName: file });
+
+  assert.equal(validateRelationshipTarget('/ppt/charts/chart1.xml', 'Internal'), '/ppt/charts/chart1.xml');
+  const ir = await extractPptxToSlideIr(file);
+  assert.ok(ir.slides[0].elements.some((element) => element.kind === 'chart'));
+
+  const JSZip = require('jszip');
+  const zip = await JSZip.loadAsync(fs.readFileSync(file));
+  const relPath = 'ppt/slides/_rels/slide1.xml.rels';
+  const relationships = await zip.file(relPath).async('string');
+  zip.file(relPath, relationships.replace('/ppt/charts/chart1.xml', '/../../escape.xml'));
+  const hostile = path.join(temp, 'hostile-chart.pptx');
+  fs.writeFileSync(hostile, await zip.generateAsync({ type: 'nodebuffer' }));
+  await assert.rejects(() => extractPptxToSlideIr(hostile), /unsafe resolved relationship path/i);
 });
 
 test('linked local media is inert, path-redacted, and review-flagged instead of aborting conversion', async (t) => {
@@ -44,6 +69,65 @@ test('linked local media is inert, path-redacted, and review-flagged instead of 
   assert.equal(media.url, null);
   assert.doesNotMatch(JSON.stringify(ir), /C:\/Users\/Instructor/i);
   assert.ok(ir.slides[0].warnings.some((warning) => /External linked media unavailable/.test(warning)));
+});
+
+test('a real textless PowerPoint vector shape is explicit and cannot be silently dropped', async (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-slide-ir-vector-shape-'));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const file = path.join(temp, 'vector-shape.pptx');
+  const pptx = new PptxGenJS();
+  pptx.addSlide().addShape(pptx.ShapeType.rect, { x: 1, y: 1, w: 4, h: 2, fill: { color: 'D92D20' } });
+  await pptx.writeFile({ fileName: file });
+
+  const ir = await extractPptxToSlideIr(file);
+  assert.ok(ir.slides[0].elements.some((element) => element.kind === 'graphic'));
+  assert.ok(ir.slides[0].warnings.some((warning) => /Vector shapes/.test(warning)));
+});
+
+test('a real labeled non-rectangular shape retains its text and requires rendered fallback', async (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-slide-ir-labeled-shape-'));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const file = path.join(temp, 'labeled-shape.pptx');
+  const pptx = new PptxGenJS();
+  pptx.addSlide().addText('STOP', {
+    shape: pptx.ShapeType.hexagon,
+    x: 1, y: 1, w: 4, h: 2,
+    fill: { color: 'D92D20' },
+  });
+  await pptx.writeFile({ fileName: file });
+
+  const ir = await extractPptxToSlideIr(file);
+  const shape = ir.slides[0].elements.find((element) => element.kind === 'graphic');
+  assert.ok(shape);
+  assert.equal(shape.text, 'STOP');
+  assert.equal(shape.source_geometry, 'hexagon');
+  assert.ok(ir.slides[0].warnings.some((warning) => /Vector shapes/.test(warning)));
+});
+
+test('a packaged PowerPoint connector is explicit and requires rendered fallback', async (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-slide-ir-connector-'));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const base = path.join(temp, 'base.pptx');
+  const file = path.join(temp, 'connector.pptx');
+  const pptx = new PptxGenJS();
+  pptx.addSlide().addText('Connector fixture', { x: 1, y: 1, w: 4, h: 1 });
+  await pptx.writeFile({ fileName: base });
+  const JSZip = require('jszip');
+  const zip = await JSZip.loadAsync(fs.readFileSync(base));
+  const original = await zip.file('ppt/slides/slide1.xml').async('string');
+  const connector = '<p:cxnSp><p:nvCxnSpPr><p:cNvPr id="88" name="Process connector"/><p:cNvCxnSpPr/><p:nvPr/></p:nvCxnSpPr><p:spPr><a:xfrm><a:off x="100" y="200"/><a:ext cx="300" cy="400"/></a:xfrm><a:prstGeom prst="line"><a:avLst/></a:prstGeom></p:spPr></p:cxnSp>';
+  zip.file('ppt/slides/slide1.xml', original.replace('</p:spTree>', `${connector}</p:spTree>`));
+  fs.writeFileSync(file, await zip.generateAsync({ type: 'nodebuffer' }));
+
+  const packaged = await unzipper.Open.file(file);
+  const slideXml = (await packaged.files.find((entry) => entry.path === 'ppt/slides/slide1.xml').buffer()).toString('utf8');
+  assert.match(slideXml, /<p:cxnSp>/);
+  const ir = await extractPptxToSlideIr(file);
+  const parsed = ir.slides[0].elements.find((element) => element.source_name === 'Process connector');
+  assert.equal(parsed.kind, 'graphic');
+  assert.equal(parsed.source_geometry, 'line');
+  assert.deepEqual(parsed.bbox_emu, { x: 100, y: 200, w: 300, h: 400 });
+  assert.ok(ir.slides[0].warnings.some((warning) => /Vector shapes/.test(warning)));
 });
 
 test('deterministic PPTX extraction preserves order, prose, bullets, hyperlinks, notes, and dimensions', async (t) => {
@@ -124,7 +208,7 @@ test('complex source objects use a bounded LibreOffice/PDF rendered fallback whe
   const calls = [];
   const execFile = async (command, args) => {
     calls.push({ command, args });
-    if (/libreoffice|soffice/i.test(command)) fs.writeFileSync(path.join(args[args.indexOf('--outdir') + 1], 'complex.pdf'), 'pdf');
+    if (/libreoffice|soffice/i.test(command)) fs.writeFileSync(args.at(-1).replace(/\.pptx$/i, '.pdf'), 'pdf');
     else if (command === 'pdftoppm') fs.writeFileSync(`${args.at(-1)}.png`, png);
     else throw new Error('unexpected renderer');
     return { stdout: '', stderr: '' };
@@ -136,4 +220,57 @@ test('complex source objects use a bounded LibreOffice/PDF rendered fallback whe
   assert.ok(fs.existsSync(result[0].finalPath));
   assert.ok(ir.slides[0].elements.some((element) => element.rendered_fallback === true));
   assert.ok(calls.some((call) => call.command === 'pdftoppm'));
+});
+
+test('graphics and review-flagged vector assets trigger one rendered fallback and cover source placeholders', async (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-rendered-vector-fallback-'));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const source = path.join(temp, 'vector.pptx');
+  fs.writeFileSync(source, 'fixture');
+  const png = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(32, 2)]);
+  const ir = {
+    assets: [{ id: 'asset:vector', mime: 'image/svg+xml', review_flag: 'UNSUPPORTED_VECTOR_FORMAT' }],
+    slides: [{
+      source_slide_number: 1,
+      elements: [
+        { id: 'graphic-1', kind: 'graphic' },
+        { id: 'vector-1', kind: 'image', asset_ref: 'asset:vector' },
+      ],
+      warnings: [],
+    }],
+  };
+  const result = await renderComplexSlideFallbacks(source, ir, temp, {
+    execFile: async (command, args) => {
+      if (/libreoffice|soffice/i.test(command)) fs.writeFileSync(args.at(-1).replace(/\.pptx$/i, '.pdf'), 'pdf');
+      else if (command === 'pdftoppm') fs.writeFileSync(`${args.at(-1)}.png`, png);
+      else throw new Error('unexpected renderer');
+      return { stdout: '', stderr: '' };
+    },
+  });
+
+  assert.equal(result.length, 1);
+  assert.equal(ir.slides[0].elements.filter((element) => element.rendered_fallback === true).length, 1);
+  assert.equal(ir.slides[0].elements.find((element) => element.id === 'graphic-1').rendered_fallback_covered, true);
+  assert.equal(ir.slides[0].elements.find((element) => element.id === 'vector-1').rendered_fallback_covered, true);
+});
+
+test('complex source conversion fails truthfully when its rendered fallback is unavailable', async (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-rendered-fallback-failure-'));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const source = path.join(temp, 'complex.pptx');
+  fs.writeFileSync(source, 'fixture');
+  const ir = {
+    assets: [],
+    slides: [{ source_slide_number: 1, elements: [{ id: 'smartart-1', kind: 'smartart' }], warnings: [] }],
+  };
+
+  await assert.rejects(
+    renderComplexSlideFallbacks(source, ir, temp, {
+      execFile: async () => { throw new Error('renderer unavailable'); },
+    }),
+    (error) => error.code === 'presentation_complex_fallback_unavailable'
+      && error.retryable === true
+      && /renderer unavailable/.test(error.message),
+  );
+  assert.equal(fs.readdirSync(temp).filter((name) => name.endsWith('.png')).length, 0);
 });

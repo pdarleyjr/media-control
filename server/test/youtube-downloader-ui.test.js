@@ -48,3 +48,18 @@ test('YouTube Downloader presents concise errors instead of raw worker commands'
   assert.match(view, /t\('downloads\.failed_detail'\)/);
   assert.match(view, /t\(`downloads\.status\.\$\{j\.status\}`\)/);
 });
+
+test('completed downloads expose a visible Media Library handoff only after the strict ready invariant', () => {
+  const view = fs.readFileSync(viewPath, 'utf8');
+  const downloadsRoute = fs.readFileSync(path.join(root, 'server', 'routes', 'downloads.js'), 'utf8');
+  const library = fs.readFileSync(path.join(root, 'frontend', 'js', 'views', 'content-library.js'), 'utf8');
+
+  assert.match(view, /j\.ready[\s\S]*downloads\.open_library/);
+  assert.match(view, /j\.ready[\s\S]*downloads\.preview/);
+  assert.match(view, /downloads\.completed_named/);
+  assert.match(downloadsRoute, /processing_status[\s\S]*filepath[\s\S]*file_size[\s\S]*remote_url/);
+  assert.match(downloadsRoute, /media_library_url/);
+  assert.match(library, /hashQuery\.get\('focus'\)/);
+  assert.match(library, /api\.getContentItem\(state\.focusContentId\)/);
+  assert.match(library, /scrollIntoView/);
+});

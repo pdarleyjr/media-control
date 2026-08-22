@@ -18,9 +18,18 @@ const {
   PROFILE_IDS,
   listProfiles,
   listLayouts,
+  decorateLayoutStyles,
   validateDeck,
 } = require('../lib/presentation-template-registry');
 const { contentUseDecision, contextFromRequest } = require('../lib/content-visibility');
+const { inspectMediaFile } = require('../lib/media-integrity');
+const { getMediaPipeline } = require('../lib/media-pipeline');
+const { emitContentPurge } = require('../lib/node-registry');
+const {
+  beginPresentationCleanup,
+  processPresentationCleanup,
+} = require('../services/presentation-cleanup');
+const { copyPresentationAssetToLibrary } = require('../services/presentation-asset-copy');
 
 // MBFD Media Control Studio — Presentations CRUD. Mirrors the workspace-scoped
 // access idiom from routes/playlists.js: list/create scope by req.workspaceId,
@@ -122,7 +131,7 @@ router.get('/templates/registry', (_req, res) => {
   if (!allowV2(res)) return;
   const profiles = listProfiles().map(({ production_template_path: _path, ...profile }) => ({
     ...profile,
-    layouts: listLayouts(profile.id),
+    layouts: listLayouts(profile.id).map(decorateLayoutStyles),
   }));
   res.setHeader('Cache-Control', 'private, max-age=300');
   res.json({
@@ -363,6 +372,60 @@ router.post('/:id/assets/link', requireWrite, (req, res) => {
   res.status(existing ? 200 : 201).json({ asset_id: assetId, content_id: contentId, url: `/player/asset/${contentId}`, mime_type: mime });
 });
 
+router.get('/:id/assets', requireRead, (req, res) => {
+  const linked = db.prepare(`SELECT pa.id AS asset_id, pa.content_id, pa.created_at,
+      c.filename, c.mime_type, c.file_size, c.content_type, c.processing_status,
+      c.thumbnail_path, c.library_scope
+    FROM presentation_assets pa JOIN content c ON c.id=pa.content_id
+    WHERE pa.presentation_id=? ORDER BY pa.created_at, pa.id`).all(req.params.id);
+  const sourceDecks = db.prepare(`SELECT DISTINCT c.id AS content_id, c.filename, c.mime_type,
+      c.file_size, c.processing_status, c.library_scope
+    FROM presentation_conversion_runs pcr JOIN content c ON c.id=pcr.source_content_id
+    WHERE pcr.presentation_id=?`).all(req.params.id);
+  const previews = db.prepare(`SELECT id AS slide_id, sort_order, thumbnail_path
+    FROM presentation_slides WHERE presentation_id=? AND thumbnail_path IS NOT NULL
+    ORDER BY sort_order`).all(req.params.id);
+  const response = {
+    source_decks: sourceDecks,
+    extracted_images: [],
+    studio_uploads: [],
+    video_audio: [],
+    rendered_previews: previews,
+    linked_library_media: [],
+  };
+  for (const asset of linked) {
+    if (asset.library_scope !== 'internal') response.linked_library_media.push(asset);
+    else if (/^(video|audio)\//i.test(asset.mime_type || '')) response.video_audio.push(asset);
+    else if (asset.content_type === 'presentation_image') response.studio_uploads.push(asset);
+    else response.extracted_images.push(asset);
+  }
+  res.json(response);
+});
+
+// Create an independent Media Library item from one dependency owned by this
+// presentation. The internal source row and bytes remain unchanged.
+router.post('/:id/assets/:contentId/save-copy', requireWrite, async (req, res) => {
+  try {
+    const copy = await copyPresentationAssetToLibrary(db, {
+      presentationId: req.params.id,
+      contentId: req.params.contentId,
+      workspaceId: req.presentation.workspace_id,
+      userId: req.user.id,
+      contentDir: config.contentDir,
+    });
+    return res.status(201).json(copy);
+  } catch (error) {
+    if (error.code === 'PRESENTATION_ASSET_NOT_FOUND') {
+      return res.status(404).json({ code: error.code, error: 'Presentation asset not found.' });
+    }
+    if (['PRESENTATION_ASSET_NOT_LOCAL', 'PRESENTATION_ASSET_PATH_INVALID', 'PRESENTATION_ASSET_NOT_READY'].includes(error.code)) {
+      return res.status(409).json({ code: error.code, error: error.message });
+    }
+    console.error('[presentations] asset Save Copy failed');
+    return res.status(500).json({ code: 'PRESENTATION_ASSET_COPY_FAILED', error: 'Could not save this asset to the Media Library.' });
+  }
+});
+
 // ── Slide image upload ──────────────────────────────────────────────────────
 // Upload an image to use on a slide. The binary is stored in the shared content
 // table (content_type='presentation_image') + a presentation_assets row links it
@@ -371,47 +434,90 @@ router.post('/:id/assets/link', requireWrite, (req, res) => {
 // content can't be enumerated). Placement (x/y/w/h/fit/effects) is NOT stored
 // here — it lives in the slide's `images[]` inside deck_json, edited client-side.
 const IMG_MIME = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp']);
+const PRESENTATION_MEDIA_MIME = new Set([
+  ...IMG_MIME,
+  'video/mp4', 'video/webm', 'video/quicktime',
+  'audio/mpeg', 'audio/mp4', 'audio/wav', 'audio/ogg',
+]);
 
 function safeName(name) { return sanitizeString((name || 'image').normalize('NFC')); }
 
 router.post('/:id/assets', requireWrite, upload.single('file'), async (req, res) => {
+  let uploadedPath = null;
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-    // Allow ONLY the raster set (IMG_MIME) — explicitly NOT image/svg+xml, which is
-    // a script-capable XSS vector when served directly to a browser.
-    const isImage = req.file.mimetype && IMG_MIME.has(req.file.mimetype);
-    if (!isImage) {
-      // Drop the rejected upload multer wrote to disk before bailing.
-      try { fs.unlinkSync(req.file.path); } catch { /* best effort */ }
-      return res.status(400).json({ error: 'Only JPEG, PNG, GIF, WebP, or BMP images can be added to slides' });
+    uploadedPath = upload.resolveUploadedFilePath(req.file);
+    if (!uploadedPath) return res.status(400).json({ error: 'Invalid upload path' });
+    if (!upload.uploadedFileHasBytes(req.file)) {
+      upload.discardUploadedFile(req.file);
+      return res.status(400).json({ code: 'EMPTY_UPLOAD', error: 'The presentation media file is empty.' });
     }
+    const integrity = inspectMediaFile({
+      filePath: uploadedPath,
+      contentDir: config.contentDir,
+      claimedMime: req.file.mimetype,
+      filename: req.file.originalname,
+    });
+    if (!integrity.ok || !PRESENTATION_MEDIA_MIME.has(integrity.detectedMime)) {
+      // Drop the rejected upload multer wrote to disk before bailing.
+      upload.discardUploadedFile(req.file);
+      return res.status(415).json({ error: 'Only inspected raster images, MP4/WebM/QuickTime video, or common audio files can be added to slides' });
+    }
+    req.file.mimetype = integrity.detectedMime;
+    req.file.size = integrity.size;
+    const isImage = IMG_MIME.has(req.file.mimetype);
     const filepath = req.file.filename;
     let width = null, height = null, thumbnailPath = null;
     // Best-effort metadata + thumbnail (mirrors routes/content.js; never fatal).
     try {
       const sharp = require('sharp');
       const sharpOpts = { limitInputPixels: false, failOn: 'none' };
-      try { const m = await sharp(req.file.path, sharpOpts).metadata(); width = m.width; height = m.height; }
+      try { const m = await sharp(uploadedPath, sharpOpts).metadata(); width = m.width; height = m.height; }
       catch (e) { console.warn('[pres-asset] sharp metadata failed:', e.message); }
       try {
         thumbnailPath = `thumb_${filepath}`;
-        await sharp(req.file.path, sharpOpts).resize(config.thumbnailWidth).jpeg({ quality: 70 })
+        await sharp(uploadedPath, sharpOpts).resize(config.thumbnailWidth).jpeg({ quality: 70 })
           .toFile(path.join(config.contentDir, thumbnailPath));
       } catch (e) { console.warn('[pres-asset] sharp thumbnail failed:', e.message); thumbnailPath = null; }
     } catch (e) { console.warn('[pres-asset] sharp unavailable:', e.message); }
 
     const contentId = uuidv4();
-    db.prepare(`
-      INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, thumbnail_path, width, height, content_type, access_level)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'presentation_image', 'private')
-    `).run(contentId, req.user.id, req.presentation.workspace_id, safeName(req.file.originalname),
-           filepath, req.file.mimetype, req.file.size, thumbnailPath, width, height);
-
     const assetId = uuidv4();
-    db.prepare(`
-      INSERT INTO presentation_assets (id, presentation_id, content_id, position_json, fit_mode)
-      VALUES (?, ?, ?, '{}', 'contain')
-    `).run(assetId, req.params.id, contentId);
+    const pipeline = getMediaPipeline({ db, io: req.app.get('io') });
+    let queued;
+    db.transaction(() => {
+      db.prepare(`
+        INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, thumbnail_path, width, height, content_type, access_level)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'private')
+      `).run(contentId, req.user.id, req.presentation.workspace_id, safeName(req.file.originalname),
+      filepath, req.file.mimetype, req.file.size, thumbnailPath, width, height,
+      isImage ? 'presentation_image' : 'presentation_asset');
+      db.prepare("UPDATE content SET library_scope='internal' WHERE id=?").run(contentId);
+      db.prepare(`
+        INSERT INTO presentation_assets (id, presentation_id, content_id, position_json, fit_mode)
+        VALUES (?, ?, ?, '{}', 'contain')
+      `).run(assetId, req.params.id, contentId);
+      queued = (req.file.mimetype.startsWith('video/')
+        ? pipeline.enqueueVideo({
+        contentId,
+        workspaceId: req.presentation.workspace_id,
+        userId: req.user.id,
+        absolutePath: uploadedPath,
+        expectedVersion: 1,
+        expectedFilepath: filepath,
+        sourceType: 'presentation_studio_upload',
+      })
+        : pipeline.enqueueThumbnailFinalize({
+        contentId,
+        workspaceId: req.presentation.workspace_id,
+        userId: req.user.id,
+        absolutePath: uploadedPath,
+        expectedVersion: 1,
+        expectedFilepath: filepath,
+        mimeType: req.file.mimetype,
+          sourceType: 'presentation_studio_upload',
+        })).job;
+    })();
 
     res.status(201).json({
       asset_id: assetId,
@@ -419,52 +525,62 @@ router.post('/:id/assets', requireWrite, upload.single('file'), async (req, res)
       url: `/player/asset/${contentId}`,
       thumbnail_url: thumbnailPath ? `/api/content/${contentId}/thumbnail` : `/player/asset/${contentId}`,
       filename: safeName(req.file.originalname),
+      mime_type: req.file.mimetype,
       width, height,
+      media_job: queued ? { id: queued.id, status: queued.status, stage: queued.stage, progress_pct: queued.progress_pct } : null,
     });
   } catch (err) {
     console.error('[pres-asset] upload error:', err);
     // Don't leak the uploaded file (or its thumbnail) on a failed insert.
     if (req.file) {
-      if (req.file.path) { try { fs.unlinkSync(req.file.path); } catch { /* */ } }
+      if (uploadedPath) upload.discardUploadedFile(req.file);
       if (req.file.filename) { try { fs.unlinkSync(path.join(config.contentDir, 'thumb_' + req.file.filename)); } catch { /* */ } }
     }
-    res.status(500).json({ error: 'Image upload failed' });
+    res.status(500).json({ error: 'Presentation media upload failed' });
   }
 });
 
-// Delete. Also best-effort prunes presentation_image content that this deck
-// uniquely owned (not referenced by any other presentation_asset, playlist
-// item, or widget), so removing a deck reclaims its uploaded images + files.
-router.delete('/:id', requireWrite, (req, res) => {
-  // Gather this presentation's image asset content rows BEFORE the cascade.
-  let assetContentIds = [];
+// Delete the presentation and durably ledger every internal dependency before
+// cleanup. A crash or byte-removal failure remains retryable at next startup.
+router.delete('/:id', requireWrite, async (req, res) => {
+  let operationId;
   try {
-    assetContentIds = db.prepare('SELECT DISTINCT content_id FROM presentation_assets WHERE presentation_id = ? AND content_id IS NOT NULL')
-      .all(req.params.id).map((r) => r.content_id);
-  } catch { /* table/edge — skip cleanup */ }
-
-  const presWorkspaceId = req.presentation.workspace_id;
-  db.prepare('DELETE FROM presentations WHERE id = ?').run(req.params.id);
-
-  // Orphan prune (best-effort): only presentation_image rows IN THIS PRESENTATION'S
-  // OWN WORKSPACE, never referenced elsewhere. Workspace-scoping + a UUID guard
-  // ensure we can never touch another workspace's content or mis-fire the LIKE.
-  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  for (const cid of assetContentIds) {
-    try {
-      if (!UUID_RE.test(cid)) continue;
-      const row = db.prepare("SELECT id, filepath, thumbnail_path FROM content WHERE id = ? AND workspace_id = ? AND content_type = 'presentation_image'").get(cid, presWorkspaceId);
-      if (!row) continue;
-      const stillAsset = db.prepare('SELECT 1 FROM presentation_assets WHERE content_id = ? LIMIT 1').get(cid);
-      const inPlaylist = db.prepare('SELECT 1 FROM playlist_items WHERE content_id = ? LIMIT 1').get(cid);
-      const inWidget = db.prepare('SELECT 1 FROM widgets WHERE config LIKE ? LIMIT 1').get(`%/api/content/${cid}/%`);
-      if (stillAsset || inPlaylist || inWidget) continue;
-      if (row.filepath) { try { fs.unlinkSync(path.join(config.contentDir, path.basename(row.filepath))); } catch { /* gone */ } }
-      if (row.thumbnail_path) { try { fs.unlinkSync(path.join(config.contentDir, path.basename(row.thumbnail_path))); } catch { /* gone */ } }
-      db.prepare('DELETE FROM content WHERE id = ?').run(cid);
-    } catch (e) { console.warn('[pres-asset] orphan prune skipped for', cid, e.message); }
+    operationId = beginPresentationCleanup(db, {
+      presentationId: req.params.id,
+      workspaceId: req.presentation.workspace_id,
+    });
+  } catch (error) {
+    console.warn('[pres-asset] cleanup ledger creation failed:', error.message);
+    return res.status(409).json({ error: 'Presentation could not be deleted safely.' });
   }
-  res.json({ success: true });
+  const cleanup = processPresentationCleanup(db, operationId, { contentDir: config.contentDir });
+  const purges = await Promise.all(cleanup.erased.map(async (entry) => {
+    const purge = await emitContentPurge(req.app.get('io'), {
+      contentId: entry.content_id,
+      assetId: entry.asset_id,
+      generation: entry.generation,
+      nodeIds: entry.node_ids.length ? entry.node_ids : undefined,
+    });
+    return {
+      content_id: entry.content_id,
+      nodes: (purge.nodes || []).map((node) => ({
+        node_id: node.node_id,
+        acknowledged: node.acknowledged,
+        purged: node.purged,
+        offline: node.offline,
+        error: node.error || null,
+      })),
+    };
+  }));
+  return res.status(cleanup.state === 'completed' ? 200 : 202).json({
+    success: true,
+    cleanup_operation_id: operationId,
+    cleanup_state: cleanup.state,
+    cleanup_pending: cleanup.state !== 'completed',
+    internal_assets_erased: purges,
+    shared_internal_assets_preserved: cleanup.skipped_shared,
+    cleanup_errors: cleanup.errors,
+  });
 });
 
 module.exports = router;

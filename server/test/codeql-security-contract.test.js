@@ -27,12 +27,26 @@ test('database and filesystem resource routes use the standard rate limiter', ()
     '/api/media-observability',
     '/api/live-sources',
     '/api/devices',
+    '/api/downloads',
+    '/api/broadcast',
   ]) {
     assert.ok(
       server.includes(`app.use('${route}', rateLimit(rateLimitOptions(`),
       `${route} must use the standard rate limiter`,
     );
   }
+});
+
+test('public presentation player resources are bounded before database or filesystem work', () => {
+  const server = source('server/server.js');
+  assert.match(server, /app\.get\('\/player\/deck\/:id',\s*rateLimit\(rateLimitOptions\(/);
+  assert.match(server, /app\.get\('\/player\/asset\/:id',\s*rateLimit\(rateLimitOptions\(/);
+});
+
+test('optional authentication parses only the fixed session-cookie name', () => {
+  const auth = source('server/middleware/auth.js');
+  assert.doesNotMatch(auth, /acc\[key\]\s*=/);
+  assert.match(auth, /key\s*===\s*'mc_token'/);
 });
 
 test('video-wall requests use the constrained central API client', () => {

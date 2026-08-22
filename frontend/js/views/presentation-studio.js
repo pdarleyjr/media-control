@@ -18,6 +18,7 @@ const state = {
   deck: null,
   selectedSlide: 0,
   content: [],
+  assets: null,
   guides: { boundaries: true, seamSafe: false, critical: false },
   dirty: false,
   undo: [],
@@ -100,6 +101,31 @@ function profileOptions(selected) {
     <option value="${PROFILE_TWO}" ${selected === PROFILE_TWO ? 'selected' : ''}>${esc(t('studio.profile_two'))}</option>`;
 }
 
+function assetInventoryMarkup() {
+  const groups = [
+    ['source_decks', 'studio.assets_source'],
+    ['extracted_images', 'studio.assets_extracted'],
+    ['studio_uploads', 'studio.assets_uploads'],
+    ['video_audio', 'studio.assets_av'],
+    ['rendered_previews', 'studio.assets_previews'],
+    ['linked_library_media', 'studio.assets_linked'],
+  ];
+  const rows = groups.map(([key, label]) => {
+    const items = Array.isArray(state.assets?.[key]) ? state.assets[key] : [];
+    if (!items.length) return '';
+    return `<div class="studio-asset-group"><h4>${esc(t(label))}<span>${items.length}</span></h4>
+      <ul>${items.map((item) => `<li>
+        <span>${esc(item.filename || `${t('studio.slide')} ${Number(item.sort_order) + 1}`)}</span>
+        <small>${esc(item.mime_type || item.processing_status || t('studio.assets_preview'))}</small>
+        ${item.content_id && item.library_scope === 'internal' ? `<button class="studio-button" data-save-asset-copy="${esc(item.content_id)}">${esc(t('studio.save_asset_copy'))}</button>` : ''}
+      </li>`).join('')}</ul></div>`;
+  }).join('');
+  return `<details class="studio-asset-inventory" open><summary>${esc(t('studio.assets_internal'))}</summary>
+    <p>${esc(t('studio.assets_internal_hint'))}</p>
+    ${rows || `<div class="studio-meta">${esc(t('studio.assets_empty'))}</div>`}
+  </details>`;
+}
+
 async function renderLibrary(app) {
   state.presentation = null; state.deck = null; state.dirty = false; state.undo = []; state.redo = [];
   const cards = state.presentations.map((item) => {
@@ -167,11 +193,17 @@ function renderStage() {
   const width = Number(profile.canvas_px?.w) || 11520;
   const height = Number(profile.canvas_px?.h) || 2160;
   viewport.className = `studio-stage-viewport${width === 7680 ? ' is-two-display' : ''}`;
+  const typography = (object) => {
+    const style = object?.style;
+    if (!style) return '';
+    const padding = style.padding_px || {};
+    return `;font-family:${esc(style.font_face || 'sans-serif')};font-size:${(Number(style.font_size_px || 45) / width) * 100}cqw;font-weight:${style.bold ? 700 : 400};color:#${esc(String(style.color || 'F7FAFD').replace(/^#/, ''))};text-align:${esc(style.align || 'left')};line-height:${Number(style.line_height) || 1.22};padding:${(Number(padding.top) || 0) / width * 100}cqw ${(Number(padding.right) || 0) / width * 100}cqw ${(Number(padding.bottom) || 0) / width * 100}cqw ${(Number(padding.left) || 0) / width * 100}cqw`;
+  };
   const renderObject = ([name, object]) => {
     const box = object?.bbox_px;
     if (!box) return '';
     const value = slide.slots?.[name];
-    const style = `left:${(box.x / width) * 100}%;top:${(box.y / height) * 100}%;width:${(box.w / width) * 100}%;height:${(box.h / height) * 100}%`;
+    const style = `left:${(box.x / width) * 100}%;top:${(box.y / height) * 100}%;width:${(box.w / width) * 100}%;height:${(box.h / height) * 100}%${typography(object)}`;
     if (name === 'GLOBAL_MBFD_LOGO' || name === 'GLOBAL_MBFD_WATERMARK') {
       return `<div class="studio-stage-object" style="${style}"><img src="/player/template-asset/${encodeURIComponent(state.deck.wall_profile)}/${encodeURIComponent(name)}" alt=""></div>`;
     }
@@ -500,6 +532,14 @@ function bindEditor(app) {
     try { if (state.dirty) await savePresentation(); await api.presentations.exportToLibrary(state.presentation.id); showToast(t('studio.save_library'), 'success'); }
     catch (error) { showToast(error.message, 'error'); } finally { button.disabled = false; }
   });
+  document.querySelectorAll('[data-save-asset-copy]').forEach((button) => button.addEventListener('click', async () => {
+    button.disabled = true;
+    try {
+      await api.presentations.saveAssetCopy(state.presentation.id, button.dataset.saveAssetCopy);
+      showToast(t('studio.saved_asset_copy'), 'success');
+    } catch (error) { showToast(error.message, 'error'); }
+    finally { button.disabled = false; }
+  }));
   document.querySelector('[data-studio-present]')?.addEventListener('click', (event) => presentDeck(event.currentTarget));
   document.querySelectorAll('[data-guide]').forEach((input) => input.addEventListener('change', () => { state.guides[input.dataset.guide] = input.checked; renderStage(); }));
   document.getElementById('studioDeckTitle')?.addEventListener('focus', (event) => { if (!event.target.dataset.history) { pushUndo(); event.target.dataset.history = '1'; } });
@@ -538,19 +578,12 @@ function bindEditor(app) {
     if (!file || !slide) return;
     if (!slot) { showToast(t('studio.no_media_slot'), 'info'); return; }
     try {
-      let contentId; let type = String(file.type || '').split('/')[0];
-      if (type === 'image') {
-        const uploaded = await api.presentations.uploadAsset(state.presentation.id, file, (pct) => status(`${pct}%`));
-        contentId = uploaded.content_id;
-      } else {
-        const uploaded = await api.uploadContent(file, (pct) => status(`${pct}%`));
-        contentId = uploaded.id || uploaded.content_id;
-        const linked = await api.presentations.linkAsset(state.presentation.id, contentId);
-        type = String(linked.mime_type || file.type || '').split('/')[0];
-      }
+      const uploaded = await api.presentations.uploadAsset(state.presentation.id, file, (pct) => status(`${pct}%`));
+      const contentId = uploaded.content_id;
+      const type = String(uploaded.mime_type || file.type || '').split('/')[0];
       pushUndo(); slide.slots[slot] = { type, content_id: contentId, fit: 'contain', caption: file.name };
       if (!state.deck.assets.some((asset) => asset.content_id === contentId)) state.deck.assets.push({ id: newId('asset'), content_id: contentId, type });
-      state.dirty = true; state.content = await api.getContent(); renderEditor(app);
+      state.dirty = true; state.assets = await api.presentations.assets(state.presentation.id); renderEditor(app);
     } catch (error) { showToast(error.message, 'error'); }
   });
 }
@@ -596,6 +629,7 @@ function renderEditor(app) {
         <div class="studio-panel-body">
           <label class="studio-label">${esc(t('studio.layout'))}<select class="studio-select" id="studioLayout">${layouts.map((layout) => `<option value="${esc(layout.layout_id)}" ${layout.layout_id === slide?.template_id ? 'selected' : ''}>${esc(layout.layout_id.replaceAll('_', ' '))}</option>`).join('')}</select></label>
           <label class="studio-button" for="studioImageUpload">${esc(t('studio.upload_media'))}<input id="studioImageUpload" type="file" accept="image/jpeg,image/png,image/gif,image/webp,image/bmp,video/mp4,video/webm,video/quicktime,audio/mpeg,audio/mp4,audio/wav,audio/ogg" hidden></label>
+          ${assetInventoryMarkup()}
           <div id="studioInspectorFields" class="studio-inspector-fields"></div>
         </div></details>
     </div>`, 'editor');
@@ -651,7 +685,11 @@ async function loadAndRender(app) {
     if (params.get('mode') === 'ai' || window.location.hash === '#/ai-deck') return renderAi(app);
     const id = params.get('id');
     if (!id) return renderLibrary(app);
-    const [presentation, content] = await Promise.all([api.presentations.get(id), api.getContent().catch(() => [])]);
+    const [presentation, content, assets] = await Promise.all([
+      api.presentations.get(id),
+      api.getContent().catch(() => []),
+      api.presentations.assets(id).catch(() => null),
+    ]);
     if (generation !== renderGeneration) return;
     const deck = typeof presentation.deck_json === 'string' ? JSON.parse(presentation.deck_json) : presentation.deck_json;
     if (deck.version !== 'mbfd-deck-v2') {
@@ -659,7 +697,7 @@ async function loadAndRender(app) {
       window.location.hash = `#/slide-editor?id=${encodeURIComponent(id)}&legacy=1`;
       return;
     }
-    state.presentation = presentation; state.deck = deck; state.content = Array.isArray(content) ? content : [];
+    state.presentation = presentation; state.deck = deck; state.content = Array.isArray(content) ? content : []; state.assets = assets;
     state.selectedSlide = Math.min(state.selectedSlide, Math.max(0, deck.slides.length - 1)); state.dirty = false; state.undo = []; state.redo = [];
     renderEditor(app);
   } catch (error) {

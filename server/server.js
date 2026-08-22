@@ -8,18 +8,12 @@ const path = require('path');
 const fs = require('fs');
 const config = require('./config');
 const { resolveFeatureFlags } = require('./lib/feature-flags');
+const { installFatalProcessHandlers } = require('./lib/fatal-process-handlers');
+const { resolveStoredContentFile } = require('./lib/trusted-content-file');
 
-// 2026-05-28: top-level safety nets. A single unhandled throw inside a
-// Socket.IO listener used to kill the entire Node process, putting the
-// container into a restart loop that broke playback for every device. We
-// fix the root causes per-handler, but also log + survive any future
-// regression so a single bad payload can't take production down again.
-process.on('uncaughtException', (err) => {
-  console.error('[uncaughtException]', err && err.stack || err);
-});
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('[unhandledRejection]', reason && reason.stack || reason);
-});
+// Fatal runtime failures leave Node in an undefined state. Record them
+// synchronously, exit non-zero, and let Docker's restart policy recover.
+installFatalProcessHandlers();
 
 // Ensure upload directories exist
 [config.contentDir, config.screenshotsDir].forEach(dir => {
@@ -250,29 +244,31 @@ app.get('/player/template-asset/:profile/:name', async (req, res) => {
 // API call needed). Published snapshot is preferred; falls back to the working
 // deck. The deck JSON is `<`-escaped so AI/user content containing "</script>"
 // can't break out of the inline script tag.
-app.get('/player/deck/:id', (req, res) => {
+app.get('/player/deck/:id', rateLimit(rateLimitOptions(60000, 120)), require('./middleware/auth').optionalAuth, (req, res) => {
   const { db } = require('./db/database');
-  const p = db.prepare('SELECT id, title, deck_json, status, published_snapshot FROM presentations WHERE id = ?').get(req.params.id);
+  const { deckForPlayer } = require('./lib/presentation-player-access');
+  const selected = deckForPlayer(db, req.params.id, req.user || null);
+  if (!selected) return res.status(404).type('text/plain').send('deck not found');
   const deckHtmlPath = path.join(__dirname, 'player', 'deck.html');
   fs.readFile(deckHtmlPath, 'utf8', (err, html) => {
     if (err) return res.status(500).type('text/plain').send('deck player unavailable');
     let deckJson = 'null';
     let renderPlanJson = 'null';
-    if (p) {
-      const raw = p.published_snapshot || p.deck_json || 'null';
-      try {
-        const parsed = JSON.parse(raw);
-        deckJson = raw;
-        if (parsed && parsed.version === 'mbfd-deck-v2') {
-          const { buildRenderPlan } = require('./lib/presentation-template-registry');
-          renderPlanJson = JSON.stringify(buildRenderPlan(parsed, { mode: 'production' }));
-        }
-      } catch { deckJson = 'null'; renderPlanJson = 'null'; }
+    try {
+      deckJson = JSON.stringify(selected.deck);
+      if (selected.deck.version === 'mbfd-deck-v2') {
+        const { buildRenderPlan } = require('./lib/presentation-template-registry');
+        renderPlanJson = JSON.stringify(buildRenderPlan(selected.deck, { mode: 'production' }));
+      }
+    } catch {
+      return res.status(404).type('text/plain').send('deck not found');
     }
     const safe = deckJson.replace(/</g, '\\u003c');
     const safePlan = renderPlanJson.replace(/</g, '\\u003c');
     const inject = '<script>window.__deck = ' + safe + ';window.__deckRenderPlan = ' + safePlan + ';</script>\n';
-    res.type('html').setHeader('Cache-Control', 'no-cache').send(html.replace('</head>', inject + '</head>'));
+    res.type('html').setHeader('Cache-Control', selected.public ? 'no-cache' : 'private, no-store');
+    if (!selected.public) res.setHeader('Vary', 'Authorization, Cookie');
+    res.send(html.replace('</head>', inject + '</head>'));
   });
 });
 
@@ -452,7 +448,7 @@ app.get('/player/canvas-asset/:endpointId/:contentId/:width/:height/:signature',
 // can't be used to enumerate arbitrary private content. UUIDs are unguessable,
 // matching the public deck threat model (anyone with a deck URL can already see
 // the deck + its images). Path-traversal guarded; CORS-open + long cache.
-app.get('/player/asset/:id', (req, res) => {
+app.get('/player/asset/:id', rateLimit(rateLimitOptions(60000, 600)), require('./middleware/auth').optionalAuth, (req, res) => {
   const { db } = require('./db/database');
   const c = db.prepare('SELECT id, filepath, mime_type FROM content WHERE id = ?').get(req.params.id);
   if (!c || !c.filepath) return res.status(404).type('text/plain').send('not found');
@@ -462,13 +458,19 @@ app.get('/player/asset/:id', (req, res) => {
     'audio/mpeg', 'audio/mp4', 'audio/wav', 'audio/ogg',
   ]);
   if (!safePresentationMimes.has(String(c.mime_type || '').toLowerCase())) return res.status(404).type('text/plain').send('not found');
-  const linked = db.prepare('SELECT 1 FROM presentation_assets WHERE content_id = ? LIMIT 1').get(req.params.id);
-  if (!linked) return res.status(403).type('text/plain').send('not a presentation asset');
-  const safePath = path.resolve(config.contentDir, path.basename(c.filepath));
-  if (!safePath.startsWith(path.resolve(config.contentDir))) return res.status(403).type('text/plain').send('invalid path');
+  const { presentationAssetAccess } = require('./lib/presentation-player-access');
+  const assetAccess = presentationAssetAccess(db, req.params.id, req.user || null);
+  if (!assetAccess.allowed) {
+    return res.status(404).type('text/plain').send('not found');
+  }
+  const safePath = resolveStoredContentFile(config.contentDir, c.filepath);
+  if (!safePath) return res.status(404).type('text/plain').send('not found');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-  res.setHeader('Cache-Control', 'public, max-age=2592000, immutable');
+  res.setHeader('Cache-Control', assetAccess.public
+    ? 'public, max-age=2592000, immutable'
+    : 'private, no-store');
+  if (!assetAccess.public) res.setHeader('Vary', 'Authorization, Cookie');
   // Force the stored allowlisted MIME — never let the on-disk extension drive the
   // Content-Type (an attacker could upload a raster file named ".html"). nosniff
   // stops browsers MIME-sniffing the bytes into something executable.
@@ -984,11 +986,13 @@ app.use('/api/ai', requireAuth, resolveTenancy, require('./routes/ai'));
 // Files (Nextcloud WebDAV proxy) + media downloads. Feature-flag + env gated.
 app.use('/api/files', rateLimit(rateLimitOptions(60000, 30)));
 app.use('/api/files', requireAuth, resolveTenancy, require('./routes/files'));
+app.use('/api/downloads', rateLimit(rateLimitOptions(60000, 60)));
 app.use('/api/downloads', requireAuth, resolveTenancy, require('./routes/downloads'));
 // Phase 3: Operational Activities ("Scenes") + Fast Broadcast. Same
 // requireAuth + resolveTenancy gating as the other resource routes; handlers
 // scope by req.workspaceId and reuse the existing device-content-push path.
 app.use('/api/scenes', requireAuth, resolveTenancy, require('./routes/scenes'));
+app.use('/api/broadcast', rateLimit(rateLimitOptions(60000, 60)));
 app.use('/api/broadcast', requireAuth, resolveTenancy, require('./routes/broadcast'));
 app.use('/api/classroom-preparation', rateLimit(rateLimitOptions(60000, 60)));
 app.use('/api/classroom-preparation', requireAuth, resolveTenancy, require('./routes/classroom-preparation'));

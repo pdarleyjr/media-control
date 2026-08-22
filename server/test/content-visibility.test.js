@@ -140,6 +140,10 @@ test('read predicate denies private rows to ordinary peers and allows authorized
   assert.equal(canReadContent(row, { userId: 'member-a', workspaceId: 'ws-a1', organizationId: 'org-a', workspaceRole: 'workspace_viewer' }), false);
   assert.equal(canReadContent(row, { userId: 'admin-a', workspaceId: 'ws-a1', organizationId: 'org-a', workspaceRole: 'workspace_admin' }), true);
   assert.equal(canReadContent(row, { userId: 'platform', isPlatformAdmin: true }), true);
+  assert.equal(canReadContent({ ...row, library_scope: 'internal' }, {
+    userId: 'owner-a', workspaceId: 'ws-a1', organizationId: 'org-a', workspaceRole: 'workspace_editor',
+  }), false);
+  assert.equal(canReadContent({ ...row, library_scope: 'internal' }, { userId: 'platform', isPlatformAdmin: true }), false);
 });
 
 test('capabilities enforce publication authority and owner self-service', () => {
@@ -151,7 +155,7 @@ test('capabilities enforce publication authority and owner self-service', () => 
   assert.equal(owner.canRequestOrganization, true);
   assert.equal(owner.canTransfer, false);
   assert.equal(owner.canArchive, true);
-  assert.equal(owner.canDelete, false, 'active content must be archived before permanent deletion');
+  assert.equal(owner.canDelete, true, 'managed active content can enter the explicit permanent-erase flow');
 
   const viewerOwner = contentCapabilities(ownPrivate, {
     userId: 'owner-a', workspaceId: 'ws-a1', organizationId: 'org-a', workspaceRole: 'workspace_viewer', orgRole: null,
@@ -211,4 +215,7 @@ test('content consumption respects destination workspace, organization, template
   assert.equal(canUseContentInWorkspace({
     user_id: 'owner-a', workspace_id: 'ws-a1', organization_id: 'org-a', access_level: VISIBILITY.ORGANIZATION_SHARED, archived_at: 123,
   }, { ...common, workspaceId: 'ws-a2' }), false);
+  assert.equal(canUseContentInWorkspace({
+    user_id: 'owner-a', workspace_id: 'ws-a1', organization_id: 'org-a', access_level: VISIBILITY.WORKSPACE_SHARED, library_scope: 'internal',
+  }, { ...common, workspaceId: 'ws-a1' }), false);
 });

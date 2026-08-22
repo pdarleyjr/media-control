@@ -1,13 +1,24 @@
 [CmdletBinding()]
 # Installs (or re-installs) the P3 room-agent as a Windows Scheduled Task so it
-# survives logoff + auto-restarts every 60s (watchdog). Idempotent — safe to
+# survives logoff + auto-restarts every 60s (watchdog). Idempotent - safe to
 # re-run after a `git pull` to pick up new agent.js / sync-worker.js.
 #
-# Two tasks are created:
+# Tasks created / managed by this script:
 #   MBFD_RoomAgent   -> `node agent.js` at logon, restart every 60s on failure
 #   MBFD_AudioEnforce-> the audio watchdog at logon (60s loop inside the script)
 #   MBFD_NetworkEnforce -> the wired-first watchdog at logon (disables Wi-Fi
 #                          when Ethernet is up and keeps the box on the wire)
+#   MBFD_RoomCacheAgent -> the read-through content cache agent
+#                          (`cache-agent.js`). This script does NOT create or
+#                          re-register it, because the on-box launcher
+#                          `run-agent.cmd` carries the per-node secret in ENV.
+#                          Instead `ensure-cache-agent-supervision.ps1` fixes
+#                          only its SETTINGS so a fail-fast fatal exit is
+#                          recovered on a fixed 60s restart interval.
+#
+# Restart semantics: Windows Task Scheduler restarts a failed task on a FIXED
+# interval (RestartInterval) for up to RestartCount attempts. There is no
+# exponential backoff at the Task Scheduler layer.
 #
 # Constraint: does NOT disable the Windows Firewall. Room-agent <-> GMKtec comms
 #  use the LAN path when configured; the on-box SSH inbound rule, if any, is
@@ -26,7 +37,7 @@ $audioWatchdog = Join-Path (Split-Path -Parent $PSScriptRoot) 'audio\audio-watch
 $networkWatchdog = Join-Path (Split-Path -Parent $PSScriptRoot) 'network-watchdog.ps1'
 
 $nodeExe = (Get-Command node.exe -ErrorAction SilentlyContinue).Source
-if (-not $nodeExe) { Write-Error 'node.exe not on PATH — install Node LTS first'; exit 3 }
+if (-not $nodeExe) { Write-Error 'node.exe not on PATH - install Node LTS first'; exit 3 }
 
 # Install node deps for the agent (socket.io-client + better-sqlite3).
 if (Test-Path (Join-Path $agentDir 'package.json')) {
@@ -43,7 +54,9 @@ function New-ManagedTask([string]$Name, [string]$Cmd, [string[]]$Args, [int]$Res
   }
   $action = New-ScheduledTaskAction -Execute $Cmd -Argument ($Args -join ' ')
   $trig = New-ScheduledTaskTrigger -AtLogOn
-  $settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Seconds $RestartSec) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+  # ExecutionTimeLimit 0 (PT0S) so a healthy long-running watchdog is never
+  # force-terminated; the Task Scheduler default is PT72H.
+  $settings = New-ScheduledTaskSettingsSet -RestartCount 255 -RestartInterval (New-TimeSpan -Seconds $RestartSec) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
   $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel $RunLevel
   Register-ScheduledTask -TaskName $Name -Action $action -Trigger $trig -Settings $settings -Principal $principal -Force | Out-Null
   Start-ScheduledTask -TaskName $Name
@@ -53,6 +66,24 @@ function New-ManagedTask([string]$Name, [string]$Cmd, [string[]]$Args, [int]$Res
 New-ManagedTask -Name 'MBFD_RoomAgent' -Cmd $nodeExe -Args @("agent.js") -RestartSec 60
 New-ManagedTask -Name 'MBFD_AudioEnforce' -Cmd 'powershell.exe' -Args @('-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$audioWatchdog`"") -RestartSec 60
 New-ManagedTask -Name 'MBFD_NetworkEnforce' -Cmd 'powershell.exe' -Args @('-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$networkWatchdog`"") -RestartSec 60 -RunLevel Highest
+
+# The cache agent runs fail-fast (see room-agent/fatal-process.js): a fatal
+# uncaught exception intentionally terminates Node with a nonzero exit code.
+# That is only safe when Task Scheduler restarts it, so establish the
+# supervision settings of the existing MBFD_RoomCacheAgent task WITHOUT touching
+# its secret-bearing launcher, principal, or trigger. A fail-fast agent with no
+# working supervisor is a production defect, so any failure here MUST abort the
+# install/update (fail closed). We deliberately do NOT catch and continue.
+$cacheSupervision = Join-Path $PSScriptRoot 'ensure-cache-agent-supervision.ps1'
+if (-not (Test-Path -LiteralPath $cacheSupervision)) {
+  throw "MBFD_RoomCacheAgent supervision script is missing at '$cacheSupervision'. Refusing to install a fail-fast cache agent with no confirmed supervisor."
+}
+Write-Host 'establishing MBFD_RoomCacheAgent restart-on-failure supervision...'
+& $cacheSupervision -TaskName 'MBFD_RoomCacheAgent' -RestartIntervalSeconds 60 -RestartCount 255
+# If the line above returns, supervision is verified active. If it throws
+# (missing+uncreatable task, invalid settings, or post-apply verification
+# failure) the script terminates here with a non-zero exit and the later
+# "install/update complete" message is never printed.
 
 Write-Host 'install/update complete.'
 Write-Host 'Firewall note: Windows Firewall is left ENABLED (constraint). The agent reaches GMKtec over the LAN URL when configured; no inbound rule is added.'

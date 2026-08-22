@@ -68,6 +68,15 @@ function getLayout(profileId, layoutId) {
   return layout;
 }
 
+function decorateLayoutStyles(layout) {
+  const { styleForObject } = require('./presentation-style-contract');
+  const decorated = clone(layout);
+  for (const [name, object] of Object.entries(decorated.named_objects || {})) {
+    object.style = styleForObject(name);
+  }
+  return decorated;
+}
+
 function intersectsGutter(box, gutter) {
   if (!box || !gutter) return false;
   return box.x < gutter.x2 && box.x + box.w > gutter.x1;
@@ -154,7 +163,7 @@ function buildRenderPlan(deck, options = {}) {
     theme: clone(SOURCE_SPEC.theme),
     overlays,
     slides: deck.slides.map((slide) => {
-      const layout = getLayout(deck.wall_profile, slide.template_id);
+      const layout = decorateLayoutStyles(getLayout(deck.wall_profile, slide.template_id));
       return {
         id: slide.id,
         template_id: slide.template_id,
@@ -165,6 +174,7 @@ function buildRenderPlan(deck, options = {}) {
           name,
           value: clone(value),
           geometry: layout.named_objects[name],
+          style: layout.named_objects[name]?.style,
         })),
       };
     }),
@@ -179,6 +189,7 @@ module.exports = {
   getProfile,
   listProfiles,
   getLayout,
+  decorateLayoutStyles,
   listLayouts,
   listLayoutIds,
   intersectsGutter,

@@ -48,8 +48,9 @@ function validateRelationshipTarget(target, targetMode = 'Internal') {
   }
   const normalized = value.replace(/\\/g, '/');
   // OOXML legitimately uses relative targets such as ../media/image1.png.
+  // It also permits package-root targets such as /ppt/charts/chart1.xml.
   // resolveInternalTarget performs the decisive package-root containment check.
-  if (normalized.startsWith('/') || /^[A-Za-z]:/.test(normalized)) {
+  if (normalized.startsWith('//') || /^[A-Za-z]:/.test(normalized)) {
     throw new Error('Unsafe internal relationship target');
   }
   return normalized;
@@ -77,7 +78,9 @@ function relsPath(partPath) {
 
 function resolveInternalTarget(partPath, target) {
   const validated = validateRelationshipTarget(target, 'Internal');
-  const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(partPath), validated));
+  const resolved = validated.startsWith('/')
+    ? path.posix.normalize(validated.slice(1))
+    : path.posix.normalize(path.posix.join(path.posix.dirname(partPath), validated));
   if (resolved.startsWith('../') || path.posix.isAbsolute(resolved)) throw new Error('Unsafe resolved relationship path');
   return validateEntryName(resolved);
 }
@@ -137,15 +140,28 @@ function parseShape(shapeXml, relationships, slideNumber, elementIndex) {
       level: Number(pPr ? attrs(pPr[1]).lvl : 0) || 0,
     };
   }).filter((paragraph) => paragraph.text);
-  if (!textParagraphs.length) return null;
-  const bulletParagraphs = textParagraphs.filter((paragraph) => paragraph.bullet);
   const box = extractBox(shapeXml);
   const id = `s${slideNumber}-obj-${pAttrs.id || elementIndex}`;
+  const presetGeometry = shapeXml.match(/<a:prstGeom\b([^>]*)>/i);
+  const preset = presetGeometry ? String(attrs(presetGeometry[1]).prst || '').toLowerCase() : '';
+  const complexGeometry = /<a:custGeom\b/i.test(shapeXml) || Boolean(preset && preset !== 'rect');
+  if (!textParagraphs.length) {
+    if (ph || !complexGeometry && !preset) return null;
+    return {
+      id,
+      kind: 'graphic',
+      text: '',
+      bbox_emu: box,
+      source_name: pAttrs.name || null,
+      source_geometry: preset || (/a:custGeom/i.test(shapeXml) ? 'custom' : null),
+    };
+  }
+  const bulletParagraphs = textParagraphs.filter((paragraph) => paragraph.bullet);
   const hyperlinkIds = Array.from(shapeXml.matchAll(/<a:hlinkClick\b([^>]*)>/gi), (match) => attrs(match[1])['r:id']).filter(Boolean);
   const hyperlinkRelationships = hyperlinkIds.map((relId) => relationships.find((rel) => rel.id === relId)).filter(Boolean);
   return {
     id,
-    kind: bulletParagraphs.length ? 'bullets' : 'paragraph',
+    kind: complexGeometry ? 'graphic' : (bulletParagraphs.length ? 'bullets' : 'paragraph'),
     text: bulletParagraphs.length ? undefined : textParagraphs.map((paragraph) => paragraph.text).join('\n'),
     items: bulletParagraphs.length ? bulletParagraphs.map((paragraph) => paragraph.text) : undefined,
     paragraphs: textParagraphs,
@@ -153,7 +169,27 @@ function parseShape(shapeXml, relationships, slideNumber, elementIndex) {
     style: {},
     semantic_role: phAttrs.type || null,
     source_name: pAttrs.name || null,
+    source_geometry: complexGeometry ? (preset || 'custom') : null,
     hyperlinks: hyperlinkRelationships.map((rel) => rel.target),
+  };
+}
+
+function parseConnector(connectorXml, relationships, slideNumber, elementIndex) {
+  const parsed = parseShape(connectorXml, relationships, slideNumber, elementIndex);
+  if (parsed) {
+    parsed.kind = 'graphic';
+    parsed.source_geometry = parsed.source_geometry || 'connector';
+    return parsed;
+  }
+  const properties = connectorXml.match(/<p:cNvPr\b([^>]*)>/i);
+  const pAttrs = properties ? attrs(properties[1]) : {};
+  return {
+    id: `s${slideNumber}-obj-${pAttrs.id || elementIndex}`,
+    kind: 'graphic',
+    text: extractText(connectorXml).trim(),
+    bbox_emu: extractBox(connectorXml),
+    source_name: pAttrs.name || null,
+    source_geometry: 'connector',
   };
 }
 
@@ -277,6 +313,9 @@ async function extractPptxToSlideIr(filePath, options = {}) {
       const element = parseShape(match[0], relationships, index + 1, ++elementIndex);
       if (element) elements.push(element);
     }
+    for (const match of slideXml.matchAll(/<p:cxnSp(?:\s[^>]*)?>([\s\S]*?)<\/p:cxnSp>/gi)) {
+      elements.push(parseConnector(match[0], relationships, index + 1, ++elementIndex));
+    }
     for (const match of slideXml.matchAll(/<p:pic(?:\s[^>]*)?>([\s\S]*?)<\/p:pic>/gi)) {
       const element = parsePicture(match[0], relationships, index + 1, ++elementIndex);
       elements.push(element);
@@ -287,6 +326,7 @@ async function extractPptxToSlideIr(filePath, options = {}) {
     const mediaElements = parseMediaElements(slideXml, relationships, index + 1, elementIndex);
     elements.push(...mediaElements); elementIndex += mediaElements.length;
     const warnings = [];
+    if (elements.some((element) => element.kind === 'graphic')) warnings.push('Vector shapes require rendered-fallback review');
     for (const match of slideXml.matchAll(/<p:grpSp(?:\s[^>]*)?>([\s\S]*?)<\/p:grpSp>/gi)) {
       elements.push({ id: `s${index + 1}-obj-${++elementIndex}`, kind: 'group', text: extractText(match[0]), bbox_emu: extractBox(match[0]) });
     }
