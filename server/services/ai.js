@@ -267,6 +267,54 @@ function normalizeConversionPlan(plan, slide, profileId) {
       }
     }
   }
+  // Qwen can correctly identify a comparison's semantic groups while routing a
+  // shared slide heading into the small A/B LABEL placeholders. Exact-preserve
+  // hydration then makes that label overflow. When the same semantic lane has
+  // an existing, unmodified BODY/PARAGRAPH assignment with enough capacity,
+  // deterministically merge the heading's source ref into that body and remove
+  // the unsafe short-region assignment. This preserves every source character,
+  // keeps Qwen's chosen layout, and avoids degrading the slide to Faithful mode.
+  for (const target of normalized.target_slides) {
+    if (!profileId || !listLayoutIds(profileId).includes(target.layout_id)) continue;
+    const layout = getLayout(profileId, target.layout_id);
+    for (const assignment of [...target.region_assignments]) {
+      if (assignment.text != null || !isShortTextRegion(assignment.region_id)) continue;
+      const sourceText = projectedTextForAssignment(slide, assignment);
+      const sourceObject = layout.named_objects[assignment.region_id];
+      if (!sourceText || !sourceObject?.bbox_px) continue;
+      const sourceCapacity = estimatedCapacity(sourceObject.bbox_px, styleForObject(assignment.region_id));
+      if (sourceText.length <= sourceCapacity) continue;
+
+      const semanticLane = String(assignment.region_id).replace(/_(?:TITLE|SUBTITLE|LABEL|SLIDE_LABEL|CAPTION)$/, '');
+      const candidates = target.region_assignments
+        .filter((candidate) => candidate !== assignment
+          && candidate.text == null
+          && /(?:_BODY|_PARAGRAPH)$/.test(candidate.region_id)
+          && layout.named_objects[candidate.region_id]?.bbox_px)
+        .sort((left, right) => {
+          const leftLane = String(left.region_id).startsWith(`${semanticLane}_`) ? 0 : 1;
+          const rightLane = String(right.region_id).startsWith(`${semanticLane}_`) ? 0 : 1;
+          return leftLane - rightLane;
+        });
+      const destination = candidates.find((candidate) => {
+        const combinedRefs = [...new Set([...assignment.source_refs, ...candidate.source_refs])];
+        const projected = projectedTextForAssignment(slide, { ...candidate, source_refs: combinedRefs });
+        const object = layout.named_objects[candidate.region_id];
+        return projected.length <= estimatedCapacity(object.bbox_px, styleForObject(candidate.region_id));
+      });
+      if (!destination) continue;
+
+      destination.source_refs = [...new Set([...assignment.source_refs, ...destination.source_refs])];
+      destination.content_type = 'paragraph';
+      destination.transform = 'preserve_paragraph';
+      target.region_assignments = target.region_assignments.filter((candidate) => candidate !== assignment);
+      normalized.requires_review = true;
+      normalized.review_reasons = [...new Set([
+        ...normalized.review_reasons,
+        `Server relocated oversized ${assignment.region_id} source text into ${destination.region_id}.`,
+      ])];
+    }
+  }
   const occurrencesByRef = new Map();
   for (const target of normalized.target_slides) {
     for (const assignment of target.region_assignments) {

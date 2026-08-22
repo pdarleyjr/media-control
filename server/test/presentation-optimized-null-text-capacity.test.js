@@ -242,7 +242,7 @@ test('G) regression: forbidden geometry, media-region, and source-accounting gua
   assert.match(String(ai.validateConversionPlan(omit, source, PID_TWO, 'instructor_optimized')), /omits source content/);
 });
 
-test('H) end-to-end: mapSlideToV2 refuses to split a null-text paragraph through a label region', async (t) => {
+test('H) end-to-end: mapSlideToV2 relocates oversized null-text label content into the matching body region', async (t) => {
   const originalFetch = global.fetch;
   const badRaw = comparisonPlan(PID_TWO, 'instructor_optimized', 'TV1_A_LABEL', 'TV2_B_LABEL', 'TV1_A_LABEL', 'TV2_B_LABEL');
   badRaw.target_slides[0].region_assignments = [
@@ -253,10 +253,62 @@ test('H) end-to-end: mapSlideToV2 refuses to split a null-text paragraph through
   ];
   global.fetch = async () => new Response(JSON.stringify({ message: { content: JSON.stringify(badRaw) } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   t.after(() => { global.fetch = originalFetch; });
-  await assert.rejects(
-    ai.mapSlideToV2(comparisonSource(), { wallProfile: PID_TWO, mode: 'instructor_optimized' }),
-    /exceeds deterministic capacity/
-  );
+  const mapping = await ai.mapSlideToV2(comparisonSource(), { wallProfile: PID_TWO, mode: 'instructor_optimized' });
+  const assignments = mapping.raw_plan.target_slides[0].region_assignments;
+  const label = assignments.find((item) => item.region_id === 'TV1_A_LABEL');
+  const body = assignments.find((item) => item.region_id === 'TV1_A_BODY');
+  assert.equal(label, undefined, 'oversized prose must not remain in the short label region');
+  assert.deepEqual(body.source_refs, ['a-body', 'a-head']);
+  assert.equal(ai.validateConversionPlan(mapping.raw_plan, comparisonSource(), PID_TWO, 'instructor_optimized'), null);
+});
+
+test('H2) the representative A-J comparison plan keeps Qwen optimization while relocating its repeated slide heading', async (t) => {
+  const originalFetch = global.fetch;
+  const source = {
+    source_slide_number: 4,
+    title: 'D. Tactical Comparison',
+    elements: [
+      { id: 'slide-title', kind: 'paragraph', text: 'D. Tactical Comparison' },
+      { id: 'a-title', kind: 'paragraph', text: 'Standpipe Supply' },
+      { id: 'a-body', kind: 'paragraph', text: 'Target 500 GPM at 150 psi. Confirm a sustained water source and protect the supply line.' },
+      { id: 'b-title', kind: 'paragraph', text: 'Tank Water Only' },
+      { id: 'b-body', kind: 'paragraph', text: 'The apparatus carries 1,250 gallons. Treat tank water as a bounded bridge, not a sustained source.' },
+    ],
+    speaker_notes: '', relationships: [], warnings: [],
+  };
+  const plan = {
+    source_slide_number: 4,
+    wall_mode: getProfile(PID_TWO).source_key,
+    transfer_mode: 'instructor_optimized',
+    layout_id: 'COMPARISON',
+    target_slides: [{
+      layout_id: 'COMPARISON',
+      region_assignments: [
+        assignment('TV1_A_LABEL', ['slide-title'], 'paragraph'),
+        assignment('TV1_A_TITLE', ['a-title'], 'text'),
+        assignment('TV1_A_BODY', ['a-body'], 'paragraph'),
+        assignment('TV2_B_LABEL', ['slide-title'], 'paragraph'),
+        assignment('TV2_B_TITLE', ['b-title'], 'text'),
+        assignment('TV2_B_BODY', ['b-body'], 'paragraph'),
+      ],
+    }],
+    media_actions: [],
+    source_accounting: {
+      accounted_source_refs: ['slide-title', 'a-title', 'a-body', 'b-title', 'b-body'],
+      unaccounted_source_refs: [],
+    },
+    requires_review: false,
+    review_reasons: [],
+    confidence: 1,
+  };
+  global.fetch = async () => new Response(JSON.stringify({ message: { content: JSON.stringify(plan) } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  t.after(() => { global.fetch = originalFetch; });
+  const mapping = await ai.mapSlideToV2(source, { wallProfile: PID_TWO, mode: 'instructor_optimized' });
+  const assignments = mapping.raw_plan.target_slides[0].region_assignments;
+  assert.equal(assignments.some((item) => /_LABEL$/.test(item.region_id)), false);
+  assert.deepEqual(assignments.find((item) => item.region_id === 'TV1_A_BODY').source_refs, ['slide-title', 'a-body']);
+  assert.deepEqual(assignments.find((item) => item.region_id === 'TV2_B_BODY').source_refs, ['slide-title', 'b-body']);
+  assert.equal(ai.validateConversionPlan(mapping.raw_plan, source, PID_TWO, 'instructor_optimized'), null);
 });
 
 test('I) bounded continuation normalization rejects content it cannot preserve in full', async (t) => {
