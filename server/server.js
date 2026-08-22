@@ -718,7 +718,7 @@ function extractScreenshotToken(req) {
   }
   return null;
 }
-app.get('/api/devices/:id/screenshot', (req, res) => {
+app.get('/api/devices/:id/screenshot', rateLimit(rateLimitOptions(60000, 600)), (req, res) => {
   let user = null;
   const token = extractScreenshotToken(req);
   if (!token) return res.status(401).json({ error: 'Authentication required' });

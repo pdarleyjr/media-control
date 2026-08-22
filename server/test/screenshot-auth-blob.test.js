@@ -16,6 +16,7 @@ test('screenshot route accepts Bearer and httpOnly cookie, never query tokens', 
   assert.match(server, /Bearer /);
   assert.doesNotMatch(server, /const tokenParam = req\.query\.token/);
   assert.match(server, /Query-string tokens are rejected|never[\s\S]*URLs/i);
+  assert.match(server, /app\.get\('\/api\/devices\/:id\/screenshot',\s*rateLimit\(rateLimitOptions\(60000,\s*600\)\)/);
 });
 
 test('authenticated screenshot loading uses fetch Blob object URLs', () => {
