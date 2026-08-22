@@ -24,7 +24,7 @@ param(
 # exception / unhandled rejection (fail-fast). That is only correct when an
 # external supervisor restarts the process. The live classroom task was found
 # registered with RestartCount=0 and NO RestartInterval, plus the Task Scheduler
-# default ExecutionTimeLimit of PT72H — meaning a fatal exit was never recovered
+#   default ExecutionTimeLimit of PT72H - meaning a fatal exit was never recovered
 # and a healthy agent would be force-terminated after 72 hours of uptime.
 #
 # SAFETY CONTRACT
@@ -100,7 +100,7 @@ if ($existing) {
   if (-not (Test-Path -LiteralPath $LauncherPath)) {
     throw "Task '$TaskName' does not exist and the trusted launcher '$LauncherPath' is missing. Create the launcher on-box (it holds MC_NODE_TOKEN in ENV and must never be committed), then re-run."
   }
-  Write-Step "task '$TaskName' missing — creating it as SYSTEM AtStartup from '$LauncherPath'"
+  Write-Step "task '$TaskName' missing - creating it as SYSTEM AtStartup from '$LauncherPath'"
   $action = New-ScheduledTaskAction -Execute $LauncherPath
   $trigger = New-ScheduledTaskTrigger -AtStartup
   $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest

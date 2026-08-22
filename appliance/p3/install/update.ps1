@@ -1,6 +1,6 @@
 [CmdletBinding()]
 # Installs (or re-installs) the P3 room-agent as a Windows Scheduled Task so it
-# survives logoff + auto-restarts every 60s (watchdog). Idempotent — safe to
+# survives logoff + auto-restarts every 60s (watchdog). Idempotent - safe to
 # re-run after a `git pull` to pick up new agent.js / sync-worker.js.
 #
 # Tasks created / managed by this script:
@@ -37,7 +37,7 @@ $audioWatchdog = Join-Path (Split-Path -Parent $PSScriptRoot) 'audio\audio-watch
 $networkWatchdog = Join-Path (Split-Path -Parent $PSScriptRoot) 'network-watchdog.ps1'
 
 $nodeExe = (Get-Command node.exe -ErrorAction SilentlyContinue).Source
-if (-not $nodeExe) { Write-Error 'node.exe not on PATH — install Node LTS first'; exit 3 }
+if (-not $nodeExe) { Write-Error 'node.exe not on PATH - install Node LTS first'; exit 3 }
 
 # Install node deps for the agent (socket.io-client + better-sqlite3).
 if (Test-Path (Join-Path $agentDir 'package.json')) {
