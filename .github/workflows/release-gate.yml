@@ -10,19 +10,30 @@ on:
     branches:
       - repair/enterprise-media-control
       - main
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - labeled
+      - unlabeled
+  workflow_dispatch:
 
 concurrency:
-  group: release-gate-${{ github.workflow }}-${{ github.ref }}
+  group: release-gate-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   secret-scan:
-    name: gitleaks
+    name: exhaustive / gitleaks
+    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'release-candidate') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Checkout full history
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -31,30 +42,26 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  test-and-build:
-    name: test:release + container
-    needs: secret-scan
+  electron:
+    name: exhaustive / Electron audit
+    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'release-candidate') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 10
     defaults:
       run:
-        working-directory: server
-
+        working-directory: appliance/electron
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: |
-            server/package-lock.json
-            appliance/electron/package-lock.json
+          cache-dependency-path: appliance/electron/package-lock.json
 
-      - name: Install and audit podium Electron shell
-        working-directory: appliance/electron
+      - name: Install, audit, and validate shell
         run: |
           npm ci
           npm exec -- install-electron
@@ -63,97 +70,270 @@ jobs:
           node --check main.js
           node --check preload.js
 
+  contracts:
+    name: exhaustive / node + P3 + UI contracts
+    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'release-candidate') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
       - name: Install server dependencies
         run: |
           npm ci --ignore-scripts
           npm rebuild better-sqlite3
 
-      - name: Install Playwright (enterprise fixture harness)
-        working-directory: server/e2e/enterprise-ui
+      - name: Verify release scripts and fixtures
         run: |
-          npm ci
-          npx playwright install --with-deps chromium
-
-      - name: Install Playwright (real-app / FF / SW harness)
-        working-directory: server/e2e/real-app
-        run: |
-          npm ci
-          # The browser-console acceptance suite (playwright.browser-console.config.js)
-          # runs projects in BOTH chromium AND firefox, so both browsers must be
-          # present on the clean runner. Chromium alone made the Firefox project
-          # fail with "Executable doesn't exist at .../firefox/firefox".
-          # WebKit is required for the mobile-defect acceptance suite (iPhone emulation).
-          # The Azure Ubuntu mirror can become severely throttled while fetching
-          # WebKit's media dependencies. Keep the host rendering environment (and
-          # its committed visual baselines) but use Ubuntu's standard archive.
-          sudo sed -i \
-            -e 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
-            -e 's|https://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
-            /etc/apt/sources.list.d/ubuntu.sources
-          npx playwright install --with-deps chromium firefox webkit
-
-      - name: Verify release gate scripts exist
-        run: |
-          node -e "const p=require('./package.json'); for (const k of ['test:node','test:p3','test:ui-contract','test:playwright','test:real-app','test:live-preview','test:feature-flag-rollback','test:service-worker','test:browser-console','test:release']) { if (!p.scripts[k]) { console.error('missing script', k); process.exit(1);} } console.log('scripts ok')"
+          node -e "const p=require('./package.json'); for (const k of ['test:node','test:p3','test:ui-contract','test:playwright','test:real-app','test:live-preview','test:feature-flag-rollback','test:service-worker','test:browser-console','test:release']) { if (!p.scripts[k]) { console.error('missing script', k); process.exit(1); } } console.log('scripts ok')"
           test -f ../appliance/p3/room-agent/cache-server.test.js
           test -f ../appliance/p3/room-agent/common-loader.test.js
-          test -f ../appliance/p3/room-agent/lan-health-test.test.js
+          test -f ../appliance/p3/room-agent/lan-health-test.js
           test -f e2e/real-app/feature-flag-rollback.spec.js
           test -f e2e/real-app/service-worker.spec.js
           test -f e2e/real-app/real-app.spec.js
+          test -f e2e/real-app/browser-console.spec.js
           test -f e2e/real-app/live-preview-lifecycle.spec.js
           test -f e2e/real-app/playwright.live-preview.config.js
-          test -f e2e/real-app/browser-console.spec.js
           test -f e2e/real-app/playwright.browser-console.config.js
           test -f e2e/real-app/mobile-defect.spec.js
           test -f e2e/real-app/playwright.mobile.config.js
 
-      - name: Run mobile acceptance tests (Chromium + WebKit)
+      - name: Run Node, P3, and UI contracts
+        run: |
+          npm run test:node
+          npm run test:p3
+          npm run test:ui-contract
+
+  enterprise-ui:
+    name: exhaustive / enterprise UI
+    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'release-candidate') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: server/e2e/enterprise-ui/package-lock.json
+
+      - name: Install harness and Chromium
+        run: |
+          npm --prefix e2e/enterprise-ui ci
+          cd e2e/enterprise-ui
+          npx playwright install --with-deps chromium
+
+      - name: Run enterprise UI
+        run: npm run test:playwright
+
+      - name: Upload failure evidence
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: enterprise-ui-failure-${{ github.sha }}
+          path: server/e2e/enterprise-ui/test-results/
+          if-no-files-found: error
+          retention-days: 14
+
+  real-app:
+    name: exhaustive / ${{ matrix.suite }}
+    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'release-candidate') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: real-app
+            script: test:real-app
+            browsers: chromium
+          - suite: live-preview
+            script: test:live-preview
+            browsers: chromium
+          - suite: feature-flag-rollback
+            script: test:feature-flag-rollback
+            browsers: chromium
+          - suite: service-worker
+            script: test:service-worker
+            browsers: chromium
+          - suite: browser-console
+            script: test:browser-console
+            browsers: chromium firefox
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            server/e2e/real-app/package-lock.json
+
+      - name: Install locked dependencies
+        run: |
+          npm ci --ignore-scripts
+          npm rebuild better-sqlite3
+          npm --prefix e2e/real-app ci
+
+      - name: Install required browsers
         working-directory: server/e2e/real-app
-        run: npx playwright test --config=playwright.mobile.config.js
+        run: npx playwright install --with-deps ${{ matrix.browsers }}
+
+      - name: Run ${{ matrix.suite }}
+        run: npm run ${{ matrix.script }}
         env:
           CI: true
 
-      - name: Upload mobile failure evidence
+      - name: Upload failure evidence
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: mobile-failure-evidence-${{ github.sha }}
+          name: ${{ matrix.suite }}-failure-${{ github.sha }}
+          path: |
+            server/e2e/real-app/test-results/
+            server/e2e/real-app/playwright-report*/
+          if-no-files-found: error
+          retention-days: 14
+
+  mobile:
+    name: exhaustive / mobile ${{ matrix.project }}
+    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'release-candidate') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - project: chromium-mobile
+            browser: chromium
+          - project: webkit-mobile
+            browser: webkit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            server/e2e/real-app/package-lock.json
+
+      - name: Install locked dependencies
+        run: |
+          npm ci --ignore-scripts
+          npm rebuild better-sqlite3
+          npm --prefix e2e/real-app ci
+
+      - name: Use the standard Ubuntu archive for WebKit dependencies
+        if: matrix.browser == 'webkit'
+        run: |
+          sudo sed -i \
+            -e 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
+            -e 's|https://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+            /etc/apt/sources.list.d/ubuntu.sources
+
+      - name: Install ${{ matrix.browser }}
+        working-directory: server/e2e/real-app
+        run: npx playwright install --with-deps ${{ matrix.browser }}
+
+      - name: Run ${{ matrix.project }} acceptance
+        working-directory: server/e2e/real-app
+        run: npx playwright test --config=playwright.mobile.config.js --project=${{ matrix.project }}
+        env:
+          CI: true
+
+      - name: Upload failure evidence
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mobile-${{ matrix.project }}-failure-${{ github.sha }}
           path: |
             server/e2e/real-app/test-results/
             server/e2e/real-app/playwright-report-mobile/
           if-no-files-found: error
           retention-days: 14
 
-      - name: Run release test gate
-        run: npm run test:release
-        env:
-          CI: true
+  container:
+    name: exhaustive / production container
+    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'release-candidate') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Build production container
-        working-directory: ${{ github.workspace }}
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Resolve immutable build metadata
+        id: metadata
+        shell: bash
         run: |
           set -euo pipefail
-          GIT_COMMIT="$(git rev-parse HEAD)"
-          GIT_TREE="$(git rev-parse 'HEAD^{tree}')"
-          GIT_BRANCH="${GITHUB_REF_NAME:-unknown}"
-          BUILD_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          TAG="media-control:ci-${GIT_COMMIT}"
-          docker build \
-            --build-arg "CACHEBUST=${GIT_COMMIT}" \
-            --build-arg "GIT_COMMIT=${GIT_COMMIT}" \
-            --build-arg "GIT_TREE=${GIT_TREE}" \
-            --build-arg "GIT_BRANCH=${GIT_BRANCH}" \
-            --build-arg "BUILD_TIMESTAMP=${BUILD_TS}" \
-            --build-arg "BUILD_ID=gha-${GITHUB_RUN_ID:-local}" \
-            --build-arg "IMAGE_TAG=${TAG}" \
-            -t "${TAG}" \
-            .
+          echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+          echo "branch=${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-unknown}}" >> "$GITHUB_OUTPUT"
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Build cached production image
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          load: true
+          push: false
+          tags: media-control:ci-${{ github.sha }}
+          build-args: |
+            CACHEBUST=${{ github.sha }}
+            GIT_COMMIT=${{ github.sha }}
+            GIT_TREE=${{ steps.metadata.outputs.tree }}
+            GIT_BRANCH=${{ steps.metadata.outputs.branch }}
+            BUILD_TIMESTAMP=${{ steps.metadata.outputs.timestamp }}
+            BUILD_ID=gha-${{ github.run_id }}
+            IMAGE_TAG=media-control:ci-${{ github.sha }}
+          cache-from: type=gha,scope=media-control-production
+          cache-to: type=gha,mode=max,scope=media-control-production
+
+      - name: Verify embedded image provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="media-control:ci-${GITHUB_SHA}"
+          GIT_TREE="${{ steps.metadata.outputs.tree }}"
           mkdir -p image-provenance
           IMAGE_ID="$(docker image inspect "${TAG}" --format '{{.Id}}')"
           OCI_REVISION="$(docker image inspect "${TAG}" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
           OCI_SOURCE="$(docker image inspect "${TAG}" --format '{{index .Config.Labels "org.opencontainers.image.source"}}')"
-          test "${OCI_REVISION}" = "${GIT_COMMIT}"
+          test "${OCI_REVISION}" = "${GITHUB_SHA}"
           test "${OCI_SOURCE}" = "https://github.com/pdarleyjr/media-control"
 
           docker run -d --rm --name media-control-provenance-test \
@@ -173,7 +353,7 @@ jobs:
             if (version.git_tree !== expectedTree) throw new Error(`tree mismatch: ${version.git_tree}`);
             if (version.provenance?.mode !== "embedded") throw new Error("embedded provenance is not active");
             if (version.provenance?.mutable_environment_ignored !== true) throw new Error("runtime environment is not ignored");
-          ' "${GIT_COMMIT}" "${GIT_TREE}"
+          ' "${GITHUB_SHA}" "${GIT_TREE}"
           docker rm -f media-control-provenance-test
           trap - EXIT
 
@@ -189,12 +369,43 @@ jobs:
               github_run_id: process.env.GITHUB_RUN_ID,
             };
             fs.writeFileSync("image-provenance/image.json", `${JSON.stringify(payload, null, 2)}\n`);
-          ' "${GIT_COMMIT}" "${GIT_TREE}" "${IMAGE_ID}" "${TAG}" "${OCI_REVISION}" "${OCI_SOURCE}"
+          ' "${GITHUB_SHA}" "${GIT_TREE}" "${IMAGE_ID}" "${TAG}" "${OCI_REVISION}" "${OCI_SOURCE}"
 
       - name: Upload image provenance
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: image-provenance-${{ github.sha }}
           path: image-provenance/
           if-no-files-found: error
           retention-days: 30
+
+  release-gate:
+    name: Release Gate
+    if: always()
+    needs:
+      - secret-scan
+      - electron
+      - contracts
+      - enterprise-ui
+      - real-app
+      - mobile
+      - container
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require release-candidate policy and exhaustive jobs
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_CANDIDATE: ${{ contains(github.event.pull_request.labels.*.name, 'release-candidate') }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ] && [ "$RELEASE_CANDIDATE" != true ]; then
+            echo "Add the release-candidate label to run the exhaustive merge gate."
+            exit 1
+          fi
+          test "${{ needs.secret-scan.result }}" = success
+          test "${{ needs.electron.result }}" = success
+          test "${{ needs.contracts.result }}" = success
+          test "${{ needs.enterprise-ui.result }}" = success
+          test "${{ needs.real-app.result }}" = success
+          test "${{ needs.mobile.result }}" = success
+          test "${{ needs.container.result }}" = success
