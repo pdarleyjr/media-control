@@ -671,31 +671,34 @@
 .mc-nc-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--mc-text-primary); font-size: var(--mc-font-size-sm); }
 
 /* ════════════════════════════════════════════════════════════════════════
-   Content LIBRARY drawer (right-side, collapsible). A fixed overlay so it never
-   reflows the stage; slides off-screen when collapsed, leaving a docked reopen
-   tab. Width (--mc-library-w, 380px) is kept BELOW the inspector's 430px so the
-   inspector (z-index 40) fully covers this drawer (z-index 30) when a display is
-   selected. Scroll lives on .mc-library-body — NOT on #mc-toolbox — because
-   paintToolbox() replaces #mc-toolbox innerHTML wholesale.
+   Content Library bottom shelf. It is a fixed overlay so opening it never
+   reflows the stage, wall grid, or transport controls. Collapsing translates the
+   shelf down until only its horizontal 48px handle remains. Scroll lives on
+   .mc-library-body — NOT on #mc-toolbox — because paintToolbox() replaces
+   #mc-toolbox innerHTML wholesale.
    ════════════════════════════════════════════════════════════════════════ */
 .mc-library-drawer {
-  position: fixed; right: 0; top: 0; height: 100%;
-  width: var(--mc-library-w, 380px); max-width: 92vw;
+  position: fixed; left: 0; right: 0; bottom: 0;
+  display: flex; flex-direction: column;
+  height: var(--mc-library-expanded-h, clamp(220px, 40dvh, 360px));
+  max-height: 100dvh; width: auto; max-width: none;
   z-index: 30;
   transition: transform var(--mc-transition-base);
   will-change: transform;
 }
-.mc-library-drawer[data-open="false"] { transform: translateX(100%); }
+.mc-library-drawer[data-open="false"] {
+  transform: translateY(calc(100% - var(--mc-library-collapsed-h, 48px)));
+}
 
-/* Docked reopen tab — rides the drawer's left edge, stays visible when the
-   drawer is collapsed off-screen so the operator can pull it back open. */
+/* The horizontal handle remains visible at the viewport bottom when collapsed. */
 .mc-library-tab {
-  position: absolute; top: 50%; right: 100%; transform: translateY(-50%);
-  display: flex; flex-direction: column; align-items: center; gap: var(--space-2, 8px);
-  padding: var(--mc-space-md, 16px) var(--space-2, 8px);
-  background: var(--mc-surface); border: 1px solid var(--mc-border-medium); border-right: none;
-  border-radius: var(--mc-radius-md, 12px) 0 0 var(--mc-radius-md, 12px);
-  box-shadow: -6px 0 16px rgba(41,37,36,0.12);
+  position: relative; flex: 0 0 var(--mc-library-collapsed-h, 48px);
+  width: 100%; min-width: 100%; min-height: var(--mc-library-collapsed-h, 48px);
+  display: flex; flex-direction: row; align-items: center; justify-content: center;
+  gap: var(--space-2, 8px); padding: 0 var(--mc-space-md, 16px);
+  background: var(--mc-surface); border: 1px solid var(--mc-border-medium); border-bottom: none;
+  border-radius: var(--mc-radius-md, 12px) var(--mc-radius-md, 12px) 0 0;
+  box-shadow: 0 -6px 16px rgba(41,37,36,0.12);
   color: var(--mc-text-primary); font-family: var(--mc-font-family-sans);
   font-size: var(--mc-font-size-sm); cursor: pointer;
 }
@@ -703,18 +706,18 @@
 .mc-library-tab:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .mc-library-tab-ico { display: inline-flex; color: var(--accent); transition: transform var(--mc-transition-base); }
 .mc-library-tab-ico svg { width: 18px; height: 18px; display: block; }
-/* Chevron points right (collapse) when open, flips to point left (reopen) when collapsed. */
-.mc-library-drawer[data-open="false"] .mc-library-tab-ico { transform: rotate(180deg); }
+/* Chevron points down to collapse and up to reopen. */
+.mc-library-tab-ico { transform: rotate(90deg); }
+.mc-library-drawer[data-open="false"] .mc-library-tab-ico { transform: rotate(-90deg); }
 .mc-library-tab-label {
-  writing-mode: vertical-rl; text-orientation: mixed;
   font-weight: var(--mc-fw-semibold, 600); letter-spacing: 0.04em;
   text-transform: uppercase; font-size: var(--font-2, 12px); color: var(--mc-text-secondary);
 }
 
 .mc-library-inner {
-  display: flex; flex-direction: column; height: 100%;
-  background: var(--mc-surface); border-left: 1px solid var(--mc-border-medium);
-  box-shadow: -8px 0 24px rgba(41,37,36,0.16);
+  display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0;
+  background: var(--mc-surface); border-top: 1px solid var(--mc-border-medium);
+  box-shadow: 0 -8px 24px rgba(41,37,36,0.16);
 }
 .mc-library-head {
   flex: 0 0 auto;
@@ -2720,46 +2723,57 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
 }
 .mc-cc-controls .mc-action-dock-host { margin-top: 4px; }
 
-/* Right Content Library tab — collapsed by default to a 56px right rail.
-   The existing drawer mechanics (data-open + data-library-toggle) drive the
-   slide-in; only the default-collapsed geometry lives here. */
+/* Content Library shelf — collapsed by default to a 48px bottom handle. The
+   existing data-open + data-library-toggle mechanics drive the vertical reveal. */
+.mc-cc-shell {
+  --mc-library-collapsed-h: 48px;
+  --mc-library-expanded-h: clamp(220px, 40dvh, 360px);
+}
 .mc-cc-body .mc-library-drawer {
-  position: fixed; top: 72px; right: 0; bottom: 0;
-  width: min(320px, 34vw); max-width: 92vw; height: auto;
-  z-index: 40;
+  position: fixed; top: auto; left: 72px; right: 0; bottom: 0;
+  width: auto; max-width: none; height: var(--mc-library-expanded-h);
+  max-height: calc(100dvh - 72px);
+  z-index: 30;
   transition: transform var(--mc-transition-base);
 }
-/* Parked off-screen right (only the pull-tab shows); open slides it in. The
+body.cc-fullscreen:not(.console-mode) .mc-cc-body .mc-library-drawer {
+  left: var(--sidebar-current-width);
+}
+/* Parked below the viewport (only the pull-tab shows); open slides it up. The
    stage/grid NEVER reflows, so the displays can't blank or re-tile on toggle. */
-.mc-cc-body .mc-library-drawer[data-open="false"] { transform: translateX(100%); }
+.mc-cc-body .mc-library-drawer[data-open="false"] {
+  transform: translateY(calc(100% - var(--mc-library-collapsed-h)));
+}
 .mc-cc-body .mc-library-drawer[data-open="true"]  { transform: none; }
 .mc-cc-body .mc-library-drawer .mc-library-inner {
-  display: flex; flex-direction: column; height: 100%;
+  display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0;
   background: var(--mc-surface, #fff);
-  border-left: 1px solid var(--mc-border-light, #e8e5e0);
-  box-shadow: -12px 0 30px rgba(41, 37, 36, 0.18);
+  border-top: 1px solid var(--mc-border-light, #e8e5e0);
+  box-shadow: 0 -12px 30px rgba(41, 37, 36, 0.18);
 }
-/* Small pull-tab riding the drawer's LEFT edge — sticks out at the viewport
-   right edge when parked, becomes the collapse handle when open. */
+/* Horizontal handle is always the first, stable shelf row. */
 .mc-cc-body .mc-library-drawer .mc-library-tab {
-  position: absolute; top: 20px; right: 100%; left: auto;
-  transform: none;
-  width: 38px; height: 124px; padding: 8px 4px;
-  border-radius: 10px 0 0 10px;
-  background: var(--accent, #2563EB);
-  border: 1px solid var(--accent-hover, #1D4ED8); border-right: none;
-  box-shadow: -6px 0 16px rgba(37, 99, 235, 0.28);
+  position: relative; inset: auto; transform: none;
+  width: 100%; height: var(--mc-library-collapsed-h); padding: 0 16px;
+  border-radius: 10px 10px 0 0;
+  background: var(--mc-surface, #fff);
+  border: 1px solid var(--mc-border-medium, #d6d3d1); border-bottom: none;
+  box-shadow: 0 -6px 16px rgba(41, 37, 36, 0.16);
 }
-.mc-cc-body .mc-library-drawer .mc-library-tab:hover { background: var(--accent-hover, #1D4ED8); }
+.mc-cc-body .mc-library-drawer .mc-library-tab:hover { background: var(--mc-surface-alt, #f5f5f4); }
 .mc-cc-body .mc-library-drawer .mc-library-tab-label {
-  writing-mode: vertical-rl; transform: rotate(180deg);
-  letter-spacing: 0.5px; font-size: 10px;
-  color: #fff; font-weight: var(--mc-fw-bold, 700);
+  writing-mode: horizontal-tb; transform: none;
+  letter-spacing: 0.5px; font-size: 12px;
+  color: var(--mc-text-secondary, #57534e); font-weight: var(--mc-fw-bold, 700);
 }
-.mc-cc-body .mc-library-drawer .mc-library-tab-ico { color: #fff; }
+.mc-cc-body .mc-library-drawer .mc-library-tab-ico { color: var(--accent, #2563EB); transform: rotate(90deg); }
 .mc-cc-body .mc-library-drawer .mc-library-tab-ico svg { width: 14px; height: 14px; }
-/* Chevron points left (open me) when parked, right (close) when open. */
-.mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-tab-ico { transform: rotate(180deg); }
+/* Chevron points up (open me) when parked, down (close) when open. */
+.mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-tab-ico { transform: rotate(-90deg); }
+
+@media (max-width: 900px) {
+  body.cc-fullscreen:not(.console-mode) .mc-cc-body .mc-library-drawer { left: 0; }
+}
 
 /* Responsive: stack rail under controls only when very narrow; keep canvas
    dominant. The shell stays single-screen — never reverts to the old
@@ -3490,27 +3504,21 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
   .mc-live-ladder, .mc-composition-control { grid-column: 1 / -1; }
 
   .mc-cc-body .mc-library-drawer {
-    position: absolute !important;
-    inset: 0 !important;
-    width: 100% !important;
-    max-width: 100% !important;
-    height: 100% !important;
-    max-height: 100% !important;
-    z-index: 100;
-    padding-bottom: env(safe-area-inset-bottom);
+    left: 0;
+    max-height: calc(100dvh - env(safe-area-inset-top));
   }
   .mc-cc-body .mc-library-drawer .mc-library-tab {
-    top: 4px;
-    width: 48px;
+    width: 100%;
     height: 48px;
-    min-width: 48px;
+    min-width: 100%;
     min-height: 48px;
-    padding: 0;
-    border-radius: 10px 0 0 10px;
+    padding: 0 12px;
+    border-radius: 10px 10px 0 0;
   }
-  .mc-cc-body .mc-library-drawer .mc-library-tab-label { display: none; }
+  .mc-cc-body .mc-library-drawer .mc-library-tab-label { display: inline; }
   .mc-cc-body .mc-library-drawer .mc-library-tab-ico svg { width: 20px; height: 20px; }
-  .mc-library-inner { height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  .mc-library-inner { min-height: 0; }
+  .mc-library-body { padding-bottom: max(var(--mc-space-lg, 24px), env(safe-area-inset-bottom)); }
   .mc-multiview-host:not([hidden]) {
     inset: 0; width: 100vw; height: 100dvh; border-radius: 0;
   }
@@ -3526,22 +3534,7 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
   .mc-cc-shell { height: 100%; }
   .mc-cc-main { row-gap: 12px; }
   .mc-cc-tp-text { display: inline; font-size: 11px; }
-  .mc-cc-body .mc-library-drawer {
-    top: var(--classroom-banner-height, 0px);
-    height: calc(100dvh - var(--classroom-banner-height, 0px)) !important;
-  }
-  .mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-tab {
-    top: 4px;
-    right: calc(100% + 4px);
-    width: 48px;
-    height: 48px;
-    min-width: 48px;
-    min-height: 48px;
-    padding: 0;
-    border-radius: 10px;
-  }
-  .mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-tab-label { display: none; }
-  .mc-cc-body .mc-library-drawer[data-open="false"] .mc-library-tab-ico svg { width: 20px; height: 20px; }
+  .mc-cc-body .mc-library-drawer { max-height: calc(100dvh - var(--classroom-banner-height, 0px)); }
 }
 
 /* Lenovo Tab One and comparable short landscape tablets. Keep the preview and

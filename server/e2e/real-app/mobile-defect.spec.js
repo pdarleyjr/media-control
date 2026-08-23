@@ -340,6 +340,80 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await context.close();
   });
 
+  test('bottom Content Library shelf preserves stage and wall geometry while open', async ({ browser }, testInfo) => {
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 838, height: 500 },
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: true,
+    });
+    await waitForCommandCenterVisualReady(page);
+
+    const measureStage = () => page.evaluate(() => {
+      const rect = (element) => {
+        const box = element?.getBoundingClientRect();
+        return box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null;
+      };
+      return {
+        stage: rect(document.querySelector('.mc-stage.mc-cc-canvas')),
+        cells: Array.from(document.querySelectorAll('.mc-wall-cell')).map(rect),
+      };
+    });
+
+    const before = await measureStage();
+    const shelf = page.locator('#mc-library-drawer');
+    const handle = shelf.locator(':scope > [data-library-toggle]');
+    const handleBox = await handle.boundingBox();
+    const collapsedStyle = await shelf.evaluate((element) => ({
+      position: getComputedStyle(element).position,
+      open: element.dataset.open,
+    }));
+
+    expect(collapsedStyle).toEqual({ position: 'fixed', open: 'false' });
+    expect(handleBox.height).toBeGreaterThanOrEqual(48);
+    expect(handleBox.height).toBeLessThanOrEqual(64);
+    expect(handleBox.width).toBeGreaterThanOrEqual(320);
+    expect(handleBox.y + handleBox.height).toBeLessThanOrEqual(501);
+
+    await handle.click();
+    await expect(shelf).toHaveAttribute('data-open', 'true');
+    await page.waitForTimeout(250);
+    const after = await measureStage();
+
+    for (const key of ['x', 'y', 'width', 'height']) {
+      expect(Math.abs(after.stage[key] - before.stage[key]), `stage ${key} delta`).toBeLessThanOrEqual(1);
+    }
+    expect(after.cells.length).toBe(before.cells.length);
+    for (let index = 0; index < before.cells.length; index += 1) {
+      for (const key of ['x', 'y', 'width', 'height']) {
+        expect(Math.abs(after.cells[index][key] - before.cells[index][key]), `wall cell ${index} ${key} delta`).toBeLessThanOrEqual(1);
+      }
+    }
+
+    const expandedBox = await shelf.boundingBox();
+    expect(expandedBox.width).toBeGreaterThanOrEqual(764);
+    expect(expandedBox.height).toBeGreaterThanOrEqual(210);
+    expect(expandedBox.y + expandedBox.height).toBeLessThanOrEqual(501);
+    expect(await page.locator('.mc-library-backdrop, [data-library-backdrop]').count()).toBe(0);
+    expect(await page.locator('.mc-stage.mc-cc-canvas').getAttribute('inert')).toBeNull();
+    expect(await page.locator('.mc-stage.mc-cc-canvas').getAttribute('aria-hidden')).toBeNull();
+
+    const stageHit = await page.locator('.mc-stage.mc-cc-canvas').evaluate((stage) => {
+      const box = stage.getBoundingClientRect();
+      const hit = document.elementFromPoint(box.left + box.width / 2, box.top + 8);
+      return hit === stage || stage.contains(hit);
+    });
+    expect(stageHit, 'the uncovered stage remains pointer-interactive while the shelf is open').toBe(true);
+
+    const overflow = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      innerWidth: window.innerWidth,
+    }));
+    expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.innerWidth + 2);
+    await page.screenshot({ path: testInfo.outputPath('command-center-bottom-shelf-open.png'), fullPage: true });
+    await context.close();
+  });
+
   test('Lenovo tablet can add and remove a ready image from the wallpaper menu', async ({ browser }) => {
     const context = await browser.newContext({
       viewport: { width: 838, height: 500 }, hasTouch: true, serviceWorkers: 'block',

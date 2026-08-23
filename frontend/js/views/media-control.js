@@ -2964,16 +2964,16 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
 
         <aside id="mc-library-drawer" class="mc-library-drawer" data-open="false" aria-label="${esc(t('mc.section.sources'))}" hidden>
           <button type="button" class="mc-library-tab mc-cc-lib-tab" data-library-toggle
-                  aria-expanded="false" aria-controls="mc-toolbox"
+                  aria-expanded="false" aria-controls="mc-library-panel"
                   title="${esc(t('mc.library.toggle'))}">
             <span class="mc-library-tab-label">${esc(t('mc.library.title'))}</span>
             <span class="mc-library-tab-ico" aria-hidden="true">${ICON_CHEVRON}</span>
           </button>
-          <div class="mc-library-inner">
+          <div id="mc-library-panel" class="mc-library-inner">
             <div class="mc-library-head">
               <h2 id="mc-library-title" class="mc-library-title">${esc(t('mc.library.title'))}</h2>
               <button type="button" class="mc-library-collapse" data-library-toggle
-                      aria-expanded="false" aria-controls="mc-toolbox"
+                      aria-expanded="false" aria-controls="mc-library-panel"
                       aria-label="${esc(t('mc.library.collapse'))}" title="${esc(t('mc.library.collapse'))}">
                 <span aria-hidden="true">${ICON_CHEVRON}</span>
               </button>
@@ -3004,8 +3004,8 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
   // video" defect. Dashboard previews are always muted and never produce audio, so
   // no operator-gesture audio hook exists.
 
-  // The right Content Library tab is now the only fixed right-edge element — the
-  // collapsed tab (data-open="false") re-shows itself when the drawer toggles.
+  // The Content Library is a fixed bottom shelf. Its collapsed handle remains
+  // visible while the shelf body stays inert, and opening it never reflows stage.
   const libDrawer = document.getElementById('mc-library-drawer');
   if (libDrawer && libDrawer.hidden) {
     libDrawer.hidden = false;
