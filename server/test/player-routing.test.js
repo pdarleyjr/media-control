@@ -105,6 +105,8 @@ test('isFramableSite: our own *.mbfdhub.com dashboards iframe live; third-party 
   // Look-alike hosts must NOT match the suffix.
   assert.equal(PR.isFramableSite('https://evil-mbfdhub.com/'), false);
   assert.equal(PR.isFramableSite('https://notmbfdhub.com/'), false);
+  // Direct dashboard frames execute active content and must use TLS.
+  assert.equal(PR.isFramableSite('http://wall.mbfdhub.com/'), false);
   // Non-absolute / empty.
   assert.equal(PR.isFramableSite('/player/deck/abc'), false);
   assert.equal(PR.isFramableSite(''), false);

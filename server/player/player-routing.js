@@ -89,7 +89,7 @@
   // framable (they blank in an iframe) and still take the screenshot path. Checked
   // AFTER ownPlayerPath() (our /player pages), so it only ever sees bare dashboards.
   function isFramableSite(u) {
-    if (typeof u !== 'string' || !/^https?:\/\//i.test(u)) return false;
+    if (typeof u !== 'string' || !/^https:\/\//i.test(u)) return false;
     if (ownPlayerPath(u)) return false;                   // our /player pages route root-relative, not here
     try {
       var h = new URL(u).host.toLowerCase();

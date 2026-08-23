@@ -150,6 +150,11 @@ test('web frame readiness is armed before navigation can complete', () => {
     webFrame.indexOf("frame.addEventListener('error'") < webFrame.indexOf('frame.src = webSrc;'),
     'a synchronous iframe navigation failure must remain observable',
   );
+  assert.match(webFrame, /let webSrc = null;/);
+  assert.match(
+    webFrame,
+    /if \(!webSrc\) \{[\s\S]*?failPendingBroadcastRender\([\s\S]*?return;[\s\S]*?\}[\s\S]*?frame\.src = webSrc;/,
+  );
 });
 
 test('frontend polls and renders every device state rather than treating HTTP acceptance as success', () => {

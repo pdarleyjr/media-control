@@ -4454,7 +4454,7 @@
           // player, which bypasses X-Frame-Options / CSP frame-ancestors (a
           // direct iframe of such a site renders blank). Our own /player/* pages
           // (decks, grid, oz, hls) are root-relative and iframe directly.
-          let webSrc = src;
+          let webSrc = null;
           const ownPath = PR.ownPlayerPath(remoteUrl);
           if (ownPath) {
             // Our OWN player/content page (grid / hls / oz / cam / deck / uploaded
@@ -4487,6 +4487,13 @@
             const sw = Math.max(320, Math.min(3840, Math.round(mount.clientWidth || window.innerWidth || 1600)));
             const sh = Math.max(240, Math.min(2160, Math.round(mount.clientHeight || window.innerHeight || 900)));
             webSrc = '/player/site.html?id=' + encodeURIComponent(item.content_id) + '&w=' + sw + '&h=' + sh + '&full=1';
+          }
+          if (!webSrc) {
+            currentMediaError = { code: 'unsafe_web_url', message: 'Web content URL is not allowed' };
+            showStatus('Unable to load web content');
+            publishPlayerState();
+            failPendingBroadcastRender('Web content URL is not allowed');
+            return;
           }
           frame.style.cssText = 'width:100%;height:100%;border:none;background:#000';
           frame.allow = 'autoplay; fullscreen';
