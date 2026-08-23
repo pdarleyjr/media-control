@@ -38,6 +38,10 @@ test('authenticated player status is persisted and relayed to the workspace dash
 test('player distinguishes receipt from confirmed rendering', () => {
   const player = source('player/index.html');
   const bootstrap = source('player/managed-bootstrap.js');
+  const contentSource = player.slice(
+    player.indexOf('function safeMediaUrl(rawUrl) {'),
+    player.indexOf('function resolveCaptionTrackUrl(rawUrl, baseUrl) {'),
+  );
   assert.match(player, /emitPendingBroadcastStatusFor\(pending, 'acknowledged'\)/);
   assert.match(player, /emitPendingBroadcastStatusFor\(pending, 'confirmed'\)/);
   assert.match(player, /expected_playlist_revision/);
@@ -46,6 +50,10 @@ test('player distinguishes receipt from confirmed rendering', () => {
   assert.match(player, /scheduleRenderConfirmation/);
   assert.match(player, /scheduleVideoRenderReady/);
   assert.match(bootstrap, /fallbackDelayMs/);
+  assert.match(contentSource, /new URL\(raw, window\.location\.href\)/);
+  assert.match(contentSource, /candidate\.protocol !== 'http:'[\s\S]*candidate\.protocol !== 'https:'/);
+  assert.match(contentSource, /candidate\.username[\s\S]*\|\| candidate\.password/);
+  assert.match(contentSource, /return safeMediaUrl\(raw\)/);
   const fullscreenImage = player.slice(
     player.indexOf('} else if (isImage) {'),
     player.indexOf('} else if (isPdf) {'),
