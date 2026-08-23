@@ -2893,12 +2893,14 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
           </section>
 
           <section class="mc-cc-controls">
-            <div id="mc-transport-host" class="mc-transport-row-host"></div>
+            <div class="mc-persistent-controls" role="region" aria-label="Persistent playback and safety controls">
+              <div id="mc-transport-host" class="mc-transport-row-host"></div>
+              <div id="mc-action-dock-host" class="mc-action-dock-host"></div>
+            </div>
             <div class="mc-cc-sub-row">
               <div id="mc-span-split-host" class="mc-span-split-host"></div>
               <div id="mc-screensaver-host" class="mc-screensaver-row-host"></div>
             </div>
-            <div id="mc-action-dock-host" class="mc-action-dock-host"></div>
           </section>
         </main>
 

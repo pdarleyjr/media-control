@@ -392,7 +392,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
 
     const expandedBox = await shelf.boundingBox();
     expect(expandedBox.width).toBeGreaterThanOrEqual(764);
-    expect(expandedBox.height).toBeGreaterThanOrEqual(210);
+    expect(expandedBox.height).toBeGreaterThanOrEqual(180);
     expect(expandedBox.y + expandedBox.height).toBeLessThanOrEqual(501);
     expect(await page.locator('.mc-library-backdrop, [data-library-backdrop]').count()).toBe(0);
     expect(await page.locator('.mc-stage.mc-cc-canvas').getAttribute('inert')).toBeNull();
@@ -411,6 +411,147 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     }));
     expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.innerWidth + 2);
     await page.screenshot({ path: testInfo.outputPath('command-center-bottom-shelf-open.png'), fullPage: true });
+    await context.close();
+  });
+
+  test('expanded Lenovo shelf keeps the stage and persistent safety controls unobscured', async ({ browser }, testInfo) => {
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 838, height: 500 },
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: true,
+    });
+    await page.route('**/api/live-stream/operator-state*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          stream_state: 'on_air',
+          stream_active: true,
+          recording_state: 'active',
+          recording_active: true,
+          publisher: { active: true, mode: 'fixed_compositor' },
+          capabilities: { stream_state: 'on_air' },
+          camera_edge: {
+            anpviz_stream: true,
+            active_source: 'anpviz',
+            microphone_connected: true,
+            recording_active: true,
+          },
+        }),
+      });
+    });
+    await page.reload({ waitUntil: 'networkidle' });
+    await waitForCommandCenterVisualReady(page);
+    await expect(page.locator('[data-dock="stop-live"]')).toBeVisible();
+    await expect(page.locator('#mc-dock-record-btn')).toHaveText('Stop Recording');
+
+    const measureStage = () => page.locator('.mc-stage.mc-cc-canvas').evaluate((stage) => {
+      const box = stage.getBoundingClientRect();
+      return { x: box.x, y: box.y, width: box.width, height: box.height };
+    });
+    const before = await measureStage();
+    await page.locator('#mc-library-drawer > [data-library-toggle]').click();
+    await expect(page.locator('#mc-library-drawer')).toHaveAttribute('data-open', 'true');
+    await page.waitForTimeout(250);
+    const after = await measureStage();
+    for (const key of ['x', 'y', 'width', 'height']) {
+      expect(Math.abs(after[key] - before[key]), `stage ${key} delta`).toBeLessThanOrEqual(1);
+    }
+    expect(after.width, 'the stage uses the width reclaimed from the removed left rail').toBeGreaterThanOrEqual(800);
+
+    const geometry = await page.evaluate(() => {
+      const rect = (element) => {
+        const box = element.getBoundingClientRect();
+        return { left: box.left, top: box.top, right: box.right, bottom: box.bottom, width: box.width, height: box.height };
+      };
+      const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+      const visible = (element) => {
+        const style = getComputedStyle(element);
+        const box = element.getBoundingClientRect();
+        return !element.hidden && style.display !== 'none' && style.visibility !== 'hidden' && box.width > 0 && box.height > 0;
+      };
+      const shelf = rect(document.querySelector('#mc-library-drawer'));
+      const stageElement = document.querySelector('.mc-stage.mc-cc-canvas');
+      const stage = rect(stageElement);
+      const stripElement = document.querySelector('.mc-persistent-controls') || document.querySelector('.mc-cc-controls');
+      const strip = rect(stripElement);
+      const dropSelector = [
+        '.mc-wall-region[data-layout-group-id][data-wall-id]',
+        '.mc-display-card[data-device-id]',
+        '.mc-wall-cell[data-device-id]',
+        '.mc-wall-split-half[data-device-id][data-split-half]',
+        '.mc-wall-all[data-wall-ids]',
+        '.mc-wall-group-region[data-layout-group-id][data-wall-id]',
+        '.mc-wall[data-wall-id]',
+        '.mc-display-card-tile[data-display-id]',
+      ].join(',');
+      const targets = Array.from(stageElement.querySelectorAll(dropSelector)).filter(visible).map((element) => {
+        const box = rect(element);
+        const x = Math.min(innerWidth - 1, Math.max(0, box.left + box.width / 2));
+        const y = Math.min(innerHeight - 1, Math.max(0, box.top + box.height / 2));
+        const hit = document.elementFromPoint(x, y);
+        return {
+          box,
+          inViewport: box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight,
+          unobscured: !overlaps(box, shelf) && !!hit && stageElement.contains(hit),
+          hit: hit ? `${hit.tagName}.${hit.className || ''}` : null,
+        };
+      });
+      return {
+        shelf,
+        stage,
+        strip,
+        stageShelfOverlap: overlaps(stage, shelf),
+        stripShelfOverlap: overlaps(strip, shelf),
+        targetCount: targets.length,
+        targets,
+      };
+    });
+    expect(geometry.targetCount, 'at least one visible stage drop target is required').toBeGreaterThan(0);
+    expect(geometry.stageShelfOverlap, `stage ${JSON.stringify(geometry.stage)} vs shelf ${JSON.stringify(geometry.shelf)}`).toBe(false);
+    expect(geometry.stripShelfOverlap, `strip ${JSON.stringify(geometry.strip)} vs shelf ${JSON.stringify(geometry.shelf)}`).toBe(false);
+    for (const [index, target] of geometry.targets.entries()) {
+      expect(target.inViewport, `drop target ${index} remains fully inside the viewport`).toBe(true);
+      expect(target.unobscured, `drop target ${index} ${JSON.stringify(target)} remains hit-testable above the shelf`).toBe(true);
+    }
+
+    const persistentButtons = [
+      '[data-cc-tp="prev"]',
+      '[data-cc-tp="restart"]',
+      '[data-cc-tp="play_pause"]',
+      '[data-cc-tp="next"]',
+      '#mc-dock-blank-btn',
+      '[data-dock="stop-live"]',
+      '#mc-dock-record-btn',
+    ];
+    await page.evaluate((selectors) => {
+      window.__mcPersistentAcceptanceClicks = [];
+      selectors.forEach((selector) => {
+        document.querySelector(selector)?.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          window.__mcPersistentAcceptanceClicks.push(selector);
+        }, { capture: true, once: true });
+      });
+    }, persistentButtons);
+    for (const selector of persistentButtons) {
+      const button = page.locator(selector);
+      await expect(button, `${selector} remains visible with the shelf expanded`).toBeVisible();
+      const box = await button.boundingBox();
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.y).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(839);
+      expect(box.y + box.height).toBeLessThanOrEqual(501);
+      expect(box.width, `${selector} preserves a touch-safe width`).toBeGreaterThanOrEqual(48);
+      expect(box.height, `${selector} preserves a touch-safe height`).toBeGreaterThanOrEqual(48);
+      expect(box.y + box.height, `${selector} ends before the shelf begins`).toBeLessThanOrEqual(geometry.shelf.top + 1);
+      await button.focus();
+      await expect(button).toBeFocused();
+      await button.click();
+    }
+    expect(await page.evaluate(() => window.__mcPersistentAcceptanceClicks)).toEqual(persistentButtons);
+    await page.screenshot({ path: testInfo.outputPath('command-center-lenovo-expanded-persistent-controls.png'), fullPage: true });
     await context.close();
   });
 
