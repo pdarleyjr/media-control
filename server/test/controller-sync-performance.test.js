@@ -173,6 +173,17 @@ test('embedded live playback is the default while screenshot-only mode is an exp
   assert.match(grid, /var STAGGER_MS = operatorPreview \? 600 : 1500/);
 });
 
+test('stage repaint identity includes the authored web player URL', () => {
+  const main = read('frontend/js/views/media-control.js');
+
+  // Guest Computer and a live-news station are both kind=web. Their content
+  // identity can arrive before the richer authored URL, so the later URL
+  // reconciliation must rebuild the iframe rather than taking the
+  // screenshot-only in-place path and leaving the prior source visible.
+  assert.match(main, /const remoteUrl = np\.remoteUrl \|\| np\.remote_url \|\| ''/);
+  assert.match(main, /return \[np\.kind \|\| '', np\.contentId \|\| '', remoteUrl,/);
+});
+
 test('video previews reconcile seek and play state from the physical player', () => {
   const livePreview = read('frontend/js/views/media-control/live-preview.js');
   const main = read('frontend/js/views/media-control.js');
