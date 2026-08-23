@@ -25,3 +25,20 @@ test('Command Center Content Library uses a fixed bottom shelf without a modal b
   assert.doesNotMatch(css, /\.mc-cc-body \.mc-library-drawer\[data-open="false"\][^{]*\{[^}]*translateX/);
 });
 
+test('Command Center shelf defines exactly six normalized operator categories', () => {
+  const toolbox = read('frontend/js/views/media-control/toolbox.js');
+  const view = read('frontend/js/views/media-control.js');
+  const api = read('frontend/js/api.js');
+
+  assert.match(toolbox, /const TABS = Object\.freeze\(\[[\s\S]*?id: 'videos',[\s\S]*?label: 'Videos'[\s\S]*?id: 'images',[\s\S]*?label: 'Images'[\s\S]*?id: 'docs',[\s\S]*?label: 'Docs'[\s\S]*?id: 'sources',[\s\S]*?label: 'Sources'[\s\S]*?id: 'livefeeds',[\s\S]*?label: 'Live Feeds'[\s\S]*?id: 'additional',[\s\S]*?label: 'Additional Controls'[\s\S]*?\]\)/);
+  assert.match(toolbox, /const TAB_ALIASES = Object\.freeze\(\{[\s\S]*?media: 'videos'[\s\S]*?camerafeeds: 'sources'[\s\S]*?presentations: 'docs'[\s\S]*?youtube: 'sources'[\s\S]*?nextcloud: 'sources'[\s\S]*?playlists: 'additional'[\s\S]*?scenes: 'additional'/);
+  assert.match(toolbox, /function trustedMime\(item\)[\s\S]*?item\?\.media\?\.detected_mime_type[\s\S]*?item\?\.detected_mime_type[\s\S]*?item\?\.mime_type/);
+  assert.match(toolbox, /mime\.startsWith\('video\/'\)[\s\S]*?mime\.startsWith\('image\/'\)[\s\S]*?SUPPORTED_DOCUMENT_MIMES\.has\(mime\)/);
+  assert.match(toolbox, /mime\.startsWith\('audio\/'\)[\s\S]*?return null/);
+  assert.doesNotMatch(toolbox, /id: 'media',\s*(?:key|label):/);
+  assert.doesNotMatch(toolbox, /id: 'camerafeeds',\s*(?:key|label):/);
+  assert.doesNotMatch(toolbox, /const MEDIA_TYPES/);
+  assert.match(view, /openContentDrawerFiltered\(folderName\)[\s\S]*?openToolboxTab\(tb, 'images', \{ folder: folderName \}\)/);
+  assert.match(view, /openLibraryTab\('sources'\)/);
+  assert.match(api, /filters\.folder\)[\s\S]*?query\.set\('folder', filters\.folder\)/);
+});

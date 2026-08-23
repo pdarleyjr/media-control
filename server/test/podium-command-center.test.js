@@ -229,7 +229,7 @@ test('podium rail surfaces remain inside the persistent command center', () => {
   assert.match(rail, /openViewModal\(\{ title: 'Downloads', module: downloadsView \}\)/);
   assert.match(rail, /openViewModal\(\{ title: 'System Logs', module: auditLogView \}\)/);
   assert.match(rail, /openViewModal\(\{ title: 'Settings', module: settingsView \}\)/);
-  assert.match(rail, /case 'cameras':[\s\S]*?openLibraryTab\('camerafeeds'\)/);
+  assert.match(rail, /case 'cameras':[\s\S]*?openLibraryTab\('sources'\)/);
   assert.match(rail, /case 'multiview':[\s\S]*?actions\.onMultiview/);
   assert.match(rail, /case 'share':[\s\S]*?actions\.onShare/);
   assert.match(rail, /case 'schedules':[\s\S]*?schedulesView/);

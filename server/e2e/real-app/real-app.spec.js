@@ -502,7 +502,7 @@ test.describe('Phase 1 — Feature flag OFF: real app loads correctly', () => {
     await expect(page.locator('.mc-cc-shell')).toBeVisible({ timeout: 20000 });
 
     await page.locator('#mc-library-drawer > [data-library-toggle]').click();
-    const liveSourcesTab = page.locator('.mc-tb-tab[data-tab="camerafeeds"]');
+    const liveSourcesTab = page.locator('.mc-tb-tab[data-tab="sources"]');
     await expect(liveSourcesTab).toBeVisible();
     await liveSourcesTab.click();
     await expect(page.locator('.mc-live-source-tile')).toHaveCount(1);
@@ -516,10 +516,10 @@ test.describe('Phase 1 — Feature flag OFF: real app loads correctly', () => {
     assertNoErrors(errors, 'canonical live sources');
   });
 
-  test('1h. Direct Camera-panel navigation isolates a delayed Media-tab render', async ({ page }) => {
+  test('1h. Direct Camera-panel navigation isolates a delayed Videos-tab render', async ({ page }) => {
     const errors = attachErrorCollectors(page);
     await setupAuth(page);
-    await page.route('**/api/folders*', async (route) => {
+    await page.route('**/api/content*', async (route) => {
       await new Promise((resolve) => setTimeout(resolve, 750));
       await route.continue();
     });
@@ -537,6 +537,7 @@ test.describe('Phase 1 — Feature flag OFF: real app loads correctly', () => {
     await setupAuth(page);
     await page.goto(`${BASE_URL}/app#/control?panel=cameras`);
     await expect(page.locator('.mc-live-source-tile')).toHaveCount(1, { timeout: 20000 });
+    await page.locator('.mc-tb-tab[data-tab="livefeeds"]').click();
 
     const liveNews = page.locator('details[data-feed-group-id="news"]');
     await expect(liveNews).toHaveJSProperty('open', true);

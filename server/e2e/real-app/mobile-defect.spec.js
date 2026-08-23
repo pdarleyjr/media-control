@@ -414,6 +414,71 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await context.close();
   });
 
+  test('six-category shelf uses detected MIME and keeps Screensavers as a clearable Images filter', async ({ browser }, testInfo) => {
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 838, height: 500 },
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: true,
+    });
+    const contentRequests = [];
+    const content = [
+      { id: 'video-detected', filename: 'detected-video.jpg', mime_type: 'image/jpeg', detected_mime_type: 'video/mp4' },
+      { id: 'image-detected', filename: 'detected-image.bin', mime_type: 'application/octet-stream', media: { detected_mime_type: 'image/png' } },
+      { id: 'pdf-detected', filename: 'runbook.bin', mime_type: 'application/octet-stream', detected_mime_type: 'application/pdf' },
+      { id: 'office-detected', filename: 'briefing.bin', mime_type: 'application/octet-stream', media: { detected_mime_type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' } },
+      { id: 'odf-detected', filename: 'staffing.bin', mime_type: 'application/octet-stream', detected_mime_type: 'application/vnd.oasis.opendocument.spreadsheet' },
+      { id: 'unsupported-app', filename: 'archive.zip', mime_type: 'application/zip' },
+      { id: 'standalone-audio', filename: 'dispatch-audio.mp3', mime_type: 'audio/mpeg', detected_mime_type: 'audio/mpeg' },
+    ];
+    await page.route('**/api/content*', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname !== '/api/content') return route.continue();
+      contentRequests.push(url.toString());
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(content) });
+    });
+    await page.route('**/api/presentations*', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname !== '/api/presentations') return route.continue();
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 'deck-1', title: 'Incident Command Deck' }]) });
+    });
+    await page.reload({ waitUntil: 'networkidle' });
+    await waitForCommandCenterVisualReady(page);
+    await page.locator('#mc-library-drawer > [data-library-toggle]').click();
+
+    const tabs = page.locator('.mc-tb-tab');
+    await expect(tabs).toHaveCount(6);
+    expect(await tabs.allTextContents()).toEqual(['Videos', 'Images', 'Docs', 'Sources', 'Live Feeds', 'Additional Controls']);
+    await expect(page.locator('.mc-tb-tab[aria-selected="true"]')).toHaveCount(1);
+    await expect(page.locator('.mc-tb-tab[aria-selected="true"]')).toHaveText('Videos');
+    await expect(page.locator('#mc-toolbox .mc-tile-label')).toHaveText(['detected-video.jpg']);
+    await page.screenshot({ path: testInfo.outputPath('command-center-six-category-shelf.png'), fullPage: true });
+
+    await page.locator('.mc-tb-tab[data-tab="images"]').click();
+    await expect(page.locator('#mc-toolbox .mc-tile-label')).toHaveText(['detected-image.bin']);
+
+    await page.locator('.mc-tb-tab[data-tab="docs"]').click();
+    await expect(page.locator('#mc-toolbox .mc-tile-label')).toHaveText([
+      'runbook.bin',
+      'briefing.bin',
+      'staffing.bin',
+      'Incident Command Deck',
+    ]);
+    await expect(page.locator('#mc-toolbox')).not.toContainText('archive.zip');
+    await expect(page.locator('#mc-toolbox')).not.toContainText('dispatch-audio.mp3');
+
+    await page.locator('.mc-cc-saver-select').selectOption('folder:Screensavers');
+    await expect(page.locator('.mc-tb-tab[data-tab="images"]')).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('[data-context-filter="Screensavers"]')).toContainText('Screensavers');
+    await expect(page.locator('[data-clear-context-filter]')).toBeVisible();
+    expect(contentRequests.some((url) => new URL(url).searchParams.get('folder') === 'Screensavers')).toBe(true);
+    await page.locator('[data-clear-context-filter]').click();
+    await expect(page.locator('[data-context-filter]')).toHaveCount(0);
+    expect(new URL(contentRequests.at(-1)).searchParams.has('folder')).toBe(false);
+    expect(await page.locator('.mc-tb-tab').allTextContents()).not.toContain('Screensavers');
+    await context.close();
+  });
+
   test('Lenovo tablet can add and remove a ready image from the wallpaper menu', async ({ browser }) => {
     const context = await browser.newContext({
       viewport: { width: 838, height: 500 }, hasTouch: true, serviceWorkers: 'block',
@@ -1428,7 +1493,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     const drawerBox = await drawer.boundingBox();
     expect(drawerBox.width).toBeLessThanOrEqual(501);
     expect(drawerBox.y).toBeGreaterThanOrEqual(headerBox.y + headerBox.height);
-    await page.locator('.mc-library-collapse').tap();
+    await page.locator('[data-library-toggle]').first().tap();
     await expect(drawer).toHaveAttribute('data-open', 'false');
 
     await page.setViewportSize({ width: 838, height: 500 });
