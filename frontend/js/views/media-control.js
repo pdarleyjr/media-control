@@ -10,6 +10,7 @@ import { mountSpanSplit } from './media-control/span-split.js';
 import { mountActionDock } from './media-control/action-dock.js';
 import * as displayState from '../services/display-state.js';
 import { previewSource, renderStage } from './media-control/stage.js';
+import { buildLivePreviewTargets, livePreviewTargetDeviceIds } from './media-control/preview-targets.js';
 import { renderToolbox } from './media-control/toolbox.js';
 import { sendToDisplays, sentToast, trackBroadcastDelivery } from './media-control/send.js';
 import { dispatchTransportTransaction, sendTransportCommand } from './media-control/transport.js';
@@ -138,9 +139,8 @@ function openContentDrawerFiltered(folderName) {
   } catch { /* best-effort; never block the screensaver UI */ }
 }
 
-// Active Command Center target: the single wall / display rendered large on the
-// central canvas. null = legacy "show the whole room" stage (preserved when no
-// target is chosen). The target selector drives this; changing it is VIEW-ONLY.
+// Active Command Center control target. Every mounted logical preview remains
+// visible; this value drives highlight, transport, and typed routing only.
 let activeTarget = null;
 let activeControlTarget = null;
 const LAST_TARGET_KEY = 'mc_control_last_target';
@@ -188,9 +188,6 @@ let selectedIds = [];   // ids on the stage; re-hydrated from the server, persis
 let wallMemberIds = new Set();   // device ids owned by a video wall (never their own card)
 let walls = [];
 let previewKickoff = null;
-let activePreviewInterval = null;
-let backgroundPreviewInterval = null;
-let activePreviewCursor = 0;
 let lastStageSig = null;     // structural signature of the last full stage paint (see paintStage)
 let refreshAfterSendTimer = null;
 let previewRequestTimer = null;
@@ -199,11 +196,11 @@ const pendingPostActionPreviewIds = new Set();
 const pendingPreviewRequestIds = new Set();
 const lastPreviewRequestAt = new Map();
 let screenshotPoller = null;
-// Keep one embedded player for the active target so the operator sees real
-// playback. `live_preview=0` is an explicit diagnostics/fallback mode only.
+// Every mounted logical surface gets one passive embedded player. Operator
+// selection controls only focus/transport; `live_preview=0` remains an explicit
+// diagnostics/fallback mode.
 const LIVE_EMBED_PREVIEWS = new URLSearchParams(window.location.search).get('live_preview') !== '0';
 const PREVIEW_REQUEST_MIN_MS = 750;
-const ACTIVE_PREVIEW_INTERVAL_MS = 4000;
 const BACKGROUND_PREVIEW_INTERVAL_MS = 60000;
 // Per-wall split-column sources for a SINGLE spanning device (Mosaic): wallId ->
 // array indexed by column (0=left). Survives repaint (kept here, NOT in the DOM)
@@ -582,38 +579,18 @@ function paintStage() {
   // Live state of EVERY display, incl. wall members, so wall composites can show
   // what each member screen is showing right now.
   const byId = new Map(all.map(d => [d.id, d]));
-  const displays = all.filter((d) => !wallMemberIds.has(d.id)
-    || (activeTarget && activeTarget.type === 'display' && activeTarget.id === d.id));
-  // Phase 1 Command Center: when a target is selected, render ONLY that target
-  // large on the canvas (its wall card / its single display card). null keeps the
-  // legacy "whole room" stage. The persisted selectedIds (drives content sends)
-  // is untouched — this is a VIEW filter only, so a target switch never drops a
-  // display from the broadcast set.
-  let renderWalls = walls;
-  let renderSelectedIds = selectedIds;
-  if (activeTarget) {
-    if (activeTarget.type === 'wall') {
-      renderWalls = (walls || []).filter((w) => w.id === activeTarget.id);
-      renderSelectedIds = [];
-    } else if (activeTarget.type === 'group') {
-      const group = layoutGroupById(activeTarget.id);
-      const wall = group && (walls || []).find((candidate) => candidate.id === group.wall_id);
-      const groupWall = wallViewForLayoutGroup(wall, group);
-      renderWalls = groupWall ? [groupWall] : [];
-      renderSelectedIds = [];
-    } else if (activeTarget.type === 'display') {
-      renderWalls = [];
-      renderSelectedIds = [activeTarget.id];
-    }
-  }
+  const displays = all.filter((d) => !wallMemberIds.has(d.id));
+  const livePreviewTargets = LIVE_EMBED_PREVIEWS
+    ? buildLivePreviewTargets({ displays, walls, byId, selectedIds })
+    : new Map();
   renderStage(el, {
     displays,
-    walls: renderWalls,
+    walls,
     byId,
-    selectedIds: renderSelectedIds,
-    livePreviewDeviceId: LIVE_EMBED_PREVIEWS ? activePreviewDeviceId() : null,
-    activeControlTargetId: activeControlTarget?.id || null,
-    overviewMode: false, // Room Overview removed (task §8) — always focused view
+    selectedIds,
+    livePreviewTargets,
+    activeControlTarget: activeControlTarget || activeTarget,
+    overviewMode: false,
     onSelect: selectStageDisplayTarget,
     onSelectGroup: selectLayoutGroupTarget,
     onCalibrateWall: showWallCalibration,
@@ -622,13 +599,11 @@ function paintStage() {
     onSetWallMode: setWallMode,
     onScreensaver: applyScreensaver,
   });
-  // Cinema mode: when the active target is a single wall OR a single non-wall
-  // display, fill the canvas full-bleed (the CC canvas transport row + screensaver
-  // + dock handle all controls below). The inline per-card chrome is hidden so
-  // there's only ONE set of transport/screensaver/blank controls visible.
-  const isCinemaTarget = !!(activeTarget &&
-    (activeTarget.type === 'wall' || activeTarget.type === 'group' || activeTarget.type === 'display'));
-  el.classList.toggle('mc-cc-cinema', isCinemaTarget);
+  // The Command Center always mounts the complete logical room view. Keep that
+  // grid clipped to its canvas (with its own bounded scroll when the room is
+  // dense) so preview cards can never cover the transport/layout controls.
+  el.classList.remove('mc-cc-cinema');
+  el.classList.add('mc-cc-overview');
   // Re-attach drop handlers on the freshly-rendered cards.
   attachStageDrop(el);
   // Record what we just rendered so screenshot-only updates can patch in place
@@ -790,7 +765,17 @@ function refreshPreviewsInPlace() {
       video.dataset.mcCurrentTime = String(reported);
       video.dataset.mcPaused = paused ? '1' : '0';
       if (paused) video.pause();
-      else video.play().catch(() => {});
+      else {
+        video.play().then(() => {
+          video.removeAttribute('data-mc-playback-error');
+        }).catch((error) => {
+          video.dataset.mcPlaybackError = error?.name || 'play-rejected';
+          try {
+            window.__mcPreviewMetrics = window.__mcPreviewMetrics || { playRejections: 0 };
+            window.__mcPreviewMetrics.playRejections += 1;
+          } catch { /* SSR / no window */ }
+        });
+      }
     };
     if (video.readyState >= 1) seek();
     else video.addEventListener('loadedmetadata', seek, { once: true });
@@ -1061,29 +1046,22 @@ function visibleDeviceIds() {
   for (const id of wallMemberIds) if (id && isPollableDisplay(id)) ids.add(id);
   return [...ids];
 }
-function activePreviewIdList() {
-  if (!activeTarget) return [];
-  if (activeTarget.type === 'display') return activeTarget.id ? [activeTarget.id] : [];
-  if (activeTarget.type === 'group') return activeTargetDeviceIds();
-  const wall = (walls || []).find((candidate) => candidate.id === activeTarget.id);
-  if (!wall) return [];
-  if (wall.layout_mode !== 'split') {
-    const id = wallTransportDeviceId(wall);
-    return id ? [id] : [];
-  }
-  return wallDeviceIds(wall).filter(Boolean);
+function previewSessionDeviceIds() {
+  const displays = displayState.getAll().filter((display) => !wallMemberIds.has(display.id));
+  const byId = new Map(displayState.getAll().map((display) => [display.id, display]));
+  return livePreviewTargetDeviceIds(buildLivePreviewTargets({ displays, walls, byId, selectedIds }));
 }
 function requestVisiblePreviews() {
   queuePreviewRequests(visibleDeviceIds(), 0, false);
 }
 function requestActivePreview() {
-  queuePreviewRequests(activePreviewIdList(), 0, false);
+  queuePreviewRequests(previewSessionDeviceIds(), 0, false);
 }
 function startPreviewRefresh() {
   stopPreviewRefresh();
   screenshotPoller = createScreenshotPoller({
     minIntervalMs: PREVIEW_REQUEST_MIN_MS,
-    activeIntervalMs: LIVE_EMBED_PREVIEWS ? BACKGROUND_PREVIEW_INTERVAL_MS : ACTIVE_PREVIEW_INTERVAL_MS,
+    activeIntervalMs: BACKGROUND_PREVIEW_INTERVAL_MS,
     backgroundIntervalMs: BACKGROUND_PREVIEW_INTERVAL_MS,
     requestScreenshot: (id, meta) => requestScreenshot(id, meta),
     isRetired: (id) => !isPollableDisplay(id),
@@ -1102,7 +1080,7 @@ function startPreviewRefresh() {
       }
     },
     listVisibleIds: ({ activeOnly } = {}) => {
-      if (activeOnly) return activePreviewIdList().filter((id) => isPollableDisplay(id));
+      if (activeOnly) return previewSessionDeviceIds().filter((id) => isPollableDisplay(id));
       return visibleDeviceIds();
     },
   });
@@ -1117,8 +1095,6 @@ function stopPreviewRefresh() {
     screenshotPoller = null;
   }
   if (previewKickoff) { clearTimeout(previewKickoff); previewKickoff = null; }
-  if (activePreviewInterval) { clearInterval(activePreviewInterval); activePreviewInterval = null; }
-  if (backgroundPreviewInterval) { clearInterval(backgroundPreviewInterval); backgroundPreviewInterval = null; }
   if (previewRequestTimer) { clearTimeout(previewRequestTimer); previewRequestTimer = null; }
   for (const timer of postActionPreviewTimers) clearTimeout(timer);
   postActionPreviewTimers.clear();
@@ -2040,32 +2016,19 @@ function syncSocketTarget(tgt) {
   else selectSocketTarget(type, id);
 }
 
-// The active target changed — re-point the canvas + refresh the canvas-level
+// The active target changed — patch control focus and refresh canvas-level
 // controls. This is view-only; the socket target join only selects the live
 // ack/state stream for the web/Electron controller.
 let targetPaintFrame = null;
 let targetPaintGeneration = 0;
 
-function scheduleTargetPaint(tgt) {
+function scheduleTargetPaint() {
   const generation = ++targetPaintGeneration;
   if (targetPaintFrame != null) cancelAnimationFrame(targetPaintFrame);
-  const stage = stageEl();
-  if (stage) {
-    stage.setAttribute('aria-busy', 'true');
-    stage.querySelector('.mc-stage-target-loading')?.remove();
-    const loading = document.createElement('div');
-    loading.className = 'mc-stage-target-loading';
-    loading.setAttribute('role', 'status');
-    loading.textContent = t('mc.cc.target.loading', { target: tgt?.name || targetLabelOf(tgt?.id) || '' });
-    stage.appendChild(loading);
-  }
-  // Yield once so the selected tab, busy state, and loading feedback paint
-  // before live video/iframe preview markup is rebuilt.
   targetPaintFrame = requestAnimationFrame(() => {
     targetPaintFrame = null;
     if (generation !== targetPaintGeneration) return;
     paintStage();
-    stageEl()?.removeAttribute('aria-busy');
   });
 }
 
@@ -2106,7 +2069,6 @@ function handleTargetChange(tgt) {
     // in Focus View. Focus is now explicit for each mounted Command Center view.
     sessionStorage.removeItem(LAST_TARGET_KEY);
   } catch { /* session storage is best effort */ }
-  activePreviewCursor = 0;
   syncSocketTarget(activeControlTarget || activeTarget);
   if (restoringTarget) {
     // Startup preference reconciliation is not an operator-requested switch.
@@ -2117,19 +2079,16 @@ function handleTargetChange(tgt) {
       cancelAnimationFrame(targetPaintFrame);
       targetPaintFrame = null;
     }
-    stageEl()?.querySelector('.mc-stage-target-loading')?.remove();
-    stageEl()?.removeAttribute('aria-busy');
     paintStage();
   } else {
-    scheduleTargetPaint(tgt);
+    scheduleTargetPaint();
   }
   paintSummary();
   paintChips();
   if (transportApi && transportApi.repaint) transportApi.repaint();
   if (spanSplitApi && spanSplitApi.repaint) spanSplitApi.repaint();
   if (screensaverApi && screensaverApi.repaint) screensaverApi.repaint();
-  const previewId = activePreviewDeviceId();
-  if (previewId) queuePreviewRequests([previewId], 50, true);
+  queuePreviewRequests(previewSessionDeviceIds(), 50, true);
   // Persist the last focused target after an INTENTIONAL operator selection.
   // Skipped during startup restore (restoringTarget flag) so view restoration
   // never writes a preference or emits a command.
@@ -2138,9 +2097,9 @@ function handleTargetChange(tgt) {
   }
 }
 
-// Pick the initial canvas target so the canvas opens on ONE large preview (per
-// the mockup): the first video wall, else the first online non-wall display,
-// else the first non-wall display. Returns a target object or null.
+// Pick the initial control target: the first video wall, else the first online
+// non-wall display, else the first non-wall display. Preview visibility is
+// independent of this choice. Returns a target object or null.
 function chooseInitialTarget() {
   if (Array.isArray(walls) && walls.length) {
     const w = walls.slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))[0];
@@ -2534,18 +2493,6 @@ function activeTargetIds() {
     return (w && w.devices ? w.devices.map((d) => d.device_id) : []);
   }
   return commandTarget.id ? [commandTarget.id] : [];
-}
-function activePreviewDeviceId() {
-  const previewTarget = activeControlTarget || activeTarget;
-  if (!previewTarget) return null;
-  if (previewTarget.type === 'display') return previewTarget.id || null;
-  if (previewTarget.type === 'region') return previewTarget.device_id || null;
-  if (previewTarget.type === 'group') {
-    const group = layoutGroupById(previewTarget.id);
-    return group?.leader_device_id || group?.member_ids?.[0] || null;
-  }
-  const wall = (walls || []).find((candidate) => candidate.id === previewTarget.id);
-  return wall ? wallTransportDeviceId(wall) : null;
 }
 function handleCommandAck(data) {
   if (!data) return;
@@ -3060,9 +3007,9 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
   }
 pruneSelection();
 
-  // ---- Phase 1 Command Center: target-driven canvas + controls ----
-  // The header dropdown drives the active target rendered large on the canvas.
-  // Switching targets is VIEW-ONLY — it re-points the canvas and emits NO
+  // ---- Phase 1 Command Center: target-driven controls ----
+  // The header dropdown drives the active control highlight and toolbar target.
+  // Switching targets is VIEW-ONLY — it changes focus and emits NO
   // stop/blank to whatever was showing before. The canvas-level controls
   // (transport row, Span|Split, screensaver, action dock) reuse existing
   // functions and route commands to the active target only.

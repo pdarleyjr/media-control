@@ -37,7 +37,8 @@ test('confirmed blank state is persisted and projected from display_states', () 
   assert.doesNotMatch(projection, /device\.screenOn \?\?/);
   assert.match(stage, /typeof display\.screen_on !== 'boolean'/);
   assert.match(stage, /mc\.blank\.status\.unknown/);
-  assert.match(stage, /screenStateIdentity/);
+  assert.match(stage, /function applyStatusInPlace/);
+  assert.match(stage, /mc-status-blanked/);
 });
 
 test('player reconnect restore and release hash include authoritative screen modules', () => {
