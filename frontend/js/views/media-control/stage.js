@@ -177,7 +177,31 @@ export function previewSource(obj) {
   return null;
 }
 
-function displayCard(display, { livePreview = false } = {}) {
+function previewTarget(targets, key) {
+  return targets instanceof Map ? targets.get(key) || null : null;
+}
+
+function previewMediaIdentity(display, livePreview, sourceDeviceId = display?.id) {
+  const np = display?.now_playing || {};
+  return JSON.stringify({
+    live: !!livePreview,
+    sourceDeviceId: sourceDeviceId || '',
+    kind: np.kind || '',
+    contentId: np.contentId || np.content_id || '',
+    remoteUrl: np.remoteUrl || np.remote_url || '',
+    posterUrl: np.poster_url || '',
+    sourceRevision: np.source_revision || np.program_revision || '',
+    fit: np.fit || np.object_fit || '',
+  });
+}
+
+function stampPreviewMedia(html, surfaceKey, deviceId, identity) {
+  if (!html) return html;
+  return html.replace(/^\s*<([a-z][\w-]*)/i,
+    `<$1 data-preview-surface-key="${esc(surfaceKey)}" data-preview-device-id="${esc(deviceId || '')}" data-mc-media-identity="${esc(identity)}"`);
+}
+
+function displayCard(display, { livePreviewTarget = null, previewSurfaceKey = null } = {}) {
   const s = statusOf(display);
   const f = freshness(display.screenshot_at);
   const nowPlaying = display.now_playing && display.now_playing.label
@@ -191,14 +215,21 @@ function displayCard(display, { livePreview = false } = {}) {
   const pv = previewSource(display);
   const showingPoster = !!(pv && pv.poster);
   const staleCls = (pv && !pv.poster && (f.stale || offline)) ? ' mc-shot-stale' : '';
-  const live = livePreview
+  const surfaceKey = previewSurfaceKey || `display:${display.id}`;
+  const live = livePreviewTarget
     ? liveEmbedHtml(display.now_playing, 'mc-card-shot', { fallbackSrc: pv && pv.src })
     : null;
-  const preview = live
+  const previewHtml = live
     ? live
     : (pv
       ? shotImg(`mc-card-shot${staleCls}${pv.poster ? ' mc-shot-poster' : ''}`, pv.src, t('mc.card.preview_alt', { name: display.name }))
       : `<div class="mc-card-shot mc-card-shot-empty">${esc(t('mc.card.no_preview'))}</div>`);
+  const preview = stampPreviewMedia(
+    previewHtml,
+    surfaceKey,
+    livePreviewTarget?.deviceId || display.id,
+    previewMediaIdentity(display, !!live, livePreviewTarget?.deviceId || display.id),
+  );
   // A poster is always current (it IS what's playing), so show a neutral caption
   // rather than a misleading "Updated Ns ago" about a screenshot we aren't using.
   const captionText = showingPoster ? t('mc.card.now_showing') : f.text;
@@ -272,22 +303,17 @@ function wallTransportDeviceId(wall, members) {
   return wall.leader_device_id || members[0]?.id || null;
 }
 
-function wallCell(member, screenNo, { showPreview = true, livePreview = false } = {}) {
+function wallCell(member, screenNo, { showPreview = true } = {}) {
   const s = statusOf(member);
   const offline = !member.online;
   const f = freshness(member.screenshot_at);
   const pv = previewSource(member);
   const staleCls = (pv && !pv.poster && (f.stale || offline)) ? ' mc-shot-stale' : '';
-  const live = showPreview && livePreview
-    ? liveEmbedHtml(member.now_playing, 'mc-wall-cell-shot', { allowVideo: true, fallbackSrc: pv && pv.src })
-    : null;
   const preview = !showPreview
     ? ''
-    : (live
-      ? live
-      : (pv
-        ? shotImg(`mc-wall-cell-shot${staleCls}${pv.poster ? ' mc-shot-poster' : ''}`, pv.src, '')
-        : `<span class="mc-wall-cell-empty">${esc(t('mc.card.no_preview'))}</span>`));
+    : (pv
+      ? shotImg(`mc-wall-cell-shot${staleCls}${pv.poster ? ' mc-shot-poster' : ''}`, pv.src, '')
+      : `<span class="mc-wall-cell-empty">${esc(t('mc.card.no_preview'))}</span>`);
   const np = member.now_playing && member.now_playing.label ? member.now_playing.label : '';
   // The visible cell label is the screen position; the device name + now-playing
   // ride in the title. (No em-dash in the title — anti-slop.)
@@ -303,19 +329,31 @@ function wallCell(member, screenNo, { showPreview = true, livePreview = false } 
     </div>`;
 }
 
-function wallSpanPreview(leader, livePreview = false) {
+function wallSpanPreview(leader, livePreviewTarget = null, surfaceKey = '') {
   const pv = previewSource(leader);
   // Always allow video in the span preview — the dashboard must mirror what the
   // physical wall is showing. Previously allowVideo=false caused a screenshot
   // fallback which is a black tile for video (canvas capture is tainted).
-  const live = leader && livePreview
+  const live = leader && livePreviewTarget
     ? liveEmbedHtml(leader.now_playing, 'mc-wall-span-shot', { allowVideo: true, fallbackSrc: pv && pv.src })
     : null;
   if (live) {
-    return `<div class="mc-wall-span-layer" data-device-id="${esc(leader.id)}">${live}</div>`;
+    const preview = stampPreviewMedia(
+      live,
+      surfaceKey,
+      livePreviewTarget.deviceId,
+      previewMediaIdentity(leader, true, livePreviewTarget.deviceId),
+    );
+    return `<div class="mc-wall-span-layer" data-device-id="${esc(leader.id)}">${preview}</div>`;
   }
   if (!leader || !pv) {
-    return `<div class="mc-wall-span-layer mc-wall-span-empty"><span>${esc(t('mc.card.no_preview'))}</span></div>`;
+    const empty = stampPreviewMedia(
+      `<span>${esc(t('mc.card.no_preview'))}</span>`,
+      surfaceKey,
+      leader?.id || '',
+      previewMediaIdentity(leader, false),
+    );
+    return `<div class="mc-wall-span-layer mc-wall-span-empty">${empty}</div>`;
   }
   const f = freshness(leader.screenshot_at);
   const staleCls = (pv && !pv.poster && (f.stale || !leader.online)) ? ' mc-shot-stale' : '';
@@ -326,8 +364,14 @@ function wallSpanPreview(leader, livePreview = false) {
   const npLabel = leader.now_playing && leader.now_playing.label && leader.now_playing.kind !== 'idle'
     ? `<div class="mc-wall-span-np-label">${esc(leader.now_playing.label)}</div>`
     : '';
+  const preview = stampPreviewMedia(
+    shotImg(`mc-wall-span-shot${staleCls}${pv.poster ? ' mc-shot-poster' : ''}`, pv.src, t('mc.card.preview_alt', { name: leader.name })),
+    surfaceKey,
+    leader.id,
+    previewMediaIdentity(leader, false),
+  );
   return `<div class="mc-wall-span-layer" data-device-id="${esc(leader.id)}">
-    ${shotImg(`mc-wall-span-shot${staleCls}${pv.poster ? ' mc-shot-poster' : ''}`, pv.src, t('mc.card.preview_alt', { name: leader.name }))}
+    ${preview}
     ${npLabel}
   </div>`;
 }
@@ -347,7 +391,7 @@ function wallEmptySlot(screenNo) {
 // mirror the wall's leader (single-player walls drive every screen from one
 // player), so all N screens reflect the wall's content. Each screen is its own
 // drop/inspect target; the footer strip fills every screen at once.
-function wallCard(wall, byId, livePreviewDeviceId = null, overviewMode = false) {
+function wallCard(wall, byId, livePreviewTargets = new Map(), overviewMode = false, previewSurfaceKey = null) {
   const members = (wall.devices || []).map(m => wallMemberView(m, byId));
   const cols = Math.max(1, wall.grid_cols || members.reduce((mx, m) => Math.max(mx, (m.grid_col || 0) + 1), 1));
   const rows = Math.max(1, wall.grid_rows || members.reduce((mx, m) => Math.max(mx, (m.grid_row || 0) + 1), 1));
@@ -376,6 +420,9 @@ function wallCard(wall, byId, livePreviewDeviceId = null, overviewMode = false) 
   const fillLabel = mode === 'split' ? t('mc.wall.fill_all') : t('mc.wall.fill_span');
   const modeHint = mode === 'split' ? t('mc.wall.split_hint') : t('mc.wall.span_hint');
   const transportId = wallTransportDeviceId(wall, members);
+  const surfaceKey = previewSurfaceKey || `wall:${wall.id}`;
+  const livePreviewTarget = previewTarget(livePreviewTargets, surfaceKey);
+  const previewMember = members.find((member) => member.id === livePreviewTarget?.deviceId) || leader;
   // Row-major over every physical screen slot; CSS grid auto-places them in order.
   const cells = [];
   let n = 0;
@@ -385,12 +432,11 @@ function wallCard(wall, byId, livePreviewDeviceId = null, overviewMode = false) 
       const m = byPos.get(c + ',' + r) || leader;
       cells.push(m ? wallCell(m, n, {
         showPreview: overviewMode || mode === 'split',
-        livePreview: m.id === livePreviewDeviceId,
       }) : wallEmptySlot(n));
     }
   }
   const spanLayer = mode === 'span' && !overviewMode
-    ? wallSpanPreview(leader, !!leader && leader.id === livePreviewDeviceId)
+    ? wallSpanPreview(previewMember, livePreviewTarget, surfaceKey)
     : '';
   return `
     <section class="mc-card mc-wall mc-wall-mode-${mode}" data-wall-id="${esc(wall.id)}" data-layout-mode="${mode}" style="--mc-cols:${cols}; --mc-cell-ar:${cellAr}" aria-label="${esc(t('mc.wall.aria', { name: wall.name }))}">
@@ -420,7 +466,7 @@ function wallCard(wall, byId, livePreviewDeviceId = null, overviewMode = false) 
     </section>`;
 }
 
-function wallGroupsCard(wall, byId, livePreviewDeviceId, activeControlTargetId, overviewMode = false) {
+function wallGroupsCard(wall, byId, livePreviewTargets, activeControlTarget, overviewMode = false) {
   const groups = wall.layout?.groups || [];
   const orderedMembers = [...(wall.devices || [])].sort((a, b) =>
     (Number(a.grid_row) - Number(b.grid_row)) || (Number(a.grid_col) - Number(b.grid_col))
@@ -446,11 +492,12 @@ function wallGroupsCard(wall, byId, livePreviewDeviceId, activeControlTargetId, 
       layout_mode: 'span',
       is_locked: false,
     };
-    return `<div class="mc-wall-region${group.id === activeControlTargetId ? ' is-active' : ''}"
+    const surfaceKey = `wall-group:${wall.id}:${group.id}`;
+    return `<div class="mc-wall-region${group.id === activeControlTarget?.id ? ' is-active' : ''}"
       data-layout-group-id="${esc(group.id)}" data-wall-id="${esc(wall.id)}" role="button" tabindex="0"
       style="--mc-region-cols:${regionWall.grid_cols}"
       aria-label="${esc(`Control ${regionWall.name}`)}">
-      ${wallCard(regionWall, byId, livePreviewDeviceId, overviewMode)}
+      ${wallCard(regionWall, byId, livePreviewTargets, overviewMode, surfaceKey)}
     </div>`;
   }).join('');
   return `<section class="mc-wall-groups-overview" data-wall-id="${esc(wall.id)}">
@@ -499,7 +546,7 @@ function wallSplitRegionCell(leader, region) {
     </div>`;
 }
 
-function wallSplitGroup(wall, byId, livePreviewDeviceId = null) {
+function wallSplitGroup(wall, byId, livePreviewTargets = new Map()) {
   const members = (wall.devices || []).map(m => wallMemberView(m, byId));
   const ids = [...new Set(members.map(m => m.id))].join(',');
   const cols = Math.max(1, wall.grid_cols || members.length || 1);
@@ -511,6 +558,8 @@ function wallSplitGroup(wall, byId, livePreviewDeviceId = null) {
   // into one column of a grid pushed to the single window (see dropOnWallHalf).
   if (members.length === 1 && ((wall.layout?.regions || []).length > 0 || cols > 1)) {
     const leader = members[0];
+    const surfaceKey = `wall-regions:${wall.id}`;
+    const compositePreview = wallSpanPreview(leader, previewTarget(livePreviewTargets, surfaceKey), surfaceKey);
     const regions = (wall.layout?.valid === false ? [] : (wall.layout?.regions || []))
       .filter((region) => region.enabled !== false && region.player_device_id === leader.id);
     const halves = regions.map((region) => wallSplitRegionCell(leader, region));
@@ -537,15 +586,22 @@ function wallSplitGroup(wall, byId, livePreviewDeviceId = null) {
         <a class="mc-wall-edit" href="#/walls">${esc(t('mc.wall.edit'))}</a>
       </div>
       <div class="mc-wall-hint">${esc(t('mc.wall.split_one_hint'))}</div>
-      <div class="mc-wall-grid" style="grid-template-columns:repeat(${Math.max(1, regions.length)}, 1fr)">
-        ${halves.join('')}${missingRegions}
+      <div class="mc-wall-grid mc-wall-regions-preview" style="grid-template-columns:repeat(${Math.max(1, regions.length)}, 1fr)">
+        ${compositePreview}${halves.join('')}${missingRegions}
       </div>
     </section>`;
   }
 
   // Multi-device split: each physical screen is its OWN device → its own card.
   const memberCards = members
-    .map(m => { const live = byId.get(m.id); return live ? displayCard(live, { livePreview: live.id === livePreviewDeviceId }) : ''; })
+    .map(m => {
+      const live = byId.get(m.id);
+      const surfaceKey = `wall-split:${wall.id}:${m.id}`;
+      return live ? displayCard(live, {
+        livePreviewTarget: previewTarget(livePreviewTargets, surfaceKey),
+        previewSurfaceKey: surfaceKey,
+      }) : '';
+    })
     .join('');
   return `
     <section class="mc-card mc-wall mc-wall-split" data-wall-id="${esc(wall.id)}" data-layout-mode="split" style="--mc-cols:${cols}" aria-label="${esc(t('mc.wall.aria', { name: wall.name }))}">
@@ -594,52 +650,86 @@ function emptyState() {
 }
 
 // ── Stable keyed render (task §4) ─────────────────────────────────────────
-// Routine state updates (screenshots, heartbeats, playback progress, now-playing
-// label drift) must NOT destroy and recreate the stage DOM. Every recreated
-// preview iframe re-emits Feature-Policy load chatter, reloads its document,
-// drops playback state, and burns CPU/network. So renderStage computes a
-// STRUCTURAL signature of what it is about to paint; when that signature is
-// unchanged since the last paint it skips the container.innerHTML rebuild and
-// only patches mutable labels/badges/captions/selects in place. The screenshot
-// + slide-index + video-seek sync themselves are handled by refreshPreviewsInPlace
-// in media-control.js (already keyed off this same signature), so a stable
-// signature means zero iframe recreation.
-//
-// The signature deliberately includes the fields whose change REQUIRES a rebuild:
-// card identity (which displays/walls are shown), wall grid/leader/layout,
-// live-preview target, overview mode, active control target, and per-card
-// online/screen_on/now-playing-identity. It deliberately EXCLUDES the
-// fast-moving fields (screenshot URL, screenshot_at, label text, playback time,
-// freshness caption) — those are patched incrementally below / by
-// refreshPreviewsInPlace. This mirrors the stageSignature() guard already used
-// by the media-control subscriber, but is computed here from the exact render
-// inputs as a defense-in-depth against any caller that bypasses that guard.
-function playingIdentity(d) {
-  const np = d && d.now_playing;
-  if (!np) return '';
-  const remoteUrl = np.remoteUrl || np.remote_url || '';
-  return [np.kind || '', np.contentId || '', remoteUrl, np.poster_url || ''].join('~');
-}
-function screenStateIdentity(display) {
-  return typeof display?.screen_on === 'boolean' ? (display.screen_on ? 1 : 0) : 'u';
-}
-function stageRenderSignature({ displays = [], walls = [], byId = new Map(), selectedIds = [], livePreviewDeviceId = null, activeControlTargetId = null, overviewMode = false }) {
+// Operator state and program identity are intentionally excluded from this
+// structural signature. Selection is patched in place, while a source change is
+// reconciled only inside its keyed preview slot.
+function stageRenderSignature({ displays = [], walls = [], selectedIds = [], livePreviewTargets = new Map(), overviewMode = false }) {
   const parts = [];
   parts.push('sel:' + selectedIds.join(','));
-  parts.push('lp:' + (livePreviewDeviceId || ''));
-  parts.push('tgt:' + (activeControlTargetId || ''));
   parts.push('ov:' + (overviewMode ? 1 : 0));
-  for (const d of displays) {
-    parts.push('d:' + d.id + ':' + (d.online ? 1 : 0) + ':' + screenStateIdentity(d) + ':' + playingIdentity(d));
+  for (const d of displays) parts.push('d:' + d.id);
+  if (livePreviewTargets instanceof Map) {
+    for (const key of livePreviewTargets.keys()) parts.push(`p:${key}`);
   }
   for (const w of (walls || [])) {
     parts.push('w:' + w.id + ':' + (w.grid_cols || 0) + 'x' + (w.grid_rows || 0) + ':' + (w.leader_device_id || '') + ':' + (w.layout_mode || 'span') + ':' + (w.is_locked ? 1 : 0));
     for (const m of (w.devices || [])) {
-      const d = byId.get(m.device_id) || {};
-      parts.push('m:' + m.device_id + ':' + (d.online ? 1 : 0) + ':' + screenStateIdentity(d) + ':' + playingIdentity(d));
+      parts.push(`m:${m.device_id}:${m.grid_col ?? ''}:${m.grid_row ?? ''}`);
+    }
+    for (const group of (w.layout?.groups || [])) {
+      parts.push(`g:${group.id}:${group.leader_device_id || ''}:${(group.member_ids || []).join(',')}`);
+    }
+    for (const region of (w.layout?.regions || [])) {
+      parts.push(`r:${region.id}:${region.player_device_id || ''}:${region.enabled === false ? 0 : 1}`);
     }
   }
   return parts.join('|');
+}
+
+function updateControlStateInPlace(container, activeControlTarget) {
+  const targetId = activeControlTarget?.id || '';
+  const wallId = activeControlTarget?.wall_id || (activeControlTarget?.type === 'wall' ? targetId : '');
+  container.querySelectorAll('[data-layout-group-id]').forEach((region) => {
+    const active = activeControlTarget?.type === 'group' && region.dataset.layoutGroupId === targetId;
+    region.classList.toggle('is-active', active);
+    region.setAttribute('aria-current', active ? 'true' : 'false');
+  });
+  container.querySelectorAll('.mc-display-card[data-device-id]').forEach((card) => {
+    const active = activeControlTarget?.type === 'display' && card.dataset.deviceId === targetId;
+    card.classList.toggle('is-active', active);
+    card.setAttribute('aria-current', active ? 'true' : 'false');
+  });
+  container.querySelectorAll('[data-wall-id]').forEach((wall) => {
+    const active = !!wallId && wall.dataset.wallId === wallId;
+    wall.classList.toggle('is-control-target', active);
+  });
+}
+
+function isLiveSession(node) {
+  return node?.matches?.('iframe.mc-live-embed, video.mc-live-embed') || false;
+}
+
+function reconcilePreviewSlots(container, desiredHtml) {
+  const template = document.createElement('template');
+  template.innerHTML = desiredHtml;
+  const desiredByKey = new Map();
+  template.content.querySelectorAll('[data-preview-surface-key]').forEach((node) => {
+    desiredByKey.set(node.dataset.previewSurfaceKey, node);
+  });
+  container.querySelectorAll('[data-preview-surface-key]').forEach((current) => {
+    const desired = desiredByKey.get(current.dataset.previewSurfaceKey);
+    if (!desired || desired.dataset.mcMediaIdentity === current.dataset.mcMediaIdentity) return;
+    const oldIframe = current.matches('iframe');
+    const newIframe = desired.matches('iframe');
+    if (isLiveSession(current)) bumpStageMetric(container, 'liveSessionDestroys');
+    if (oldIframe) bumpStageMetric(container, 'iframeRemoves');
+    if (newIframe) bumpStageMetric(container, 'iframeNavigations');
+    current.replaceWith(desired.cloneNode(true));
+    if (isLiveSession(desired)) bumpStageMetric(container, 'liveSessionCreates');
+    if (newIframe) bumpStageMetric(container, 'iframeCreates');
+  });
+  bumpStageMetric(container, 'liveSessions', 0);
+  container._mcMetrics.liveSessions = container.querySelectorAll('iframe.mc-live-embed, video.mc-live-embed').length;
+  try { window.__mcStageMetrics = container._mcMetrics; } catch { /* SSR / no window */ }
+}
+
+const STATUS_CLASSES = ['mc-status-live', 'mc-status-standby', 'mc-status-unknown', 'mc-status-blanked', 'mc-status-offline'];
+function applyStatusInPlace(host, status) {
+  if (!host || !status) return;
+  host.classList.remove(...STATUS_CLASSES);
+  host.classList.add(status.cls);
+  const badge = host.querySelector('.mc-badge');
+  if (badge) badge.outerHTML = statusBadge(status);
 }
 
 // Lightweight in-place patch for the cards already on the stage when the
@@ -647,7 +737,7 @@ function stageRenderSignature({ displays = [], walls = [], byId = new Map(), sel
 // touches the preview media (img/iframe/video), which are owned by
 // refreshPreviewsInPlace so paused video stays paused and presentation frames
 // keep their scroll/zoom state.
-function updateStageInPlace(container, { byId = new Map(), displays = [], walls = [] } = {}) {
+function updateStageInPlace(container, { byId = new Map(), displays = [], activeControlTarget = null, desiredHtml = '' } = {}) {
   const all = new Map();
   for (const d of displays) all.set(d.id, d);
   for (const d of byId.values()) if (!all.has(d.id)) all.set(d.id, d);
@@ -656,8 +746,7 @@ function updateStageInPlace(container, { byId = new Map(), displays = [], walls 
     const d = all.get(id);
     if (!d) return;
     const s = statusOf(d);
-    const badge = card.querySelector('.mc-badge');
-    if (badge) badge.outerHTML = statusBadge(s);
+    applyStatusInPlace(card, s);
     const f = freshness(d.screenshot_at);
     const caption = card.querySelector('.mc-card-caption');
     if (caption) {
@@ -675,6 +764,10 @@ function updateStageInPlace(container, { byId = new Map(), displays = [], walls 
       npEl.setAttribute('title', label);
     }
   });
+  container.querySelectorAll('.mc-wall-cell[data-device-id]').forEach((cell) => {
+    const display = all.get(cell.dataset.deviceId);
+    if (display) applyStatusInPlace(cell, statusOf(display));
+  });
   // Wall span now-playing label chip.
   container.querySelectorAll('.mc-wall-span-np-label').forEach((el) => {
     const host = el.closest('[data-device-id]');
@@ -684,13 +777,24 @@ function updateStageInPlace(container, { byId = new Map(), displays = [], walls 
     if (!label) { el.remove(); }
     else if (el.textContent !== label) el.textContent = label;
   });
+  reconcilePreviewSlots(container, desiredHtml);
+  updateControlStateInPlace(container, activeControlTarget);
 }
 
 // Instrumentation for soak/verification (task §4): counts are kept on the
 // container so a browser console can read window.__mcStageMetrics after a run.
 function bumpStageMetric(container, key, n = 1) {
   if (!container) return;
-  container._mcMetrics = container._mcMetrics || { renders: 0, iframeCreates: 0, iframeRemoves: 0, inPlacePatches: 0 };
+  container._mcMetrics = container._mcMetrics || {
+    renders: 0,
+    iframeCreates: 0,
+    iframeRemoves: 0,
+    iframeNavigations: 0,
+    liveSessionCreates: 0,
+    liveSessionDestroys: 0,
+    liveSessions: 0,
+    inPlacePatches: 0,
+  };
   container._mcMetrics[key] = (container._mcMetrics[key] || 0) + n;
   try { window.__mcStageMetrics = container._mcMetrics; } catch { /* SSR / no window */ }
 }
@@ -712,12 +816,9 @@ function bumpStageMetric(container, key, n = 1) {
  * @param {(ids:string[], source:object, label:string)=>void} [opts.onScreensaver]
  *   A screensaver option was chosen on a card; broadcast `source` to `ids`.
  */
-export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], livePreviewDeviceId = null, activeControlTargetId = null, overviewMode = false, onSelect, onSelectGroup, onCalibrateWall, onAddDisplay, onTransportAction, onSetWallMode, onScreensaver } = {}) {
+export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], livePreviewTargets = new Map(), activeControlTarget = null, overviewMode = false, onSelect, onSelectGroup, onCalibrateWall, onAddDisplay, onTransportAction, onSetWallMode, onScreensaver } = {}) {
   if (!container) return;
   const selected = new Set(selectedIds);
-
-  // Build a lookup map for display data so transport bars can read screen_on.
-  const displayMap = new Map(displays.map(d => [d.id, d]));
 
   // Load/render order: Video Wall 1, then Video Wall 2, ... (by the trailing
   // number in the name), with the single-screen Smartboard LAST among displays —
@@ -741,15 +842,21 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
   const cards = displays
     .filter(d => selected.has(d.id))
     .sort((a, b) => (isSmartboard(a) ? 1 : 0) - (isSmartboard(b) ? 1 : 0))
-    .map((display) => displayCard(display, { livePreview: display.id === livePreviewDeviceId }))
+    .map((display) => {
+      const surfaceKey = `display:${display.id}`;
+      return displayCard(display, {
+        livePreviewTarget: previewTarget(livePreviewTargets, surfaceKey),
+        previewSurfaceKey: surfaceKey,
+      });
+    })
     .join('');
   // Span walls render as one composite card; SPLIT walls render each member as
   // its own independent display card (see wallSplitGroup).
   const wallCards = wallList.map(w => (w.layout_mode === 'groups'
-    ? wallGroupsCard(w, byId, livePreviewDeviceId, activeControlTargetId, overviewMode)
+    ? wallGroupsCard(w, byId, livePreviewTargets, activeControlTarget, overviewMode)
     : (w.layout_mode === 'split'
-      ? wallSplitGroup(w, byId, livePreviewDeviceId)
-      : wallCard(w, byId, livePreviewDeviceId, overviewMode)))).join('');
+      ? wallSplitGroup(w, byId, livePreviewTargets)
+      : wallCard(w, byId, livePreviewTargets, overviewMode)))).join('');
 
   const isEmpty = !cards && !wallCards;
 
@@ -759,24 +866,29 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
   // chatter, reloading documents, dropping playback state). Instead patch the
   // mutable labels/badges/captions in place; screenshot/slide/video sync is left
   // to refreshPreviewsInPlace (media-control.js), which keys off the same data.
-  const sig = stageRenderSignature({ displays: displays.filter(d => selected.has(d.id)), walls: wallList, byId, selectedIds, livePreviewDeviceId, activeControlTargetId, overviewMode });
+  const desiredHtml = isEmpty ? emptyState() : `${wallCards}${cards}${addTile()}`;
+  const sig = stageRenderSignature({ displays: displays.filter(d => selected.has(d.id)), walls: wallList, selectedIds, livePreviewTargets, overviewMode });
   if (!isEmpty && sig && sig === container._mcRenderSig && container.querySelector('.mc-card, .mc-stage-empty')) {
-    updateStageInPlace(container, { byId, displays, walls: wallList });
+    updateStageInPlace(container, { byId, displays, activeControlTarget, desiredHtml });
     bumpStageMetric(container, 'inPlacePatches');
     return;
   }
   container._mcRenderSig = sig;
   bumpStageMetric(container, 'renders');
   const beforeIframes = container.querySelectorAll('iframe').length;
+  const beforeSessions = container.querySelectorAll('iframe.mc-live-embed, video.mc-live-embed').length;
 
   container.classList.toggle('mc-stage-is-empty', isEmpty);
-  container.innerHTML = isEmpty
-    ? emptyState()
-    : `${wallCards}${cards}${addTile()}`;
+  container.innerHTML = desiredHtml;
 
   const afterIframes = container.querySelectorAll('iframe').length;
-  if (afterIframes > beforeIframes) bumpStageMetric(container, 'iframeCreates', afterIframes - beforeIframes);
-  if (beforeIframes > afterIframes) bumpStageMetric(container, 'iframeRemoves', beforeIframes - afterIframes);
+  const afterSessions = container.querySelectorAll('iframe.mc-live-embed, video.mc-live-embed').length;
+  if (beforeIframes) bumpStageMetric(container, 'iframeRemoves', beforeIframes);
+  if (afterIframes) bumpStageMetric(container, 'iframeCreates', afterIframes);
+  if (beforeSessions) bumpStageMetric(container, 'liveSessionDestroys', beforeSessions);
+  if (afterSessions) bumpStageMetric(container, 'liveSessionCreates', afterSessions);
+  container._mcMetrics.liveSessions = afterSessions;
+  updateControlStateInPlace(container, activeControlTarget);
 
   // Display cards are <article> with a dedicated <button class="mc-card-select">
   // (the preview media) as the sole inspect/select affordance; wall screen cells

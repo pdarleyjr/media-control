@@ -2,9 +2,9 @@
 // card so the Command Center shows ACTUAL live content, not static screenshots.
 //
 // Key rules to avoid the CDN overload / "Reconnecting" cascade:
-//   • Grid (multiview): embed one operator preview with all cells live. Only the
-//     selected Command Center target gets this preview, so opening the dashboard
-//     does not multiply the grid across every wall card.
+//   • Grid (multiview): embed one operator preview with all cells live for each
+//     visible logical surface. Span/group surfaces still use one leader session,
+//     so a physical wall never multiplies the same grid across member cells.
 //   • Individual HLS/camera streams: embed live ONLY in the span preview (one
 //     stream), never in every wall cell (N streams = CDN rate-limit = reconnect).
 //   • Documents/decks: render one same-origin preview at the slide index reported
@@ -134,8 +134,8 @@ export function liveEmbedHtml(nowPlaying, cls = '', opts = {}) {
 
     case 'grid': {
       // Multiview grid in the dashboard: load every cell in one operator preview.
-      // The stage renders a live element for only activePreviewDeviceId, avoiding
-      // the old N-cards-times-N-streams cascade while preserving real playback.
+      // The stage allocates one session per visible logical surface, avoiding the
+      // old N-cards-times-N-streams cascade while preserving real playback.
       if (np.remoteUrl) {
         const src = toRootRelative(np.remoteUrl);
         const previewSrc = src + (src.includes('?') ? '&' : '?') + 'operator_preview=1';
