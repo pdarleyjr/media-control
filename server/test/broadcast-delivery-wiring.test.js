@@ -135,6 +135,28 @@ test('video confirmation has a bounded fallback for background-throttled wall wi
   assert.match(fullscreenVideo, /markBroadcastElementReady\(video, reason\)/);
 });
 
+test('web frame readiness is armed before navigation can complete', () => {
+  const player = source('player/index.html');
+  const webFrame = player.slice(
+    player.indexOf("const frame = document.createElement('iframe');"),
+    player.indexOf('mount.appendChild(frame);', player.indexOf("const frame = document.createElement('iframe');")),
+  );
+
+  assert.ok(
+    webFrame.indexOf("frame.addEventListener('load'") < webFrame.indexOf('frame.src = webSrc;'),
+    'a cached iframe may complete navigation before a late load listener is armed',
+  );
+  assert.ok(
+    webFrame.indexOf("frame.addEventListener('error'") < webFrame.indexOf('frame.src = webSrc;'),
+    'a synchronous iframe navigation failure must remain observable',
+  );
+  assert.match(webFrame, /let webSrc = null;/);
+  assert.match(
+    webFrame,
+    /if \(!webSrc\) \{[\s\S]*?failPendingBroadcastRender\([\s\S]*?return;[\s\S]*?\}[\s\S]*?frame\.src = webSrc;/,
+  );
+});
+
 test('frontend polls and renders every device state rather than treating HTTP acceptance as success', () => {
   const send = source('../frontend/js/views/media-control/send.js');
   assert.match(send, /trackBroadcastDelivery/);
