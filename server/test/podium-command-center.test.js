@@ -343,3 +343,17 @@ test('podium browser smoke follows authorized wall targets without hardcoded roo
   assert.doesNotMatch(smoke, /Video Wall 1 target is missing/);
   assert.doesNotMatch(smoke, /Video Wall 2 target is missing/);
 });
+
+test('command center visual snapshots wait for the asynchronous layout to settle', () => {
+  const mobile = read('server/e2e/real-app/mobile-defect.spec.js');
+  const visualBlock = mobile.match(/test\(`Command Center visual regression[\s\S]*?await context\.close\(\);/i)?.[0] || '';
+
+  assert.match(mobile, /async function waitForCommandCenterVisualReady/);
+  assert.match(mobile, /\.mc-cam-health-label/);
+  assert.match(mobile, /\[data-live-state\]/);
+  assert.match(mobile, /document\.fonts\.ready/);
+  assert.match(mobile, /stableSamples >= 4/);
+  assert.match(visualBlock, /waitForCommandCenterVisualReady\(page\)/);
+  assert.doesNotMatch(visualBlock, /waitForTimeout\(500\)/);
+  assert.match(visualBlock, /maxDiffPixelRatio:\s*0\.01/);
+});
