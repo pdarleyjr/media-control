@@ -46,3 +46,12 @@ test('Multiview submits its internal grid as a same-origin relative player URL',
   assert.match(source, /return `\/player\/grid\.html\?cells=\$\{b64url\(JSON\.stringify\(map\)\)\}`/);
   assert.doesNotMatch(source, /location\.origin\}\/player\/grid\.html/);
 });
+
+test('Multiview populated frames render the assigned media instead of an icon-only placeholder', () => {
+  assert.match(source, /function cellPreviewHtml\(c\)/);
+  assert.match(source, /c\.kind === 'v'[\s\S]*?<video[\s\S]*?autoplay muted loop playsinline/);
+  assert.match(source, /c\.kind === 'm'[\s\S]*?<img/);
+  assert.match(source, /<iframe[\s\S]*?loading="eager"[\s\S]*?referrerpolicy="no-referrer"/);
+  assert.match(source, /const preview = cellPreviewHtml\(c\)/);
+  assert.match(source, /\$\{preview\}[\s\S]*?<div class="mc-mv-cell-actions">/);
+});

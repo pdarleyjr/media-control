@@ -2,7 +2,7 @@
 //
 // A single display is split into a 4-left / 2-center / 4-right mosaic (every
 // cell 16:9 by default). The operator drags source tiles from the toolbox into
-// each frame, sees a thumbnail + label in just the frame they dropped into, can
+// each frame, sees the muted live source + label in just the frame they dropped into, can
 // click any frame to monitor THAT stream's audio locally (in this browser, not
 // on the wall — so they can switch which feed they hear), then sends the
 // assembled layout to a display.
@@ -441,6 +441,21 @@ function sourceLibraryHtml() {
   </aside>`;
 }
 
+// Render the same assigned source the display grid will receive. Composer media
+// is passive and muted: it proves the visual source is actually playable without
+// producing operator audio or intercepting frame drag/resize controls.
+function cellPreviewHtml(c) {
+  const fit = cellFit(c);
+  const src = FIT_PARAM_RE.test(c.cellUrl) ? withFit(c.cellUrl, fit) : c.cellUrl;
+  if (c.kind === 'v') {
+    return `<video class="mc-mv-cell-preview" src="${esc(src)}" autoplay muted loop playsinline tabindex="-1" aria-hidden="true"></video>`;
+  }
+  if (c.kind === 'm') {
+    return `<img class="mc-mv-cell-preview" src="${esc(src)}" alt="" loading="eager" decoding="async">`;
+  }
+  return `<iframe class="mc-mv-cell-preview" src="${esc(src)}" loading="eager" referrerpolicy="no-referrer" tabindex="-1" aria-hidden="true"></iframe>`;
+}
+
 function cellInner(slot) {
   const c = cells[slot.id];
   if (!c) {
@@ -458,9 +473,7 @@ function cellInner(slot) {
       <div class="mc-mv-cell-label" title="${esc(c.label || '')}">${esc(c.label || t('mc.mv.screen_share'))}</div>
       ${handlesHtml()}`;
   }
-  const thumb = c.thumb
-    ? `<img class="mc-mv-cell-thumb" src="${esc(c.thumb)}" alt="" loading="lazy">`
-    : `<span class="mc-mv-cell-ico" aria-hidden="true">${IC[c.category] || IC.generic}</span>`;
+  const preview = cellPreviewHtml(c);
   const monitoring = monitorSlot === slot.id;
   const listenBtn = c.monitorUrl
     ? `<button type="button" class="mc-mv-cell-btn mc-mv-listen${monitoring ? ' active' : ''}"
@@ -485,7 +498,7 @@ function cellInner(slot) {
        title="${esc(filling ? t('mc.mv.fit_to') : t('mc.mv.fill_to'))}"
        aria-pressed="${filling ? 'false' : 'true'}">${filling ? IC.fill : IC.fit}</button>`;
   return `
-    ${thumb}
+    ${preview}
     <div class="mc-mv-cell-actions">
       ${fitBtn}
       ${listenBtn}
