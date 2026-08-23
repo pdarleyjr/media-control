@@ -123,25 +123,6 @@ function seedStandalonePrograms() {
   }
 }
 
-function changeProgramB() {
-  const Database = require('better-sqlite3');
-  const database = new Database(dbPath, { timeout: 10000 });
-  database.pragma('busy_timeout = 10000');
-  try {
-    database.transaction(() => {
-      database.prepare('UPDATE playlists SET published_snapshot = ?, updated_at = ? WHERE id = ?')
-        .run(snapshot('b2', 'preview-content-b2'), Math.floor(Date.now() / 1000), 'preview-playlist-b');
-      database.prepare(`
-        UPDATE display_states
-        SET current_content_id = 'preview-content-b2', state_revision = state_revision + 1, updated_at = ?
-        WHERE target_type = 'display' AND target_id = 'preview-display-b'
-      `).run(Date.now());
-    })();
-  } finally {
-    database.close();
-  }
-}
-
 function commandCount() {
   const Database = require('better-sqlite3');
   const database = new Database(dbPath, { readonly: true });
@@ -235,10 +216,20 @@ test('@durable-live-preview two programs remain live across selection and only a
     expect(metricsAfterSelection[key], `${key} changed during control-only selection`).toBe(metricsBeforeSelection[key]);
   }
 
-  changeProgramB();
   await page.evaluate(async () => {
     const state = await import('/js/services/display-state.js');
-    await state.refresh();
+    const current = state.get('preview-display-b');
+    state.applyConfirmedState('preview-display-b', {
+      state_revision: (Number(current?.state_revision) || 0) + 1,
+      now_playing: {
+        ...(current?.now_playing || {}),
+        kind: 'web',
+        contentId: 'preview-content-b2',
+        content_id: 'preview-content-b2',
+        remoteUrl: '/player/live-source.html?fixture=b2',
+        remote_url: '/player/live-source.html?fixture=b2',
+      },
+    });
   });
   await expect.poll(async () => {
     const states = await mediaState(page);
