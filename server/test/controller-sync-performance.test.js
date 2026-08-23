@@ -244,6 +244,8 @@ test('split image cells replace a stale prior-media screenshot with current cont
   const player = read('server/player/index.html');
 
   assert.match(displays, /new Set\(\['image', 'video', 'web', 'youtube', 'pdf', 'document'\]\)/);
+  assert.match(displays, /contentVisibilityScope\(contextFromRequest\(req\), \{ alias: 'c' \}\)/);
+  assert.match(displays, /posterStmt\.get\(np\.contentId, \.\.\.posterVisibility\.params\)/);
   assert.match(stage, /kind === 'image'[\s\S]*age > STALE_AFTER_S/);
   assert.match(stage, /content-bound poster is safer than pixels left over from the previous item/);
   assert.match(player, /img\.crossOrigin = 'anonymous'/);

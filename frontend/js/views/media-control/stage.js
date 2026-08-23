@@ -413,7 +413,7 @@ function wallCard(wall, byId, livePreviewDeviceId = null, overviewMode = false) 
         ${spanLayer}
         ${cells.join('')}
       </div>
-      <div class="mc-wall-all" data-wall-ids="${esc(ids)}">
+      <div class="mc-wall-all" data-wall-id="${esc(wall.id)}" data-wall-ids="${esc(ids)}">
         <span class="mc-wall-all-ico" aria-hidden="true">${ICON_WALL_ALL}</span>
         <span>${esc(fillLabel)}</span>
       </div>
@@ -425,6 +425,7 @@ function wallGroupsCard(wall, byId, livePreviewDeviceId, activeControlTargetId, 
   const orderedMembers = [...(wall.devices || [])].sort((a, b) =>
     (Number(a.grid_row) - Number(b.grid_row)) || (Number(a.grid_col) - Number(b.grid_col))
   );
+  const wallMemberIds = [...new Set(orderedMembers.map((member) => member.device_id).filter(Boolean))].join(',');
   const regions = groups.map((group) => {
     const memberIds = new Set(group.member_ids || []);
     const members = orderedMembers.filter((member) => memberIds.has(member.device_id));
@@ -458,6 +459,10 @@ function wallGroupsCard(wall, byId, livePreviewDeviceId, activeControlTargetId, 
       <span>Select a region to control or drop content directly onto it.</span>
     </header>
     <div class="mc-wall-groups-regions">${regions}</div>
+    <div class="mc-wall-all" data-wall-id="${esc(wall.id)}" data-wall-ids="${esc(wallMemberIds)}">
+      <span class="mc-wall-all-ico" aria-hidden="true">${ICON_WALL_ALL}</span>
+      <span>${esc(t('mc.wall.fill_all'))}</span>
+    </div>
   </section>`;
 }
 

@@ -1836,7 +1836,7 @@ function attachStageDrop(stageContainer) {
       if (!ids.length) { showToast(t('mc.send.no_displays'), 'error'); return; }
       if (forcesSingleScreen(parsed.source)) {
         // Website → one screen only. Prefer a live wall member, else the first member.
-        const wallId = zone.closest('.mc-wall[data-wall-id]')?.dataset.wallId;
+        const wallId = zone.dataset.wallId || zone.closest('.mc-wall[data-wall-id]')?.dataset.wallId;
         const wall = (walls || []).find((w) => w.id === wallId);
         const single = wallTransportDeviceId(wall) || ids[0];
         showToast(t('mc.route.single_screen_only'), 'info');

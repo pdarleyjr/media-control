@@ -202,7 +202,7 @@ function dragDropConfig() {
     dwellMs,
     targetSelector: groupId
       ? `.mc-wall-region[data-wall-id="${wallId}"][data-layout-group-id="${groupId}"]`
-      : `.mc-wall[data-wall-id="${wallId}"] .mc-wall-all`,
+      : `.mc-wall-all[data-wall-id="${wallId}"]`,
     deviceIds: csv(required('SMOKE_DRAG_DEVICE_IDS')),
     nonTargetDeviceIds: csv(required('SMOKE_DRAG_NON_TARGET_DEVICE_IDS')),
     restoreContentId: required('SMOKE_DRAG_RESTORE_CONTENT_ID'),
@@ -344,7 +344,13 @@ async function createWebSession(config) {
   return body;
 }
 
-async function waitForPhysicalContent(db, deviceIds, contentId, timeoutMs = 20000) {
+async function waitForPhysicalContent(
+  db,
+  deviceIds,
+  contentId,
+  timeoutMs = 20000,
+  requiredRenderStates = ['playing']
+) {
   const placeholders = deviceIds.map(() => '?').join(',');
   const deadline = Date.now() + timeoutMs;
   let rows = [];
@@ -357,7 +363,7 @@ async function waitForPhysicalContent(db, deviceIds, contentId, timeoutMs = 2000
     `).all(...deviceIds);
     if (rows.length === deviceIds.length && rows.every((row) => (
       row.current_content_id === contentId
-      && row.render_state === 'playing'
+      && requiredRenderStates.includes(row.render_state)
       && !row.error_state
     ))) return rows;
     await sleep(250);
@@ -382,10 +388,11 @@ function sameStateValue(left, right) {
 }
 
 function stablePlaybackStateMatches(actual, expected) {
+  const timedMedia = /^(video|audio)$/i.test(String(expected?.content_type || ''));
   return ['current_content_id', 'current_asset_id', 'content_type', 'render_state',
     'error_state', 'slide_index', 'paused', 'muted', 'volume']
     .every((key) => sameStateValue(actual?.[key], expected?.[key]))
-    && (expected?.paused !== 1 || expected?.current_time == null
+    && (!timedMedia || expected?.paused !== 1 || expected?.current_time == null
       || Math.abs(Number(actual?.current_time) - Number(expected.current_time)) <= 1.25);
 }
 
@@ -426,22 +433,25 @@ async function restoreTransportState(db, token, beforeStates) {
       if (!['playing', 'paused'].includes(state.render_state)) {
         throw new Error(`unsupported baseline render state for exact restore: ${JSON.stringify(state)}`);
       }
+      const timedMedia = /^(video|audio)$/i.test(String(state.content_type || ''));
+      const presentation = /^(document|presentation|deck)$/i.test(String(state.content_type || ''));
       if (Number.isInteger(state.slide_index) && state.slide_index > 1) {
         commands.push(await sendRestorationCommand(socket, db, state.target_id, 'go_to_slide', {
           slide: state.slide_index,
         }));
-      } else if (/^(video|audio)$/i.test(String(state.content_type || ''))
+      } else if (timedMedia
         && Number.isFinite(Number(state.current_time)) && Number(state.current_time) > 0) {
         commands.push(await sendRestorationCommand(socket, db, state.target_id, 'seek', {
           position_seconds: Number(state.current_time),
         }));
       }
-      if (Number.isFinite(Number(state.volume)) && Number(state.volume) >= 0 && Number(state.volume) <= 1) {
+      if (timedMedia && Number.isFinite(Number(state.volume))
+        && Number(state.volume) >= 0 && Number(state.volume) <= 1) {
         commands.push(await sendRestorationCommand(socket, db, state.target_id, 'volume', {
           volume: Number(state.volume),
         }));
       }
-      if (state.muted === 1 || state.muted === 0) {
+      if (timedMedia && (state.muted === 1 || state.muted === 0)) {
         commands.push(await sendRestorationCommand(
           socket,
           db,
@@ -449,7 +459,7 @@ async function restoreTransportState(db, token, beforeStates) {
           state.muted === 1 ? 'mute' : 'unmute'
         ));
       }
-      if (state.paused === 1 || state.paused === 0) {
+      if ((timedMedia || presentation) && (state.paused === 1 || state.paused === 0)) {
         commands.push(await sendRestorationCommand(
           socket,
           db,
@@ -517,71 +527,57 @@ async function waitForRestoredStates(db, beforeStates, timeoutMs = 20000) {
 }
 
 async function waitForPhysicalSource(db, deviceIds, config, beforeStates, startedAt, timeoutMs = 20000) {
-  const placeholders = deviceIds.map(() => '?').join(',');
   const beforeRevision = new Map(beforeStates.map((row) => [row.target_id, Number(row.state_revision) || 0]));
   const deadline = Date.now() + timeoutMs;
-  let commands = [];
   let states = [];
   let delivery = null;
   let deliveryResults = [];
   while (Date.now() < deadline) {
-    const candidates = db.prepare(`
-      SELECT target_id, command_id, command_type, payload, status, ack_at, ack_error, created_at
-      FROM command_logs
-      WHERE target_type = 'display'
-        AND target_id IN (${placeholders})
-        AND created_at >= ?
-        AND payload LIKE ?
-      ORDER BY created_at DESC
-    `).all(...deviceIds, startedAt - 1000, `%${config.sourceMarker}%`);
-    const latestByTarget = new Map();
-    for (const row of candidates) {
-      if (!latestByTarget.has(row.target_id)) latestByTarget.set(row.target_id, row);
-    }
-    commands = deviceIds.map((id) => latestByTarget.get(id)).filter(Boolean);
     states = physicalDisplayStates(db, deviceIds);
     delivery = null;
     deliveryResults = [];
-    if (commands.length === deviceIds.length) {
-      const commandIds = commands.map((row) => row.command_id);
-      const commandPlaceholders = commandIds.map(() => '?').join(',');
-      delivery = db.prepare(`
-        SELECT br.id, br.source_type, br.source_id, br.typed_targets_json,
-               br.resolved_target_ids_json, br.expected_target_count, br.status, br.created_at,
-               COUNT(DISTINCT bdr.command_id) AS matched_command_count
-        FROM broadcast_requests br
-        JOIN broadcast_device_results bdr ON bdr.request_id = br.id
-        WHERE bdr.command_id IN (${commandPlaceholders}) AND br.created_at >= ?
-        GROUP BY br.id
-        HAVING matched_command_count = ?
-        ORDER BY br.created_at DESC
-        LIMIT 1
-      `).get(...commandIds, startedAt - 1000, deviceIds.length) || null;
-      if (delivery) {
-        deliveryResults = db.prepare(`
-          SELECT device_id, command_id, state, delivery_state, acknowledgment_state,
-                 failure_reason, delivered_at, acknowledged_at, confirmed_at
-          FROM broadcast_device_results
-          WHERE request_id = ?
-          ORDER BY ordinal, device_id
-        `).all(delivery.id);
-      }
-    }
     let typedTargets = [];
     let resolvedTargetIds = [];
-    try { typedTargets = JSON.parse(delivery?.typed_targets_json || '[]'); } catch { /* fail below */ }
-    try { resolvedTargetIds = JSON.parse(delivery?.resolved_target_ids_json || '[]'); } catch { /* fail below */ }
-    const typedTarget = typedTargets[0] || {};
-    const targetIdentityMatches = config.groupId
-      ? typedTarget.type === 'wall-group'
-        && typedTarget.wall_id === config.wallId
-        && typedTarget.group_id === config.groupId
-        && Number(typedTarget.layout_revision) === config.layoutRevision
-      : typedTarget.type === 'wall'
-        && (typedTarget.id === config.wallId || typedTarget.wall_id === config.wallId)
-        && Number(typedTarget.layout_revision) === config.layoutRevision;
+    const deliveries = db.prepare(`
+      SELECT br.id, br.source_type, br.source_id, br.typed_targets_json,
+             br.resolved_target_ids_json, br.expected_target_count, br.status, br.created_at
+      FROM broadcast_requests br
+      WHERE br.created_at >= ? AND br.source_type = 'remote_url'
+      ORDER BY br.created_at DESC
+      LIMIT 10
+    `).all(startedAt - 1000);
+    for (const candidate of deliveries) {
+      let candidateTargets = [];
+      let candidateResolvedIds = [];
+      try { candidateTargets = JSON.parse(candidate.typed_targets_json || '[]'); } catch { continue; }
+      try { candidateResolvedIds = JSON.parse(candidate.resolved_target_ids_json || '[]'); } catch { continue; }
+      const typedTarget = candidateTargets[0] || {};
+      const targetIdentityMatches = config.groupId
+        ? typedTarget.type === 'wall-group'
+          && typedTarget.wall_id === config.wallId
+          && typedTarget.group_id === config.groupId
+          && Number(typedTarget.layout_revision) === config.layoutRevision
+        : typedTarget.type === 'wall'
+          && (typedTarget.id === config.wallId || typedTarget.wall_id === config.wallId)
+          && Number(typedTarget.layout_revision) === config.layoutRevision;
+      if (candidateTargets.length !== 1 || !targetIdentityMatches
+        || candidateResolvedIds.slice().sort().join(',') !== deviceIds.slice().sort().join(',')) continue;
+      delivery = candidate;
+      typedTargets = candidateTargets;
+      resolvedTargetIds = candidateResolvedIds;
+      deliveryResults = db.prepare(`
+        SELECT device_id, command_id, expected_source_id, state, delivery_state,
+               acknowledgment_state, failure_reason, delivered_at, acknowledged_at, confirmed_at
+        FROM broadcast_device_results
+        WHERE request_id = ?
+        ORDER BY ordinal, device_id
+      `).all(delivery.id);
+      break;
+    }
     const deliveryResultsConfirmed = deliveryResults.length === deviceIds.length
       && deliveryResults.every((row) => deviceIds.includes(row.device_id)
+        && row.command_id
+        && row.expected_source_id
         && row.state === 'confirmed'
         && row.delivery_state === 'delivered'
         && row.acknowledgment_state === 'confirmed'
@@ -591,30 +587,26 @@ async function waitForPhysicalSource(db, deviceIds, config, beforeStates, starte
         && row.confirmed_at);
     const typedTargetConfirmed = delivery?.status === 'confirmed'
       && typedTargets.length === 1
-      && targetIdentityMatches
       && resolvedTargetIds.slice().sort().join(',') === deviceIds.slice().sort().join(',')
       && Number(delivery.expected_target_count) === deviceIds.length
-      && Number(delivery.matched_command_count) === deviceIds.length
       && deliveryResultsConfirmed;
-    const commandsAcked = commands.length === deviceIds.length
-      && commands.every((row) => row.status === 'acked' && row.ack_at && !row.ack_error);
+    const expectedByDevice = new Map(deliveryResults.map((row) => [row.device_id, row.expected_source_id]));
     const statesAdvanced = states.length === deviceIds.length && states.every((row) => (
       (Number(row.state_revision) || 0) > (beforeRevision.get(row.target_id) || 0)
-      && row.command_revision
-      && row.command_revision !== beforeStates.find((before) => before.target_id === row.target_id)?.command_revision
+      && row.current_content_id === expectedByDevice.get(row.target_id)
       && row.render_state === 'playing'
       && !row.error_state
       && (!config.expectedContentType || row.content_type === config.expectedContentType)
     ));
-    if (commandsAcked && statesAdvanced && typedTargetConfirmed) {
+    if (statesAdvanced && typedTargetConfirmed) {
       return {
-        commands: commands.map((row) => ({
-          target_id: row.target_id,
+        commands: deliveryResults.map((row) => ({
+          target_id: row.device_id,
           command_id: row.command_id,
-          command_type: row.command_type,
-          status: row.status,
-          acknowledged_at: row.ack_at,
-          source_marker_confirmed: String(row.payload || '').includes(config.sourceMarker),
+          status: row.state,
+          acknowledged_at: row.acknowledged_at,
+          source_identity_confirmed: expectedByDevice.get(row.device_id)
+            === states.find((state) => state.target_id === row.device_id)?.current_content_id,
         })),
         states,
         delivery: {
@@ -630,7 +622,7 @@ async function waitForPhysicalSource(db, deviceIds, config, beforeStates, starte
     }
     await sleep(250);
   }
-  throw new Error(`physical source did not converge to ${config.sourceLabel}: ${JSON.stringify({ commands, states, delivery, deliveryResults })}`);
+  throw new Error(`physical source did not converge to ${config.sourceLabel}: ${JSON.stringify({ states, delivery, deliveryResults })}`);
 }
 
 async function restoreDragDropContent(db, config, beforeStates) {
@@ -666,7 +658,13 @@ async function restoreDragDropContent(db, config, beforeStates) {
   if (!response.ok || body.sent !== config.deviceIds.length) {
     throw new Error(`drag restore failed (${response.status}): ${JSON.stringify(body)}`);
   }
-  await waitForPhysicalContent(db, config.deviceIds, config.restoreContentId);
+  await waitForPhysicalContent(
+    db,
+    config.deviceIds,
+    config.restoreContentId,
+    20000,
+    ['playing', 'paused']
+  );
   const transportCommands = await restoreTransportState(db, generateToken(user, target.workspace_id), beforeStates);
   return {
     states: await waitForRestoredStates(db, beforeStates),

@@ -47,12 +47,16 @@ test('multiview remains reachable inside the fixed command center viewport', () 
 
 test('podium library drag and drop preserves the source contract through physical wall verification', () => {
   const toolbox = read('frontend/js/views/media-control/toolbox.js');
+  const stage = read('frontend/js/views/media-control/stage.js');
   const view = read('frontend/js/views/media-control.js');
   const smoke = read('scripts/live-console-ui-smoke.js');
 
   assert.match(toolbox, /draggable="true"[\s\S]*?data-drag-source=/);
   assert.match(toolbox, /addEventListener\('dragstart'[\s\S]*?application\/x-mc-source/);
   assert.match(view, /\.mc-wall-all\[data-wall-ids\][\s\S]*?addEventListener\('drop'/);
+  assert.match(stage, /mc-wall-groups-overview[\s\S]*?class="mc-wall-all"[\s\S]*?data-wall-id="\$\{esc\(wall\.id\)\}"/);
+  assert.match(stage, /data-wall-id="\$\{esc\(wall\.id\)\}" data-wall-ids="\$\{esc\(wallMemberIds\)\}"/);
+  assert.match(view, /zone\.dataset\.wallId \|\| zone\.closest\('\.mc-wall\[data-wall-id\]'\)/);
   assert.match(smoke, /new DragEvent\('dragstart'/);
   assert.match(smoke, /new DragEvent\('drop'/);
   assert.match(smoke, /SMOKE_DRAG_CONTENT_ID/);
@@ -74,12 +78,20 @@ test('podium library drag and drop preserves the source contract through physica
   assert.match(smoke, /type:\s*'wall-group'/);
   assert.match(smoke, /layout_revision:\s*config\.layoutRevision/);
   assert.match(smoke, /restoreDragDropContent\(db, dragConfig, beforeState\)/);
+  assert.match(smoke, /requiredRenderStates\.includes\(row\.render_state\)/);
+  assert.match(smoke, /config\.restoreContentId,[\s\S]*?\['playing', 'paused'\]/);
   assert.match(smoke, /waitForRestoredStates\(db, beforeStates\)/);
+  assert.match(smoke, /const timedMedia = \/\^\(video\|audio\)\$\/i\.test\(String\(expected\?\.content_type \|\| ''\)\)/);
+  assert.match(smoke, /!timedMedia \|\| expected\?\.paused !== 1/);
   assert.match(smoke, /restoreTransportState\(db, generateToken\(user, target\.workspace_id\), beforeStates\)/);
+  assert.match(smoke, /const timedMedia = \/\^\(video\|audio\)\$\/i/);
+  assert.match(smoke, /const presentation = \/\^\(document\|presentation\|deck\)\$\/i/);
+  assert.match(smoke, /if \(timedMedia && \(state\.muted === 1 \|\| state\.muted === 0\)\)/);
   assert.match(smoke, /state\.muted === 1 \? 'mute' : 'unmute'/);
   assert.match(smoke, /state\.paused === 1 \? 'pause' : 'play'/);
   assert.match(smoke, /action, command_id: envelope\.command_id, acknowledged_at: row\.ack_at/);
-  assert.match(smoke, /JOIN broadcast_device_results bdr ON bdr\.request_id = br\.id/);
+  assert.match(smoke, /FROM broadcast_requests br[\s\S]*?br\.source_type = 'remote_url'/);
+  assert.match(smoke, /row\.current_content_id === expectedByDevice\.get\(row\.target_id\)/);
   assert.match(smoke, /row\.acknowledgment_state === 'confirmed'/);
   assert.match(smoke, /proveStableSourcePlayback\(db, dragConfig/);
   assert.match(smoke, /fs\.mkdtempSync\(path\.join\(os\.tmpdir\(\), 'mbfd-console-evidence-'\)\)/);
