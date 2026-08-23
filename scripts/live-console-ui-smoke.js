@@ -182,6 +182,29 @@ function csv(value) {
   return String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
 }
 
+function openAcceptanceDatabase() {
+  const Database = require('../server/node_modules/better-sqlite3');
+  const dbPath = String(process.env.DB_PATH || '').trim();
+  if (!dbPath) throw new Error('DB_PATH is required for live drag/drop acceptance');
+  return new Database(dbPath, { readonly: true, fileMustExist: true });
+}
+
+function generateAcceptanceToken(user, currentWorkspaceId) {
+  const jwt = require('../server/node_modules/jsonwebtoken');
+  const config = require('../server/config');
+  return jwt.sign(
+    {
+      id: user.id,
+      email: user.email,
+      username: user.username || null,
+      role: user.role,
+      current_workspace_id: currentWorkspaceId || null,
+    },
+    config.jwtSecret,
+    { algorithm: 'HS256', expiresIn: config.jwtExpiry }
+  );
+}
+
 function dragDropConfig() {
   const contentId = String(process.env.SMOKE_DRAG_CONTENT_ID || '').trim();
   const sourceLabel = String(process.env.SMOKE_DRAG_SOURCE_LABEL || '').trim();
@@ -630,7 +653,6 @@ async function restoreDragDropContent(db, config, beforeStates) {
     `drag restore baseline is incomplete: ${JSON.stringify(beforeStates)}`);
   assert(beforeStates.every((row) => row.current_content_id === config.restoreContentId),
     `SMOKE_DRAG_RESTORE_CONTENT_ID does not match the live baseline: ${JSON.stringify(beforeStates)}`);
-  const { generateToken } = require('../server/middleware/auth');
   const user = db.prepare('SELECT * FROM users WHERE lower(email) = ?').get(config.restoreUserEmail);
   if (!user) throw new Error(`drag restore user not found: ${config.restoreUserEmail}`);
   const target = db.prepare('SELECT workspace_id FROM devices WHERE id = ?').get(config.deviceIds[0]);
@@ -646,10 +668,11 @@ async function restoreDragDropContent(db, config, beforeStates) {
         layout_revision: config.layoutRevision,
       }
     : { type: 'wall', id: config.wallId, layout_revision: config.layoutRevision };
+  const token = generateAcceptanceToken(user, target.workspace_id);
   const response = await fetch('http://127.0.0.1:3001/api/broadcast', {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${generateToken(user, target.workspace_id)}`,
+      Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ content_id: config.restoreContentId, targets: [restoreTarget] }),
@@ -665,7 +688,7 @@ async function restoreDragDropContent(db, config, beforeStates) {
     20000,
     ['playing', 'paused']
   );
-  const transportCommands = await restoreTransportState(db, generateToken(user, target.workspace_id), beforeStates);
+  const transportCommands = await restoreTransportState(db, token, beforeStates);
   return {
     states: await waitForRestoredStates(db, beforeStates),
     transport_commands: transportCommands,
@@ -695,7 +718,7 @@ async function main() {
   if (!loginConfig && !deviceToken) throw new Error('CONSOLE_DEVICE_TOKEN or SMOKE_LOGIN_IDENTIFIER is required');
   const webSession = loginConfig ? await createWebSession(loginConfig) : null;
   const dragConfig = dragDropConfig();
-  const dragDb = dragConfig ? require('../server/db/database').db : null;
+  const dragDb = dragConfig ? openAcceptanceDatabase() : null;
   const evidenceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-console-evidence-'));
   const screenshotName = path.basename(String(process.env.SMOKE_SCREENSHOT_PATH || 'console-ui-smoke.png'));
   const screenshotPath = path.join(evidenceDir, screenshotName);
@@ -806,6 +829,21 @@ async function main() {
     let dragDrop = null;
     if (dragConfig) {
       const db = dragDb;
+      const configuredWallTarget = `wall:${dragConfig.wallId}`;
+      const selectedConfiguredWall = await evaluate(cdp, `(() => {
+        const button = [...document.querySelectorAll('.mc-target-wall-btn[data-target-value]')]
+          .find((item) => item.dataset.targetValue === ${JSON.stringify(configuredWallTarget)});
+        if (!button) return false;
+        if (!button.classList.contains('is-active')) button.click();
+        return true;
+      })()`);
+      assert(selectedConfiguredWall, `configured wall tab is missing: ${configuredWallTarget}`);
+      await waitFor(cdp, `(() => {
+        const button = [...document.querySelectorAll('.mc-target-wall-btn[data-target-value]')]
+          .find((item) => item.dataset.targetValue === ${JSON.stringify(configuredWallTarget)});
+        return !!button?.classList.contains('is-active')
+          && !!document.querySelector(${JSON.stringify(dragConfig.targetSelector)});
+      })()`, 'configured wall target', 30000);
       if (dragConfig.sourceLabel) {
         const opened = await evaluate(cdp, `(() => {
           const tab = document.querySelector('.mc-tb-tab[data-tab="camerafeeds"]');
@@ -914,6 +952,9 @@ async function main() {
           dragDrop = { ...(dragDrop || {}), restored_state: restoredState };
         }
       }
+
+      dragDrop = { ...(dragDrop || {}), mouse_to_touch_settle_ms: 2000 };
+      await sleep(dragDrop.mouse_to_touch_settle_ms);
 
       let touchDispatched = false;
       let beforeTouchState = [];
@@ -1276,6 +1317,7 @@ async function main() {
         await sleep(250);
       }
     }
+    dragDb?.close();
   }
 }
 

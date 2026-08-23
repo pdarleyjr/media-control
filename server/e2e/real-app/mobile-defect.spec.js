@@ -174,6 +174,52 @@ async function openAuthedControl(browser, contextOptions = {}) {
   return { context, page };
 }
 
+async function waitForCommandCenterVisualReady(page) {
+  await page.evaluate(async () => {
+    if (document.fonts && document.fonts.ready) await document.fonts.ready;
+    await Promise.all(Array.from(document.images, (image) => {
+      if (image.complete) return undefined;
+      return new Promise((resolve) => {
+        image.addEventListener('load', resolve, { once: true });
+        image.addEventListener('error', resolve, { once: true });
+      });
+    }));
+  });
+
+  await expect.poll(async () => page.locator('.mc-cam-health-label').textContent())
+    .not.toMatch(/^\s*(?:Checking cameras)?\s*$/);
+  await expect.poll(async () => page.locator('[data-live-state]').textContent())
+    .not.toMatch(/^\s*(?:—)?\s*$/);
+
+  const deadline = Date.now() + 15000;
+  let previousGeometry = '';
+  let stableSamples = 0;
+  while (Date.now() < deadline) {
+    const geometry = await page.evaluate(() => {
+      const selectors = [
+        '.mc-cc-main',
+        '.mc-stage.mc-cc-canvas',
+        '.mc-wall-grid',
+        '.mc-cc-controls',
+        '.mc-action-dock',
+      ];
+      return selectors.map((selector) => {
+        const element = document.querySelector(selector);
+        if (!element) return `${selector}:missing`;
+        const box = element.getBoundingClientRect();
+        return [selector, box.x, box.y, box.width, box.height]
+          .map((value) => typeof value === 'number' ? value.toFixed(2) : value)
+          .join(':');
+      }).join('|');
+    });
+    stableSamples = geometry === previousGeometry ? stableSamples + 1 : 1;
+    if (stableSamples >= 4) return;
+    previousGeometry = geometry;
+    await page.waitForTimeout(250);
+  }
+  throw new Error('Command Center geometry did not settle before visual capture');
+}
+
 test.describe.configure({ mode: 'serial' });
 
 test.describe('Mobile operator console — defect reproduction + acceptance', () => {
@@ -1390,7 +1436,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
         hasTouch: visual.mobile,
         deviceScaleFactor: visual.mobile ? 1.6 : 1,
       });
-      await page.waitForTimeout(500);
+      await waitForCommandCenterVisualReady(page);
       await expect(page).toHaveScreenshot(`command-center-${visual.name}-${testInfo.project.name}.png`, {
         animations: 'disabled',
         caret: 'hide',
