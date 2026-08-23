@@ -16,7 +16,7 @@ import { t, tn } from '../../i18n.js';
 import { api } from '../../api.js';
 import { sendToDisplays, sentToast, trackBroadcastDelivery } from './send.js';
 import { showToast } from '../../components/toast.js';
-import { renderCameraFeedsTab } from './camera-feeds.js';
+import { renderLiveFeedsTab, renderManagedSourcesTab } from './camera-feeds.js';
 
 let activeTab = 'videos';
 
@@ -628,7 +628,7 @@ async function renderSourcesCategory(container, options) {
   const nextcloudHost = container.querySelector('.mc-tb-nextcloud-source .mc-tb-category-host');
   renderYouTubeTab(urlHost, options);
   await Promise.all([
-    renderCameraFeedsTab(managedHost, options),
+    renderManagedSourcesTab(managedHost, options),
     renderNextcloudTab(nextcloudHost, options),
   ]);
 }
@@ -823,7 +823,7 @@ async function loadTab(tabId, tabBody, options, context = {}) {
       await renderSourcesCategory(renderHost, { selectedIds, onAfterSend, onRouteSource, onRouteNextcloud });
       break;
     case 'livefeeds':
-      await renderCameraFeedsTab(renderHost, { selectedIds, onAfterSend, onRouteSource });
+      renderLiveFeedsTab(renderHost, { selectedIds, onAfterSend, onRouteSource });
       break;
     case 'additional':
       await renderAdditionalCategory(renderHost, { selectedIds, onAfterSend, onRouteSource });

@@ -620,6 +620,53 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await context.close();
   });
 
+  test('Sources and Live Feeds use disjoint catalogs and one managed refresh lifecycle', async ({ browser }) => {
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 838, height: 500 },
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: true,
+    });
+    const managedRequestTimes = [];
+    await page.route('**/api/live-sources*', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname !== '/api/live-sources') return route.continue();
+      managedRequestTimes.push(Date.now());
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          edge_available: true,
+          sources: [
+            { id: 'anpviz', available: true, signal: { video_online: true, microphone_connected: true, audio_online: true } },
+            { id: 'guest-computer', available: true, signal: { resolution: '1920x1080', frame_rate: 60, embedded_audio_detected: true } },
+          ],
+        }),
+      });
+    });
+    await page.reload({ waitUntil: 'networkidle' });
+    await waitForCommandCenterVisualReady(page);
+    await page.locator('#mc-library-drawer > [data-library-toggle]').click();
+    await page.locator('.mc-tb-tab[data-tab="sources"]').click();
+
+    await expect(page.locator('#mc-toolbox .mc-live-source-tile')).toHaveCount(2);
+    await expect(page.locator('#mc-toolbox .mc-live-news-tile')).toHaveCount(0);
+    await expect(page.locator('#mc-toolbox')).not.toContainText('CBS News Miami');
+    await expect(page.locator('#mc-toolbox')).not.toContainText('1st Street Beach');
+    await expect.poll(() => managedRequestTimes.length, { timeout: 7_000 }).toBe(2);
+    expect(managedRequestTimes[1] - managedRequestTimes[0], 'managed catalog retains its five-second cadence').toBeGreaterThanOrEqual(4_500);
+
+    await page.locator('.mc-tb-tab[data-tab="livefeeds"]').click();
+    await expect(page.locator('#mc-toolbox .mc-live-source-tile')).toHaveCount(0);
+    await expect(page.locator('#mc-toolbox .mc-live-news-tile')).toHaveCount(12);
+    await expect(page.locator('#mc-toolbox')).toContainText('CBS News Miami');
+    await expect(page.locator('#mc-toolbox')).toContainText('1st Street Beach');
+    const requestsAtLiveFeeds = managedRequestTimes.length;
+    await page.waitForTimeout(5_500);
+    expect(managedRequestTimes.length, 'public Live Feeds does not start or retain a managed-source poller').toBe(requestsAtLiveFeeds);
+    await context.close();
+  });
+
   test('large shelf cards preserve fallback, pagination, drag payload, and tap routing', async ({ browser }, testInfo) => {
     const { context, page } = await openAuthedControl(browser, {
       viewport: { width: 838, height: 500 },

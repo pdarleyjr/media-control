@@ -532,7 +532,7 @@ test.describe('Phase 1 — Feature flag OFF: real app loads correctly', () => {
     assertNoErrors(errors, 'direct Camera-panel navigation');
   });
 
-  test('1i. Live News stays open across refresh and Miami Beach webcams are organized separately', async ({ page }) => {
+  test('1i. Public Live Feeds stay separate from managed Sources and preserve disclosure state', async ({ page }) => {
     const errors = attachErrorCollectors(page);
     await setupAuth(page);
     await page.goto(`${BASE_URL}/app#/control?panel=cameras`);
@@ -544,8 +544,8 @@ test.describe('Phase 1 — Feature flag OFF: real app loads correctly', () => {
     await expect(liveNews.locator('.mc-news-feed-section')).toHaveCount(3);
     await expect(liveNews.locator('.mc-live-news-tile')).toHaveCount(7);
 
-    // The source inventory refreshes every five seconds. The disclosure must
-    // retain an explicit operator close when the DOM is replaced by that refresh.
+    // Public catalogs have no managed-source refresh lifecycle. An explicit
+    // operator close therefore remains stable across the former poll interval.
     await liveNews.locator('summary').click();
     await expect(liveNews).toHaveJSProperty('open', false);
     await page.waitForTimeout(6_250);
