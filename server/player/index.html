@@ -3978,13 +3978,30 @@
     }
 
     // ==================== Content Rendering ====================
+    function safeMediaUrl(rawUrl) {
+      try {
+        const raw = String(rawUrl || '').trim();
+        if (!raw || /[\\\u0000-\u001f]/.test(raw)) return '';
+        const candidate = new URL(raw, window.location.href);
+        if (
+          (candidate.protocol !== 'http:' && candidate.protocol !== 'https:')
+          || candidate.username
+          || candidate.password
+        ) return '';
+        return candidate.href;
+      } catch {
+        return '';
+      }
+    }
+
     function contentSrcForItem(item) {
       if (!item) return '';
-      if (item.asset_url) return item.asset_url;
-      if (item.remote_url) return item.remote_url;
-      if (item.content_id) return `${config.serverUrl}/api/content/${encodeURIComponent(item.content_id)}/file`;
-      if (item.filepath) return `${config.serverUrl}/uploads/content/${item.filepath}`;
-      return '';
+      let raw = '';
+      if (item.asset_url) raw = item.asset_url;
+      else if (item.remote_url) raw = item.remote_url;
+      else if (item.content_id) raw = `${config.serverUrl}/api/content/${encodeURIComponent(item.content_id)}/file`;
+      else if (item.filepath) raw = `${config.serverUrl}/uploads/content/${item.filepath}`;
+      return safeMediaUrl(raw);
     }
 
     function resolveCaptionTrackUrl(rawUrl, baseUrl) {
@@ -4724,8 +4741,8 @@
             failPendingBroadcastElement(img, 'Image failed to load');
             if (!isFollower) advanceTimer = setTimeout(nextItem, 3000);
           });
-          img.src = src;
           mount.appendChild(img);
+          img.src = src;
           // Leader/solo rotates multi-item slide shows. A single sticky image
           // must NOT timer-advance (would black-flash every duration_sec).
           if (!isFollower && playlist.length > 1) {
