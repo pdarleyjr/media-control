@@ -3,7 +3,7 @@
 // optimizations between monotonic room revisions.
 import { api } from '../api.js';
 import { on as onSocket, roomState } from '../socket.js';
-import { projectRoomDisplays } from './room-display-projection.js';
+import { projectRoomDisplays, projectStateSyncNowPlaying } from './room-display-projection.js';
 import { mergeDisplayList, mergeDisplayRecord } from './display-state-revision.js';
 
 let displays = new Map();          // id -> display state
@@ -259,17 +259,7 @@ function ensureWired() {
     const cur = displays.get(id);
     if (!cur) return;
     const state = d.state && typeof d.state === 'object' ? d.state : d;
-    const npPatch = { ...(cur.now_playing || {}) };
-    if (state.current_content_id) {
-      npPatch.contentId = state.current_content_id;
-      npPatch.content_id = state.current_content_id;
-    }
-    if (state.media_title) npPatch.label = state.media_title;
-    if (state.content_type) npPatch.kind = state.content_type;
-    if (state.paused !== undefined) npPatch.paused = !!state.paused;
-    if (state.slide_index != null) npPatch.slideIndex = state.slide_index;
-    if (state.slide_count != null) npPatch.slideCount = state.slide_count;
-    else if (state.slide_total != null) npPatch.slideCount = state.slide_total;
+    const npPatch = projectStateSyncNowPlaying(cur.now_playing, state);
     merge(id, { ...state, now_playing: npPatch });
   });
   // Pairing can happen from either the legacy Displays page or Command Center.

@@ -115,14 +115,14 @@ test('presentation previews follow the authoritative physical slide state', () =
   const main = read('frontend/js/views/media-control.js');
   const stage = read('frontend/js/views/media-control/stage.js');
   const livePreview = read('frontend/js/views/media-control/live-preview.js');
-  const displayState = read('frontend/js/services/display-state.js');
+  const displayProjection = read('frontend/js/services/room-display-projection.js');
   const deck = read('server/player/deck.html');
 
   assert.match(stage, /function shouldPreferPoster\(obj\)/);
   assert.match(stage, /kind === 'document' \|\| kind === 'pdf'/);
   assert.match(stage, /if \(screenshot && !shouldPreferPoster\(obj\)\)/);
-  assert.match(displayState, /if \(state\.slide_index != null\) npPatch\.slideIndex = state\.slide_index/);
-  assert.match(displayState, /if \(state\.slide_count != null\) npPatch\.slideCount = state\.slide_count/);
+  assert.match(displayProjection, /if \(state\.slide_index != null\) nowPlaying\.slideIndex = state\.slide_index/);
+  assert.match(displayProjection, /if \(state\.slide_count != null\) nowPlaying\.slideCount = state\.slide_count/);
   assert.match(livePreview, /case 'pdf':[\s\S]*case 'document':[\s\S]*\/player\/doc\//);
   assert.match(livePreview, /case 'presentation':/);
   assert.match(livePreview, /data-mc-presentation="1"/);

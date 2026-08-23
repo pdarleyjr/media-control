@@ -65,6 +65,10 @@ function createFixtureDb() {
       updated_at INTEGER,
       PRIMARY KEY (target_type, target_id)
     );
+    CREATE TABLE playlists (
+      id TEXT PRIMARY KEY,
+      published_snapshot TEXT
+    );
     CREATE TABLE screenshots (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       device_id TEXT,
@@ -210,6 +214,8 @@ test('authoritative snapshot loads workspace and room state without leaking cred
   const db = createFixtureDb();
   try {
     ensureRoomRevisionSchema(db);
+    db.prepare(`INSERT INTO playlists VALUES
+      ('playlist-a', '[{"content_id":"content-a","filename":"MBTV · Miami Beach","mime_type":"text/html","remote_url":"/player/hls.html?station=mbtv"}]')`).run();
     db.prepare(`INSERT INTO devices VALUES
       ('display-a', 'ws-1', 'Front Left', 'online', 1700000000, 1, 3840, 2160,
        'wall-a', 'layout-a', 'playlist-a', 1700000001,
@@ -300,6 +306,9 @@ test('authoritative snapshot loads workspace and room state without leaking cred
     assert.deepEqual(snapshot.confirmedState.displays.map((display) => display.id), ['display-a']);
     assert.equal(snapshot.confirmedState.displays[0].name, 'Front Left');
     assert.equal(snapshot.confirmedState.displays[0].screenOn, false);
+    assert.equal(snapshot.confirmedState.displays[0].sourceKind, 'web');
+    assert.equal(snapshot.confirmedState.displays[0].remoteUrl, '/player/hls.html?station=mbtv');
+    assert.equal(snapshot.confirmedState.displays[0].contentLabel, 'MBTV · Miami Beach');
     assert.deepEqual(snapshot.deviceStates.displays.map((display) => display.id), ['display-a']);
     assert.equal(snapshot.deviceStates.displays[0].screenshotAt, 1700000004);
     assert.deepEqual(snapshot.deviceStates.displays[0].capabilities, {

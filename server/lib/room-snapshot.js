@@ -1,5 +1,7 @@
 'use strict';
 
+const { nowPlayingFromSnapshot, overlayNowPlaying } = require('./display-state');
+
 // Authoritative, restart-safe room state contract. The service is deliberately
 // transport-agnostic: Socket.IO and REST callers can share the same snapshot
 // builder, while tests can inject a better-sqlite3 database and explicit
@@ -22,6 +24,7 @@ const PUBLIC_CAPABILITY_KEYS = new Set([
 const CONFIRMED_DISPLAY_SCHEMA = {
   id: PUBLIC_SCALAR, name: PUBLIC_SCALAR, status: PUBLIC_SCALAR,
   contentId: PUBLIC_SCALAR, assetId: PUBLIC_SCALAR, contentType: PUBLIC_SCALAR,
+  sourceKind: PUBLIC_SCALAR, remoteUrl: PUBLIC_SCALAR, contentLabel: PUBLIC_SCALAR,
   layoutMode: PUBLIC_SCALAR, slideIndex: PUBLIC_SCALAR, slideCount: PUBLIC_SCALAR,
   currentTime: PUBLIC_SCALAR, duration: PUBLIC_SCALAR, paused: PUBLIC_SCALAR,
   muted: PUBLIC_SCALAR, volume: PUBLIC_SCALAR, localAssetReady: PUBLIC_SCALAR,
@@ -339,6 +342,7 @@ function parsePublicJson(value, fallback, schema) {
 function loadConfirmedState(db, workspaceId) {
   const rows = db.prepare(`
     SELECT d.id AS target_id, d.name, d.status, d.last_heartbeat,
+           p.published_snapshot,
            ds.current_content_id, ds.current_asset_id, ds.content_type,
            ds.layout_mode, ds.slide_index, ds.slide_count, ds.current_time, ds.duration,
            ds.paused, ds.muted, ds.volume, ds.local_asset_ready, ds.last_ack_at,
@@ -348,41 +352,52 @@ function loadConfirmedState(db, workspaceId) {
     FROM devices d
     LEFT JOIN display_states ds
       ON ds.target_type = 'display' AND ds.target_id = d.id
+    LEFT JOIN playlists p ON p.id = d.playlist_id
     WHERE d.workspace_id = ?
       AND d.id NOT LIKE ?
     ORDER BY d.name COLLATE NOCASE, d.id
   `).all(workspaceId, `${LIVE_STREAM_DEVICE_PREFIX}%`);
   return {
-    displays: rows.map((row) => ({
-      id: row.target_id,
-      name: row.name || row.target_id,
-      status: row.status || 'offline',
-      contentId: row.current_content_id ?? null,
-      assetId: row.current_asset_id ?? null,
-      contentType: row.content_type ?? null,
-      layoutMode: row.layout_mode ?? null,
-      slideIndex: row.slide_index ?? null,
-      slideCount: row.slide_count ?? null,
-      currentTime: row.current_time ?? null,
-      duration: row.duration ?? null,
-      paused: boolOrNull(row.paused),
-      muted: boolOrNull(row.muted),
-      volume: row.volume ?? null,
-      localAssetReady: boolOrNull(row.local_asset_ready),
-      lastAckAt: row.last_ack_at ?? null,
-      lastHeartbeatAt: row.last_heartbeat_at ?? row.last_heartbeat ?? null,
-      renderState: row.render_state ?? null,
-      errorState: row.error_state ?? null,
-      wallId: row.wall_id ?? null,
-      layoutId: row.layout_id ?? null,
-      groupId: row.group_id ?? null,
-      memberId: row.member_id ?? null,
-      playbackRevision: row.playback_revision ?? null,
-      commandRevision: row.command_revision ?? null,
-      screenOn: boolOrNull(row.screen_on),
-      stateRevision: Number(row.state_revision) || 0,
-      updatedAt: row.updated_at ?? null,
-    })),
+    displays: rows.map((row) => {
+      const authored = nowPlayingFromSnapshot(row.published_snapshot);
+      const authoredMatchesConfirmed = authored.contentId == null
+        || row.current_content_id == null
+        || String(authored.contentId) === String(row.current_content_id);
+      const nowPlaying = overlayNowPlaying(authoredMatchesConfirmed ? authored : {}, row);
+      return {
+        id: row.target_id,
+        name: row.name || row.target_id,
+        status: row.status || 'offline',
+        contentId: row.current_content_id ?? null,
+        assetId: row.current_asset_id ?? null,
+        contentType: row.content_type ?? null,
+        sourceKind: nowPlaying.kind ?? row.content_type ?? null,
+        remoteUrl: nowPlaying.remoteUrl ?? null,
+        contentLabel: nowPlaying.label ?? null,
+        layoutMode: row.layout_mode ?? null,
+        slideIndex: row.slide_index ?? null,
+        slideCount: row.slide_count ?? null,
+        currentTime: row.current_time ?? null,
+        duration: row.duration ?? null,
+        paused: boolOrNull(row.paused),
+        muted: boolOrNull(row.muted),
+        volume: row.volume ?? null,
+        localAssetReady: boolOrNull(row.local_asset_ready),
+        lastAckAt: row.last_ack_at ?? null,
+        lastHeartbeatAt: row.last_heartbeat_at ?? row.last_heartbeat ?? null,
+        renderState: row.render_state ?? null,
+        errorState: row.error_state ?? null,
+        wallId: row.wall_id ?? null,
+        layoutId: row.layout_id ?? null,
+        groupId: row.group_id ?? null,
+        memberId: row.member_id ?? null,
+        playbackRevision: row.playback_revision ?? null,
+        commandRevision: row.command_revision ?? null,
+        screenOn: boolOrNull(row.screen_on),
+        stateRevision: Number(row.state_revision) || 0,
+        updatedAt: row.updated_at ?? null,
+      };
+    }),
   };
 }
 

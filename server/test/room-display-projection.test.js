@@ -148,6 +148,75 @@ test('a same-content room update preserves the REST-hydrated live-player source 
   assert.equal(nowPlaying.remoteUrl, '/player/hls.html?station=mbtv');
 });
 
+test('a new confirmed news identity uses the authored player source carried by the room snapshot', async () => {
+  const { projectRoomDisplays } = await loadProjection();
+  const prior = new Map([['front-left', {
+    id: 'front-left',
+    now_playing: {
+      contentId: 'guest-content',
+      content_id: 'guest-content',
+      kind: 'web',
+      label: 'Guest Computer',
+      remoteUrl: '/player/live-source.html?source=guest-computer',
+    },
+  }]]);
+
+  const projected = projectRoomDisplays({
+    confirmedState: { displays: [{
+      id: 'front-left', status: 'online', contentId: 'news-content',
+      contentType: 'video', sourceKind: 'web', contentLabel: 'MBTV · Miami Beach',
+      remoteUrl: '/player/hls.html?station=mbtv', renderState: 'playing',
+    }] },
+    deviceStates: { displays: [{ id: 'front-left', screenOn: true }] },
+  }, prior);
+
+  const nowPlaying = projected.get('front-left').now_playing;
+  assert.equal(nowPlaying.contentId, 'news-content');
+  assert.equal(nowPlaying.kind, 'web');
+  assert.equal(nowPlaying.label, 'MBTV · Miami Beach');
+  assert.equal(nowPlaying.remoteUrl, '/player/hls.html?station=mbtv');
+});
+
+test('same-identity renderer sync cannot downgrade an authored web player to file video', async () => {
+  const { projectStateSyncNowPlaying } = await loadProjection();
+  const prior = {
+    contentId: 'news-content',
+    content_id: 'news-content',
+    kind: 'web',
+    label: 'MBTV · Miami Beach',
+    remoteUrl: '/player/hls.html?station=mbtv',
+  };
+
+  const nowPlaying = projectStateSyncNowPlaying(prior, {
+    current_content_id: 'news-content',
+    content_type: 'video',
+    render_state: 'playing',
+  });
+
+  assert.equal(nowPlaying.kind, 'web');
+  assert.equal(nowPlaying.remoteUrl, '/player/hls.html?station=mbtv');
+});
+
+test('a different-identity renderer sync drops content-bound metadata from the previous source', async () => {
+  const { projectStateSyncNowPlaying } = await loadProjection();
+  const nowPlaying = projectStateSyncNowPlaying({
+    contentId: 'guest-content',
+    content_id: 'guest-content',
+    kind: 'web',
+    label: 'Guest Computer',
+    remoteUrl: '/player/live-source.html?source=guest-computer',
+  }, {
+    current_content_id: 'news-content',
+    content_type: 'video',
+    media_title: 'MBTV · Miami Beach',
+  });
+
+  assert.equal(nowPlaying.contentId, 'news-content');
+  assert.equal(nowPlaying.kind, 'video');
+  assert.equal(nowPlaying.label, 'MBTV · Miami Beach');
+  assert.equal(nowPlaying.remoteUrl, undefined);
+});
+
 test('invalid snapshots do not erase the current display store', async () => {
   const { projectRoomDisplays } = await loadProjection();
   assert.equal(projectRoomDisplays({}, new Map([['tv-1', { id: 'tv-1' }]])), null);

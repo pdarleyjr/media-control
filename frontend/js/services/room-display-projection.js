@@ -4,6 +4,29 @@ function asMap(value) {
   return new Map();
 }
 
+export function projectStateSyncNowPlaying(currentNowPlaying = {}, state = {}) {
+  const priorContentId = currentNowPlaying.contentId ?? currentNowPlaying.content_id ?? null;
+  const contentId = state.current_content_id ?? priorContentId;
+  const contentIdentityChanged = priorContentId != null
+    && contentId != null
+    && String(priorContentId) !== String(contentId);
+  const nowPlaying = contentIdentityChanged ? {} : { ...currentNowPlaying };
+  if (contentId != null) {
+    nowPlaying.contentId = contentId;
+    nowPlaying.content_id = contentId;
+  }
+  if (state.media_title) nowPlaying.label = state.media_title;
+  if (state.content_type
+      && (contentIdentityChanged || !nowPlaying.kind || nowPlaying.kind === 'idle' || nowPlaying.kind === 'content')) {
+    nowPlaying.kind = state.content_type;
+  }
+  if (state.paused !== undefined) nowPlaying.paused = !!state.paused;
+  if (state.slide_index != null) nowPlaying.slideIndex = state.slide_index;
+  if (state.slide_count != null) nowPlaying.slideCount = state.slide_count;
+  else if (state.slide_total != null) nowPlaying.slideCount = state.slide_total;
+  return nowPlaying;
+}
+
 /**
  * Adapt the compact authoritative room contract to the richer legacy display
  * view-model used by Command Center. The snapshot owns membership and
@@ -41,13 +64,22 @@ export function projectRoomDisplays(snapshot, priorDisplays = new Map(), options
       const contentIdentityChanged = priorContentId != null
         && contentId != null
         && String(priorContentId) !== String(contentId);
+      const sourceKind = display.sourceKind || display.contentType;
+      const authoredPresentation = {};
+      if (typeof display.contentLabel === 'string' && display.contentLabel) {
+        authoredPresentation.label = display.contentLabel;
+      }
+      if (typeof display.remoteUrl === 'string' && display.remoteUrl) {
+        authoredPresentation.remoteUrl = display.remoteUrl;
+      }
       const nowPlaying = {
         ...(contentIdentityChanged ? {} : (prior.now_playing || {})),
+        ...authoredPresentation,
         contentId,
         content_id: contentId,
         kind: (contentIdentityChanged || (priorContentId == null && contentId != null))
-          ? (display.contentType || prior.now_playing?.kind || 'idle')
-          : (prior.now_playing?.kind || display.contentType || 'idle'),
+          ? (sourceKind || prior.now_playing?.kind || 'idle')
+          : (display.sourceKind || prior.now_playing?.kind || display.contentType || 'idle'),
         paused: display.paused ?? prior.now_playing?.paused ?? null,
         slideIndex: display.slideIndex ?? prior.now_playing?.slideIndex ?? null,
         slideCount: display.slideCount ?? prior.now_playing?.slideCount ?? null,
