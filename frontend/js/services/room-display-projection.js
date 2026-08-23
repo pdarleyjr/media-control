@@ -45,7 +45,9 @@ export function projectRoomDisplays(snapshot, priorDisplays = new Map(), options
         ...(contentIdentityChanged ? {} : (prior.now_playing || {})),
         contentId,
         content_id: contentId,
-        kind: display.contentType || prior.now_playing?.kind || 'idle',
+        kind: (contentIdentityChanged || (priorContentId == null && contentId != null))
+          ? (display.contentType || prior.now_playing?.kind || 'idle')
+          : (prior.now_playing?.kind || display.contentType || 'idle'),
         paused: display.paused ?? prior.now_playing?.paused ?? null,
         slideIndex: display.slideIndex ?? prior.now_playing?.slideIndex ?? null,
         slideCount: display.slideCount ?? prior.now_playing?.slideCount ?? null,

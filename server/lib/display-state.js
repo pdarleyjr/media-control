@@ -48,4 +48,24 @@ function nowPlayingFromSnapshot(snapshotJson) {
   return result;
 }
 
-module.exports = { nowPlayingFromSnapshot };
+// Merge confirmed renderer state without erasing the authored source shape.
+// Internal HLS/live-source/grid pages report their child media element as
+// `video`, but Command Center must keep rendering the player-page remoteUrl.
+function overlayNowPlaying(nowPlaying, liveState) {
+  const np = { ...(nowPlaying || {}) };
+  if (liveState.current_content_id != null) np.contentId = liveState.current_content_id;
+  if (liveState.current_asset_id != null) np.assetId = liveState.current_asset_id;
+  if (liveState.content_type && (!np.kind || np.kind === 'idle' || np.kind === 'content')) {
+    np.kind = liveState.content_type;
+  }
+  if (liveState.paused != null) np.paused = liveState.paused;
+  if (liveState.slide_index != null) np.slideIndex = liveState.slide_index;
+  if (liveState.current_time != null) np.currentTime = liveState.current_time;
+  if (liveState.duration != null) np.duration = liveState.duration;
+  if (liveState.local_asset_ready != null) np.localAssetReady = liveState.local_asset_ready;
+  if (liveState.render_state) np.render_state = liveState.render_state;
+  if (liveState.error_state) np.error_state = liveState.error_state;
+  return np;
+}
+
+module.exports = { nowPlayingFromSnapshot, overlayNowPlaying };

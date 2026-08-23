@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { db } = require('../db/database');
-const { nowPlayingFromSnapshot } = require('../lib/display-state');
+const { nowPlayingFromSnapshot, overlayNowPlaying } = require('../lib/display-state');
 const { mapDisplayRow } = require('../lib/display-row');
 const { userPrefRoom } = require('../lib/socket-rooms');
 const { contextFromRequest, contentVisibilityScope } = require('../lib/content-visibility');
@@ -70,21 +70,6 @@ function buildTelemetry(row) {
     uptime_seconds: row.uptime_seconds ?? null,
     reported_at: row.telemetry_reported_at ?? null,
   };
-}
-
-function overlayNowPlaying(nowPlaying, liveState) {
-  const np = { ...(nowPlaying || {}) };
-  if (liveState.current_content_id != null) np.contentId = liveState.current_content_id;
-  if (liveState.current_asset_id != null) np.assetId = liveState.current_asset_id;
-  if (liveState.content_type) np.kind = liveState.content_type;
-  if (liveState.paused != null) np.paused = liveState.paused;
-  if (liveState.slide_index != null) np.slideIndex = liveState.slide_index;
-  if (liveState.current_time != null) np.currentTime = liveState.current_time;
-  if (liveState.duration != null) np.duration = liveState.duration;
-  if (liveState.local_asset_ready != null) np.localAssetReady = liveState.local_asset_ready;
-  if (liveState.render_state) np.render_state = liveState.render_state;
-  if (liveState.error_state) np.error_state = liveState.error_state;
-  return np;
 }
 
 // Deny writes for read-only members (mirrors scenes.js inline gate).
