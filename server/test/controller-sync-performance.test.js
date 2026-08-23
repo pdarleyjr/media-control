@@ -250,7 +250,7 @@ test('split image cells replace a stale prior-media screenshot with current cont
   assert.match(stage, /content-bound poster is safer than pixels left over from the previous item/);
   assert.match(player, /img\.crossOrigin = 'anonymous'/);
   assert.match(player, /img\.addEventListener\('load'[\s\S]*captureAndSend\(\)/);
-  assert.match(player, /img\.src = src;[\s\S]*mount\.appendChild\(img\)/);
+  assert.match(player, /mount\.appendChild\(img\);[\s\S]*img\.src = src/);
 });
 
 test('display state store coalesces subscriber notifications by animation frame', () => {

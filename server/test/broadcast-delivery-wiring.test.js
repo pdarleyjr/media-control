@@ -55,6 +55,11 @@ test('player distinguishes receipt from confirmed rendering', () => {
       < fullscreenImage.indexOf('requestAnimationFrame(() =>'),
     'decoded image confirmation must not wait for a throttled animation frame',
   );
+  assert.ok(
+    fullscreenImage.indexOf('mount.appendChild(img)')
+      < fullscreenImage.indexOf('img.src = src'),
+    'fullscreen images must be attached before cached content can emit load',
+  );
 });
 
 test('YouTube failures remain visible in authoritative player state', () => {

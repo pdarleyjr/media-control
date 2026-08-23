@@ -4724,8 +4724,8 @@
             failPendingBroadcastElement(img, 'Image failed to load');
             if (!isFollower) advanceTimer = setTimeout(nextItem, 3000);
           });
-          img.src = src;
           mount.appendChild(img);
+          img.src = src;
           // Leader/solo rotates multi-item slide shows. A single sticky image
           // must NOT timer-advance (would black-flash every duration_sec).
           if (!isFollower && playlist.length > 1) {
