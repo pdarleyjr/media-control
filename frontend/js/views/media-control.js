@@ -687,7 +687,8 @@ function stageSignature() {
     // patched by refreshPreviewsInPlace() without a full repaint.
     const preview = previewSource(d);
     const previewKind = preview ? (preview.poster ? 'poster' : 'screenshot') : 'none';
-    return [np.kind || '', np.contentId || '', np.poster_url || '', previewKind].join('~');
+    const remoteUrl = np.remoteUrl || np.remote_url || '';
+    return [np.kind || '', np.contentId || '', remoteUrl, np.poster_url || '', previewKind].join('~');
   };
   for (const id of selectedIds) {
     if (wallMemberIds.has(id)) continue;
