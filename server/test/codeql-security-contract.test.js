@@ -27,6 +27,7 @@ test('database and filesystem resource routes use the standard rate limiter', ()
     '/api/media-observability',
     '/api/live-sources',
     '/api/devices',
+    '/api/displays',
     '/api/downloads',
     '/api/broadcast',
   ]) {

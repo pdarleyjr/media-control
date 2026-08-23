@@ -948,7 +948,7 @@ app.post('/api/admin/cache-recovery', rateLimit(rateLimitOptions(60000, 5)), req
 // work from repeated retire/delete attempts.
 app.use('/api/devices', rateLimit(rateLimitOptions(60000, 120)));
 app.use('/api/devices', requireAuth, resolveTenancy, require('./routes/devices'));
-app.use('/api/displays', requireAuth, resolveTenancy, require('./routes/displays'));
+app.use('/api/displays', rateLimit(rateLimitOptions(60000, 600)), requireAuth, resolveTenancy, require('./routes/displays'));
 app.use('/api/advanced-canvas', requireAuth, resolveTenancy, require('./routes/advanced-canvas'));
 app.use('/api/content', requireAuth, resolveTenancy, require('./routes/content'));
 app.use('/api/live-sources', rateLimit(rateLimitOptions(60000, 60)));
