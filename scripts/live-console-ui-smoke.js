@@ -695,6 +695,7 @@ async function main() {
   if (!loginConfig && !deviceToken) throw new Error('CONSOLE_DEVICE_TOKEN or SMOKE_LOGIN_IDENTIFIER is required');
   const webSession = loginConfig ? await createWebSession(loginConfig) : null;
   const dragConfig = dragDropConfig();
+  const dragDb = dragConfig ? require('../server/db/database').db : null;
   const evidenceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-console-evidence-'));
   const screenshotName = path.basename(String(process.env.SMOKE_SCREENSHOT_PATH || 'console-ui-smoke.png'));
   const screenshotPath = path.join(evidenceDir, screenshotName);
@@ -804,7 +805,7 @@ async function main() {
 
     let dragDrop = null;
     if (dragConfig) {
-      const { db } = require('../server/db/database');
+      const db = dragDb;
       if (dragConfig.sourceLabel) {
         const opened = await evaluate(cdp, `(() => {
           const tab = document.querySelector('.mc-tb-tab[data-tab="camerafeeds"]');
