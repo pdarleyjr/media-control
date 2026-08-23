@@ -55,3 +55,12 @@ test('Multiview populated frames render the assigned media instead of an icon-on
   assert.match(source, /const preview = cellPreviewHtml\(c\)/);
   assert.match(source, /\$\{preview\}[\s\S]*?<div class="mc-mv-cell-actions">/);
 });
+
+test('Multiview always offers live news and an available Guest Computer source', () => {
+  assert.match(source, /LIVE_NEWS_CATALOG/);
+  assert.match(source, /LIVE_SOURCE_CATALOG/);
+  assert.match(source, /api\.liveSources\.list\(\)/);
+  assert.match(source, /config\.id === 'guest-computer'/);
+  assert.match(source, /source\.available === true/);
+  assert.match(source, /multiviewLiveSources/);
+});

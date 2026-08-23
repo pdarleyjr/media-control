@@ -32,6 +32,7 @@ import { openTargetPicker } from '../../components/target-picker.js';
 import { waitForTargetCatalog } from '../../services/target-catalog-runtime.js';
 import { findCatalogTarget } from '../../services/target-catalog.js';
 import * as screenShareEngine from '../../services/screen-share-engine.js';
+import { LIVE_NEWS_CATALOG, LIVE_SOURCE_CATALOG } from './camera-feeds-catalog.js';
 
 // 4-left / 2-center / 4-right, in percent of the 16:9 canvas. MIRROR of SLOTS
 // in server/player/multiview-core.js.
@@ -87,6 +88,7 @@ let cells = {};               // slotId -> { cellUrl, monitorUrl, kind, label, t
 let geoms = {};               // slotId -> { x,y,w,h } percent override (absent = fixed SLOT)
 let shareDevice = {};         // slotId -> { deviceIds, label } receiving this frame's screen share
 let contentIndex = {};        // content_id -> { mime, thumbnail_url, filename }
+let multiviewLiveSources = [];// canonical Guest/news sources independent of the active toolbox tab
 let routeSourceFn = null;     // injected: (source, label) => Promise<bool>
 let onCloseFn = null;         // injected: () => void — closes the composer panel
 let monitorSlot = null;       // slot id currently being monitored locally
@@ -403,6 +405,16 @@ function availableLibrarySources() {
       label: tile.dataset.label || tile.textContent?.trim() || t('mc.tile.content_fallback'),
       thumb: image?.currentSrc || image?.src || '',
     });
+  });
+  // Guest Computer and live news must remain selectable even when another
+  // toolbox tab is active. These descriptors come from the same canonical
+  // catalogs as Camera Feeds; Guest is included only when the live-source API
+  // reports it available.
+  multiviewLiveSources.forEach((item) => {
+    const key = JSON.stringify(item.source);
+    if (seen.has(key)) return;
+    seen.add(key);
+    found.push(item);
   });
   // Always include authorized uploaded media too. The toolbox only renders its
   // active tab, so treating this as a fallback would make most content vanish
@@ -1036,6 +1048,25 @@ export async function renderMultiview(container, { routeSource, onClose } = {}) 
     contentIndex = {};
     for (const it of items) contentIndex[it.id] = { mime: it.mime_type || '', thumbnail_url: it.thumbnail_url || null, filename: it.filename || '' };
   } catch { contentIndex = {}; }
+  multiviewLiveSources = LIVE_NEWS_CATALOG.map((config) => ({
+    source: { remote_url: config.url, live_source_id: config.id, audio_policy: config.audio_policy },
+    label: config.title,
+    thumb: '',
+  }));
+  try {
+    const response = await api.liveSources.list();
+    const byId = new Map((response.sources || []).map((source) => [source.id, source]));
+    LIVE_SOURCE_CATALOG
+      .map((config) => ({ config, source: byId.get(config.id) || { available: false } }))
+      .filter(({ config, source }) => config.id === 'guest-computer' && source.available === true)
+      .forEach(({ config }) => {
+        multiviewLiveSources.unshift({
+          source: { remote_url: config.url, live_source_id: config.id, audio_policy: config.audio_policy },
+          label: t(config.nameKey),
+          thumb: '',
+        });
+      });
+  } catch { /* news remains usable; unavailable Guest remains hidden */ }
   render();
 }
 
