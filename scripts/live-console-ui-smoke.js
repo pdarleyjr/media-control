@@ -6,6 +6,7 @@ const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const deviceContract = require('../server/player/device-contract');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -87,6 +88,46 @@ class CdpClient {
   }
 }
 
+function connectDashboard(token) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket('ws://127.0.0.1:3001/socket.io/?EIO=4&transport=websocket');
+    const pending = new Map();
+    let nextAckId = 1;
+    const timer = setTimeout(() => reject(new Error('dashboard websocket connect timeout')), 10000);
+    ws.onerror = () => reject(new Error('dashboard websocket error'));
+    ws.onmessage = (event) => {
+      const message = String(event.data || '');
+      if (message === '2') return ws.send('3');
+      if (message.startsWith('0')) return ws.send(`40/dashboard,${JSON.stringify({ token })}`);
+      if (message.startsWith('40/dashboard,')) {
+        clearTimeout(timer);
+        resolve({
+          close: () => ws.close(),
+          emitWithAck(name, data, timeoutMs = 10000) {
+            return new Promise((ackResolve, ackReject) => {
+              const id = nextAckId++;
+              const ackTimer = setTimeout(() => {
+                pending.delete(id);
+                ackReject(new Error(`socket ack timeout: ${name}`));
+              }, timeoutMs);
+              pending.set(id, { resolve: ackResolve, timer: ackTimer });
+              ws.send(`42/dashboard,${id}${JSON.stringify([name, data])}`);
+            });
+          },
+        });
+        return;
+      }
+      const ackMatch = message.match(/^43\/dashboard,(\d+)(.*)$/s);
+      if (!ackMatch) return;
+      const waiter = pending.get(Number(ackMatch[1]));
+      if (!waiter) return;
+      pending.delete(Number(ackMatch[1]));
+      clearTimeout(waiter.timer);
+      waiter.resolve(JSON.parse(ackMatch[2] || '[]')[0]);
+    };
+  });
+}
+
 async function waitForTarget(port) {
   const deadline = Date.now() + 15000;
   while (Date.now() < deadline) {
@@ -138,6 +179,8 @@ function dragDropConfig() {
   if (contentId && sourceLabel) throw new Error('set only one of SMOKE_DRAG_CONTENT_ID or SMOKE_DRAG_SOURCE_LABEL');
   const wallId = required('SMOKE_DRAG_WALL_ID');
   const groupId = String(process.env.SMOKE_DRAG_GROUP_ID || '').trim();
+  const layoutRevision = Number(required('SMOKE_DRAG_LAYOUT_REVISION'));
+  const dwellMs = Number(process.env.SMOKE_DRAG_DWELL_MS || 5000);
   const config = {
     contentId,
     sourceLabel,
@@ -145,14 +188,29 @@ function dragDropConfig() {
     expectedContentType: String(process.env.SMOKE_DRAG_EXPECT_CONTENT_TYPE || 'web').trim(),
     wallId,
     groupId,
+    layoutRevision,
+    dwellMs,
     targetSelector: groupId
       ? `.mc-wall-region[data-wall-id="${wallId}"][data-layout-group-id="${groupId}"]`
       : `.mc-wall[data-wall-id="${wallId}"] .mc-wall-all`,
     deviceIds: csv(required('SMOKE_DRAG_DEVICE_IDS')),
+    nonTargetDeviceIds: csv(required('SMOKE_DRAG_NON_TARGET_DEVICE_IDS')),
     restoreContentId: required('SMOKE_DRAG_RESTORE_CONTENT_ID'),
     restoreUserEmail: String(process.env.SMOKE_DRAG_RESTORE_USER_EMAIL || 'peterdarley@miamibeachfl.gov').trim().toLowerCase(),
   };
   if (!config.deviceIds.length) throw new Error('SMOKE_DRAG_DEVICE_IDS must contain at least one display');
+  if (!Number.isSafeInteger(config.layoutRevision) || config.layoutRevision < 0) {
+    throw new Error('SMOKE_DRAG_LAYOUT_REVISION must be a non-negative integer');
+  }
+  if (!Number.isFinite(config.dwellMs) || config.dwellMs < 2000 || config.dwellMs > 30000) {
+    throw new Error('SMOKE_DRAG_DWELL_MS must be between 2000 and 30000');
+  }
+  if (!config.nonTargetDeviceIds.length) {
+    throw new Error('SMOKE_DRAG_NON_TARGET_DEVICE_IDS must contain at least one display');
+  }
+  if (config.nonTargetDeviceIds.some((id) => config.deviceIds.includes(id))) {
+    throw new Error('SMOKE_DRAG_NON_TARGET_DEVICE_IDS must not overlap SMOKE_DRAG_DEVICE_IDS');
+  }
   return config;
 }
 
@@ -301,11 +359,151 @@ function physicalDisplayStates(db, deviceIds) {
   const placeholders = deviceIds.map(() => '?').join(',');
   return db.prepare(`
     SELECT target_id, current_content_id, current_asset_id, content_type,
-           render_state, error_state, state_revision, command_revision
+           render_state, error_state, state_revision, command_revision,
+           slide_index, current_time, duration, paused, muted, volume
     FROM display_states
     WHERE target_type = 'display' AND target_id IN (${placeholders})
     ORDER BY target_id
   `).all(...deviceIds);
+}
+
+function sameStateValue(left, right) {
+  return (left ?? null) === (right ?? null);
+}
+
+function stablePlaybackStateMatches(actual, expected) {
+  return ['current_content_id', 'current_asset_id', 'content_type', 'render_state',
+    'error_state', 'slide_index', 'paused', 'muted', 'volume']
+    .every((key) => sameStateValue(actual?.[key], expected?.[key]))
+    && (expected?.paused !== 1 || expected?.current_time == null
+      || Math.abs(Number(actual?.current_time) - Number(expected.current_time)) <= 1.25);
+}
+
+async function sendRestorationCommand(socket, db, deviceId, action, payload = {}) {
+  const envelope = deviceContract.createCommand({
+    device_id: deviceId,
+    target_scope: 'display',
+    payload: { ...payload, action },
+  });
+  const ack = await socket.emitWithAck('dashboard:device-command', { device_id: deviceId, envelope });
+  if (!ack?.delivered) {
+    throw new Error(`${action} restore delivery rejected for ${deviceId}: ${ack?.reason || 'unknown'}`);
+  }
+  const deadline = Date.now() + 15000;
+  let row = null;
+  while (Date.now() < deadline) {
+    row = db.prepare(`
+      SELECT command_id, status, ack_at, ack_error
+      FROM command_logs
+      WHERE command_id = ?
+    `).get(envelope.command_id) || null;
+    if (row && ['failed', 'timeout'].includes(row.status)) {
+      throw new Error(`${action} restore failed for ${deviceId}: ${row.status}/${row.ack_error || ''}`);
+    }
+    if (row?.status === 'acked' && row.ack_at && !row.ack_error) {
+      return { device_id: deviceId, action, command_id: envelope.command_id, acknowledged_at: row.ack_at };
+    }
+    await sleep(250);
+  }
+  throw new Error(`${action} restore acknowledgement timeout for ${deviceId}: ${JSON.stringify(row)}`);
+}
+
+async function restoreTransportState(db, token, beforeStates) {
+  const socket = await connectDashboard(token);
+  const commands = [];
+  try {
+    for (const state of beforeStates) {
+      if (!['playing', 'paused'].includes(state.render_state)) {
+        throw new Error(`unsupported baseline render state for exact restore: ${JSON.stringify(state)}`);
+      }
+      if (Number.isInteger(state.slide_index) && state.slide_index > 1) {
+        commands.push(await sendRestorationCommand(socket, db, state.target_id, 'go_to_slide', {
+          slide: state.slide_index,
+        }));
+      } else if (/^(video|audio)$/i.test(String(state.content_type || ''))
+        && Number.isFinite(Number(state.current_time)) && Number(state.current_time) > 0) {
+        commands.push(await sendRestorationCommand(socket, db, state.target_id, 'seek', {
+          position_seconds: Number(state.current_time),
+        }));
+      }
+      if (Number.isFinite(Number(state.volume)) && Number(state.volume) >= 0 && Number(state.volume) <= 1) {
+        commands.push(await sendRestorationCommand(socket, db, state.target_id, 'volume', {
+          volume: Number(state.volume),
+        }));
+      }
+      if (state.muted === 1 || state.muted === 0) {
+        commands.push(await sendRestorationCommand(
+          socket,
+          db,
+          state.target_id,
+          state.muted === 1 ? 'mute' : 'unmute'
+        ));
+      }
+      if (state.paused === 1 || state.paused === 0) {
+        commands.push(await sendRestorationCommand(
+          socket,
+          db,
+          state.target_id,
+          state.paused === 1 ? 'pause' : 'play'
+        ));
+      }
+    }
+  } finally {
+    socket.close();
+  }
+  return commands;
+}
+
+function assertNonTargetImmutability(db, deviceIds, beforeStates, config, startedAt) {
+  const placeholders = deviceIds.map(() => '?').join(',');
+  const sourceCommands = db.prepare(`
+    SELECT target_id, command_id, command_type, status, ack_at, ack_error, created_at
+    FROM command_logs
+    WHERE target_type = 'display'
+      AND target_id IN (${placeholders})
+      AND created_at >= ?
+      AND payload LIKE ?
+    ORDER BY created_at, target_id
+  `).all(...deviceIds, startedAt - 1000, `%${config.sourceMarker}%`);
+  const afterStates = physicalDisplayStates(db, deviceIds);
+  const beforeByTarget = new Map(beforeStates.map((row) => [row.target_id, row]));
+  const changed = afterStates.filter((row) => {
+    const before = beforeByTarget.get(row.target_id);
+    return !before
+      || row.command_revision !== before.command_revision
+      || !stablePlaybackStateMatches(row, before);
+  });
+  assert(sourceCommands.length === 0,
+    `non-target displays received ${config.sourceLabel} commands: ${JSON.stringify(sourceCommands)}`);
+  assert(afterStates.length === deviceIds.length && changed.length === 0,
+    `non-target display state changed: ${JSON.stringify({ beforeStates, afterStates, changed })}`);
+  return {
+    device_ids: deviceIds,
+    source_command_count: sourceCommands.length,
+    states: afterStates.map((row) => ({
+      ...row,
+      state_revision_delta: (Number(row.state_revision) || 0)
+        - (Number(beforeByTarget.get(row.target_id)?.state_revision) || 0),
+    })),
+  };
+}
+
+async function waitForRestoredStates(db, beforeStates, timeoutMs = 20000) {
+  const deviceIds = beforeStates.map((row) => row.target_id);
+  const beforeByTarget = new Map(beforeStates.map((row) => [row.target_id, row]));
+  const deadline = Date.now() + timeoutMs;
+  let states = [];
+  while (Date.now() < deadline) {
+    states = physicalDisplayStates(db, deviceIds);
+    const restored = states.length === deviceIds.length && states.every((row) => {
+      const before = beforeByTarget.get(row.target_id);
+      return stablePlaybackStateMatches(row, before)
+        && (Number(row.state_revision) || 0) > (Number(before?.state_revision) || 0);
+    });
+    if (restored) return states;
+    await sleep(250);
+  }
+  throw new Error(`display state did not restore exactly: ${JSON.stringify({ beforeStates, states })}`);
 }
 
 async function waitForPhysicalSource(db, deviceIds, config, beforeStates, startedAt, timeoutMs = 20000) {
@@ -314,6 +512,8 @@ async function waitForPhysicalSource(db, deviceIds, config, beforeStates, starte
   const deadline = Date.now() + timeoutMs;
   let commands = [];
   let states = [];
+  let delivery = null;
+  let deliveryResults = [];
   while (Date.now() < deadline) {
     const candidates = db.prepare(`
       SELECT target_id, command_id, command_type, payload, status, ack_at, ack_error, created_at
@@ -330,15 +530,73 @@ async function waitForPhysicalSource(db, deviceIds, config, beforeStates, starte
     }
     commands = deviceIds.map((id) => latestByTarget.get(id)).filter(Boolean);
     states = physicalDisplayStates(db, deviceIds);
+    delivery = null;
+    deliveryResults = [];
+    if (commands.length === deviceIds.length) {
+      const commandIds = commands.map((row) => row.command_id);
+      const commandPlaceholders = commandIds.map(() => '?').join(',');
+      delivery = db.prepare(`
+        SELECT br.id, br.source_type, br.source_id, br.typed_targets_json,
+               br.resolved_target_ids_json, br.expected_target_count, br.status, br.created_at,
+               COUNT(DISTINCT bdr.command_id) AS matched_command_count
+        FROM broadcast_requests br
+        JOIN broadcast_device_results bdr ON bdr.request_id = br.id
+        WHERE bdr.command_id IN (${commandPlaceholders}) AND br.created_at >= ?
+        GROUP BY br.id
+        HAVING matched_command_count = ?
+        ORDER BY br.created_at DESC
+        LIMIT 1
+      `).get(...commandIds, startedAt - 1000, deviceIds.length) || null;
+      if (delivery) {
+        deliveryResults = db.prepare(`
+          SELECT device_id, command_id, state, delivery_state, acknowledgment_state,
+                 failure_reason, delivered_at, acknowledged_at, confirmed_at
+          FROM broadcast_device_results
+          WHERE request_id = ?
+          ORDER BY ordinal, device_id
+        `).all(delivery.id);
+      }
+    }
+    let typedTargets = [];
+    let resolvedTargetIds = [];
+    try { typedTargets = JSON.parse(delivery?.typed_targets_json || '[]'); } catch { /* fail below */ }
+    try { resolvedTargetIds = JSON.parse(delivery?.resolved_target_ids_json || '[]'); } catch { /* fail below */ }
+    const typedTarget = typedTargets[0] || {};
+    const targetIdentityMatches = config.groupId
+      ? typedTarget.type === 'wall-group'
+        && typedTarget.wall_id === config.wallId
+        && typedTarget.group_id === config.groupId
+        && Number(typedTarget.layout_revision) === config.layoutRevision
+      : typedTarget.type === 'wall'
+        && (typedTarget.id === config.wallId || typedTarget.wall_id === config.wallId)
+        && Number(typedTarget.layout_revision) === config.layoutRevision;
+    const deliveryResultsConfirmed = deliveryResults.length === deviceIds.length
+      && deliveryResults.every((row) => deviceIds.includes(row.device_id)
+        && row.state === 'confirmed'
+        && row.delivery_state === 'delivered'
+        && row.acknowledgment_state === 'confirmed'
+        && !row.failure_reason
+        && row.delivered_at
+        && row.acknowledged_at
+        && row.confirmed_at);
+    const typedTargetConfirmed = delivery?.status === 'confirmed'
+      && typedTargets.length === 1
+      && targetIdentityMatches
+      && resolvedTargetIds.slice().sort().join(',') === deviceIds.slice().sort().join(',')
+      && Number(delivery.expected_target_count) === deviceIds.length
+      && Number(delivery.matched_command_count) === deviceIds.length
+      && deliveryResultsConfirmed;
     const commandsAcked = commands.length === deviceIds.length
       && commands.every((row) => row.status === 'acked' && row.ack_at && !row.ack_error);
     const statesAdvanced = states.length === deviceIds.length && states.every((row) => (
       (Number(row.state_revision) || 0) > (beforeRevision.get(row.target_id) || 0)
+      && row.command_revision
+      && row.command_revision !== beforeStates.find((before) => before.target_id === row.target_id)?.command_revision
       && row.render_state === 'playing'
       && !row.error_state
       && (!config.expectedContentType || row.content_type === config.expectedContentType)
     ));
-    if (commandsAcked && statesAdvanced) {
+    if (commandsAcked && statesAdvanced && typedTargetConfirmed) {
       return {
         commands: commands.map((row) => ({
           target_id: row.target_id,
@@ -349,14 +607,27 @@ async function waitForPhysicalSource(db, deviceIds, config, beforeStates, starte
           source_marker_confirmed: String(row.payload || '').includes(config.sourceMarker),
         })),
         states,
+        delivery: {
+          request_id: delivery.id,
+          status: delivery.status,
+          source_type: delivery.source_type,
+          typed_targets: typedTargets,
+          resolved_target_ids: resolvedTargetIds,
+          expected_target_count: delivery.expected_target_count,
+          device_results: deliveryResults,
+        },
       };
     }
     await sleep(250);
   }
-  throw new Error(`physical source did not converge to ${config.sourceLabel}: ${JSON.stringify({ commands, states })}`);
+  throw new Error(`physical source did not converge to ${config.sourceLabel}: ${JSON.stringify({ commands, states, delivery, deliveryResults })}`);
 }
 
-async function restoreDragDropContent(db, config) {
+async function restoreDragDropContent(db, config, beforeStates) {
+  assert(beforeStates.length === config.deviceIds.length,
+    `drag restore baseline is incomplete: ${JSON.stringify(beforeStates)}`);
+  assert(beforeStates.every((row) => row.current_content_id === config.restoreContentId),
+    `SMOKE_DRAG_RESTORE_CONTENT_ID does not match the live baseline: ${JSON.stringify(beforeStates)}`);
   const { generateToken } = require('../server/middleware/auth');
   const user = db.prepare('SELECT * FROM users WHERE lower(email) = ?').get(config.restoreUserEmail);
   if (!user) throw new Error(`drag restore user not found: ${config.restoreUserEmail}`);
@@ -365,19 +636,48 @@ async function restoreDragDropContent(db, config) {
   const membership = db.prepare('SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
     .get(target.workspace_id, user.id);
   if (!membership && user.role !== 'platform_admin') throw new Error('drag restore user cannot access the target workspace');
+  const restoreTarget = config.groupId
+    ? {
+        type: 'wall-group',
+        wall_id: config.wallId,
+        group_id: config.groupId,
+        layout_revision: config.layoutRevision,
+      }
+    : { type: 'wall', id: config.wallId, layout_revision: config.layoutRevision };
   const response = await fetch('http://127.0.0.1:3001/api/broadcast', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${generateToken(user, target.workspace_id)}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ content_id: config.restoreContentId, device_ids: config.deviceIds }),
+    body: JSON.stringify({ content_id: config.restoreContentId, targets: [restoreTarget] }),
   });
   const body = await response.json();
   if (!response.ok || body.sent !== config.deviceIds.length) {
     throw new Error(`drag restore failed (${response.status}): ${JSON.stringify(body)}`);
   }
-  return waitForPhysicalContent(db, config.deviceIds, config.restoreContentId);
+  await waitForPhysicalContent(db, config.deviceIds, config.restoreContentId);
+  const transportCommands = await restoreTransportState(db, generateToken(user, target.workspace_id), beforeStates);
+  return {
+    states: await waitForRestoredStates(db, beforeStates),
+    transport_commands: transportCommands,
+  };
+}
+
+async function proveStableSourcePlayback(db, config, routedStates) {
+  await sleep(config.dwellMs);
+  const states = physicalDisplayStates(db, config.deviceIds);
+  const routedByTarget = new Map(routedStates.map((row) => [row.target_id, row]));
+  const stable = states.length === config.deviceIds.length && states.every((row) => {
+    const routed = routedByTarget.get(row.target_id);
+    return row.render_state === 'playing'
+      && !row.error_state
+      && (!config.expectedContentType || row.content_type === config.expectedContentType)
+      && row.command_revision === routed?.command_revision
+      && (Number(row.state_revision) || 0) >= (Number(routed?.state_revision) || 0);
+  });
+  assert(stable, `${config.sourceLabel} did not remain stable for ${config.dwellMs}ms: ${JSON.stringify(states)}`);
+  return { dwell_ms: config.dwellMs, states };
 }
 
 async function main() {
@@ -388,7 +688,11 @@ async function main() {
   const webSession = loginConfig ? await createWebSession(loginConfig) : null;
   const dragConfig = dragDropConfig();
   const screenshotPath = String(process.env.SMOKE_SCREENSHOT_PATH || '/tmp/console-ui-smoke.png');
-  const cameraScreenshotPath = screenshotPath.replace(/(\.png)?$/i, '-camera.png');
+  const liveSourceScreenshotPath = screenshotPath.replace(/(\.png)?$/i, '-live-source.png');
+  const startupSettleMs = Number(process.env.SMOKE_STARTUP_SETTLE_MS || 0);
+  if (!Number.isFinite(startupSettleMs) || startupSettleMs < 0 || startupSettleMs > 10000) {
+    throw new Error('SMOKE_STARTUP_SETTLE_MS must be between 0 and 10000');
+  }
   const chromium = String(process.env.CHROMIUM_PATH || '/usr/bin/chromium-browser');
   const port = await freePort();
   const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-console-smoke-'));
@@ -441,6 +745,7 @@ async function main() {
     if (ready.length < 2) {
       throw new Error(`at least two authorized wall targets are required: ${JSON.stringify(ready)}`);
     }
+    if (startupSettleMs > 0) await sleep(startupSettleMs);
     const expectedWallTargets = csv(process.env.SMOKE_EXPECT_WALL_TARGETS);
     const targetCycle = expectedWallTargets.length
       ? expectedWallTargets.map((label) => {
@@ -543,9 +848,11 @@ async function main() {
       })()`, 'podium drag source and wall target', 30000);
 
       let dispatched = false;
+      let beforeState = [];
       try {
+        beforeState = physicalDisplayStates(db, dragConfig.deviceIds);
+        const beforeNonTargetState = physicalDisplayStates(db, dragConfig.nonTargetDeviceIds);
         const dragStartedAt = Date.now();
-        const beforeState = physicalDisplayStates(db, dragConfig.deviceIds);
         const browserResult = await evaluate(cdp, `(() => {
           const contentId = ${JSON.stringify(dragConfig.contentId)};
           const sourceLabel = ${JSON.stringify(dragConfig.sourceLabel)};
@@ -572,22 +879,37 @@ async function main() {
         const probeState = dragConfig.sourceLabel
           ? await waitForPhysicalSource(db, dragConfig.deviceIds, dragConfig, beforeState, dragStartedAt)
           : await waitForPhysicalContent(db, dragConfig.deviceIds, dragConfig.contentId);
+        const stableState = dragConfig.sourceLabel
+          ? await proveStableSourcePlayback(db, dragConfig, probeState.states)
+          : null;
+        const nonTargetState = assertNonTargetImmutability(
+          db,
+          dragConfig.nonTargetDeviceIds,
+          beforeNonTargetState,
+          dragConfig,
+          dragStartedAt
+        );
         dragDrop = {
+          before_state: beforeState,
           browser: browserResult,
           probe_state: probeState,
+          stable_state: stableState,
+          non_target_state: nonTargetState,
           convergence_ms: Date.now() - dragStartedAt,
         };
       } finally {
         if (dispatched) {
-          const restoredState = await restoreDragDropContent(db, dragConfig);
+          const restoredState = await restoreDragDropContent(db, dragConfig, beforeState);
           dragDrop = { ...(dragDrop || {}), restored_state: restoredState };
         }
       }
 
       let touchDispatched = false;
+      let beforeTouchState = [];
       try {
+        beforeTouchState = physicalDisplayStates(db, dragConfig.deviceIds);
+        const beforeTouchNonTargetState = physicalDisplayStates(db, dragConfig.nonTargetDeviceIds);
         const touchStartedAt = Date.now();
-        const beforeTouchState = physicalDisplayStates(db, dragConfig.deviceIds);
         const touchResult = await evaluate(cdp, `(() => {
           const contentId = ${JSON.stringify(dragConfig.contentId)};
           const sourceLabel = ${JSON.stringify(dragConfig.sourceLabel)};
@@ -625,15 +947,28 @@ async function main() {
         const touchProbeState = dragConfig.sourceLabel
           ? await waitForPhysicalSource(db, dragConfig.deviceIds, dragConfig, beforeTouchState, touchStartedAt)
           : await waitForPhysicalContent(db, dragConfig.deviceIds, dragConfig.contentId);
+        const touchStableState = dragConfig.sourceLabel
+          ? await proveStableSourcePlayback(db, dragConfig, touchProbeState.states)
+          : null;
+        const touchNonTargetState = assertNonTargetImmutability(
+          db,
+          dragConfig.nonTargetDeviceIds,
+          beforeTouchNonTargetState,
+          dragConfig,
+          touchStartedAt
+        );
         dragDrop = {
           ...(dragDrop || {}),
+          touch_before_state: beforeTouchState,
           touch_browser: touchResult,
           touch_probe_state: touchProbeState,
+          touch_stable_state: touchStableState,
+          touch_non_target_state: touchNonTargetState,
           touch_convergence_ms: Date.now() - touchStartedAt,
         };
       } finally {
         if (touchDispatched) {
-          const touchRestoredState = await restoreDragDropContent(db, dragConfig);
+          const touchRestoredState = await restoreDragDropContent(db, dragConfig, beforeTouchState);
           dragDrop = { ...(dragDrop || {}), touch_restored_state: touchRestoredState };
         }
       }
@@ -840,26 +1175,38 @@ async function main() {
     await evaluate(cdp, `document.querySelector('.mc-mv-close')?.click()`);
     await waitFor(cdp, `document.querySelector('.mc-multiview-host')?.hidden === true`, 'Multiview close');
 
-    const cameraTabOpened = await evaluate(cdp, `(() => {
+    const liveSourceTabOpened = await evaluate(cdp, `(() => {
       const tab = document.querySelector('.mc-tb-tab[data-tab="camerafeeds"]');
       if (!tab) return false;
       tab.click();
       return true;
     })()`);
-    assert(cameraTabOpened, 'Live Sources tab is missing');
-    await waitFor(cdp, `!!document.querySelector('.mc-live-source-tile [data-state]')`, 'live source status');
-    const liveSources = await evaluate(cdp, `(() => [...document.querySelectorAll('.mc-live-source-tile')].map((tile) => ({
+    assert(liveSourceTabOpened, 'Live Sources tab is missing');
+    const inScopeLiveSourceLabel = dragConfig?.sourceLabel || '';
+    await waitFor(cdp, `!![...document.querySelectorAll('.mc-live-source-tile')].find((tile) => (
+      !${JSON.stringify(inScopeLiveSourceLabel)}
+      || tile.querySelector('.mc-tile-label')?.textContent?.trim() === ${JSON.stringify(inScopeLiveSourceLabel)}
+    ))?.querySelector('[data-state]')`, 'live source status');
+    const liveSources = await evaluate(cdp, `(() => [...document.querySelectorAll('.mc-live-source-tile')]
+      .filter((tile) => !${JSON.stringify(inScopeLiveSourceLabel)}
+        || tile.querySelector('.mc-tile-label')?.textContent?.trim() === ${JSON.stringify(inScopeLiveSourceLabel)})
+      .map((tile) => ({
       label: tile.querySelector('.mc-tile-label')?.textContent?.trim(),
       state: tile.querySelector('[data-state]')?.dataset.state,
       disabled: tile.disabled,
       source: JSON.parse(tile.dataset.dragSource || '{}'),
       height: Math.round(tile.getBoundingClientRect().height),
     })))()`);
-    assert(liveSources.some((item) => item.label === 'Anpviz Camera'), `canonical Anpviz source missing: ${JSON.stringify(liveSources)}`);
-    assert(!liveSources.some((item) => /Focus|ANNKE|WyreStorm|Camera [123]/i.test(item.label || '')), `obsolete camera surfaced: ${JSON.stringify(liveSources)}`);
+    if (inScopeLiveSourceLabel) {
+      assert(liveSources.length === 1 && liveSources[0].label === inScopeLiveSourceLabel,
+        `configured live source missing: ${JSON.stringify(liveSources)}`);
+    } else {
+      assert(liveSources.some((item) => item.label === 'Anpviz Camera'), `canonical Anpviz source missing: ${JSON.stringify(liveSources)}`);
+      assert(!liveSources.some((item) => /Focus|ANNKE|WyreStorm|Camera [123]/i.test(item.label || '')), `obsolete camera surfaced: ${JSON.stringify(liveSources)}`);
+    }
     assert(liveSources.every((item) => item.height >= 48), `live-source touch target is too small: ${JSON.stringify(liveSources)}`);
-    const cameraShot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
-    fs.writeFileSync(cameraScreenshotPath, Buffer.from(cameraShot.data, 'base64'));
+    const liveSourceShot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+    fs.writeFileSync(liveSourceScreenshotPath, Buffer.from(liveSourceShot.data, 'base64'));
 
     const runtimeExceptions = cdp.events.filter((event) => event.method === 'Runtime.exceptionThrown');
     console.log(JSON.stringify({
@@ -878,7 +1225,7 @@ async function main() {
       whiteboard,
       runtime_exceptions: runtimeExceptions.length,
       screenshot: screenshotPath,
-      camera_screenshot: cameraScreenshotPath,
+      live_source_screenshot: liveSourceScreenshotPath,
     }));
   } catch (error) {
     if (cdp) {

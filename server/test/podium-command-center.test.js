@@ -58,6 +58,8 @@ test('podium library drag and drop preserves the source contract through physica
   assert.match(smoke, /SMOKE_DRAG_CONTENT_ID/);
   assert.match(smoke, /SMOKE_DRAG_SOURCE_LABEL/);
   assert.match(smoke, /SMOKE_DRAG_GROUP_ID/);
+  assert.match(smoke, /SMOKE_DRAG_LAYOUT_REVISION/);
+  assert.match(smoke, /SMOKE_DRAG_NON_TARGET_DEVICE_IDS/);
   assert.match(smoke, /dragConfig\.contentId\.toLowerCase\(\) === 'auto'/);
   assert.match(smoke, /configured drag source is not visible/);
   assert.match(smoke, /pointerType: 'touch'/);
@@ -67,7 +69,19 @@ test('podium library drag and drop preserves the source contract through physica
   assert.match(smoke, /touch_convergence_ms: Date\.now\(\) - touchStartedAt/);
   assert.match(smoke, /waitForPhysicalContent\(db, dragConfig\.deviceIds, dragConfig\.contentId\)/);
   assert.match(smoke, /waitForPhysicalSource\(db, dragConfig\.deviceIds/);
-  assert.match(smoke, /restoreDragDropContent\(db, dragConfig\)/);
+  assert.match(smoke, /assertNonTargetImmutability\([\s\S]*?dragConfig\.nonTargetDeviceIds/);
+  assert.match(smoke, /targets:\s*\[restoreTarget\]/);
+  assert.match(smoke, /type:\s*'wall-group'/);
+  assert.match(smoke, /layout_revision:\s*config\.layoutRevision/);
+  assert.match(smoke, /restoreDragDropContent\(db, dragConfig, beforeState\)/);
+  assert.match(smoke, /waitForRestoredStates\(db, beforeStates\)/);
+  assert.match(smoke, /restoreTransportState\(db, generateToken\(user, target\.workspace_id\), beforeStates\)/);
+  assert.match(smoke, /state\.muted === 1 \? 'mute' : 'unmute'/);
+  assert.match(smoke, /state\.paused === 1 \? 'pause' : 'play'/);
+  assert.match(smoke, /action, command_id: envelope\.command_id, acknowledged_at: row\.ack_at/);
+  assert.match(smoke, /JOIN broadcast_device_results bdr ON bdr\.request_id = br\.id/);
+  assert.match(smoke, /row\.acknowledgment_state === 'confirmed'/);
+  assert.match(smoke, /proveStableSourcePlayback\(db, dragConfig/);
 });
 
 test('grouped wall regions accept an exact typed drop instead of falling through to the room', () => {
@@ -99,6 +113,15 @@ test('a late startup preference response cannot overwrite an operator target cli
   assert.match(view, /if \(!restoringTarget\) targetIntentGeneration \+= 1/);
   assert.match(view, /const restoreGeneration = targetIntentGeneration/);
   assert.match(view, /targetIntentGeneration !== restoreGeneration/);
+});
+
+test('a startup preference response from an unmounted render cannot mutate a later render', () => {
+  const view = read('frontend/js/views/media-control.js');
+
+  assert.match(view, /let targetRestoreLifecycleGeneration = 0/);
+  assert.match(view, /const restoreLifecycleGeneration = targetRestoreLifecycleGeneration/);
+  assert.match(view, /targetRestoreLifecycleGeneration !== restoreLifecycleGeneration/);
+  assert.match(view, /targetRestoreLifecycleGeneration \+= 1/);
 });
 
 test('Multiview contains its own mouse, touch, and keyboard content picker', () => {

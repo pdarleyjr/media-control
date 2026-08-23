@@ -29,6 +29,7 @@ const { ensureDevicePlaylist } = require('../lib/wall-playlists');
 const { parseStoredLayout, groupForDevice } = require('../lib/wall-layout');
 const whiteboardState = require('./whiteboard-state');
 const { contentUseDecision } = require('../lib/content-visibility');
+const { isAppOwnedRelativeUrl } = require('../lib/ssrf-policy');
 
 // Mirror routes/playlists.js + routes/assignments.js snapshot select so the
 // published snapshot the player consumes carries the same denormalized shape.
@@ -51,11 +52,41 @@ function buildSnapshotItems(playlistId) {
 // Keeps the broadcast path inside the existing playlist_item->content model
 // rather than inventing a new payload type. Mirrors routes/content.js POST
 // /remote (empty filepath, derived mime_type).
+function isGuestComputerPlayerUrl(remoteUrl) {
+  if (!isAppOwnedRelativeUrl(remoteUrl)) return false;
+  try {
+    const parsed = new URL(String(remoteUrl), 'http://media-control.local');
+    return parsed.pathname === '/player/live-source.html'
+      && parsed.searchParams.get('source') === 'guest-computer';
+  } catch {
+    return false;
+  }
+}
+
 function resolveRemoteUrlContent(remoteUrl, workspaceId, userId) {
-  const existing = db.prepare(
-    'SELECT id, mime_type FROM content WHERE remote_url = ? AND (workspace_id = ? OR workspace_id IS NULL) LIMIT 1'
-  ).get(remoteUrl, workspaceId || null);
+  const shareGuestComputer = isGuestComputerPlayerUrl(remoteUrl);
+  const existing = shareGuestComputer
+    ? db.prepare(`
+        SELECT id, mime_type, access_level
+        FROM content
+        WHERE remote_url = ? AND workspace_id = ?
+        LIMIT 1
+      `).get(remoteUrl, workspaceId || null)
+    : db.prepare(`
+        SELECT id, mime_type, access_level
+        FROM content
+        WHERE remote_url = ? AND (workspace_id = ? OR workspace_id IS NULL)
+        LIMIT 1
+      `).get(remoteUrl, workspaceId || null);
   if (existing) {
+    // Guest Computer is a workspace-owned live input, not an operator-owned
+    // library item. Older releases stored the generated player row as private,
+    // which made the same live source fail for every later operator. Normalize
+    // only this canonical app-owned source; ordinary remote/deck rows retain
+    // their governed visibility.
+    if (shareGuestComputer && existing.access_level !== 'workspace_shared') {
+      db.prepare("UPDATE content SET access_level = 'workspace_shared' WHERE id = ?").run(existing.id);
+    }
     // Self-heal legacy deck/presentation rows that an older resolver stored as
     // image/jpeg. Players without the /player/deck/ URL rescue render those as a
     // broken <img> (blank) — the "presentation won't play on the wall" bug. A
@@ -86,10 +117,11 @@ function resolveRemoteUrlContent(remoteUrl, workspaceId, userId) {
   else mimeType = 'text/html';
   let filename;
   try { filename = new URL(remoteUrl).hostname || 'remote'; } catch { filename = 'remote'; }
+  const accessLevel = shareGuestComputer ? 'workspace_shared' : 'private';
   db.prepare(`
     INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, remote_url, access_level)
-    VALUES (?, ?, ?, ?, '', ?, 0, ?, 'private')
-  `).run(id, userId || null, workspaceId || null, filename, mimeType, remoteUrl);
+    VALUES (?, ?, ?, ?, '', ?, 0, ?, ?)
+  `).run(id, userId || null, workspaceId || null, filename, mimeType, remoteUrl, accessLevel);
   return id;
 }
 
