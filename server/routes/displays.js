@@ -4,6 +4,7 @@ const { db } = require('../db/database');
 const { nowPlayingFromSnapshot } = require('../lib/display-state');
 const { mapDisplayRow } = require('../lib/display-row');
 const { userPrefRoom } = require('../lib/socket-rooms');
+const { contextFromRequest, contentVisibilityScope } = require('../lib/content-visibility');
 const config = require('../config');
 
 // The io instance is set by server.js after Socket.IO initializes (task §11
@@ -154,19 +155,21 @@ router.get('/state', (req, res) => {
   // cross-origin deck / web / YouTube iframes paint BLACK to the player's canvas
   // screenshot, so the live capture is a useless preview. When such content is
   // playing, expose the content's generated poster (the sharp image / ffmpeg
-  // video-frame thumbnail made at upload, served by the public, token-less
-  // /api/content/:id/thumbnail route) so the dashboard shows a real preview
-  // instead of a black tile. Images expose their thumbnail as a content-bound
-  // fallback when a device capture is delayed; fresh image screenshots still
-  // win in the stage. Anything without a generated poster falls back to the
-  // live screenshot.
+  // video-frame thumbnail made at upload) so the dashboard shows a real preview
+  // instead of a black tile. The URL is exposed only when this requesting user
+  // can read the content; otherwise the stage falls back to the authorized live
+  // screenshot without issuing a doomed/private thumbnail request. Images expose
+  // their thumbnail as a content-bound fallback when a device capture is delayed;
+  // fresh image screenshots still win in the stage.
   const POSTERABLE = new Set(['image', 'video', 'web', 'youtube', 'pdf', 'document']);
-  const posterStmt = db.prepare('SELECT thumbnail_path FROM content WHERE id = ?');
+  const posterVisibility = contentVisibilityScope(contextFromRequest(req), { alias: 'c' });
+  const posterStmt = db.prepare(`SELECT c.thumbnail_path FROM content c
+    WHERE c.id = ? AND ${posterVisibility.clause}`);
   for (const d of displays) {
     const np = d.now_playing;
     if (np && np.contentId && POSTERABLE.has(np.kind)) {
       try {
-        const c = posterStmt.get(np.contentId);
+        const c = posterStmt.get(np.contentId, ...posterVisibility.params);
         if (c && c.thumbnail_path) np.poster_url = `/api/content/${np.contentId}/thumbnail`;
       } catch { /* leave poster_url unset → cell falls back to the live screenshot */ }
     }
