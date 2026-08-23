@@ -41,3 +41,8 @@ test('Multiview re-fetches and revalidates revision and membership immediately b
   const startIndex = source.indexOf('screenShareEngine.startBroadcastTo(', validateIndex);
   assert.ok(refreshIndex > selectedIndex && validateIndex > refreshIndex && startIndex > validateIndex);
 });
+
+test('Multiview submits its internal grid as a same-origin relative player URL', () => {
+  assert.match(source, /return `\/player\/grid\.html\?cells=\$\{b64url\(JSON\.stringify\(map\)\)\}`/);
+  assert.doesNotMatch(source, /location\.origin\}\/player\/grid\.html/);
+});

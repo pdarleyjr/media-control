@@ -317,7 +317,7 @@ function buildGridUrl() {
     if (validGeom(g)) { entry.x = g.x; entry.y = g.y; entry.w = g.w; entry.h = g.h; }
     map[id] = entry;
   }
-  return `${location.origin}/player/grid.html?cells=${b64url(JSON.stringify(map))}`;
+  return `/player/grid.html?cells=${b64url(JSON.stringify(map))}`;
 }
 
 // ---------- single-device wall split (N full-height column cells) ----------
@@ -350,7 +350,7 @@ export async function buildSplitGridUrl(halfSources, cols) {
     map[ids[i]] = { u: res.cellUrl, l: res.label || '', k: res.kind || 'i' };
   }
   if (!Object.keys(map).length) return null;
-  return `${location.origin}/player/grid.html?cells=${b64url(JSON.stringify(map))}&split=${n}`;
+  return `/player/grid.html?cells=${b64url(JSON.stringify(map))}&split=${n}`;
 }
 
 // ---------- rendering ----------
