@@ -82,6 +82,10 @@ test('podium library drag and drop preserves the source contract through physica
   assert.match(smoke, /JOIN broadcast_device_results bdr ON bdr\.request_id = br\.id/);
   assert.match(smoke, /row\.acknowledgment_state === 'confirmed'/);
   assert.match(smoke, /proveStableSourcePlayback\(db, dragConfig/);
+  assert.match(smoke, /fs\.mkdtempSync\(path\.join\(os\.tmpdir\(\), 'mbfd-console-evidence-'\)\)/);
+  assert.match(smoke, /fs\.constants\.O_EXCL/);
+  assert.match(smoke, /fs\.openSync\(filePath, flags, 0o600\)/);
+  assert.doesNotMatch(smoke, /writeFileSync\(screenshotPath/);
 });
 
 test('grouped wall regions accept an exact typed drop instead of falling through to the room', () => {

@@ -10,6 +10,16 @@ const deviceContract = require('../server/player/device-contract');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function writePrivateEvidence(filePath, data) {
+  const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL;
+  const fd = fs.openSync(filePath, flags, 0o600);
+  try {
+    fs.writeFileSync(fd, data);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 function required(name) {
   const value = String(process.env[name] || '').trim();
   if (!value) throw new Error(`${name} is required`);
@@ -687,7 +697,9 @@ async function main() {
   if (!loginConfig && !deviceToken) throw new Error('CONSOLE_DEVICE_TOKEN or SMOKE_LOGIN_IDENTIFIER is required');
   const webSession = loginConfig ? await createWebSession(loginConfig) : null;
   const dragConfig = dragDropConfig();
-  const screenshotPath = String(process.env.SMOKE_SCREENSHOT_PATH || '/tmp/console-ui-smoke.png');
+  const evidenceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-console-evidence-'));
+  const screenshotName = path.basename(String(process.env.SMOKE_SCREENSHOT_PATH || 'console-ui-smoke.png'));
+  const screenshotPath = path.join(evidenceDir, screenshotName);
   const liveSourceScreenshotPath = screenshotPath.replace(/(\.png)?$/i, '-live-source.png');
   const startupSettleMs = Number(process.env.SMOKE_STARTUP_SETTLE_MS || 0);
   if (!Number.isFinite(startupSettleMs) || startupSettleMs < 0 || startupSettleMs > 10000) {
@@ -1169,7 +1181,7 @@ async function main() {
     assert(['auto', 'scroll'].includes(routeDialog.listOverflowY), `routing choices are not independently scrollable: ${JSON.stringify(routeDialog)}`);
 
     const shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
-    fs.writeFileSync(screenshotPath, Buffer.from(shot.data, 'base64'));
+    writePrivateEvidence(screenshotPath, Buffer.from(shot.data, 'base64'));
     await evaluate(cdp, `document.querySelector('[data-target-cancel]')?.click()`);
     await waitFor(cdp, `!document.querySelector('dialog.mc-target-picker[open]')`, 'routing picker close');
     await evaluate(cdp, `document.querySelector('.mc-mv-close')?.click()`);
@@ -1206,7 +1218,7 @@ async function main() {
     }
     assert(liveSources.every((item) => item.height >= 48), `live-source touch target is too small: ${JSON.stringify(liveSources)}`);
     const liveSourceShot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
-    fs.writeFileSync(liveSourceScreenshotPath, Buffer.from(liveSourceShot.data, 'base64'));
+    writePrivateEvidence(liveSourceScreenshotPath, Buffer.from(liveSourceShot.data, 'base64'));
 
     const runtimeExceptions = cdp.events.filter((event) => event.method === 'Runtime.exceptionThrown');
     console.log(JSON.stringify({
@@ -1244,7 +1256,7 @@ async function main() {
       error.message += `; diagnostics=${JSON.stringify({ diagnostics, browserErrors })}`;
       try {
         const failedShot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
-        fs.writeFileSync(screenshotPath, Buffer.from(failedShot.data, 'base64'));
+        writePrivateEvidence(screenshotPath, Buffer.from(failedShot.data, 'base64'));
       } catch { /* preserve the original smoke failure */ }
     }
     if (chromiumError) error.message += `; chromium=${chromiumError.replace(/\s+/g, ' ').slice(-800)}`;
