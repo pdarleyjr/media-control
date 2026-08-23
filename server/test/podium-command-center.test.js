@@ -83,7 +83,10 @@ test('podium library drag and drop preserves the source contract through physica
   assert.match(smoke, /waitForRestoredStates\(db, beforeStates\)/);
   assert.match(smoke, /const timedMedia = \/\^\(video\|audio\)\$\/i\.test\(String\(expected\?\.content_type \|\| ''\)\)/);
   assert.match(smoke, /!timedMedia \|\| expected\?\.paused !== 1/);
-  assert.match(smoke, /restoreTransportState\(db, generateToken\(user, target\.workspace_id\), beforeStates\)/);
+  assert.match(smoke, /const token = generateAcceptanceToken\(user, target\.workspace_id\)/);
+  assert.match(smoke, /restoreTransportState\(db, token, beforeStates\)/);
+  assert.match(smoke, /mouse_to_touch_settle_ms:\s*2000/);
+  assert.match(smoke, /await sleep\(dragDrop\.mouse_to_touch_settle_ms\)/);
   assert.match(smoke, /const timedMedia = \/\^\(video\|audio\)\$\/i/);
   assert.match(smoke, /const presentation = \/\^\(document\|presentation\|deck\)\$\/i/);
   assert.match(smoke, /if \(timedMedia && \(state\.muted === 1 \|\| state\.muted === 0\)\)/);
@@ -102,13 +105,29 @@ test('podium library drag and drop preserves the source contract through physica
 
 test('live console smoke opens its acceptance database before browser-driven writes', () => {
   const smoke = read('scripts/live-console-ui-smoke.js');
-  const databaseOpen = smoke.indexOf("const dragDb = dragConfig ? require('../server/db/database').db : null;");
+  const databaseOpen = smoke.indexOf('const dragDb = dragConfig ? openAcceptanceDatabase() : null;');
   const chromiumSpawn = smoke.indexOf('const child = spawn(chromium');
 
   assert.notEqual(databaseOpen, -1);
   assert.notEqual(chromiumSpawn, -1);
   assert.ok(databaseOpen < chromiumSpawn);
-  assert.doesNotMatch(smoke.slice(chromiumSpawn), /require\('\.\.\/server\/db\/database'\)/);
+  assert.match(smoke, /function openAcceptanceDatabase\(\)[\s\S]*?better-sqlite3[\s\S]*?process\.env\.DB_PATH[\s\S]*?readonly:\s*true[\s\S]*?fileMustExist:\s*true/);
+  assert.doesNotMatch(smoke, /require\('\.\.\/server\/db\/database'\)/);
+  assert.doesNotMatch(smoke, /require\('\.\.\/server\/middleware\/auth'\)/);
+  assert.match(smoke, /function generateAcceptanceToken\(user, currentWorkspaceId\)[\s\S]*?jsonwebtoken[\s\S]*?algorithm:\s*'HS256'[\s\S]*?expiresIn:\s*config\.jwtExpiry/);
+  assert.match(smoke, /dragDb\?\.close\(\)/);
+});
+
+test('live console smoke selects the configured wall before looking for its drop target', () => {
+  const smoke = read('scripts/live-console-ui-smoke.js');
+  const configuredWallSelection = smoke.indexOf("const configuredWallTarget = `wall:${dragConfig.wallId}`;");
+  const dragInventory = smoke.indexOf("const inventory = await waitFor(cdp");
+
+  assert.notEqual(configuredWallSelection, -1);
+  assert.notEqual(dragInventory, -1);
+  assert.ok(configuredWallSelection < dragInventory);
+  assert.match(smoke, /mc-target-wall-btn.*data-target-value[\s\S]*?configuredWallTarget[\s\S]*?button\.click\(\)/);
+  assert.match(smoke, /configured wall target/);
 });
 
 test('grouped wall regions accept an exact typed drop instead of falling through to the room', () => {
