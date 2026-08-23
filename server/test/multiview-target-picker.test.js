@@ -41,3 +41,26 @@ test('Multiview re-fetches and revalidates revision and membership immediately b
   const startIndex = source.indexOf('screenShareEngine.startBroadcastTo(', validateIndex);
   assert.ok(refreshIndex > selectedIndex && validateIndex > refreshIndex && startIndex > validateIndex);
 });
+
+test('Multiview submits its internal grid as a same-origin relative player URL', () => {
+  assert.match(source, /return `\/player\/grid\.html\?cells=\$\{b64url\(JSON\.stringify\(map\)\)\}`/);
+  assert.doesNotMatch(source, /location\.origin\}\/player\/grid\.html/);
+});
+
+test('Multiview populated frames render the assigned media instead of an icon-only placeholder', () => {
+  assert.match(source, /function cellPreviewHtml\(c\)/);
+  assert.match(source, /c\.kind === 'v'[\s\S]*?<video[\s\S]*?autoplay muted loop playsinline/);
+  assert.match(source, /c\.kind === 'm'[\s\S]*?<img/);
+  assert.match(source, /<iframe[\s\S]*?loading="eager"[\s\S]*?referrerpolicy="no-referrer"/);
+  assert.match(source, /const preview = cellPreviewHtml\(c\)/);
+  assert.match(source, /\$\{preview\}[\s\S]*?<div class="mc-mv-cell-actions">/);
+});
+
+test('Multiview always offers live news and an available Guest Computer source', () => {
+  assert.match(source, /LIVE_NEWS_CATALOG/);
+  assert.match(source, /LIVE_SOURCE_CATALOG/);
+  assert.match(source, /api\.liveSources\.list\(\)/);
+  assert.match(source, /config\.id === 'guest-computer'/);
+  assert.match(source, /source\.available === true/);
+  assert.match(source, /multiviewLiveSources/);
+});

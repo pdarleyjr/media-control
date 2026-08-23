@@ -2,7 +2,7 @@
 //
 // A single display is split into a 4-left / 2-center / 4-right mosaic (every
 // cell 16:9 by default). The operator drags source tiles from the toolbox into
-// each frame, sees a thumbnail + label in just the frame they dropped into, can
+// each frame, sees the muted live source + label in just the frame they dropped into, can
 // click any frame to monitor THAT stream's audio locally (in this browser, not
 // on the wall — so they can switch which feed they hear), then sends the
 // assembled layout to a display.
@@ -32,6 +32,7 @@ import { openTargetPicker } from '../../components/target-picker.js';
 import { waitForTargetCatalog } from '../../services/target-catalog-runtime.js';
 import { findCatalogTarget } from '../../services/target-catalog.js';
 import * as screenShareEngine from '../../services/screen-share-engine.js';
+import { LIVE_NEWS_CATALOG, LIVE_SOURCE_CATALOG } from './camera-feeds-catalog.js';
 
 // 4-left / 2-center / 4-right, in percent of the 16:9 canvas. MIRROR of SLOTS
 // in server/player/multiview-core.js.
@@ -87,6 +88,7 @@ let cells = {};               // slotId -> { cellUrl, monitorUrl, kind, label, t
 let geoms = {};               // slotId -> { x,y,w,h } percent override (absent = fixed SLOT)
 let shareDevice = {};         // slotId -> { deviceIds, label } receiving this frame's screen share
 let contentIndex = {};        // content_id -> { mime, thumbnail_url, filename }
+let multiviewLiveSources = [];// canonical Guest/news sources independent of the active toolbox tab
 let routeSourceFn = null;     // injected: (source, label) => Promise<bool>
 let onCloseFn = null;         // injected: () => void — closes the composer panel
 let monitorSlot = null;       // slot id currently being monitored locally
@@ -317,7 +319,7 @@ function buildGridUrl() {
     if (validGeom(g)) { entry.x = g.x; entry.y = g.y; entry.w = g.w; entry.h = g.h; }
     map[id] = entry;
   }
-  return `${location.origin}/player/grid.html?cells=${b64url(JSON.stringify(map))}`;
+  return `/player/grid.html?cells=${b64url(JSON.stringify(map))}`;
 }
 
 // ---------- single-device wall split (N full-height column cells) ----------
@@ -350,7 +352,7 @@ export async function buildSplitGridUrl(halfSources, cols) {
     map[ids[i]] = { u: res.cellUrl, l: res.label || '', k: res.kind || 'i' };
   }
   if (!Object.keys(map).length) return null;
-  return `${location.origin}/player/grid.html?cells=${b64url(JSON.stringify(map))}&split=${n}`;
+  return `/player/grid.html?cells=${b64url(JSON.stringify(map))}&split=${n}`;
 }
 
 // ---------- rendering ----------
@@ -404,6 +406,16 @@ function availableLibrarySources() {
       thumb: image?.currentSrc || image?.src || '',
     });
   });
+  // Guest Computer and live news must remain selectable even when another
+  // toolbox tab is active. These descriptors come from the same canonical
+  // catalogs as Camera Feeds; Guest is included only when the live-source API
+  // reports it available.
+  multiviewLiveSources.forEach((item) => {
+    const key = JSON.stringify(item.source);
+    if (seen.has(key)) return;
+    seen.add(key);
+    found.push(item);
+  });
   // Always include authorized uploaded media too. The toolbox only renders its
   // active tab, so treating this as a fallback would make most content vanish
   // from the composer whenever Camera Feeds or Presentations was selected.
@@ -441,6 +453,21 @@ function sourceLibraryHtml() {
   </aside>`;
 }
 
+// Render the same assigned source the display grid will receive. Composer media
+// is passive and muted: it proves the visual source is actually playable without
+// producing operator audio or intercepting frame drag/resize controls.
+function cellPreviewHtml(c) {
+  const fit = cellFit(c);
+  const src = FIT_PARAM_RE.test(c.cellUrl) ? withFit(c.cellUrl, fit) : c.cellUrl;
+  if (c.kind === 'v') {
+    return `<video class="mc-mv-cell-preview" src="${esc(src)}" autoplay muted loop playsinline tabindex="-1" aria-hidden="true"></video>`;
+  }
+  if (c.kind === 'm') {
+    return `<img class="mc-mv-cell-preview" src="${esc(src)}" alt="" loading="eager" decoding="async">`;
+  }
+  return `<iframe class="mc-mv-cell-preview" src="${esc(src)}" loading="eager" referrerpolicy="no-referrer" tabindex="-1" aria-hidden="true"></iframe>`;
+}
+
 function cellInner(slot) {
   const c = cells[slot.id];
   if (!c) {
@@ -458,9 +485,7 @@ function cellInner(slot) {
       <div class="mc-mv-cell-label" title="${esc(c.label || '')}">${esc(c.label || t('mc.mv.screen_share'))}</div>
       ${handlesHtml()}`;
   }
-  const thumb = c.thumb
-    ? `<img class="mc-mv-cell-thumb" src="${esc(c.thumb)}" alt="" loading="lazy">`
-    : `<span class="mc-mv-cell-ico" aria-hidden="true">${IC[c.category] || IC.generic}</span>`;
+  const preview = cellPreviewHtml(c);
   const monitoring = monitorSlot === slot.id;
   const listenBtn = c.monitorUrl
     ? `<button type="button" class="mc-mv-cell-btn mc-mv-listen${monitoring ? ' active' : ''}"
@@ -485,7 +510,7 @@ function cellInner(slot) {
        title="${esc(filling ? t('mc.mv.fit_to') : t('mc.mv.fill_to'))}"
        aria-pressed="${filling ? 'false' : 'true'}">${filling ? IC.fill : IC.fit}</button>`;
   return `
-    ${thumb}
+    ${preview}
     <div class="mc-mv-cell-actions">
       ${fitBtn}
       ${listenBtn}
@@ -1023,6 +1048,25 @@ export async function renderMultiview(container, { routeSource, onClose } = {}) 
     contentIndex = {};
     for (const it of items) contentIndex[it.id] = { mime: it.mime_type || '', thumbnail_url: it.thumbnail_url || null, filename: it.filename || '' };
   } catch { contentIndex = {}; }
+  multiviewLiveSources = LIVE_NEWS_CATALOG.map((config) => ({
+    source: { remote_url: config.url, live_source_id: config.id, audio_policy: config.audio_policy },
+    label: config.title,
+    thumb: '',
+  }));
+  try {
+    const response = await api.liveSources.list();
+    const byId = new Map((response.sources || []).map((source) => [source.id, source]));
+    LIVE_SOURCE_CATALOG
+      .map((config) => ({ config, source: byId.get(config.id) || { available: false } }))
+      .filter(({ config, source }) => config.id === 'guest-computer' && source.available === true)
+      .forEach(({ config }) => {
+        multiviewLiveSources.unshift({
+          source: { remote_url: config.url, live_source_id: config.id, audio_policy: config.audio_policy },
+          label: t(config.nameKey),
+          thumb: '',
+        });
+      });
+  } catch { /* news remains usable; unavailable Guest remains hidden */ }
   render();
 }
 

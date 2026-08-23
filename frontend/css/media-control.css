@@ -1777,10 +1777,10 @@ a.mc-recent-row:focus-visible { outline: 3px solid var(--accent); outline-offset
 .mc-mv-slot-name { font-size: clamp(9px, 0.9vw, 12px); font-weight: var(--mc-fw-semibold, 600); color: var(--mc-text-secondary, #94a3b8); }
 .mc-mv-slot-hint { font-size: clamp(8px, 0.8vw, 10px); color: var(--mc-text-tertiary, #64748b); }
 
-.mc-mv-cell-thumb { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-/* Mirror the wall's fit choice in the preview thumbnail: Fill (cover, default)
+.mc-mv-cell-preview { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; object-fit: cover; background: #000; pointer-events: none; }
+/* Mirror the wall's fit choice in the live preview: Fill (cover, default)
    vs Fit (contain, letterbox). Matches grid.html's per-cell object-fit. */
-.mc-mv-cell[data-fit="contain"] .mc-mv-cell-thumb { object-fit: contain; background: #000; }
+.mc-mv-cell[data-fit="contain"] .mc-mv-cell-preview { object-fit: contain; }
 .mc-mv-cell-ico { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--mc-text-secondary, #94a3b8); }
 .mc-mv-cell-ico svg { width: 28%; height: 28%; max-width: 40px; max-height: 40px; opacity: 0.7; }
 

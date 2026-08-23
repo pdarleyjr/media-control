@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { nowPlayingFromSnapshot } = require('../lib/display-state');
+const { nowPlayingFromSnapshot, overlayNowPlaying } = require('../lib/display-state');
 
 test('null snapshot -> idle', () => {
   assert.deepEqual(nowPlayingFromSnapshot(null), { label: 'Idle', kind: 'idle', itemCount: 0 });
@@ -55,4 +55,22 @@ test('defensive { items: [...] } wrapper still resolves', () => {
   const r = nowPlayingFromSnapshot(snap);
   assert.equal(r.label, 'welcome.jpg');
   assert.equal(r.kind, 'image');
+});
+
+test('live renderer state does not replace an internal HLS player source with a file-video preview', () => {
+  const result = overlayNowPlaying({
+    label: 'MBTV · Miami Beach',
+    kind: 'web',
+    contentId: 'news-content',
+    remoteUrl: '/player/hls.html?station=mbtv',
+  }, {
+    current_content_id: 'news-content',
+    content_type: 'video',
+    render_state: 'playing',
+    paused: false,
+  });
+
+  assert.equal(result.kind, 'web');
+  assert.equal(result.remoteUrl, '/player/hls.html?station=mbtv');
+  assert.equal(result.render_state, 'playing');
 });

@@ -122,6 +122,32 @@ test('a new confirmed content identity cannot inherit the previous source URL or
   assert.notEqual(nowPlaying.label, 'Anpviz Camera');
 });
 
+test('a same-content room update preserves the REST-hydrated live-player source kind and URL', async () => {
+  const { projectRoomDisplays } = await loadProjection();
+  const prior = new Map([['front-left', {
+    id: 'front-left',
+    now_playing: {
+      contentId: 'news-content',
+      content_id: 'news-content',
+      kind: 'web',
+      label: 'MBTV · Miami Beach',
+      remoteUrl: '/player/hls.html?station=mbtv',
+    },
+  }]]);
+
+  const projected = projectRoomDisplays({
+    confirmedState: { displays: [{
+      id: 'front-left', status: 'online', contentId: 'news-content',
+      contentType: 'video', renderState: 'playing',
+    }] },
+    deviceStates: { displays: [{ id: 'front-left', screenOn: true }] },
+  }, prior);
+
+  const nowPlaying = projected.get('front-left').now_playing;
+  assert.equal(nowPlaying.kind, 'web');
+  assert.equal(nowPlaying.remoteUrl, '/player/hls.html?station=mbtv');
+});
+
 test('invalid snapshots do not erase the current display store', async () => {
   const { projectRoomDisplays } = await loadProjection();
   assert.equal(projectRoomDisplays({}, new Map([['tv-1', { id: 'tv-1' }]])), null);
