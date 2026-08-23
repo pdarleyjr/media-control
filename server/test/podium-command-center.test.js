@@ -100,6 +100,17 @@ test('podium library drag and drop preserves the source contract through physica
   assert.doesNotMatch(smoke, /writeFileSync\(screenshotPath/);
 });
 
+test('live console smoke opens its acceptance database before browser-driven writes', () => {
+  const smoke = read('scripts/live-console-ui-smoke.js');
+  const databaseOpen = smoke.indexOf("const dragDb = dragConfig ? require('../server/db/database').db : null;");
+  const chromiumSpawn = smoke.indexOf('const child = spawn(chromium');
+
+  assert.notEqual(databaseOpen, -1);
+  assert.notEqual(chromiumSpawn, -1);
+  assert.ok(databaseOpen < chromiumSpawn);
+  assert.doesNotMatch(smoke.slice(chromiumSpawn), /require\('\.\.\/server\/db\/database'\)/);
+});
+
 test('grouped wall regions accept an exact typed drop instead of falling through to the room', () => {
   const stage = read('frontend/js/views/media-control/stage.js');
   const view = read('frontend/js/views/media-control.js');
