@@ -42,3 +42,18 @@ test('Command Center shelf defines exactly six normalized operator categories', 
   assert.match(view, /openLibraryTab\('sources'\)/);
   assert.match(api, /filters\.folder\)[\s\S]*?query\.set\('folder', filters\.folder\)/);
 });
+
+test('Command Center shelf cards are large visual tiles without changing route payloads', () => {
+  const toolbox = read('frontend/js/views/media-control/toolbox.js');
+  const css = read('frontend/css/media-control.css');
+
+  assert.match(css, /\.mc-library-body \.mc-tile\s*\{[\s\S]*?width:\s*152px;[\s\S]*?min-height:\s*132px;/);
+  assert.match(css, /\.mc-library-body \.mc-tile-thumb[\s\S]*?width:\s*136px;[\s\S]*?height:\s*82px;/);
+  assert.match(css, /\.mc-library-body \.mc-tile-label[\s\S]*?white-space:\s*nowrap;[\s\S]*?text-overflow:\s*ellipsis;/);
+  assert.match(css, /\.mc-library-body \.mc-tile-thumb-fallback[\s\S]*?width:\s*136px;[\s\S]*?height:\s*82px;/);
+  assert.match(toolbox, /const src = JSON\.stringify\(\{ content_id: item\.id \}\)/);
+  assert.match(toolbox, /data-drag-source='\$\{esc\(src\)\}'/);
+  assert.match(toolbox, /data-label="\$\{esc\(name\)\}"/);
+  assert.match(toolbox, /rememberFailedThumbnailUrl\(img\.dataset\.thumbUrl/);
+  assert.match(toolbox, /const PAGE = 60/);
+});

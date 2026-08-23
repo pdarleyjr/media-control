@@ -479,6 +479,88 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await context.close();
   });
 
+  test('large shelf cards preserve fallback, pagination, drag payload, and tap routing', async ({ browser }, testInfo) => {
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 838, height: 500 },
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: true,
+    });
+    const longName = `extended-incident-command-briefing-${'very-long-'.repeat(10)}.mp4`;
+    const videos = Array.from({ length: 65 }, (_, index) => ({
+      id: `large-card-video-${index + 1}`,
+      filename: index === 0 ? longName : `training-video-${String(index + 1).padStart(2, '0')}.mp4`,
+      mime_type: 'video/mp4',
+      detected_mime_type: 'video/mp4',
+      thumbnail_url: index === 1 ? '/missing-command-center-thumbnail.jpg' : '',
+      created_at: 65 - index,
+    }));
+    await page.route('**/api/content*', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname !== '/api/content') return route.continue();
+      const offset = Number(url.searchParams.get('offset') || 0);
+      const limit = Number(url.searchParams.get('limit') || 60);
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(videos.slice(offset, offset + limit)),
+      });
+    });
+    await page.reload({ waitUntil: 'networkidle' });
+    await waitForCommandCenterVisualReady(page);
+    await page.locator('#mc-library-drawer > [data-library-toggle]').click();
+
+    const labels = page.locator('#mc-toolbox .mc-tile-label');
+    await expect(labels).toHaveCount(60);
+    const firstTile = page.locator('#mc-toolbox .mc-tile[data-drag-source]').first();
+    await firstTile.scrollIntoViewIfNeeded();
+    const geometry = await firstTile.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      const thumb = element.querySelector('.mc-tile-thumb-fallback').getBoundingClientRect();
+      const label = element.querySelector('.mc-tile-label');
+      const style = getComputedStyle(label);
+      return {
+        width: box.width,
+        height: box.height,
+        thumbWidth: thumb.width,
+        thumbHeight: thumb.height,
+        whiteSpace: style.whiteSpace,
+        textOverflow: style.textOverflow,
+        labelOverflow: label.scrollWidth > label.clientWidth,
+      };
+    });
+    expect(geometry.width).toBeGreaterThanOrEqual(136);
+    expect(geometry.width).toBeLessThanOrEqual(168);
+    expect(geometry.height).toBeGreaterThanOrEqual(132);
+    expect(geometry.thumbWidth).toBeGreaterThanOrEqual(120);
+    expect(geometry.thumbHeight).toBeGreaterThanOrEqual(72);
+    expect(geometry.whiteSpace).toBe('nowrap');
+    expect(geometry.textOverflow).toBe('ellipsis');
+    expect(geometry.labelOverflow).toBe(true);
+
+    const brokenThumbTile = page.locator('[data-label="training-video-02.mp4"]');
+    await brokenThumbTile.scrollIntoViewIfNeeded();
+    await expect(brokenThumbTile.locator('[data-thumb-fallback]')).toBeVisible();
+    await expect(brokenThumbTile.locator('img[data-media-thumb]')).toBeHidden();
+
+    expect(JSON.parse(await firstTile.getAttribute('data-drag-source'))).toEqual({ content_id: 'large-card-video-1' });
+    const dragPayload = await firstTile.evaluate((element) => {
+      const transfer = new DataTransfer();
+      element.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: transfer }));
+      return JSON.parse(transfer.getData('application/x-mc-source'));
+    });
+    expect(dragPayload).toEqual({ content_id: 'large-card-video-1' });
+
+    await firstTile.click();
+    await expect(page.locator('dialog.mc-target-picker[open]')).toBeVisible();
+    await page.locator('[data-target-cancel]').click();
+    await page.locator('#mc-media-loadmore').click();
+    await expect(labels).toHaveCount(65);
+    await expect(page.locator('#mc-media-loadmore')).toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath('command-center-large-content-cards.png'), fullPage: true });
+    await context.close();
+  });
+
   test('Lenovo tablet can add and remove a ready image from the wallpaper menu', async ({ browser }) => {
     const context = await browser.newContext({
       viewport: { width: 838, height: 500 }, hasTouch: true, serviceWorkers: 'block',

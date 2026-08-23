@@ -542,6 +542,54 @@
 }
 .mc-scene-tile { width: 120px; }
 
+/* Command Center shelf cards are deliberately visual and finger-sized. These
+   overrides are scoped below .mc-library-body so the full Media Library and the
+   Present view retain their own card systems. */
+.mc-library-body .mc-tile-grid { gap: var(--mc-space-md, 12px); }
+.mc-library-body .mc-tile {
+  width: 152px;
+  min-height: 132px;
+  gap: var(--mc-space-sm, 8px);
+  padding: 8px;
+  align-items: center;
+}
+.mc-library-body .mc-tile-cell { width: 152px; }
+.mc-library-body .mc-tile-thumb,
+.mc-library-body .mc-tile-thumb-fallback {
+  width: 136px;
+  height: 82px;
+  border-radius: var(--mc-radius-sm, 8px);
+}
+.mc-library-body .mc-tile-thumb-fallback:not([hidden]) {
+  display: grid;
+  place-items: center;
+  background: var(--mc-bg-secondary);
+  color: var(--accent);
+  font-size: 40px;
+}
+.mc-library-body .mc-tile-thumb-fallback[hidden] { display: none; }
+.mc-library-body .mc-tile-icon-svg:not(.mc-tile-thumb-fallback) {
+  display: grid;
+  place-items: center;
+  width: 136px;
+  height: 82px;
+  border-radius: var(--mc-radius-sm, 8px);
+  background: var(--mc-bg-secondary);
+  color: var(--accent);
+}
+.mc-library-body .mc-tile-icon-svg:not(.mc-tile-thumb-fallback) svg { width: 42px; height: 42px; }
+.mc-library-body .mc-tile-label {
+  width: 100%;
+  max-width: 136px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+  color: var(--mc-text-primary);
+  font-size: var(--mc-font-size-sm, 13px);
+  font-weight: var(--mc-fw-medium, 500);
+}
+
 /* Categorized media toolbar: search/sort plus the one contextual Screensavers
    filter. General folder navigation remains on the full Media Library page. */
 .mc-tb-media-toolbar { display: flex; flex-direction: column; gap: var(--mc-space-sm, 8px); margin-bottom: var(--mc-space-sm, 8px); }
@@ -599,9 +647,14 @@
 .mc-live-source-heading strong { font-size: var(--mc-font-size-sm, 13px); }
 .mc-live-source-heading span { color: var(--mc-text-secondary); font-size: var(--mc-font-size-xs, 11px); line-height: 1.45; }
 .mc-live-source-grid { grid-template-columns: repeat(auto-fit, minmax(152px, 196px)); }
+.mc-library-body .mc-live-source-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(152px, 168px));
+}
 .mc-live-source-tile {
   width: 100%; min-height: 148px; align-items: flex-start; padding: var(--space-3, 12px);
 }
+.mc-library-body .mc-live-source-tile { width: 100%; min-height: 132px; }
 .mc-live-source-tile.is-unavailable {
   opacity: .72; cursor: not-allowed; border-style: dashed;
 }
@@ -611,6 +664,7 @@
   width: 72px; height: 54px; border-radius: var(--mc-radius-sm, 8px);
   background: var(--mc-bg-secondary); color: var(--accent);
 }
+.mc-library-body .mc-cf-tile-ico { width: 136px; height: 82px; }
 .mc-cf-tile-ico svg { width: 30px; height: 30px; }
 .mc-cf-tile .mc-tile-sub {
   font-size: var(--mc-font-size-xs, 11px); line-height: 1.35; text-align: left;
