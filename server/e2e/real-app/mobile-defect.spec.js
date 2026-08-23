@@ -1417,4 +1417,232 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     expect(display).not.toBe('none');
     await context.close();
   });
+
+  test('an operator wall click wins over a delayed startup preference response', async ({ browser }) => {
+    const Database = require('better-sqlite3');
+    const dbPath = path.join(tmpDir, 'test.db');
+    const database = new Database(dbPath, { timeout: 10000 });
+    const workspaceId = database.prepare(
+      'SELECT workspace_id FROM workspace_members WHERE user_id = ? LIMIT 1'
+    ).get(userId)?.workspace_id;
+    const now = Math.floor(Date.now() / 1000) + 3600;
+    database.transaction(() => {
+      database.prepare(`
+        INSERT INTO devices (id, user_id, workspace_id, name, pairing_code, status, last_heartbeat, wall_id, screen_on)
+        VALUES ('mobile-secondary-display', ?, ?, 'Secondary Display', '820099', 'online', ?, 'mobile-secondary-wall', 1)
+      `).run(userId, workspaceId, now);
+      database.prepare(`
+        INSERT INTO display_states
+          (target_type, target_id, workspace_id, screen_on, command_revision, state_revision, updated_at)
+        VALUES ('display', 'mobile-secondary-display', ?, 1, 'fixture-on', 1, ?)
+      `).run(workspaceId, Date.now());
+      database.prepare(`
+        INSERT INTO video_walls (id, user_id, workspace_id, name, grid_cols, grid_rows, is_locked, layout_mode)
+        VALUES ('mobile-secondary-wall', ?, ?, 'Classroom 1 Secondary Wall', 1, 1, 1, 'span')
+      `).run(userId, workspaceId);
+      database.prepare(`
+        INSERT INTO video_wall_devices
+          (wall_id, device_id, grid_col, grid_row, canvas_x, canvas_y, canvas_width, canvas_height)
+        VALUES ('mobile-secondary-wall', 'mobile-secondary-display', 0, 0, 0, 0, 1920, 1080)
+      `).run();
+      database.prepare(`
+        UPDATE video_walls
+        SET layout_mode = 'groups', layout_revision = 7, layout_json = ?
+        WHERE id = 'mobile-command-wall'
+      `).run(JSON.stringify({
+        version: 1,
+        revision: 7,
+        preset: 'span-left',
+        groups: [
+          {
+            id: 'mobile-primary-pair',
+            name: 'Front Pair',
+            layout: 'span',
+            member_ids: ['mobile-wall-display-1', 'mobile-wall-display-2'],
+            leader_device_id: 'mobile-wall-display-1',
+          },
+          {
+            id: 'mobile-primary-solo',
+            name: 'Front Right',
+            layout: 'solo',
+            member_ids: ['mobile-wall-display-3'],
+            leader_device_id: 'mobile-wall-display-3',
+          },
+        ],
+      }));
+    })();
+    database.close();
+
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const page = await context.newPage();
+    try {
+      await page.addInitScript(() => {
+        const nativeFetch = window.fetch.bind(window);
+        const state = {
+          mode: 'operator',
+          operator_ref: 'wall:mobile-command-wall',
+          operator_loads: 0,
+          restore_ref: 'wall:mobile-secondary-wall',
+          restore_loads: 0,
+          lifecycle_loads: 0,
+        };
+        window.__mcPreferenceTestState = state;
+        window.fetch = async (input, init = {}) => {
+          const requestUrl = new URL(typeof input === 'string' ? input : input.url, window.location.origin);
+          const method = String(init.method || (typeof input === 'object' && input.method) || 'GET').toUpperCase();
+          if (method !== 'GET' || requestUrl.pathname !== '/api/displays/control-preferences') {
+            return nativeFetch(input, init);
+          }
+          const mode = state.mode;
+          const operatorLoadNumber = mode === 'operator' ? ++state.operator_loads : 0;
+          const restoreLoadNumber = mode === 'restore' ? ++state.restore_loads : 0;
+          const loadNumber = mode === 'lifecycle' ? ++state.lifecycle_loads : 0;
+          if (mode === 'operator' || loadNumber === 1) {
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+          }
+          const restoredRef = mode === 'operator'
+            ? state.operator_ref
+            : (mode === 'restore'
+              ? state.restore_ref
+              : (loadNumber === 1 ? 'wall:mobile-command-wall' : 'wall:mobile-secondary-wall'));
+          return new Response(JSON.stringify({
+            room_id: 'classroom-1',
+            last_focused_target_ref: restoredRef,
+            pinned_target_refs: [],
+            revision: Math.max(1, operatorLoadNumber, restoreLoadNumber, loadNumber),
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        };
+      });
+      await page.addInitScript(({ token, user }) => {
+        localStorage.setItem('token', token);
+        localStorage.setItem('user', JSON.stringify(user));
+        localStorage.setItem('rd_onboarded', '1');
+      }, {
+        token: authToken,
+        user: {
+          id: userId,
+          email: TEST_EMAIL,
+          name: 'Mobile Test',
+          role: 'platform_admin',
+          current_workspace_id: workspaceId,
+        },
+      });
+      await page.goto(`${BASE_URL}/app#/control`, { waitUntil: 'domcontentloaded' });
+      const secondary = page.locator('.mc-target-wall-btn', { hasText: 'Classroom 1 Secondary Wall' });
+      await test.step('Scenario B: Wall 2 wins over a delayed Wall 1 preference', async () => {
+        await expect(secondary).toBeVisible();
+        await expect.poll(() => page.evaluate(() => window.__mcPreferenceTestState.operator_loads))
+          .toBeGreaterThanOrEqual(1);
+        await secondary.click();
+        await expect(secondary).toHaveAttribute('aria-selected', 'true');
+        await expect(secondary).toHaveClass(/is-active/);
+        await page.waitForTimeout(2000);
+        await expect(secondary).toHaveAttribute('aria-selected', 'true');
+        await expect(secondary).toHaveClass(/is-active/);
+      });
+
+      await test.step('Scenario A: Wall 1 wins over a delayed Wall 2 preference', async () => {
+        await page.evaluate(() => {
+          Object.assign(window.__mcPreferenceTestState, {
+            mode: 'operator',
+            operator_ref: 'wall:mobile-secondary-wall',
+            operator_loads: 0,
+          });
+          window.location.hash = '#/content';
+        });
+        await expect(page.locator('.media-library-page')).toBeVisible();
+        await page.evaluate(() => { window.location.hash = '#/control'; });
+        await expect.poll(() => page.evaluate(() => window.__mcPreferenceTestState.operator_loads)).toBe(1);
+        const primary = page.locator('.mc-target-wall-btn', { hasText: 'Classroom 1 Primary Wall' });
+        await primary.click();
+        await expect(primary).toHaveAttribute('aria-selected', 'true');
+        await page.waitForTimeout(2000);
+        await expect(primary).toHaveAttribute('aria-selected', 'true');
+        await expect(primary).toHaveClass(/is-active/);
+      });
+
+      await test.step('Scenario C: a wall group wins over a delayed wall preference', async () => {
+        await page.evaluate(() => {
+          Object.assign(window.__mcPreferenceTestState, {
+            mode: 'operator',
+            operator_ref: 'wall:mobile-secondary-wall',
+            operator_loads: 0,
+          });
+          window.location.hash = '#/content';
+        });
+        await expect(page.locator('.media-library-page')).toBeVisible();
+        await page.evaluate(() => { window.location.hash = '#/control'; });
+        await expect.poll(() => page.evaluate(() => window.__mcPreferenceTestState.operator_loads)).toBe(1);
+        await page.locator('.mc-target-select').selectOption('group:mobile-primary-pair');
+        const group = page.locator('.mc-wall-region[data-layout-group-id="mobile-primary-pair"]');
+        await expect(group).toHaveClass(/is-active/);
+        await page.waitForTimeout(2000);
+        await expect(group).toHaveClass(/is-active/);
+      });
+
+      await test.step('Scenario D: no intervention restores the persisted target', async () => {
+        await page.evaluate(() => {
+          Object.assign(window.__mcPreferenceTestState, {
+            mode: 'restore',
+            restore_ref: 'wall:mobile-secondary-wall',
+            restore_loads: 0,
+          });
+          window.location.hash = '#/content';
+        });
+        await expect(page.locator('.media-library-page')).toBeVisible();
+        await page.evaluate(() => { window.location.hash = '#/control'; });
+        await expect.poll(() => page.evaluate(() => window.__mcPreferenceTestState.restore_loads)).toBe(1);
+        await expect(secondary).toHaveAttribute('aria-selected', 'true');
+        await expect(secondary).toHaveClass(/is-active/);
+      });
+
+      await test.step('Scenario E: an unmounted restore cannot overwrite the next rendered control view', async () => {
+        await page.evaluate(({ key, value }) => {
+          window.__mcPreferenceTestState.mode = 'lifecycle';
+          window.__mcPreferenceTestState.lifecycle_loads = 0;
+          localStorage.setItem(key, JSON.stringify(value));
+          window.location.hash = '#/content';
+        }, {
+          key: `mc:control-prefs:v2:${userId}:${workspaceId}:classroom-1`,
+          value: {
+            room_id: 'classroom-1',
+            last_focused_target_ref: 'wall:mobile-command-wall',
+            pinned_target_refs: [],
+            revision: 1,
+          },
+        });
+        await expect(page.locator('.media-library-page')).toBeVisible();
+
+        await page.evaluate(() => { window.location.hash = '#/control'; });
+        await expect(page.locator('.mc-cc-shell')).toBeVisible();
+        await expect.poll(() => page.evaluate(() => window.__mcPreferenceTestState.lifecycle_loads)).toBe(1);
+        await page.evaluate(() => { window.location.hash = '#/content'; });
+        await expect(page.locator('.media-library-page')).toBeVisible();
+        await page.evaluate(() => { window.location.hash = '#/control'; });
+        await expect.poll(() => page.evaluate(() => window.__mcPreferenceTestState.lifecycle_loads))
+          .toBeGreaterThanOrEqual(2);
+        await expect(secondary).toHaveAttribute('aria-selected', 'true');
+        await expect(secondary).toHaveClass(/is-active/);
+        await page.waitForTimeout(2000);
+        await expect(secondary).toHaveAttribute('aria-selected', 'true');
+        await expect(secondary).toHaveClass(/is-active/);
+      });
+    } finally {
+      await context.close();
+      const cleanup = new Database(dbPath, { timeout: 10000 });
+      cleanup.transaction(() => {
+        cleanup.prepare(`
+          UPDATE video_walls
+          SET layout_mode = 'span', layout_json = NULL, layout_revision = 0
+          WHERE id = 'mobile-command-wall'
+        `).run();
+        cleanup.prepare('DELETE FROM control_preferences WHERE user_id = ?').run(userId);
+        cleanup.prepare("DELETE FROM video_wall_devices WHERE wall_id='mobile-secondary-wall'").run();
+        cleanup.prepare("DELETE FROM display_states WHERE target_id='mobile-secondary-display'").run();
+        cleanup.prepare("DELETE FROM video_walls WHERE id='mobile-secondary-wall'").run();
+        cleanup.prepare("DELETE FROM devices WHERE id='mobile-secondary-display'").run();
+      })();
+      cleanup.close();
+    }
+  });
 });

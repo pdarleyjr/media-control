@@ -120,3 +120,55 @@ test('a wall broadcast forks a playlist shared with another wall', () => {
     cleanup(prefix);
   }
 });
+
+test('the canonical Guest Computer player remains routable after another operator created its legacy private row', () => {
+  const prefix = `test-guest-visibility-${Date.now()}-`;
+  const ownerId = `${prefix}owner`;
+  const operatorId = `${prefix}operator`;
+  const orgId = `${prefix}org`;
+  const workspaceId = `${prefix}workspace`;
+  const deviceId = `${prefix}display`;
+  const contentId = `${prefix}guest-content`;
+  const remoteUrl = `/player/live-source.html?source=guest-computer&test=${encodeURIComponent(prefix)}`;
+
+  cleanup(prefix);
+  try {
+    const insertUser = db.prepare("INSERT INTO users (id, email, name, role) VALUES (?, ?, ?, 'user')");
+    insertUser.run(ownerId, `${prefix}owner@example.test`, 'Legacy Guest Owner');
+    insertUser.run(operatorId, `${prefix}operator@example.test`, 'Current Classroom Operator');
+    db.prepare('INSERT INTO organizations (id, name, owner_user_id) VALUES (?, ?, ?)')
+      .run(orgId, 'Guest Visibility Org', ownerId);
+    db.prepare('INSERT INTO workspaces (id, organization_id, name, created_by) VALUES (?, ?, ?, ?)')
+      .run(workspaceId, orgId, 'Guest Visibility Workspace', ownerId);
+    db.prepare("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, 'workspace_admin')")
+      .run(workspaceId, ownerId);
+    db.prepare("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, 'workspace_editor')")
+      .run(workspaceId, operatorId);
+    db.prepare(`
+      INSERT INTO content
+        (id, user_id, workspace_id, filename, filepath, mime_type, file_size, remote_url, access_level)
+      VALUES (?, ?, ?, 'Guest Computer', '', 'text/html', 0, ?, 'private')
+    `).run(contentId, ownerId, workspaceId, remoteUrl);
+    db.prepare(`
+      INSERT INTO devices (id, user_id, workspace_id, name, status)
+      VALUES (?, ?, ?, 'Guest Route Display', 'online')
+    `).run(deviceId, ownerId, workspaceId);
+
+    assert.equal(sceneEngine.pushSourceToDevice(null, deviceId, { remote_url: remoteUrl }, {
+      workspaceId,
+      userId: operatorId,
+      contentContext: {
+        userId: operatorId,
+        workspaceId,
+        workspaceRole: 'workspace_editor',
+      },
+      targetDeviceIds: [deviceId],
+    }), true);
+    assert.equal(
+      db.prepare('SELECT access_level FROM content WHERE id = ?').get(contentId).access_level,
+      'workspace_shared'
+    );
+  } finally {
+    cleanup(prefix);
+  }
+});

@@ -145,6 +145,8 @@ let activeTarget = null;
 let activeControlTarget = null;
 const LAST_TARGET_KEY = 'mc_control_last_target';
 let restoringTarget = false; // suppresses preference writes during startup restore
+let targetIntentGeneration = 0; // a real operator selection always wins over late startup preferences
+let targetRestoreLifecycleGeneration = 0; // invalidates async restores across unmount/render cycles
 let commandCenterState = createCommandCenterState();
 let prefsStore = null;       // serialized control-preferences store (§6/§7)
 let targetApi = null;       // target-selector module API
@@ -2075,6 +2077,7 @@ function handleTargetChange(tgt) {
     if (fallback) { handleTargetChange(fallback); }
     return;
   }
+  if (!restoringTarget) targetIntentGeneration += 1;
   if (tgt?.type === 'group' || tgt?.type === 'region') {
     activeControlTarget = tgt;
     activeTarget = { type: 'wall', id: tgt.wall_id, wall_id: tgt.wall_id, supportsModes: true };
@@ -2231,6 +2234,8 @@ function persistLastFocusedTarget(target) {
 // the default chain. A scoped local cached copy is read first for fast first
 // paint. Emits NO playback command.
 async function restoreLastFocusedTarget() {
+  const restoreGeneration = targetIntentGeneration;
+  const restoreLifecycleGeneration = targetRestoreLifecycleGeneration;
   // 1. Synchronous first paint from the scoped local cache (best-effort, may
   //    be stale). The server remains authoritative; the cache only avoids an
   //    empty-stage flash while the preferences request is in flight.
@@ -2255,7 +2260,9 @@ async function restoreLastFocusedTarget() {
   let prefs = null;
   try { prefs = await prefsStore.load(); } catch { /* unauthenticated/offline */ }
   if (!prefs) return;
+  if (targetRestoreLifecycleGeneration !== restoreLifecycleGeneration) return;
   if (Array.isArray(prefs.pinned_target_refs)) targetApi?.setPinned?.(prefs.pinned_target_refs);
+  if (targetIntentGeneration !== restoreGeneration) return;
 
   const serverRef = prefs.last_focused_target_ref || null;
   if (serverRef) {
@@ -2983,6 +2990,8 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
   commandCenterState = createCommandCenterState();
   activeTarget = null;
   activeControlTarget = null;
+  targetRestoreLifecycleGeneration += 1;
+  targetIntentGeneration = 0;
   try { sessionStorage.removeItem(LAST_TARGET_KEY); } catch { /* migrate legacy focus preference */ }
   // Room Overview / Focus View mode toggle is removed (task §5). The operator
   // UI always opens in a focused wall/display view; the last focused target is
@@ -3350,6 +3359,7 @@ pruneSelection();
 window.mcGetNavigationContext = () => ({ selected_target: activeTarget });
 
 export function unmount() {
+  targetRestoreLifecycleGeneration += 1;
   // Abort the preference store so a pending write can't mutate an unmounted view.
   if (prefsStore) { try { prefsStore.abort(); } catch { /* */ } prefsStore = null; }
   // The view owns NO live broadcast resource (that's the engine singleton),
