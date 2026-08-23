@@ -617,7 +617,8 @@ function emptyState() {
 function playingIdentity(d) {
   const np = d && d.now_playing;
   if (!np) return '';
-  return [np.kind || '', np.contentId || '', np.poster_url || ''].join('~');
+  const remoteUrl = np.remoteUrl || np.remote_url || '';
+  return [np.kind || '', np.contentId || '', remoteUrl, np.poster_url || ''].join('~');
 }
 function screenStateIdentity(display) {
   return typeof display?.screen_on === 'boolean' ? (display.screen_on ? 1 : 0) : 'u';
