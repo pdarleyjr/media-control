@@ -40,21 +40,22 @@ test('repeated room snapshots cannot create a dashboard target-selection event s
   );
 });
 
-test('media control drag drop refreshes the active visual truth without polling every display', () => {
+test('media control refreshes every visible logical preview without tying sessions to control selection', () => {
   const source = read('frontend/js/views/media-control.js');
-  // Active tile refresh is bounded and routed through the instrumented
-  // screenshot poller (dedupe, freshness skip, visibility pause, backoff).
-  assert.match(source, /const ACTIVE_PREVIEW_INTERVAL_MS = 4000/);
+  // Screenshot fallbacks remain bounded, while live sessions are derived from
+  // every visible logical program rather than the selected control target.
   assert.match(source, /const BACKGROUND_PREVIEW_INTERVAL_MS = 60000/);
-  assert.match(source, /function requestActivePreview/);
-  assert.match(source, /function activePreviewDeviceId/);
+  assert.match(source, /buildLivePreviewTargets/);
+  assert.match(source, /livePreviewTargetDeviceIds/);
+  assert.doesNotMatch(source, /function activePreviewDeviceId/);
+  assert.doesNotMatch(source, /livePreviewDeviceId/);
   assert.match(source, /function scheduleDisplayStateRefresh/);
   assert.match(source, /function queuePreviewRequests/);
   assert.match(source, /displayState\.refresh\(\)\.catch/);
   assert.match(source, /createScreenshotPoller\(\{/);
   assert.match(source, /screenshotPoller\.start\(\)/);
   assert.match(source, /screenshotPoller\.stop\(\)/);
-  assert.match(source, /activeIntervalMs: LIVE_EMBED_PREVIEWS \? BACKGROUND_PREVIEW_INTERVAL_MS : ACTIVE_PREVIEW_INTERVAL_MS/);
+  assert.match(source, /activeIntervalMs: BACKGROUND_PREVIEW_INTERVAL_MS/);
   assert.match(source, /backgroundIntervalMs: BACKGROUND_PREVIEW_INTERVAL_MS/);
   assert.match(source, /for \(const delay of \[350, 1400\]\)/);
   assert.match(
@@ -91,8 +92,10 @@ test('span wall transport controls fan out to every wall member', () => {
 
 test('an independently selected split-wall member remains renderable as a display target', () => {
   const main = read('frontend/js/views/media-control.js');
+  const stage = read('frontend/js/views/media-control/stage.js');
 
-  assert.match(main, /!wallMemberIds\.has\(d\.id\)[\s\S]*activeTarget\.type === 'display'[\s\S]*activeTarget\.id === d\.id/);
+  assert.match(main, /const displays = all\.filter\(\(d\) => !wallMemberIds\.has\(d\.id\)\)/);
+  assert.match(stage, /wall-split:\$\{wall\.id\}:\$\{m\.id\}/);
   assert.match(main, /return isSplitWallMemberId\(d\.id\)/);
 });
 
@@ -143,19 +146,20 @@ test('wall documents pass fill mode into the child player instead of centering o
   assert.match(doc, /body\[data-fit="fill"\] #page \{ object-fit: fill; \}/);
 });
 
-test('embedded live playback is the default while screenshot-only mode is an explicit opt-out', () => {
+test('embedded live playback is the default for every visible logical surface', () => {
   const livePreview = read('frontend/js/views/media-control/live-preview.js');
   const stage = read('frontend/js/views/media-control/stage.js');
   const grid = read('server/player/grid.html');
 
   // Live embed is the DEFAULT; screenshot-only is an explicit opt-out (?live_preview=0).
   assert.match(livePreview, /operator_preview=1/);
-  assert.match(stage, /livePreviewDeviceId/);
+  assert.match(stage, /livePreviewTargets/);
   const main = read('frontend/js/views/media-control.js');
   assert.match(main, /const LIVE_EMBED_PREVIEWS = new URLSearchParams\(window\.location\.search\)\.get\('live_preview'\) !== '0'/);
-  assert.match(main, /livePreviewDeviceId: LIVE_EMBED_PREVIEWS \? activePreviewDeviceId\(\) : null/);
+  assert.match(main, /livePreviewTargets/);
+  assert.doesNotMatch(main, /activePreviewDeviceId/);
   assert.match(main, /const PREVIEW_REQUEST_MIN_MS = 750/);
-  assert.match(main, /const ACTIVE_PREVIEW_INTERVAL_MS = 4000/);
+  assert.doesNotMatch(main, /ACTIVE_PREVIEW_INTERVAL_MS/);
   // §9: dashboard previews are PASSIVE — always muted, no native controls, no
   // pointer events, and NEVER request browser/classroom audio. The old
   // operator-gesture audio hook (enableLivePreviewAudio + audio_preview=1 +
@@ -173,6 +177,19 @@ test('embedded live playback is the default while screenshot-only mode is an exp
   assert.match(grid, /var STAGGER_MS = operatorPreview \? 600 : 1500/);
 });
 
+test('selection state is patched in place and cannot participate in media DOM identity', () => {
+  const main = read('frontend/js/views/media-control.js');
+  const stage = read('frontend/js/views/media-control/stage.js');
+  const signature = stage.match(/function stageRenderSignature[\s\S]*?return parts\.join\('\|'\);[\s\S]*?\}/)?.[0] || '';
+
+  assert.doesNotMatch(main, /livePreviewDeviceId/);
+  assert.doesNotMatch(signature, /activeControlTargetId|livePreviewDeviceId/);
+  assert.match(stage, /function updateControlStateInPlace/);
+  assert.match(stage, /function reconcilePreviewSlots/);
+  assert.match(stage, /iframeNavigations/);
+  assert.doesNotMatch(main, /mc-stage-target-loading/);
+});
+
 test('stage repaint identity includes the authored web player URL', () => {
   const main = read('frontend/js/views/media-control.js');
   const stage = read('frontend/js/views/media-control/stage.js');
@@ -183,8 +200,8 @@ test('stage repaint identity includes the authored web player URL', () => {
   // screenshot-only in-place path and leaving the prior source visible.
   assert.match(main, /const remoteUrl = np\.remoteUrl \|\| np\.remote_url \|\| ''/);
   assert.match(main, /return \[np\.kind \|\| '', np\.contentId \|\| '', remoteUrl,/);
-  assert.match(stage, /const remoteUrl = np\.remoteUrl \|\| np\.remote_url \|\| ''/);
-  assert.match(stage, /return \[np\.kind \|\| '', np\.contentId \|\| '', remoteUrl,/);
+  assert.match(stage, /remoteUrl: np\.remoteUrl \|\| np\.remote_url \|\| ''/);
+  assert.match(stage, /data-mc-media-identity/);
 });
 
 test('video previews reconcile seek and play state from the physical player', () => {
@@ -197,7 +214,9 @@ test('video previews reconcile seek and play state from the physical player', ()
   assert.match(main, /video\.mc-live-embed\[data-mc-video="1"\]/);
   assert.match(main, /Math\.abs\(video\.currentTime - target\) > 1\.25/);
   assert.match(main, /if \(paused\) video\.pause\(\)/);
-  assert.match(main, /else video\.play\(\)\.catch/);
+  assert.match(main, /video\.play\(\)\.then/);
+  assert.match(main, /data-mc-playback-error/);
+  assert.match(main, /playRejections/);
 });
 
 test('camera status reports active sources continuously instead of a static idle label', () => {

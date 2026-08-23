@@ -143,13 +143,12 @@ test('grouped wall regions accept an exact typed drop instead of falling through
   assert.match(smoke, /\.mc-wall-region\[data-layout-group-id\]/);
 });
 
-test('target switching yields one paint so the selected wall responds before heavy preview work', () => {
+test('target switching patches control state without a structural media loading cycle', () => {
   const view = read('frontend/js/views/media-control.js');
   assert.match(view, /function scheduleTargetPaint\(/);
   assert.match(view, /requestAnimationFrame\(/);
-  assert.match(view, /aria-busy/);
-  assert.match(view, /mc-stage-target-loading/);
-  assert.match(view, /if \(restoringTarget\) \{[\s\S]*?paintStage\(\);[\s\S]*?\} else \{[\s\S]*?scheduleTargetPaint\(tgt\);/);
+  assert.doesNotMatch(view, /mc-stage-target-loading/);
+  assert.match(view, /if \(restoringTarget\) \{[\s\S]*?paintStage\(\);[\s\S]*?\} else \{[\s\S]*?scheduleTargetPaint\(\);/);
 });
 
 test('a late startup preference response cannot overwrite an operator target click', () => {
@@ -267,7 +266,7 @@ test('live podium preview does not duplicate work with one-second screenshots', 
   // Screenshot polling is routed through the instrumented poller; the active
   // tile cadence drops to the low-frequency background interval whenever the
   // live embedded preview is active (no per-second duplicate capture).
-  assert.match(view, /activeIntervalMs: LIVE_EMBED_PREVIEWS \? BACKGROUND_PREVIEW_INTERVAL_MS : ACTIVE_PREVIEW_INTERVAL_MS/);
+  assert.match(view, /activeIntervalMs: BACKGROUND_PREVIEW_INTERVAL_MS/);
   assert.match(view, /BACKGROUND_PREVIEW_INTERVAL_MS = 60000/);
 });
 
