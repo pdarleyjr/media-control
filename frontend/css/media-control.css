@@ -2824,7 +2824,7 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
 .mc-cc-overview > .mc-wall,
 .mc-cc-overview > .mc-display-card-tile,
 .mc-cc-overview > .mc-wall-groups-overview {
-  grid-column: auto;
+  grid-column: 1 / -1;
   width: 100%;
   max-width: none;
   min-width: 0;
