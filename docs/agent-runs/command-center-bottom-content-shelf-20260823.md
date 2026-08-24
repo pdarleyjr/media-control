@@ -136,6 +136,13 @@
 - `git diff --check`: PASS.
 - `git status --short`: clean after generated report cleanup and before this log was added.
 
+### Pre-production hosted-gate correction
+
+- Hosted release run `32704992648` reproduced two Linux-only release blockers before production was changed: WebKit placed the active Stop Live button outside the `838x500` viewport, and Chromium sampled the desktop shelf before its opening transition had settled.
+- Correction: short-landscape transport/safety controls retain their 48px touch height with tighter horizontal spacing; the visual acceptance helper now waits for the drawer's actual viewport-aligned settled geometry instead of sampling during its transition.
+- Targeted acceptance after correction: Chromium and WebKit both passed on Windows and Ubuntu for the expanded Lenovo safety-control scenario and the Phase-5 desktop visual checkpoint.
+- The failed run's image artifact is explicitly rejected for deployment; a new exact-head hosted release gate is required.
+
 ## Manual Hardware
 
 - `MANUAL_LENOVO_ACCEPTANCE`: NOT_PERFORMED. Automated `838x500` landscape and `500x838` portrait emulation passed; that is not physical touch-device acceptance.

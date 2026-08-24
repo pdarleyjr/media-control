@@ -220,6 +220,14 @@ async function waitForCommandCenterVisualReady(page) {
   throw new Error('Command Center geometry did not settle before visual capture');
 }
 
+async function waitForLibraryDrawerSettled(page) {
+  const drawer = page.locator('#mc-library-drawer');
+  await expect.poll(async () => drawer.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return Math.abs(box.bottom - window.innerHeight);
+  })).toBeLessThanOrEqual(1);
+}
+
 test.describe.configure({ mode: 'serial' });
 
 test.describe('Mobile operator console — defect reproduction + acceptance', () => {
@@ -378,7 +386,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
 
     await handle.click();
     await expect(shelf).toHaveAttribute('data-open', 'true');
-    await page.waitForTimeout(250);
+    await waitForLibraryDrawerSettled(page);
     const after = await measureStage();
 
     for (const key of ['x', 'y', 'width', 'height']) {
@@ -454,7 +462,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     const before = await measureStage();
     await page.locator('#mc-library-drawer > [data-library-toggle]').click();
     await expect(page.locator('#mc-library-drawer')).toHaveAttribute('data-open', 'true');
-    await page.waitForTimeout(250);
+    await waitForLibraryDrawerSettled(page);
     const after = await measureStage();
     for (const key of ['x', 'y', 'width', 'height']) {
       expect(Math.abs(after[key] - before[key]), `stage ${key} delta`).toBeLessThanOrEqual(1);
@@ -836,6 +844,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     const controlsBeforeOpen = await page.locator('.mc-cc-controls').boundingBox();
     await page.locator('#mc-library-drawer > [data-library-toggle]').click();
     await expect(page.locator('#mc-library-drawer')).toHaveAttribute('data-open', 'true');
+    await waitForLibraryDrawerSettled(page);
     const stageAfterOpen = await page.locator('.mc-stage.mc-cc-canvas').boundingBox();
     const controlsAfterOpen = await page.locator('.mc-cc-controls').boundingBox();
     expect(stageAfterOpen).toEqual(stageBeforeOpen);

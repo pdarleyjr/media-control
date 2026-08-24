@@ -3955,6 +3955,10 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-body .mc-library-drawer {
   .mc-cc-overview > .mc-wall .mc-wall-grid { height: 100%; min-height: 0; }
   .mc-cc-controls { height: 102px; gap: 6px; }
   .mc-persistent-controls { display: flex; height: 48px; justify-content: center; }
+  .mc-cc-tp-row,
+  .mc-action-dock-persistent { gap: 4px; }
+  .mc-cc-tp-btn { padding-inline: 10px; }
+  .mc-action-dock-persistent .mc-dock-btn { padding-inline: 8px; }
   .mc-cc-controls .mc-action-dock-host { position: absolute; right: 0; width: auto; }
   .mc-persistent-controls:has([data-dock="stop-live"]:not([hidden]), #mc-dock-record-btn:not([hidden])) {
     display: grid; grid-template-columns: max-content minmax(0, 1fr); justify-content: stretch;
