@@ -166,11 +166,28 @@ async function getCameraDirectorState(workspaceId) {
     return { ok: false, message: result.message || 'Camera control edge is unreachable' };
   }
   const s = (result.data && typeof result.data === 'object') ? result.data : {};
+  const hasCanonicalAnpviz = !!(s.sources?.anpviz && typeof s.sources.anpviz === 'object');
+  const anpviz = hasCanonicalAnpviz
+    ? s.sources.anpviz
+    : {};
+  const sourceBoolean = (nestedValue, legacyValue) => {
+    const value = hasCanonicalAnpviz ? nestedValue : legacyValue;
+    return typeof value === 'boolean' ? value : null;
+  };
   const cameraOnline = s.camera_online === true;
   const previewOnline = s.preview_online === true;
-  const microphoneConnected = s.microphone_connected === true;
-  const audioOnline = s.audio_online === true;
-  const programSourceReady = cameraOnline && microphoneConnected && audioOnline;
+  const microphoneConnected = sourceBoolean(anpviz.microphone_connected, s.microphone_connected);
+  const audioOnline = sourceBoolean(anpviz.audio_online, s.audio_online);
+  const synchronizationValue = hasCanonicalAnpviz
+    ? anpviz.synchronization_status
+    : s.synchronization_status;
+  const synchronizationStatus = typeof synchronizationValue === 'string'
+    ? synchronizationValue
+    : null;
+  const programSourceReady = cameraOnline
+    && microphoneConnected === true
+    && audioOnline === true
+    && synchronizationStatus === 'locked';
   const recording = s.recording === true;
   const programState = liveStreamProgramState(workspaceId);
   const contentActive = programState.content_active === true;
@@ -241,7 +258,7 @@ async function getCameraDirectorState(workspaceId) {
       preview_online: previewOnline,
       microphone_connected: microphoneConnected,
       audio_online: audioOnline,
-      synchronization_status: s.synchronization_status || null,
+      synchronization_status: synchronizationStatus,
       recording_active: recording,
       recording_state: recording ? 'active' : 'standby',
       livestreaming: s.livestreaming === true,

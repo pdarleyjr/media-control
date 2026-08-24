@@ -69,7 +69,14 @@ test('live content state is read from the authenticated workspace, never an any-
   const route = read('routes/live-stream.js');
   const dock = read('../frontend/js/views/media-control/action-dock.js');
   assert.match(route, /async function getCameraDirectorState\(workspaceId\)/);
-  assert.match(route, /const programSourceReady = cameraOnline && microphoneConnected && audioOnline/);
+  assert.match(route, /const hasCanonicalAnpviz = !!\(s\.sources\?\.anpviz/);
+  assert.match(route, /const value = hasCanonicalAnpviz \? nestedValue : legacyValue/);
+  assert.match(route, /sourceBoolean\(anpviz\.microphone_connected, s\.microphone_connected\)/);
+  assert.match(route, /sourceBoolean\(anpviz\.audio_online, s\.audio_online\)/);
+  assert.match(route, /const programSourceReady = cameraOnline/);
+  assert.match(route, /microphoneConnected === true/);
+  assert.match(route, /audioOnline === true/);
+  assert.match(route, /synchronizationStatus === 'locked'/);
   assert.match(route, /anpviz_stream:\s*programSourceReady/);
   assert.match(route, /stream_start_allowed:\s*programSourceReady/);
   assert.match(route, /liveStreamProgramState\(workspaceId\)/);

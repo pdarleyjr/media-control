@@ -32,9 +32,15 @@ test('prepare, manual start, auto gate, disabled start, and stop preserve safety
   const cameraState = {
     camera_online: true,
     preview_online: true,
-    microphone_connected: true,
-    audio_online: true,
-    synchronization_status: 'locked',
+    camera_audio_online: true,
+    sources: {
+      anpviz: {
+        video_online: true,
+        microphone_connected: true,
+        audio_online: true,
+        synchronization_status: 'locked',
+      },
+    },
     recording: false,
     livestreaming: false,
     session_id: null,
@@ -130,7 +136,7 @@ test('prepare, manual start, auto gate, disabled start, and stop preserve safety
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    req.user = { id: userId };
+    req.user = { id: userId, role: 'platform_admin' };
     req.workspaceId = workspaceId;
     next();
   });
@@ -148,9 +154,26 @@ test('prepare, manual start, auto gate, disabled start, and stop preserve safety
     assert.equal(typeof statusBody.request_id, 'string');
     assert.equal(statusBody.operator_start_allowed, true);
     assert.equal(statusBody.automatic_start_allowed, false);
+    assert.equal(statusBody.publisher_available, true);
+    assert.equal(statusBody.camera_edge.microphone_connected, true);
+    assert.equal(statusBody.camera_edge.audio_online, true);
+    assert.equal(statusBody.camera_edge.synchronization_status, 'locked');
     assert.equal(statusBody.managed_receiver_online, false);
     assert.equal(statusBody.peertube_configured, true);
     assert.equal(statusBody.ai_director.data.settings, undefined);
+
+    const operatorState = await (await fetch(`${base}/operator-state`)).json();
+    assert.equal(operatorState.publisher_available, true);
+    assert.equal(operatorState.operator_start_allowed, true);
+    assert.equal(operatorState.camera_edge.microphone_connected, true);
+    assert.equal(operatorState.camera_edge.audio_online, true);
+    assert.equal(operatorState.camera_edge.synchronization_status, 'locked');
+
+    const recordingPreflightResponse = await fetch(`${base}/recording/preflight`, { method: 'POST' });
+    const recordingPreflight = await recordingPreflightResponse.json();
+    assert.equal(recordingPreflightResponse.status, 200);
+    assert.equal(recordingPreflight.success, true);
+    assert.equal(recordingPreflight.camera_ready, true);
 
     // Mark receiver online for start gates
     db.prepare("UPDATE devices SET status = 'online' WHERE workspace_id = ? AND id LIKE 'live-stream-program-%'")
@@ -236,6 +259,39 @@ test('prepare, manual start, auto gate, disabled start, and stop preserve safety
     assert.equal(directorState.mode, modeBeforeStop);
     assert.ok(!cameraCalls.some((call) => call.includes('/mode/')));
     assert.ok(!cameraCalls.some((call) => call.includes('/scene/')));
+
+    cameraState.microphone_connected = true;
+    cameraState.audio_online = true;
+    cameraState.synchronization_status = 'locked';
+    cameraState.sources.anpviz.microphone_connected = false;
+    const disconnectedStatus = await (await fetch(`${base}/status`)).json();
+    assert.equal(disconnectedStatus.publisher_available, false);
+    assert.equal(disconnectedStatus.camera_edge.microphone_connected, false);
+    assert.equal(disconnectedStatus.publisher_failure_reason, 'ROOM_MICROPHONE_DISCONNECTED');
+    const disconnectedPreflight = await fetch(`${base}/recording/preflight`, { method: 'POST' });
+    assert.equal(disconnectedPreflight.status, 502);
+
+    delete cameraState.sources.anpviz.microphone_connected;
+    const unknownStatus = await (await fetch(`${base}/status`)).json();
+    assert.equal(unknownStatus.publisher_available, false);
+    assert.equal(unknownStatus.camera_edge.microphone_connected, null);
+    assert.equal(unknownStatus.publisher_failure_reason, 'CAMERA_PROGRAM_UNAVAILABLE');
+
+    cameraState.sources.anpviz.microphone_connected = true;
+    cameraState.sources.anpviz.audio_online = false;
+    const audioOfflineStatus = await (await fetch(`${base}/status`)).json();
+    assert.equal(audioOfflineStatus.publisher_available, false);
+    assert.equal(audioOfflineStatus.camera_edge.audio_online, false);
+    const audioOfflinePreflight = await fetch(`${base}/recording/preflight`, { method: 'POST' });
+    assert.equal(audioOfflinePreflight.status, 502);
+
+    cameraState.sources.anpviz.audio_online = true;
+    cameraState.sources.anpviz.synchronization_status = 'unlocked';
+    const unsynchronizedStatus = await (await fetch(`${base}/status`)).json();
+    assert.equal(unsynchronizedStatus.publisher_available, false);
+    assert.equal(unsynchronizedStatus.camera_edge.synchronization_status, 'unlocked');
+    const unsynchronizedPreflight = await fetch(`${base}/recording/preflight`, { method: 'POST' });
+    assert.equal(unsynchronizedPreflight.status, 502);
   } finally {
     cleanup();
     resetLiveProductionStateForTests();
