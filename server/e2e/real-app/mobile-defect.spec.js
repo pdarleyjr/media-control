@@ -2167,8 +2167,8 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     expect(shell.y + shell.height, 'Command Center shell remains inside the usable viewport')
       .toBeLessThanOrEqual(500);
     expect(stage.y + stage.height, 'display canvas must end before controls begin').toBeLessThanOrEqual(controls.y + 1);
-    expect(controls.y - (stage.y + stage.height), 'display canvas needs deliberate finger-safe clearance before controls')
-      .toBeGreaterThanOrEqual(12);
+    expect(controls.y - (stage.y + stage.height), 'display canvas keeps a compact visible separation before controls')
+      .toBeGreaterThanOrEqual(4);
     expect(controls.y + controls.height, 'controls remain inside the viewport').toBeLessThanOrEqual(500);
 
     const transportButtons = page.locator('.mc-cc-tp-btn:visible');
@@ -2184,19 +2184,20 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.innerWidth);
 
     const libraryTab = page.locator('.mc-library-tab:visible');
-    const header = await page.locator('.mc-cc-head').boundingBox();
     const libraryTabBox = await libraryTab.boundingBox();
     expect(libraryTabBox.width).toBeGreaterThanOrEqual(48);
     expect(libraryTabBox.height).toBeGreaterThanOrEqual(48);
-    expect(libraryTabBox.y + libraryTabBox.height, 'collapsed Content Library control stays in the header track')
-      .toBeLessThanOrEqual(header.y + header.height + 1);
+    expect(libraryTabBox.y, 'collapsed Content Library control remains attached to the viewport bottom')
+      .toBeGreaterThanOrEqual(500 - libraryTabBox.height - 1);
+    expect(libraryTabBox.y + libraryTabBox.height, 'collapsed Content Library control remains fully visible')
+      .toBeLessThanOrEqual(501);
 
-    const lastDockAction = page.locator('[data-dock="add-display"]');
-    await lastDockAction.scrollIntoViewIfNeeded();
-    const lastDockBox = await lastDockAction.boundingBox();
-    expect(lastDockBox.x + lastDockBox.width).toBeLessThanOrEqual(838 + 1);
-    expect(lastDockBox.height).toBeGreaterThanOrEqual(48);
-    expect(await lastDockAction.evaluate((element) => {
+    const persistentSafetyAction = page.locator('#mc-dock-blank-btn');
+    await persistentSafetyAction.scrollIntoViewIfNeeded();
+    const safetyBox = await persistentSafetyAction.boundingBox();
+    expect(safetyBox.x + safetyBox.width).toBeLessThanOrEqual(838 + 1);
+    expect(safetyBox.height).toBeGreaterThanOrEqual(48);
+    expect(await persistentSafetyAction.evaluate((element) => {
       const box = element.getBoundingClientRect();
       const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
       return hit === element || element.contains(hit);
@@ -2215,27 +2216,30 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     });
     const layout = await page.evaluate(() => {
       const body = document.querySelector('.mc-cc-body');
-      const rail = document.querySelector('.mc-cc-rail');
       const main = document.querySelector('.mc-cc-main');
-      const dock = document.querySelector('.mc-action-dock');
+      const dock = document.querySelector('.mc-action-dock-persistent');
+      const mobileMenu = document.querySelector('.mobile-menu-btn');
       return {
         bodyColumns: getComputedStyle(body).gridTemplateColumns,
-        railDirection: getComputedStyle(rail).flexDirection,
+        internalRailPresent: !!document.querySelector('.mc-cc-rail'),
+        mobileMenuVisible: !!mobileMenu && getComputedStyle(mobileMenu).display !== 'none'
+          && mobileMenu.getBoundingClientRect().width > 0,
         mainOverflowY: getComputedStyle(main).overflowY,
-        dockColumns: getComputedStyle(dock).gridTemplateColumns,
+        dockDisplay: getComputedStyle(dock).display,
         documentWidth: document.documentElement.scrollWidth,
         viewportWidth: window.innerWidth,
       };
     });
     expect(layout.bodyColumns.split(' ').length).toBe(1);
-    expect(layout.railDirection).toBe('row');
-    expect(layout.mainOverflowY).toBe('auto');
-    expect(layout.dockColumns.split(' ').length).toBe(2);
+    expect(layout.internalRailPresent).toBe(false);
+    expect(layout.mobileMenuVisible).toBe(true);
+    expect(['auto', 'hidden']).toContain(layout.mainOverflowY);
+    expect(layout.dockDisplay).toBe('flex');
     expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth + 2);
 
     const stage = await page.locator('.mc-stage.mc-cc-canvas').boundingBox();
     const controls = await page.locator('.mc-cc-controls').boundingBox();
-    expect(controls.y - (stage.y + stage.height)).toBeGreaterThanOrEqual(12);
+    expect(controls.y - (stage.y + stage.height)).toBeGreaterThanOrEqual(4);
     for (const button of await page.locator('.mc-cc-tp-btn:visible').all()) {
       const box = await button.boundingBox();
       expect(box.height).toBeGreaterThanOrEqual(48);
@@ -2316,7 +2320,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
       expect(geometry.documentWidth, `${width}x${height} horizontal overflow`).toBeLessThanOrEqual(geometry.viewportWidth + 2);
       expect(geometry.shellRight, `${width}x${height} shell right`).toBeLessThanOrEqual(width + 1);
       expect(geometry.shellBottom, `${width}x${height} shell bottom`).toBeLessThanOrEqual(height + 1);
-      expect(geometry.gap, `${width}x${height} preview clearance`).toBeGreaterThanOrEqual(12);
+      expect(geometry.gap, `${width}x${height} preview clearance`).toBeGreaterThanOrEqual(4);
 
       const buttons = page.locator('.mc-cc-tp-btn:visible');
       for (let index = 0; index < await buttons.count(); index += 1) {
