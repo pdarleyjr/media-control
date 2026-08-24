@@ -172,6 +172,10 @@
 .mc-display-card:focus-visible, .mc-wall-card:focus-visible, .mc-add-tile:focus-visible {
   outline: 3px solid var(--accent); outline-offset: 2px;
 }
+.mc-stage > .mc-stage-target-inactive {
+  position: absolute !important; inset: 0 !important;
+  visibility: hidden !important; pointer-events: none !important;
+}
 .mc-card-media { position: relative; width: 100%; background: var(--mc-bg-secondary); }
 .mc-card-shot { width: 100%; height: 100%; object-fit: cover; display: block; }
 .mc-card-shot-empty {

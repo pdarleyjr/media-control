@@ -94,9 +94,10 @@ test('an independently selected split-wall member remains renderable as a displa
   const main = read('frontend/js/views/media-control.js');
   const stage = read('frontend/js/views/media-control/stage.js');
 
-  assert.match(main, /const displays = all\.filter\(\(d\) => !wallMemberIds\.has\(d\.id\)\)/);
+  assert.match(main, /function mountedStandaloneDisplays\(\)[\s\S]*?routeableDisplays\(\)[\s\S]*?!wallMemberIds\.has\(display\.id\)/);
   assert.match(stage, /wall-split:\$\{wall\.id\}:\$\{m\.id\}/);
   assert.match(main, /return isSplitWallMemberId\(d\.id\)/);
+  assert.match(stage, /focusedDisplayId[\s\S]*?node\.querySelectorAll\('\[data-device-id\]'\)/);
 });
 
 test('transport actions refresh state and force previews so dashboard mirrors slide changes', () => {
