@@ -143,6 +143,16 @@
 - Targeted acceptance after correction: Chromium and WebKit both passed on Windows and Ubuntu for the expanded Lenovo safety-control scenario and the Phase-5 desktop visual checkpoint.
 - The failed run's image artifact is explicitly rejected for deployment; a new exact-head hosted release gate is required.
 
+### Hosted-gate follow-up and Linux visual acceptance
+
+- Exact-head run `32706755667` kept production unchanged and exposed two later blockers: Chromium sent the Phase-6 wheel event while the 200ms drawer transform still placed the pointer below the `838x500` viewport, and WebKit compared the approved Phase-5 composition with stale Phase-1 Linux screenshots.
+- Scroll correction: the acceptance test now waits for the drawer's viewport-aligned settled geometry before measuring and scrolling it. The previously deterministic Ubuntu Chromium failure then passed 5/5 repetitions without any product scroll or routing change.
+- Linux visual baselines: all six desktop/Lenovo Chromium and WebKit baselines were regenerated from Ubuntu 24.04 after direct visual inspection. The stale expectations showed the rejected administration-card layout; the replacements show the approved no-sidebar bottom-shelf composition.
+- Visual inspection also found and blocked a real `838x500` acceptance defect before baseline approval: the primary Span/Split and Screensaver/Wallpaper row was 849px wide in an 818px container, clipping its left and right controls.
+- Layout correction: only the short-landscape sub-row was compacted. The stage, display/drop-target geometry, transport controls, persistent safety strip, routing, player protocol, and protected playback machinery were not changed.
+- Added regression coverage requires every primary sub-row control to remain within the viewport and the row's scroll width to fit its client width across the responsive breakpoint matrix. Chromium and WebKit targeted matrix checks and all six regenerated Linux visual checkpoints pass.
+- The failed run `32706755667` image artifact is rejected for deployment; production still requires a completely green replacement hosted release gate at the final exact head.
+
 ## Manual Hardware
 
 - `MANUAL_LENOVO_ACCEPTANCE`: NOT_PERFORMED. Automated `838x500` landscape and `500x838` portrait emulation passed; that is not physical touch-device acceptance.

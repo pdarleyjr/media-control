@@ -1101,6 +1101,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await page.reload({ waitUntil: 'networkidle' });
     await waitForCommandCenterVisualReady(page);
     await page.locator('#mc-library-drawer > [data-library-toggle]').click();
+    await waitForLibraryDrawerSettled(page);
 
     const scrollBody = page.locator('.mc-library-body');
     const scrollGeometry = await scrollBody.evaluate((element) => ({
@@ -2192,6 +2193,22 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     }));
     expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.innerWidth);
 
+    const subRowGeometry = await page.locator('.mc-cc-controls > .mc-cc-sub-row').evaluate((row) => ({
+      clientWidth: row.clientWidth,
+      scrollWidth: row.scrollWidth,
+      controls: Array.from(row.querySelectorAll('button, select')).map((element) => {
+        const box = element.getBoundingClientRect();
+        return { label: element.textContent?.trim() || element.getAttribute('aria-label'), left: box.left, right: box.right };
+      }),
+      viewportWidth: window.innerWidth,
+    }));
+    expect(subRowGeometry.scrollWidth, 'Span/Split and Screensaver controls fit without horizontal clipping')
+      .toBeLessThanOrEqual(subRowGeometry.clientWidth + 1);
+    for (const control of subRowGeometry.controls) {
+      expect(control.left, `${control.label} starts inside the viewport`).toBeGreaterThanOrEqual(0);
+      expect(control.right, `${control.label} ends inside the viewport`).toBeLessThanOrEqual(subRowGeometry.viewportWidth + 1);
+    }
+
     const libraryTab = page.locator('.mc-library-tab:visible');
     const libraryTabBox = await libraryTab.boundingBox();
     expect(libraryTabBox.width).toBeGreaterThanOrEqual(48);
@@ -2318,18 +2335,23 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
         const stage = document.querySelector('.mc-stage.mc-cc-canvas')?.getBoundingClientRect();
         const controls = document.querySelector('.mc-cc-controls')?.getBoundingClientRect();
         const shell = document.querySelector('.mc-cc-shell')?.getBoundingClientRect();
+        const subRow = document.querySelector('.mc-cc-controls > .mc-cc-sub-row');
         return {
           documentWidth: document.documentElement.scrollWidth,
           viewportWidth: window.innerWidth,
           shellRight: shell?.right,
           shellBottom: shell?.bottom,
           gap: stage && controls ? controls.top - stage.bottom : null,
+          subRowClientWidth: subRow?.clientWidth,
+          subRowScrollWidth: subRow?.scrollWidth,
         };
       });
       expect(geometry.documentWidth, `${width}x${height} horizontal overflow`).toBeLessThanOrEqual(geometry.viewportWidth + 2);
       expect(geometry.shellRight, `${width}x${height} shell right`).toBeLessThanOrEqual(width + 1);
       expect(geometry.shellBottom, `${width}x${height} shell bottom`).toBeLessThanOrEqual(height + 1);
       expect(geometry.gap, `${width}x${height} preview clearance`).toBeGreaterThanOrEqual(4);
+      expect(geometry.subRowScrollWidth, `${width}x${height} primary sub-row content is not clipped`)
+        .toBeLessThanOrEqual(geometry.subRowClientWidth + 1);
 
       const buttons = page.locator('.mc-cc-tp-btn:visible');
       for (let index = 0; index < await buttons.count(); index += 1) {
