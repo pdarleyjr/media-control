@@ -356,6 +356,10 @@ jobs:
           docker rm -f media-control-provenance-test
           trap - EXIT
 
+          docker save "${TAG}" | gzip -1 > image-provenance/media-control-image.tar.gz
+          ARCHIVE_SHA256="$(sha256sum image-provenance/media-control-image.tar.gz | cut -d ' ' -f 1)"
+          ARCHIVE_BYTES="$(stat -c '%s' image-provenance/media-control-image.tar.gz)"
+
           node -e '
             const fs = require("fs");
             const payload = {
@@ -365,10 +369,13 @@ jobs:
               image_tag: process.argv[4],
               oci_revision: process.argv[5],
               oci_source: process.argv[6],
+              archive_sha256: process.argv[7],
+              archive_bytes: Number(process.argv[8]),
+              archive_format: "docker-save+gzip",
               github_run_id: process.env.GITHUB_RUN_ID,
             };
             fs.writeFileSync("image-provenance/image.json", `${JSON.stringify(payload, null, 2)}\n`);
-          ' "${GITHUB_SHA}" "${GIT_TREE}" "${IMAGE_ID}" "${TAG}" "${OCI_REVISION}" "${OCI_SOURCE}"
+          ' "${GITHUB_SHA}" "${GIT_TREE}" "${IMAGE_ID}" "${TAG}" "${OCI_REVISION}" "${OCI_SOURCE}" "${ARCHIVE_SHA256}" "${ARCHIVE_BYTES}"
 
       - name: Upload image provenance
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
