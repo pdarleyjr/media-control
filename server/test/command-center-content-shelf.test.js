@@ -77,5 +77,5 @@ test('Command Center composition follows the approved shelf mockup without a dup
   assert.match(css, /\.mc-library-body \.mc-tb-tab\.active\s*\{[\s\S]*?background:\s*var\(--mc-surface/);
   assert.match(css, /\.mc-action-dock-persistent \.mc-cam-health-wrap\s*\{\s*display:\s*none/);
   assert.match(css, /--mc-library-layout-reserve-h:\s*clamp\(220px, 27dvh, 260px\)/);
-  assert.match(css, /@media \(min-width: 1100px\) and \(min-height: 760px\)[\s\S]*?--mc-library-expanded-h:\s*clamp\(340px, 40dvh, 360px\)/);
+  assert.match(css, /@media \(min-width: 1100px\) and \(min-height: 760px\)[\s\S]*?--mc-library-expanded-h:\s*clamp\(340px, 40dvh, 350px\)/);
 });
