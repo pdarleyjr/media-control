@@ -53,25 +53,17 @@ export function getLiveLadder() {
 }
 
 export function mountActionDock(hostEl, opts = {}) {
-  if (!hostEl) return { syncLive() { return Promise.resolve(); }, repaintBlank() {}, destroy() {} };
+  if (!hostEl) return { syncLive() { return Promise.resolve(); }, repaintBlank() {}, attachSecondaryHost() {}, destroy() {} };
   liveStateKnown = true;
   const cb = opts || {};
   hostEl.innerHTML = `
-    <div class="mc-action-dock" role="toolbar" aria-label="${esc(t('mc.cc.brand'))}">
-      <button type="button" class="mc-dock-btn mc-dock-primary" data-dock="multiview">${esc(t('mc.cc.dock.multiview'))}</button>
+    <div class="mc-action-dock mc-action-dock-persistent" role="toolbar" aria-label="Persistent safety controls">
       <div class="mc-blank-control" role="group" aria-label="${esc(t('mc.blank.group'))}" data-blank-control>
         <span class="mc-blank-status" data-blank-status role="status" aria-live="polite">${esc(t('mc.blank.status.unknown'))}</span>
         <button type="button" class="mc-dock-btn mc-dock-default" data-dock="blank-toggle" id="mc-dock-blank-btn">${esc(t('mc.blank.action.unblank_wall'))}</button>
       </div>
-      <button type="button" class="mc-dock-btn mc-dock-default" data-dock="whiteboard">${esc(t('mc.wb.dock_open'))}</button>
-      <button type="button" class="mc-dock-btn mc-dock-default" data-dock="share">${esc(t('mc.cc.dock.share'))}</button>
-      <button type="button" class="mc-dock-btn mc-dock-default" data-dock="record-toggle" id="mc-dock-record-btn" disabled aria-disabled="true" title="${esc(t('mc.cc.record.status_unavailable'))}">${esc('Start Recording')}</button>
-      <button type="button" class="mc-dock-btn mc-dock-live" data-dock="start-live">${esc(t('mc.cc.dock.start_live'))}</button>
+      <button type="button" class="mc-dock-btn mc-dock-danger is-recording" data-dock="record-toggle" id="mc-dock-record-btn" disabled aria-disabled="true" hidden title="${esc(t('mc.cc.record.status_unavailable'))}">${esc('Stop Recording')}</button>
       <button type="button" class="mc-dock-btn mc-dock-danger" data-dock="stop-live" hidden>${esc(t('mc.cc.dock.stop_live'))}</button>
-      <button type="button" class="mc-dock-btn mc-dock-add" data-dock="add-display" aria-label="${esc(t('mc.cc.dock.add_display'))}">
-        <span class="mc-dock-add-text">${esc(t('mc.cc.dock.add_display'))}</span>
-        <span class="mc-dock-add-plus" aria-hidden="true">+</span>
-      </button>
       <div class="mc-live-ladder" id="mc-live-ladder" role="status" aria-live="polite">
         <span class="mc-live-ladder-state" data-live-state>—</span>
         <span class="mc-live-ladder-reason" data-live-reason hidden></span>
@@ -97,14 +89,41 @@ export function mountActionDock(hostEl, opts = {}) {
       </div>
     </div>`;
 
-  const recordBtn = hostEl.querySelector('[data-dock="record-toggle"]');
-  const startBtn = hostEl.querySelector('[data-dock="start-live"]');
+  let secondaryHost = null;
+  const recordBtn = hostEl.querySelector('#mc-dock-record-btn');
   const stopBtn = hostEl.querySelector('[data-dock="stop-live"]');
   const blankBtn = hostEl.querySelector('[data-dock="blank-toggle"]');
   const blankControl = hostEl.querySelector('[data-blank-control]');
   const blankStatus = hostEl.querySelector('[data-blank-status]');
   const ladderEl = hostEl.querySelector('#mc-live-ladder');
   const compositionEl = hostEl.querySelector('[data-composition-control]');
+
+  function currentSecondaryHost() {
+    return secondaryHost?.isConnected ? secondaryHost : null;
+  }
+
+  function secondaryMarkup() {
+    return `
+      <div class="mc-action-dock mc-action-dock-secondary" role="toolbar" aria-label="Additional controls">
+        <button type="button" class="mc-dock-btn mc-dock-primary" data-dock="multiview">${esc(t('mc.cc.dock.multiview'))}</button>
+        <button type="button" class="mc-dock-btn mc-dock-default" data-dock="whiteboard">${esc(t('mc.wb.dock_open'))}</button>
+        <button type="button" class="mc-dock-btn mc-dock-default" data-dock="share">${esc(t('mc.cc.dock.share'))}</button>
+        <button type="button" class="mc-dock-btn mc-dock-default" data-dock="record-toggle" id="mc-dock-start-record-btn" disabled aria-disabled="true" title="${esc(t('mc.cc.record.status_unavailable'))}">${esc('Start Recording')}</button>
+        <button type="button" class="mc-dock-btn mc-dock-live" data-dock="start-live">${esc(t('mc.cc.dock.start_live'))}</button>
+        <button type="button" class="mc-dock-btn mc-dock-add" data-dock="add-display" aria-label="${esc(t('mc.cc.dock.add_display'))}">
+          <span class="mc-dock-add-text">${esc(t('mc.cc.dock.add_display'))}</span>
+          <span class="mc-dock-add-plus" aria-hidden="true">+</span>
+        </button>
+      </div>`;
+  }
+
+  function attachSecondaryHost(nextHost) {
+    if (!nextHost) return;
+    secondaryHost = nextHost;
+    secondaryHost.innerHTML = secondaryMarkup();
+    wireDockButtons(secondaryHost);
+    repaintLive();
+  }
 
   function repaintBlank() {
     if (!blankBtn) return;
@@ -150,6 +169,9 @@ export function mountActionDock(hostEl, opts = {}) {
 
   function repaintLive() {
     const onAir = liveActive || lastLadder.state === LIVE_LADDER.ON_AIR;
+    const secondary = currentSecondaryHost();
+    const startBtn = secondary?.querySelector('[data-dock="start-live"]');
+    const startRecordBtn = secondary?.querySelector('#mc-dock-start-record-btn');
     if (startBtn) {
       startBtn.hidden = onAir;
       const block = onAir || startInFlight || livePhase === 'starting' || livePhase === 'stopping' || lastLadder.canStart === false;
@@ -163,12 +185,21 @@ export function mountActionDock(hostEl, opts = {}) {
     }
     paintLadder(lastLadder);
     if (recordBtn) {
-      recordBtn.textContent = recordingActive ? 'Stop Recording' : 'Start Recording';
+      recordBtn.hidden = !recordingActive;
+      recordBtn.textContent = 'Stop Recording';
       recordBtn.classList.toggle('is-recording', recordingActive);
       recordBtn.disabled = livePhase === 'starting' || livePhase === 'stopping'
-        || (!recordingActive && !recordingAvailable);
+        || !recordingActive;
       recordBtn.title = recordingUnavailableReason || recordBtn.textContent;
       recordBtn.setAttribute('aria-disabled', recordBtn.disabled ? 'true' : 'false');
+    }
+    if (startRecordBtn) {
+      startRecordBtn.hidden = recordingActive;
+      startRecordBtn.textContent = 'Start Recording';
+      startRecordBtn.disabled = recordingActive || livePhase === 'starting' || livePhase === 'stopping'
+        || !recordingAvailable;
+      startRecordBtn.title = recordingUnavailableReason || startRecordBtn.textContent;
+      startRecordBtn.setAttribute('aria-disabled', startRecordBtn.disabled ? 'true' : 'false');
     }
     if (compositionEl) {
       compositionEl.hidden = !onAir || !liveCompositionAvailable;
@@ -280,6 +311,7 @@ export function mountActionDock(hostEl, opts = {}) {
       if (!startInFlight) liveActive = false;
       liveCompositionAvailable = false;
       recordingAvailable = false;
+      recordingActive = false;
       recordingUnavailableReason = t('mc.cc.record.status_unavailable');
       lastLadder = { state: LIVE_LADDER.UNKNOWN, canStart: false, reason: 'Status unavailable' };
     } finally {
@@ -300,8 +332,11 @@ export function mountActionDock(hostEl, opts = {}) {
   }
 
   async function onRecordToggle() {
-    if (!recordBtn || recordBtn.disabled) return;
-    recordBtn.disabled = true;
+    const startRecordBtn = currentSecondaryHost()?.querySelector('#mc-dock-start-record-btn');
+    const activeButton = recordingActive ? recordBtn : startRecordBtn;
+    if (!activeButton || activeButton.disabled) return;
+    if (recordBtn) recordBtn.disabled = true;
+    if (startRecordBtn) startRecordBtn.disabled = true;
     try {
       if (recordingActive) {
         await api.liveStream.recordingStop({ session_id: recordingSessionId });
@@ -317,13 +352,13 @@ export function mountActionDock(hostEl, opts = {}) {
     } catch (e) {
       showToast(formatLiveFailure(e) || e?.message || 'Recording failed', 'error');
     } finally {
-      recordBtn.disabled = false;
       repaintLive();
       await syncLive();
     }
   }
 
   async function onStartLive() {
+    const startBtn = currentSecondaryHost()?.querySelector('[data-dock="start-live"]');
     if (startInFlight || (startBtn && startBtn.disabled)) {
       if (lastLadder.reason) showToast(lastLadder.reason, 'error');
       return;
@@ -477,24 +512,30 @@ export function mountActionDock(hostEl, opts = {}) {
     }
   }
 
-  hostEl.querySelectorAll('[data-dock]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      switch (btn.dataset.dock) {
-        case 'multiview': if (typeof cb.onMultiview === 'function') cb.onMultiview(); break;
-        case 'blank-selected': if (typeof cb.onBlankSelected === 'function') cb.onBlankSelected(); break;
-        case 'blank-toggle':
-          if (typeof cb.onBlankToggle === 'function') await cb.onBlankToggle();
-          repaintBlank();
-          break;
-        case 'whiteboard': if (typeof cb.onWhiteboard === 'function') cb.onWhiteboard(); break;
-        case 'share': if (typeof cb.onShare === 'function') cb.onShare(); break;
-        case 'record-toggle': await onRecordToggle(); break;
-        case 'start-live': await onStartLive(); break;
-        case 'stop-live': await onStopLive(); break;
-        case 'add-display': if (typeof cb.onAddDisplay === 'function') cb.onAddDisplay(); break;
-      }
+  function wireDockButtons(root) {
+    root.querySelectorAll('[data-dock]').forEach((btn) => {
+      if (btn.dataset.mcActionDockWired === 'true') return;
+      btn.dataset.mcActionDockWired = 'true';
+      btn.addEventListener('click', async () => {
+        switch (btn.dataset.dock) {
+          case 'multiview': if (typeof cb.onMultiview === 'function') cb.onMultiview(); break;
+          case 'blank-selected': if (typeof cb.onBlankSelected === 'function') cb.onBlankSelected(); break;
+          case 'blank-toggle':
+            if (typeof cb.onBlankToggle === 'function') await cb.onBlankToggle();
+            repaintBlank();
+            break;
+          case 'whiteboard': if (typeof cb.onWhiteboard === 'function') cb.onWhiteboard(); break;
+          case 'share': if (typeof cb.onShare === 'function') cb.onShare(); break;
+          case 'record-toggle': await onRecordToggle(); break;
+          case 'start-live': await onStartLive(); break;
+          case 'stop-live': await onStopLive(); break;
+          case 'add-display': if (typeof cb.onAddDisplay === 'function') cb.onAddDisplay(); break;
+        }
+      });
     });
-  });
+  }
+
+  wireDockButtons(hostEl);
 
   hostEl.querySelectorAll('[data-composition-layout]').forEach((button) => {
     button.addEventListener('click', () => onCompositionLayout(button.dataset.compositionLayout));
@@ -525,6 +566,7 @@ export function mountActionDock(hostEl, opts = {}) {
   return {
     syncLive,
     repaintBlank,
+    attachSecondaryHost,
     destroy() { if (healthTimer) { clearInterval(healthTimer); healthTimer = null; } },
   };
 }

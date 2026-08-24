@@ -46,3 +46,18 @@ test('operator starts in one click and controls only the three fixed composition
   assert.match(dock, /api\.liveStream\.compositionContent/);
   assert.doesNotMatch(send, /api\.liveStream\.compositionContent/);
 });
+
+test('one action controller renders persistent safety and attachable secondary hosts', () => {
+  const dock = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'js', 'views', 'media-control', 'action-dock.js'), 'utf8');
+  const mediaControl = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'js', 'views', 'media-control.js'), 'utf8');
+  const toolbox = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'js', 'views', 'media-control', 'toolbox.js'), 'utf8');
+
+  assert.equal((mediaControl.match(/mountActionDock\(/g) || []).length, 1);
+  assert.match(dock, /mc-action-dock-persistent/);
+  assert.match(dock, /mc-action-dock-secondary/);
+  assert.match(dock, /attachSecondaryHost/);
+  assert.match(dock, /id="mc-dock-record-btn"[\s\S]*Stop Recording/);
+  assert.match(toolbox, /onMountAdditionalControls/);
+  assert.match(toolbox, /mc-tb-additional-actions/);
+  assert.match(mediaControl, /dockApi\?\.attachSecondaryHost/);
+});

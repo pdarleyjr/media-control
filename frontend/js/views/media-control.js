@@ -1243,7 +1243,19 @@ function paintToolbox() {
     onAfterSend: refreshAfterSend,
     onRouteSource: routeSourceWithPicker,
     onRouteNextcloud: routeNextcloudWithPicker,
+    onBeforeToolboxReplace: parkSecondaryControls,
+    onMountAdditionalControls: (host) => {
+      dockApi?.attachSecondaryHost(host);
+      const secondaryRow = document.querySelector('.mc-cc-sub-row');
+      if (secondaryRow) host.append(secondaryRow);
+    },
   });
+}
+
+function parkSecondaryControls() {
+  const parking = document.getElementById('mc-secondary-controls-parking');
+  const secondaryRow = document.querySelector('.mc-cc-sub-row');
+  if (parking && secondaryRow && secondaryRow.parentElement !== parking) parking.append(secondaryRow);
 }
 
 // The library drawer sits BELOW the inspector (z-index 30 vs 40) and is fully
@@ -2897,9 +2909,11 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
               <div id="mc-transport-host" class="mc-transport-row-host"></div>
               <div id="mc-action-dock-host" class="mc-action-dock-host"></div>
             </div>
-            <div class="mc-cc-sub-row">
-              <div id="mc-span-split-host" class="mc-span-split-host"></div>
-              <div id="mc-screensaver-host" class="mc-screensaver-row-host"></div>
+            <div id="mc-secondary-controls-parking" class="mc-secondary-controls-parking" aria-hidden="true">
+              <div class="mc-cc-sub-row">
+                <div id="mc-span-split-host" class="mc-span-split-host"></div>
+                <div id="mc-screensaver-host" class="mc-screensaver-row-host"></div>
+              </div>
             </div>
           </section>
         </main>

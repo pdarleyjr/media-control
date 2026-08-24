@@ -608,7 +608,8 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await expect(page.locator('#mc-toolbox')).not.toContainText('archive.zip');
     await expect(page.locator('#mc-toolbox')).not.toContainText('dispatch-audio.mp3');
 
-    await page.locator('.mc-cc-saver-select').selectOption('folder:Screensavers');
+    await page.locator('.mc-tb-tab[data-tab="additional"]').click();
+    await page.locator('#mc-toolbox .mc-cc-saver-select').selectOption('folder:Screensavers');
     await expect(page.locator('.mc-tb-tab[data-tab="images"]')).toHaveAttribute('aria-selected', 'true');
     await expect(page.locator('[data-context-filter="Screensavers"]')).toContainText('Screensavers');
     await expect(page.locator('[data-clear-context-filter]')).toBeVisible();
@@ -664,6 +665,102 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     const requestsAtLiveFeeds = managedRequestTimes.length;
     await page.waitForTimeout(5_500);
     expect(managedRequestTimes.length, 'public Live Feeds does not start or retain a managed-source poller').toBe(requestsAtLiveFeeds);
+    await context.close();
+  });
+
+  test('one action controller keeps safety stops persistent and secondary actions in Additional Controls', async ({ browser }, testInfo) => {
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 838, height: 500 },
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: true,
+    });
+    let operatorMode = 'idle';
+    let operatorRequests = 0;
+    await page.route('**/api/live-stream/operator-state*', async (route) => {
+      operatorRequests += 1;
+      if (operatorMode === 'failed') {
+        await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'unavailable' }) });
+        return;
+      }
+      const active = operatorMode === 'active';
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          stream_state: active ? 'on_air' : 'ready',
+          stream_active: active,
+          recording_state: active ? 'active' : 'idle',
+          recording_active: active,
+          publisher: { active, mode: 'direct_camera' },
+          capabilities: {
+            stream_state: active ? 'on_air' : 'ready',
+            publisher_mode: 'direct_camera',
+            publisher_available: true,
+            publisher_ready: true,
+            operator_start_allowed: true,
+          },
+          camera_edge: {
+            anpviz_stream: true,
+            active_source: 'anpviz',
+            microphone_connected: true,
+            recording_active: active,
+          },
+        }),
+      });
+    });
+    await page.reload({ waitUntil: 'networkidle' });
+    await waitForCommandCenterVisualReady(page);
+    await page.locator('#mc-library-drawer > [data-library-toggle]').click();
+    await page.locator('.mc-tb-tab[data-tab="additional"]').click();
+
+    const persistent = page.locator('.mc-action-dock-persistent');
+    const secondary = page.locator('#mc-toolbox .mc-action-dock-secondary');
+    await expect(persistent).toHaveCount(1);
+    await expect(secondary).toHaveCount(1);
+    await expect(page.locator('#mc-toolbox .mc-cc-sub-row')).toBeVisible();
+    await expect(persistent.locator('#mc-dock-blank-btn')).toBeVisible();
+    await expect(persistent.locator('[data-dock="multiview"], [data-dock="whiteboard"], [data-dock="share"], [data-dock="start-live"]')).toHaveCount(0);
+    await expect(secondary.locator('[data-dock="multiview"]')).toBeVisible();
+    await expect(secondary.locator('[data-dock="whiteboard"]')).toBeVisible();
+    await expect(secondary.locator('[data-dock="share"]')).toBeVisible();
+    await expect(secondary.locator('#mc-dock-start-record-btn')).toBeEnabled();
+    await expect(secondary.locator('[data-dock="start-live"]')).toBeEnabled();
+    await expect(page.locator('#mc-toolbox')).toContainText('Playlists');
+    await expect(page.locator('#mc-toolbox')).toContainText('Scenes');
+    await expect(page.locator('#mc-broadcast-chip')).toHaveCount(1);
+    await page.screenshot({ path: testInfo.outputPath('command-center-additional-controls.png'), fullPage: true });
+    const requestsAfterAttach = operatorRequests;
+    await page.waitForTimeout(5_500);
+    expect(operatorRequests - requestsAfterAttach, 'attaching a second presentation host does not duplicate the poller').toBeLessThanOrEqual(1);
+
+    operatorMode = 'active';
+    await expect.poll(() => operatorRequests, { timeout: 7_000 }).toBeGreaterThan(requestsAfterAttach + 1);
+    await expect(persistent.locator('[data-dock="stop-live"]')).toBeVisible();
+    await expect(persistent.locator('#mc-dock-record-btn')).toBeVisible();
+    await expect(persistent.locator('#mc-dock-record-btn')).toHaveText('Stop Recording');
+    await expect(secondary.locator('[data-dock="start-live"]')).toBeHidden();
+    await expect(secondary.locator('#mc-dock-start-record-btn')).toBeHidden();
+
+    await page.locator('.mc-tb-tab[data-tab="videos"]').click();
+    await page.locator('#mc-library-drawer > [data-library-toggle]').click();
+    await expect(page.locator('#mc-library-drawer')).toHaveAttribute('data-open', 'false');
+    await expect(persistent.locator('[data-dock="stop-live"]')).toBeVisible();
+    await expect(persistent.locator('#mc-dock-record-btn')).toBeVisible();
+    const persistentStrip = await page.locator('.mc-persistent-controls').boundingBox();
+    expect(persistentStrip.height, 'the permanent operational strip stays compact').toBeLessThanOrEqual(52);
+    await page.screenshot({ path: testInfo.outputPath('command-center-persistent-stops.png'), fullPage: true });
+
+    operatorMode = 'failed';
+    const requestsBeforeFailure = operatorRequests;
+    await expect.poll(() => operatorRequests, { timeout: 7_000 }).toBeGreaterThan(requestsBeforeFailure);
+    await expect(persistent.locator('[data-dock="stop-live"]')).toBeHidden();
+    await expect(persistent.locator('#mc-dock-record-btn')).toBeHidden();
+    await expect(persistent.locator('.mc-cam-health-label')).toContainText(/unavailable/i);
+    await page.locator('#mc-library-drawer > [data-library-toggle]').click();
+    await page.locator('.mc-tb-tab[data-tab="additional"]').click();
+    await expect(page.locator('#mc-toolbox #mc-dock-start-record-btn')).toBeDisabled();
+    await expect(page.locator('#mc-toolbox [data-dock="start-live"]')).toBeDisabled();
     await context.close();
   });
 

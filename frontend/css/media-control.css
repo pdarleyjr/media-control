@@ -2356,6 +2356,9 @@ img.mc-cc-logo { background: transparent; box-shadow: none; padding: 0; }
   display: flex; align-items: center; justify-content: center; gap: var(--mc-space-sm, 8px);
   flex-wrap: wrap;
 }
+.mc-action-dock-persistent { flex-wrap: nowrap; }
+.mc-action-dock-secondary { justify-content: flex-start; }
+.mc-tb-additional-actions .mc-action-dock-host { margin-top: 0; }
 .mc-blank-control {
   display: inline-flex;
   align-items: stretch;
@@ -2785,10 +2788,16 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
   justify-content: center;
   gap: 8px;
 }
-.mc-cc-controls .mc-cc-sub-row {
+.mc-cc-sub-row {
   width: min(1120px, 86vw);
   display: flex; justify-content: center; align-items: center;
   gap: 12px; flex-wrap: wrap;
+}
+.mc-secondary-controls-parking { display: none; }
+.mc-tb-additional-actions .mc-cc-sub-row {
+  width: 100%;
+  justify-content: flex-start;
+  margin-top: 10px;
 }
 .mc-cc-controls .mc-action-dock-host { margin-top: 4px; }
 

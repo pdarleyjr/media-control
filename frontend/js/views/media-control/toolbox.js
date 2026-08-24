@@ -634,8 +634,13 @@ async function renderSourcesCategory(container, options) {
 }
 
 async function renderAdditionalCategory(container, options) {
-  container.innerHTML = categorySection('Playlists', 'mc-tb-additional-playlists')
+  container.innerHTML = categorySection('Actions', 'mc-tb-additional-actions')
+    + categorySection('Playlists', 'mc-tb-additional-playlists')
     + categorySection('Scenes', 'mc-tb-additional-scenes');
+  const actionsHost = container.querySelector('.mc-tb-additional-actions .mc-tb-category-host');
+  if (typeof options.onMountAdditionalControls === 'function') {
+    options.onMountAdditionalControls(actionsHost);
+  }
   await Promise.all([
     renderPlaylistsTab(container.querySelector('.mc-tb-additional-playlists .mc-tb-category-host'), options),
     renderScenesTab(container.querySelector('.mc-tb-additional-scenes .mc-tb-category-host'), options),
@@ -803,7 +808,8 @@ function clearLiveSourceTimers(root) {
 }
 
 async function loadTab(tabId, tabBody, options, context = {}) {
-  const { selectedIds, onAfterSend, onRouteSource, onRouteNextcloud } = options;
+  const { selectedIds, onAfterSend, onRouteSource, onRouteNextcloud, onMountAdditionalControls, onBeforeToolboxReplace } = options;
+  if (typeof onBeforeToolboxReplace === 'function') onBeforeToolboxReplace();
   const previousHost = tabBody._renderHost;
   clearLiveSourceTimers(previousHost);
   const renderHost = document.createElement('div');
@@ -826,7 +832,7 @@ async function loadTab(tabId, tabBody, options, context = {}) {
       renderLiveFeedsTab(renderHost, { selectedIds, onAfterSend, onRouteSource });
       break;
     case 'additional':
-      await renderAdditionalCategory(renderHost, { selectedIds, onAfterSend, onRouteSource });
+      await renderAdditionalCategory(renderHost, { selectedIds, onAfterSend, onRouteSource, onMountAdditionalControls });
       break;
     default:
       renderHost.innerHTML = '';
@@ -842,11 +848,14 @@ async function loadTab(tabId, tabBody, options, context = {}) {
  * @param {()=>void} [opts.onAfterSend] called after a successful fallback send
  * @param {(source:object,label:string)=>Promise<boolean>} [opts.onRouteSource]
  * @param {(path:string,label:string)=>Promise<boolean>} [opts.onRouteNextcloud]
+ * @param {(host:HTMLElement)=>void} [opts.onMountAdditionalControls]
+ * @param {()=>void} [opts.onBeforeToolboxReplace]
  */
-export function renderToolbox(container, { selectedIds = [], onAfterSend, onRouteSource, onRouteNextcloud } = {}) {
+export function renderToolbox(container, { selectedIds = [], onAfterSend, onRouteSource, onRouteNextcloud, onMountAdditionalControls, onBeforeToolboxReplace } = {}) {
   if (!container) return;
+  if (typeof onBeforeToolboxReplace === 'function') onBeforeToolboxReplace();
   activeTab = normalizeToolboxTab(activeTab);
-  const options = { selectedIds, onAfterSend, onRouteSource, onRouteNextcloud };
+  const options = { selectedIds, onAfterSend, onRouteSource, onRouteNextcloud, onMountAdditionalControls, onBeforeToolboxReplace };
 
   const tabHtml = TABS.map(tab =>
     `<button type="button" class="mc-tb-tab${tab.id === activeTab ? ' active' : ''}"
