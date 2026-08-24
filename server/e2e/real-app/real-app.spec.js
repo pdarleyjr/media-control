@@ -599,10 +599,12 @@ test.describe('Phase 1 — Feature flag OFF: real app loads correctly', () => {
     });
   });
 
-  test('1l. enhanced Whiteboard launcher is reachable from the web action dock', async ({ page }) => {
+  test('1l. enhanced Whiteboard launcher is reachable from Additional Controls', async ({ page }) => {
     const errors = attachErrorCollectors(page);
     await setupAuth(page);
     await page.goto(`${BASE_URL}/app#/control`);
+    await page.locator('#mc-library-drawer > [data-library-toggle]').click();
+    await page.locator('.mc-tb-tab[data-tab="additional"]').click();
     const launcher = page.locator('[data-dock="whiteboard"]');
     await expect(launcher).toBeVisible({ timeout: 20000 });
     const contract = await launcher.evaluate((button) => ({
@@ -613,7 +615,7 @@ test.describe('Phase 1 — Feature flag OFF: real app loads correctly', () => {
     expect(contract.height).toBeGreaterThanOrEqual(44);
     expect(contract.label).toBe('Whiteboard');
     expect(contract.launcher_registered).toBe(true);
-    assertNoErrors(errors, 'web Whiteboard action dock');
+    assertNoErrors(errors, 'web Whiteboard Additional Controls');
   });
 });
 
