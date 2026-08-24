@@ -176,6 +176,7 @@ test.afterAll(() => {
 
 test('@durable-live-preview two programs remain live across selection and only a changed source navigates', async ({ page }) => {
   const pageErrors = [];
+  await page.setViewportSize({ width: 1366, height: 768 });
   page.on('pageerror', (error) => pageErrors.push(error.message));
   await page.route('**/player/live-source.html?fixture=*', async (route) => {
     const source = new URL(route.request().url()).searchParams.get('fixture');
@@ -253,6 +254,7 @@ test('@durable-live-preview two programs remain live across selection and only a
 });
 
 test('@durable-live-preview browser renders one durable session per span group split mosaic and multiview surface', async ({ page }) => {
+  await page.setViewportSize({ width: 1366, height: 768 });
   await page.route('**/preview-harness', (route) => route.fulfill({
     status: 200,
     contentType: 'text/html',
@@ -323,6 +325,13 @@ test('@durable-live-preview browser renders one durable session per span group s
   }, { controlTarget: activeControlTarget, offlineSpan: offlineSpanLeader });
 
   await renderTopology({ type: 'group', id: 'solo', wall_id: 'groups' });
+  const readableLayout = await page.evaluate(() => {
+    const stage = document.querySelector('#fixture')?.getBoundingClientRect();
+    const wall = document.querySelector('#fixture > .mc-wall[data-wall-id="span"]')?.getBoundingClientRect();
+    return stage && wall ? { wallToStageWidth: wall.width / stage.width } : null;
+  });
+  expect(readableLayout?.wallToStageWidth,
+    'a three-screen wall must retain a readable full-row preview at 1366x768').toBeGreaterThanOrEqual(0.9);
   const expectedKeys = [
     'display:multiview',
     'wall:span',
