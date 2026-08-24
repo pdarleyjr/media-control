@@ -2532,7 +2532,8 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
         },
       });
       await page.goto(`${BASE_URL}/app#/control`, { waitUntil: 'domcontentloaded' });
-      const secondary = page.locator('.mc-target-wall-btn', { hasText: 'Classroom 1 Secondary Wall' });
+      const secondary = page.locator('.mc-target-wall-btn[data-target-value="wall:mobile-secondary-wall"]');
+      const visibleWallStages = page.locator('#mc-stage > [data-wall-id]:visible');
       await test.step('Scenario B: Wall 2 wins over a delayed Wall 1 preference', async () => {
         await expect(secondary).toBeVisible();
         await expect.poll(() => page.evaluate(() => window.__mcPreferenceTestState.operator_loads))
@@ -2543,6 +2544,8 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
         await page.waitForTimeout(2000);
         await expect(secondary).toHaveAttribute('aria-selected', 'true');
         await expect(secondary).toHaveClass(/is-active/);
+        await expect(visibleWallStages).toHaveCount(1);
+        await expect(visibleWallStages).toHaveAttribute('data-wall-id', 'mobile-secondary-wall');
       });
 
       await test.step('Scenario A: Wall 1 wins over a delayed Wall 2 preference', async () => {
@@ -2557,12 +2560,14 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
         await expect(page.locator('.media-library-page')).toBeVisible();
         await page.evaluate(() => { window.location.hash = '#/control'; });
         await expect.poll(() => page.evaluate(() => window.__mcPreferenceTestState.operator_loads)).toBe(1);
-        const primary = page.locator('.mc-target-wall-btn', { hasText: 'Classroom 1 Primary Wall' });
+        const primary = page.locator('.mc-target-wall-btn[data-target-value="wall:mobile-command-wall"]');
         await primary.click();
         await expect(primary).toHaveAttribute('aria-selected', 'true');
         await page.waitForTimeout(2000);
         await expect(primary).toHaveAttribute('aria-selected', 'true');
         await expect(primary).toHaveClass(/is-active/);
+        await expect(visibleWallStages).toHaveCount(1);
+        await expect(visibleWallStages).toHaveAttribute('data-wall-id', 'mobile-command-wall');
       });
 
       await test.step('Scenario C: a wall group wins over a delayed wall preference', async () => {

@@ -117,6 +117,10 @@ function seedStandalonePrograms() {
       `);
       insertState.run('preview-display-a', workspaceId, 'preview-content-a', Date.now());
       insertState.run('preview-display-b', workspaceId, 'preview-content-b', Date.now());
+      database.prepare(`
+        INSERT INTO dashboard_state (user_id, workspace_id, selection_json, updated_at)
+        VALUES (?, ?, ?, ?)
+      `).run(authUser.id, workspaceId, JSON.stringify(['preview-display-a']), now);
     })();
   } finally {
     database.close();
@@ -189,8 +193,11 @@ test('@durable-live-preview two programs remain live across selection and only a
   }, { token: authToken, user: authUser });
 
   await page.goto(`${BASE_URL}/app#/control`);
-  await expect(page.locator('iframe[data-preview-surface-key="display:preview-display-a"]')).toBeVisible({ timeout: 20000 });
-  await expect(page.locator('iframe[data-preview-surface-key="display:preview-display-b"]')).toBeVisible();
+  const previewA = page.locator('iframe[data-preview-surface-key="display:preview-display-a"]');
+  const previewB = page.locator('iframe[data-preview-surface-key="display:preview-display-b"]');
+  await expect(previewA).toBeVisible({ timeout: 20000 });
+  await expect(previewB).toBeAttached();
+  await expect(previewB).toBeHidden();
   await expect.poll(async () => (await mediaState(page)).every((item) => item.time > 0 && item.paused === false)).toBe(true);
 
   await page.evaluate(() => {
@@ -206,6 +213,8 @@ test('@durable-live-preview two programs remain live across selection and only a
 
   await page.locator('select.mc-target-select').selectOption('display:preview-display-b');
   await expect(page.locator('article[data-device-id="preview-display-b"]')).toHaveAttribute('aria-current', 'true');
+  await expect(previewA).toBeHidden();
+  await expect(previewB).toBeVisible();
   await page.waitForTimeout(350);
   const afterSelection = await mediaState(page);
   expect(afterSelection.map((item) => item.nodeToken)).toEqual(initial.map((item) => item.nodeToken));
@@ -374,6 +383,20 @@ test('@durable-live-preview browser renders one durable session per span group s
   }
   await expect(page.locator('[data-layout-group-id="pair"]')).toHaveAttribute('aria-current', 'true');
   await expect(page.locator('[data-layout-group-id="solo"]')).toHaveAttribute('aria-current', 'false');
+
+  await renderTopology({ type: 'display', id: 'split-a' });
+  const visibleWall = page.locator('#fixture > [data-wall-id]:visible');
+  await expect(visibleWall).toHaveCount(1);
+  await expect(visibleWall).toHaveAttribute('data-wall-id', 'split');
+  const afterSplitSelection = await page.evaluate(() => ({
+    tokens: Object.fromEntries([...document.querySelectorAll('[data-preview-surface-key]')]
+      .map((node) => [node.dataset.previewSurfaceKey, node.__testNodeToken])),
+    metrics: { ...window.__mcStageMetrics },
+  }));
+  expect(afterSplitSelection.tokens).toEqual(after.tokens);
+  for (const key of ['renders', 'iframeCreates', 'iframeRemoves', 'iframeNavigations', 'liveSessionCreates', 'liveSessionDestroys', 'liveSessions']) {
+    expect(afterSplitSelection.metrics[key], `${key} changed while selecting a split-wall member`).toBe(after.metrics[key]);
+  }
 
   await renderTopology({ type: 'group', id: 'pair', wall_id: 'groups' }, true);
   const afterFailover = await page.evaluate(() => ({

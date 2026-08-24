@@ -693,6 +693,39 @@ function updateControlStateInPlace(container, activeControlTarget) {
     const active = !!wallId && wall.dataset.wallId === wallId;
     wall.classList.toggle('is-control-target', active);
   });
+
+  // Focus View keeps every logical preview mounted so selecting another target
+  // cannot destroy/recreate its iframe or media session. Only the active
+  // top-level wall/display participates in layout and accessibility, however.
+  // Direct children are intentional: grouped/split wall regions remain intact
+  // inside their selected parent wall.
+  const stageTargets = Array.from(container.children).filter((node) => (
+    node.hasAttribute('data-wall-id')
+      || node.matches('.mc-display-card[data-device-id]')
+  ));
+  const focusedDisplayId = activeControlTarget?.type === 'display' ? targetId : '';
+  const matchesFocus = (node) => {
+    if (wallId) return node.dataset.wallId === wallId;
+    if (!focusedDisplayId) return false;
+    if (node.matches('.mc-display-card[data-device-id]')) {
+      return node.dataset.deviceId === focusedDisplayId;
+    }
+    return Array.from(node.querySelectorAll('[data-device-id]'))
+      .some((member) => member.dataset.deviceId === focusedDisplayId);
+  };
+  const focusedTargets = stageTargets.filter(matchesFocus);
+  const hasResolvedFocus = focusedTargets.length > 0;
+  for (const node of stageTargets) {
+    const inactive = hasResolvedFocus && !focusedTargets.includes(node);
+    node.classList.toggle('mc-stage-target-inactive', inactive);
+    if (inactive) {
+      node.setAttribute('inert', '');
+      node.setAttribute('aria-hidden', 'true');
+    } else {
+      node.removeAttribute('inert');
+      node.removeAttribute('aria-hidden');
+    }
+  }
 }
 
 function isLiveSession(node) {

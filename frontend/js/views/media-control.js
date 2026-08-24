@@ -565,6 +565,10 @@ function paintSummary() {
   el.innerHTML = parts.join('');
 }
 
+function mountedStandaloneDisplays() {
+  return routeableDisplays().filter((display) => !wallMemberIds.has(display.id));
+}
+
 function paintStage() {
   const el = stageEl();
   if (!el) return;
@@ -572,15 +576,19 @@ function paintStage() {
   // Live state of EVERY display, incl. wall members, so wall composites can show
   // what each member screen is showing right now.
   const byId = new Map(all.map(d => [d.id, d]));
-  const displays = all.filter((d) => !wallMemberIds.has(d.id));
+  // The persisted selection remains the legacy broadcast scope; it must not
+  // decide whether a valid header-focus target exists in the stage. Mount every
+  // routeable standalone once so focus switches stay view-only and session-safe.
+  const displays = mountedStandaloneDisplays();
+  const mountedDisplayIds = displays.map((display) => display.id);
   const livePreviewTargets = LIVE_EMBED_PREVIEWS
-    ? buildLivePreviewTargets({ displays, walls, byId, selectedIds })
+    ? buildLivePreviewTargets({ displays, walls, byId, selectedIds: mountedDisplayIds })
     : new Map();
   renderStage(el, {
     displays,
     walls,
     byId,
-    selectedIds,
+    selectedIds: mountedDisplayIds,
     livePreviewTargets,
     activeControlTarget: activeControlTarget || activeTarget,
     overviewMode: false,
@@ -592,9 +600,9 @@ function paintStage() {
     onSetWallMode: setWallMode,
     onScreensaver: applyScreensaver,
   });
-  // The Command Center always mounts the complete logical room view. Keep that
-  // grid clipped to its canvas (with its own bounded scroll when the room is
-  // dense) so preview cards can never cover the transport/layout controls.
+  // Keep the complete logical room mounted so target switches do not tear down
+  // preview sessions. stage.js exposes only the focused top-level target while
+  // this bounded canvas prevents any mounted preview from covering controls.
   el.classList.remove('mc-cc-cinema');
   el.classList.add('mc-cc-overview');
   // Re-attach drop handlers on the freshly-rendered cards.
@@ -658,10 +666,8 @@ function stageSignature() {
     const remoteUrl = np.remoteUrl || np.remote_url || '';
     return [np.kind || '', np.contentId || '', remoteUrl, np.poster_url || '', previewKind].join('~');
   };
-  for (const id of selectedIds) {
-    if (wallMemberIds.has(id)) continue;
-    const d = byId.get(id);
-    if (!d) continue;
+  for (const d of mountedStandaloneDisplays()) {
+    const id = d.id;
     parts.push('c:' + id + ':' + (d.online ? 1 : 0) + ':' + screenStateIdentity(d) +
       ':' + playingSig(d) + ':' + (d.screenshot_url ? 1 : 0));
   }
