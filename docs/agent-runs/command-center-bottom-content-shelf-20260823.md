@@ -158,7 +158,7 @@
 - Whiteboard acceptance alignment: `8ce8a2f7e090e9b38ca616ce77ccb0e342ad340b`
 - Reconciliation: `e89398c1b78b65f1ee0038e2817fe2577b1d7644`
 - Final main: `ab8e54f574afe9d8644ce68f603e1e9d6408a1a9`
-- Phase 8: recorded by the immediate follow-up provenance commit because a commit cannot contain its own hash.
+- Phase 8: `a8a33b316a73202b8f6dfa9a4591d97ebb992a11`
 - Rollback method: revert feature commits in reverse order while retaining both reconciliation merges and all authoritative current-main work. Never reset the shared branch.
 
 ## Final Outcome
