@@ -1,0 +1,148 @@
+name: pr-fast-gate
+
+on:
+  pull_request:
+    branches:
+      - repair/enterprise-media-control
+      - main
+
+concurrency:
+  group: pr-fast-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  secret-scan:
+    name: fast / gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Scan repository and history
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  contracts:
+    name: fast / node + P3 + UI contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install server dependencies
+        run: |
+          npm ci --ignore-scripts
+          npm rebuild better-sqlite3
+
+      - name: Run fast contracts
+        run: |
+          npm run test:node
+          npm run test:p3
+          npm run test:ui-contract
+
+  live-preview:
+    name: fast / durable live previews
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            server/e2e/real-app/package-lock.json
+
+      - name: Install locked dependencies
+        run: |
+          npm ci --ignore-scripts
+          npm rebuild better-sqlite3
+          npm --prefix e2e/real-app ci
+
+      - name: Install Chromium
+        working-directory: server/e2e/real-app
+        run: npx playwright install --with-deps chromium
+
+      - name: Run real playback lifecycle
+        run: npm run test:live-preview
+
+      - name: Upload failure evidence
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fast-live-preview-failure-${{ github.sha }}
+          path: |
+            server/e2e/real-app/test-results/
+            server/e2e/real-app/playwright-live-preview-report/
+          if-no-files-found: error
+          retention-days: 14
+
+  electron:
+    name: fast / Electron audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: appliance/electron
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: appliance/electron/package-lock.json
+
+      - name: Install, audit, and validate shell
+        run: |
+          npm ci
+          npm exec -- install-electron
+          npm audit --audit-level=high
+          test -x node_modules/electron/dist/electron
+          node --check main.js
+          node --check preload.js
+
+  fast-gate:
+    name: PR Fast Gate
+    if: always()
+    needs:
+      - secret-scan
+      - contracts
+      - live-preview
+      - electron
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every fast job
+        run: |
+          test "${{ needs.secret-scan.result }}" = success
+          test "${{ needs.contracts.result }}" = success
+          test "${{ needs.live-preview.result }}" = success
+          test "${{ needs.electron.result }}" = success
