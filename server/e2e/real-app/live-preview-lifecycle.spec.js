@@ -180,8 +180,13 @@ test.afterAll(() => {
 
 test('@durable-live-preview two programs remain live across selection and only a changed source navigates', async ({ page }) => {
   const pageErrors = [];
+  const screenshotRequests = [];
   await page.setViewportSize({ width: 1366, height: 768 });
   page.on('pageerror', (error) => pageErrors.push(error.message));
+  page.on('console', (message) => {
+    const match = message.text().match(/^requestScreenshot:\s+(\S+)/);
+    if (match) screenshotRequests.push(match[1]);
+  });
   await page.route('**/player/live-source.html?fixture=*', async (route) => {
     const source = new URL(route.request().url()).searchParams.get('fixture');
     await route.fulfill({ status: 200, contentType: 'text/html', body: fixturePlayerHtml(source) });
@@ -190,6 +195,7 @@ test('@durable-live-preview two programs remain live across selection and only a
     localStorage.setItem('token', token);
     localStorage.setItem('user', JSON.stringify(user));
     localStorage.setItem('rd_onboarded', '1');
+    localStorage.setItem('mc_diag', '1');
   }, { token: authToken, user: authUser });
 
   await page.goto(`${BASE_URL}/app#/control`);
@@ -198,6 +204,9 @@ test('@durable-live-preview two programs remain live across selection and only a
   await expect(previewA).toBeVisible({ timeout: 20000 });
   await expect(previewB).toBeAttached();
   await expect(previewB).toBeHidden();
+  await expect.poll(() => screenshotRequests, {
+    message: 'every mounted standalone must receive preview refresh requests even when outside persisted broadcast selection',
+  }).toContain('preview-display-b');
   await expect.poll(async () => (await mediaState(page)).every((item) => item.time > 0 && item.paused === false)).toBe(true);
 
   await page.evaluate(() => {

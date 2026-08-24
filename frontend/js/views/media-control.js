@@ -1037,18 +1037,27 @@ async function dropOnWallRegion(wallId, regionId, source, label) {
 // without a request, a card's screenshot_url stays null and it reads "No preview"
 // forever. The retired dashboard poked every card 2s after load + every 30s — the
 // unified control surface dropped that driver during consolidation, which is why
-// previews never loaded here. Re-add it, scoped to the displays actually on screen:
-// the selected non-wall cards PLUS every wall member screen (wall cells each render
-// their own member's live preview). Offline devices are a server-side no-op.
+// previews never loaded here. Re-add it, scoped to every mounted standalone target
+// PLUS every wall member screen (wall cells each render their own member's live
+// preview). Persisted broadcast selection must never decide preview freshness.
+// Offline devices are a server-side no-op.
 function visibleDeviceIds() {
-  const ids = new Set(selectedIds.filter(id => id && !wallMemberIds.has(id) && isPollableDisplay(id)));
+  const ids = new Set(mountedStandaloneDisplays()
+    .map((display) => display.id)
+    .filter((id) => id && isPollableDisplay(id)));
   for (const id of wallMemberIds) if (id && isPollableDisplay(id)) ids.add(id);
   return [...ids];
 }
 function previewSessionDeviceIds() {
-  const displays = displayState.getAll().filter((display) => !wallMemberIds.has(display.id));
+  const displays = mountedStandaloneDisplays();
+  const mountedDisplayIds = displays.map((display) => display.id);
   const byId = new Map(displayState.getAll().map((display) => [display.id, display]));
-  return livePreviewTargetDeviceIds(buildLivePreviewTargets({ displays, walls, byId, selectedIds }));
+  return livePreviewTargetDeviceIds(buildLivePreviewTargets({
+    displays,
+    walls,
+    byId,
+    selectedIds: mountedDisplayIds,
+  }));
 }
 function requestVisiblePreviews() {
   queuePreviewRequests(visibleDeviceIds(), 0, false);
