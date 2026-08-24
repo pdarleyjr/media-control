@@ -3907,7 +3907,7 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-body .mc-library-drawer {
 .mc-action-dock-secondary .mc-live-ladder { min-height: 48px; min-width: 112px; padding: 5px 10px; }
 
 @media (min-width: 1100px) and (min-height: 760px) {
-  .mc-cc-shell { --mc-library-expanded-h: clamp(340px, 40dvh, 360px); }
+  .mc-cc-shell { --mc-library-expanded-h: clamp(340px, 40dvh, 350px); }
 }
 
 @media (max-width: 768px) {
@@ -3967,6 +3967,14 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-body .mc-library-drawer {
     flex-wrap: nowrap; justify-content: center; gap: 6px; overflow-x: auto; overflow-y: hidden;
   }
   .mc-action-dock-persistent { justify-content: flex-end; }
+  .mc-action-dock-persistent,
+  .mc-action-dock-persistent .mc-blank-control,
+  .mc-action-dock-persistent #mc-dock-blank-btn {
+    min-width: 0; max-width: 100%;
+  }
+  .mc-action-dock-persistent #mc-dock-blank-btn {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   .mc-library-body { padding: 6px 10px 10px; }
   .mc-library-body .mc-tb-bar { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; }
   .mc-library-body .mc-tb-tab { flex: 0 0 auto; }

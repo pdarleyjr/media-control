@@ -1004,6 +1004,265 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await context.close();
   });
 
+  test('Phase 6 keyboard navigation, focus, touch sizing, and inspector precedence remain accessible', async ({ browser }) => {
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 838, height: 500 },
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: true,
+    });
+    await waitForCommandCenterVisualReady(page);
+
+    const toggle = page.locator('#mc-library-drawer > [data-library-toggle]');
+    await toggle.focus();
+    const focusStyle = await toggle.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { outlineStyle: style.outlineStyle, outlineWidth: parseFloat(style.outlineWidth) };
+    });
+    expect(focusStyle.outlineStyle).not.toBe('none');
+    expect(focusStyle.outlineWidth).toBeGreaterThanOrEqual(3);
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#mc-library-drawer')).toHaveAttribute('data-open', 'true');
+    await toggle.focus();
+    await page.keyboard.press('Space');
+    await expect(page.locator('#mc-library-drawer')).toHaveAttribute('data-open', 'false');
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#mc-library-drawer')).toHaveAttribute('data-open', 'true');
+
+    const tabs = page.locator('.mc-tb-tab');
+    await expect(tabs).toHaveCount(6);
+    expect(await tabs.allTextContents()).toEqual(['Videos', 'Images', 'Docs', 'Sources', 'Live Feeds', 'Additional Controls']);
+    const tabState = await tabs.evaluateAll((elements) => elements.map((element) => ({
+      height: element.getBoundingClientRect().height,
+      selected: element.getAttribute('aria-selected'),
+      tabIndex: element.tabIndex,
+    })));
+    expect(tabState.every(({ height }) => height >= 48)).toBe(true);
+    expect(tabState.filter(({ selected }) => selected === 'true')).toHaveLength(1);
+    expect(tabState.filter(({ tabIndex }) => tabIndex === 0)).toHaveLength(1);
+
+    await tabs.first().focus();
+    await page.keyboard.press('ArrowRight');
+    await expect(page.locator('.mc-tb-tab[data-tab="images"]')).toBeFocused();
+    await expect(page.locator('.mc-tb-tab[data-tab="images"]')).toHaveAttribute('aria-selected', 'true');
+    await page.keyboard.press('End');
+    await expect(page.locator('.mc-tb-tab[data-tab="additional"]')).toBeFocused();
+    await expect(page.locator('.mc-tb-tab[data-tab="additional"]')).toHaveAttribute('aria-selected', 'true');
+    await page.keyboard.press('Home');
+    await expect(page.locator('.mc-tb-tab[data-tab="videos"]')).toBeFocused();
+    await page.keyboard.press('ArrowLeft');
+    await expect(page.locator('.mc-tb-tab[data-tab="additional"]')).toBeFocused();
+
+    await page.locator('.mc-wall-cell[data-device-id]').first().evaluate((element) => element.click());
+    await expect(page.locator('#mc-inspector')).toBeVisible();
+    await expect(page.locator('#mc-library-drawer')).toHaveAttribute('inert', '');
+    await expect(page.locator('#mc-library-drawer')).toHaveAttribute('aria-hidden', 'true');
+    await page.locator('#mc-inspector [data-insp-close]').click();
+    await expect(page.locator('#mc-inspector')).toBeHidden();
+    await expect(page.locator('#mc-library-drawer')).not.toHaveAttribute('inert', '');
+    await expect(page.locator('#mc-library-drawer')).not.toHaveAttribute('aria-hidden', 'true');
+    await context.close();
+  });
+
+  test('Phase 6 shelf scroll, mouse drag, touch drag, and release-outside safety preserve routing intent', async ({ browser }) => {
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 838, height: 500 },
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: true,
+    });
+    const videos = Array.from({ length: 65 }, (_, index) => ({
+      id: `phase6-video-${index + 1}`,
+      filename: `phase6-training-video-${String(index + 1).padStart(2, '0')}.mp4`,
+      mime_type: 'video/mp4',
+      detected_mime_type: 'video/mp4',
+      created_at: 65 - index,
+    }));
+    await page.route('**/api/content*', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname !== '/api/content') return route.continue();
+      const offset = Number(url.searchParams.get('offset') || 0);
+      const limit = Number(url.searchParams.get('limit') || 60);
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(videos.slice(offset, offset + limit)),
+      });
+    });
+    await page.reload({ waitUntil: 'networkidle' });
+    await waitForCommandCenterVisualReady(page);
+    await page.locator('#mc-library-drawer > [data-library-toggle]').click();
+
+    const scrollBody = page.locator('.mc-library-body');
+    const scrollGeometry = await scrollBody.evaluate((element) => ({
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      touchAction: getComputedStyle(element).touchAction,
+    }));
+    expect(scrollGeometry.scrollHeight).toBeGreaterThan(scrollGeometry.clientHeight);
+    expect(scrollGeometry.touchAction).not.toBe('none');
+    const scrollBox = await scrollBody.boundingBox();
+    await page.mouse.move(scrollBox.x + 20, scrollBox.y + scrollBox.height - 20);
+    await page.mouse.wheel(0, 360);
+    await expect.poll(() => scrollBody.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+
+    const firstTile = page.locator('#mc-toolbox .mc-tile[data-drag-source]').first();
+    const stageTarget = page.locator('.mc-wall-all[data-wall-ids], #mc-stage').first();
+    await firstTile.scrollIntoViewIfNeeded();
+    await page.evaluate(() => {
+      window.__phase6MouseDrop = null;
+      window.__phase6MouseDragSource = '';
+      document.addEventListener('dragstart', (event) => {
+        window.__phase6MouseDragSource = event.dataTransfer?.getData('application/x-mc-source')
+          || event.dataTransfer?.getData('text/plain')
+          || '';
+      }, { once: true });
+      document.addEventListener('drop', (event) => {
+        const target = event.target.closest('.mc-wall-all[data-wall-ids], .mc-wall-cell[data-device-id], #mc-stage');
+        window.__phase6MouseDrop = {
+          target: target?.className || target?.id || '',
+        };
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }, { capture: true, once: true });
+    });
+    await firstTile.dragTo(stageTarget);
+    await expect.poll(() => page.evaluate(() => window.__phase6MouseDrop)).not.toBeNull();
+    expect(await page.evaluate(() => window.__phase6MouseDrop.target)).not.toBe('');
+    expect(JSON.parse(await page.evaluate(() => window.__phase6MouseDragSource))).toEqual({ content_id: 'phase6-video-1' });
+
+    await page.evaluate(() => {
+      window.__phase6TouchDrops = [];
+      document.addEventListener('mc:source-drop', (event) => {
+        window.__phase6TouchDrops.push({
+          detail: event.detail,
+          target: event.target.className || event.target.id || '',
+        });
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }, { capture: true });
+    });
+    const tileBox = await firstTile.boundingBox();
+    const targetBox = await stageTarget.boundingBox();
+    await firstTile.evaluate((element, points) => {
+      const dispatch = (type, x, y) => element.dispatchEvent(new PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 61,
+        pointerType: 'touch',
+        isPrimary: true,
+        buttons: type === 'pointerup' ? 0 : 1,
+        clientX: x,
+        clientY: y,
+      }));
+      dispatch('pointerdown', points.start.x, points.start.y);
+      dispatch('pointermove', points.end.x, points.end.y);
+      dispatch('pointerup', points.end.x, points.end.y);
+    }, {
+      start: { x: tileBox.x + tileBox.width / 2, y: tileBox.y + tileBox.height / 2 },
+      end: { x: targetBox.x + targetBox.width / 2, y: targetBox.y + targetBox.height / 2 },
+    });
+    await expect.poll(() => page.evaluate(() => window.__phase6TouchDrops.length)).toBe(1);
+    expect(await page.evaluate(() => window.__phase6TouchDrops[0].detail.source)).toEqual({ content_id: 'phase6-video-1' });
+
+    await page.evaluate(() => { window.__phase6TouchDrops = []; });
+    await firstTile.evaluate((element, point) => {
+      const dispatch = (type, x, y) => element.dispatchEvent(new PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 62,
+        pointerType: 'touch',
+        isPrimary: true,
+        buttons: type === 'pointerup' ? 0 : 1,
+        clientX: x,
+        clientY: y,
+      }));
+      dispatch('pointerdown', point.x, point.y);
+      dispatch('pointermove', 2, 2);
+      dispatch('pointerup', 2, 2);
+    }, { x: tileBox.x + tileBox.width / 2, y: tileBox.y + tileBox.height / 2 });
+    await page.waitForTimeout(100);
+    expect(await page.evaluate(() => window.__phase6TouchDrops)).toEqual([]);
+    await expect(page.locator('dialog.mc-target-picker[open]')).toHaveCount(0);
+    await context.close();
+  });
+
+  test('Phase 6 Lenovo landscape remains operable with 200 percent text', async ({ browser }) => {
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 838, height: 500 },
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: true,
+    });
+    await waitForCommandCenterVisualReady(page);
+    await page.addStyleTag({ content: `
+      .mc-cc-shell button,
+      .mc-cc-shell select,
+      .mc-cc-shell .mc-library-tab-label,
+      .mc-cc-shell .mc-tb-tab { font-size: 200% !important; line-height: 1.2 !important; }
+    ` });
+    const toggle = page.locator('#mc-library-drawer > [data-library-toggle]');
+    await toggle.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#mc-library-drawer')).toHaveAttribute('data-open', 'true');
+
+    const overflow = await page.evaluate(() => ({
+      clientWidth: document.documentElement.clientWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+    }));
+    expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth + 1);
+    const tabs = page.locator('.mc-tb-tab');
+    await expect(tabs).toHaveCount(6);
+    for (let index = 0; index < 6; index += 1) {
+      const tab = tabs.nth(index);
+      await tab.scrollIntoViewIfNeeded();
+      await expect(tab).toBeVisible();
+      expect(await tab.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(48);
+    }
+
+    const reachability = await page.evaluate(() => {
+      const shelf = document.querySelector('#mc-library-drawer').getBoundingClientRect();
+      const targets = Array.from(document.querySelectorAll('.mc-wall-cell[data-device-id]')).map((element) => {
+        const box = element.getBoundingClientRect();
+        return { top: box.top, bottom: box.bottom, width: box.width, height: box.height };
+      });
+      return { shelfTop: shelf.top, targets };
+    });
+    for (const selector of [
+      '[data-cc-tp="prev"]',
+      '[data-cc-tp="restart"]',
+      '[data-cc-tp="play_pause"]',
+      '[data-cc-tp="next"]',
+      '#mc-dock-blank-btn',
+    ]) {
+      const control = page.locator(selector);
+      await control.scrollIntoViewIfNeeded();
+      await expect(control).toBeVisible();
+      const geometry = await control.evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+        return {
+          box: { left: box.left, right: box.right, top: box.top, bottom: box.bottom, width: box.width },
+          viewport: { width: innerWidth, height: innerHeight },
+          height: box.height,
+          insideViewport: box.left >= -1 && box.right <= innerWidth + 1 && box.top >= -1 && box.bottom <= innerHeight + 1,
+          hit: hit === element || element.contains(hit),
+        };
+      });
+      expect(geometry.height, JSON.stringify({ selector, geometry })).toBeGreaterThanOrEqual(48);
+      expect(geometry.insideViewport, JSON.stringify({ selector, geometry })).toBe(true);
+      expect(geometry.hit, JSON.stringify({ selector, geometry })).toBe(true);
+    }
+    for (const target of reachability.targets) {
+      expect(target.bottom, JSON.stringify({ target, shelfTop: reachability.shelfTop })).toBeLessThanOrEqual(reachability.shelfTop);
+    }
+
+    await toggle.focus();
+    await page.keyboard.press('Space');
+    await expect(page.locator('#mc-library-drawer')).toHaveAttribute('data-open', 'false');
+    await context.close();
+  });
+
   test('Lenovo tablet can add and remove a ready image from the wallpaper menu', async ({ browser }) => {
     const context = await browser.newContext({
       viewport: { width: 838, height: 500 }, hasTouch: true, serviceWorkers: 'block',
