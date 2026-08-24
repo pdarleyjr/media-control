@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - repair/enterprise-media-control
-      - main
       - 'release/**'
   pull_request:
     branches:
