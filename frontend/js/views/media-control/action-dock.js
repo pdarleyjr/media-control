@@ -64,7 +64,7 @@ export function mountActionDock(hostEl, opts = {}) {
       </div>
       <button type="button" class="mc-dock-btn mc-dock-danger is-recording" data-dock="record-toggle" id="mc-dock-record-btn" disabled aria-disabled="true" hidden title="${esc(t('mc.cc.record.status_unavailable'))}">${esc('Stop Recording')}</button>
       <button type="button" class="mc-dock-btn mc-dock-danger" data-dock="stop-live" hidden>${esc(t('mc.cc.dock.stop_live'))}</button>
-      <div class="mc-live-ladder" id="mc-live-ladder" role="status" aria-live="polite">
+      <div class="mc-live-ladder mc-live-ladder-persistent" id="mc-live-ladder" role="status" aria-live="polite">
         <span class="mc-live-ladder-state" data-live-state>—</span>
         <span class="mc-live-ladder-reason" data-live-reason hidden></span>
       </div>
@@ -80,7 +80,7 @@ export function mountActionDock(hostEl, opts = {}) {
         <button type="button" data-composition-layout="camera_main_content_pip">${esc(t('mc.live.composition.camera_main'))}</button>
         <button type="button" class="mc-composition-remove" data-composition-remove>${esc(t('mc.live.composition.remove'))}</button>
       </div>
-      <div class="mc-cam-health-wrap">
+      <div class="mc-cam-health-wrap mc-cam-health-persistent">
         <button type="button" class="mc-cam-health mc-cam-unknown" id="mc-cam-health"
                 title="${esc(t('mc.cc.camera.details'))}" aria-live="polite" aria-expanded="false">
           <span class="mc-cam-health-dot"></span><span class="mc-cam-health-label">${esc(t('mc.cc.camera.loading'))}</span>
@@ -97,6 +97,7 @@ export function mountActionDock(hostEl, opts = {}) {
   const blankStatus = hostEl.querySelector('[data-blank-status]');
   const ladderEl = hostEl.querySelector('#mc-live-ladder');
   const compositionEl = hostEl.querySelector('[data-composition-control]');
+  let lastCameraEdge = null;
 
   function currentSecondaryHost() {
     return secondaryHost?.isConnected ? secondaryHost : null;
@@ -114,6 +115,17 @@ export function mountActionDock(hostEl, opts = {}) {
           <span class="mc-dock-add-text">${esc(t('mc.cc.dock.add_display'))}</span>
           <span class="mc-dock-add-plus" aria-hidden="true">+</span>
         </button>
+        <div class="mc-live-ladder mc-live-ladder-secondary" role="status" aria-live="polite">
+          <span class="mc-live-ladder-state" data-live-state>—</span>
+          <span class="mc-live-ladder-reason" data-live-reason hidden></span>
+        </div>
+        <div class="mc-cam-health-wrap">
+          <button type="button" class="mc-cam-health mc-cam-unknown" data-camera-health
+                  title="${esc(t('mc.cc.camera.details'))}" aria-live="polite" aria-expanded="false">
+            <span class="mc-cam-health-dot"></span><span class="mc-cam-health-label">${esc(t('mc.cc.camera.loading'))}</span>
+          </button>
+          <div class="mc-cam-health-detail" data-camera-health-detail role="status" hidden></div>
+        </div>
       </div>`;
   }
 
@@ -122,7 +134,9 @@ export function mountActionDock(hostEl, opts = {}) {
     secondaryHost = nextHost;
     secondaryHost.innerHTML = secondaryMarkup();
     wireDockButtons(secondaryHost);
+    wireCameraHealth(secondaryHost);
     repaintLive();
+    repaintCamHealth(lastCameraEdge);
   }
 
   function repaintBlank() {
@@ -151,20 +165,22 @@ export function mountActionDock(hostEl, opts = {}) {
 
   function paintLadder(ladder) {
     lastLadder = ladder || lastLadder;
-    if (!ladderEl) return;
-    const st = ladderEl.querySelector('[data-live-state]');
-    const rs = ladderEl.querySelector('[data-live-reason]');
-    if (st) st.textContent = lastLadder.state || LIVE_LADDER.UNKNOWN;
-    if (rs) {
-      if (lastLadder.reason) {
-        rs.hidden = false;
-        rs.textContent = lastLadder.reason;
-      } else {
-        rs.hidden = true;
-        rs.textContent = '';
+    const ladderEls = [ladderEl, ...Array.from(currentSecondaryHost()?.querySelectorAll('.mc-live-ladder') || [])].filter(Boolean);
+    ladderEls.forEach((element) => {
+      const st = element.querySelector('[data-live-state]');
+      const rs = element.querySelector('[data-live-reason]');
+      if (st) st.textContent = lastLadder.state || LIVE_LADDER.UNKNOWN;
+      if (rs) {
+        if (lastLadder.reason) {
+          rs.hidden = false;
+          rs.textContent = lastLadder.reason;
+        } else {
+          rs.hidden = true;
+          rs.textContent = '';
+        }
       }
-    }
-    ladderEl.dataset.state = (lastLadder.state || '').toLowerCase().replace(/\s+/g, '-');
+      element.dataset.state = (lastLadder.state || '').toLowerCase().replace(/\s+/g, '-');
+    });
   }
 
   function repaintLive() {
@@ -224,42 +240,47 @@ export function mountActionDock(hostEl, opts = {}) {
   }
 
   function repaintCamHealth(data) {
-    const badge = hostEl.querySelector('#mc-cam-health');
-    const detail = hostEl.querySelector('#mc-cam-health-detail');
-    if (!badge) return;
-    const lbl = badge.querySelector('.mc-cam-health-label');
-    if (!data) {
-      badge.className = 'mc-cam-health mc-cam-unknown';
-      if (lbl) lbl.textContent = t('mc.cc.camera.unavailable');
-      if (detail) detail.innerHTML = `<span>${esc(t('mc.cc.camera.unavailable'))}</span>`;
-      return;
-    }
-    const cams = [
-      { id: 'anpviz', name: t('mc.live_source.anpviz'), online: !!data.anpviz_stream },
-    ];
-    const up = cams.filter((cam) => cam.online).length;
-    const active = data.active_source === 'anpviz' ? 'anpviz' : null;
-    const cls = up === cams.length ? 'mc-cam-green' : (up > 0 ? 'mc-cam-yellow' : 'mc-cam-red');
-    const txt = active && cams.some((cam) => cam.id === active && cam.online)
-      ? t('mc.cc.camera.active', { count: up })
-      : t('mc.cc.camera.online', { count: up });
-    badge.className = 'mc-cam-health ' + cls;
-    if (lbl) lbl.textContent = txt;
-    if (detail) {
-      const audioMode = data.audio_mode || data.effective_audio_mode || null;
-      const audioLine = audioMode
-        ? `<span class="mc-cam-detail-row"><b>Audio</b><em>${esc(String(audioMode))}</em></span>`
-        : '';
-      const publisherLine = `<span class="mc-cam-detail-row"><b>Publisher</b><em>${esc(String(data.publisher_mode || 'direct_camera'))}</em></span>`;
-      const microphoneLine = `<span class="mc-cam-detail-row"><b>${esc(t('mc.cc.camera.microphone'))}</b><em>${esc(data.microphone_connected ? t('mc.cc.camera.connected') : t('mc.cc.camera.disconnected'))}</em></span>`;
-      detail.innerHTML = cams.map((cam) => {
-        const selected = active === cam.id;
-        const state = selected && cam.online         
-          ? t('mc.cc.camera.selected')
-          : (cam.online ? t('mc.cc.camera.ready') : t('mc.cc.camera.offline'));
-        return `<span class="mc-cam-detail-row${selected ? ' is-active' : ''}"><b>${esc(cam.name)}</b><em>${esc(state)}</em></span>`;
-      }).join('') + microphoneLine + audioLine + publisherLine;
-    }
+    lastCameraEdge = data || null;
+    const badges = [
+      hostEl.querySelector('#mc-cam-health'),
+      ...Array.from(currentSecondaryHost()?.querySelectorAll('[data-camera-health]') || []),
+    ].filter(Boolean);
+    badges.forEach((badge) => {
+      const detail = badge.closest('.mc-cam-health-wrap')?.querySelector('.mc-cam-health-detail');
+      const lbl = badge.querySelector('.mc-cam-health-label');
+      if (!data) {
+        badge.className = 'mc-cam-health mc-cam-unknown';
+        if (lbl) lbl.textContent = t('mc.cc.camera.unavailable');
+        if (detail) detail.innerHTML = `<span>${esc(t('mc.cc.camera.unavailable'))}</span>`;
+        return;
+      }
+      const cams = [
+        { id: 'anpviz', name: t('mc.live_source.anpviz'), online: !!data.anpviz_stream },
+      ];
+      const up = cams.filter((cam) => cam.online).length;
+      const active = data.active_source === 'anpviz' ? 'anpviz' : null;
+      const cls = up === cams.length ? 'mc-cam-green' : (up > 0 ? 'mc-cam-yellow' : 'mc-cam-red');
+      const txt = active && cams.some((cam) => cam.id === active && cam.online)
+        ? t('mc.cc.camera.active', { count: up })
+        : t('mc.cc.camera.online', { count: up });
+      badge.className = 'mc-cam-health ' + cls;
+      if (lbl) lbl.textContent = txt;
+      if (detail) {
+        const audioMode = data.audio_mode || data.effective_audio_mode || null;
+        const audioLine = audioMode
+          ? `<span class="mc-cam-detail-row"><b>Audio</b><em>${esc(String(audioMode))}</em></span>`
+          : '';
+        const publisherLine = `<span class="mc-cam-detail-row"><b>Publisher</b><em>${esc(String(data.publisher_mode || 'direct_camera'))}</em></span>`;
+        const microphoneLine = `<span class="mc-cam-detail-row"><b>${esc(t('mc.cc.camera.microphone'))}</b><em>${esc(data.microphone_connected ? t('mc.cc.camera.connected') : t('mc.cc.camera.disconnected'))}</em></span>`;
+        detail.innerHTML = cams.map((cam) => {
+          const selected = active === cam.id;
+          const state = selected && cam.online
+            ? t('mc.cc.camera.selected')
+            : (cam.online ? t('mc.cc.camera.ready') : t('mc.cc.camera.offline'));
+          return `<span class="mc-cam-detail-row${selected ? ' is-active' : ''}"><b>${esc(cam.name)}</b><em>${esc(state)}</em></span>`;
+        }).join('') + microphoneLine + audioLine + publisherLine;
+      }
+    });
   }
 
   let syncingLive = false;
@@ -322,12 +343,16 @@ export function mountActionDock(hostEl, opts = {}) {
     repaintCamHealth(cameraEdge);
   }
 
-  const cameraBadge = hostEl.querySelector('#mc-cam-health');
-  const cameraDetail = hostEl.querySelector('#mc-cam-health-detail');
-  if (cameraBadge && cameraDetail) {
-    cameraBadge.addEventListener('click', () => {
-      cameraDetail.hidden = !cameraDetail.hidden;
-      cameraBadge.setAttribute('aria-expanded', cameraDetail.hidden ? 'false' : 'true');
+  function wireCameraHealth(root) {
+    root.querySelectorAll('#mc-cam-health, [data-camera-health]').forEach((cameraBadge) => {
+      if (cameraBadge.dataset.mcCameraHealthWired === 'true') return;
+      const cameraDetail = cameraBadge.closest('.mc-cam-health-wrap')?.querySelector('.mc-cam-health-detail');
+      if (!cameraDetail) return;
+      cameraBadge.dataset.mcCameraHealthWired = 'true';
+      cameraBadge.addEventListener('click', () => {
+        cameraDetail.hidden = !cameraDetail.hidden;
+        cameraBadge.setAttribute('aria-expanded', cameraDetail.hidden ? 'false' : 'true');
+      });
     });
   }
 
@@ -536,6 +561,7 @@ export function mountActionDock(hostEl, opts = {}) {
   }
 
   wireDockButtons(hostEl);
+  wireCameraHealth(hostEl);
 
   hostEl.querySelectorAll('[data-composition-layout]').forEach((button) => {
     button.addEventListener('click', () => onCompositionLayout(button.dataset.compositionLayout));

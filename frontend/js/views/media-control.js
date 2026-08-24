@@ -1243,19 +1243,8 @@ function paintToolbox() {
     onAfterSend: refreshAfterSend,
     onRouteSource: routeSourceWithPicker,
     onRouteNextcloud: routeNextcloudWithPicker,
-    onBeforeToolboxReplace: parkSecondaryControls,
-    onMountAdditionalControls: (host) => {
-      dockApi?.attachSecondaryHost(host);
-      const secondaryRow = document.querySelector('.mc-cc-sub-row');
-      if (secondaryRow) host.append(secondaryRow);
-    },
+    onMountAdditionalControls: (host) => dockApi?.attachSecondaryHost(host),
   });
-}
-
-function parkSecondaryControls() {
-  const parking = document.getElementById('mc-secondary-controls-parking');
-  const secondaryRow = document.querySelector('.mc-cc-sub-row');
-  if (parking && secondaryRow && secondaryRow.parentElement !== parking) parking.append(secondaryRow);
 }
 
 // The library drawer sits BELOW the inspector (z-index 30 vs 40) and is fully
@@ -2857,8 +2846,8 @@ function wireCommandRail(actions = {}) {
 export async function render({ signal, routeHash = '#/control' } = {}) {
   const app = document.getElementById('app');
   // Command Center shell: a single appliance-style screen — fixed header,
-  // left icon rail + center workspace (canvas > playback > span/split+saver >
-  // action dock) + right Content Library tab. NO long scrolling dashboard:
+  // full-width center workspace (canvas > playback/safety > span/split+saver)
+  // and an attached bottom Content Library shelf. NO long scrolling dashboard:
   // the old Room Presets / Recent / Room Setup are absent from the default page.
   app.innerHTML = `
     <div class="mc-cc-shell">
@@ -2879,23 +2868,6 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
       </header>
 
       <div class="mc-cc-body">
-        <nav class="mc-cc-rail" aria-label="${esc(t('mc.cc.rail.label'))}">
-          <button type="button" class="mc-cc-rail-btn is-active" data-mc-rail="command" title="${esc(t('mc.cc.rail.command'))}" aria-label="${esc(t('mc.cc.rail.command'))}">${ICON_COMMAND}</button>
-          <button type="button" class="mc-cc-rail-btn" data-mc-rail="displays" title="${esc(t('mc.cc.rail.displays'))}" aria-label="${esc(t('mc.cc.rail.displays'))}">${ICON_DISPLAYS}</button>
-          <button type="button" class="mc-cc-rail-btn" data-mc-rail="whiteboard" title="${esc(t('mc.cc.rail.whiteboard'))}" aria-label="${esc(t('mc.cc.rail.whiteboard'))}">${ICON_WHITEBOARD}</button>
-          <button type="button" class="mc-cc-rail-btn" data-mc-rail="media" title="${esc(t('mc.cc.rail.media'))}" aria-label="${esc(t('mc.cc.rail.media'))}">${ICON_MEDIA}</button>
-          <button type="button" class="mc-cc-rail-btn mc-cc-upload-btn" data-mc-rail="upload" title="Upload Media" aria-label="Upload Media">${ICON_UPLOAD}<span>Upload</span></button>
-          <button type="button" class="mc-cc-rail-btn" data-mc-rail="cameras" title="Cameras" aria-label="Cameras">${ICON_DISPLAYS}</button>
-          <button type="button" class="mc-cc-rail-btn" data-mc-rail="multiview" title="Multiview" aria-label="Multiview">${ICON_COMMAND}</button>
-          <button type="button" class="mc-cc-rail-btn" data-mc-rail="share" title="Share My Screen" aria-label="Share My Screen">${ICON_DOWNLOADS}</button>
-          <button type="button" class="mc-cc-rail-btn" data-mc-rail="schedules" title="Schedules" aria-label="Schedules">${ICON_LOGS}</button>
-          <button type="button" class="mc-cc-rail-btn" data-mc-rail="downloads" title="${esc(t('mc.cc.rail.downloads'))}" aria-label="${esc(t('mc.cc.rail.downloads'))}">${ICON_DOWNLOADS}</button>
-          <span class="mc-cc-rail-spacer"></span>
-          <button type="button" class="mc-cc-rail-btn" data-mc-rail="admin" title="${esc(t('mc.cc.rail.admin'))}" aria-label="${esc(t('mc.cc.rail.admin'))}">${ICON_ADMIN}</button>
-          <button type="button" class="mc-cc-rail-btn" data-mc-rail="logs" title="${esc(t('mc.cc.rail.logs'))}" aria-label="${esc(t('mc.cc.rail.logs'))}">${ICON_LOGS}</button>
-          <button type="button" class="mc-cc-rail-btn" data-mc-rail="settings" title="${esc(t('mc.cc.rail.settings'))}" aria-label="${esc(t('mc.cc.rail.settings'))}">${ICON_SETTINGS}</button>
-        </nav>
-
         <main class="mc-cc-main">
           <section class="mc-cc-canvas-area">
             <div id="mc-cc-chips" class="mc-cc-chips" aria-live="polite"></div>
@@ -2909,11 +2881,9 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
               <div id="mc-transport-host" class="mc-transport-row-host"></div>
               <div id="mc-action-dock-host" class="mc-action-dock-host"></div>
             </div>
-            <div id="mc-secondary-controls-parking" class="mc-secondary-controls-parking" aria-hidden="true">
-              <div class="mc-cc-sub-row">
-                <div id="mc-span-split-host" class="mc-span-split-host"></div>
-                <div id="mc-screensaver-host" class="mc-screensaver-row-host"></div>
-              </div>
+            <div class="mc-cc-sub-row" aria-label="Wall layout and screensaver controls">
+              <div id="mc-span-split-host" class="mc-span-split-host"></div>
+              <div id="mc-screensaver-host" class="mc-screensaver-row-host"></div>
             </div>
           </section>
         </main>
@@ -2922,8 +2892,8 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
           <button type="button" class="mc-library-tab mc-cc-lib-tab" data-library-toggle
                   aria-expanded="false" aria-controls="mc-library-panel"
                   title="${esc(t('mc.library.toggle'))}">
-            <span id="mc-library-title" class="mc-library-tab-label">${esc(t('mc.library.title'))}</span>
             <span class="mc-library-tab-ico" aria-hidden="true">${ICON_CHEVRON}</span>
+            <span id="mc-library-title" class="mc-library-tab-label">${esc(t('mc.library.title'))}</span>
           </button>
           <div id="mc-library-panel" class="mc-library-inner">
             <div class="mc-library-body">
@@ -2959,12 +2929,6 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
     libDrawer.hidden = false;
     libDrawer.classList.remove('is-open');
   }
-
-  // Wire the left icon rail. These buttons previously had NO click handlers, so
-  // the whole rail looked dead (operator feedback: "none of the sidebar items
-  // are clickable"). Each now routes to its surface. The Admin item is already a
-  // real <a href="#/walls"> and the active "command" item is the page itself.
-  wireCommandRail({ onMultiview: toggleMultiview, onShare: shareScreenActive });
 
   // Re-hydrate the last-controlled selection, learn which devices are wall-owned,
   // and load the live display state — then prune any stale/wall-member ids.

@@ -215,29 +215,20 @@ test('a split-wall tile selects only that member for transport controls', () => 
   assert.match(view, /onSelect:\s*selectStageDisplayTarget/);
 });
 
-test('podium rail surfaces remain inside the persistent command center', () => {
+test('the Command Center removes only its duplicate rail and keeps primary actions in the attached shelf', () => {
   const view = read('frontend/js/views/media-control.js');
-  const railStart = view.indexOf('function wireCommandRail(');
-  const railEnd = view.indexOf('\nexport async function render(', railStart);
-  const rail = view.slice(railStart, railEnd);
+  const toolbox = read('frontend/js/views/media-control/toolbox.js');
+  const dock = read('frontend/js/views/media-control/action-dock.js');
 
-  assert.match(view, /import \* as downloadsView from '.\/downloads\.js'/);
-  assert.match(view, /import \* as auditLogView from '.\/audit-log\.js'/);
-  assert.match(view, /import \* as settingsView from '.\/settings\.js'/);
-  assert.match(view, /data-mc-rail="admin"/);
-  assert.match(rail, /openViewModal\(\{ title: 'Downloads', module: downloadsView \}\)/);
-  assert.match(rail, /openViewModal\(\{ title: 'System Logs', module: auditLogView \}\)/);
-  assert.match(rail, /openViewModal\(\{ title: 'Settings', module: settingsView \}\)/);
-  assert.match(rail, /case 'cameras':[\s\S]*?openLibraryTab\('sources'\)/);
-  assert.match(rail, /case 'multiview':[\s\S]*?actions\.onMultiview/);
-  assert.match(rail, /case 'share':[\s\S]*?actions\.onShare/);
-  assert.match(rail, /case 'schedules':[\s\S]*?schedulesView/);
-  assert.match(view, /data-mc-rail="upload"/);
-  assert.match(rail, /case 'upload':[\s\S]*?openUploadMediaModal\(\)/);
-  assert.match(view, /data-quick-upload-input/);
-  assert.doesNotMatch(rail, /window\.location\.hash = '#\/(?:downloads|audit|settings|)'/);
-  assert.match(read('frontend/css/media-control.css'), /\.mc-target-choice\s*\{[\s\S]*?min-height:\s*58px/);
-  assert.match(read('frontend/css/media-control.css'), /\.mc-cc-rail\s*\{[\s\S]*?overflow-y:\s*auto/);
+  assert.doesNotMatch(view, /<nav class="mc-cc-rail"/);
+  assert.doesNotMatch(view, /wireCommandRail\(\{/);
+  assert.match(toolbox, /<div class="mc-tb-additional-actions"><\/div>/);
+  assert.match(dock, /data-dock="multiview"/);
+  assert.match(dock, /data-dock="whiteboard"/);
+  assert.match(dock, /data-dock="share"/);
+  assert.match(dock, /id="mc-dock-start-record-btn"/);
+  assert.match(dock, /data-dock="start-live"/);
+  assert.match(view, /routeHash\.includes\('panel=cameras'\)\) openLibraryTab\('sources'\)/);
 });
 
 test('a hybrid wall preset keeps the complete wall visible and selects a control region', () => {

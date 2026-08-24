@@ -57,3 +57,25 @@ test('Command Center shelf cards are large visual tiles without changing route p
   assert.match(toolbox, /rememberFailedThumbnailUrl\(img\.dataset\.thumbUrl/);
   assert.match(toolbox, /const PAGE = 60/);
 });
+
+test('Command Center composition follows the approved shelf mockup without a duplicate internal rail', () => {
+  const view = read('frontend/js/views/media-control.js');
+  const dock = read('frontend/js/views/media-control/action-dock.js');
+  const toolbox = read('frontend/js/views/media-control/toolbox.js');
+  const css = read('frontend/css/media-control.css');
+
+  assert.doesNotMatch(view, /<nav class="mc-cc-rail"/);
+  assert.doesNotMatch(view, /mc-secondary-controls-parking/);
+  assert.match(view, /class="mc-persistent-controls"[\s\S]*?id="mc-action-dock-host"[\s\S]*?class="mc-cc-sub-row"[\s\S]*?id="mc-span-split-host"[\s\S]*?id="mc-screensaver-host"/);
+  assert.doesNotMatch(toolbox, /categorySection\('Actions'/);
+  assert.match(toolbox, /class="mc-tb-additional-actions"/);
+  assert.match(dock, /mc-action-dock-secondary[\s\S]*?data-dock="multiview"[\s\S]*?data-dock="whiteboard"[\s\S]*?data-dock="share"[\s\S]*?id="mc-dock-start-record-btn"[\s\S]*?data-dock="start-live"[\s\S]*?data-camera-health/);
+  assert.match(css, /body\.cc-fullscreen:not\(\.console-mode\) \.content\s*\{[\s\S]*?margin-left:\s*var\(--sidebar-current-width\)\s*!important/);
+  assert.doesNotMatch(css, /body\.cc-fullscreen \.sidebar,[\s\S]*?display:\s*none\s*!important/);
+  assert.match(css, /\.mc-cc-body \.mc-library-drawer \.mc-library-tab\s*\{[\s\S]*?width:\s*min\(/);
+  assert.match(css, /\.mc-library-body \.mc-tb-bar\s*\{[\s\S]*?justify-content:\s*flex-start/);
+  assert.match(css, /\.mc-library-body \.mc-tb-tab\.active\s*\{[\s\S]*?background:\s*var\(--mc-surface/);
+  assert.match(css, /\.mc-action-dock-persistent \.mc-cam-health-wrap\s*\{\s*display:\s*none/);
+  assert.match(css, /--mc-library-layout-reserve-h:\s*clamp\(220px, 27dvh, 260px\)/);
+  assert.match(css, /@media \(min-width: 1100px\) and \(min-height: 760px\)[\s\S]*?--mc-library-expanded-h:\s*clamp\(340px, 40dvh, 360px\)/);
+});

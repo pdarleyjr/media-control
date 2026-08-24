@@ -634,10 +634,10 @@ async function renderSourcesCategory(container, options) {
 }
 
 async function renderAdditionalCategory(container, options) {
-  container.innerHTML = categorySection('Actions', 'mc-tb-additional-actions')
+  container.innerHTML = '<div class="mc-tb-additional-actions"></div>'
     + categorySection('Playlists', 'mc-tb-additional-playlists')
     + categorySection('Scenes', 'mc-tb-additional-scenes');
-  const actionsHost = container.querySelector('.mc-tb-additional-actions .mc-tb-category-host');
+  const actionsHost = container.querySelector('.mc-tb-additional-actions');
   if (typeof options.onMountAdditionalControls === 'function') {
     options.onMountAdditionalControls(actionsHost);
   }
