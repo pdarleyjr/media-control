@@ -1,10 +1,7 @@
-// toolbox.js — the segmented source-dock below the stage in the unified Media
-// Control dashboard. Six SOURCE tabs: Media · Playlists · Presentations ·
-// YouTube/URL · Scenes · Nextcloud. (Region "templates" are a per-display
-// layout, not a source to send, so they live in the inspector's "Partition into
-// regions" flow — not as a toolbox tab.) Playlists fold in the retired
-// #/playlists nav link: each playlist is a drag-or-tap source, and a "Manage"
-// link opens the full builder.
+// toolbox.js — the six-category Content Library shelf in the unified Media
+// Control Command Center. The categories are operator concepts, not storage
+// types: Videos · Images · Docs · Sources · Live Feeds · Additional Controls.
+// The separate full Media Library keeps its administrative folder/type surface.
 //
 // Clicking a tile opens the Command Center routing picker. Dropping a tile on a
 // stage card still calls sendToDisplays() for the explicit single-card target.
@@ -19,21 +16,71 @@ import { t, tn } from '../../i18n.js';
 import { api } from '../../api.js';
 import { sendToDisplays, sentToast, trackBroadcastDelivery } from './send.js';
 import { showToast } from '../../components/toast.js';
-import { renderCameraFeedsTab } from './camera-feeds.js';
+import { renderLiveFeedsTab, renderManagedSourcesTab } from './camera-feeds.js';
 
-// Active tab id (persisted only for the lifetime of the rendered toolbox).
-let activeTab = 'media';
+let activeTab = 'videos';
 
-// ---- tab definitions (labels resolved through t() at render time) ----
-const TABS = [
-  { id: 'media',         key: 'mc.tab.media' },
-  { id: 'camerafeeds',   key: 'mc.tab.camerafeeds' },
-  { id: 'playlists',     key: 'mc.tab.playlists' },
-  { id: 'presentations', key: 'mc.tab.presentations' },
-  { id: 'youtube',       key: 'mc.tab.youtube' },
-  { id: 'scenes',        key: 'mc.tab.scenes' },
-  { id: 'nextcloud',     key: 'mc.tab.nextcloud' },
-];
+const TABS = Object.freeze([
+  { id: 'videos',     label: 'Videos' },
+  { id: 'images',     label: 'Images' },
+  { id: 'docs',       label: 'Docs' },
+  { id: 'sources',    label: 'Sources' },
+  { id: 'livefeeds',  label: 'Live Feeds' },
+  { id: 'additional', label: 'Additional Controls' },
+]);
+
+const TAB_ALIASES = Object.freeze({
+  media: 'videos',
+  camerafeeds: 'sources',
+  presentations: 'docs',
+  youtube: 'sources',
+  nextcloud: 'sources',
+  playlists: 'additional',
+  scenes: 'additional',
+});
+
+export function normalizeToolboxTab(tabId) {
+  const requested = String(tabId || '').toLowerCase();
+  const normalized = TAB_ALIASES[requested] || requested;
+  return TABS.some((tab) => tab.id === normalized) ? normalized : 'videos';
+}
+
+// This mirrors the supported document renderer contract: PDF, Microsoft Office,
+// OpenXML Office, and OpenDocument only. It deliberately does not admit every
+// application/* row.
+const SUPPORTED_DOCUMENT_MIMES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.ms-excel',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.oasis.opendocument.text',
+  'application/vnd.oasis.opendocument.spreadsheet',
+  'application/vnd.oasis.opendocument.presentation',
+]);
+
+function trustedMime(item) {
+  return String(
+    item?.media?.detected_mime_type
+    || item?.detected_mime_type
+    || item?.mime_type
+    || ''
+  ).toLowerCase();
+}
+
+function contentCategory(item) {
+  const mime = trustedMime(item);
+  if (mime.startsWith('video/')) return 'videos';
+  if (mime.startsWith('image/')) return 'images';
+  if (SUPPORTED_DOCUMENT_MIMES.has(mime)) return 'docs';
+  // Standalone audio is accepted by the full Media Library but the normal
+  // display player has no standalone audio routing/render path. Keep it out of
+  // Command Center rather than presenting a route action that cannot complete.
+  if (mime.startsWith('audio/')) return null;
+  return null;
+}
 
 // Playlist tile glyph (stroke icon, matches the dashboard's SVG vocabulary).
 const ICON_PLAYLIST = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><circle cx="4" cy="6" r="1"></circle><circle cx="4" cy="12" r="1"></circle><circle cx="4" cy="18" r="1"></circle></svg>';
@@ -66,7 +113,7 @@ function errorState(msg) {
 // document never shows the generic image placeholder (or, in the library, a
 // broken <img> pointed at raw document bytes).
 function mediaTileGlyph(item) {
-  const mt = item.mime_type || '';
+  const mt = trustedMime(item);
   let glyph = '🖼';
   if (item.remote_url) glyph = '🔗';
   else if (/pdf/.test(mt)) glyph = '📕';
@@ -137,23 +184,16 @@ async function downloadContentItem(id, name) {
   }
 }
 
-const MEDIA_TYPES = [
-  { id: '',            key: 'mc.media.all' },
-  { id: 'video',       key: 'mc.media.videos' },
-  { id: 'image',       key: 'mc.media.images' },
-  { id: 'application', key: 'mc.media.documents' },
-];
 const MEDIA_SORTS = [
   { id: 'newest', key: 'mc.media.sort_newest' },
   { id: 'name',   key: 'mc.media.sort_name' },
   { id: 'type',   key: 'mc.media.sort_type' },
 ];
 
-async function renderMediaTab(container, { selectedIds, onAfterSend, onRouteSource }) {
+async function renderMediaCategoryTab(container, { selectedIds, onAfterSend, onRouteSource }, category, context = {}) {
   const PAGE = 60;
   const state = {
-    folderId: undefined,
-    type: '',
+    folder: category === 'images' && context.folder ? String(context.folder) : undefined,
     search: '',
     sort: 'newest',
     items: [],
@@ -166,12 +206,9 @@ async function renderMediaTab(container, { selectedIds, onAfterSend, onRouteSour
 
   container.innerHTML = `
     <div class="mc-tb-media-toolbar">
-      <div class="mc-tb-folders" role="group" aria-label="${esc(t('mc.media.folders'))}" id="mc-media-folders"></div>
+      <div class="mc-tb-context-filter-host"></div>
       <div class="mc-tb-media-controls">
         <input class="mc-tb-search" id="mc-media-search" type="search" placeholder="${esc(t('mc.media.search_placeholder'))}" autocomplete="off">
-        <select class="mc-tb-type" id="mc-media-type" aria-label="${esc(t('mc.media.type_label'))}">
-          ${MEDIA_TYPES.map(o => `<option value="${esc(o.id)}"${o.id === state.type ? ' selected' : ''}>${esc(t(o.key))}</option>`).join('')}
-        </select>
         <select class="mc-tb-sort" id="mc-media-sort" aria-label="${esc(t('mc.media.sort_label'))}">
           ${MEDIA_SORTS.map(o => `<option value="${esc(o.id)}"${o.id === state.sort ? ' selected' : ''}>${esc(t(o.key))}</option>`).join('')}
         </select>
@@ -183,29 +220,24 @@ async function renderMediaTab(container, { selectedIds, onAfterSend, onRouteSour
 
   const grid = container.querySelector('#mc-media-grid');
   const statusEl = container.querySelector('#mc-media-status');
-  const foldersEl = container.querySelector('#mc-media-folders');
+  const contextFilterHost = container.querySelector('.mc-tb-context-filter-host');
   const loadmoreWrap = container.querySelector('#mc-media-loadmore-wrap');
 
-  // Real folder list from the content_folders table (task §12). Falls back to
-  // inferring from item.folder strings only if the folders API is unavailable.
-  let folders = [];
-  try { folders = await api.getFolders() || []; } catch { folders = []; }
-
-  function renderFolderChips() {
-    const chips = [`<button type="button" class="mc-tb-folder${state.folderId === undefined ? ' is-active' : ''}" data-folder="">${esc(t('mc.media.all'))}</button>`];
-    for (const f of folders) {
-      const fid = f.id || f.folder_id;
-      const active = state.folderId === fid ? ' is-active' : '';
-      chips.push(`<button type="button" class="mc-tb-folder${active}" data-folder="${esc(fid)}" data-folder-name="${esc(f.name)}">${esc(f.name)}</button>`);
+  function renderContextFilter() {
+    if (!state.folder) {
+      contextFilterHost.replaceChildren();
+      return;
     }
-    foldersEl.innerHTML = chips.join('');
-    foldersEl.style.display = folders.length ? '' : 'none';
-    foldersEl.querySelectorAll('.mc-tb-folder[data-folder]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        state.folderId = btn.dataset.folder ? btn.dataset.folder : undefined;
-        renderFolderChips();
-        loadPage({ offset: 0, append: false });
-      });
+    contextFilterHost.innerHTML = `
+      <div class="mc-tb-context-filter" data-context-filter="${esc(state.folder)}" role="status">
+        <span>Images in <strong>${esc(state.folder)}</strong></span>
+        <button type="button" data-clear-context-filter aria-label="Clear ${esc(state.folder)} image filter">Clear filter</button>
+      </div>`;
+    contextFilterHost.querySelector('[data-clear-context-filter]').addEventListener('click', () => {
+      state.folder = undefined;
+      delete context.folder;
+      renderContextFilter();
+      loadPage({ offset: 0, append: false });
     });
   }
 
@@ -213,7 +245,7 @@ async function renderMediaTab(container, { selectedIds, onAfterSend, onRouteSour
     const s = state.sort;
     const arr = items.slice();
     if (s === 'name') arr.sort((a, b) => String(a.filename || a.name || '').localeCompare(String(b.filename || b.name || '')));
-    else if (s === 'type') arr.sort((a, b) => String(a.mime_type || '').localeCompare(String(b.mime_type || '')));
+    else if (s === 'type') arr.sort((a, b) => trustedMime(a).localeCompare(trustedMime(b)));
     else arr.sort((a, b) => Number(b.created_at || 0) - Number(a.created_at || 0));
     return arr;
   }
@@ -278,15 +310,14 @@ async function renderMediaTab(container, { selectedIds, onAfterSend, onRouteSour
     let succeeded = false;
     try {
       const result = await api.getGovernedContent({
-        folderId: state.folderId,
-        type: state.type || undefined,
+        folder: state.folder,
         search: state.search || undefined,
         limit: PAGE,
         offset,
       }, { signal: controller.signal });
       if (requestGeneration !== state.requestGeneration) return;
       const page = Array.isArray(result) ? result : (result && Array.isArray(result.content) ? result.content : []);
-      const sorted = sortItems(page);
+      const sorted = sortItems(page.filter((item) => contentCategory(item) === category));
       state.items = append ? state.items.concat(sorted) : sorted;
       state.offset = offset;
       state.hasMore = page.length === PAGE;
@@ -313,7 +344,7 @@ async function renderMediaTab(container, { selectedIds, onAfterSend, onRouteSour
     }
   }
 
-  renderFolderChips();
+  renderContextFilter();
 
   // Debounced search + filter/sort change resets to page 1.
   let searchTimer = null;
@@ -323,9 +354,6 @@ async function renderMediaTab(container, { selectedIds, onAfterSend, onRouteSour
       state.search = (e.target.value || '').trim();
       loadPage({ offset: 0, append: false });
     }, 300);
-  });
-  container.querySelector('#mc-media-type').addEventListener('change', (e) => {
-    state.type = e.target.value; loadPage({ offset: 0, append: false });
   });
   container.querySelector('#mc-media-sort').addEventListener('change', (e) => {
     state.sort = e.target.value; state.items = sortItems(state.items); renderGrid();
@@ -428,8 +456,8 @@ function renderYouTubeTab(container, { selectedIds, onAfterSend, onRouteSource }
 // Lists the signed-in member's own NC files via api.files.list(path), with
 // folder navigation. image/* and video/* rows get a "Broadcast" tile button;
 // clicking calls api.files.broadcast using the shared confirm-all 409 gate.
-// Presentations (deck player path) are intentionally NOT shown here — use the
-// Presentations tab. The email comes from the JWT (server-enforced); the client
+// Presentations (deck player path) are intentionally NOT shown here — use Docs.
+// The email comes from the JWT (server-enforced); the client
 // never sends it.
 async function renderNextcloudTab(container, { selectedIds, onAfterSend, onRouteNextcloud }, path = '') {
   container.innerHTML = loadingState(t('mc.tb.loading_nextcloud'));
@@ -574,6 +602,49 @@ async function renderScenesTab(container, { onAfterSend }) {
       }
     });
   });
+}
+
+function categorySection(title, className) {
+  return `<section class="mc-tb-category-section ${className}"><h3>${esc(title)}</h3><div class="mc-tb-category-host"></div></section>`;
+}
+
+async function renderDocsCategory(container, options, context) {
+  container.innerHTML = categorySection('Files', 'mc-tb-doc-files')
+    + categorySection('Media Control presentations', 'mc-tb-doc-presentations');
+  const filesHost = container.querySelector('.mc-tb-doc-files .mc-tb-category-host');
+  const presentationsHost = container.querySelector('.mc-tb-doc-presentations .mc-tb-category-host');
+  await Promise.all([
+    renderMediaCategoryTab(filesHost, options, 'docs', context),
+    renderPresentationsTab(presentationsHost, options),
+  ]);
+}
+
+async function renderSourcesCategory(container, options) {
+  container.innerHTML = categorySection('Managed sources', 'mc-tb-managed-sources')
+    + categorySection('YouTube or URL', 'mc-tb-url-source')
+    + categorySection('Nextcloud', 'mc-tb-nextcloud-source');
+  const managedHost = container.querySelector('.mc-tb-managed-sources .mc-tb-category-host');
+  const urlHost = container.querySelector('.mc-tb-url-source .mc-tb-category-host');
+  const nextcloudHost = container.querySelector('.mc-tb-nextcloud-source .mc-tb-category-host');
+  renderYouTubeTab(urlHost, options);
+  await Promise.all([
+    renderManagedSourcesTab(managedHost, options),
+    renderNextcloudTab(nextcloudHost, options),
+  ]);
+}
+
+async function renderAdditionalCategory(container, options) {
+  container.innerHTML = '<div class="mc-tb-additional-actions"></div>'
+    + categorySection('Playlists', 'mc-tb-additional-playlists')
+    + categorySection('Scenes', 'mc-tb-additional-scenes');
+  const actionsHost = container.querySelector('.mc-tb-additional-actions');
+  if (typeof options.onMountAdditionalControls === 'function') {
+    options.onMountAdditionalControls(actionsHost);
+  }
+  await Promise.all([
+    renderPlaylistsTab(container.querySelector('.mc-tb-additional-playlists .mc-tb-category-host'), options),
+    renderScenesTab(container.querySelector('.mc-tb-additional-scenes .mc-tb-category-host'), options),
+  ]);
 }
 
 // Attach click + dragstart on toolbox tiles that call sendToDisplays.
@@ -727,38 +798,41 @@ export function attachTileHandlers(container, selectedIds, onAfterSend, onRouteS
 }
 
 // Load and render the given tab into the tab-body container.
-async function loadTab(tabId, tabBody, { selectedIds, onAfterSend, onRouteSource, onRouteNextcloud }) {
+function clearLiveSourceTimers(root) {
+  if (!root) return;
+  [root, ...root.querySelectorAll('*')].forEach((element) => {
+    if (!element._liveSourcesTimer) return;
+    clearTimeout(element._liveSourcesTimer);
+    element._liveSourcesTimer = null;
+  });
+}
+
+async function loadTab(tabId, tabBody, options, context = {}) {
+  const { selectedIds, onAfterSend, onRouteSource, onRouteNextcloud, onMountAdditionalControls, onBeforeToolboxReplace } = options;
+  if (typeof onBeforeToolboxReplace === 'function') onBeforeToolboxReplace();
   const previousHost = tabBody._renderHost;
-  if (previousHost?._liveSourcesTimer) {
-    clearTimeout(previousHost._liveSourcesTimer);
-    previousHost._liveSourcesTimer = null;
-  }
+  clearLiveSourceTimers(previousHost);
   const renderHost = document.createElement('div');
   renderHost.className = 'mc-tb-render-host';
   renderHost.innerHTML = loadingState(t('mc.tb.loading'));
   tabBody.replaceChildren(renderHost);
   tabBody._renderHost = renderHost;
   switch (tabId) {
-    case 'media':
-      await renderMediaTab(renderHost, { selectedIds, onAfterSend, onRouteSource });
+    case 'videos':
+    case 'images':
+      await renderMediaCategoryTab(renderHost, { selectedIds, onAfterSend, onRouteSource }, tabId, context);
       break;
-    case 'camerafeeds':
-      await renderCameraFeedsTab(renderHost, { selectedIds, onAfterSend, onRouteSource });
+    case 'docs':
+      await renderDocsCategory(renderHost, { selectedIds, onAfterSend, onRouteSource }, context);
       break;
-    case 'playlists':
-      await renderPlaylistsTab(renderHost, { selectedIds, onAfterSend, onRouteSource });
+    case 'sources':
+      await renderSourcesCategory(renderHost, { selectedIds, onAfterSend, onRouteSource, onRouteNextcloud });
       break;
-    case 'presentations':
-      await renderPresentationsTab(renderHost, { selectedIds, onAfterSend, onRouteSource });
+    case 'livefeeds':
+      renderLiveFeedsTab(renderHost, { selectedIds, onAfterSend, onRouteSource });
       break;
-    case 'youtube':
-      renderYouTubeTab(renderHost, { selectedIds, onAfterSend, onRouteSource });
-      break;
-    case 'scenes':
-      await renderScenesTab(renderHost, { onAfterSend });
-      break;
-    case 'nextcloud':
-      await renderNextcloudTab(renderHost, { selectedIds, onAfterSend, onRouteNextcloud });
+    case 'additional':
+      await renderAdditionalCategory(renderHost, { selectedIds, onAfterSend, onRouteSource, onMountAdditionalControls });
       break;
     default:
       renderHost.innerHTML = '';
@@ -774,35 +848,73 @@ async function loadTab(tabId, tabBody, { selectedIds, onAfterSend, onRouteSource
  * @param {()=>void} [opts.onAfterSend] called after a successful fallback send
  * @param {(source:object,label:string)=>Promise<boolean>} [opts.onRouteSource]
  * @param {(path:string,label:string)=>Promise<boolean>} [opts.onRouteNextcloud]
+ * @param {(host:HTMLElement)=>void} [opts.onMountAdditionalControls]
+ * @param {()=>void} [opts.onBeforeToolboxReplace]
  */
-export function renderToolbox(container, { selectedIds = [], onAfterSend, onRouteSource, onRouteNextcloud } = {}) {
+export function renderToolbox(container, { selectedIds = [], onAfterSend, onRouteSource, onRouteNextcloud, onMountAdditionalControls, onBeforeToolboxReplace } = {}) {
   if (!container) return;
+  if (typeof onBeforeToolboxReplace === 'function') onBeforeToolboxReplace();
+  activeTab = normalizeToolboxTab(activeTab);
+  const options = { selectedIds, onAfterSend, onRouteSource, onRouteNextcloud, onMountAdditionalControls, onBeforeToolboxReplace };
 
   const tabHtml = TABS.map(tab =>
     `<button type="button" class="mc-tb-tab${tab.id === activeTab ? ' active' : ''}"
-             role="tab" aria-selected="${tab.id === activeTab ? 'true' : 'false'}"
-             data-tab="${esc(tab.id)}">${esc(t(tab.key))}</button>`
+             id="mc-tb-tab-${esc(tab.id)}" role="tab"
+             aria-selected="${tab.id === activeTab ? 'true' : 'false'}" aria-controls="mc-tb-panel"
+             tabindex="${tab.id === activeTab ? '0' : '-1'}"
+             data-tab="${esc(tab.id)}">${esc(tab.label)}</button>`
   ).join('');
 
   container.innerHTML = `
-    <div class="mc-tb-bar" role="tablist">${tabHtml}</div>
-    <div class="mc-tb-body" id="mc-tb-body"></div>`;
+    <div class="mc-tb-bar" role="tablist" aria-label="Content Library categories">${tabHtml}</div>
+    <div class="mc-tb-body" id="mc-tb-panel" role="tabpanel" aria-labelledby="mc-tb-tab-${esc(activeTab)}"></div>`;
 
-  const tabBody = container.querySelector('#mc-tb-body');
+  const tabBody = container.querySelector('#mc-tb-panel');
+  const tabs = [...container.querySelectorAll('.mc-tb-tab')];
 
-  // Tab switching
-  container.querySelectorAll('.mc-tb-tab').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      activeTab = btn.dataset.tab;
-      container.querySelectorAll('.mc-tb-tab').forEach(b => {
-        const on = b.dataset.tab === activeTab;
-        b.classList.toggle('active', on);
-        b.setAttribute('aria-selected', on ? 'true' : 'false');
-      });
-      await loadTab(activeTab, tabBody, { selectedIds, onAfterSend, onRouteSource, onRouteNextcloud });
+  const activateTab = async (requestedTab, context) => {
+    activeTab = normalizeToolboxTab(requestedTab);
+    if (activeTab === 'images' && context?.folder) {
+      container._mcToolboxContext = { folder: String(context.folder) };
+    } else if (activeTab !== 'images') {
+      container._mcToolboxContext = {};
+    }
+    tabs.forEach((tab) => {
+      const selected = tab.dataset.tab === activeTab;
+      tab.classList.toggle('active', selected);
+      tab.setAttribute('aria-selected', selected ? 'true' : 'false');
+      tab.tabIndex = selected ? 0 : -1;
+    });
+    tabBody.setAttribute('aria-labelledby', `mc-tb-tab-${activeTab}`);
+    await loadTab(activeTab, tabBody, options, container._mcToolboxContext || {});
+  };
+  container._mcOpenToolboxTab = activateTab;
+
+  tabs.forEach((btn, index) => {
+    btn.addEventListener('click', () => activateTab(btn.dataset.tab));
+    btn.addEventListener('keydown', (event) => {
+      let nextIndex = null;
+      if (event.key === 'ArrowRight') nextIndex = (index + 1) % tabs.length;
+      else if (event.key === 'ArrowLeft') nextIndex = (index - 1 + tabs.length) % tabs.length;
+      else if (event.key === 'Home') nextIndex = 0;
+      else if (event.key === 'End') nextIndex = tabs.length - 1;
+      if (nextIndex === null) return;
+      event.preventDefault();
+      tabs[nextIndex].focus();
+      activateTab(tabs[nextIndex].dataset.tab);
     });
   });
 
-  // Load initial tab
-  loadTab(activeTab, tabBody, { selectedIds, onAfterSend, onRouteSource, onRouteNextcloud });
+  loadTab(activeTab, tabBody, options, container._mcToolboxContext || {});
+}
+
+export function openToolboxTab(container, tabId, context = {}) {
+  if (!container) return false;
+  const normalized = normalizeToolboxTab(tabId);
+  if (typeof container._mcOpenToolboxTab === 'function') {
+    container._mcOpenToolboxTab(normalized, context);
+    return true;
+  }
+  container.querySelector(`.mc-tb-tab[data-tab="${normalized}"]`)?.click();
+  return true;
 }

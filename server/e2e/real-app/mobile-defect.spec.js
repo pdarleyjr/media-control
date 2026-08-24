@@ -220,6 +220,14 @@ async function waitForCommandCenterVisualReady(page) {
   throw new Error('Command Center geometry did not settle before visual capture');
 }
 
+async function waitForLibraryDrawerSettled(page) {
+  const drawer = page.locator('#mc-library-drawer');
+  await expect.poll(async () => drawer.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return Math.abs(box.bottom - window.innerHeight);
+  })).toBeLessThanOrEqual(1);
+}
+
 test.describe.configure({ mode: 'serial' });
 
 test.describe('Mobile operator console — defect reproduction + acceptance', () => {
@@ -337,6 +345,931 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     }
     const display = await drawer.evaluate((el) => window.getComputedStyle(el).display);
     expect(display, 'library drawer must not be permanently display:none on mobile').not.toBe('none');
+    await context.close();
+  });
+
+  test('bottom Content Library shelf preserves stage and wall geometry while open', async ({ browser }, testInfo) => {
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 838, height: 500 },
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: true,
+    });
+    await waitForCommandCenterVisualReady(page);
+
+    const measureStage = () => page.evaluate(() => {
+      const rect = (element) => {
+        const box = element?.getBoundingClientRect();
+        return box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null;
+      };
+      return {
+        stage: rect(document.querySelector('.mc-stage.mc-cc-canvas')),
+        cells: Array.from(document.querySelectorAll('.mc-wall-cell')).map(rect),
+      };
+    });
+
+    const before = await measureStage();
+    const shelf = page.locator('#mc-library-drawer');
+    const handle = shelf.locator(':scope > [data-library-toggle]');
+    const handleBox = await handle.boundingBox();
+    const collapsedStyle = await shelf.evaluate((element) => ({
+      position: getComputedStyle(element).position,
+      open: element.dataset.open,
+    }));
+
+    expect(collapsedStyle).toEqual({ position: 'fixed', open: 'false' });
+    expect(handleBox.height).toBeGreaterThanOrEqual(48);
+    expect(handleBox.height).toBeLessThanOrEqual(64);
+    expect(handleBox.width).toBeGreaterThanOrEqual(148);
+    expect(handleBox.width).toBeLessThanOrEqual(190);
+    expect(handleBox.y + handleBox.height).toBeLessThanOrEqual(501);
+
+    await handle.click();
+    await expect(shelf).toHaveAttribute('data-open', 'true');
+    await waitForLibraryDrawerSettled(page);
+    const after = await measureStage();
+
+    for (const key of ['x', 'y', 'width', 'height']) {
+      expect(Math.abs(after.stage[key] - before.stage[key]), `stage ${key} delta`).toBeLessThanOrEqual(1);
+    }
+    expect(after.cells.length).toBe(before.cells.length);
+    for (let index = 0; index < before.cells.length; index += 1) {
+      for (const key of ['x', 'y', 'width', 'height']) {
+        expect(Math.abs(after.cells[index][key] - before.cells[index][key]), `wall cell ${index} ${key} delta`).toBeLessThanOrEqual(1);
+      }
+    }
+
+    const expandedBox = await shelf.boundingBox();
+    expect(expandedBox.width).toBeGreaterThanOrEqual(764);
+    expect(expandedBox.height).toBeGreaterThanOrEqual(180);
+    expect(expandedBox.y + expandedBox.height).toBeLessThanOrEqual(501);
+    expect(await page.locator('.mc-library-backdrop, [data-library-backdrop]').count()).toBe(0);
+    expect(await page.locator('.mc-stage.mc-cc-canvas').getAttribute('inert')).toBeNull();
+    expect(await page.locator('.mc-stage.mc-cc-canvas').getAttribute('aria-hidden')).toBeNull();
+
+    const stageHit = await page.locator('.mc-stage.mc-cc-canvas').evaluate((stage) => {
+      const box = stage.getBoundingClientRect();
+      const hit = document.elementFromPoint(box.left + box.width / 2, box.top + 8);
+      return hit === stage || stage.contains(hit);
+    });
+    expect(stageHit, 'the uncovered stage remains pointer-interactive while the shelf is open').toBe(true);
+
+    const overflow = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      innerWidth: window.innerWidth,
+    }));
+    expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.innerWidth + 2);
+    await page.screenshot({ path: testInfo.outputPath('command-center-bottom-shelf-open.png'), fullPage: true });
+    await context.close();
+  });
+
+  test('expanded Lenovo shelf keeps the stage and persistent safety controls unobscured', async ({ browser }, testInfo) => {
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 838, height: 500 },
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: true,
+    });
+    await page.route('**/api/live-stream/operator-state*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          stream_state: 'on_air',
+          stream_active: true,
+          recording_state: 'active',
+          recording_active: true,
+          publisher: { active: true, mode: 'fixed_compositor' },
+          capabilities: { stream_state: 'on_air' },
+          camera_edge: {
+            anpviz_stream: true,
+            active_source: 'anpviz',
+            microphone_connected: true,
+            recording_active: true,
+          },
+        }),
+      });
+    });
+    await page.reload({ waitUntil: 'networkidle' });
+    await waitForCommandCenterVisualReady(page);
+    await expect(page.locator('[data-dock="stop-live"]')).toBeVisible();
+    await expect(page.locator('#mc-dock-record-btn')).toHaveText('Stop Recording');
+
+    const measureStage = () => page.locator('.mc-stage.mc-cc-canvas').evaluate((stage) => {
+      const box = stage.getBoundingClientRect();
+      return { x: box.x, y: box.y, width: box.width, height: box.height };
+    });
+    const before = await measureStage();
+    await page.locator('#mc-library-drawer > [data-library-toggle]').click();
+    await expect(page.locator('#mc-library-drawer')).toHaveAttribute('data-open', 'true');
+    await waitForLibraryDrawerSettled(page);
+    const after = await measureStage();
+    for (const key of ['x', 'y', 'width', 'height']) {
+      expect(Math.abs(after[key] - before[key]), `stage ${key} delta`).toBeLessThanOrEqual(1);
+    }
+    expect(after.width, 'the stage uses the width reclaimed from the removed left rail').toBeGreaterThanOrEqual(800);
+
+    const geometry = await page.evaluate(() => {
+      const rect = (element) => {
+        const box = element.getBoundingClientRect();
+        return { left: box.left, top: box.top, right: box.right, bottom: box.bottom, width: box.width, height: box.height };
+      };
+      const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+      const visible = (element) => {
+        const style = getComputedStyle(element);
+        const box = element.getBoundingClientRect();
+        return !element.hidden && style.display !== 'none' && style.visibility !== 'hidden' && box.width > 0 && box.height > 0;
+      };
+      const shelf = rect(document.querySelector('#mc-library-drawer'));
+      const stageElement = document.querySelector('.mc-stage.mc-cc-canvas');
+      const stage = rect(stageElement);
+      const stripElement = document.querySelector('.mc-persistent-controls') || document.querySelector('.mc-cc-controls');
+      const strip = rect(stripElement);
+      const dropSelector = [
+        '.mc-wall-region[data-layout-group-id][data-wall-id]',
+        '.mc-display-card[data-device-id]',
+        '.mc-wall-cell[data-device-id]',
+        '.mc-wall-split-half[data-device-id][data-split-half]',
+        '.mc-wall-all[data-wall-ids]',
+        '.mc-wall-group-region[data-layout-group-id][data-wall-id]',
+        '.mc-wall[data-wall-id]',
+        '.mc-display-card-tile[data-display-id]',
+      ].join(',');
+      const targets = Array.from(stageElement.querySelectorAll(dropSelector)).filter(visible).map((element) => {
+        const box = rect(element);
+        const x = Math.min(innerWidth - 1, Math.max(0, box.left + box.width / 2));
+        const y = Math.min(innerHeight - 1, Math.max(0, box.top + box.height / 2));
+        const hit = document.elementFromPoint(x, y);
+        return {
+          box,
+          inViewport: box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight,
+          unobscured: !overlaps(box, shelf) && !!hit && stageElement.contains(hit),
+          hit: hit ? `${hit.tagName}.${hit.className || ''}` : null,
+        };
+      });
+      return {
+        shelf,
+        stage,
+        strip,
+        stageShelfOverlap: overlaps(stage, shelf),
+        stripShelfOverlap: overlaps(strip, shelf),
+        targetCount: targets.length,
+        targets,
+      };
+    });
+    expect(geometry.targetCount, 'at least one visible stage drop target is required').toBeGreaterThan(0);
+    expect(geometry.stageShelfOverlap, `stage ${JSON.stringify(geometry.stage)} vs shelf ${JSON.stringify(geometry.shelf)}`).toBe(false);
+    expect(geometry.stripShelfOverlap, `strip ${JSON.stringify(geometry.strip)} vs shelf ${JSON.stringify(geometry.shelf)}`).toBe(false);
+    for (const [index, target] of geometry.targets.entries()) {
+      expect(target.inViewport, `drop target ${index} remains fully inside the viewport`).toBe(true);
+      expect(target.unobscured, `drop target ${index} ${JSON.stringify(target)} remains hit-testable above the shelf`).toBe(true);
+    }
+
+    const persistentButtons = [
+      '[data-cc-tp="prev"]',
+      '[data-cc-tp="restart"]',
+      '[data-cc-tp="play_pause"]',
+      '[data-cc-tp="next"]',
+      '#mc-dock-blank-btn',
+      '[data-dock="stop-live"]',
+      '#mc-dock-record-btn',
+    ];
+    await page.evaluate((selectors) => {
+      window.__mcPersistentAcceptanceClicks = [];
+      selectors.forEach((selector) => {
+        document.querySelector(selector)?.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          window.__mcPersistentAcceptanceClicks.push(selector);
+        }, { capture: true, once: true });
+      });
+    }, persistentButtons);
+    for (const selector of persistentButtons) {
+      const button = page.locator(selector);
+      await expect(button, `${selector} remains visible with the shelf expanded`).toBeVisible();
+      const box = await button.boundingBox();
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.y).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(839);
+      expect(box.y + box.height).toBeLessThanOrEqual(501);
+      expect(box.width, `${selector} preserves a touch-safe width`).toBeGreaterThanOrEqual(48);
+      expect(box.height, `${selector} preserves a touch-safe height`).toBeGreaterThanOrEqual(48);
+      expect(box.y + box.height, `${selector} ends before the shelf begins`).toBeLessThanOrEqual(geometry.shelf.top + 1);
+      await button.focus();
+      await expect(button).toBeFocused();
+      await button.click();
+    }
+    expect(await page.evaluate(() => window.__mcPersistentAcceptanceClicks)).toEqual(persistentButtons);
+    await page.screenshot({ path: testInfo.outputPath('command-center-lenovo-expanded-persistent-controls.png'), fullPage: true });
+    await context.close();
+  });
+
+  test('six-category shelf uses detected MIME and keeps Screensavers as a clearable Images filter', async ({ browser }, testInfo) => {
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 838, height: 500 },
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: true,
+    });
+    const contentRequests = [];
+    const content = [
+      { id: 'video-detected', filename: 'detected-video.jpg', mime_type: 'image/jpeg', detected_mime_type: 'video/mp4' },
+      { id: 'image-detected', filename: 'detected-image.bin', mime_type: 'application/octet-stream', media: { detected_mime_type: 'image/png' } },
+      { id: 'pdf-detected', filename: 'runbook.bin', mime_type: 'application/octet-stream', detected_mime_type: 'application/pdf' },
+      { id: 'office-detected', filename: 'briefing.bin', mime_type: 'application/octet-stream', media: { detected_mime_type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' } },
+      { id: 'odf-detected', filename: 'staffing.bin', mime_type: 'application/octet-stream', detected_mime_type: 'application/vnd.oasis.opendocument.spreadsheet' },
+      { id: 'unsupported-app', filename: 'archive.zip', mime_type: 'application/zip' },
+      { id: 'standalone-audio', filename: 'dispatch-audio.mp3', mime_type: 'audio/mpeg', detected_mime_type: 'audio/mpeg' },
+    ];
+    await page.route('**/api/content*', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname !== '/api/content') return route.continue();
+      contentRequests.push(url.toString());
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(content) });
+    });
+    await page.route('**/api/presentations*', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname !== '/api/presentations') return route.continue();
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 'deck-1', title: 'Incident Command Deck' }]) });
+    });
+    await page.reload({ waitUntil: 'networkidle' });
+    await waitForCommandCenterVisualReady(page);
+    await page.locator('#mc-library-drawer > [data-library-toggle]').click();
+
+    const tabs = page.locator('.mc-tb-tab');
+    await expect(tabs).toHaveCount(6);
+    expect(await tabs.allTextContents()).toEqual(['Videos', 'Images', 'Docs', 'Sources', 'Live Feeds', 'Additional Controls']);
+    await expect(page.locator('.mc-tb-tab[aria-selected="true"]')).toHaveCount(1);
+    await expect(page.locator('.mc-tb-tab[aria-selected="true"]')).toHaveText('Videos');
+    await expect(page.locator('#mc-toolbox .mc-tile-label')).toHaveText(['detected-video.jpg']);
+    await page.screenshot({ path: testInfo.outputPath('command-center-six-category-shelf.png'), fullPage: true });
+
+    await page.locator('.mc-tb-tab[data-tab="images"]').click();
+    await expect(page.locator('#mc-toolbox .mc-tile-label')).toHaveText(['detected-image.bin']);
+
+    await page.locator('.mc-tb-tab[data-tab="docs"]').click();
+    await expect(page.locator('#mc-toolbox .mc-tile-label')).toHaveText([
+      'runbook.bin',
+      'briefing.bin',
+      'staffing.bin',
+      'Incident Command Deck',
+    ]);
+    await expect(page.locator('#mc-toolbox')).not.toContainText('archive.zip');
+    await expect(page.locator('#mc-toolbox')).not.toContainText('dispatch-audio.mp3');
+
+    await page.locator('.mc-tb-tab[data-tab="additional"]').click();
+    await page.locator('.mc-cc-controls .mc-cc-saver-select').selectOption('folder:Screensavers');
+    await expect(page.locator('.mc-tb-tab[data-tab="images"]')).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('[data-context-filter="Screensavers"]')).toContainText('Screensavers');
+    await expect(page.locator('[data-clear-context-filter]')).toBeVisible();
+    expect(contentRequests.some((url) => new URL(url).searchParams.get('folder') === 'Screensavers')).toBe(true);
+    await page.locator('[data-clear-context-filter]').click();
+    await expect(page.locator('[data-context-filter]')).toHaveCount(0);
+    expect(new URL(contentRequests.at(-1)).searchParams.has('folder')).toBe(false);
+    expect(await page.locator('.mc-tb-tab').allTextContents()).not.toContain('Screensavers');
+    await context.close();
+  });
+
+  test('Sources and Live Feeds use disjoint catalogs and one managed refresh lifecycle', async ({ browser }) => {
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 838, height: 500 },
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: true,
+    });
+    const managedRequestTimes = [];
+    await page.route('**/api/live-sources*', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname !== '/api/live-sources') return route.continue();
+      managedRequestTimes.push(Date.now());
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          edge_available: true,
+          sources: [
+            { id: 'anpviz', available: true, signal: { video_online: true, microphone_connected: true, audio_online: true } },
+            { id: 'guest-computer', available: true, signal: { resolution: '1920x1080', frame_rate: 60, embedded_audio_detected: true } },
+          ],
+        }),
+      });
+    });
+    await page.reload({ waitUntil: 'networkidle' });
+    await waitForCommandCenterVisualReady(page);
+    await page.locator('#mc-library-drawer > [data-library-toggle]').click();
+    await page.locator('.mc-tb-tab[data-tab="sources"]').click();
+
+    await expect(page.locator('#mc-toolbox .mc-live-source-tile')).toHaveCount(2);
+    await expect(page.locator('#mc-toolbox .mc-live-news-tile')).toHaveCount(0);
+    await expect(page.locator('#mc-toolbox')).not.toContainText('CBS News Miami');
+    await expect(page.locator('#mc-toolbox')).not.toContainText('1st Street Beach');
+    await expect.poll(() => managedRequestTimes.length, { timeout: 7_000 }).toBe(2);
+    expect(managedRequestTimes[1] - managedRequestTimes[0], 'managed catalog retains its five-second cadence').toBeGreaterThanOrEqual(4_500);
+
+    await page.locator('.mc-tb-tab[data-tab="livefeeds"]').click();
+    await expect(page.locator('#mc-toolbox .mc-live-source-tile')).toHaveCount(0);
+    await expect(page.locator('#mc-toolbox .mc-live-news-tile')).toHaveCount(12);
+    await expect(page.locator('#mc-toolbox')).toContainText('CBS News Miami');
+    await expect(page.locator('#mc-toolbox')).toContainText('1st Street Beach');
+    const requestsAtLiveFeeds = managedRequestTimes.length;
+    await page.waitForTimeout(5_500);
+    expect(managedRequestTimes.length, 'public Live Feeds does not start or retain a managed-source poller').toBe(requestsAtLiveFeeds);
+    await context.close();
+  });
+
+  test('one action controller keeps safety stops persistent and secondary actions in Additional Controls', async ({ browser }, testInfo) => {
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 838, height: 500 },
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: true,
+    });
+    let operatorMode = 'idle';
+    let operatorRequests = 0;
+    await page.route('**/api/live-stream/operator-state*', async (route) => {
+      operatorRequests += 1;
+      if (operatorMode === 'failed') {
+        await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'unavailable' }) });
+        return;
+      }
+      const active = operatorMode === 'active';
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          stream_state: active ? 'on_air' : 'ready',
+          stream_active: active,
+          recording_state: active ? 'active' : 'idle',
+          recording_active: active,
+          publisher: { active, mode: 'direct_camera' },
+          capabilities: {
+            stream_state: active ? 'on_air' : 'ready',
+            publisher_mode: 'direct_camera',
+            publisher_available: true,
+            publisher_ready: true,
+            operator_start_allowed: true,
+          },
+          camera_edge: {
+            anpviz_stream: true,
+            active_source: 'anpviz',
+            microphone_connected: true,
+            recording_active: active,
+          },
+        }),
+      });
+    });
+    await page.reload({ waitUntil: 'networkidle' });
+    await waitForCommandCenterVisualReady(page);
+    await page.locator('#mc-library-drawer > [data-library-toggle]').click();
+    await page.locator('.mc-tb-tab[data-tab="additional"]').click();
+
+    const persistent = page.locator('.mc-action-dock-persistent');
+    const secondary = page.locator('#mc-toolbox .mc-action-dock-secondary');
+    await expect(persistent).toHaveCount(1);
+    await expect(secondary).toHaveCount(1);
+    await expect(page.locator('#mc-toolbox .mc-cc-sub-row')).toHaveCount(0);
+    await expect(page.locator('.mc-cc-controls > .mc-cc-sub-row')).toBeVisible();
+    await expect(persistent.locator('#mc-dock-blank-btn')).toBeVisible();
+    await expect(persistent.locator('[data-dock="multiview"], [data-dock="whiteboard"], [data-dock="share"], [data-dock="start-live"]')).toHaveCount(0);
+    await expect(secondary.locator('[data-dock="multiview"]')).toBeVisible();
+    await expect(secondary.locator('[data-dock="whiteboard"]')).toBeVisible();
+    await expect(secondary.locator('[data-dock="share"]')).toBeVisible();
+    await expect(secondary.locator('#mc-dock-start-record-btn')).toBeEnabled();
+    await expect(secondary.locator('[data-dock="start-live"]')).toBeEnabled();
+    await expect(secondary.locator('[data-camera-health]')).toBeVisible();
+    await expect(persistent.locator('.mc-cam-health-wrap')).toBeHidden();
+    await expect(page.locator('#mc-toolbox h3', { hasText: /^Actions$/ })).toHaveCount(0);
+    await expect(page.locator('#mc-toolbox')).toContainText('Playlists');
+    await expect(page.locator('#mc-toolbox')).toContainText('Scenes');
+    await expect(page.locator('#mc-broadcast-chip')).toHaveCount(1);
+    await page.screenshot({ path: testInfo.outputPath('command-center-additional-controls.png'), fullPage: true });
+    const requestsAfterAttach = operatorRequests;
+    await page.waitForTimeout(5_500);
+    expect(operatorRequests - requestsAfterAttach, 'attaching a second presentation host does not duplicate the poller').toBeLessThanOrEqual(1);
+
+    operatorMode = 'active';
+    await expect.poll(() => operatorRequests, { timeout: 7_000 }).toBeGreaterThan(requestsAfterAttach + 1);
+    await expect(persistent.locator('[data-dock="stop-live"]')).toBeVisible();
+    await expect(persistent.locator('#mc-dock-record-btn')).toBeVisible();
+    await expect(persistent.locator('#mc-dock-record-btn')).toHaveText('Stop Recording');
+    await expect(secondary.locator('[data-dock="start-live"]')).toBeHidden();
+    await expect(secondary.locator('#mc-dock-start-record-btn')).toBeHidden();
+
+    await page.locator('.mc-tb-tab[data-tab="videos"]').click();
+    await page.locator('#mc-library-drawer > [data-library-toggle]').click();
+    await expect(page.locator('#mc-library-drawer')).toHaveAttribute('data-open', 'false');
+    await expect(persistent.locator('[data-dock="stop-live"]')).toBeVisible();
+    await expect(persistent.locator('#mc-dock-record-btn')).toBeVisible();
+    const persistentStrip = await page.locator('.mc-persistent-controls').boundingBox();
+    expect(persistentStrip.height, 'the permanent operational strip stays compact').toBeLessThanOrEqual(52);
+    await page.screenshot({ path: testInfo.outputPath('command-center-persistent-stops.png'), fullPage: true });
+
+    operatorMode = 'failed';
+    const requestsBeforeFailure = operatorRequests;
+    await expect.poll(() => operatorRequests, { timeout: 7_000 }).toBeGreaterThan(requestsBeforeFailure);
+    await expect(persistent.locator('[data-dock="stop-live"]')).toBeHidden();
+    await expect(persistent.locator('#mc-dock-record-btn')).toBeHidden();
+    await page.locator('#mc-library-drawer > [data-library-toggle]').click();
+    await page.locator('.mc-tb-tab[data-tab="additional"]').click();
+    await expect(page.locator('#mc-toolbox #mc-dock-start-record-btn')).toBeDisabled();
+    await expect(page.locator('#mc-toolbox [data-dock="start-live"]')).toBeDisabled();
+    await expect(page.locator('#mc-toolbox [data-camera-health] .mc-cam-health-label')).toContainText(/unavailable/i);
+    await context.close();
+  });
+
+  test('Phase 5 visual checkpoint matches the approved Command Center composition', async ({ browser }, testInfo) => {
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 1440, height: 900 },
+      deviceScaleFactor: 1,
+    });
+    await page.route('**/api/content*', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname !== '/api/content') return route.continue();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          { id: 'visual-video-1', filename: 'Incident Command Briefing.mp4', mime_type: 'video/mp4', detected_mime_type: 'video/mp4' },
+          { id: 'visual-video-2', filename: 'Extrication Training.mp4', mime_type: 'video/mp4', detected_mime_type: 'video/mp4' },
+          { id: 'visual-image-1', filename: 'MBFD Wallpaper.png', mime_type: 'image/png', detected_mime_type: 'image/png' },
+        ]),
+      });
+    });
+    await page.route('**/api/live-sources*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          { id: 'anpviz', name: 'Anpviz Camera', type: 'camera', available: true },
+          { id: 'guest-computer', name: 'Guest Computer', type: 'computer', available: true },
+        ]),
+      });
+    });
+    await page.reload({ waitUntil: 'networkidle' });
+    await waitForCommandCenterVisualReady(page);
+
+    await expect(page.locator('.mc-cc-rail')).toHaveCount(0);
+    await expect(page.locator('.sidebar')).toBeVisible();
+    await expect(page.locator('.mc-cc-overview .mc-wall-head:visible, .mc-cc-overview .mc-wall-hint:visible')).toHaveCount(0);
+    await expect(page.locator('.mc-cc-controls > .mc-cc-sub-row')).toBeVisible();
+    await expect(page.locator('.mc-action-dock-persistent .mc-cam-health-wrap')).toBeHidden();
+    await expect(page.locator('.mc-action-dock-persistent .mc-live-ladder[data-state="ready"]')).toBeHidden();
+
+    const desktopGeometry = await page.evaluate(() => {
+      const stageElement = document.querySelector('.mc-stage.mc-cc-canvas');
+      const stage = stageElement.getBoundingClientRect();
+      const canvas = document.querySelector('.mc-cc-canvas-area').getBoundingClientRect();
+      const main = document.querySelector('.mc-cc-main').getBoundingClientRect();
+      const stageStyle = getComputedStyle(stageElement);
+      const handle = document.querySelector('[data-library-toggle]').getBoundingClientRect();
+      return {
+        viewportWidth: innerWidth,
+        mainWidth: main.width,
+        canvasWidth: canvas.width,
+        stageWidth: stage.width,
+        stageHeight: stage.height,
+        computedWidth: stageStyle.width,
+        computedMaxWidth: stageStyle.maxWidth,
+        computedHeight: stageStyle.height,
+        computedAspectRatio: stageStyle.aspectRatio,
+        handleWidth: handle.width,
+      };
+    });
+    expect(desktopGeometry.stageWidth, JSON.stringify(desktopGeometry)).toBeGreaterThanOrEqual(1280);
+    expect(desktopGeometry.handleWidth).toBeGreaterThanOrEqual(148);
+    expect(desktopGeometry.handleWidth).toBeLessThanOrEqual(190);
+    await page.screenshot({ path: testInfo.outputPath('phase5-main-collapsed-1440x900.png'), fullPage: true });
+
+    const stageBeforeOpen = await page.locator('.mc-stage.mc-cc-canvas').boundingBox();
+    const controlsBeforeOpen = await page.locator('.mc-cc-controls').boundingBox();
+    await page.locator('#mc-library-drawer > [data-library-toggle]').click();
+    await expect(page.locator('#mc-library-drawer')).toHaveAttribute('data-open', 'true');
+    await waitForLibraryDrawerSettled(page);
+    const stageAfterOpen = await page.locator('.mc-stage.mc-cc-canvas').boundingBox();
+    const controlsAfterOpen = await page.locator('.mc-cc-controls').boundingBox();
+    expect(stageAfterOpen).toEqual(stageBeforeOpen);
+    expect(controlsAfterOpen).toEqual(controlsBeforeOpen);
+    const tabs = page.locator('.mc-tb-tab');
+    await expect(tabs).toHaveCount(6);
+    expect(await tabs.allTextContents()).toEqual(['Videos', 'Images', 'Docs', 'Sources', 'Live Feeds', 'Additional Controls']);
+    const tabGeometry = await page.evaluate(() => {
+      const tabs = Array.from(document.querySelectorAll('.mc-tb-tab')).map((element) => element.getBoundingClientRect());
+      return { firstLeft: tabs[0].left, lastRight: tabs[tabs.length - 1].right, maxWidth: Math.max(...tabs.map((box) => box.width)) };
+    });
+    expect(tabGeometry.firstLeft).toBeGreaterThanOrEqual(72);
+    expect(tabGeometry.firstLeft).toBeLessThan(120);
+    expect(tabGeometry.lastRight).toBeLessThan(720);
+    expect(tabGeometry.maxWidth).toBeLessThan(180);
+    await expect(page.locator('#mc-media-grid .mc-tile-cell')).toHaveCount(2);
+    const openVideosGeometry = await page.evaluate(() => {
+      const rect = (selector) => {
+        const box = document.querySelector(selector)?.getBoundingClientRect();
+        return box ? { top: box.top, bottom: box.bottom, width: box.width, height: box.height } : null;
+      };
+      return {
+        shelf: rect('#mc-library-drawer'),
+        controls: rect('.mc-cc-controls'),
+        tiles: Array.from(document.querySelectorAll('#mc-media-grid .mc-tile-cell')).map((tile) => {
+          const box = tile.getBoundingClientRect();
+          return { top: box.top, bottom: box.bottom, width: box.width, height: box.height };
+        }),
+        viewportHeight: innerHeight,
+      };
+    });
+    expect(openVideosGeometry.shelf?.height, JSON.stringify(openVideosGeometry)).toBeGreaterThanOrEqual(340);
+    expect(openVideosGeometry.shelf?.top, JSON.stringify(openVideosGeometry)).toBeGreaterThanOrEqual(openVideosGeometry.controls.bottom);
+    for (const tile of openVideosGeometry.tiles) {
+      expect(tile.bottom, JSON.stringify(openVideosGeometry)).toBeLessThanOrEqual(openVideosGeometry.viewportHeight);
+    }
+    await page.screenshot({ path: testInfo.outputPath('phase5-videos-open-1440x900.png'), fullPage: true });
+
+    await page.locator('.mc-tb-tab[data-tab="sources"]').click();
+    await expect(page.locator('.mc-tb-tab[data-tab="sources"]')).toHaveAttribute('aria-selected', 'true');
+    await page.screenshot({ path: testInfo.outputPath('phase5-sources-open-1440x900.png'), fullPage: true });
+
+    await page.locator('.mc-tb-tab[data-tab="additional"]').click();
+    await expect(page.locator('#mc-toolbox h3', { hasText: /^Actions$/ })).toHaveCount(0);
+    await expect(page.locator('#mc-toolbox .mc-action-dock-secondary')).toBeVisible();
+    await expect(page.locator('.mc-cc-controls > .mc-cc-sub-row')).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath('phase5-additional-open-1440x900.png'), fullPage: true });
+
+    await page.setViewportSize({ width: 838, height: 500 });
+    await expect(page.locator('#mc-library-drawer')).toHaveAttribute('data-open', 'true');
+    await page.locator('.mc-tb-tab[data-tab="videos"]').click();
+    await page.waitForTimeout(150);
+    const lenovoGeometry = await page.evaluate(() => {
+      const rect = (selector) => {
+        const box = document.querySelector(selector)?.getBoundingClientRect();
+        return box ? { top: box.top, bottom: box.bottom, width: box.width, height: box.height } : null;
+      };
+      return {
+        stage: rect('.mc-stage.mc-cc-canvas'),
+        wall: rect('.mc-cc-overview > .mc-wall'),
+        grid: rect('.mc-cc-overview > .mc-wall .mc-wall-grid'),
+        targets: Array.from(document.querySelectorAll('.mc-cc-overview .mc-wall-cell'))
+          .map((target) => {
+            const box = target.getBoundingClientRect();
+            return { top: box.top, bottom: box.bottom, width: box.width, height: box.height };
+          }),
+      };
+    });
+    expect(lenovoGeometry.stage?.height, JSON.stringify(lenovoGeometry)).toBeGreaterThanOrEqual(110);
+    expect(lenovoGeometry.wall?.height, JSON.stringify(lenovoGeometry)).toBeGreaterThanOrEqual(100);
+    expect(lenovoGeometry.grid?.height, JSON.stringify(lenovoGeometry)).toBeGreaterThanOrEqual(90);
+    expect(lenovoGeometry.targets.length, JSON.stringify(lenovoGeometry)).toBeGreaterThan(0);
+    for (const target of lenovoGeometry.targets) {
+      expect(target.height, JSON.stringify(lenovoGeometry)).toBeGreaterThanOrEqual(70);
+      expect(target.top, JSON.stringify(lenovoGeometry)).toBeGreaterThanOrEqual(0);
+      expect(target.bottom, JSON.stringify(lenovoGeometry)).toBeLessThanOrEqual(500);
+    }
+    await page.screenshot({ path: testInfo.outputPath('phase5-shelf-open-838x500.png'), fullPage: true });
+
+    await page.setViewportSize({ width: 500, height: 838 });
+    await expect(page.locator('#mc-library-drawer')).toHaveAttribute('data-open', 'true');
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: testInfo.outputPath('phase5-shelf-open-500x838.png'), fullPage: true });
+    await context.close();
+  });
+
+  test('large shelf cards preserve fallback, pagination, drag payload, and tap routing', async ({ browser }, testInfo) => {
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 838, height: 500 },
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: true,
+    });
+    const longName = `extended-incident-command-briefing-${'very-long-'.repeat(10)}.mp4`;
+    const videos = Array.from({ length: 65 }, (_, index) => ({
+      id: `large-card-video-${index + 1}`,
+      filename: index === 0 ? longName : `training-video-${String(index + 1).padStart(2, '0')}.mp4`,
+      mime_type: 'video/mp4',
+      detected_mime_type: 'video/mp4',
+      thumbnail_url: index === 1 ? '/missing-command-center-thumbnail.jpg' : '',
+      created_at: 65 - index,
+    }));
+    await page.route('**/api/content*', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname !== '/api/content') return route.continue();
+      const offset = Number(url.searchParams.get('offset') || 0);
+      const limit = Number(url.searchParams.get('limit') || 60);
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(videos.slice(offset, offset + limit)),
+      });
+    });
+    await page.reload({ waitUntil: 'networkidle' });
+    await waitForCommandCenterVisualReady(page);
+    await page.locator('#mc-library-drawer > [data-library-toggle]').click();
+
+    const labels = page.locator('#mc-toolbox .mc-tile-label');
+    await expect(labels).toHaveCount(60);
+    const firstTile = page.locator('#mc-toolbox .mc-tile[data-drag-source]').first();
+    await firstTile.scrollIntoViewIfNeeded();
+    const geometry = await firstTile.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      const thumb = element.querySelector('.mc-tile-thumb-fallback').getBoundingClientRect();
+      const label = element.querySelector('.mc-tile-label');
+      const style = getComputedStyle(label);
+      return {
+        width: box.width,
+        height: box.height,
+        thumbWidth: thumb.width,
+        thumbHeight: thumb.height,
+        whiteSpace: style.whiteSpace,
+        textOverflow: style.textOverflow,
+        labelOverflow: label.scrollWidth > label.clientWidth,
+      };
+    });
+    expect(geometry.width).toBeGreaterThanOrEqual(136);
+    expect(geometry.width).toBeLessThanOrEqual(168);
+    expect(geometry.height).toBeGreaterThanOrEqual(132);
+    expect(geometry.thumbWidth).toBeGreaterThanOrEqual(120);
+    expect(geometry.thumbHeight).toBeGreaterThanOrEqual(72);
+    expect(geometry.whiteSpace).toBe('nowrap');
+    expect(geometry.textOverflow).toBe('ellipsis');
+    expect(geometry.labelOverflow).toBe(true);
+
+    const brokenThumbTile = page.locator('[data-label="training-video-02.mp4"]');
+    await brokenThumbTile.scrollIntoViewIfNeeded();
+    await expect(brokenThumbTile.locator('[data-thumb-fallback]')).toBeVisible();
+    await expect(brokenThumbTile.locator('img[data-media-thumb]')).toBeHidden();
+
+    expect(JSON.parse(await firstTile.getAttribute('data-drag-source'))).toEqual({ content_id: 'large-card-video-1' });
+    const dragPayload = await firstTile.evaluate((element) => {
+      const transfer = new DataTransfer();
+      element.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: transfer }));
+      return JSON.parse(transfer.getData('application/x-mc-source'));
+    });
+    expect(dragPayload).toEqual({ content_id: 'large-card-video-1' });
+
+    await firstTile.click();
+    await expect(page.locator('dialog.mc-target-picker[open]')).toBeVisible();
+    await page.locator('[data-target-cancel]').click();
+    await page.locator('#mc-media-loadmore').click();
+    await expect(labels).toHaveCount(65);
+    await expect(page.locator('#mc-media-loadmore')).toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath('command-center-large-content-cards.png'), fullPage: true });
+    await context.close();
+  });
+
+  test('Phase 6 keyboard navigation, focus, touch sizing, and inspector precedence remain accessible', async ({ browser }) => {
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 838, height: 500 },
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: true,
+    });
+    await waitForCommandCenterVisualReady(page);
+
+    const toggle = page.locator('#mc-library-drawer > [data-library-toggle]');
+    await toggle.focus();
+    const focusStyle = await toggle.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { outlineStyle: style.outlineStyle, outlineWidth: parseFloat(style.outlineWidth) };
+    });
+    expect(focusStyle.outlineStyle).not.toBe('none');
+    expect(focusStyle.outlineWidth).toBeGreaterThanOrEqual(3);
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#mc-library-drawer')).toHaveAttribute('data-open', 'true');
+    await toggle.focus();
+    await page.keyboard.press('Space');
+    await expect(page.locator('#mc-library-drawer')).toHaveAttribute('data-open', 'false');
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#mc-library-drawer')).toHaveAttribute('data-open', 'true');
+
+    const tabs = page.locator('.mc-tb-tab');
+    await expect(tabs).toHaveCount(6);
+    expect(await tabs.allTextContents()).toEqual(['Videos', 'Images', 'Docs', 'Sources', 'Live Feeds', 'Additional Controls']);
+    const tabState = await tabs.evaluateAll((elements) => elements.map((element) => ({
+      height: element.getBoundingClientRect().height,
+      selected: element.getAttribute('aria-selected'),
+      tabIndex: element.tabIndex,
+    })));
+    expect(tabState.every(({ height }) => height >= 48)).toBe(true);
+    expect(tabState.filter(({ selected }) => selected === 'true')).toHaveLength(1);
+    expect(tabState.filter(({ tabIndex }) => tabIndex === 0)).toHaveLength(1);
+
+    await tabs.first().focus();
+    await page.keyboard.press('ArrowRight');
+    await expect(page.locator('.mc-tb-tab[data-tab="images"]')).toBeFocused();
+    await expect(page.locator('.mc-tb-tab[data-tab="images"]')).toHaveAttribute('aria-selected', 'true');
+    await page.keyboard.press('End');
+    await expect(page.locator('.mc-tb-tab[data-tab="additional"]')).toBeFocused();
+    await expect(page.locator('.mc-tb-tab[data-tab="additional"]')).toHaveAttribute('aria-selected', 'true');
+    await page.keyboard.press('Home');
+    await expect(page.locator('.mc-tb-tab[data-tab="videos"]')).toBeFocused();
+    await page.keyboard.press('ArrowLeft');
+    await expect(page.locator('.mc-tb-tab[data-tab="additional"]')).toBeFocused();
+
+    await page.locator('.mc-wall-cell[data-device-id]').first().evaluate((element) => element.click());
+    await expect(page.locator('#mc-inspector')).toBeVisible();
+    await expect(page.locator('#mc-library-drawer')).toHaveAttribute('inert', '');
+    await expect(page.locator('#mc-library-drawer')).toHaveAttribute('aria-hidden', 'true');
+    await page.locator('#mc-inspector [data-insp-close]').click();
+    await expect(page.locator('#mc-inspector')).toBeHidden();
+    await expect(page.locator('#mc-library-drawer')).not.toHaveAttribute('inert', '');
+    await expect(page.locator('#mc-library-drawer')).not.toHaveAttribute('aria-hidden', 'true');
+    await context.close();
+  });
+
+  test('Phase 6 shelf scroll, mouse drag, touch drag, and release-outside safety preserve routing intent', async ({ browser }) => {
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 838, height: 500 },
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: true,
+    });
+    const videos = Array.from({ length: 65 }, (_, index) => ({
+      id: `phase6-video-${index + 1}`,
+      filename: `phase6-training-video-${String(index + 1).padStart(2, '0')}.mp4`,
+      mime_type: 'video/mp4',
+      detected_mime_type: 'video/mp4',
+      created_at: 65 - index,
+    }));
+    await page.route('**/api/content*', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname !== '/api/content') return route.continue();
+      const offset = Number(url.searchParams.get('offset') || 0);
+      const limit = Number(url.searchParams.get('limit') || 60);
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(videos.slice(offset, offset + limit)),
+      });
+    });
+    await page.reload({ waitUntil: 'networkidle' });
+    await waitForCommandCenterVisualReady(page);
+    await page.locator('#mc-library-drawer > [data-library-toggle]').click();
+    await waitForLibraryDrawerSettled(page);
+
+    const scrollBody = page.locator('.mc-library-body');
+    const scrollGeometry = await scrollBody.evaluate((element) => ({
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      touchAction: getComputedStyle(element).touchAction,
+    }));
+    expect(scrollGeometry.scrollHeight).toBeGreaterThan(scrollGeometry.clientHeight);
+    expect(scrollGeometry.touchAction).not.toBe('none');
+    const scrollBox = await scrollBody.boundingBox();
+    await page.mouse.move(scrollBox.x + 20, scrollBox.y + scrollBox.height - 20);
+    await page.mouse.wheel(0, 360);
+    await expect.poll(() => scrollBody.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+
+    const firstTile = page.locator('#mc-toolbox .mc-tile[data-drag-source]').first();
+    const stageTarget = page.locator('.mc-wall-all[data-wall-ids], #mc-stage').first();
+    await firstTile.scrollIntoViewIfNeeded();
+    await page.evaluate(() => {
+      window.__phase6MouseDrop = null;
+      window.__phase6MouseDragSource = '';
+      document.addEventListener('dragstart', (event) => {
+        window.__phase6MouseDragSource = event.dataTransfer?.getData('application/x-mc-source')
+          || event.dataTransfer?.getData('text/plain')
+          || '';
+      }, { once: true });
+      document.addEventListener('drop', (event) => {
+        const target = event.target.closest('.mc-wall-all[data-wall-ids], .mc-wall-cell[data-device-id], #mc-stage');
+        window.__phase6MouseDrop = {
+          target: target?.className || target?.id || '',
+        };
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }, { capture: true, once: true });
+    });
+    await firstTile.dragTo(stageTarget);
+    await expect.poll(() => page.evaluate(() => window.__phase6MouseDrop)).not.toBeNull();
+    expect(await page.evaluate(() => window.__phase6MouseDrop.target)).not.toBe('');
+    expect(JSON.parse(await page.evaluate(() => window.__phase6MouseDragSource))).toEqual({ content_id: 'phase6-video-1' });
+
+    await page.evaluate(() => {
+      window.__phase6TouchDrops = [];
+      document.addEventListener('mc:source-drop', (event) => {
+        window.__phase6TouchDrops.push({
+          detail: event.detail,
+          target: event.target.className || event.target.id || '',
+        });
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }, { capture: true });
+    });
+    const tileBox = await firstTile.boundingBox();
+    const targetBox = await stageTarget.boundingBox();
+    await firstTile.evaluate((element, points) => {
+      const dispatch = (type, x, y) => element.dispatchEvent(new PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 61,
+        pointerType: 'touch',
+        isPrimary: true,
+        buttons: type === 'pointerup' ? 0 : 1,
+        clientX: x,
+        clientY: y,
+      }));
+      dispatch('pointerdown', points.start.x, points.start.y);
+      dispatch('pointermove', points.end.x, points.end.y);
+      dispatch('pointerup', points.end.x, points.end.y);
+    }, {
+      start: { x: tileBox.x + tileBox.width / 2, y: tileBox.y + tileBox.height / 2 },
+      end: { x: targetBox.x + targetBox.width / 2, y: targetBox.y + targetBox.height / 2 },
+    });
+    await expect.poll(() => page.evaluate(() => window.__phase6TouchDrops.length)).toBe(1);
+    expect(await page.evaluate(() => window.__phase6TouchDrops[0].detail.source)).toEqual({ content_id: 'phase6-video-1' });
+
+    await page.evaluate(() => { window.__phase6TouchDrops = []; });
+    await firstTile.evaluate((element, point) => {
+      const dispatch = (type, x, y) => element.dispatchEvent(new PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 62,
+        pointerType: 'touch',
+        isPrimary: true,
+        buttons: type === 'pointerup' ? 0 : 1,
+        clientX: x,
+        clientY: y,
+      }));
+      dispatch('pointerdown', point.x, point.y);
+      dispatch('pointermove', 2, 2);
+      dispatch('pointerup', 2, 2);
+    }, { x: tileBox.x + tileBox.width / 2, y: tileBox.y + tileBox.height / 2 });
+    await page.waitForTimeout(100);
+    expect(await page.evaluate(() => window.__phase6TouchDrops)).toEqual([]);
+    await expect(page.locator('dialog.mc-target-picker[open]')).toHaveCount(0);
+    await context.close();
+  });
+
+  test('Phase 6 Lenovo landscape remains operable with 200 percent text', async ({ browser }) => {
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 838, height: 500 },
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: true,
+    });
+    await waitForCommandCenterVisualReady(page);
+    await page.addStyleTag({ content: `
+      .mc-cc-shell button,
+      .mc-cc-shell select,
+      .mc-cc-shell .mc-library-tab-label,
+      .mc-cc-shell .mc-tb-tab { font-size: 200% !important; line-height: 1.2 !important; }
+    ` });
+    const toggle = page.locator('#mc-library-drawer > [data-library-toggle]');
+    await toggle.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#mc-library-drawer')).toHaveAttribute('data-open', 'true');
+
+    const overflow = await page.evaluate(() => ({
+      clientWidth: document.documentElement.clientWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+    }));
+    expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth + 1);
+    const tabs = page.locator('.mc-tb-tab');
+    await expect(tabs).toHaveCount(6);
+    for (let index = 0; index < 6; index += 1) {
+      const tab = tabs.nth(index);
+      await tab.scrollIntoViewIfNeeded();
+      await expect(tab).toBeVisible();
+      expect(await tab.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(48);
+    }
+
+    const reachability = await page.evaluate(() => {
+      const shelf = document.querySelector('#mc-library-drawer').getBoundingClientRect();
+      const targets = Array.from(document.querySelectorAll('.mc-wall-cell[data-device-id]')).map((element) => {
+        const box = element.getBoundingClientRect();
+        return { top: box.top, bottom: box.bottom, width: box.width, height: box.height };
+      });
+      return { shelfTop: shelf.top, targets };
+    });
+    for (const selector of [
+      '[data-cc-tp="prev"]',
+      '[data-cc-tp="restart"]',
+      '[data-cc-tp="play_pause"]',
+      '[data-cc-tp="next"]',
+      '#mc-dock-blank-btn',
+    ]) {
+      const control = page.locator(selector);
+      await control.scrollIntoViewIfNeeded();
+      await expect(control).toBeVisible();
+      const geometry = await control.evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+        return {
+          box: { left: box.left, right: box.right, top: box.top, bottom: box.bottom, width: box.width },
+          viewport: { width: innerWidth, height: innerHeight },
+          height: box.height,
+          insideViewport: box.left >= -1 && box.right <= innerWidth + 1 && box.top >= -1 && box.bottom <= innerHeight + 1,
+          hit: hit === element || element.contains(hit),
+        };
+      });
+      expect(geometry.height, JSON.stringify({ selector, geometry })).toBeGreaterThanOrEqual(48);
+      expect(geometry.insideViewport, JSON.stringify({ selector, geometry })).toBe(true);
+      expect(geometry.hit, JSON.stringify({ selector, geometry })).toBe(true);
+    }
+    for (const target of reachability.targets) {
+      expect(target.bottom, JSON.stringify({ target, shelfTop: reachability.shelfTop })).toBeLessThanOrEqual(reachability.shelfTop);
+    }
+
+    await toggle.focus();
+    await page.keyboard.press('Space');
+    await expect(page.locator('#mc-library-drawer')).toHaveAttribute('data-open', 'false');
     await context.close();
   });
 
@@ -1244,8 +2177,8 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     expect(shell.y + shell.height, 'Command Center shell remains inside the usable viewport')
       .toBeLessThanOrEqual(500);
     expect(stage.y + stage.height, 'display canvas must end before controls begin').toBeLessThanOrEqual(controls.y + 1);
-    expect(controls.y - (stage.y + stage.height), 'display canvas needs deliberate finger-safe clearance before controls')
-      .toBeGreaterThanOrEqual(12);
+    expect(controls.y - (stage.y + stage.height), 'display canvas keeps a compact visible separation before controls')
+      .toBeGreaterThanOrEqual(4);
     expect(controls.y + controls.height, 'controls remain inside the viewport').toBeLessThanOrEqual(500);
 
     const transportButtons = page.locator('.mc-cc-tp-btn:visible');
@@ -1260,20 +2193,37 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     }));
     expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.innerWidth);
 
+    const subRowGeometry = await page.locator('.mc-cc-controls > .mc-cc-sub-row').evaluate((row) => ({
+      clientWidth: row.clientWidth,
+      scrollWidth: row.scrollWidth,
+      controls: Array.from(row.querySelectorAll('button, select')).map((element) => {
+        const box = element.getBoundingClientRect();
+        return { label: element.textContent?.trim() || element.getAttribute('aria-label'), left: box.left, right: box.right };
+      }),
+      viewportWidth: window.innerWidth,
+    }));
+    expect(subRowGeometry.scrollWidth, 'Span/Split and Screensaver controls fit without horizontal clipping')
+      .toBeLessThanOrEqual(subRowGeometry.clientWidth + 1);
+    for (const control of subRowGeometry.controls) {
+      expect(control.left, `${control.label} starts inside the viewport`).toBeGreaterThanOrEqual(0);
+      expect(control.right, `${control.label} ends inside the viewport`).toBeLessThanOrEqual(subRowGeometry.viewportWidth + 1);
+    }
+
     const libraryTab = page.locator('.mc-library-tab:visible');
-    const header = await page.locator('.mc-cc-head').boundingBox();
     const libraryTabBox = await libraryTab.boundingBox();
     expect(libraryTabBox.width).toBeGreaterThanOrEqual(48);
     expect(libraryTabBox.height).toBeGreaterThanOrEqual(48);
-    expect(libraryTabBox.y + libraryTabBox.height, 'collapsed Content Library control stays in the header track')
-      .toBeLessThanOrEqual(header.y + header.height + 1);
+    expect(libraryTabBox.y, 'collapsed Content Library control remains attached to the viewport bottom')
+      .toBeGreaterThanOrEqual(500 - libraryTabBox.height - 1);
+    expect(libraryTabBox.y + libraryTabBox.height, 'collapsed Content Library control remains fully visible')
+      .toBeLessThanOrEqual(501);
 
-    const lastDockAction = page.locator('[data-dock="add-display"]');
-    await lastDockAction.scrollIntoViewIfNeeded();
-    const lastDockBox = await lastDockAction.boundingBox();
-    expect(lastDockBox.x + lastDockBox.width).toBeLessThanOrEqual(838 + 1);
-    expect(lastDockBox.height).toBeGreaterThanOrEqual(48);
-    expect(await lastDockAction.evaluate((element) => {
+    const persistentSafetyAction = page.locator('#mc-dock-blank-btn');
+    await persistentSafetyAction.scrollIntoViewIfNeeded();
+    const safetyBox = await persistentSafetyAction.boundingBox();
+    expect(safetyBox.x + safetyBox.width).toBeLessThanOrEqual(838 + 1);
+    expect(safetyBox.height).toBeGreaterThanOrEqual(48);
+    expect(await persistentSafetyAction.evaluate((element) => {
       const box = element.getBoundingClientRect();
       const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
       return hit === element || element.contains(hit);
@@ -1292,27 +2242,30 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     });
     const layout = await page.evaluate(() => {
       const body = document.querySelector('.mc-cc-body');
-      const rail = document.querySelector('.mc-cc-rail');
       const main = document.querySelector('.mc-cc-main');
-      const dock = document.querySelector('.mc-action-dock');
+      const dock = document.querySelector('.mc-action-dock-persistent');
+      const mobileMenu = document.querySelector('.mobile-menu-btn');
       return {
         bodyColumns: getComputedStyle(body).gridTemplateColumns,
-        railDirection: getComputedStyle(rail).flexDirection,
+        internalRailPresent: !!document.querySelector('.mc-cc-rail'),
+        mobileMenuVisible: !!mobileMenu && getComputedStyle(mobileMenu).display !== 'none'
+          && mobileMenu.getBoundingClientRect().width > 0,
         mainOverflowY: getComputedStyle(main).overflowY,
-        dockColumns: getComputedStyle(dock).gridTemplateColumns,
+        dockDisplay: getComputedStyle(dock).display,
         documentWidth: document.documentElement.scrollWidth,
         viewportWidth: window.innerWidth,
       };
     });
     expect(layout.bodyColumns.split(' ').length).toBe(1);
-    expect(layout.railDirection).toBe('row');
-    expect(layout.mainOverflowY).toBe('auto');
-    expect(layout.dockColumns.split(' ').length).toBe(2);
+    expect(layout.internalRailPresent).toBe(false);
+    expect(layout.mobileMenuVisible).toBe(true);
+    expect(['auto', 'hidden']).toContain(layout.mainOverflowY);
+    expect(layout.dockDisplay).toBe('flex');
     expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth + 2);
 
     const stage = await page.locator('.mc-stage.mc-cc-canvas').boundingBox();
     const controls = await page.locator('.mc-cc-controls').boundingBox();
-    expect(controls.y - (stage.y + stage.height)).toBeGreaterThanOrEqual(12);
+    expect(controls.y - (stage.y + stage.height)).toBeGreaterThanOrEqual(4);
     for (const button of await page.locator('.mc-cc-tp-btn:visible').all()) {
       const box = await button.boundingBox();
       expect(box.height).toBeGreaterThanOrEqual(48);
@@ -1354,7 +2307,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     const drawerBox = await drawer.boundingBox();
     expect(drawerBox.width).toBeLessThanOrEqual(501);
     expect(drawerBox.y).toBeGreaterThanOrEqual(headerBox.y + headerBox.height);
-    await page.locator('.mc-library-collapse').tap();
+    await page.locator('[data-library-toggle]').first().tap();
     await expect(drawer).toHaveAttribute('data-open', 'false');
 
     await page.setViewportSize({ width: 838, height: 500 });
@@ -1382,18 +2335,23 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
         const stage = document.querySelector('.mc-stage.mc-cc-canvas')?.getBoundingClientRect();
         const controls = document.querySelector('.mc-cc-controls')?.getBoundingClientRect();
         const shell = document.querySelector('.mc-cc-shell')?.getBoundingClientRect();
+        const subRow = document.querySelector('.mc-cc-controls > .mc-cc-sub-row');
         return {
           documentWidth: document.documentElement.scrollWidth,
           viewportWidth: window.innerWidth,
           shellRight: shell?.right,
           shellBottom: shell?.bottom,
           gap: stage && controls ? controls.top - stage.bottom : null,
+          subRowClientWidth: subRow?.clientWidth,
+          subRowScrollWidth: subRow?.scrollWidth,
         };
       });
       expect(geometry.documentWidth, `${width}x${height} horizontal overflow`).toBeLessThanOrEqual(geometry.viewportWidth + 2);
       expect(geometry.shellRight, `${width}x${height} shell right`).toBeLessThanOrEqual(width + 1);
       expect(geometry.shellBottom, `${width}x${height} shell bottom`).toBeLessThanOrEqual(height + 1);
-      expect(geometry.gap, `${width}x${height} preview clearance`).toBeGreaterThanOrEqual(12);
+      expect(geometry.gap, `${width}x${height} preview clearance`).toBeGreaterThanOrEqual(4);
+      expect(geometry.subRowScrollWidth, `${width}x${height} primary sub-row content is not clipped`)
+        .toBeLessThanOrEqual(geometry.subRowClientWidth + 1);
 
       const buttons = page.locator('.mc-cc-tp-btn:visible');
       for (let index = 0; index < await buttons.count(); index += 1) {

@@ -11,7 +11,7 @@ import { mountActionDock } from './media-control/action-dock.js';
 import * as displayState from '../services/display-state.js';
 import { previewSource, renderStage } from './media-control/stage.js';
 import { buildLivePreviewTargets, livePreviewTargetDeviceIds } from './media-control/preview-targets.js';
-import { renderToolbox } from './media-control/toolbox.js';
+import { openToolboxTab, renderToolbox } from './media-control/toolbox.js';
 import { sendToDisplays, sentToast, trackBroadcastDelivery } from './media-control/send.js';
 import { dispatchTransportTransaction, sendTransportCommand } from './media-control/transport.js';
 import { createTransportIntentTracker } from './media-control/transport-intent.js';
@@ -118,24 +118,17 @@ function ccAvatarHtml() {
   return `<span class="mc-cc-avatar" title="${esc(label)}" role="img" aria-label="${esc(label)}">${esc(ccUserInitials(user))}</span>`;
 }
 
-// Open the media drawer and, best-effort, activate the matching folder chip on
-// the Media tab. Additive: if the toolbox isn't mounted or the chip is absent,
-// it simply opens the drawer and leaves it on "All" (no error path).
+// Open Images with the contextual Screensavers filter. Ordinary folder browsing
+// stays in the full Media Library; this transient filter is the one deliberate
+// Command Center folder entry point and can be cleared inside the shelf.
 function openContentDrawerFiltered(folderName) {
   if (!folderName) return;
   try {
     const drawer = document.getElementById('mc-library-drawer');
-    if (drawer) drawer.setAttribute('data-open', 'true');
+    if (drawer?.dataset.open !== 'true') drawer?.querySelector('[data-library-toggle]')?.click();
     const tb = document.getElementById('mc-toolbox');
     if (!tb) return;
-    const mediaTab = tb.querySelector('.mc-tb-tab[data-tab="media"]');
-    if (mediaTab) mediaTab.click();
-    const tryActivate = (attemptsLeft) => {
-      const chip = tb.querySelector('.mc-tb-folder[data-folder="' + folderName + '"]');
-      if (chip) { chip.click(); return; }
-      if (attemptsLeft > 0) setTimeout(() => tryActivate(attemptsLeft - 1), 120);
-    };
-    tryActivate(12); // ~1.4s for the Media tab to paint
+    openToolboxTab(tb, 'images', { folder: folderName });
   } catch { /* best-effort; never block the screensaver UI */ }
 }
 
@@ -1250,6 +1243,7 @@ function paintToolbox() {
     onAfterSend: refreshAfterSend,
     onRouteSource: routeSourceWithPicker,
     onRouteNextcloud: routeNextcloudWithPicker,
+    onMountAdditionalControls: (host) => dockApi?.attachSecondaryHost(host),
   });
 }
 
@@ -2712,7 +2706,7 @@ function openLibraryTab(tabId) {
   const drawer = document.getElementById('mc-library-drawer');
   if (!drawer) return;
   if (drawer.dataset.open !== 'true') drawer.querySelector('[data-library-toggle]')?.click();
-  setTimeout(() => drawer.querySelector(`.mc-tb-tab[data-tab="${tabId}"]`)?.click(), 0);
+  setTimeout(() => openToolboxTab(document.getElementById('mc-toolbox'), tabId), 0);
 }
 
 function openUploadMediaModal() {
@@ -2786,7 +2780,7 @@ function openUploadMediaModal() {
       input.addEventListener('change', () => uploadFiles(input.files));
       body.querySelector('[data-quick-upload-library]').addEventListener('click', () => {
         controller.close();
-        openLibraryTab('media');
+        openLibraryTab('videos');
       });
     },
   });
@@ -2819,7 +2813,7 @@ function wireCommandRail(actions = {}) {
           openUploadMediaModal();
           break;
         case 'cameras':
-          openLibraryTab('camerafeeds');
+          openLibraryTab('sources');
           break;
         case 'multiview':
           actions.onMultiview?.();
@@ -2852,8 +2846,8 @@ function wireCommandRail(actions = {}) {
 export async function render({ signal, routeHash = '#/control' } = {}) {
   const app = document.getElementById('app');
   // Command Center shell: a single appliance-style screen — fixed header,
-  // left icon rail + center workspace (canvas > playback > span/split+saver >
-  // action dock) + right Content Library tab. NO long scrolling dashboard:
+  // full-width center workspace (canvas > playback/safety > span/split+saver)
+  // and an attached bottom Content Library shelf. NO long scrolling dashboard:
   // the old Room Presets / Recent / Room Setup are absent from the default page.
   app.innerHTML = `
     <div class="mc-cc-shell">
@@ -2874,23 +2868,6 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
       </header>
 
       <div class="mc-cc-body">
-        <nav class="mc-cc-rail" aria-label="${esc(t('mc.cc.rail.label'))}">
-          <button type="button" class="mc-cc-rail-btn is-active" data-mc-rail="command" title="${esc(t('mc.cc.rail.command'))}" aria-label="${esc(t('mc.cc.rail.command'))}">${ICON_COMMAND}</button>
-          <button type="button" class="mc-cc-rail-btn" data-mc-rail="displays" title="${esc(t('mc.cc.rail.displays'))}" aria-label="${esc(t('mc.cc.rail.displays'))}">${ICON_DISPLAYS}</button>
-          <button type="button" class="mc-cc-rail-btn" data-mc-rail="whiteboard" title="${esc(t('mc.cc.rail.whiteboard'))}" aria-label="${esc(t('mc.cc.rail.whiteboard'))}">${ICON_WHITEBOARD}</button>
-          <button type="button" class="mc-cc-rail-btn" data-mc-rail="media" title="${esc(t('mc.cc.rail.media'))}" aria-label="${esc(t('mc.cc.rail.media'))}">${ICON_MEDIA}</button>
-          <button type="button" class="mc-cc-rail-btn mc-cc-upload-btn" data-mc-rail="upload" title="Upload Media" aria-label="Upload Media">${ICON_UPLOAD}<span>Upload</span></button>
-          <button type="button" class="mc-cc-rail-btn" data-mc-rail="cameras" title="Cameras" aria-label="Cameras">${ICON_DISPLAYS}</button>
-          <button type="button" class="mc-cc-rail-btn" data-mc-rail="multiview" title="Multiview" aria-label="Multiview">${ICON_COMMAND}</button>
-          <button type="button" class="mc-cc-rail-btn" data-mc-rail="share" title="Share My Screen" aria-label="Share My Screen">${ICON_DOWNLOADS}</button>
-          <button type="button" class="mc-cc-rail-btn" data-mc-rail="schedules" title="Schedules" aria-label="Schedules">${ICON_LOGS}</button>
-          <button type="button" class="mc-cc-rail-btn" data-mc-rail="downloads" title="${esc(t('mc.cc.rail.downloads'))}" aria-label="${esc(t('mc.cc.rail.downloads'))}">${ICON_DOWNLOADS}</button>
-          <span class="mc-cc-rail-spacer"></span>
-          <button type="button" class="mc-cc-rail-btn" data-mc-rail="admin" title="${esc(t('mc.cc.rail.admin'))}" aria-label="${esc(t('mc.cc.rail.admin'))}">${ICON_ADMIN}</button>
-          <button type="button" class="mc-cc-rail-btn" data-mc-rail="logs" title="${esc(t('mc.cc.rail.logs'))}" aria-label="${esc(t('mc.cc.rail.logs'))}">${ICON_LOGS}</button>
-          <button type="button" class="mc-cc-rail-btn" data-mc-rail="settings" title="${esc(t('mc.cc.rail.settings'))}" aria-label="${esc(t('mc.cc.rail.settings'))}">${ICON_SETTINGS}</button>
-        </nav>
-
         <main class="mc-cc-main">
           <section class="mc-cc-canvas-area">
             <div id="mc-cc-chips" class="mc-cc-chips" aria-live="polite"></div>
@@ -2900,31 +2877,25 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
           </section>
 
           <section class="mc-cc-controls">
-            <div id="mc-transport-host" class="mc-transport-row-host"></div>
-            <div class="mc-cc-sub-row">
+            <div class="mc-persistent-controls" role="region" aria-label="Persistent playback and safety controls">
+              <div id="mc-transport-host" class="mc-transport-row-host"></div>
+              <div id="mc-action-dock-host" class="mc-action-dock-host"></div>
+            </div>
+            <div class="mc-cc-sub-row" aria-label="Wall layout and screensaver controls">
               <div id="mc-span-split-host" class="mc-span-split-host"></div>
               <div id="mc-screensaver-host" class="mc-screensaver-row-host"></div>
             </div>
-            <div id="mc-action-dock-host" class="mc-action-dock-host"></div>
           </section>
         </main>
 
         <aside id="mc-library-drawer" class="mc-library-drawer" data-open="false" aria-label="${esc(t('mc.section.sources'))}" hidden>
           <button type="button" class="mc-library-tab mc-cc-lib-tab" data-library-toggle
-                  aria-expanded="false" aria-controls="mc-toolbox"
+                  aria-expanded="false" aria-controls="mc-library-panel"
                   title="${esc(t('mc.library.toggle'))}">
-            <span class="mc-library-tab-label">${esc(t('mc.library.title'))}</span>
             <span class="mc-library-tab-ico" aria-hidden="true">${ICON_CHEVRON}</span>
+            <span id="mc-library-title" class="mc-library-tab-label">${esc(t('mc.library.title'))}</span>
           </button>
-          <div class="mc-library-inner">
-            <div class="mc-library-head">
-              <h2 id="mc-library-title" class="mc-library-title">${esc(t('mc.library.title'))}</h2>
-              <button type="button" class="mc-library-collapse" data-library-toggle
-                      aria-expanded="false" aria-controls="mc-toolbox"
-                      aria-label="${esc(t('mc.library.collapse'))}" title="${esc(t('mc.library.collapse'))}">
-                <span aria-hidden="true">${ICON_CHEVRON}</span>
-              </button>
-            </div>
+          <div id="mc-library-panel" class="mc-library-inner">
             <div class="mc-library-body">
               <section id="mc-toolbox" class="mc-toolbox" aria-labelledby="mc-library-title"></section>
             </div>
@@ -2951,19 +2922,13 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
   // video" defect. Dashboard previews are always muted and never produce audio, so
   // no operator-gesture audio hook exists.
 
-  // The right Content Library tab is now the only fixed right-edge element — the
-  // collapsed tab (data-open="false") re-shows itself when the drawer toggles.
+  // The Content Library is a fixed bottom shelf. Its collapsed handle remains
+  // visible while the shelf body stays inert, and opening it never reflows stage.
   const libDrawer = document.getElementById('mc-library-drawer');
   if (libDrawer && libDrawer.hidden) {
     libDrawer.hidden = false;
     libDrawer.classList.remove('is-open');
   }
-
-  // Wire the left icon rail. These buttons previously had NO click handlers, so
-  // the whole rail looked dead (operator feedback: "none of the sidebar items
-  // are clickable"). Each now routes to its surface. The Admin item is already a
-  // real <a href="#/walls"> and the active "command" item is the page itself.
-  wireCommandRail({ onMultiview: toggleMultiview, onShare: shareScreenActive });
 
   // Re-hydrate the last-controlled selection, learn which devices are wall-owned,
   // and load the live display state — then prune any stale/wall-member ids.
@@ -3300,7 +3265,7 @@ pruneSelection();
   };
   socketOn('playback-state', playbackStateHandler);
 
-  if (routeHash.includes('panel=cameras')) openLibraryTab('camerafeeds');
+  if (routeHash.includes('panel=cameras')) openLibraryTab('sources');
   if (routeHash.includes('panel=multiview')) toggleMultiview();
 }
 

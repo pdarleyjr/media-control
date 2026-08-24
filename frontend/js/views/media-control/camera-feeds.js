@@ -1,5 +1,5 @@
-// Live Sources tab — one authoritative Anpviz/TONOR source plus the dynamically
-// available ZowieBox Guest Computer. Both use the normal route/tap/drag contract.
+// Managed Sources and public Live Feeds share the normal route/tap/drag contract
+// but never share inventory or polling. Only managed classroom sources refresh.
 
 import { esc } from '../../utils.js';
 import { t } from '../../i18n.js';
@@ -137,9 +137,8 @@ function restoreDisclosureState(container, state) {
  * @param {HTMLElement} container
  * @param {object} opts
  */
-export async function renderCameraFeedsTab(container, { selectedIds, onAfterSend, onRouteSource } = {}) {
+export async function renderManagedSourcesTab(container, { selectedIds, onAfterSend, onRouteSource } = {}) {
   if (container._liveSourcesTimer) clearTimeout(container._liveSourcesTimer);
-  const disclosureState = captureDisclosureState(container);
   try {
     const response = await api.liveSources.list();
     const byId = new Map((response.sources || []).map((source) => [source.id, source]));
@@ -155,28 +154,7 @@ export async function renderCameraFeedsTab(container, { selectedIds, onAfterSend
       <div class="mc-tile-grid mc-live-source-grid">
         ${visible.map(({ config, source }) => tileHtml(config, source)).join('')}
       </div>
-      <details class="mc-live-news-group" data-feed-group-id="news">
-        <summary>
-          <span class="mc-live-news-icon" aria-hidden="true">${ICONS.news}</span>
-          <strong>${esc(t('mc.cf.group.news'))}</strong>
-          <span>${LIVE_NEWS_CATALOG.length}</span>
-        </summary>
-        <div class="mc-public-feed-groups">
-          ${newsGroupsHtml()}
-        </div>
-      </details>
-      <details class="mc-live-news-group mc-public-webcams-group" data-feed-group-id="miami-beach">
-        <summary>
-          <span class="mc-live-news-icon" aria-hidden="true">${ICONS.camera}</span>
-          <strong>Miami Beach Public Webcams</strong>
-          <span>${MIAMI_BEACH_FEED_GROUPS.reduce((count, group) => count + group.feeds.length, 0)}</span>
-        </summary>
-        <div class="mc-public-feed-groups">
-          ${publicWebcamGroupsHtml()}
-        </div>
-      </details>
       ${response.edge_available ? '' : `<div class="mc-tb-state mc-tb-error" role="status">${esc(t('mc.live_source.edge_unavailable'))}</div>`}`;
-    restoreDisclosureState(container, disclosureState);
     attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource);
   } catch (_error) {
     container.innerHTML = `<div class="mc-tb-state mc-tb-error" role="alert">${esc(t('mc.live_source.load_failed'))}</div>`;
@@ -184,7 +162,44 @@ export async function renderCameraFeedsTab(container, { selectedIds, onAfterSend
 
   container._liveSourcesTimer = setTimeout(() => {
     if (container.isConnected) {
-      renderCameraFeedsTab(container, { selectedIds, onAfterSend, onRouteSource });
+      renderManagedSourcesTab(container, { selectedIds, onAfterSend, onRouteSource });
     }
   }, 5_000);
+}
+
+export function renderLiveFeedsTab(container, { selectedIds, onAfterSend, onRouteSource } = {}) {
+  if (container._liveSourcesTimer) {
+    clearTimeout(container._liveSourcesTimer);
+    container._liveSourcesTimer = null;
+  }
+  const disclosureState = captureDisclosureState(container);
+  container.innerHTML = `
+    <details class="mc-live-news-group" data-feed-group-id="news">
+      <summary>
+        <span class="mc-live-news-icon" aria-hidden="true">${ICONS.news}</span>
+        <strong>${esc(t('mc.cf.group.news'))}</strong>
+        <span>${LIVE_NEWS_CATALOG.length}</span>
+      </summary>
+      <div class="mc-public-feed-groups">
+        ${newsGroupsHtml()}
+      </div>
+    </details>
+    <details class="mc-live-news-group mc-public-webcams-group" data-feed-group-id="miami-beach">
+      <summary>
+        <span class="mc-live-news-icon" aria-hidden="true">${ICONS.camera}</span>
+        <strong>Miami Beach Public Webcams</strong>
+        <span>${MIAMI_BEACH_FEED_GROUPS.reduce((count, group) => count + group.feeds.length, 0)}</span>
+      </summary>
+      <div class="mc-public-feed-groups">
+        ${publicWebcamGroupsHtml()}
+      </div>
+    </details>`;
+  restoreDisclosureState(container, disclosureState);
+  attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource);
+}
+
+// Compatibility for callers outside the six-category shelf: the legacy camera
+// entry point now means managed classroom Sources only.
+export async function renderCameraFeedsTab(container, options = {}) {
+  return renderManagedSourcesTab(container, options);
 }

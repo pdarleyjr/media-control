@@ -224,6 +224,7 @@ export const api = {
   getGovernedContent: (filters = {}, options = {}) => {
     const query = new URLSearchParams();
     if (filters.folderId !== undefined) query.set('folder_id', filters.folderId === null ? 'root' : filters.folderId);
+    if (filters.folder) query.set('folder', filters.folder);
     if (filters.visibility) query.set('visibility', filters.visibility);
     if (filters.type) query.set('type', filters.type);
     if (filters.search) query.set('search', filters.search);

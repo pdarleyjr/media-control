@@ -135,7 +135,7 @@ test('Guest Computer uses embedded HDMI audio and the normal draggable source co
   assert.doesNotMatch(guestBlock, /tonor/i);
 });
 
-test('live-source refresh preserves operator disclosure state instead of collapsing Live News', () => {
+test('public Live Feed disclosure state remains operator-controlled', () => {
   const view = read('frontend/js/views/media-control/camera-feeds.js');
 
   assert.match(view, /captureDisclosureState/);
@@ -143,6 +143,26 @@ test('live-source refresh preserves operator disclosure state instead of collaps
   assert.match(view, /defaultOpen/);
   assert.match(view, /data-feed-group-id="news"/);
   assert.match(view, /addEventListener\('toggle'/);
+});
+
+test('managed Sources own the only live-source refresh lifecycle while Live Feeds stay public-only', () => {
+  const view = read('frontend/js/views/media-control/camera-feeds.js');
+  const toolbox = read('frontend/js/views/media-control/toolbox.js');
+  const managedStart = view.indexOf('export async function renderManagedSourcesTab');
+  const publicStart = view.indexOf('export function renderLiveFeedsTab');
+  const compatibilityStart = view.indexOf('export async function renderCameraFeedsTab');
+
+  assert.ok(managedStart >= 0 && publicStart > managedStart && compatibilityStart > publicStart);
+  const managedBlock = view.slice(managedStart, publicStart);
+  const publicBlock = view.slice(publicStart, compatibilityStart);
+  assert.match(managedBlock, /api\.liveSources\.list/);
+  assert.match(managedBlock, /setTimeout/);
+  assert.doesNotMatch(managedBlock, /LIVE_NEWS_CATALOG|MIAMI_BEACH_FEED_GROUPS|mc-live-news-tile/);
+  assert.match(publicBlock, /LIVE_NEWS_CATALOG/);
+  assert.match(publicBlock, /MIAMI_BEACH_FEED_GROUPS/);
+  assert.doesNotMatch(publicBlock, /api\.liveSources\.list|setTimeout/);
+  assert.match(toolbox, /renderManagedSourcesTab\(managedHost/);
+  assert.match(toolbox, /case 'livefeeds':[\s\S]*renderLiveFeedsTab\(renderHost/);
 });
 
 test('Miami Beach public webcams are restored as organized external media, not managed cameras', () => {
