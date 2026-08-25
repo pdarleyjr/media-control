@@ -344,8 +344,9 @@ app.get('/player/managed', (req, res) => {
         deviceToken: display.device_token,
         deviceName: display.name,
         serverUrl: `${req.protocol}://${req.get('host')}`,
-        // Query input is only a request. The authenticated display identity is
-        // authoritative: only Front Left may auto-unmute for the eARC soundbar.
+        // Query input is only a request. This authenticated Front Left flag is
+        // the legacy autoplay fallback; durable playlist ownership may grant
+        // any one classroom renderer while Windows stays on TV1/eARC.
         audioEnabled: authorizeManagedDisplayAudio(display, audioEnabled),
       },
     };

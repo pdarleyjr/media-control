@@ -14,6 +14,7 @@ const commandModel = require('../lib/command-model');
 const deviceContract = require('../player/device-contract');
 const { createRoomSnapshot, publishRoomSnapshot } = require('../lib/room-state-broadcaster');
 const { getRoomRevision } = require('../lib/room-snapshot');
+const { storedAudioPolicyForDevice } = require('../lib/audio-ownership');
 const {
   TRANSPORT_ACTIONS,
   createLiveTransportMirror,
@@ -203,6 +204,7 @@ module.exports = function setupDashboardSocket(io) {
     ingestCommand: (values) => commandModel.ingestCommand(values),
     createCommand: (values) => deviceContract.createCommand(values),
     resolveAudioAuthority: (devices) => commandModel.resolveClassroomAudioAuthority(devices),
+    getAudioPolicy: (deviceId) => storedAudioPolicyForDevice(db, deviceId),
   });
 
   // Build a per-socket registrar for rate-limited control events. Each accepted

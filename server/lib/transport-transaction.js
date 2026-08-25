@@ -282,6 +282,7 @@ function createTransportTransactionCoordinator(dependencies = {}) {
     ingestCommand,
     createCommand,
     resolveAudioAuthority,
+    getAudioPolicy,
     randomUUID,
     now,
   } = dependencies;
@@ -386,17 +387,41 @@ function createTransportTransactionCoordinator(dependencies = {}) {
     };
   }
 
-  function audioAuthority(workspaceId) {
+  function audioAuthority(workspaceId, deviceIds) {
+    if (typeof getAudioPolicy === 'function') {
+      const policies = deviceIds.map((deviceId) => getAudioPolicy(deviceId));
+      const first = policies[0] || null;
+      const common = Boolean(first)
+        && policies.every((policy) => (
+          policy
+          && String(policy.transaction_id || '') === String(first.transaction_id || '')
+          && Number(policy.revision) === Number(first.revision)
+          && String(policy.content_instance_id || '') === String(first.content_instance_id || '')
+          && Number(policy.generation) === Number(first.generation)
+          && String(policy.owner_device_id || '') === String(first.owner_device_id || '')
+          && String(policy.output_device_id || '') === String(first.output_device_id || '')
+        ));
+      return {
+        authorityDeviceId: common ? (first.owner_device_id || null) : null,
+        audioPolicy: common ? first : null,
+        conflict: !common,
+      };
+    }
     const devices = listWorkspaceDevices(workspaceId) || [];
     const resolved = typeof resolveAudioAuthority === 'function'
       ? resolveAudioAuthority(devices)
       : { valid: false, authority_device_id: null };
-    return resolved && resolved.valid ? resolved.authority_device_id : null;
+    return {
+      authorityDeviceId: resolved && resolved.valid ? resolved.authority_device_id : null,
+      audioPolicy: null,
+      conflict: false,
+    };
   }
 
   function buildTransaction(request, deviceIds, idempotencyKey, fingerprint) {
     const context = resolveContext(request, deviceIds);
     const createdAt = clock();
+    const audio = audioAuthority(request.workspaceId, deviceIds);
     return {
       ok: true,
       id: uuid(),
@@ -418,7 +443,9 @@ function createTransportTransactionCoordinator(dependencies = {}) {
         expectedRevision: request.expectedRevision,
         expectedGeneration: request.expectedGeneration,
       },
-      authorityDeviceId: audioAuthority(request.workspaceId),
+      authorityDeviceId: audio.authorityDeviceId,
+      audioPolicy: audio.audioPolicy,
+      audioPolicyConflict: audio.conflict,
       targets: new Map(),
       liveConsidered: false,
       createdAt,
@@ -428,8 +455,6 @@ function createTransportTransactionCoordinator(dependencies = {}) {
   }
 
   function targetPayload(transaction, deviceId, targetRole) {
-    const audioAllowed = targetRole === 'physical'
-      && transaction.authorityDeviceId === deviceId;
     const state = (typeof getDisplayState === 'function' ? getDisplayState(deviceId) : null) || {};
     const incoming = clonePayload(transaction.requestPayload || {});
     const overrides = transaction.requestOverrides || {};
@@ -444,6 +469,17 @@ function createTransportTransactionCoordinator(dependencies = {}) {
         ?? (typeof getContentGeneration === 'function'
           ? getContentGeneration(contentId, state.current_asset_id ?? null)
           : null);
+    const audioPolicyMatches = !transaction.audioPolicy || (
+      present(transaction.audioPolicy.content_instance_id)
+      && present(contentInstanceId)
+      && String(transaction.audioPolicy.content_instance_id) === String(contentInstanceId)
+      && Number.isFinite(Number(transaction.audioPolicy.generation))
+      && Number.isFinite(Number(expectedGeneration))
+      && Number(transaction.audioPolicy.generation) === Number(expectedGeneration)
+    );
+    const audioAllowed = targetRole === 'physical'
+      && transaction.authorityDeviceId === deviceId
+      && audioPolicyMatches;
     return {
       ...transaction.payload,
       action: transaction.action,
@@ -465,6 +501,14 @@ function createTransportTransactionCoordinator(dependencies = {}) {
       audio_authority_device_id: transaction.authorityDeviceId,
       audio_allowed: audioAllowed,
       force_muted: !audioAllowed,
+      ...(transaction.audioPolicy ? {
+        audio_policy_transaction_id: transaction.audioPolicy.transaction_id || null,
+        audio_policy_revision: transaction.audioPolicy.revision ?? null,
+        audio_policy_content_instance_id: transaction.audioPolicy.content_instance_id || null,
+        audio_policy_generation: transaction.audioPolicy.generation ?? null,
+      } : {}),
+      ...(transaction.audioPolicy && !audioPolicyMatches ? { audio_policy_mismatch: true } : {}),
+      ...(transaction.audioPolicyConflict ? { audio_policy_conflict: true } : {}),
     };
   }
 

@@ -16,6 +16,20 @@ test('broadcast route creates a persistent request and returns a request status 
   assert.match(route, /status_url:/);
 });
 
+test('broadcast fences one dynamic audio policy before committing its request-scoped owner', () => {
+  const route = source('routes/broadcast.js');
+  assert.match(route, /resolveDeterministicAudioOwner/);
+  assert.match(route, /source\.content_instance_id\s*=\s*deliveryRequest\.id/);
+  assert.match(route, /const proposedAudioPolicy\s*=\s*buildAudioPolicy\(/);
+  assert.match(route, /outputDeviceId:\s*audioOutputDeviceId/);
+  assert.match(route, /ownerDeviceId:\s*audioOwnerDeviceId/);
+  assert.match(route, /transactionId:\s*deliveryRequest\.id/);
+  assert.match(route, /nextAudioPolicyRevision\(/);
+  assert.match(route, /revision:\s*audioPolicyRevision/);
+  assert.match(route, /await fenceAudioOwnershipTargets\(deviceNamespace,/);
+  assert.match(route, /source\.audio_policy\s*=\s*audioFenceResult\.committed_policy/);
+});
+
 test('playlist payload carries request, command, source, and expected revision metadata', () => {
   const socket = source('ws/deviceSocket.js');
   assert.match(socket, /payload\.broadcast_delivery/);
@@ -24,6 +38,19 @@ test('playlist payload carries request, command, source, and expected revision m
   assert.match(socket, /source_id:\s*String\(activeDelivery\.sourceId\)/);
   assert.match(socket, /expected_playlist_revision:\s*payload\.playlist_revision/);
   assert.match(socket, /broadcastDelivery\.markPrepared\(/);
+});
+
+test('playlist payload carries a device-specific mute decision from the durable common policy', () => {
+  const socket = source('ws/deviceSocket.js');
+  assert.match(socket, /payload\.audio_policy/);
+  assert.match(socket, /audio_allowed/);
+  assert.match(socket, /force_muted/);
+  assert.match(socket, /playlist_revision:\s*payload\.playlist_revision/);
+  assert.match(
+    socket,
+    /authoritativeAudioPolicy\s*&&\s*!authoritativeAudioPolicy\.owner_device_id[\s\S]*ensureAudioOwnerAfterReconnect/,
+    'a durable null-owner policy must retry a fresh fenced recovery after the host becomes ready',
+  );
 });
 
 test('authenticated player status is persisted and relayed to the workspace dashboard', () => {

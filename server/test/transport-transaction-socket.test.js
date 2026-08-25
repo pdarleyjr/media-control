@@ -130,7 +130,13 @@ test('real dashboard socket dispatches one transaction to five displays and Live
     assert.deepEqual(new Set([...received.values()].map(
       envelope => envelope.payload.action,
     )), new Set(['go_to_slide']));
-    assert.equal(received.get('front-left').payload.audio_allowed, true);
+    // This fixture has no durable playlist ownership policy. The real socket
+    // integration must therefore keep every physical renderer fail-muted
+    // instead of reviving the legacy Front Left advisory.
+    for (const [deviceId] of physical) {
+      assert.equal(received.get(deviceId).payload.audio_allowed, false);
+      assert.equal(received.get(deviceId).payload.force_muted, true);
+    }
     assert.equal(received.get(live.id).payload.force_muted, true);
   } finally {
     for (const client of clients) client.disconnect();

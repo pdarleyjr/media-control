@@ -7,9 +7,19 @@ const { db, pruneTelemetry, pruneScreenshots } = require('../db/database');
 const config = require('../config');
 const heartbeat = require('../services/heartbeat');
 const commandQueue = require('../lib/command-queue');
+const {
+  audioPolicyHeartbeatDecision,
+  commonAudioPolicyFromAssignments,
+  policyForDevice,
+  storedAudioPolicyForDevice,
+} = require('../lib/audio-ownership');
 const { withLocalAssetUrls, withClassroomCacheUrls, withPublicContentAssetUrls } = require('../lib/local-asset-url');
 const { profileForDevice, isClassroom1Smartboard } = require('../lib/display-profiles');
 const whiteboardState = require('../services/whiteboard-state');
+const {
+  ensureAudioOwnershipAfterReconnect,
+  recoverAudioOwnershipAfterLoss,
+} = require('../lib/audio-owner-recovery');
 
 // Debounce window for marking a device offline on socket disconnect. Brief
 // flap (Wi-Fi blip, Engine.IO ping miss, server-side eviction-then-reconnect)
@@ -81,6 +91,54 @@ function scheduleDeviceRoomSnapshot(io, deviceId, reason) {
     console.warn(`[room-state] could not schedule ${reason || 'device transition'} for ${deviceId}: ${error.message}`);
     return null;
   }
+}
+
+const audioRecoveryFlights = new Map();
+
+function audioRecoveryFlightKey(deviceId) {
+  const policy = storedAudioPolicyForDevice(db, deviceId);
+  return policy
+    ? `${policy.source_key || policy.content_instance_id || policy.transaction_id}:${policy.revision}`
+    : `device:${deviceId}`;
+}
+
+function runAudioRecoveryOnce(deviceId, recover) {
+  const key = audioRecoveryFlightKey(deviceId);
+  const active = audioRecoveryFlights.get(key);
+  if (active) return active;
+  const pending = Promise.resolve().then(recover).finally(() => {
+    if (audioRecoveryFlights.get(key) === pending) audioRecoveryFlights.delete(key);
+  });
+  audioRecoveryFlights.set(key, pending);
+  return pending;
+}
+
+function recoverLostAudioOwner(deviceNs, deviceId) {
+  return runAudioRecoveryOnce(deviceId, () => recoverAudioOwnershipAfterLoss({
+    database: db,
+    namespace: deviceNs,
+    lostDeviceId: deviceId,
+    buildPayload: buildPlaylistPayload,
+    emitPolicyUpdate: (targetDeviceId) => commandQueue.queueOrEmitPlaylistUpdate(
+      deviceNs,
+      targetDeviceId,
+      buildPlaylistPayload,
+    ),
+  }));
+}
+
+function ensureAudioOwnerAfterReconnect(deviceNs, deviceId) {
+  return runAudioRecoveryOnce(deviceId, () => ensureAudioOwnershipAfterReconnect({
+    database: db,
+    namespace: deviceNs,
+    deviceId,
+    buildPayload: buildPlaylistPayload,
+    emitPolicyUpdate: (targetDeviceId) => commandQueue.queueOrEmitPlaylistUpdate(
+      deviceNs,
+      targetDeviceId,
+      buildPlaylistPayload,
+    ),
+  }));
 }
 
 function pushEffectiveWallLeadership(deviceNs, wallId, exceptDeviceId = null) {
@@ -344,6 +402,8 @@ function buildPlaylistPayload(deviceId, delivery = null) {
     }
   }
 
+  const commonAudioPolicy = commonAudioPolicyFromAssignments(assignments);
+
   let layout = null;
   if (device?.layout_id) {
     layout = db.prepare('SELECT * FROM layouts WHERE id = ?').get(device.layout_id);
@@ -488,6 +548,7 @@ function buildPlaylistPayload(deviceId, delivery = null) {
       auto_detected: !!device?.auto_detect_resolution,
     },
     display_profile: profileForDevice(device),
+    audio_policy: commonAudioPolicy,
   };
 
   // Stable revision for missed-push reconciliation. Playback state is excluded:
@@ -503,7 +564,21 @@ function buildPlaylistPayload(deviceId, delivery = null) {
     layout_context: payload.layout_context,
     device_geometry: payload.device_geometry,
     display_profile: payload.display_profile,
+    audio_policy: payload.audio_policy,
   })).digest('hex').slice(0, 24);
+  if (commonAudioPolicy) {
+    const deviceAudioPolicy = policyForDevice(
+      commonAudioPolicy,
+      deviceId,
+      payload.playlist_revision,
+    );
+    payload.audio_policy = deviceAudioPolicy ? {
+      ...deviceAudioPolicy,
+      audio_allowed: deviceAudioPolicy.audio_allowed,
+      force_muted: deviceAudioPolicy.force_muted,
+      playlist_revision: payload.playlist_revision,
+    } : null;
+  }
   let activeDeliveries = Array.isArray(delivery)
     ? delivery
     : (delivery && typeof delivery === 'object' ? [delivery] : []);
@@ -842,6 +917,9 @@ module.exports = function setupDeviceSocket(io) {
           } else {
             socket.emit('device:playlist-update', buildPlaylistPayload(device_id));
           }
+          void ensureAudioOwnerAfterReconnect(deviceNs, device_id).catch((error) => {
+            console.error(`Audio reconnect recovery failed for ${device_id}: ${error.message}`);
+          });
 
           emitToDeviceWorkspace(dashboardNs, device_id, 'dashboard:device-status', { device_id, status: 'online' });
           scheduleDeviceRoomSnapshot(io, device_id, 'device:online');
@@ -943,10 +1021,10 @@ module.exports = function setupDeviceSocket(io) {
     // handler, crashing Node. Now we (a) re-check the parent row exists
     // before any FK insert, and (b) wrap each write in try/catch so a single
     // malformed payload never restarts the container.
-    socket.on('device:heartbeat', (data) => {
+    socket.on('device:heartbeat', (data, acknowledge) => {
       try {
         if (!requireDeviceAuth()) return;
-        const { device_id, telemetry } = data || {};
+        const { device_id, telemetry, audio_policy_state } = data || {};
         if (!device_id || device_id !== currentDeviceId) return;
 
         // Parent existence check: if the device row was deleted server-side
@@ -1008,9 +1086,32 @@ module.exports = function setupDeviceSocket(io) {
             console.warn(`dashboard emit failed for ${device_id}: ${e.message}`);
           }
         }
+        const authoritativeAudioPolicy = buildPlaylistPayload(device_id).audio_policy || null;
+        const audioPolicyDecision = audioPolicyHeartbeatDecision(
+          authoritativeAudioPolicy,
+          audio_policy_state,
+        );
+        if (audioPolicyDecision.clamp) {
+          socket.emit('device:audio-policy-clamp', {
+            version: 1,
+            reason: audioPolicyDecision.reason,
+            audio_policy: authoritativeAudioPolicy,
+          });
+        }
+        if (authoritativeAudioPolicy && !authoritativeAudioPolicy.owner_device_id) {
+          void ensureAudioOwnerAfterReconnect(deviceNs, device_id).catch((error) => {
+            console.error(`Audio heartbeat recovery failed for ${device_id}: ${error.message}`);
+          });
+        }
+        if (typeof acknowledge === 'function') acknowledge({
+          ok: true,
+          audio_policy: authoritativeAudioPolicy,
+          audio_policy_decision: audioPolicyDecision,
+        });
       } catch (e) {
         // Catch-all so a malformed payload never escapes the event loop.
         console.error(`device:heartbeat handler crashed: ${e.message}`, e.stack);
+        if (typeof acknowledge === 'function') acknowledge({ ok: false, error: 'heartbeat_failed' });
       }
     });
 
@@ -1528,6 +1629,9 @@ socket.on('device:wb-undo', () => {
           const wall = db.prepare('SELECT wall_id AS id FROM video_wall_devices WHERE device_id = ?').get(deviceId);
           if (wall) pushEffectiveWallLeadership(deviceNs, wall.id, deviceId);
         } catch (e) { console.error('Wall effective-leader refresh failed:', e.message); }
+        void recoverLostAudioOwner(deviceNs, deviceId).catch((error) => {
+          console.error(`Audio owner recovery failed for ${deviceId}: ${error.message}`);
+        });
 
         // Save last screenshot to disk as offline snapshot
         const lastB64 = lastScreenshots[deviceId];
@@ -1550,3 +1654,5 @@ socket.on('device:wb-undo', () => {
 // Exposed for focused contract tests and internal reconciliation callers. The
 // production export remains the namespace setup function above.
 module.exports.buildPlaylistPayload = buildPlaylistPayload;
+module.exports.ensureAudioOwnerAfterReconnect = ensureAudioOwnerAfterReconnect;
+module.exports.recoverLostAudioOwner = recoverLostAudioOwner;

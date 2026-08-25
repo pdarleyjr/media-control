@@ -257,6 +257,7 @@
   <script src="/player/device-contract.js"></script>
   <script src="/player/screen-state.js"></script>
   <script src="/player/player-routing.js"></script>
+  <script src="/player/audio-policy.js"></script>
 <script>
 // Expose the player's socket to the screen-share receiver. The player JS
 // calls io('/device', ...) - we monkey-patch io() so the resulting Manager's
@@ -407,7 +408,9 @@
     function applyManagedDisplayConfig() {
       const managed = window.__playerConfig && window.__playerConfig.managedDisplay;
       if (!managed || !managed.deviceId || !managed.deviceToken) return;
-      if (config.deviceId && config.deviceId !== managed.deviceId) savePlaylistCache([]);
+      if (config.deviceId && config.deviceId !== managed.deviceId) {
+        savePlaylistCache([]);
+      }
       const origin = window.location.origin;
       const bootstrap = window.MbfdPlayerBootstrap;
       config.serverUrl = bootstrap && typeof bootstrap.resolveManagedServerUrl === 'function'
@@ -424,6 +427,15 @@
     let socket = null;
     let config = getConfig();
     applyManagedDisplayConfig();
+    const rendererSessionId = (window.crypto && typeof window.crypto.randomUUID === 'function')
+      ? window.crypto.randomUUID()
+      : `renderer-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const managedAudioConfig = window.__playerConfig?.managedDisplay;
+    const staticManagedAudioAllowed = !managedAudioConfig || managedAudioConfig.audioEnabled === true;
+    const audioPolicyController = window.MbfdAudioPolicy.createAudioPolicyController({
+      deviceId: config.deviceId,
+      fallbackAllowed: staticManagedAudioAllowed,
+    });
     let playlist = [];
     let currentIndex = -1;
     let isPlaying = false;
@@ -456,10 +468,10 @@
     let userHasInteracted = false;
     // Managed kiosk displays (Electron, autoplay-policy=no-user-gesture-required)
     // have no user present to dismiss the "tap to enable audio" overlay.
-    // Only unlock audio for the ONE display explicitly designated as the audio
-    // source (audioEnabled:true in its managedDisplay config — TV1/Front-Left,
-    // which feeds the eARC soundbar). ALL other leaders must stay muted so only
-    // the correct speaker plays. Wall followers are always muted via isWallFollower().
+    // A managed kiosk can satisfy Chromium's user-activation gate without a
+    // person present. This static flag is only the legacy fallback; an
+    // authoritative playlist policy below still decides which one renderer may
+    // produce audio and may deliberately choose any TV in a span.
     if (window.__playerConfig?.managedDisplay?.audioEnabled) {
       userHasInteracted = true;
     }
@@ -478,9 +490,6 @@
     let currentMediaError = null;
     let lastPlaybackProgressAt = 0;
     let playbackGeneration = 0;
-    const rendererSessionId = (window.crypto && typeof window.crypto.randomUUID === 'function')
-      ? window.crypto.randomUUID()
-      : `renderer-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const pendingBroadcastDeliveries = new Map();
     let currentMediaAbortController = null;
     let activeSeekCancel = null;
@@ -509,15 +518,98 @@
     let displayStateRestoreTimer = null;
     let displayStateRestoreAttempt = 0;
     let awaitingAuthoritativePlaylist = false;
-    // Followers in a video wall must stay silent — N copies of the same audio
-    // slightly out of sync produce a flanged echo across the wall. Only the
-    // leader is allowed to make sound. This helper is the single source of
-    // truth used by every code path that would otherwise unmute audio.
+    function audioPolicyContext(items = playlist, playlistRevision = appliedPlaylistRevision) {
+      return {
+        content_instance_ids: (Array.isArray(items) ? items : [])
+          .map((item) => item?.content_instance_id)
+          .filter(Boolean),
+        content_generations: (Array.isArray(items) ? items : [])
+          .map((item) => item?.content_generation)
+          .filter((value) => value != null),
+        playlist_revision: playlistRevision,
+      };
+    }
+    function publishAudioPolicyState(reason) {
+      const accepted = audioPolicyController.statusSnapshot();
+      const audioAllowed = audioPolicyController.audioAllowed();
+      const detail = {
+        version: 1,
+        initialized: true,
+        state: audioPolicyController.hasPolicy() && !audioPolicyController.isBlocked()
+          ? 'active'
+          : 'fail-muted',
+        reason: reason || audioPolicyController.blockReason() || null,
+        device_id: config.deviceId || null,
+        renderer_session_id: rendererSessionId,
+        content_instance_id: accepted?.content_instance_id || null,
+        transaction_id: accepted?.transaction_id || null,
+        revision: accepted?.revision ?? null,
+        generation: accepted?.generation ?? null,
+        owner_device_id: accepted?.owner_device_id || null,
+        audio_allowed: audioAllowed,
+        muted: !audioAllowed,
+        playlist_revision: accepted?.playlist_revision || appliedPlaylistRevision || null,
+      };
+      window.__mbfdAudioPolicyState = detail;
+      try { window.dispatchEvent(new CustomEvent('mbfd:audio-policy-state', { detail })); } catch (_) {}
+      return detail;
+    }
+    // Legacy playlists keep followers silent to avoid flanged echo. When a
+    // dynamic playlist policy is present, it is the single source of truth and
+    // may select any one renderer, including a follower.
     function isWallFollower() { return !!(wallConfig && !wallConfig.is_leader); }
     function audioOutputAllowed() {
+      if (audioPolicyController.hasPolicy() || audioPolicyController.isBlocked()) {
+        return audioPolicyController.audioAllowed();
+      }
       const managedDisplay = window.__playerConfig?.managedDisplay;
       return !isWallFollower() && (!managedDisplay || managedDisplay.audioEnabled === true);
     }
+    function muteAllPlayerAudio() {
+      document.querySelectorAll('video, audio').forEach((media) => {
+        try { media.muted = true; } catch (_) {}
+      });
+      try {
+        if (activeYtPlayer && typeof activeYtPlayer.mute === 'function') activeYtPlayer.mute();
+      } catch (_) {}
+      document.querySelectorAll('iframe').forEach((frame) => {
+        try {
+          frame.contentWindow?.postMessage({
+            type: 'mbfd-player-command',
+            action: 'mute',
+          }, '*');
+        } catch (_) {}
+      });
+    }
+    function reconcileAudioPolicy() {
+      if (!audioOutputAllowed()) {
+        muteAllPlayerAudio();
+        hideEnableAudioPrompt();
+        publishAudioPolicyState(audioPolicyController.blockReason());
+        return;
+      }
+      userHasInteracted = true;
+      unlockAudio();
+      publishAudioPolicyState('authoritative_owner_grant');
+    }
+    function applyPlaylistAudioPolicy(data, items) {
+      if (!data?.audio_policy) {
+        if (managedAudioConfig) audioPolicyController.block('authoritative_policy_missing');
+        else audioPolicyController.clear();
+        reconcileAudioPolicy();
+        return managedAudioConfig
+          ? { applied: false, reason: 'authoritative_policy_missing' }
+          : { applied: true, reason: 'legacy_static_audio_policy' };
+      }
+      const result = audioPolicyController.apply(
+        data.audio_policy,
+        audioPolicyContext(items, data.playlist_revision),
+      );
+      if (!result.applied) console.warn('[audio-policy] rejected: ' + result.reason);
+      reconcileAudioPolicy();
+      return result;
+    }
+    publishAudioPolicyState('cold_start');
     function applyManagedProgramAudioPolicy(policy) {
       if (!isManagedProgramReceiver()) return false;
       const contentEnabled = policy === 'content_replace';
@@ -1291,9 +1383,8 @@
         // First gesture: prime the AudioContext. This signals "site activated"
         // to Firefox and unlocks subsequent <video> unmute attempts.
         if (wasFirst) unlockAudioContext();
-        // Followers in a video wall must stay muted forever — even after a
-        // user gesture. Otherwise tapping a follower screen would unmute it
-        // and cause echo with the leader.
+        // A renderer without current ownership must stay muted even after a
+        // user gesture. Otherwise a tap could escape the authoritative policy.
         if (!audioOutputAllowed()) return;
         if (wasFirst) console.log('[wall/audio] first user gesture detected — attempting unmute');
         tryUnmuteLeader();
@@ -1397,16 +1488,14 @@
         document.body.appendChild(tapOverlay);
 
         // Auto-dismiss. Two paths:
-        //   • Managed audio display (TV1): dismiss immediately with unlockAudio() so the
-        //     designated soundbar display never sits waiting for a human tap that will
-        //     never come. The browser's user-activation gate is bypassed on kiosk windows
-        //     via --autoplay-policy=no-user-gesture-required; calling unlockAudio() here
-        //     also fires the DOM / AudioContext setup so iframes (grid/hls/oz) have their
-        //     audio ready as soon as content loads.
+        //   • Legacy statically enabled managed display: dismiss immediately with
+        //     unlockAudio(). Dynamic policies can grant any renderer later through
+        //     reconcileAudioPolicy(). The kiosk's autoplay flag bypasses Chromium's
+        //     gesture gate; unlockAudio() also prepares iframe audio plumbing.
         //   • All other displays / non-kiosk: auto-dismiss after 5s and connect MUTED
         //     (same as before). Sound returns on the first real tap.
         if (userHasInteracted) {
-          // Zero-delay dismiss: managed audio display — start connecting and audio immediately.
+          // Zero-delay dismiss for the legacy statically enabled managed display.
           setTimeout(() => {
             if (tapOverlay.parentNode) tapOverlay.remove();
             unlockAudio();
@@ -1469,8 +1558,8 @@
         src.connect(ctx.destination);
         src.start(0);
       } catch(e) { console.warn('Audio unlock failed:', e); }
-      // Managed displays without audio permission and wall followers stay
-      // muted even when transport controls synthesize an unlock gesture.
+      // Renderers without current audio ownership stay muted even when
+      // transport controls synthesize an unlock gesture.
       if (!audioOutputAllowed()) {
         document.querySelectorAll('video').forEach(v => { v.muted = true; });
         try {
@@ -1732,6 +1821,7 @@
         command_revision: lastTransportCommand?.command_id || screenStateController.snapshot().command_revision || null,
         screen_on: screenStateController.snapshot().screen_on,
       };
+      Object.assign(snapshot, audioPolicyController.stateFields());
 
       if (child && typeof child === 'object') {
         if (child.current_content_id != null) snapshot.current_content_id = child.current_content_id;
@@ -2608,6 +2698,9 @@
 
       socket.on('connect', () => {
         console.log('Connected');
+        audioPolicyController.block('socket_reconnecting');
+        muteAllPlayerAudio();
+        publishAudioPolicyState('socket_reconnecting');
         awaitingAuthoritativePlaylist = !!(config.deviceId && (config.paired || config.deviceToken));
         if (receiverHealth) receiverHealth.markConnecting(_t('receiver_connecting'));
         else {
@@ -2619,6 +2712,9 @@
 
       socket.on('disconnect', () => {
         console.log('Disconnected');
+        audioPolicyController.block('socket_disconnected');
+        muteAllPlayerAudio();
+        publishAudioPolicyState('socket_disconnected');
         stopHeartbeat();
         if (receiverHealth) {
           receiverHealth.markStale(_t('receiver_stale'));
@@ -2776,6 +2872,61 @@
         }
       });
 
+      socket.on('device:audio-policy-fence', async (data, acknowledge) => {
+        const rawPolicy = data?.audio_policy;
+        const result = audioPolicyController.fence({
+          ...rawPolicy,
+          owner_device_id: data?.pending_owner_device_id || null,
+        });
+        muteAllPlayerAudio();
+        const state = publishAudioPolicyState(result.reason || 'mute_before_owner_grant');
+        const mediaMuted = [...document.querySelectorAll('video, audio')]
+          .every((media) => media.muted === true);
+        let youtubeMuted = true;
+        try {
+          youtubeMuted = !activeYtPlayer
+            || typeof activeYtPlayer.isMuted !== 'function'
+            || activeYtPlayer.isMuted() === true;
+        } catch (_) { youtubeMuted = false; }
+        const hostMute = await window.MbfdAudioPolicy.confirmHostMuted({
+          bridge: window.mbfdKioskAudio,
+          state: {
+            version: 1,
+            device_id: config.deviceId || null,
+            renderer_session_id: rendererSessionId,
+            transaction_id: rawPolicy?.transaction_id || null,
+            revision: rawPolicy?.revision ?? null,
+            generation: rawPolicy?.generation ?? null,
+          },
+          timeoutMs: 1000,
+        });
+        if (typeof acknowledge === 'function') {
+          acknowledge({
+            ok: result.applied === true && mediaMuted && youtubeMuted && hostMute.confirmed === true,
+            muted: mediaMuted && youtubeMuted,
+            host_muted: hostMute.confirmed === true,
+            host_mute_error: hostMute.reason,
+            phase: 'muted',
+            device_id: config.deviceId || null,
+            renderer_session_id: rendererSessionId,
+            transaction_id: rawPolicy?.transaction_id || null,
+            revision: rawPolicy?.revision ?? null,
+            generation: rawPolicy?.generation ?? null,
+            state,
+          });
+        }
+      });
+
+      socket.on('device:audio-policy-clamp', (data) => {
+        const authoritative = data?.audio_policy || null;
+        if (!authoritative) {
+          audioPolicyController.block(data?.reason || 'authoritative_policy_missing');
+        } else {
+          audioPolicyController.apply(authoritative, audioPolicyContext());
+        }
+        reconcileAudioPolicy();
+      });
+
       socket.on('device:playlist-update', (data) => {
         console.log('Playlist update:', data.assignments?.length, 'items');
         acceptBroadcastDelivery(data);
@@ -2916,14 +3067,14 @@
             if (video) { video.paused ? video.play() : video.pause(); }
             break;
           case 'KEYCODE_VOLUME_UP':
-            // Wall followers ignore volume changes — they stay silent.
+            // Renderers without audio ownership ignore volume changes.
             if (video && audioOutputAllowed()) { video.volume = Math.min(1, video.volume + 0.1); video.muted = false; publishPlayerState(); }
             break;
           case 'KEYCODE_VOLUME_DOWN':
             if (video) { video.volume = Math.max(0, video.volume - 0.1); publishPlayerState(); }
             break;
           case 'KEYCODE_MENU':
-            // Toggle mute (followers can't unmute)
+            // Toggle mute only on the current audio owner.
             if (video && audioOutputAllowed()) { video.muted = !video.muted; publishPlayerState(); }
             break;
           case 'KEYCODE_HOME':
@@ -3205,6 +3356,19 @@
           markTransportCommand(command, 'pending');
           publishPlayerState();
 
+          // Transport may control HTML video, YouTube, or a presentation
+          // iframe. A non-owner must never use an unmute/positive-volume
+          // command to escape the request-scoped playlist ownership policy.
+          const requestedVolume = action === 'volume'
+            ? Number((command.payload || {}).volume ?? (command.payload || {}).level ?? (command.payload || {}).value)
+            : null;
+          if ((action === 'unmute' || (action === 'volume' && requestedVolume > 0))
+              && !audioOutputAllowed()) {
+            muteAllPlayerAudio();
+            finishTransportCommand(command, true, null, buildPlayerState());
+            return;
+          }
+
           const targetRes = resolveTargetRoot(command.payload || {});
           if (!targetRes.ok) {
             finishTransportCommand(command, false, targetRes.error || 'Ambiguous target', buildPlayerState());
@@ -3270,11 +3434,13 @@
               } else if (action === 'mute') {
                 if (typeof youtubeTarget.mute === 'function') youtubeTarget.mute();
               } else if (action === 'unmute') {
-                if (typeof youtubeTarget.unMute === 'function') youtubeTarget.unMute();
+                if (audioOutputAllowed() && typeof youtubeTarget.unMute === 'function') youtubeTarget.unMute();
+                else if (typeof youtubeTarget.mute === 'function') youtubeTarget.mute();
               } else if (action === 'volume') {
                 const level = Number((command.payload || {}).volume ?? (command.payload || {}).level ?? (command.payload || {}).value);
                 if (!Number.isFinite(level) || level < 0 || level > 1) throw new Error('Invalid volume level');
                 if (typeof youtubeTarget.setVolume === 'function') youtubeTarget.setVolume(Math.round(level * 100));
+                if (level > 0 && !audioOutputAllowed() && typeof youtubeTarget.mute === 'function') youtubeTarget.mute();
               } else if (action === 'seek_forward' || action === 'seek_backward') {
                 const delta = Number((command.payload || {}).delta_seconds ?? (command.payload || {}).seconds ?? 10);
                 const cur = typeof youtubeTarget.getCurrentTime === 'function' ? Number(youtubeTarget.getCurrentTime()) || 0 : 0;
@@ -3401,8 +3567,12 @@
           }
           else if (action === 'unmute') {
             if (video) {
-              unlockAudio();
-              video.muted = false;
+              if (audioOutputAllowed()) {
+                unlockAudio();
+                video.muted = false;
+              } else {
+                video.muted = true;
+              }
               handled = true;
             }
             _showTransportDebug('unmute');
@@ -3414,9 +3584,13 @@
                 finishTransportCommand(command, false, 'Invalid volume level', buildPlayerState());
                 return;
               }
-              unlockAudio();
               video.volume = level;
-              if (level > 0) video.muted = false;
+              if (level > 0 && audioOutputAllowed()) {
+                unlockAudio();
+                video.muted = false;
+              } else if (level > 0) {
+                video.muted = true;
+              }
               handled = true;
             }
             _showTransportDebug('volume');
@@ -3601,15 +3775,24 @@
     // ==================== Heartbeat ====================
     function startHeartbeat() {
       stopHeartbeat();
-      heartbeatTimer = setInterval(() => {
+      const sendHeartbeat = () => {
         if (!socket?.connected || !config.deviceId) return;
         const state = buildPlayerState();
         socket.emit('device:heartbeat', {
           device_id: config.deviceId,
           telemetry: state.telemetry,
+          audio_policy_state: window.__mbfdAudioPolicyState || publishAudioPolicyState('heartbeat'),
+        }, (response) => {
+          if (!response?.audio_policy_decision?.clamp) return;
+          const authoritative = response.audio_policy || null;
+          if (!authoritative) audioPolicyController.block(response.audio_policy_decision.reason);
+          else audioPolicyController.apply(authoritative, audioPolicyContext());
+          reconcileAudioPolicy();
         });
         publishPlayerState();
-      }, HEARTBEAT_INTERVAL);
+      };
+      sendHeartbeat();
+      heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL);
     }
 
     function stopHeartbeat() { if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; } }
@@ -3674,23 +3857,17 @@
         wallConfig = null;
         container.classList.remove('wall-mode');
         console.log('[wall] exited wall mode');
+        reconcileAudioPolicy();
         return;
       }
       wallConfig = config;
       container.classList.add('wall-mode');
       console.log('[wall] applyWallMode wall=' + config.wall_id + ' is_leader=' + config.is_leader + ' userHasInteracted=' + userHasInteracted);
 
-      // Enforce the audio rule on the currently-mounted video right now.
-      // If the role flipped (e.g., leader was reassigned mid-stream), the
-      // existing video element keeps its old muted state until we touch it.
-      if (currentVideoEl) {
-        if (config.is_leader) {
-          // Defer to autoplay policy — leader can be unmuted once the user
-          // has gestured. Don't yank audio if it's already playing.
-        } else {
-          if (!currentVideoEl.muted) currentVideoEl.muted = true;
-        }
-      }
+      // A dynamic playlist policy may deliberately choose any TV1-TV5
+      // renderer, including a span follower. Legacy playlists still use the
+      // existing leader/static managed-display fallback.
+      reconcileAudioPolicy();
 
       if (config.is_leader) {
         // Leader emits at 4Hz so followers can apply small playbackRate
@@ -3800,6 +3977,7 @@
       appliedPlaylistRevision = typeof data.playlist_revision === 'string'
         ? data.playlist_revision
         : null;
+      applyPlaylistAudioPolicy(data, newItems);
       const serverRestoreState = data.display_state || null;
       wallLayoutContext = data.layout_context || null;
       applyDisplayProfile(data.display_profile || null);
@@ -4135,10 +4313,9 @@
         ? !!(container.isConnected && container._mcYoutubePlayer === youtubePlayer)
         : myGeneration === ytGeneration;
 
-      // Wall-follower flag drives mute/overlay/autoplay decisions below. Followers
-      // never have their own audio (leader-only audio rule prevents echo across
-      // adjacent TVs), so the "Click to unmute" overlay would be misleading on a
-      // follower and could itself create echo if someone tapped it.
+      // Wall role still drives playback synchronization. Audio permission is
+      // independent: the authoritative playlist policy may choose any renderer,
+      // including a follower, while every non-owner remains muted.
       const isFollowerEmbed = !!(wallConfig && !wallConfig.is_leader);
       const youtubeAudioAllowed = audioOutputAllowed();
 
@@ -4148,7 +4325,7 @@
       playerDiv.style.cssText = 'width:100%;height:100%;background:#000';
       container.appendChild(playerDiv);
 
-      // Add a click-to-unmute overlay on top of the YouTube iframe — leader/solo only.
+      // Add a click-to-unmute overlay only for the current audio owner.
       if (!userHasInteracted && youtubeAudioAllowed) {
         const overlay = document.createElement('div');
         overlay.style.cssText = 'position:absolute;inset:0;z-index:10;cursor:pointer;display:flex;align-items:end;justify-content:center;padding-bottom:max(40px,4vh);';
@@ -4183,9 +4360,8 @@
           height: '100%',
           playerVars: {
             autoplay: 1,
-            // Wall followers MUST stay muted regardless of userHasInteracted
-            // (leader-only audio rule prevents echo). Solo / leader follow the
-            // standard autoplay-policy logic: muted until the user interacts.
+            // Non-owners stay muted regardless of userHasInteracted. The one
+            // owner follows the standard autoplay-policy gesture logic.
             mute: youtubeAudioAllowed && userHasInteracted ? 0 : 1,
             controls: 0,
             rel: 0,
@@ -4487,8 +4663,8 @@
               webSrc = ownPath + (ownPath.indexOf('?') === -1 ? '?' : '&') + 'aspect=' + asp.toFixed(4);
             } else if (audioOutputAllowed() && /\/player\/(oz|hls|live-source)\.html(\?|$)/.test(ownPath)) {
               // A single full-screen managed live source or news stream → play WITH
-              // sound on leader/solo (followers stay muted to avoid echo across the
-              // wall). The player falls back to muted if the browser blocks unmuted
+              // sound on the current owner (all non-owners stay muted). The player
+              // falls back to muted if the browser blocks unmuted
               // autoplay, then unmutes on the one-time "tap to enable audio" gesture.
               webSrc = ownPath + (ownPath.indexOf('?') === -1 ? '?' : '&') + 'audio=1';
             }
@@ -4524,7 +4700,7 @@
           // enable audio"), (re)enable the grid's chosen audio cell on EVERY mount —
           // so SWITCHING the audio frame by re-sending the layout takes effect live
           // without another tap (the grid is muted by default and unlockAudio only
-          // fires on a fresh gesture). Followers stay muted (leader-only audio). The
+          // fires on a fresh gesture). Non-owners stay muted. The
           // grid is same-origin (root-relative) so we can call into it; it arms +
           // retries internally if its audio cell hasn't booted yet.
           if (isGridUrl(ownPath) && audioOutputAllowed()) {
@@ -4558,10 +4734,10 @@
             ? Math.min(2000, currentItemStartedAt - Date.now())
             : 0;
           video.autoplay = wallStartDelayMs <= 0;
-          // Followers stay muted unconditionally (leader-only audio); leaders
-          // start muted only if the user hasn't gestured yet (autoplay policy).
+          // Non-owners stay muted unconditionally; the owner starts muted only
+          // if the user hasn't gestured yet (autoplay policy).
           video.muted = !audioOutputAllowed() || !userHasInteracted;
-          // Explicit max volume on the leader so audio is at full level when
+          // Explicit max volume on the owner so audio is at full level when
           // unmute happens (default is 1.0 but make it visible in logs).
           if (audioOutputAllowed()) video.volume = 1.0;
           video.playsInline = true;
@@ -4663,7 +4839,7 @@
             publishPlayerState();
           };
           // If anything (browser, scripts, the user) tries to unmute a
-          // follower, snap it back. This is the safety net for the audio
+          // non-owner, snap it back. This is the safety net for the audio
           // bug — without it, a single stray unmute call causes echo.
           if (!audioOutputAllowed()) {
             video.addEventListener('volumechange', () => {
