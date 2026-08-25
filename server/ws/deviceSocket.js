@@ -489,7 +489,7 @@ function buildPlaylistPayload(deviceId, delivery = null) {
       layoutAssignment = buildLayoutAssignment({
         layoutId: wallLayout.id,
         layoutRevision: wallLayout.revision,
-        contentId: wall.content_id || restoredContentId || selectedAssignment?.content_id || null,
+        contentId: wall.content_id || selectedAssignment?.content_id || restoredContentId || null,
         fitMode: selectedAssignment?.fit_mode || null,
         synchronizedStartAt: selectedAssignment?.synchronized_start_at || null,
         geometry,
