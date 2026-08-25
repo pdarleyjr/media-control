@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+required_rollbacks=2
+container=media-control
+
+current_image_id="$(docker inspect "$container" --format '{{.Image}}')"
+current_image_ref="$(docker inspect "$container" --format '{{.Config.Image}}')"
+
+mapfile -t media_control_image_ids < <(
+  docker image ls --no-trunc --format '{{.ID}} {{.Repository}}:{{.Tag}}' |
+    awk '$2 ~ /media-control/ && !seen[$1]++ {print $1}'
+)
+
+rollback_ids=()
+for image_id in "${media_control_image_ids[@]}"; do
+  [[ "$image_id" == "$current_image_id" ]] && continue
+  rollback_ids+=("$image_id")
+done
+
+printf 'current Media Control image: %s (%s)\n' "$current_image_ref" "$current_image_id"
+printf 'distinct Media Control rollback images available: %d; required: %d\n' \
+  "${#rollback_ids[@]}" "$required_rollbacks"
+
+for (( index=0; index<required_rollbacks && index<${#rollback_ids[@]}; index++ )); do
+  printf 'protected-rollback %d: %s\n' "$((index + 1))" "${rollback_ids[index]}"
+done
+
+extra_count=$((${#rollback_ids[@]} - required_rollbacks))
+(( extra_count < 0 )) && extra_count=0
+printf 'additional historical Media Control image IDs requiring human review: %d\n' "$extra_count"
+
+if (( ${#rollback_ids[@]} < required_rollbacks )); then
+  printf 'ERROR: fewer than %d distinct rollback images are available\n' "$required_rollbacks" >&2
+  exit 1
+fi
+
+printf '%s\n' 'audit complete; this command does not delete or retag images'

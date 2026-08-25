@@ -1,0 +1,12 @@
+[Unit]
+Description=Check MBFD root filesystem capacity every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=mbfd-root-capacity-monitor.service
+
+[Install]
+WantedBy=timers.target

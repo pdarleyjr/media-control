@@ -1,0 +1,14 @@
+[Unit]
+Description=MBFD root filesystem capacity band monitor
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mbfd-root-capacity-monitor
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+StateDirectory=mbfd-storage-monitor
+ReadWritePaths=/run/lock
