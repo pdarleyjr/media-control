@@ -16,6 +16,18 @@
     return Number.isFinite(number) ? number : null;
   }
 
+  function createRendererSessionId(cryptoApi) {
+    if (cryptoApi && typeof cryptoApi.randomUUID === 'function') {
+      return cryptoApi.randomUUID();
+    }
+    if (cryptoApi && typeof cryptoApi.getRandomValues === 'function') {
+      const bytes = new Uint8Array(16);
+      cryptoApi.getRandomValues(bytes);
+      return `renderer-${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+    }
+    throw new Error('secure renderer session identity unavailable');
+  }
+
   function normalizeAudioPolicy(raw, deviceId) {
     if (!raw || typeof raw !== 'object' || Number(raw.version) !== 1) return null;
     const ownerDeviceId = text(raw.owner_device_id);
@@ -291,6 +303,7 @@
   return {
     confirmHostMuted,
     createAudioPolicyController,
+    createRendererSessionId,
     normalizeAudioPolicy,
   };
 }));

@@ -7,6 +7,7 @@ const path = require('node:path');
 const {
   confirmHostMuted,
   createAudioPolicyController,
+  createRendererSessionId,
   normalizeAudioPolicy,
 } = require('../player/audio-policy');
 
@@ -32,6 +33,42 @@ function context(overrides = {}) {
     ...overrides,
   };
 }
+
+test('renderer session identity prefers randomUUID, securely falls back, and otherwise fails closed', () => {
+  let fallbackCalls = 0;
+  assert.equal(createRendererSessionId({
+    randomUUID: () => 'preferred-random-uuid',
+    getRandomValues: () => {
+      fallbackCalls += 1;
+      throw new Error('fallback must not run');
+    },
+  }), 'preferred-random-uuid');
+  assert.equal(fallbackCalls, 0);
+
+  const fallback = createRendererSessionId({
+    getRandomValues: (bytes) => {
+      for (let index = 0; index < bytes.length; index += 1) bytes[index] = index;
+      return bytes;
+    },
+  });
+  assert.equal(fallback, 'renderer-000102030405060708090a0b0c0d0e0f');
+  assert.throws(
+    () => createRendererSessionId(null),
+    /secure renderer session identity unavailable/,
+  );
+  assert.throws(
+    () => createRendererSessionId({}),
+    /secure renderer session identity unavailable/,
+  );
+
+  const source = fs.readFileSync(path.join(__dirname, '..', 'player', 'index.html'), 'utf8');
+  const initialization = source.slice(
+    source.indexOf('const rendererSessionId'),
+    source.indexOf('const managedAudioConfig'),
+  );
+  assert.match(initialization, /createRendererSessionId\(window\.crypto\)/);
+  assert.doesNotMatch(initialization, /Math\.random/);
+});
 
 test('normalization derives per-renderer mute state without changing the physical TV1/eARC output', () => {
   assert.deepEqual(normalizeAudioPolicy(policy(), 'tv2'), {

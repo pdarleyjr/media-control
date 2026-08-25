@@ -427,9 +427,7 @@
     let socket = null;
     let config = getConfig();
     applyManagedDisplayConfig();
-    const rendererSessionId = (window.crypto && typeof window.crypto.randomUUID === 'function')
-      ? window.crypto.randomUUID()
-      : `renderer-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const rendererSessionId = window.MbfdAudioPolicy.createRendererSessionId(window.crypto);
     const managedAudioConfig = window.__playerConfig?.managedDisplay;
     const staticManagedAudioAllowed = !managedAudioConfig || managedAudioConfig.audioEnabled === true;
     const audioPolicyController = window.MbfdAudioPolicy.createAudioPolicyController({
