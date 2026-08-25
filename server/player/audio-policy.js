@@ -131,6 +131,8 @@
     const rendererId = text(deviceId);
     let current = null;
     let activeFence = null;
+    let authorizationRevoked = false;
+    let authorizationReason = null;
     // Cold start is fail-muted until either a durable cached policy or a fresh
     // authoritative playlist payload has been applied.
     let blocked = true;
@@ -146,6 +148,17 @@
       blocked = true;
       blockedReason = String(reason || 'audio_policy_blocked');
       return { applied: true, reason: blockedReason, policy: current ? { ...current } : null };
+    }
+
+    function revokeAuthorization(reason = 'audio_authorization_revoked') {
+      authorizationRevoked = true;
+      authorizationReason = String(reason || 'audio_authorization_revoked');
+      return block(authorizationReason);
+    }
+
+    function restoreAuthorization() {
+      authorizationRevoked = false;
+      authorizationReason = null;
     }
 
     function fence(raw) {
@@ -169,6 +182,9 @@
     }
 
     function apply(raw, context = {}) {
+      if (authorizationRevoked) {
+        return reject(authorizationReason || 'audio_authorization_revoked');
+      }
       const next = normalizeAudioPolicy(raw, rendererId);
       if (!next || next.revision === null || !next.transaction_id) {
         return reject('invalid_audio_policy');
@@ -220,8 +236,8 @@
     function clear() {
       current = null;
       activeFence = null;
-      blocked = false;
-      blockedReason = null;
+      blocked = authorizationRevoked;
+      blockedReason = authorizationRevoked ? authorizationReason : null;
     }
 
     function audioAllowed() {
@@ -264,6 +280,8 @@
       fence,
       hasPolicy: () => current !== null,
       isBlocked: () => blocked,
+      restoreAuthorization,
+      revokeAuthorization,
       snapshot,
       statusSnapshot,
       stateFields,

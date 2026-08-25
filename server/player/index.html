@@ -2751,6 +2751,7 @@
         config.deviceId = data.device_id;
         if (data.device_token) config.deviceToken = data.device_token;
         saveConfig(config);
+        if (data.status === 'online') audioPolicyController.restoreAuthorization();
         console.log('Registered:', data.device_id);
 
         if (!config.paired) {
@@ -2789,6 +2790,9 @@
       });
 
       socket.on('device:unpaired', () => {
+        audioPolicyController.revokeAuthorization('device_unpaired');
+        muteAllPlayerAudio();
+        publishAudioPolicyState('device_unpaired');
         if (isManagedProgramReceiver()) {
           receiverHealth?.markError('Live-program receiver was removed. Retrying bootstrap...', 'RECEIVER_REMOVED');
           scheduleReceiverReload();
@@ -2807,6 +2811,9 @@
       });
 
       socket.on('device:auth-error', (data) => {
+        audioPolicyController.revokeAuthorization('device_auth_rejected');
+        muteAllPlayerAudio();
+        publishAudioPolicyState('device_auth_rejected');
         if (isManagedProgramReceiver()) {
           receiverHealth?.markError('Live-program receiver authentication failed. Retrying bootstrap...', 'RECEIVER_AUTH_FAILED');
           scheduleReceiverReload();

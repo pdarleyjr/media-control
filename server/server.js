@@ -1054,6 +1054,7 @@ function updateFrontendHash() {
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'doc.html'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'deck.html'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'device-contract.js'))); } catch {}
+    try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'audio-policy.js'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'screen-state.js'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'grid.html'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'multiview-core.js'))); } catch {}
@@ -1061,7 +1062,7 @@ function updateFrontendHash() {
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'sw.js'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'debug-overlay.js'))); } catch {}
     frontendHash = crypto.createHash('md5').update(Buffer.concat(files.map(f => Buffer.from(f)))).digest('hex').slice(0, 8);
-    const playerFiles = ['index.html', 'doc.html', 'deck.html', 'device-contract.js', 'screen-state.js', 'player-routing.js', 'managed-bootstrap.js', 'sw.js']
+    const playerFiles = ['index.html', 'doc.html', 'deck.html', 'device-contract.js', 'audio-policy.js', 'screen-state.js', 'player-routing.js', 'managed-bootstrap.js', 'sw.js']
       .map((file) => {
         try { return fs.readFileSync(path.join(__dirname, 'player', file)); } catch { return Buffer.from(''); }
       });

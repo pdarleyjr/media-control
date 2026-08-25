@@ -70,14 +70,16 @@ async function recoverAudioOwnershipAfterLoss(options = {}) {
     getStoredPolicy(device.id),
     lostPolicy,
   ));
-  const onlineIds = participants
+  const connectedIds = participants
     .map((device) => String(device.id))
-    .filter((deviceId) => (!lostId || deviceId !== lostId) && isOnline(deviceId));
+    .filter((deviceId) => isOnline(deviceId));
+  const eligibleOwnerIds = connectedIds
+    .filter((deviceId) => !lostId || deviceId !== lostId);
   const replacementOwnerId = resolveDeterministicAudioOwner({
-    targetDeviceIds: onlineIds,
+    targetDeviceIds: eligibleOwnerIds,
     preferredDeviceId: lostPolicy.output_device_id,
     orderedDeviceIds: orderedRendererDeviceIds(participants),
-    onlineDeviceIds: onlineIds,
+    onlineDeviceIds: eligibleOwnerIds,
   });
   const proposed = buildAudioPolicy({
     outputDeviceId: lostPolicy.output_device_id,
@@ -88,8 +90,8 @@ async function recoverAudioOwnershipAfterLoss(options = {}) {
     revision: nextAudioPolicyRevision({ now, persistedRevision }),
     sourceKey: lostPolicy.source_key,
   });
-  const fence = replacementOwnerId
-    ? await fenceTargets({ deviceIds: onlineIds, policy: proposed })
+  const fence = connectedIds.length > 0
+    ? await fenceTargets({ deviceIds: connectedIds, policy: proposed })
     : {
         ok: false,
         acknowledged_device_ids: [],
@@ -107,9 +109,10 @@ async function recoverAudioOwnershipAfterLoss(options = {}) {
     if (!device.playlist_id || !stampedPlaylists.has(device.playlist_id)) continue;
     emitPolicyUpdate(device.id, buildPayload);
   }
+  const recovered = fence.ok === true && Boolean(committed.owner_device_id);
   return {
-    recovered: fence.ok === true && Boolean(committed.owner_device_id),
-    reason: fence.ok === true ? null : 'audio_recovery_failed_muted',
+    recovered,
+    reason: recovered ? null : 'audio_recovery_failed_muted',
     lost_device_id: lostId || null,
     participant_device_ids: participants.map((device) => device.id),
     policy: committed,

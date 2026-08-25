@@ -301,6 +301,34 @@ test('disconnect block cannot be cleared by a legacy missing-policy payload', ()
   assert.equal(controller.blockReason(), 'socket_disconnected');
 });
 
+test('authorization revocation cannot be cleared by a late ownership policy before reauthentication', () => {
+  const controller = createAudioPolicyController({ deviceId: 'tv2' });
+  assert.equal(controller.apply(policy(), context()).applied, true);
+  assert.equal(controller.audioAllowed(), true);
+
+  controller.revokeAuthorization('device_auth_rejected');
+  for (const candidate of [
+    policy(),
+    policy({ transaction_id: 'broadcast-late', revision: 201 }),
+  ]) {
+    const result = controller.apply(candidate, context());
+    assert.equal(result.applied, false);
+    assert.equal(result.reason, 'device_auth_rejected');
+    assert.equal(controller.audioAllowed(), false);
+  }
+  controller.clear();
+  assert.equal(controller.audioAllowed(), false);
+  assert.equal(controller.blockReason(), 'device_auth_rejected');
+
+  controller.restoreAuthorization();
+  const restored = controller.apply(
+    policy({ transaction_id: 'broadcast-restored', revision: 202 }),
+    context(),
+  );
+  assert.equal(restored.applied, true);
+  assert.equal(controller.audioAllowed(), true);
+});
+
 test('host mute confirmation is bounded and accepts only the exact renderer generation', async () => {
   const state = {
     version: 1,
@@ -397,4 +425,61 @@ test('managed player applies playlist policy before rendering and transport unmu
   assert.match(fence, /host_muted:\s*hostMute\.confirmed === true/);
   assert.match(source, /audioPolicyController\.block\('socket_disconnected'\)/);
   assert.match(source, /audio_policy_state:/);
+});
+
+test('unpair and authentication rejection fail-mute before receiver exits or credential clearing', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'player', 'index.html'), 'utf8');
+  const unpaired = source.slice(
+    source.indexOf("socket.on('device:unpaired'"),
+    source.indexOf("socket.on('device:auth-error'"),
+  );
+  const authError = source.slice(
+    source.indexOf("socket.on('device:auth-error'"),
+    source.indexOf("socket.on('device:program-audio-policy'"),
+  );
+
+  for (const [handler, reason] of [
+    [unpaired, 'device_unpaired'],
+    [authError, 'device_auth_rejected'],
+  ]) {
+    assert.match(handler, new RegExp(`audioPolicyController\\.revokeAuthorization\\('${reason}'\\)`));
+    assert.match(handler, /muteAllPlayerAudio\(\)/);
+    assert.match(handler, new RegExp(`publishAudioPolicyState\\('${reason}'\\)`));
+    assert.ok(
+      handler.indexOf(`audioPolicyController.revokeAuthorization('${reason}')`) < handler.indexOf('muteAllPlayerAudio()')
+      && handler.indexOf('muteAllPlayerAudio()') < handler.indexOf(`publishAudioPolicyState('${reason}')`),
+      `${reason} must block, locally mute, then publish the fail-muted state`,
+    );
+    assert.ok(
+      handler.indexOf(`publishAudioPolicyState('${reason}')`) < handler.indexOf('if (isManagedProgramReceiver())'),
+      `${reason} must fail-mute managed program receivers before their reload return`,
+    );
+    assert.ok(
+      handler.indexOf(`publishAudioPolicyState('${reason}')`) < handler.indexOf('delete config.deviceId'),
+      `${reason} must publish the exact device identity before credentials are cleared`,
+    );
+  }
+
+  const registered = source.slice(
+    source.indexOf("socket.on('device:registered'"),
+    source.indexOf("socket.on('device:room-snapshot'"),
+  );
+  assert.match(
+    registered,
+    /if \(data\.status === 'online'\) audioPolicyController\.restoreAuthorization\(\);/,
+    'only a successful known-device registration may reopen the policy controller',
+  );
+});
+
+test('audio policy controller bytes participate in frontend and player reload hashes', () => {
+  const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  assert.match(
+    server,
+    /files\.push\(fs\.readFileSync\(path\.join\(__dirname, 'player', 'audio-policy\.js'\)\)\)/,
+  );
+  const playerHash = server.slice(
+    server.indexOf('const playerFiles = ['),
+    server.indexOf("playerHash = crypto.createHash('sha256')"),
+  );
+  assert.match(playerHash, /'audio-policy\.js'/);
 });
