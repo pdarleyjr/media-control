@@ -60,7 +60,7 @@ test('reconnect recovery finishes before any queued or direct playlist can relea
     socket.indexOf('// Device ID not found in database'),
   );
   const registered = reconnect.indexOf("socket.emit('device:registered'");
-  const recovery = reconnect.indexOf('await ensureAudioOwnerAfterReconnect');
+  const recovery = reconnect.indexOf('await ensureReconnectAudioOwner');
   const queuedPlaylist = reconnect.indexOf('commandQueue.flushQueue');
   const directPlaylist = reconnect.indexOf("socket.emit('device:playlist-update'");
 

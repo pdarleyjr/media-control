@@ -632,11 +632,14 @@ function checkDeviceAccess(deviceId) {
   return { allowed: true };
 }
 
-module.exports = function setupDeviceSocket(io) {
+module.exports = function setupDeviceSocket(io, dependencies = {}) {
   // Expose helpers for use by route handlers
   module.exports.lastScreenshots = lastScreenshots;
   module.exports.buildPlaylistPayload = buildPlaylistPayload;
   module.exports.generateDeviceToken = generateDeviceToken;
+  const ensureReconnectAudioOwner = typeof dependencies.ensureAudioOwnerAfterReconnect === 'function'
+    ? dependencies.ensureAudioOwnerAfterReconnect
+    : ensureAudioOwnerAfterReconnect;
   const deviceNs = io.of('/device');
   const dashboardNs = io.of('/dashboard');
 
@@ -658,6 +661,16 @@ module.exports = function setupDeviceSocket(io) {
     let currentDeviceId = null;
     let authenticated = false; // Track whether this socket has been authenticated
     let lastPlaylistSyncAt = 0;
+    let audioReconnectBlockReason = null;
+
+    function reassertReconnectFailMuted() {
+      if (!audioReconnectBlockReason) return;
+      socket.emit('device:audio-policy-clamp', {
+        version: 1,
+        reason: audioReconnectBlockReason,
+        audio_policy: null,
+      });
+    }
 
     // Once the managed OBS receiver authenticates, constrain every subsequent
     // client-originated event to its read/report role. Ordinary displays and
@@ -899,12 +912,29 @@ module.exports = function setupDeviceSocket(io) {
           heartbeat.registerConnection(device_id, socket.id);
           socket.join(device_id);
           joinDeviceTargetRooms(socket, device_id);
-          socket.emit('device:registered', { device_id, device_token: tokenToSend, status: 'online' });
+          audioReconnectBlockReason = 'audio_reconnect_recovery_pending';
+          socket.emit('device:registered', {
+            device_id,
+            device_token: tokenToSend,
+            status: 'online',
+            audio_ready: false,
+          });
           logDeviceStatus(device_id, 'online');
           try {
-            await ensureAudioOwnerAfterReconnect(deviceNs, device_id);
+            await ensureReconnectAudioOwner(deviceNs, device_id);
+            audioReconnectBlockReason = null;
           } catch (error) {
+            audioReconnectBlockReason = 'audio_reconnect_recovery_failed';
             console.error(`Audio reconnect recovery failed for ${device_id}: ${error.message}`);
+            reassertReconnectFailMuted();
+            emitToDeviceWorkspace(dashboardNs, device_id, 'dashboard:device-status', {
+              device_id,
+              status: 'online',
+              audio_ready: false,
+              audio_status: 'fail_muted',
+              audio_error: audioReconnectBlockReason,
+            });
+            return;
           }
           // Flush any commands/playlist-updates queued while this device was offline.
           commandQueue.flushQueue(deviceNs, device_id, buildPlaylistPayload);
@@ -1092,6 +1122,18 @@ module.exports = function setupDeviceSocket(io) {
             console.warn(`dashboard emit failed for ${device_id}: ${e.message}`);
           }
         }
+        if (audioReconnectBlockReason) {
+          reassertReconnectFailMuted();
+          if (typeof acknowledge === 'function') acknowledge({
+            ok: true,
+            audio_policy: null,
+            audio_policy_decision: {
+              clamp: true,
+              reason: audioReconnectBlockReason,
+            },
+          });
+          return;
+        }
         await waitForAudioOwnerRecovery(currentDeviceId);
         const authoritativeAudioPolicy = buildPlaylistPayload(device_id).audio_policy || null;
         const audioPolicyDecision = audioPolicyHeartbeatDecision(
@@ -1134,6 +1176,15 @@ module.exports = function setupDeviceSocket(io) {
           return;
         }
         lastPlaylistSyncAt = now;
+        if (audioReconnectBlockReason) {
+          reassertReconnectFailMuted();
+          if (typeof acknowledge === 'function') acknowledge({
+            ok: false,
+            fail_muted: true,
+            error: audioReconnectBlockReason,
+          });
+          return;
+        }
         await waitForAudioOwnerRecovery(currentDeviceId);
         const payload = buildPlaylistPayload(currentDeviceId);
         const appliedRevision = data && typeof data.playlist_revision === 'string'
