@@ -229,8 +229,23 @@
 .mc-empty-desc { margin: 0; max-width: 42ch; font-size: var(--mc-font-size-sm); color: var(--mc-text-secondary); }
 .mc-stage-empty .mc-btn-cta { margin-top: var(--space-2, 8px); }
 
-/* Drag-over highlight on stage cards (blue = the go affordance) */
+/* Drag-over highlight on stage cards (blue = the go affordance). The overlay
+   covers the complete logical target and ignores hit-testing, so nested preview
+   DOM cannot make the blue acquisition cue flicker or steal the pointer. */
 .mc-card-dragover { border-color: var(--accent) !important; box-shadow: 0 0 0 2px var(--accent) !important; }
+.mc-card-dragover,
+.mc-wall-all-dragover { position: relative; }
+.mc-card-dragover::before,
+.mc-wall-all-dragover::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  pointer-events: none;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: inset 0 0 0 4px var(--accent);
+}
 
 /* ════════════════════════════════════════════════════════════════════════
    Video-wall composite — the wall rendered as its REAL member screens on the
@@ -555,18 +570,28 @@
 /* Command Center shelf cards are deliberately visual and finger-sized. These
    overrides are scoped below .mc-library-body so the full Media Library and the
    Present view retain their own card systems. */
-.mc-library-body .mc-tile-grid { gap: var(--mc-space-md, 12px); }
+.mc-library-body .mc-tile-grid {
+  flex-wrap: nowrap;
+  gap: var(--mc-space-md, 12px);
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  scroll-padding-inline: var(--mc-space-sm, 8px);
+  padding: 2px 2px var(--mc-space-sm, 8px);
+  -webkit-overflow-scrolling: touch;
+}
 .mc-library-body .mc-tile {
-  width: 152px;
+  width: 176px;
   min-height: 132px;
   gap: var(--mc-space-sm, 8px);
   padding: 8px;
   align-items: center;
 }
-.mc-library-body .mc-tile-cell { width: 152px; }
+.mc-library-body .mc-tile-cell { width: 176px; scroll-snap-align: start; }
 .mc-library-body .mc-tile-thumb,
 .mc-library-body .mc-tile-thumb-fallback {
-  width: 136px;
+  width: 160px;
   height: 82px;
   border-radius: var(--mc-radius-sm, 8px);
 }
@@ -581,7 +606,7 @@
 .mc-library-body .mc-tile-icon-svg:not(.mc-tile-thumb-fallback) {
   display: grid;
   place-items: center;
-  width: 136px;
+  width: 160px;
   height: 82px;
   border-radius: var(--mc-radius-sm, 8px);
   background: var(--mc-bg-secondary);
@@ -590,7 +615,7 @@
 .mc-library-body .mc-tile-icon-svg:not(.mc-tile-thumb-fallback) svg { width: 42px; height: 42px; }
 .mc-library-body .mc-tile-label {
   width: 100%;
-  max-width: 136px;
+  max-width: 160px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -602,14 +627,23 @@
 
 /* Categorized media toolbar: search/sort plus the one contextual Screensavers
    filter. General folder navigation remains on the full Media Library page. */
-.mc-tb-media-toolbar { display: flex; flex-direction: column; gap: var(--mc-space-sm, 8px); margin-bottom: var(--mc-space-sm, 8px); }
-.mc-tb-media-controls { display: flex; flex-wrap: wrap; gap: var(--mc-space-sm, 8px); align-items: center; }
+.mc-tb-media-toolbar {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: var(--mc-space-sm, 8px);
+  margin-bottom: 4px;
+}
+.mc-tb-context-filter-host:empty { display: none; }
+.mc-tb-context-filter-host { flex: 0 1 auto; min-width: 0; }
+.mc-tb-media-controls { display: flex; flex: 1 1 auto; flex-wrap: nowrap; gap: var(--mc-space-sm, 8px); align-items: center; min-width: 0; }
 .mc-tb-search, .mc-tb-type, .mc-tb-sort {
-  font-size: var(--mc-font-size-sm, 13px); padding: 5px 8px;
+  min-height: var(--tap-min, 48px); font-size: var(--mc-font-size-sm, 13px); padding: 5px 10px;
   background: var(--mc-surface); border: 1px solid var(--mc-border-light, #E8E5E0);
   border-radius: var(--mc-radius-sm, 8px); color: var(--mc-text-primary); min-width: 0;
 }
-.mc-tb-search { flex: 1 1 140px; }
+.mc-tb-search { flex: 0 1 clamp(168px, 28vw, 240px); width: clamp(168px, 28vw, 240px); max-width: 240px; }
 .mc-tb-type, .mc-tb-sort { flex: 0 0 auto; }
 .mc-tb-media-status { display: flex; align-items: center; gap: 6px; font-size: var(--mc-font-size-xs, 11px); color: var(--mc-text-secondary); min-height: 18px; margin-bottom: 4px; }
 .mc-tb-error-text { color: var(--mc-danger, #dc2626); }
@@ -3004,7 +3038,11 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-body .mc-library-drawer {
   box-shadow: 0 16px 38px rgba(15, 23, 42, .32);
 }
 @media (pointer: coarse) {
-  .mc-tile[data-drag-source] { touch-action: none; }
+  .mc-tile[data-drag-source] { touch-action: pan-x; }
+  .mc-library-body .mc-tile-dl {
+    width: 48px; height: 48px; min-width: 48px;
+    opacity: 1; font-size: 18px;
+  }
   .mc-target-wall-btn,
   .mc-target-customize,
   .mc-target-select,
@@ -3935,7 +3973,7 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-body .mc-library-drawer {
     width: min(172px, calc(100vw - 24px)); min-width: min(172px, calc(100vw - 24px));
   }
   .mc-library-body { padding: 8px 10px max(10px, env(safe-area-inset-bottom)); }
-  .mc-library-body .mc-tb-bar { flex-wrap: wrap; }
+  .mc-library-body .mc-tb-bar { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; }
 }
 
 @media (min-width: 769px) and (max-width: 1024px) and (max-height: 600px) and (orientation: landscape) {

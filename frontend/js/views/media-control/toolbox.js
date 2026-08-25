@@ -268,6 +268,7 @@ async function renderMediaCategoryTab(container, { selectedIds, onAfterSend, onR
   }
 
   function renderGrid() {
+    cancelActiveTouchDrag();
     grid.innerHTML = state.items.length ? state.items.map(tileHtml).join('') : '';
     wireMediaThumbnailFallbacks(grid);
     attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource);
@@ -650,28 +651,137 @@ async function renderAdditionalCategory(container, options) {
 // Attach click + dragstart on toolbox tiles that call sendToDisplays.
 // Exported so the Camera Feeds tab (camera-feeds.js) reuses the identical
 // tap-to-route + drag-to-card wiring instead of duplicating it.
+const TOUCH_HIT_SLOP_PX = 28;
+const TOUCH_AMBIGUITY_PX = 6;
+const TOUCH_INTENT_PX = 10;
+const TOUCH_CANCEL_PX = 24;
+const TOUCH_DIRECTION_RATIO = 1.5;
 const TOUCH_DROP_SELECTOR = [
-  '.mc-wall-region[data-layout-group-id][data-wall-id]',
-  '.mc-display-card[data-device-id]',
+  '.mc-wall-split-half[data-device-id][data-wall-region-id]',
   '.mc-wall-cell[data-device-id]',
-  '.mc-wall-split-half[data-device-id][data-split-half]',
+  '.mc-display-card[data-device-id]',
+  '.mc-wall-region[data-layout-group-id][data-wall-id]',
   '.mc-wall-all[data-wall-ids]',
   '#mc-stage',
 ].join(',');
 
-function touchDropTargetAt(x, y) {
-  const hit = document.elementFromPoint(x, y);
-  if (!hit) return null;
-  const groupedRegion = hit.closest('.mc-wall-region[data-layout-group-id][data-wall-id]');
+let activeTouchDragCleanup = null;
+
+function normalizeTouchDropTarget(element) {
+  if (!element?.closest) return null;
+  const splitHalf = element.closest('.mc-wall-split-half[data-device-id][data-wall-region-id]');
+  if (splitHalf) return splitHalf;
+
+  // A grouped wall is one revision-bound logical route even though its visual
+  // card contains nested physical-looking cells and a whole-wall overlay.
+  const groupedRegion = element.closest('.mc-wall-region[data-layout-group-id][data-wall-id]');
   if (groupedRegion) return groupedRegion;
-  const target = hit.closest(TOUCH_DROP_SELECTOR);
-  if (!target) return null;
-  if (target.classList.contains('mc-wall-cell') &&
-      target.closest('.mc-wall')?.dataset.layoutMode !== 'split') {
-    return target.closest('.mc-wall')?.querySelector('.mc-wall-all[data-wall-ids]') ||
-      target.closest('#mc-stage');
+
+  const wallCell = element.closest('.mc-wall-cell[data-device-id]');
+  if (wallCell) {
+    const wall = wallCell.closest('.mc-wall');
+    if (wall?.dataset.layoutMode === 'split') return wallCell;
+    return wall?.querySelector('.mc-wall-all[data-wall-ids]') || wallCell.closest('#mc-stage');
   }
-  return target;
+
+  const displayCard = element.closest('.mc-display-card[data-device-id]');
+  if (displayCard) return displayCard;
+  const wholeWall = element.closest('.mc-wall-all[data-wall-ids]');
+  if (wholeWall) return wholeWall;
+  return element.closest('#mc-stage');
+}
+
+function touchDropPriority(target) {
+  if (target?.matches('.mc-wall-split-half[data-device-id][data-wall-region-id], .mc-wall-cell[data-device-id]')) return 5;
+  if (target?.matches('.mc-display-card[data-device-id]')) return 4;
+  if (target?.matches('.mc-wall-region[data-layout-group-id][data-wall-id]')) return 3;
+  if (target?.matches('.mc-wall-all[data-wall-ids]')) return 2;
+  return target?.id === 'mc-stage' ? 1 : 0;
+}
+
+function visibleTargetRect(target) {
+  if (!target?.isConnected) return null;
+  const style = getComputedStyle(target);
+  const rect = target.getBoundingClientRect();
+  if (style.display === 'none' || style.visibility === 'hidden' || rect.width <= 0 || rect.height <= 0) return null;
+  return {
+    left: rect.left,
+    right: rect.right,
+    top: rect.top,
+    bottom: rect.bottom,
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
+function collectTouchDropTargets() {
+  const seen = new Set();
+  const targets = [];
+  document.querySelectorAll(TOUCH_DROP_SELECTOR).forEach((element) => {
+    const target = normalizeTouchDropTarget(element);
+    if (!target || target.id === 'mc-stage' || seen.has(target)) return;
+    const rect = visibleTargetRect(target);
+    if (!rect) return;
+    seen.add(target);
+    targets.push({ target, rect, priority: touchDropPriority(target) });
+  });
+  return targets;
+}
+
+function pointDistanceToRect(x, y, rect) {
+  const dx = Math.max(rect.left - x, 0, x - rect.right);
+  const dy = Math.max(rect.top - y, 0, y - rect.bottom);
+  return Math.hypot(dx, dy);
+}
+
+function nearbyTouchDropTarget(x, y, cachedTargets) {
+  const candidates = cachedTargets
+    .filter(({ target }) => target.isConnected)
+    .map((candidate) => ({
+      ...candidate,
+      distance: pointDistanceToRect(x, y, candidate.rect),
+    }))
+    .filter(({ distance }) => distance <= TOUCH_HIT_SLOP_PX);
+  if (!candidates.length) return { target: null, ambiguous: false };
+
+  // Broad whole-wall strips should yield to nearby display/region targets, but
+  // among those specific targets proximity decides. Class priority is only a
+  // stable tie-break after the ambiguity band has been applied.
+  const specificCandidates = candidates.filter(({ priority }) => priority >= 3);
+  const eligible = (specificCandidates.length ? specificCandidates : candidates)
+    .sort((a, b) => a.distance - b.distance || b.priority - a.priority);
+  const best = eligible[0];
+  const ambiguous = eligible.some((candidate, index) => index > 0 &&
+    candidate.distance - best.distance <= TOUCH_AMBIGUITY_PX);
+  return { target: ambiguous ? null : best.target, ambiguous };
+}
+
+function touchDropTargetAt(x, y, cachedTargets) {
+  const hits = typeof document.elementsFromPoint === 'function'
+    ? document.elementsFromPoint(x, y)
+    : [document.elementFromPoint(x, y)].filter(Boolean);
+  const exact = [];
+  let stage = null;
+  const seen = new Set();
+  hits.forEach((hit) => {
+    const target = normalizeTouchDropTarget(hit);
+    if (!target || seen.has(target)) return;
+    seen.add(target);
+    if (target.id === 'mc-stage') stage = target;
+    else exact.push(target);
+  });
+  const exactTarget = exact.length
+    ? exact.sort((a, b) => touchDropPriority(b) - touchDropPriority(a))[0]
+    : null;
+  // A finger that is already inside a specific cell/card/region must not be
+  // stolen by a higher-priority target that is merely within hit slop. Broad
+  // whole-wall/stage surfaces remain eligible to yield to a nearby card edge.
+  if (exactTarget && touchDropPriority(exactTarget) >= 3) return exactTarget;
+
+  const nearby = nearbyTouchDropTarget(x, y, cachedTargets);
+  if (nearby.ambiguous) return null;
+  if (nearby.target) return nearby.target;
+  return exactTarget || stage;
 }
 
 function setTouchDropHighlight(target, enabled) {
@@ -682,74 +792,167 @@ function setTouchDropHighlight(target, enabled) {
   target.classList.toggle(highlightClass, enabled);
 }
 
+function clearTouchDropHighlights() {
+  document.querySelectorAll('.mc-card-dragover, .mc-wall-all-dragover, .mc-stage-dragover').forEach((target) => {
+    target.classList.remove('mc-card-dragover', 'mc-wall-all-dragover', 'mc-stage-dragover');
+  });
+}
+
+export function cancelActiveTouchDrag() {
+  if (typeof activeTouchDragCleanup === 'function') activeTouchDragCleanup();
+  else clearTouchDropHighlights();
+}
+
 function attachTouchDrag(tile, suppressClick) {
   tile.addEventListener('pointerdown', (event) => {
-    if (!(event.pointerType === 'touch' || event.pointerType === 'pen')) return;
-    try { tile.setPointerCapture(event.pointerId); } catch { /* unsupported renderer */ }
+    if (!(event.pointerType === 'touch' || event.pointerType === 'pen') || event.isPrimary === false) return;
+    cancelActiveTouchDrag();
     const startX = event.clientX;
     const startY = event.clientY;
-    let dragging = false;
+    let mode = 'pending';
     let ghost = null;
     let target = null;
+    let targetRects = [];
+    let frame = null;
+    let latestPoint = null;
+    let settled = false;
+
+    const updateDragVisual = (x, y) => {
+      if (mode !== 'dragging' || !ghost) return;
+      ghost.style.left = `${x}px`;
+      ghost.style.top = `${y}px`;
+      const nextTarget = touchDropTargetAt(x, y, targetRects);
+      if (nextTarget === target) return;
+      setTouchDropHighlight(target, false);
+      target = nextTarget;
+      setTouchDropHighlight(target, true);
+    };
+
+    const scheduleDragVisual = (x, y) => {
+      latestPoint = { x, y };
+      if (frame != null) return;
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        if (!latestPoint) return;
+        updateDragVisual(latestPoint.x, latestPoint.y);
+      });
+    };
+
+    const beginDrag = () => {
+      mode = 'dragging';
+      suppressClick();
+      targetRects = collectTouchDropTargets();
+      ghost = tile.cloneNode(true);
+      ghost.className = 'mc-touch-drag-ghost';
+      ghost.removeAttribute('id');
+      ghost.removeAttribute('draggable');
+      document.body.appendChild(ghost);
+      try { tile.setPointerCapture(event.pointerId); } catch { /* unsupported renderer */ }
+    };
+
+    const removeListeners = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', cancel);
+      window.removeEventListener('blur', cancel);
+      window.removeEventListener('resize', cancel);
+      window.removeEventListener('orientationchange', cancel);
+      document.removeEventListener('visibilitychange', visibilityCancel);
+      tile.removeEventListener('lostpointercapture', cancel);
+    };
+
+    const settle = (finishEvent = null, drop = false) => {
+      if (settled) return;
+      settled = true;
+      removeListeners();
+      if (frame != null) {
+        cancelAnimationFrame(frame);
+        frame = null;
+      }
+      try {
+        if (drop && mode === 'dragging' && finishEvent) {
+          updateDragVisual(finishEvent.clientX, finishEvent.clientY);
+          const source = (() => { try { return JSON.parse(tile.dataset.dragSource); } catch { return null; } })();
+          if (target && source) {
+            const thumbImg = tile.querySelector('img');
+            target.dispatchEvent(new CustomEvent('mc:source-drop', {
+              bubbles: true,
+              cancelable: true,
+              detail: {
+                source,
+                label: tile.dataset.label || t('mc.tile.content_fallback'),
+                thumb: thumbImg && (thumbImg.currentSrc || thumbImg.src) || '',
+              },
+            }));
+          }
+        }
+      } finally {
+        setTouchDropHighlight(target, false);
+        clearTouchDropHighlights();
+        target = null;
+        ghost?.remove();
+        ghost = null;
+        latestPoint = null;
+        try {
+          if (tile.hasPointerCapture?.(event.pointerId)) tile.releasePointerCapture(event.pointerId);
+        } catch { /* already released */ }
+        if (activeTouchDragCleanup === cancelActive) activeTouchDragCleanup = null;
+      }
+    };
+
+    const cancelActive = () => settle();
 
     const move = (moveEvent) => {
       if (moveEvent.pointerId !== event.pointerId) return;
-      if (!dragging && Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) < 8) return;
-      if (!dragging) {
-        dragging = true;
-        suppressClick();
-        ghost = tile.cloneNode(true);
-        ghost.className = 'mc-touch-drag-ghost';
-        ghost.removeAttribute('id');
-        ghost.removeAttribute('draggable');
-        document.body.appendChild(ghost);
+      const dx = moveEvent.clientX - startX;
+      const dy = moveEvent.clientY - startY;
+      const absX = Math.abs(dx);
+      const absY = Math.abs(dy);
+      const distance = Math.hypot(dx, dy);
+      if (mode === 'pending') {
+        if (distance < TOUCH_INTENT_PX) return;
+        if (absX >= TOUCH_INTENT_PX && absX > absY * TOUCH_DIRECTION_RATIO) {
+          mode = 'scrolling';
+          suppressClick();
+          return;
+        }
+        if (dy <= -TOUCH_INTENT_PX && absY * TOUCH_DIRECTION_RATIO >= absX) {
+          beginDrag();
+        } else if (distance >= TOUCH_CANCEL_PX) {
+          mode = 'cancelled';
+          suppressClick();
+          return;
+        } else {
+          return;
+        }
       }
+      if (mode !== 'dragging') return;
       moveEvent.preventDefault();
-      ghost.style.left = `${moveEvent.clientX}px`;
-      ghost.style.top = `${moveEvent.clientY}px`;
-      const nextTarget = touchDropTargetAt(moveEvent.clientX, moveEvent.clientY);
-      if (nextTarget !== target) {
-        setTouchDropHighlight(target, false);
-        target = nextTarget;
-        setTouchDropHighlight(target, true);
-      }
+      scheduleDragVisual(moveEvent.clientX, moveEvent.clientY);
     };
 
     const finish = (finishEvent) => {
       if (finishEvent.pointerId !== event.pointerId) return;
-      tile.removeEventListener('pointermove', move);
-      tile.removeEventListener('pointerup', finish);
-      tile.removeEventListener('pointercancel', cancel);
-      try { tile.releasePointerCapture(event.pointerId); } catch { /* already released */ }
-      if (dragging) {
-        finishEvent.preventDefault();
-        const source = (() => { try { return JSON.parse(tile.dataset.dragSource); } catch { return null; } })();
-        if (target && source) {
-          const thumbImg = tile.querySelector('img');
-          target.dispatchEvent(new CustomEvent('mc:source-drop', {
-            bubbles: true,
-            detail: {
-              source,
-              label: tile.dataset.label || t('mc.tile.content_fallback'),
-              thumb: thumbImg && (thumbImg.currentSrc || thumbImg.src) || '',
-            },
-          }));
-        }
-      }
-      setTouchDropHighlight(target, false);
-      ghost?.remove();
+      if (mode === 'dragging') finishEvent.preventDefault();
+      settle(finishEvent, mode === 'dragging');
     };
     const cancel = (cancelEvent) => {
-      if (cancelEvent.pointerId !== event.pointerId) return;
-      const highlightedTarget = target;
-      target = null;
-      finish(cancelEvent);
-      setTouchDropHighlight(highlightedTarget, false);
+      if (typeof cancelEvent?.pointerId === 'number' && cancelEvent.pointerId !== event.pointerId) return;
+      settle();
+    };
+    const visibilityCancel = () => {
+      if (document.visibilityState !== 'visible') settle();
     };
 
-    tile.addEventListener('pointermove', move);
-    tile.addEventListener('pointerup', finish);
-    tile.addEventListener('pointercancel', cancel);
+    activeTouchDragCleanup = cancelActive;
+    window.addEventListener('pointermove', move, { passive: false });
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', cancel);
+    window.addEventListener('blur', cancel);
+    window.addEventListener('resize', cancel, { passive: true });
+    window.addEventListener('orientationchange', cancel);
+    document.addEventListener('visibilitychange', visibilityCancel);
+    tile.addEventListener('lostpointercapture', cancel);
   });
 }
 
@@ -809,6 +1012,7 @@ function clearLiveSourceTimers(root) {
 
 async function loadTab(tabId, tabBody, options, context = {}) {
   const { selectedIds, onAfterSend, onRouteSource, onRouteNextcloud, onMountAdditionalControls, onBeforeToolboxReplace } = options;
+  cancelActiveTouchDrag();
   if (typeof onBeforeToolboxReplace === 'function') onBeforeToolboxReplace();
   const previousHost = tabBody._renderHost;
   clearLiveSourceTimers(previousHost);
@@ -853,6 +1057,7 @@ async function loadTab(tabId, tabBody, options, context = {}) {
  */
 export function renderToolbox(container, { selectedIds = [], onAfterSend, onRouteSource, onRouteNextcloud, onMountAdditionalControls, onBeforeToolboxReplace } = {}) {
   if (!container) return;
+  cancelActiveTouchDrag();
   if (typeof onBeforeToolboxReplace === 'function') onBeforeToolboxReplace();
   activeTab = normalizeToolboxTab(activeTab);
   const options = { selectedIds, onAfterSend, onRouteSource, onRouteNextcloud, onMountAdditionalControls, onBeforeToolboxReplace };
