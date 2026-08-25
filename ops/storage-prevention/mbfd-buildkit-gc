@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+LOCK_FILE=/run/lock/mbfd-buildkit-gc.lock
+EVIDENCE_DIR=/var/log/mbfd-storage
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+LOG_FILE="${EVIDENCE_DIR}/buildkit-gc-${STAMP}.log"
+BEFORE_FILE="$(mktemp)"
+AFTER_FILE="$(mktemp)"
+
+cleanup() {
+  rm -f -- "$BEFORE_FILE" "$AFTER_FILE"
+}
+trap cleanup EXIT
+
+mkdir -p -- "$EVIDENCE_DIR"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  printf '%s %s\n' "$(date -u +%FT%TZ)" 'another BuildKit GC run holds the lock' >>"$LOG_FILE"
+  exit 0
+fi
+
+docker ps --no-trunc --format '{{.ID}} {{.Names}} {{.Image}}' | sort >"$BEFORE_FILE"
+
+if ps -eo args= | grep -Eq '[d]ocker (build|buildx)|[b]uildctl'; then
+  printf '%s %s\n' "$(date -u +%FT%TZ)" 'active build process detected; skipping BuildKit GC' | tee -a "$LOG_FILE"
+  exit 0
+fi
+
+{
+  printf '%s %s\n' "$(date -u +%FT%TZ)" 'starting bounded BuildKit GC'
+  docker buildx du --builder default
+  docker buildx prune \
+    --builder default \
+    --force \
+    --filter 'until=168h' \
+    --reserved-space '16GB' \
+    --max-used-space '32GB'
+  docker buildx du --builder default
+} 2>&1 | tee -a "$LOG_FILE"
+
+docker ps --no-trunc --format '{{.ID}} {{.Names}} {{.Image}}' | sort >"$AFTER_FILE"
+if ! cmp -s "$BEFORE_FILE" "$AFTER_FILE"; then
+  printf '%s %s\n' "$(date -u +%FT%TZ)" 'ERROR: running container identities changed during BuildKit GC' | tee -a "$LOG_FILE" >&2
+  diff -u "$BEFORE_FILE" "$AFTER_FILE" | tee -a "$LOG_FILE" >&2 || true
+  exit 1
+fi
+
+printf '%s %s\n' "$(date -u +%FT%TZ)" 'bounded BuildKit GC complete; running container identities unchanged' | tee -a "$LOG_FILE"

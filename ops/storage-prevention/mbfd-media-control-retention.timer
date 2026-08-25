@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Media Control recovery retention weekly
+
+[Timer]
+OnCalendar=Sun *-*-* 05:30:00
+Persistent=true
+RandomizedDelaySec=10min
+Unit=mbfd-media-control-retention.service
+
+[Install]
+WantedBy=timers.target
