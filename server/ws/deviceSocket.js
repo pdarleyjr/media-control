@@ -113,6 +113,10 @@ function runAudioRecoveryOnce(deviceId, recover) {
   return pending;
 }
 
+function waitForAudioOwnerRecovery(deviceId) {
+  return audioRecoveryFlights.get(audioRecoveryFlightKey(deviceId)) || null;
+}
+
 function recoverLostAudioOwner(deviceNs, deviceId) {
   return runAudioRecoveryOnce(deviceId, () => recoverAudioOwnershipAfterLoss({
     database: db,
@@ -780,7 +784,7 @@ module.exports = function setupDeviceSocket(io) {
     }
 
     // Device registers with a pairing code (first time) or device_id + device_token (reconnect)
-    socket.on('device:register', (data) => {
+    socket.on('device:register', async (data) => {
       const { pairing_code, device_id, device_token, device_info, fingerprint } = data;
 
       // Socket.IO reconnects can occur before an operator claims a pairing
@@ -897,6 +901,11 @@ module.exports = function setupDeviceSocket(io) {
           joinDeviceTargetRooms(socket, device_id);
           socket.emit('device:registered', { device_id, device_token: tokenToSend, status: 'online' });
           logDeviceStatus(device_id, 'online');
+          try {
+            await ensureAudioOwnerAfterReconnect(deviceNs, device_id);
+          } catch (error) {
+            console.error(`Audio reconnect recovery failed for ${device_id}: ${error.message}`);
+          }
           // Flush any commands/playlist-updates queued while this device was offline.
           commandQueue.flushQueue(deviceNs, device_id, buildPlaylistPayload);
 
@@ -917,9 +926,6 @@ module.exports = function setupDeviceSocket(io) {
           } else {
             socket.emit('device:playlist-update', buildPlaylistPayload(device_id));
           }
-          void ensureAudioOwnerAfterReconnect(deviceNs, device_id).catch((error) => {
-            console.error(`Audio reconnect recovery failed for ${device_id}: ${error.message}`);
-          });
 
           emitToDeviceWorkspace(dashboardNs, device_id, 'dashboard:device-status', { device_id, status: 'online' });
           scheduleDeviceRoomSnapshot(io, device_id, 'device:online');
@@ -1021,7 +1027,7 @@ module.exports = function setupDeviceSocket(io) {
     // handler, crashing Node. Now we (a) re-check the parent row exists
     // before any FK insert, and (b) wrap each write in try/catch so a single
     // malformed payload never restarts the container.
-    socket.on('device:heartbeat', (data, acknowledge) => {
+    socket.on('device:heartbeat', async (data, acknowledge) => {
       try {
         if (!requireDeviceAuth()) return;
         const { device_id, telemetry, audio_policy_state } = data || {};
@@ -1086,6 +1092,7 @@ module.exports = function setupDeviceSocket(io) {
             console.warn(`dashboard emit failed for ${device_id}: ${e.message}`);
           }
         }
+        await waitForAudioOwnerRecovery(currentDeviceId);
         const authoritativeAudioPolicy = buildPlaylistPayload(device_id).audio_policy || null;
         const audioPolicyDecision = audioPolicyHeartbeatDecision(
           authoritativeAudioPolicy,
@@ -1118,7 +1125,7 @@ module.exports = function setupDeviceSocket(io) {
     // Repair a missed live playlist push without re-registering or reloading the
     // whole kiosk page. The client sends only its applied revision; a full
     // payload is returned only when DB/wall geometry actually differs.
-    socket.on('device:playlist-sync', (data, acknowledge) => {
+    socket.on('device:playlist-sync', async (data, acknowledge) => {
       try {
         if (!requireDeviceAuth()) return;
         const now = Date.now();
@@ -1127,6 +1134,7 @@ module.exports = function setupDeviceSocket(io) {
           return;
         }
         lastPlaylistSyncAt = now;
+        await waitForAudioOwnerRecovery(currentDeviceId);
         const payload = buildPlaylistPayload(currentDeviceId);
         const appliedRevision = data && typeof data.playlist_revision === 'string'
           ? data.playlist_revision

@@ -53,6 +53,45 @@ test('playlist payload carries a device-specific mute decision from the durable 
   );
 });
 
+test('reconnect recovery finishes before any queued or direct playlist can release audio', () => {
+  const socket = source('ws/deviceSocket.js');
+  const reconnect = socket.slice(
+    socket.indexOf('if (device_id) {'),
+    socket.indexOf('// Device ID not found in database'),
+  );
+  const registered = reconnect.indexOf("socket.emit('device:registered'");
+  const recovery = reconnect.indexOf('await ensureAudioOwnerAfterReconnect');
+  const queuedPlaylist = reconnect.indexOf('commandQueue.flushQueue');
+  const directPlaylist = reconnect.indexOf("socket.emit('device:playlist-update'");
+
+  assert.ok(registered >= 0, 'the known device must be registered before its mute fence can be acknowledged');
+  assert.ok(recovery > registered, 'audio recovery must run after the reconnecting socket joins and registers');
+  assert.ok(queuedPlaylist > recovery, 'a queued playlist must not bypass reconnect audio recovery');
+  assert.ok(directPlaylist > recovery, 'the direct playlist must not bypass reconnect audio recovery');
+
+  const heartbeat = socket.slice(
+    socket.indexOf("socket.on('device:heartbeat'"),
+    socket.indexOf("socket.on('device:playlist-sync'"),
+  );
+  const heartbeatWait = heartbeat.indexOf('await waitForAudioOwnerRecovery(currentDeviceId)');
+  assert.ok(
+    heartbeatWait >= 0
+      && heartbeatWait < heartbeat.indexOf('const authoritativeAudioPolicy = buildPlaylistPayload'),
+    'an immediate reconnect heartbeat must not apply the old owner policy while recovery is in flight',
+  );
+
+  const playlistSync = socket.slice(
+    socket.indexOf("socket.on('device:playlist-sync'"),
+    socket.indexOf("socket.on('device:screenshot'"),
+  );
+  const playlistSyncWait = playlistSync.indexOf('await waitForAudioOwnerRecovery(currentDeviceId)');
+  assert.ok(
+    playlistSyncWait >= 0
+      && playlistSyncWait < playlistSync.indexOf('const payload = buildPlaylistPayload'),
+    'the reconnect playlist-sync timer must not bypass in-flight recovery',
+  );
+});
+
 test('authenticated player status is persisted and relayed to the workspace dashboard', () => {
   const socket = source('ws/deviceSocket.js');
   assert.match(socket, /socket\.on\('device:broadcast-status'/);
