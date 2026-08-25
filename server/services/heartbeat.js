@@ -47,6 +47,16 @@ function startHeartbeatChecker(io) {
         try {
           db.prepare('INSERT INTO device_status_log (device_id, status) VALUES (?, ?)').run(device.id, 'offline_timeout');
         } catch (_) {}
+        try {
+          const deviceSocket = require('../ws/deviceSocket');
+          if (typeof deviceSocket.recoverLostAudioOwner === 'function') {
+            void deviceSocket.recoverLostAudioOwner(io.of('/device'), device.id).catch((error) => {
+              console.error(`Heartbeat audio owner recovery failed for ${device.id}: ${error.message}`);
+            });
+          }
+        } catch (error) {
+          console.error(`Heartbeat audio owner recovery unavailable for ${device.id}: ${error.message}`);
+        }
       }
     }
 

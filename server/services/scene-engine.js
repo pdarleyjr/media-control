@@ -30,6 +30,10 @@ const { parseStoredLayout, groupForDevice } = require('../lib/wall-layout');
 const whiteboardState = require('./whiteboard-state');
 const { contentUseDecision } = require('../lib/content-visibility');
 const { isAppOwnedRelativeUrl } = require('../lib/ssrf-policy');
+const {
+  canReplacePlaylistAudioPolicy,
+  stampPlaylistAudioPolicy,
+} = require('../lib/audio-ownership');
 
 // Mirror routes/playlists.js + routes/assignments.js snapshot select so the
 // published snapshot the player consumes carries the same denormalized shape.
@@ -38,7 +42,7 @@ function buildSnapshotItems(playlistId) {
     SELECT pi.id, pi.content_id, pi.widget_id, pi.zone_id, pi.sort_order, pi.duration_sec,
            COALESCE(pi.fit_mode, c.default_fit_mode) AS fit_mode,
            COALESCE(c.filename, w.name) as filename, c.mime_type, c.filepath, c.file_size,
-           c.duration_sec as content_duration, c.remote_url,
+           c.duration_sec as content_duration, c.remote_url, c.version as content_generation,
            w.name as widget_name, w.widget_type, w.config as widget_config
     FROM playlist_items pi
     LEFT JOIN content c ON pi.content_id = c.id
@@ -153,6 +157,30 @@ function pushPlaylistUpdate(io, deviceId, delivery = null) {
     console.warn(`[scene-engine] pushPlaylistUpdate failed for ${deviceId}: ${e.message}`);
     return { delivered: false };
   }
+}
+
+function applyAudioPolicyToDevices(io, deviceIds, policy) {
+  const ids = [...new Set((Array.isArray(deviceIds) ? deviceIds : [])
+    .map((value) => String(value || '').trim())
+    .filter(Boolean))];
+  const playlists = new Set();
+  const updatedDevices = [];
+  for (const deviceId of ids) {
+    const device = db.prepare('SELECT playlist_id FROM devices WHERE id = ?').get(deviceId);
+    if (!device?.playlist_id) continue;
+    if (!playlists.has(device.playlist_id)) {
+      if (!stampPlaylistAudioPolicy(
+        db,
+        device.playlist_id,
+        policy,
+        policy?.content_instance_id,
+      )) continue;
+      playlists.add(device.playlist_id);
+    }
+    updatedDevices.push(deviceId);
+  }
+  for (const deviceId of updatedDevices) pushPlaylistUpdate(io, deviceId);
+  return updatedDevices;
 }
 
 function playbackScopeForDevice(deviceId) {
@@ -312,6 +340,14 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
         device.workspace_id || workspaceId,
         callerContext,
       ).allowed)) return finish(false, { failureReason: 'Playlist content unavailable' });
+      if (source.audio_policy && !stampPlaylistAudioPolicy(
+        db,
+        source.playlist_id,
+        source.audio_policy,
+        source.content_instance_id,
+      )) {
+        return finish(false, { failureReason: 'Playlist audio policy could not be persisted' });
+      }
       db.prepare('UPDATE devices SET playlist_id = ? WHERE id = ?').run(source.playlist_id, deviceId);
       whiteboardState.clearForMedia(io, deviceId);
       const dispatch = pushPlaylistUpdate(io, deviceId, delivery
@@ -347,6 +383,9 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
       mutableDeviceIds: targetDeviceIds,
     });
     if (!playlistId) return finish(false, { failureReason: 'Display playlist unavailable' });
+    if (source.audio_policy && !canReplacePlaylistAudioPolicy(db, playlistId, source.audio_policy)) {
+      return finish(false, { failureReason: 'Stale audio ownership transaction' });
+    }
 
     const fitMode = typeof source.fit_mode === 'string' && source.fit_mode
       ? source.fit_mode
@@ -381,6 +420,9 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
         content_instance_id: source.content_instance_id
           ? String(source.content_instance_id)
           : String(item.id),
+        ...(source.audio_policy && typeof source.audio_policy === 'object'
+          ? { audio_policy: { ...source.audio_policy } }
+          : {}),
       }));
       db.prepare("UPDATE playlists SET status = 'published', published_snapshot = ?, updated_at = strftime('%s','now') WHERE id = ?")
         .run(JSON.stringify(snapshot), playlistId);
@@ -481,6 +523,9 @@ function pushSourceToRegions(io, deviceId, source, routes, opts = {}) {
       mutableDeviceIds: targetDeviceIds,
     });
     if (!playlistId) return finish(false, { failureReason: 'Display playlist unavailable' });
+    if (source.audio_policy && !canReplacePlaylistAudioPolicy(db, playlistId, source.audio_policy)) {
+      return finish(false, { failureReason: 'Stale audio ownership transaction' });
+    }
     const duration = (typeof source.duration_sec === 'number' && source.duration_sec >= 1)
       ? Math.round(source.duration_sec) : 10;
     const seenZones = new Set();
@@ -518,6 +563,9 @@ function pushSourceToRegions(io, deviceId, source, routes, opts = {}) {
         content_instance_id: source.content_instance_id
           ? String(source.content_instance_id)
           : String(item.id),
+        ...(source.audio_policy && typeof source.audio_policy === 'object'
+          ? { audio_policy: { ...source.audio_policy } }
+          : {}),
       }));
       db.prepare("UPDATE playlists SET status = 'published', published_snapshot = ?, updated_at = strftime('%s','now') WHERE id = ?")
         .run(JSON.stringify(snapshot), playlistId);
@@ -674,6 +722,7 @@ function captureCurrent(workspaceId, createdBy, name, deviceIds) {
 }
 
 module.exports = {
+  applyAudioPolicyToDevices,
   resolveScene,
   resolveSceneActions,
   triggerScene,

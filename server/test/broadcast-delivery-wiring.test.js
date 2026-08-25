@@ -16,6 +16,20 @@ test('broadcast route creates a persistent request and returns a request status 
   assert.match(route, /status_url:/);
 });
 
+test('broadcast fences one dynamic audio policy before committing its request-scoped owner', () => {
+  const route = source('routes/broadcast.js');
+  assert.match(route, /resolveDeterministicAudioOwner/);
+  assert.match(route, /source\.content_instance_id\s*=\s*deliveryRequest\.id/);
+  assert.match(route, /const proposedAudioPolicy\s*=\s*buildAudioPolicy\(/);
+  assert.match(route, /outputDeviceId:\s*audioOutputDeviceId/);
+  assert.match(route, /ownerDeviceId:\s*audioOwnerDeviceId/);
+  assert.match(route, /transactionId:\s*deliveryRequest\.id/);
+  assert.match(route, /nextAudioPolicyRevision\(/);
+  assert.match(route, /revision:\s*audioPolicyRevision/);
+  assert.match(route, /await fenceAudioOwnershipTargets\(deviceNamespace,/);
+  assert.match(route, /source\.audio_policy\s*=\s*audioFenceResult\.committed_policy/);
+});
+
 test('playlist payload carries request, command, source, and expected revision metadata', () => {
   const socket = source('ws/deviceSocket.js');
   assert.match(socket, /payload\.broadcast_delivery/);
@@ -24,6 +38,58 @@ test('playlist payload carries request, command, source, and expected revision m
   assert.match(socket, /source_id:\s*String\(activeDelivery\.sourceId\)/);
   assert.match(socket, /expected_playlist_revision:\s*payload\.playlist_revision/);
   assert.match(socket, /broadcastDelivery\.markPrepared\(/);
+});
+
+test('playlist payload carries a device-specific mute decision from the durable common policy', () => {
+  const socket = source('ws/deviceSocket.js');
+  assert.match(socket, /payload\.audio_policy/);
+  assert.match(socket, /audio_allowed/);
+  assert.match(socket, /force_muted/);
+  assert.match(socket, /playlist_revision:\s*payload\.playlist_revision/);
+  assert.match(
+    socket,
+    /authoritativeAudioPolicy\s*&&\s*!authoritativeAudioPolicy\.owner_device_id[\s\S]*ensureAudioOwnerAfterReconnect/,
+    'a durable null-owner policy must retry a fresh fenced recovery after the host becomes ready',
+  );
+});
+
+test('reconnect recovery finishes before any queued or direct playlist can release audio', () => {
+  const socket = source('ws/deviceSocket.js');
+  const reconnect = socket.slice(
+    socket.indexOf('if (device_id) {'),
+    socket.indexOf('// Device ID not found in database'),
+  );
+  const registered = reconnect.indexOf("socket.emit('device:registered'");
+  const recovery = reconnect.indexOf('await ensureReconnectAudioOwner');
+  const queuedPlaylist = reconnect.indexOf('commandQueue.flushQueue');
+  const directPlaylist = reconnect.indexOf("socket.emit('device:playlist-update'");
+
+  assert.ok(registered >= 0, 'the known device must be registered before its mute fence can be acknowledged');
+  assert.ok(recovery > registered, 'audio recovery must run after the reconnecting socket joins and registers');
+  assert.ok(queuedPlaylist > recovery, 'a queued playlist must not bypass reconnect audio recovery');
+  assert.ok(directPlaylist > recovery, 'the direct playlist must not bypass reconnect audio recovery');
+
+  const heartbeat = socket.slice(
+    socket.indexOf("socket.on('device:heartbeat'"),
+    socket.indexOf("socket.on('device:playlist-sync'"),
+  );
+  const heartbeatWait = heartbeat.indexOf('await waitForAudioOwnerRecovery(currentDeviceId)');
+  assert.ok(
+    heartbeatWait >= 0
+      && heartbeatWait < heartbeat.indexOf('const authoritativeAudioPolicy = buildPlaylistPayload'),
+    'an immediate reconnect heartbeat must not apply the old owner policy while recovery is in flight',
+  );
+
+  const playlistSync = socket.slice(
+    socket.indexOf("socket.on('device:playlist-sync'"),
+    socket.indexOf("socket.on('device:screenshot'"),
+  );
+  const playlistSyncWait = playlistSync.indexOf('await waitForAudioOwnerRecovery(currentDeviceId)');
+  assert.ok(
+    playlistSyncWait >= 0
+      && playlistSyncWait < playlistSync.indexOf('const payload = buildPlaylistPayload'),
+    'the reconnect playlist-sync timer must not bypass in-flight recovery',
+  );
 });
 
 test('authenticated player status is persisted and relayed to the workspace dashboard', () => {
