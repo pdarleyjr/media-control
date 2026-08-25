@@ -11,7 +11,7 @@ import { mountActionDock } from './media-control/action-dock.js';
 import * as displayState from '../services/display-state.js';
 import { previewSource, renderStage } from './media-control/stage.js';
 import { buildLivePreviewTargets, livePreviewTargetDeviceIds } from './media-control/preview-targets.js';
-import { openToolboxTab, renderToolbox } from './media-control/toolbox.js';
+import { cancelActiveTouchDrag, openToolboxTab, renderToolbox } from './media-control/toolbox.js';
 import { sendToDisplays, sentToast, trackBroadcastDelivery } from './media-control/send.js';
 import { dispatchTransportTransaction, sendTransportCommand } from './media-control/transport.js';
 import { createTransportIntentTracker } from './media-control/transport-intent.js';
@@ -570,6 +570,7 @@ function mountedStandaloneDisplays() {
 }
 
 function paintStage() {
+  cancelActiveTouchDrag();
   const el = stageEl();
   if (!el) return;
   const all = displayState.getAll();
@@ -3199,6 +3200,7 @@ pruneSelection();
     // it can be pulled back open. The tab lives OUTSIDE .mc-library-inner.
     const libraryInner = libraryDrawer.querySelector('.mc-library-inner');
     const setLibraryOpen = (open) => {
+      if (!open) cancelActiveTouchDrag();
       libraryDrawer.dataset.open = open ? 'true' : 'false';
       libraryDrawer.querySelectorAll('[data-library-toggle]').forEach(btn => {
         btn.setAttribute('aria-expanded', open ? 'true' : 'false');
@@ -3287,6 +3289,7 @@ pruneSelection();
 window.mcGetNavigationContext = () => ({ selected_target: activeTarget });
 
 export function unmount() {
+  cancelActiveTouchDrag();
   targetRestoreLifecycleGeneration += 1;
   // Abort the preference store so a pending write can't mutate an unmounted view.
   if (prefsStore) { try { prefsStore.abort(); } catch { /* */ } prefsStore = null; }

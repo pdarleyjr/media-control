@@ -931,7 +931,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await context.close();
   });
 
-  test('large shelf cards preserve fallback, pagination, drag payload, and tap routing', async ({ browser }, testInfo) => {
+  test('After-hours horizontal shelf preserves fallback, pagination, search, sort, mouse drag, and tap routing', async ({ browser }, testInfo) => {
     const { context, page } = await openAuthedControl(browser, {
       viewport: { width: 838, height: 500 },
       deviceScaleFactor: 1,
@@ -945,6 +945,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
       mime_type: 'video/mp4',
       detected_mime_type: 'video/mp4',
       thumbnail_url: index === 1 ? '/missing-command-center-thumbnail.jpg' : '',
+      filepath: index === 0 ? '/srv/media/after-hours-download-check.mp4' : '',
       created_at: 65 - index,
     }));
     await page.route('**/api/content*', async (route) => {
@@ -952,10 +953,14 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
       if (url.pathname !== '/api/content') return route.continue();
       const offset = Number(url.searchParams.get('offset') || 0);
       const limit = Number(url.searchParams.get('limit') || 60);
+      const search = String(url.searchParams.get('search') || '').toLowerCase();
+      const filtered = search
+        ? videos.filter((video) => video.filename.toLowerCase().includes(search))
+        : videos;
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify(videos.slice(offset, offset + limit)),
+        body: JSON.stringify(filtered.slice(offset, offset + limit)),
       });
     });
     await page.reload({ waitUntil: 'networkidle' });
@@ -971,6 +976,14 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
       const thumb = element.querySelector('.mc-tile-thumb-fallback').getBoundingClientRect();
       const label = element.querySelector('.mc-tile-label');
       const style = getComputedStyle(label);
+      const track = element.closest('.mc-tile-grid');
+      const trackStyle = getComputedStyle(track);
+      const toolbar = document.querySelector('.mc-tb-media-toolbar');
+      const toolbarStyle = getComputedStyle(toolbar);
+      const search = document.querySelector('#mc-media-search');
+      const sort = document.querySelector('#mc-media-sort');
+      const searchBox = search.getBoundingClientRect();
+      const sortBox = sort.getBoundingClientRect();
       return {
         width: box.width,
         height: box.height,
@@ -979,16 +992,38 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
         whiteSpace: style.whiteSpace,
         textOverflow: style.textOverflow,
         labelOverflow: label.scrollWidth > label.clientWidth,
+        trackFlexWrap: trackStyle.flexWrap,
+        trackOverflowX: trackStyle.overflowX,
+        trackOverflowY: trackStyle.overflowY,
+        trackScrollable: track.scrollWidth > track.clientWidth,
+        toolbarDirection: toolbarStyle.flexDirection,
+        toolbarWrap: toolbarStyle.flexWrap,
+        toolbarOneRow: Math.abs(searchBox.top - sortBox.top) <= 1,
+        searchWidth: searchBox.width,
       };
     });
-    expect(geometry.width).toBeGreaterThanOrEqual(136);
-    expect(geometry.width).toBeLessThanOrEqual(168);
+    expect(geometry.width).toBeGreaterThanOrEqual(168);
+    expect(geometry.width).toBeLessThanOrEqual(200);
     expect(geometry.height).toBeGreaterThanOrEqual(132);
-    expect(geometry.thumbWidth).toBeGreaterThanOrEqual(120);
+    expect(geometry.thumbWidth).toBeGreaterThanOrEqual(152);
     expect(geometry.thumbHeight).toBeGreaterThanOrEqual(72);
     expect(geometry.whiteSpace).toBe('nowrap');
     expect(geometry.textOverflow).toBe('ellipsis');
     expect(geometry.labelOverflow).toBe(true);
+    expect(geometry.trackFlexWrap).toBe('nowrap');
+    expect(geometry.trackOverflowX).toBe('auto');
+    expect(geometry.trackOverflowY).toBe('hidden');
+    expect(geometry.trackScrollable).toBe(true);
+    expect(geometry.toolbarDirection).toBe('row');
+    expect(geometry.toolbarWrap).toBe('nowrap');
+    expect(geometry.toolbarOneRow).toBe(true);
+    expect(geometry.searchWidth).toBeLessThanOrEqual(260);
+
+    const downloadButton = page.locator('[data-download-id="large-card-video-1"]');
+    await expect(downloadButton).toBeVisible();
+    const downloadBox = await downloadButton.boundingBox();
+    expect(downloadBox.width).toBeGreaterThanOrEqual(48);
+    expect(downloadBox.height).toBeGreaterThanOrEqual(48);
 
     const brokenThumbTile = page.locator('[data-label="training-video-02.mp4"]');
     await brokenThumbTile.scrollIntoViewIfNeeded();
@@ -1006,10 +1041,39 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await firstTile.click();
     await expect(page.locator('dialog.mc-target-picker[open]')).toBeVisible();
     await page.locator('[data-target-cancel]').click();
+
+    await page.locator('#mc-media-search').fill('training-video-64');
+    await expect(labels).toHaveCount(1);
+    await expect(labels.first()).toHaveText('training-video-64.mp4');
+    await page.locator('#mc-media-search').fill('');
+    await expect(labels).toHaveCount(60);
+    await page.locator('#mc-media-sort').selectOption('name');
+    await expect(labels.first()).toHaveText(longName);
+
     await page.locator('#mc-media-loadmore').click();
     await expect(labels).toHaveCount(65);
     await expect(page.locator('#mc-media-loadmore')).toHaveCount(0);
-    await page.screenshot({ path: testInfo.outputPath('command-center-large-content-cards.png'), fullPage: true });
+    await page.locator('.mc-library-body').evaluate((element) => { element.scrollTop = 0; });
+    await page.screenshot({ path: testInfo.outputPath('lenovo-fallback-838x500-touch-shelf-toolbar.png'), fullPage: true });
+    await firstTile.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: testInfo.outputPath('lenovo-fallback-838x500-touch-shelf-cards.png'), fullPage: true });
+
+    await page.setViewportSize({ width: 500, height: 838 });
+    await expect(page.locator('#mc-library-drawer')).toHaveAttribute('data-open', 'true');
+    const portraitTrack = await page.locator('#mc-media-grid').evaluate((element) => ({
+      flexWrap: getComputedStyle(element).flexWrap,
+      overflowX: getComputedStyle(element).overflowX,
+      pageOverflow: document.documentElement.scrollWidth - innerWidth,
+    }));
+    expect(portraitTrack).toEqual({ flexWrap: 'nowrap', overflowX: 'auto', pageOverflow: 0 });
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const desktopTrack = await page.locator('#mc-media-grid').evaluate((element) => ({
+      flexWrap: getComputedStyle(element).flexWrap,
+      overflowX: getComputedStyle(element).overflowX,
+      pageOverflow: document.documentElement.scrollWidth - innerWidth,
+    }));
+    expect(desktopTrack).toEqual({ flexWrap: 'nowrap', overflowX: 'auto', pageOverflow: 0 });
     await context.close();
   });
 
@@ -1194,6 +1258,276 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await page.waitForTimeout(100);
     expect(await page.evaluate(() => window.__phase6TouchDrops)).toEqual([]);
     await expect(page.locator('dialog.mc-target-picker[open]')).toHaveCount(0);
+    await context.close();
+  });
+
+  test('After-hours touch acquisition repeats across five targets, edges, hit slop, and ambiguous gaps', async ({ browser }) => {
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 838, height: 500 },
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: true,
+    });
+    await page.route('**/api/content*', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname !== '/api/content') return route.continue();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([{
+          id: 'after-hours-touch-video',
+          filename: 'After-hours touch acceptance.mp4',
+          mime_type: 'video/mp4',
+          detected_mime_type: 'video/mp4',
+          created_at: 1,
+        }]),
+      });
+    });
+    await page.reload({ waitUntil: 'networkidle' });
+    await waitForCommandCenterVisualReady(page);
+    await page.locator('#mc-library-drawer > [data-library-toggle]').click();
+    await waitForLibraryDrawerSettled(page);
+
+    await page.evaluate(() => {
+      window.__afterHoursTouchDrops = [];
+      window.__afterHoursMouseDrops = [];
+      document.addEventListener('mc:source-drop', (event) => {
+        window.__afterHoursTouchDrops.push({
+          target: event.target.dataset.testTouchTarget || '',
+          source: event.detail?.source || null,
+        });
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }, { capture: true });
+
+      const fixture = document.createElement('div');
+      fixture.id = 'mc-after-hours-touch-fixture';
+      const addTarget = (id, left, top, width, height, {
+        className = 'mc-display-card',
+        data = { deviceId: `fixture-${id}` },
+        nestedClassName = '',
+        nestedData = {},
+      } = {}) => {
+        const target = document.createElement('div');
+        target.className = className;
+        Object.assign(target.dataset, data);
+        target.dataset.testTouchTarget = id;
+        Object.assign(target.style, {
+          position: 'fixed', left: `${left}px`, top: `${top}px`,
+          width: `${width}px`, height: `${height}px`, zIndex: '9000',
+          pointerEvents: 'auto', background: '#fff',
+        });
+        const preview = document.createElement('span');
+        preview.className = nestedClassName;
+        Object.assign(preview.dataset, nestedData);
+        preview.dataset.testNested = id;
+        Object.assign(preview.style, { position: 'absolute', inset: '0 0 18px' });
+        const caption = document.createElement('span');
+        caption.dataset.testCaption = id;
+        Object.assign(caption.style, { position: 'absolute', left: '0', right: '0', bottom: '0', height: '18px' });
+        target.append(preview, caption);
+        target.addEventListener('dragover', (event) => event.preventDefault());
+        target.addEventListener('drop', (event) => {
+          event.preventDefault();
+          window.__afterHoursMouseDrops.push(id);
+        });
+        fixture.appendChild(target);
+      };
+      ['tv1', 'tv2', 'tv3', 'tv4', 'tv5'].forEach((id, index) => {
+        addTarget(id, 20 + (index * 160), 78, 120, 64);
+      });
+      ['primary-1', 'primary-2', 'primary-3'].forEach((id, index) => {
+        addTarget(id, 20 + (index * 130), 154, 100, 54, {
+          className: 'mc-wall-split-half',
+          data: { deviceId: `fixture-${id}`, wallRegionId: `region-${index + 1}` },
+        });
+      });
+      ['secondary-1', 'secondary-2'].forEach((id, index) => {
+        addTarget(id, 530 + (index * 140), 154, 110, 54, {
+          className: 'mc-wall-region',
+          data: { layoutGroupId: `fixture-group-${index + 1}`, wallId: 'fixture-secondary-wall' },
+          nestedClassName: 'mc-wall-cell',
+          nestedData: { deviceId: `fixture-secondary-member-${index + 1}` },
+        });
+      });
+      addTarget('whole-wall', 20, 230, 150, 54, {
+        className: 'mc-wall-all',
+        data: { wallIds: 'fixture-tv1,fixture-tv2,fixture-tv3' },
+      });
+      addTarget('gap-left', 300, 230, 80, 54);
+      addTarget('gap-right', 420, 230, 80, 54);
+      document.body.appendChild(fixture);
+    });
+
+    const tile = page.locator('#mc-toolbox .mc-tile[data-drag-source]').first();
+    await tile.scrollIntoViewIfNeeded();
+    const tileBox = await tile.boundingBox();
+    const start = { x: tileBox.x + tileBox.width / 2, y: tileBox.y + tileBox.height / 2 };
+    let pointerId = 700;
+
+    const dispatchPointer = async (type, point, id, pointerType = 'touch') => tile.evaluate((element, args) => {
+      element.dispatchEvent(new PointerEvent(args.type, {
+        bubbles: true,
+        cancelable: true,
+        pointerId: args.id,
+        pointerType: args.pointerType,
+        isPrimary: true,
+        buttons: args.type === 'pointerup' || args.type === 'pointercancel' ? 0 : 1,
+        clientX: args.point.x,
+        clientY: args.point.y,
+      }));
+    }, { type, point, id, pointerType });
+    const beginDrag = async (point, id, pointerType = 'touch') => {
+      await dispatchPointer('pointerdown', start, id, pointerType);
+      await dispatchPointer('pointermove', { x: start.x, y: start.y - 18 }, id, pointerType);
+      await dispatchPointer('pointermove', point, id, pointerType);
+      await page.waitForTimeout(34);
+    };
+
+    const targetPoints = await page.evaluate(() => Object.fromEntries(
+      Array.from(document.querySelectorAll('[data-test-touch-target^="tv"]')).map((element) => {
+        const box = element.getBoundingClientRect();
+        return [element.dataset.testTouchTarget, {
+          center: { x: box.left + box.width / 2, y: box.top + box.height / 2 },
+          leftEdge: { x: box.left + 1, y: box.top + box.height / 2 },
+          rightEdge: { x: box.right - 1, y: box.top + box.height / 2 },
+          caption: { x: box.left + box.width / 2, y: box.bottom - 6 },
+          nearTop: { x: box.left + box.width / 2, y: box.top - 20 },
+        }];
+      }),
+    ));
+    const regionPoints = await page.evaluate(() => Object.fromEntries(
+      Array.from(document.querySelectorAll('[data-test-touch-target^="primary-"], [data-test-touch-target^="secondary-"], [data-test-touch-target="whole-wall"]')).map((element) => {
+        const box = element.getBoundingClientRect();
+        return [element.dataset.testTouchTarget, {
+          center: { x: box.left + box.width / 2, y: box.top + box.height / 2 },
+          caption: { x: box.left + box.width / 2, y: box.bottom - 6 },
+        }];
+      }),
+    ));
+
+    let expectedDrops = 0;
+    for (let repeat = 0; repeat < 2; repeat += 1) {
+      for (const targetId of ['tv1', 'tv2', 'tv3', 'tv4', 'tv5']) {
+        for (const [position, point] of Object.entries(targetPoints[targetId])) {
+          const id = pointerId++;
+          await beginDrag(point, id);
+          const target = page.locator(`[data-test-touch-target="${targetId}"]`);
+          await expect(target, `${targetId} ${position} repeat ${repeat + 1}`).toHaveClass(/mc-card-dragover/);
+          expect(await target.evaluate((element) => getComputedStyle(element, '::before').pointerEvents)).toBe('none');
+          await dispatchPointer('pointerup', point, id);
+          expectedDrops += 1;
+          await expect.poll(() => page.evaluate(() => window.__afterHoursTouchDrops.length)).toBe(expectedDrops);
+          expect(await page.evaluate(() => window.__afterHoursTouchDrops.at(-1).target)).toBe(targetId);
+          await expect(target).not.toHaveClass(/mc-card-dragover/);
+          await expect(page.locator('.mc-touch-drag-ghost')).toHaveCount(0);
+        }
+      }
+    }
+
+    for (const targetId of ['primary-1', 'primary-2', 'primary-3', 'secondary-1', 'secondary-2', 'whole-wall']) {
+      for (const point of Object.values(regionPoints[targetId])) {
+        const id = pointerId++;
+        await beginDrag(point, id);
+        const target = page.locator(`[data-test-touch-target="${targetId}"]`);
+        await expect(target).toHaveClass(targetId === 'whole-wall' ? /mc-wall-all-dragover/ : /mc-card-dragover/);
+        expect(await target.evaluate((element) => getComputedStyle(element, '::before').pointerEvents)).toBe('none');
+        await dispatchPointer('pointerup', point, id);
+        expectedDrops += 1;
+        await expect.poll(() => page.evaluate(() => window.__afterHoursTouchDrops.length)).toBe(expectedDrops);
+        expect(await page.evaluate(() => window.__afterHoursTouchDrops.at(-1).target)).toBe(targetId);
+        await expect(target).not.toHaveClass(/mc-card-dragover|mc-wall-all-dragover/);
+      }
+    }
+
+    const childTransitionId = pointerId++;
+    await beginDrag(targetPoints.tv1.center, childTransitionId);
+    await dispatchPointer('pointermove', targetPoints.tv1.caption, childTransitionId);
+    await expect(page.locator('[data-test-touch-target="tv1"]')).toHaveClass(/mc-card-dragover/);
+    await dispatchPointer('pointerup', targetPoints.tv1.caption, childTransitionId);
+    expectedDrops += 1;
+    await expect.poll(() => page.evaluate(() => window.__afterHoursTouchDrops.length)).toBe(expectedDrops);
+
+    const penId = pointerId++;
+    await beginDrag(targetPoints.tv2.center, penId, 'pen');
+    await expect(page.locator('[data-test-touch-target="tv2"]')).toHaveClass(/mc-card-dragover/);
+    await dispatchPointer('pointerup', targetPoints.tv2.center, penId, 'pen');
+    expectedDrops += 1;
+    await expect.poll(() => page.evaluate(() => window.__afterHoursTouchDrops.length)).toBe(expectedDrops);
+
+    const ambiguousPoint = { x: 400, y: 257 };
+    const ambiguousId = pointerId++;
+    await beginDrag(ambiguousPoint, ambiguousId);
+    await expect(page.locator('[data-test-touch-target="gap-left"]')).not.toHaveClass(/mc-card-dragover/);
+    await expect(page.locator('[data-test-touch-target="gap-right"]')).not.toHaveClass(/mc-card-dragover/);
+    await dispatchPointer('pointerup', ambiguousPoint, ambiguousId);
+    await page.waitForTimeout(50);
+    expect(await page.evaluate(() => window.__afterHoursTouchDrops.length)).toBe(expectedDrops);
+
+    const cancelTarget = targetPoints.tv3.center;
+    const cancelId = pointerId++;
+    await beginDrag(cancelTarget, cancelId);
+    await expect(page.locator('[data-test-touch-target="tv3"]')).toHaveClass(/mc-card-dragover/);
+    await dispatchPointer('pointercancel', cancelTarget, cancelId);
+    await expect(page.locator('[data-test-touch-target="tv3"]')).not.toHaveClass(/mc-card-dragover/);
+    await expect(page.locator('.mc-touch-drag-ghost')).toHaveCount(0);
+
+    const repaintId = pointerId++;
+    await beginDrag(targetPoints.tv2.center, repaintId);
+    await expect(page.locator('[data-test-touch-target="tv2"]')).toHaveClass(/mc-card-dragover/);
+    await page.evaluate(async () => {
+      const state = await import('/js/services/display-state.js');
+      const display = state.getAll()[0];
+      state.applyConfirmedState(display.id, {
+        state_revision: Number(display.state_revision || 0) + 1,
+        screen_on: !display.screen_on,
+      });
+    });
+    await expect(page.locator('[data-test-touch-target="tv2"]')).not.toHaveClass(/mc-card-dragover/);
+    await expect(page.locator('.mc-touch-drag-ghost')).toHaveCount(0);
+
+    const resizeId = pointerId++;
+    await beginDrag(targetPoints.tv3.center, resizeId);
+    await expect(page.locator('[data-test-touch-target="tv3"]')).toHaveClass(/mc-card-dragover/);
+    await page.setViewportSize({ width: 837, height: 500 });
+    await expect(page.locator('[data-test-touch-target="tv3"]')).not.toHaveClass(/mc-card-dragover/);
+    await expect(page.locator('.mc-touch-drag-ghost')).toHaveCount(0);
+    await page.setViewportSize({ width: 838, height: 500 });
+    await page.waitForTimeout(50);
+
+    const blurId = pointerId++;
+    await beginDrag(targetPoints.tv4.center, blurId);
+    await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    await expect(page.locator('[data-test-touch-target="tv4"]')).not.toHaveClass(/mc-card-dragover/);
+    await expect(page.locator('.mc-touch-drag-ghost')).toHaveCount(0);
+
+    const closeId = pointerId++;
+    await beginDrag(targetPoints.tv5.center, closeId);
+    await page.locator('#mc-library-drawer > [data-library-toggle]').click();
+    await expect(page.locator('#mc-library-drawer')).toHaveAttribute('data-open', 'false');
+    await expect(page.locator('[data-test-touch-target="tv5"]')).not.toHaveClass(/mc-card-dragover/);
+    await expect(page.locator('.mc-touch-drag-ghost')).toHaveCount(0);
+    await page.locator('#mc-library-drawer > [data-library-toggle]').click();
+
+    const swipeId = pointerId++;
+    await dispatchPointer('pointerdown', start, swipeId);
+    await dispatchPointer('pointermove', { x: start.x + 56, y: start.y + 3 }, swipeId);
+    await dispatchPointer('pointerup', { x: start.x + 56, y: start.y + 3 }, swipeId);
+    await tile.evaluate((element) => element.click());
+    await expect(page.locator('dialog.mc-target-picker[open]')).toHaveCount(0);
+    expect(await tile.evaluate((element) => getComputedStyle(element).touchAction)).toContain('pan-x');
+
+    await tile.click();
+    await expect(page.locator('dialog.mc-target-picker[open]')).toHaveCount(1);
+    await page.locator('[data-target-cancel]').click();
+
+    await tile.dragTo(page.locator('[data-test-touch-target="tv1"]'));
+    await expect.poll(() => page.evaluate(() => window.__afterHoursMouseDrops.length)).toBe(1);
+    expect(await page.evaluate(() => window.__afterHoursMouseDrops)).toEqual(['tv1']);
+
+    expect(await page.evaluate(() => window.__afterHoursTouchDrops.every(
+      (drop) => drop.source?.content_id === 'after-hours-touch-video'
+    ))).toBe(true);
     await context.close();
   });
 

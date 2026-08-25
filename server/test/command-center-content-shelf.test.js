@@ -47,10 +47,10 @@ test('Command Center shelf cards are large visual tiles without changing route p
   const toolbox = read('frontend/js/views/media-control/toolbox.js');
   const css = read('frontend/css/media-control.css');
 
-  assert.match(css, /\.mc-library-body \.mc-tile\s*\{[\s\S]*?width:\s*152px;[\s\S]*?min-height:\s*132px;/);
-  assert.match(css, /\.mc-library-body \.mc-tile-thumb[\s\S]*?width:\s*136px;[\s\S]*?height:\s*82px;/);
+  assert.match(css, /\.mc-library-body \.mc-tile\s*\{[\s\S]*?width:\s*176px;[\s\S]*?min-height:\s*132px;/);
+  assert.match(css, /\.mc-library-body \.mc-tile-thumb[\s\S]*?width:\s*160px;[\s\S]*?height:\s*82px;/);
   assert.match(css, /\.mc-library-body \.mc-tile-label[\s\S]*?white-space:\s*nowrap;[\s\S]*?text-overflow:\s*ellipsis;/);
-  assert.match(css, /\.mc-library-body \.mc-tile-thumb-fallback[\s\S]*?width:\s*136px;[\s\S]*?height:\s*82px;/);
+  assert.match(css, /\.mc-library-body \.mc-tile-thumb-fallback[\s\S]*?width:\s*160px;[\s\S]*?height:\s*82px;/);
   assert.match(toolbox, /const src = JSON\.stringify\(\{ content_id: item\.id \}\)/);
   assert.match(toolbox, /data-drag-source='\$\{esc\(src\)\}'/);
   assert.match(toolbox, /data-label="\$\{esc\(name\)\}"/);
@@ -78,4 +78,41 @@ test('Command Center composition follows the approved shelf mockup without a dup
   assert.match(css, /\.mc-action-dock-persistent \.mc-cam-health-wrap\s*\{\s*display:\s*none/);
   assert.match(css, /--mc-library-layout-reserve-h:\s*clamp\(220px, 27dvh, 260px\)/);
   assert.match(css, /@media \(min-width: 1100px\) and \(min-height: 760px\)[\s\S]*?--mc-library-expanded-h:\s*clamp\(340px, 40dvh, 350px\)/);
+});
+
+test('touch drag acquisition is prioritized, tolerant, ambiguity-safe, and lifecycle-clean', () => {
+  const toolbox = read('frontend/js/views/media-control/toolbox.js');
+  const view = read('frontend/js/views/media-control.js');
+
+  assert.match(toolbox, /const TOUCH_HIT_SLOP_PX = 28/);
+  assert.match(toolbox, /document\.elementsFromPoint/);
+  assert.match(toolbox, /function normalizeTouchDropTarget[\s\S]*?splitHalf[\s\S]*?groupedRegion[\s\S]*?wallCell[\s\S]*?displayCard[\s\S]*?wholeWall/);
+  assert.match(toolbox, /function touchDropPriority[\s\S]*?mc-wall-split-half[\s\S]*?mc-display-card[\s\S]*?mc-wall-region[\s\S]*?mc-wall-all/);
+  assert.match(toolbox, /ambiguous[\s\S]*?return null/);
+  assert.match(toolbox, /requestAnimationFrame/);
+  assert.match(toolbox, /cancelAnimationFrame/);
+  assert.match(toolbox, /let settled = false/);
+  assert.match(toolbox, /window\.addEventListener\('resize', cancel/);
+  assert.match(toolbox, /export function cancelActiveTouchDrag/);
+  assert.match(view, /import \{[^}]*cancelActiveTouchDrag[^}]*\} from '\.\/media-control\/toolbox\.js'/);
+  assert.match(view, /function paintStage\(\) \{\s*cancelActiveTouchDrag\(\)/);
+  assert.match(view, /const setLibraryOpen = \(open\) => \{\s*if \(!open\) cancelActiveTouchDrag\(\)/);
+  assert.match(view, /export function unmount\(\) \{\s*cancelActiveTouchDrag\(\)/);
+});
+
+test('bottom shelf is a compact horizontal touch track without changing stage reserve geometry', () => {
+  const css = read('frontend/css/media-control.css');
+
+  assert.match(css, /\.mc-library-body \.mc-tile-grid\s*\{[^}]*flex-wrap:\s*nowrap;[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*hidden;/);
+  assert.match(css, /\.mc-library-body \.mc-tile\s*\{[^}]*width:\s*176px;/);
+  assert.match(css, /\.mc-library-body \.mc-tile-cell\s*\{[^}]*width:\s*176px;/);
+  assert.match(css, /\.mc-tb-media-toolbar\s*\{[^}]*flex-direction:\s*row;[^}]*flex-wrap:\s*nowrap;/);
+  assert.match(css, /\.mc-tb-search\s*\{[^}]*max-width:/);
+  assert.match(css, /\.mc-tile\[data-drag-source\]\s*\{[^}]*touch-action:\s*pan-x;/);
+  assert.match(css, /\.mc-library-body \.mc-tile-dl\s*\{[^}]*width:\s*48px;[^}]*height:\s*48px;[^}]*opacity:\s*1/);
+  assert.match(css, /\.mc-card-dragover::before[\s\S]*?pointer-events:\s*none/);
+
+  // Refining the shelf must not move the stage or enlarge the short-tablet reserve.
+  assert.match(css, /--mc-library-layout-reserve-h:\s*clamp\(220px, 27dvh, 260px\)/);
+  assert.match(css, /@media \(min-width: 769px\) and \(max-width: 1024px\) and \(max-height: 600px\)[\s\S]*?--mc-library-layout-reserve-h:\s*180px/);
 });

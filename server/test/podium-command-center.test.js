@@ -190,7 +190,7 @@ test('Multiview contains its own mouse, touch, and keyboard content picker', () 
   assert.match(smoke, /\[data-target-cancel\]/);
 });
 
-test('podium touch drag uses pointer events while preserving desktop drag and drop', () => {
+test('podium touch drag preserves horizontal touch scrolling and desktop drag and drop', () => {
   const toolbox = read('frontend/js/views/media-control/toolbox.js');
   const view = read('frontend/js/views/media-control.js');
   const css = read('frontend/css/media-control.css');
@@ -200,7 +200,7 @@ test('podium touch drag uses pointer events while preserving desktop drag and dr
   assert.match(toolbox, /new CustomEvent\('mc:source-drop'/);
   assert.match(view, /addEventListener\('mc:source-drop'/);
   assert.match(css, /\.mc-touch-drag-ghost/);
-  assert.match(css, /@media \(pointer: coarse\)[\s\S]*?touch-action:\s*none/);
+  assert.match(css, /@media \(pointer: coarse\)[\s\S]*?touch-action:\s*pan-x/);
   assert.match(toolbox, /addEventListener\('dragstart'[\s\S]*?application\/x-mc-source/);
 });
 
