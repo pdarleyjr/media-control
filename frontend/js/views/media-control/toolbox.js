@@ -741,13 +741,17 @@ function nearbyTouchDropTarget(x, y, cachedTargets) {
       ...candidate,
       distance: pointDistanceToRect(x, y, candidate.rect),
     }))
-    .filter(({ distance }) => distance <= TOUCH_HIT_SLOP_PX)
-    .sort((a, b) => b.priority - a.priority || a.distance - b.distance);
+    .filter(({ distance }) => distance <= TOUCH_HIT_SLOP_PX);
   if (!candidates.length) return { target: null, ambiguous: false };
 
-  const best = candidates[0];
-  const ambiguous = candidates.some((candidate, index) => index > 0 &&
-    candidate.priority === best.priority &&
+  // Broad whole-wall strips should yield to nearby display/region targets, but
+  // among those specific targets proximity decides. Class priority is only a
+  // stable tie-break after the ambiguity band has been applied.
+  const specificCandidates = candidates.filter(({ priority }) => priority >= 3);
+  const eligible = (specificCandidates.length ? specificCandidates : candidates)
+    .sort((a, b) => a.distance - b.distance || b.priority - a.priority);
+  const best = eligible[0];
+  const ambiguous = eligible.some((candidate, index) => index > 0 &&
     candidate.distance - best.distance <= TOUCH_AMBIGUITY_PX);
   return { target: ambiguous ? null : best.target, ambiguous };
 }

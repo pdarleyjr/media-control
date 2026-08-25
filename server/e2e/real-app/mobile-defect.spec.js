@@ -1019,6 +1019,41 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     expect(geometry.toolbarOneRow).toBe(true);
     expect(geometry.searchWidth).toBeLessThanOrEqual(260);
 
+    await page.evaluate(() => {
+      window.__afterHoursShelfSwipeDrops = [];
+      document.addEventListener('mc:source-drop', (event) => {
+        window.__afterHoursShelfSwipeDrops.push(event.detail?.source || null);
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }, { capture: true });
+      document.querySelector('#mc-media-grid').scrollLeft = 0;
+    });
+    if (testInfo.project.name.startsWith('chromium')) {
+      const swipeTile = page.locator('#mc-toolbox .mc-tile[data-drag-source]').nth(2);
+      const swipeBox = await swipeTile.boundingBox();
+      const swipeY = swipeBox.y + swipeBox.height / 2;
+      const cdp = await context.newCDPSession(page);
+      await cdp.send('Input.dispatchTouchEvent', {
+        type: 'touchStart',
+        touchPoints: [{ x: swipeBox.x + swipeBox.width / 2, y: swipeY, id: 91 }],
+      });
+      for (const deltaX of [40, 80, 120, 160]) {
+        await cdp.send('Input.dispatchTouchEvent', {
+          type: 'touchMove',
+          touchPoints: [{ x: swipeBox.x + swipeBox.width / 2 - deltaX, y: swipeY + 2, id: 91 }],
+        });
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+      }
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await cdp.detach();
+    } else {
+      const trackBox = await page.locator('#mc-media-grid').boundingBox();
+      await page.mouse.move(trackBox.x + trackBox.width / 2, trackBox.y + trackBox.height / 2);
+      await page.mouse.wheel(180, 0);
+    }
+    await expect.poll(() => page.locator('#mc-media-grid').evaluate((element) => element.scrollLeft)).toBeGreaterThan(30);
+    expect(await page.evaluate(() => window.__afterHoursShelfSwipeDrops)).toEqual([]);
+
     const downloadButton = page.locator('[data-download-id="large-card-video-1"]');
     await expect(downloadButton).toBeVisible();
     const downloadBox = await downloadButton.boundingBox();
@@ -1356,6 +1391,11 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
       });
       addTarget('gap-left', 300, 230, 80, 54);
       addTarget('gap-right', 420, 230, 80, 54);
+      addTarget('cross-class-display', 300, 300, 80, 54);
+      addTarget('cross-class-split', 410, 300, 80, 54, {
+        className: 'mc-wall-split-half',
+        data: { deviceId: 'fixture-cross-class-split', wallRegionId: 'region-cross-class-split' },
+      });
       document.body.appendChild(fixture);
     });
 
@@ -1461,6 +1501,25 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await expect(page.locator('[data-test-touch-target="gap-left"]')).not.toHaveClass(/mc-card-dragover/);
     await expect(page.locator('[data-test-touch-target="gap-right"]')).not.toHaveClass(/mc-card-dragover/);
     await dispatchPointer('pointerup', ambiguousPoint, ambiguousId);
+    await page.waitForTimeout(50);
+    expect(await page.evaluate(() => window.__afterHoursTouchDrops.length)).toBe(expectedDrops);
+
+    const nearerDisplayPoint = { x: 390, y: 327 };
+    const nearerDisplayId = pointerId++;
+    await beginDrag(nearerDisplayPoint, nearerDisplayId);
+    await expect(page.locator('[data-test-touch-target="cross-class-display"]')).toHaveClass(/mc-card-dragover/);
+    await expect(page.locator('[data-test-touch-target="cross-class-split"]')).not.toHaveClass(/mc-card-dragover/);
+    await dispatchPointer('pointerup', nearerDisplayPoint, nearerDisplayId);
+    expectedDrops += 1;
+    await expect.poll(() => page.evaluate(() => window.__afterHoursTouchDrops.length)).toBe(expectedDrops);
+    expect(await page.evaluate(() => window.__afterHoursTouchDrops.at(-1).target)).toBe('cross-class-display');
+
+    const crossClassAmbiguousPoint = { x: 395, y: 327 };
+    const crossClassAmbiguousId = pointerId++;
+    await beginDrag(crossClassAmbiguousPoint, crossClassAmbiguousId);
+    await expect(page.locator('[data-test-touch-target="cross-class-display"]')).not.toHaveClass(/mc-card-dragover/);
+    await expect(page.locator('[data-test-touch-target="cross-class-split"]')).not.toHaveClass(/mc-card-dragover/);
+    await dispatchPointer('pointerup', crossClassAmbiguousPoint, crossClassAmbiguousId);
     await page.waitForTimeout(50);
     expect(await page.evaluate(() => window.__afterHoursTouchDrops.length)).toBe(expectedDrops);
 
