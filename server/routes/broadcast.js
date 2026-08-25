@@ -37,6 +37,17 @@ const { presentationDependencyDecision } = require('../services/presentation-dep
 const { buildBroadcastPreflight } = require('../lib/broadcast-preflight');
 const cameraControl = require('../lib/camera-control-client');
 const { ELEVATED_ROLES } = require('../middleware/auth');
+const {
+  buildAudioPolicy,
+  findAudioPolicyParticipants,
+  isClassroomRendererDevice,
+  maxPersistedAudioPolicyRevision,
+  nextAudioPolicyRevision,
+  orderedRendererDeviceIds,
+  resolveDeterministicAudioOwner,
+  resolvePhysicalAudioOutputDeviceId,
+} = require('../lib/audio-ownership');
+const { fenceAudioOwnershipTargets } = require('../lib/audio-ownership-transaction');
 
 function sourceIdentity({ contentId, playlistId, presentationId, remoteUrl }) {
   if (contentId) return { type: 'content', id: String(contentId) };
@@ -47,7 +58,7 @@ function sourceIdentity({ contentId, playlistId, presentationId, remoteUrl }) {
 }
 
 function loadPresentationForBroadcast(req) {
-  const pres = db.prepare(`SELECT id, workspace_id, user_id, deck_json, status, published_snapshot
+  const pres = db.prepare(`SELECT id, workspace_id, user_id, deck_json, status, published_snapshot, updated_at
     FROM presentations WHERE id = ?`).get(String(req.body.presentation_id));
   if (!pres) return { status: 404, error: `Presentation ${req.body.presentation_id} not found` };
   if (pres.workspace_id !== req.workspaceId) return { status: 403, error: `Presentation ${req.body.presentation_id} is not in this workspace` };
@@ -332,6 +343,28 @@ router.post('/', async (req, res) => {
 
   const source = { content_id, remote_url: effectiveRemoteUrl, playlist_id, fit_mode };
   const io = req.app.get('io');
+  const classroomRenderers = db.prepare(`
+    SELECT id, name
+    FROM devices
+    WHERE workspace_id = ?
+      AND id NOT LIKE ?
+  `).all(req.workspaceId, `${LIVE_STREAM_DEVICE_PREFIX}%`).filter(isClassroomRendererDevice);
+  const rendererIds = new Set(classroomRenderers.map((device) => String(device.id)));
+  const audioTargetDeviceIds = physicalTargets.filter((deviceId) => rendererIds.has(String(deviceId)));
+  const audioOutputDeviceId = resolvePhysicalAudioOutputDeviceId(classroomRenderers);
+  const deviceNamespace = io.of('/device');
+  const onlineAudioTargetIds = audioTargetDeviceIds.filter((deviceId) => {
+    const room = deviceNamespace.adapter.rooms.get(deviceId);
+    return Boolean(room && room.size > 0);
+  });
+  const audioOwnerDeviceId = audioOutputDeviceId && audioTargetDeviceIds.length > 0
+    ? resolveDeterministicAudioOwner({
+        targetDeviceIds: audioTargetDeviceIds,
+        preferredDeviceId: audioOutputDeviceId,
+        orderedDeviceIds: orderedRendererDeviceIds(classroomRenderers),
+        onlineDeviceIds: onlineAudioTargetIds,
+      })
+    : null;
   const totalRequested = dispatchRoutes.length + resolvedTargets.missing.length;
   const sourceRef = sourceIdentity({
     contentId: content_id,
@@ -405,10 +438,10 @@ router.post('/', async (req, res) => {
       delivery: deliveryRequest,
     });
   }
-  // A presentation broadcast is also its publication boundary. Snapshot only
-  // after every authorization, topology, readiness, confirmation, and
-  // idempotency check has passed, so the unauthenticated player never sees a
-  // draft and a rejected request cannot publish one as a side effect.
+  // A presentation broadcast is also its publication boundary. Complete this
+  // last abortable consistency check before muting any renderer for a new
+  // ownership epoch; a concurrent edit must not strand the current owner
+  // behind a fence that will never receive its matching committed policy.
   if (presentationForBroadcast
       && (presentationForBroadcast.status !== 'published'
         || presentationForBroadcast.published_snapshot !== presentationForBroadcast.deck_json)) {
@@ -426,20 +459,104 @@ router.post('/', async (req, res) => {
       });
     }
   }
+  // Every whole-display source, including an existing playlist, receives one
+  // durable request-scoped policy. Before any owner grant is published, all
+  // online windows participating in this same logical source must acknowledge
+  // the exact mute fence. Any timeout or stale acknowledgement commits a null
+  // owner so the content still routes but every renderer stays fail-muted.
+  const hasRegionRoute = dispatchRoutes.some((route) => route.region_id || route.zone_id);
+  let audioFenceResult = null;
+  let committedAudioOwnerDeviceId = audioOwnerDeviceId;
+  let audioParticipantDeviceIds = audioTargetDeviceIds.slice();
+  if (!hasRegionRoute && audioOutputDeviceId && audioTargetDeviceIds.length > 0) {
+    let audioGeneration = 1;
+    if (content_id) {
+      audioGeneration = Number(db.prepare('SELECT version FROM content WHERE id = ?').get(content_id)?.version) || 1;
+    } else if (effectiveRemoteUrl) {
+      audioGeneration = Number(db.prepare(`
+        SELECT version FROM content
+        WHERE remote_url = ? AND (workspace_id = ? OR workspace_id IS NULL)
+        ORDER BY CASE WHEN workspace_id = ? THEN 0 ELSE 1 END
+        LIMIT 1
+      `).get(effectiveRemoteUrl, req.workspaceId, req.workspaceId)?.version) || 1;
+    } else if (playlist_id) {
+      audioGeneration = Number(db.prepare(`
+        SELECT MAX(COALESCE(c.version, 1)) AS version
+        FROM playlist_items pi
+        LEFT JOIN content c ON c.id = pi.content_id
+        WHERE pi.playlist_id = ?
+      `).get(playlist_id)?.version) || 1;
+    }
+    source.content_instance_id = deliveryRequest.id;
+    const audioSourceKey = `${sourceRef.type}:${sourceRef.id}`;
+    audioParticipantDeviceIds = [...new Set([
+      ...audioTargetDeviceIds,
+      ...findAudioPolicyParticipants(db, {
+        workspaceId: req.workspaceId,
+        sourceKey: audioSourceKey,
+        playlistId: playlist_id || null,
+      }),
+    ])];
+    const onlineAudioParticipantIds = audioParticipantDeviceIds.filter((deviceId) => {
+      const room = deviceNamespace.adapter.rooms.get(deviceId);
+      return Boolean(room && room.size > 0);
+    });
+    const audioPolicyRevision = nextAudioPolicyRevision({
+      persistedRevision: maxPersistedAudioPolicyRevision(db),
+    });
+    const proposedAudioPolicy = buildAudioPolicy({
+      outputDeviceId: audioOutputDeviceId,
+      ownerDeviceId: audioOwnerDeviceId,
+      contentInstanceId: deliveryRequest.id,
+      transactionId: deliveryRequest.id,
+      generation: audioGeneration,
+      revision: audioPolicyRevision,
+      sourceKey: audioSourceKey,
+    });
+    audioFenceResult = audioOwnerDeviceId
+      ? await fenceAudioOwnershipTargets(deviceNamespace, {
+          deviceIds: onlineAudioParticipantIds,
+          policy: proposedAudioPolicy,
+        })
+      : {
+          ok: false,
+          acknowledged_device_ids: [],
+          failed_device_ids: [],
+          offline_device_ids: audioParticipantDeviceIds,
+          committed_policy: buildAudioPolicy({
+            ...{
+              outputDeviceId: audioOutputDeviceId,
+              ownerDeviceId: null,
+              contentInstanceId: deliveryRequest.id,
+              transactionId: deliveryRequest.id,
+              generation: audioGeneration,
+              revision: audioPolicyRevision,
+              sourceKey: audioSourceKey,
+            },
+          }),
+        };
+    source.audio_policy = audioFenceResult.committed_policy;
+    committedAudioOwnerDeviceId = source.audio_policy.owner_device_id;
+  }
   const deliveryByTarget = new Map(
     deliveryRequest.devices.map((entry) => [entry.target_key, entry])
   );
   let sent = 0;
   const failed = resolvedTargets.missing.slice();
+  // Send mute decisions before the owner grant so a same-content ownership
+  // change cannot briefly leave both renderer windows audible.
+  const audioOrderedDispatchRoutes = [...dispatchRoutes].sort((left, right) => (
+    Number(left.device_id === committedAudioOwnerDeviceId) - Number(right.device_id === committedAudioOwnerDeviceId)
+  ));
   const regionRoutesByDevice = new Map();
-  for (const route of dispatchRoutes) {
+  for (const route of audioOrderedDispatchRoutes) {
     if (route.type !== 'wall-region') continue;
     const entries = regionRoutesByDevice.get(route.device_id) || [];
     entries.push(route);
     regionRoutesByDevice.set(route.device_id, entries);
   }
   const batchProcessedDevices = new Set();
-  for (const route of dispatchRoutes) {
+  for (const route of audioOrderedDispatchRoutes) {
     const deviceId = route.device_id;
     const regionBatch = regionRoutesByDevice.get(deviceId) || [];
     if (regionBatch.length > 1) {
@@ -518,6 +635,12 @@ router.post('/', async (req, res) => {
     });
     if (result.ok) sent++; else failed.push(targetKey);
   }
+  if (source.audio_policy) {
+    const passiveParticipants = audioParticipantDeviceIds.filter((deviceId) => (
+      !audioTargetDeviceIds.includes(deviceId)
+    ));
+    sceneEngine.applyAudioPolicyToDevices(io, passiveParticipants, source.audio_policy);
+  }
   // Reinforce the upload/finalization prewarm after routing. Node delivery stays
   // workspace-scoped, and this event makes the selected asset priority.
   const prewarmContentIds = content_id
@@ -579,6 +702,8 @@ router.post('/', async (req, res) => {
       sent,
       targeting_all: targetingAll,
       cache_prewarm_requested: cachePrewarm.requested === true,
+      audio_barrier_acknowledged: audioFenceResult?.ok === true,
+      audio_owner_device_id: source.audio_policy?.owner_device_id || null,
     },
   });
 
@@ -603,6 +728,15 @@ router.post('/', async (req, res) => {
     failed,
     total: totalRequested,
     cache_prewarm: cachePrewarm,
+    audio_ownership: source.audio_policy ? {
+      transaction_id: source.audio_policy.transaction_id,
+      revision: source.audio_policy.revision,
+      owner_device_id: source.audio_policy.owner_device_id,
+      output_device_id: source.audio_policy.output_device_id,
+      barrier_acknowledged: audioFenceResult?.ok === true,
+      acknowledged_device_ids: audioFenceResult?.acknowledged_device_ids || [],
+      failed_device_ids: audioFenceResult?.failed_device_ids || [],
+    } : null,
     live_stream: liveProgram,
   });
 });
