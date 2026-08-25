@@ -11,6 +11,8 @@ function cleanup(prefix) {
   db.prepare("DELETE FROM video_wall_devices WHERE wall_id LIKE ? OR device_id LIKE ?").run(`${prefix}%`, `${prefix}%`);
   db.prepare("DELETE FROM video_walls WHERE id LIKE ?").run(`${prefix}%`);
   db.prepare("DELETE FROM devices WHERE id LIKE ?").run(`${prefix}%`);
+  db.prepare("DELETE FROM playlist_items WHERE playlist_id LIKE ?").run(`${prefix}%`);
+  db.prepare("DELETE FROM playlists WHERE id LIKE ?").run(`${prefix}%`);
   db.prepare("DELETE FROM content WHERE id LIKE ?").run(`${prefix}%`);
   db.prepare("DELETE FROM workspace_members WHERE workspace_id LIKE ? OR user_id LIKE ?").run(`${prefix}%`, `${prefix}%`);
   db.prepare("DELETE FROM workspaces WHERE id LIKE ?").run(`${prefix}%`);
@@ -18,6 +20,114 @@ function cleanup(prefix) {
   db.prepare("DELETE FROM organizations WHERE id LIKE ?").run(`${prefix}%`);
   db.prepare("DELETE FROM users WHERE id LIKE ? OR email LIKE ?").run(`${prefix}%`, `${prefix}%@example.test`);
 }
+
+test('span payload revision follows the published assignment instead of stale restored content', () => {
+  const prefix = `test-span-payload-revision-${Date.now()}-`;
+  const userId = `${prefix}user`;
+  const organizationId = `${prefix}organization`;
+  const workspaceId = `${prefix}workspace`;
+  const wallId = `${prefix}wall`;
+  const playlistId = `${prefix}playlist`;
+  const oldContentId = `${prefix}old-content`;
+  const newContentId = `${prefix}new-content`;
+  const leftId = `${prefix}left`;
+  const rightId = `${prefix}right`;
+  const transactionId = `${prefix}transaction`;
+  const audioPolicy = {
+    version: 1,
+    output_device_id: leftId,
+    owner_device_id: rightId,
+    content_instance_id: transactionId,
+    transaction_id: transactionId,
+    generation: 2,
+    revision: 123456,
+    source_key: `content:${newContentId}`,
+  };
+
+  cleanup(prefix);
+  try {
+    db.prepare("INSERT INTO users (id, email, name, role) VALUES (?, ?, 'Span User', 'platform_admin')")
+      .run(userId, `${prefix}user@example.test`);
+    db.prepare("INSERT INTO organizations (id, name, owner_user_id) VALUES (?, 'Span Org', ?)")
+      .run(organizationId, userId);
+    db.prepare("INSERT INTO workspaces (id, organization_id, name, created_by) VALUES (?, ?, 'Span Workspace', ?)")
+      .run(workspaceId, organizationId, userId);
+    db.prepare("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, 'workspace_admin')")
+      .run(workspaceId, userId);
+    for (const [id, filename] of [[oldContentId, 'old.png'], [newContentId, 'new.mp4']]) {
+      db.prepare(`
+        INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, version)
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+      `).run(
+        id,
+        userId,
+        workspaceId,
+        filename,
+        filename,
+        filename.endsWith('.mp4') ? 'video/mp4' : 'image/png',
+        id === newContentId ? 2 : 1,
+      );
+    }
+    const snapshot = [{
+      id: 1,
+      content_id: newContentId,
+      sort_order: 0,
+      duration_sec: 10,
+      filename: 'new.mp4',
+      mime_type: 'video/mp4',
+      filepath: 'new.mp4',
+      file_size: 1,
+      content_generation: 2,
+      content_instance_id: transactionId,
+      audio_policy: audioPolicy,
+    }];
+    db.prepare(`
+      INSERT INTO playlists (id, user_id, workspace_id, name, status, published_snapshot)
+      VALUES (?, ?, ?, 'Span live playlist', 'published', ?)
+    `).run(playlistId, userId, workspaceId, JSON.stringify(snapshot));
+    db.prepare(`
+      INSERT INTO playlist_items (playlist_id, content_id, sort_order, duration_sec)
+      VALUES (?, ?, 0, 10)
+    `).run(playlistId, newContentId);
+    db.prepare(`
+      INSERT INTO video_walls
+        (id, user_id, workspace_id, name, grid_cols, grid_rows, layout_mode, layout_revision, content_id, playlist_id)
+      VALUES (?, ?, ?, 'Span wall', 2, 1, 'span', 18, NULL, ?)
+    `).run(wallId, userId, workspaceId, playlistId);
+    for (const [id, name] of [[leftId, 'Left'], [rightId, 'Right']]) {
+      db.prepare(`
+        INSERT INTO devices
+          (id, user_id, workspace_id, name, status, screen_width, screen_height, wall_id, playlist_id)
+        VALUES (?, ?, ?, ?, 'online', 1920, 1080, ?, ?)
+      `).run(id, userId, workspaceId, name, wallId, playlistId);
+    }
+    db.prepare('INSERT INTO video_wall_devices (wall_id, device_id, grid_col, grid_row) VALUES (?, ?, 0, 0)')
+      .run(wallId, leftId);
+    db.prepare('INSERT INTO video_wall_devices (wall_id, device_id, grid_col, grid_row) VALUES (?, ?, 1, 0)')
+      .run(wallId, rightId);
+    db.prepare('UPDATE video_walls SET leader_device_id = ? WHERE id = ?').run(leftId, wallId);
+    db.prepare(`
+      INSERT INTO display_states
+        (target_type, target_id, workspace_id, current_content_id, render_state, state_revision)
+      VALUES ('display', ?, ?, ?, 'playing', 1)
+    `).run(rightId, workspaceId, oldContentId);
+
+    const beforeStateCatchup = deviceSocket.buildPlaylistPayload(rightId);
+    db.prepare(`
+      UPDATE display_states SET current_content_id = ?, state_revision = 2 WHERE target_type = 'display' AND target_id = ?
+    `).run(newContentId, rightId);
+    const afterStateCatchup = deviceSocket.buildPlaylistPayload(rightId);
+
+    assert.equal(beforeStateCatchup.layout_assignment.content_id, newContentId);
+    assert.equal(afterStateCatchup.layout_assignment.content_id, newContentId);
+    assert.equal(beforeStateCatchup.playlist_revision, afterStateCatchup.playlist_revision);
+    assert.equal(beforeStateCatchup.audio_policy.playlist_revision, beforeStateCatchup.playlist_revision);
+    assert.equal(afterStateCatchup.audio_policy.playlist_revision, afterStateCatchup.playlist_revision);
+    assert.equal(beforeStateCatchup.audio_policy.audio_allowed, true);
+  } finally {
+    cleanup(prefix);
+  }
+});
 
 test('device playlist payload exposes universal geometry and backward-compatible rects from real mixed panel sizes', () => {
   const prefix = `test-device-wall-payload-${Date.now()}-`;
