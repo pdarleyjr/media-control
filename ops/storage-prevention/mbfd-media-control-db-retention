@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+DB_ROOT=/var/lib/mbfd/media-control-db
+BACKUP_ROOT=/mnt/mbfd-backup-local/media-control/db-snapshots/retention
+KEEP_COUNT=2
+LOCK_FILE=/run/lock/mbfd-media-control-db-retention.lock
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+temporary=
+
+cleanup() {
+  [[ -z "$temporary" ]] || rm -f -- "$temporary"
+}
+trap cleanup EXIT
+
+validate_database() {
+  local database="$1"
+  local quick integrity foreign_keys table_count
+
+  quick="$(sqlite3 -cmd '.timeout 5000' -readonly "$database" 'PRAGMA quick_check;')"
+  [[ "$quick" == ok ]] || {
+    printf 'quick_check failed for %s: %s\n' "$database" "$quick" >&2
+    return 1
+  }
+
+  integrity="$(sqlite3 -cmd '.timeout 5000' -readonly "$database" 'PRAGMA integrity_check;')"
+  [[ "$integrity" == ok ]] || {
+    printf 'integrity_check failed for %s: %s\n' "$database" "$integrity" >&2
+    return 1
+  }
+
+  foreign_keys="$(sqlite3 -cmd '.timeout 5000' -readonly "$database" 'PRAGMA foreign_key_check;')"
+  [[ -z "$foreign_keys" ]] || {
+    printf 'foreign_key_check failed for %s: %s\n' "$database" "$foreign_keys" >&2
+    return 1
+  }
+
+  table_count="$(sqlite3 -cmd '.timeout 5000' -readonly "$database" "SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';")"
+  [[ "$table_count" =~ ^[0-9]+$ && "$table_count" -gt 0 ]] || {
+    printf 'no application tables found in %s\n' "$database" >&2
+    return 1
+  }
+}
+
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  printf '%s\n' 'another Media Control DB retention run holds the lock'
+  exit 0
+fi
+
+mkdir -p -- "$BACKUP_ROOT"
+backup_mount="$(findmnt -n -o TARGET --target "$BACKUP_ROOT" || true)"
+if [[ -z "$backup_mount" || "$backup_mount" == / ]]; then
+  printf 'backup destination is not on a separate mounted filesystem: %s\n' "$BACKUP_ROOT" >&2
+  exit 1
+fi
+
+mapfile -t snapshots < <(
+  find "$DB_ROOT" -type f -name 'remote_display.pre-*.db' ! -size 0 \
+    -printf '%T@ %p\n' | sort -nr | cut -d' ' -f2-
+)
+
+printf '%s found %d nonempty recovery snapshots; keeping %d on NVMe\n' \
+  "$(date -u +%FT%TZ)" "${#snapshots[@]}" "$KEEP_COUNT"
+
+if (( ${#snapshots[@]} <= KEEP_COUNT )); then
+  exit 0
+fi
+
+run_dir="${BACKUP_ROOT}/${STAMP}"
+mkdir -p -- "$run_dir"
+manifest="${run_dir}/manifest.tsv"
+printf 'source\tdestination\tsha256\n' >"$manifest"
+
+for (( index=KEEP_COUNT; index<${#snapshots[@]}; index++ )); do
+  database="${snapshots[index]}"
+  resolved="$(realpath -e -- "$database")"
+  case "$resolved" in
+    "$DB_ROOT"/remote_display.pre-*.db|"$DB_ROOT"/*/remote_display.pre-*.db)
+      ;;
+    *)
+      printf 'refusing unexpected snapshot path: %s\n' "$resolved" >&2
+      exit 1
+      ;;
+  esac
+
+  validate_database "$resolved"
+
+  relative="${resolved#"$DB_ROOT"/}"
+  destination="${run_dir}/${relative}"
+  temporary="${destination}.partial"
+  mkdir -p -- "$(dirname -- "$destination")"
+  [[ ! -e "$destination" ]] || {
+    printf 'refusing to overwrite existing archive: %s\n' "$destination" >&2
+    exit 1
+  }
+  rm -f -- "$temporary"
+
+  sqlite3 -cmd '.timeout 5000' -readonly "$resolved" ".backup '$temporary'"
+  validate_database "$temporary"
+  mv -f -- "$temporary" "$destination"
+  temporary=
+
+  digest="$(sha256sum "$destination" | awk '{print $1}')"
+  printf '%s  %s\n' "$digest" "$(basename -- "$destination")" >"${destination}.sha256"
+  (
+    cd -- "$(dirname -- "$destination")"
+    sha256sum -c "$(basename -- "$destination").sha256"
+  )
+
+  printf '%s\t%s\t%s\n' "$resolved" "$destination" "$digest" >>"$manifest"
+  sync -f "$destination" "${destination}.sha256" "$manifest"
+  rm -f -- "$database" "${database}-wal" "${database}-shm"
+  printf '%s offloaded and removed verified source %s\n' "$(date -u +%FT%TZ)" "$resolved"
+done
+
+printf '%s retention complete; manifest=%s\n' "$(date -u +%FT%TZ)" "$manifest"

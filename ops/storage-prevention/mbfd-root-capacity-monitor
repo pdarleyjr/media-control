@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+WARN_THRESHOLD=80
+ERROR_THRESHOLD=85
+CRITICAL_THRESHOLD=90
+STATE_DIR=/var/lib/mbfd-storage-monitor
+STATE_FILE="${STATE_DIR}/root-band"
+LOCK_FILE=/run/lock/mbfd-root-capacity-monitor.lock
+
+mkdir -p -- "$STATE_DIR"
+exec 9>"$LOCK_FILE"
+flock -n 9 || exit 0
+
+usage="$(df -P / | awk 'NR == 2 {gsub(/%/, "", $5); print $5}')"
+case "$usage" in
+  ''|*[!0-9]*)
+    logger -p daemon.err -t mbfd-root-capacity -- 'unable to parse root filesystem usage'
+    exit 1
+    ;;
+esac
+
+if (( usage >= CRITICAL_THRESHOLD )); then
+  band=CRITICAL
+elif (( usage >= ERROR_THRESHOLD )); then
+  band=ERROR
+elif (( usage >= WARN_THRESHOLD )); then
+  band=WARN
+else
+  band=OK
+fi
+
+previous=UNKNOWN
+if [[ -s "$STATE_FILE" ]]; then
+  read -r previous <"$STATE_FILE"
+fi
+
+if [[ "$band" != "$previous" ]]; then
+  if [[ "$band" == OK && "$previous" != UNKNOWN && "$previous" != OK ]]; then
+    logger -p daemon.notice -t mbfd-root-capacity -- "RECOVERY root usage ${usage}%; monitor rearmed"
+  elif [[ "$band" == OK ]]; then
+    logger -p daemon.info -t mbfd-root-capacity -- "root usage ${usage}%; state initialized"
+  else
+    priority=daemon.warning
+    [[ "$band" == ERROR ]] && priority=daemon.err
+    [[ "$band" == CRITICAL ]] && priority=daemon.crit
+    logger -p "$priority" -t mbfd-root-capacity -- "${band} root usage ${usage}% (thresholds ${WARN_THRESHOLD}/${ERROR_THRESHOLD}/${CRITICAL_THRESHOLD})"
+  fi
+  printf '%s\n' "$band" >"${STATE_FILE}.tmp"
+  mv -f -- "${STATE_FILE}.tmp" "$STATE_FILE"
+fi

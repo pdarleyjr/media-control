@@ -1,0 +1,18 @@
+[Unit]
+Description=Verify and enforce bounded Media Control recovery retention
+After=local-fs.target docker.service
+RequiresMountsFor=/mnt/mbfd-backup-local
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mbfd-media-control-db-retention
+ExecStart=/usr/local/sbin/mbfd-media-control-release-retention-audit
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=full
+ReadWritePaths=/var/lib/mbfd/media-control-db /mnt/mbfd-backup-local /run/lock

@@ -1,0 +1,36 @@
+--- a/scripts/operations/mbfd-ecosystem-backup.sh
++++ b/scripts/operations/mbfd-ecosystem-backup.sh
+@@ -88,9 +88,24 @@
+     log "snapshotting SQLite database: $label"
+     sqlite3 "$source" ".timeout 10000" ".backup '$output'"
+     integrity="$(sqlite3 "$output" 'PRAGMA integrity_check;')"
+     [[ "$integrity" == ok ]] || fail "$label SQLite integrity check failed"
+ }
+-
++
++sqlite_backup_path() {
++    local source="$1" label="$2"
++    local output quick integrity foreign_keys
++    output="$stage/sqlite/$label.sqlite"
++    [[ -s "$source" ]] || fail "SQLite source missing: $source"
++    log "snapshotting path-backed SQLite database: $label"
++    sqlite3 "$source" ".timeout 10000" ".backup '$output'"
++    quick="$(sqlite3 "$output" 'PRAGMA quick_check;')"
++    [[ "$quick" == ok ]] || fail "$label SQLite quick check failed"
++    integrity="$(sqlite3 "$output" 'PRAGMA integrity_check;')"
++    [[ "$integrity" == ok ]] || fail "$label SQLite integrity check failed"
++    foreign_keys="$(sqlite3 "$output" 'PRAGMA foreign_key_check;')"
++    [[ -z "$foreign_keys" ]] || fail "$label SQLite foreign key check failed"
++}
++
+ dump_postgres mbfd-hub-pgsql mbfd-hub
+ dump_postgres mbfd-postgres nextcloud
+ dump_postgres vac-postgres vacation
+@@ -100,6 +115,6 @@
+ sqlite_backup infra_cmd-data mbfd_command.sqlite mbfd-command
+ sqlite_backup mbfd-ai_openwebui_data webui.db openwebui
+-sqlite_backup media-control_media_control_db remote_display.db media-control
++sqlite_backup_path /var/lib/mbfd/media-control-db/remote_display.db media-control
+ sqlite_backup observability_uptime-kuma-data kuma.db uptime-kuma
+ sqlite_backup screentinker_screentinker_db remote_display.db screentinker
+ sqlite_backup mbfd-office-doc-agent-db jobs.sqlite3 office-doc-agent
