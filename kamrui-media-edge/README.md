@@ -70,6 +70,12 @@ unless evidence identifies a physical-network fault.
 Before configuring the actual OBS profile or sending any Guest RTMP media, run
 the read-only collector on the Guest Laptop while its wired dongle is connected:
 
+The collector has a required companion policy file. From a checkout of this
+branch, both files are already present under `scripts`. If transferring them to
+the laptop manually, copy both `collect-guest-laptop-network.ps1` and
+`guest-network-adapter-policy.ps1` into the same folder. Do not copy only the
+collector.
+
 ```powershell
 .\scripts\collect-guest-laptop-network.ps1 -AdapterName '<wired adapter name>' -KamruiIp 192.168.1.122 -OutputPath .\guest-network-acceptance.json
 ```
@@ -209,22 +215,22 @@ and source pulls; Compose validation is not a semantic MediaMTX check. Validate
 the rendered configuration with the pinned image in an isolated staging host or
 network namespace before using the active deployment command.
 
-## Rollback / upgrade
+## Podium / Guest live-source cutover
 
-`scripts/upgrade.sh deploy` is an active maintenance command and is not to be
-run during a class. It validates Compose, pulls the pinned digest, and
-force-recreates only `mediamtx` with `--no-deps`; only then does it add the
-exact guest RTMP UFW rule. That order prevents a momentary firewall opening to
-the pre-authentication container. This source change does not invoke that
-command.
+For this podium/Guest feature, use the dedicated
+[`scripts/deploy-live-sources-cutover.sh`](scripts/deploy-live-sources-cutover.sh)
+workflow and its [operator procedure](docs/live-sources-cutover.md). It creates
+a fresh manifest-backed rollback snapshot, renders and validates privately,
+replaces only MediaMTX's configuration and Compose definition, recreates only
+MediaMTX, verifies the path contract, and only then adds the exact Guest RTMP
+rule.
 
-Before that command, create and checksum a release snapshot containing at least
-`camera.env`, the rendered `mediamtx.yml`, and
-`docker-compose.mediamtx.yml`. `scripts/rollback.sh <verified-snapshot>` now
-requires all three, verifies its checksum manifest, removes only the exact
-guest RTMP UFW rule while the current guest address is still known, restores
-the pinned prior Compose reference, and recreates only `mediamtx` before
-restarting the Camera API. Do not use a broad firewall reset as rollback.
+For this feature, **never use `scripts/upgrade.sh deploy`**. That general
+workflow remains in the repository for separately authorized maintenance but
+has a broader scope than this classroom source cutover. The dedicated workflow
+does not deploy the Camera API, Media Control, recording components, or any
+other service. It cannot substitute for Agent 3's application-release and
+physical-acceptance gates.
 
 ## Owner
 

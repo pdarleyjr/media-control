@@ -27,6 +27,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot 'guest-network-adapter-policy.ps1')
+
 function Invoke-ReadOnly {
     param([scriptblock]$ScriptBlock)
 
@@ -94,41 +96,18 @@ function Get-DevicePowerManagement {
 }
 
 $allAdapters = @(Get-NetAdapter -IncludeHidden)
-$ethernetCandidates = @(
-    $allAdapters | Where-Object {
-        $_.Status -eq 'Up' -and
-        $_.HardwareInterface -eq $true -and
-        $_.InterfaceDescription -notmatch 'Wireless|Wi-Fi|802\.11|WLAN|Bluetooth|Tailscale|TAP|VPN|Virtual|Hyper-V|WAN Miniport|Loopback|Kernel Debug'
-    }
-)
-
-if ($AdapterName) {
-    $adapter = @($allAdapters | Where-Object { $_.Name -eq $AdapterName })
-    if ($adapter.Count -ne 1) {
-        throw "Adapter '$AdapterName' was not found exactly once. Run Get-NetAdapter and specify the connected wired adapter name."
-    }
-    $adapter = $adapter[0]
-}
-elseif ($ethernetCandidates.Count -eq 1) {
-    $adapter = $ethernetCandidates[0]
-}
-elseif ($ethernetCandidates.Count -eq 0) {
-    throw 'No connected physical Ethernet adapter was found. Connect the Guest Laptop wired dongle, then rerun with -AdapterName if necessary.'
-}
-else {
-    $names = ($ethernetCandidates | ForEach-Object Name) -join ', '
-    throw "More than one connected physical Ethernet adapter was found ($names). Rerun with -AdapterName for the Guest USB/USB-C dongle."
-}
-
-if ($adapter.Status -ne 'Up') {
-    throw "Selected adapter '$($adapter.Name)' is not Up. This is a RED wired-path result; do not configure OBS publishing."
-}
+$adapter = Select-GuestWiredEthernetAdapter -Adapters $allAdapters -AdapterName $AdapterName
 
 $ipInterface = Get-NetIPInterface -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4
 $ipConfiguration = Get-NetIPConfiguration -InterfaceIndex $adapter.ifIndex
 $ipv4 = @(
     $ipConfiguration.IPv4Address |
         Select-Object IPAddress, PrefixLength, AddressState, PrefixOrigin, SuffixOrigin
+)
+$selectedIpv4Addresses = @(
+    $ipv4 |
+        ForEach-Object { [string]$_.IPAddress } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and $_ -notmatch '^169\.254\.' }
 )
 $gateway = @($ipConfiguration.IPv4DefaultGateway | ForEach-Object NextHop)
 $dns = @($ipConfiguration.DNSServer.ServerAddresses)
@@ -146,11 +125,20 @@ $advancedProperties = Invoke-ReadOnly {
         Select-Object DisplayName, DisplayValue, RegistryKeyword, RegistryValue
 }
 
-$route = Invoke-ReadOnly {
+$route = @(Invoke-ReadOnly {
     Find-NetRoute -RemoteIPAddress $KamruiIp |
         Select-Object DestinationPrefix, NextHop, InterfaceAlias, ifIndex, RouteMetric, PolicyStore
+})
+$routeLookupFailed = @($route | Where-Object { $_.PSObject.Properties.Name -contains 'error' }).Count -gt 0
+$routeUsesSelectedEthernet = @(
+    $route | Where-Object { Test-GuestNetworkRouteUsesSelectedAdapter -Route $_ -Adapter $adapter }
+).Count -gt 0
+if ($routeLookupFailed) {
+    throw "RED: The route to KAMRUI $KamruiIp could not be determined. No ICMP or TCP acceptance test was run."
 }
-$routeUsesSelectedEthernet = @($route | Where-Object { $_.ifIndex -eq $adapter.ifIndex }).Count -gt 0
+if (-not $routeUsesSelectedEthernet) {
+    throw "RED: The route to KAMRUI $KamruiIp does not select wired adapter '$($adapter.Name)'. No ICMP or TCP acceptance test was run."
+}
 $wifi = @(
     $allAdapters | Where-Object {
         $_.InterfaceDescription -match 'Wireless|Wi-Fi|802\.11|WLAN' -or
@@ -166,6 +154,26 @@ $pingTimeouts = @($pingOutput | Where-Object { $_ -match 'Request timed out|Dest
 $tcp = Invoke-ReadOnly {
     Test-NetConnection -ComputerName $KamruiIp -Port $RtmpPort -InformationLevel Detailed -WarningAction SilentlyContinue |
         Select-Object ComputerName, RemoteAddress, RemotePort, NameResolutionSucceeded, InterfaceAlias, SourceAddress, TcpTestSucceeded, PingSucceeded
+}
+$testNetConnectionInterfaceAlias = $null
+$testNetConnectionSourceAddress = $null
+$testNetConnectionUsesSelectedEthernet = $null
+$testNetConnectionSourceMatchesSelectedEthernet = $null
+if ($tcp -and -not ($tcp.PSObject.Properties.Name -contains 'error')) {
+    if ($tcp.PSObject.Properties.Name -contains 'InterfaceAlias') {
+        $candidateInterfaceAlias = [string]$tcp.InterfaceAlias
+        if (-not [string]::IsNullOrWhiteSpace($candidateInterfaceAlias)) {
+            $testNetConnectionInterfaceAlias = $candidateInterfaceAlias
+            $testNetConnectionUsesSelectedEthernet = $candidateInterfaceAlias -ieq $adapter.Name
+        }
+    }
+    if ($tcp.PSObject.Properties.Name -contains 'SourceAddress') {
+        $candidateSourceAddress = [string]$tcp.SourceAddress
+        if (-not [string]::IsNullOrWhiteSpace($candidateSourceAddress) -and $candidateSourceAddress -ne '0.0.0.0') {
+            $testNetConnectionSourceAddress = $candidateSourceAddress
+            $testNetConnectionSourceMatchesSelectedEthernet = $selectedIpv4Addresses -contains $candidateSourceAddress
+        }
+    }
 }
 $statisticsAfter = Convert-AdapterStatistics (Get-NetAdapterStatistics -Name $adapter.Name)
 $statisticsDelta = Get-StatisticsDelta $statisticsBefore $statisticsAfter
@@ -209,6 +217,7 @@ $hasDisconnectEvents = @($recentEvents | Where-Object { $_.Message -match 'disco
 $standbyAcMinutes = Get-AcPowerIndex -PowerCfgOutput $powercfgSleep
 $hibernateAcMinutes = Get-AcPowerIndex -PowerCfgOutput $powercfgHibernate
 $hasDuplexEvidence = @($advancedProperties | Where-Object { $_.DisplayName -match 'Duplex' }).Count -gt 0
+$hasExplicitNonFullDuplex = -not (Test-GuestNetworkFullDuplexWhereObservable -AdvancedProperties $advancedProperties)
 $eventQueryFailed = $recentEvents -and $recentEvents.PSObject.Properties.Name -contains 'error'
 $batteryReportsNotOnAc = $battery -and $battery.PSObject.Properties.Name -contains 'BatteryStatus' -and $battery.BatteryStatus -ne 2
 
@@ -219,6 +228,7 @@ if ($linkMegabits -eq $null -or $linkMegabits -lt 100) {
     $reasons.Add('wired link is below 100 Mbps or link speed is not exposed')
 }
 elseif ($linkMegabits -lt 1000) {
+    if ($verdict -ne 'RED') { $verdict = 'AMBER' }
     $reasons.Add('100 Mbps can carry the stream but requires cable/dongle negotiation investigation before acceptance')
 }
 if (-not $hasUsableIpv4) {
@@ -228,6 +238,14 @@ if (-not $hasUsableIpv4) {
 if (-not $routeUsesSelectedEthernet) {
     $verdict = 'RED'
     $reasons.Add('KAMRUI route does not select the specified Ethernet adapter')
+}
+if ($testNetConnectionUsesSelectedEthernet -eq $false) {
+    $verdict = 'RED'
+    $reasons.Add('Test-NetConnection reported a different interface than the selected Ethernet adapter')
+}
+if ($testNetConnectionSourceMatchesSelectedEthernet -eq $false) {
+    $verdict = 'RED'
+    $reasons.Add('Test-NetConnection reported a source address that is not assigned to the selected Ethernet adapter')
 }
 if ($pingExitCode -ne 0 -or $pingReplies -lt $PingCount -or $pingTimeouts -gt 0) {
     $verdict = 'RED'
@@ -256,6 +274,10 @@ elseif ([string]::IsNullOrWhiteSpace($powerCanTurnOff) -or $powerCanTurnOff -eq 
 if (-not $hasDuplexEvidence) {
     if ($verdict -ne 'RED') { $verdict = 'AMBER' }
     $reasons.Add('the NIC did not expose a duplex setting; retain driver or switch evidence before acceptance')
+}
+if ($hasExplicitNonFullDuplex) {
+    $verdict = 'RED'
+    $reasons.Add('the NIC explicitly reports half duplex; correct link negotiation before acceptance')
 }
 if ($standbyAcMinutes -eq $null -or $hibernateAcMinutes -eq $null) {
     if ($verdict -ne 'RED') { $verdict = 'AMBER' }
@@ -309,6 +331,10 @@ $report = [ordered]@{
     routeToKamrui = [ordered]@{
         route = $route
         routeUsesSelectedEthernet = $routeUsesSelectedEthernet
+        testNetConnectionInterfaceAlias = $testNetConnectionInterfaceAlias
+        testNetConnectionSourceAddress = $testNetConnectionSourceAddress
+        testNetConnectionUsesSelectedEthernet = $testNetConnectionUsesSelectedEthernet
+        testNetConnectionSourceMatchesSelectedEthernet = $testNetConnectionSourceMatchesSelectedEthernet
         wifi = $wifi
     }
     pathTests = [ordered]@{

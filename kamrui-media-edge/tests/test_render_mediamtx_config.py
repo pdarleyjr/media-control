@@ -118,19 +118,19 @@ class RenderMediaMtxConfigTests(unittest.TestCase):
             upgrade.index("ufw-allow-guest-rtmp"),
         )
         self.assertNotIn("restart-mediamtx", upgrade)
-        self.assertIn('test -f "$SNAPSHOT/opt/media-stack/docker-compose.mediamtx.yml"', rollback)
-        self.assertIn("require_pinned_mediamtx_image", rollback)
-        self.assertIn("refusing floating MediaMTX image", rollback)
-        self.assertIn('"$SNAPSHOT/opt/media-stack/docker-compose.mediamtx.yml"', rollback)
-        self.assertIn("docker compose -f docker-compose.mediamtx.yml config --quiet", rollback)
+        self.assertIn("validate-rollback-snapshot.py", rollback)
+        self.assertIn("verified-legacy", rollback)
+        self.assertIn('sudo docker pull "$RESTORE_IMAGE"', rollback)
+        self.assertIn('COMPOSE_FILES+=(-f "$OVERRIDE")', rollback)
+        self.assertIn('sudo docker compose "${COMPOSE_FILES[@]}" config --quiet', rollback)
         self.assertIn(
-            "docker compose -f docker-compose.mediamtx.yml up -d --no-deps --force-recreate mediamtx",
+            'sudo docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate mediamtx',
             rollback,
         )
-        self.assertLess(
-            rollback.index("ufw-revoke-guest-rtmp"),
-            rollback.index('sudo install -o root -g root -m 0600'),
-        )
+        self.assertIn('sudo docker exec "$CONTAINER" /mediamtx --version', rollback)
+        self.assertNotIn("restart-camera-api", rollback)
+        self.assertNotIn("camera-api/", rollback)
+        self.assertNotIn("mbfd-media-admin", rollback)
 
     def test_guest_firewall_helper_adds_and_revokes_only_the_exact_rtmp_rule(self) -> None:
         admin = ADMIN_PATH.read_text(encoding="utf-8")
