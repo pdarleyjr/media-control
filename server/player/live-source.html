@@ -35,7 +35,7 @@
 (function(){
   var params=new URLSearchParams(location.search);
   var source=params.get('source')||'anpviz';
-  var allowed={anpviz:'Anpviz Camera','guest-computer':'Guest Computer'};
+  var allowed={anpviz:'Anpviz Camera','podium-computer':'Podium Computer','guest-computer':'Guest Computer'};
   if(!Object.prototype.hasOwnProperty.call(allowed,source)) source='anpviz';
   var wantAudio=params.get('audio')==='1';
   var debug=params.get('debug')==='1';

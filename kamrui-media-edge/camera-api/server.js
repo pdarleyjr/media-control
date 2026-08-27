@@ -22,6 +22,8 @@ const {
 const { verifyServiceRequest } = require('./camera-service-signature');
 const { createLivestreamAuditMiddleware } = require('./livestream-audit');
 const {
+  buildGuestPublisherHealth,
+  buildPodiumSourceHealth,
   createSignalDebouncer,
   normalizeZowieInput,
 } = require('./live-source-health');
@@ -176,8 +178,10 @@ function createInitialSourceState() {
       probeHealthy: false,
     },
     anpvizAudioMonitor: null,
-    guestComputer: {
-      deviceOnline: false,
+    podiumComputer: {
+      // Until the optional ZowieBox monitor completes its first poll, this is
+      // an unobserved device state rather than evidence that the podium is off.
+      deviceOnline: null,
       input: normalizeZowieInput(null),
       available: false,
       lastUpdate: null,
@@ -411,8 +415,8 @@ function createZowieMonitor() {
     try {
       const input = normalizeZowieInput(await client.getInput());
       const availability = debounce.update(input.signalPresent, now);
-      sourceState.guestComputer = {
-        ...sourceState.guestComputer,
+      sourceState.podiumComputer = {
+        ...sourceState.podiumComputer,
         deviceOnline: true,
         input,
         available: availability.available,
@@ -422,13 +426,13 @@ function createZowieMonitor() {
       polls += 1;
       if (polls === 1 || polls % 30 === 0) {
         const info = await client.getSystemInfo();
-        sourceState.guestComputer.firmware = info.firmware_version || info.app_version || null;
-        sourceState.guestComputer.model = info.model || null;
+        sourceState.podiumComputer.firmware = info.firmware_version || info.app_version || null;
+        sourceState.podiumComputer.model = info.model || null;
       }
     } catch (error) {
       const availability = debounce.update(false, now);
-      sourceState.guestComputer = {
-        ...sourceState.guestComputer,
+      sourceState.podiumComputer = {
+        ...sourceState.podiumComputer,
         deviceOnline: false,
         input: normalizeZowieInput(null),
         available: availability.available,
@@ -1131,11 +1135,13 @@ app.post('/api/sources/anpviz/heartbeat', (req, res) => {
 });
 
 app.get('/api/status', authMiddleware, async (req, res) => {
-  const [anpviz, guestPath] = await Promise.all([
+  const [anpviz, podiumPath, guestPath] = await Promise.all([
     getCanonicalAnpvizHealth(),
+    getMediaMtxPath('podium-computer'),
     getMediaMtxPath('guest-computer'),
   ]);
-  const guest = sourceState.guestComputer;
+  const podium = buildPodiumSourceHealth(sourceState.podiumComputer, podiumPath);
+  const guest = buildGuestPublisherHealth(guestPath);
 
   const disk = getDiskInfo(CONFIG.recordingDir);
 
@@ -1160,18 +1166,31 @@ app.get('/api/status', authMiddleware, async (req, res) => {
         audio_level_probe_healthy: anpviz.audioLevelProbeHealthy,
         last_update: anpviz.lastUpdate,
       },
+      'podium-computer': {
+        device_online: podium.deviceOnline,
+        signal_present: podium.signalPresent,
+        available: podium.available,
+        stream_ready: podium.streamReady,
+        resolution: podium.resolution,
+        frame_rate: podium.frameRate,
+        embedded_audio_detected: podium.embeddedAudioDetected,
+        last_update: podium.lastUpdate,
+        model: podium.model,
+        firmware: podium.firmware,
+      },
       'guest-computer': {
+        // The appliance cannot observe a transient laptop directly. These are
+        // only MediaMTX publisher/path facts, never inferred laptop state.
         device_online: guest.deviceOnline,
-        signal_present: guest.input.signalPresent,
+        device_observable: guest.deviceObservable,
+        publisher_online: guest.publisherOnline,
+        signal_present: guest.signalPresent,
         available: guest.available,
-        stream_ready: guestPath.ready
-          && guestPath.tracks.some((track) => /H26[45]/i.test(track)),
-        resolution: guest.input.resolution,
-        frame_rate: guest.input.frameRate,
-        embedded_audio_detected: guest.input.audioDetected,
+        stream_ready: guest.streamReady,
+        resolution: guest.resolution,
+        frame_rate: guest.frameRate,
+        embedded_audio_detected: guest.embeddedAudioDetected,
         last_update: guest.lastUpdate,
-        model: guest.model,
-        firmware: guest.firmware,
       },
     },
     recording: state.recording,

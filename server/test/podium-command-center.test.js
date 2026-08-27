@@ -190,6 +190,23 @@ test('Multiview contains its own mouse, touch, and keyboard content picker', () 
   assert.match(smoke, /\[data-target-cancel\]/);
 });
 
+test('live console smoke resets both Multiview store generations and checks all three managed-source interaction states', () => {
+  const smoke = read('scripts/live-console-ui-smoke.js');
+
+  for (const key of [
+    'mc_multiview_cells_v1',
+    'mc_multiview_cells_v2',
+    'mc_multiview_geoms_v1',
+    'mc_multiview_geoms_v2',
+  ]) assert.match(smoke, new RegExp(`localStorage\\.removeItem\\('${key}'\\)`));
+  assert.match(smoke, /'Anpviz Camera'/);
+  assert.match(smoke, /'Podium Computer'/);
+  assert.match(smoke, /'Guest Computer'/);
+  assert.match(smoke, /hasDragSource/);
+  assert.match(smoke, /item\.disabled[\s\S]*?item\.draggable !== 'true'/);
+  assert.match(smoke, /!item\.disabled[\s\S]*?item\.draggable === 'true'/);
+});
+
 test('podium touch drag preserves horizontal touch scrolling and desktop drag and drop', () => {
   const toolbox = read('frontend/js/views/media-control/toolbox.js');
   const view = read('frontend/js/views/media-control.js');

@@ -10,12 +10,20 @@ export const LIVE_SOURCE_CATALOG = Object.freeze([
     alwaysVisible: true,
   }),
   Object.freeze({
+    id: 'podium-computer',
+    nameKey: 'mc.live_source.podium',
+    url: `/player/live-source.html?source=podium-computer`,
+    icon: 'computer',
+    audio_policy: 'embedded_hdmi',
+    alwaysVisible: true,
+  }),
+  Object.freeze({
     id: 'guest-computer',
     nameKey: 'mc.live_source.guest',
     url: `/player/live-source.html?source=guest-computer`,
     icon: 'computer',
     audio_policy: 'embedded_hdmi',
-    alwaysVisible: false,
+    alwaysVisible: true,
   }),
 ]);
 
