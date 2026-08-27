@@ -726,6 +726,8 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     });
     await page.reload({ waitUntil: 'networkidle' });
     await waitForCommandCenterVisualReady(page);
+    await page.locator('#mc-library-drawer > [data-library-toggle]').click();
+    await page.locator('.mc-tb-tab[data-tab="additional"]').click();
     await page.locator('[data-dock="multiview"]').click();
     await expect(page.locator('.mc-multiview-host:not([hidden]) .mc-mv-stage')).toBeVisible();
 

@@ -69,3 +69,23 @@ Access, or force an unhealthy source routable.
 
 This document intentionally contains no credentials, environment values,
 tokens, or protected configuration contents.
+
+## Production-impact attestation correction
+
+The baseline and backup evidence above is an authorized production-host access
+record; it is not evidence of a production deployment or configuration change.
+
+- Production runtime/service/configuration behavior changed: **NONE**.
+- Production hosts accessed for authorized baseline/backup: **YES** (GMKtec,
+  KAMRUI, and the documented classroom baseline scope).
+- Protective backup artifacts created: **YES** (the exact GMKtec and KAMRUI
+  paths and integrity evidence remain recorded above).
+- Services restarted: **NONE**.
+- Active production database migrated or modified: **NONE**.
+- Displays, audio, or routing changed: **NONE**.
+- Deployment performed: **NONE**.
+
+No source, MediaMTX, ZowieBox, OBS, Cloudflare, or production Media Control
+setting was changed by this maintenance run. The Core work on the associated
+feature branch remains local-only until separately authorized release gates and
+physical acceptance are complete.

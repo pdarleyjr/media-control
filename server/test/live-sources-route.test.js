@@ -6,8 +6,8 @@ const { once } = require('node:events');
 const express = require('express');
 
 const { db } = require('../db/database');
-const cameraControl = require('../lib/camera-control-client');
-const liveSourcesRouter = require('../routes/live-sources');
+const { createLiveSourcesRouter } = require('../routes/live-sources');
+const { createManagedLiveSourceHealthMonitor } = require('../lib/managed-live-source-health');
 
 function sourceMap(payload) {
   return Object.fromEntries(payload.sources.map((source) => [source.id, source]));
@@ -22,7 +22,6 @@ async function requestRouter(server) {
 }
 
 test('live-source route persists the three-source health contract without fabricating Guest device reachability', async () => {
-  const originalStatus = cameraControl.getStatus;
   const originalRows = db.prepare(`
     SELECT id, availability, signal_json, last_seen_at, updated_at
     FROM live_sources
@@ -115,15 +114,26 @@ test('live-source route persists the three-source health contract without fabric
     },
   ];
   const app = express();
-  app.use('/', liveSourcesRouter);
+  let edgeCalls = 0;
+  const monitor = createManagedLiveSourceHealthMonitor({
+    database: db,
+    fetchStatus: async () => {
+      edgeCalls++;
+      return { ok: true, data: { sources: statuses[phase] } };
+    },
+    setIntervalImpl: () => ({ unref() {} }),
+    clearIntervalImpl: () => {},
+  });
+  app.use('/', createLiveSourcesRouter({ health: monitor }));
   const server = app.listen(0, '127.0.0.1');
 
   reset.run();
-  cameraControl.getStatus = async () => ({ ok: true, data: { sources: statuses[phase] } });
   try {
     await once(server, 'listening');
     const before = Math.floor(Date.now() / 1000);
+    await monitor.refresh();
     const first = sourceMap(await requestRouter(server));
+    assert.equal(edgeCalls, 1, 'the UI route only displays the server-owned snapshot');
     assert.equal(first.anpviz.available, true, 'Anpviz behavior remains unchanged');
     assert.equal(first['podium-computer'].available, false);
     assert.equal(first['podium-computer'].signal.device_online, null);
@@ -146,7 +156,9 @@ test('live-source route persists the three-source health contract without fabric
     );
 
     phase = 1;
+    await monitor.refresh();
     const second = sourceMap(await requestRouter(server));
+    assert.equal(edgeCalls, 2, 'the explicit server monitor refresh, not the route, polls health');
     assert.equal(second['podium-computer'].available, true);
     assert.equal(second['podium-computer'].signal.device_online, true);
     assert.ok(
@@ -155,12 +167,14 @@ test('live-source route persists the three-source health contract without fabric
     );
 
     phase = 2;
+    await monitor.refresh();
     const third = sourceMap(await requestRouter(server));
+    assert.equal(edgeCalls, 3);
     assert.equal(third['guest-computer'].signal.stream_ready, true);
     assert.equal(third['guest-computer'].signal.embedded_audio_detected, false);
     assert.equal(third['guest-computer'].available, false, 'AAC-less edge health cannot make Guest routable');
   } finally {
-    cameraControl.getStatus = originalStatus;
+    monitor.stop();
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     for (const row of originalRows) {
       restore.run(row.availability, row.signal_json, row.last_seen_at, row.updated_at, row.id);

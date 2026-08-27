@@ -29,7 +29,11 @@ const { ensureDevicePlaylist } = require('../lib/wall-playlists');
 const { parseStoredLayout, groupForDevice } = require('../lib/wall-layout');
 const whiteboardState = require('./whiteboard-state');
 const { contentUseDecision } = require('../lib/content-visibility');
-const { isAppOwnedRelativeUrl } = require('../lib/ssrf-policy');
+const {
+  isManagedComputerPlayerUrl,
+  managedComputerRouteFailure,
+  managedComputerRouteFailureInContentIds,
+} = require('../lib/managed-computer-routing');
 const {
   canReplacePlaylistAudioPolicy,
   stampPlaylistAudioPolicy,
@@ -56,140 +60,6 @@ function buildSnapshotItems(playlistId) {
 // Keeps the broadcast path inside the existing playlist_item->content model
 // rather than inventing a new payload type. Mirrors routes/content.js POST
 // /remote (empty filepath, derived mime_type).
-function isManagedComputerPlayerUrl(remoteUrl) {
-  return managedComputerSourceIds(remoteUrl, false).length > 0;
-}
-
-const MANAGED_COMPUTER_SOURCE_IDS = new Set(['podium-computer', 'guest-computer']);
-const MANAGED_COMPUTER_HEALTH_MAX_AGE_SECONDS = 60;
-const CANONICAL_MANAGED_PLAYER_ORIGINS = new Set([
-  'https://media.mbfdhub.com',
-  'https://media-control.mbfdhub.com',
-]);
-
-function canonicalManagedPlayerUrl(remoteUrl) {
-  if (isAppOwnedRelativeUrl(remoteUrl)) {
-    try { return new URL(String(remoteUrl), 'http://media-control.local'); } catch { return null; }
-  }
-  if (typeof remoteUrl !== 'string' || !/^https:\/\//i.test(remoteUrl)) return null;
-  try {
-    const parsed = new URL(remoteUrl);
-    return !parsed.username
-      && !parsed.password
-      && CANONICAL_MANAGED_PLAYER_ORIGINS.has(parsed.origin)
-      ? parsed
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function decodeMultiviewGridCells(value) {
-  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]+$/.test(value)) return null;
-  try {
-    const cells = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
-    return cells && typeof cells === 'object' && !Array.isArray(cells) ? cells : null;
-  } catch {
-    return null;
-  }
-}
-
-function managedComputerSourceIds(remoteUrl, allowGrid = true) {
-  const parsed = canonicalManagedPlayerUrl(remoteUrl);
-  if (!parsed) return [];
-  try {
-    const sourceId = parsed.searchParams.get('source');
-    if (parsed.pathname === '/player/live-source.html') {
-      return MANAGED_COMPUTER_SOURCE_IDS.has(sourceId) ? [sourceId] : [];
-    }
-    if (!allowGrid || parsed.pathname !== '/player/grid.html') return [];
-    const cells = decodeMultiviewGridCells(parsed.searchParams.get('cells'));
-    if (!cells) return [];
-    const ids = new Set();
-    for (const cell of Object.values(cells)) {
-      if (!cell || typeof cell !== 'object' || Array.isArray(cell)) continue;
-      for (const nestedSourceId of managedComputerSourceIds(cell.u, false)) ids.add(nestedSourceId);
-    }
-    return [...ids];
-  } catch {
-    return [];
-  }
-}
-
-function potentialManagedPlayerUrl(remoteUrl) {
-  if (typeof remoteUrl !== 'string' || !remoteUrl) return null;
-  if (!remoteUrl.startsWith('/') && !/^https?:\/\//i.test(remoteUrl)) return null;
-  try {
-    return new URL(remoteUrl, 'http://media-control.local');
-  } catch {
-    return null;
-  }
-}
-
-// This deliberately recognizes the URL shape without granting it canonical
-// status. The display player normalizes absolute /player/* paths, so a foreign
-// host must not be able to impersonate an app-owned Podium or Guest source.
-function potentialManagedComputerSourceIds(remoteUrl, allowGrid = true) {
-  const parsed = potentialManagedPlayerUrl(remoteUrl);
-  if (!parsed) return [];
-  const sourceId = parsed.searchParams.get('source');
-  if (parsed.pathname === '/player/live-source.html') {
-    return MANAGED_COMPUTER_SOURCE_IDS.has(sourceId) ? [sourceId] : [];
-  }
-  if (!allowGrid || parsed.pathname !== '/player/grid.html') return [];
-  const cells = decodeMultiviewGridCells(parsed.searchParams.get('cells'));
-  if (!cells) return [];
-  const ids = new Set();
-  for (const cell of Object.values(cells)) {
-    if (!cell || typeof cell !== 'object' || Array.isArray(cell)) continue;
-    for (const nestedSourceId of potentialManagedComputerSourceIds(cell.u, false)) ids.add(nestedSourceId);
-  }
-  return [...ids];
-}
-
-function nonCanonicalManagedComputerSourceId(remoteUrl) {
-  const canonical = new Set(managedComputerSourceIds(remoteUrl));
-  return potentialManagedComputerSourceIds(remoteUrl)
-    .find((sourceId) => !canonical.has(sourceId)) || null;
-}
-
-// The client only exposes a computer tile once /api/live-sources has observed
-// it healthy. Preserve that contract for direct broadcasts, scenes, and saved
-// playlists too: a stale or unavailable durable record is not authority to
-// route a live computer source. Anpviz keeps its pre-existing route path.
-function unavailableManagedComputerSourceId(remoteUrl, nowSeconds = Math.floor(Date.now() / 1000)) {
-  for (const sourceId of managedComputerSourceIds(remoteUrl)) {
-    const source = db.prepare(`
-      SELECT enabled, availability, last_seen_at
-      FROM live_sources
-      WHERE id = ?
-    `).get(sourceId);
-    const freshEnough = Number.isFinite(Number(source?.last_seen_at))
-      && Number(source.last_seen_at) >= nowSeconds - MANAGED_COMPUTER_HEALTH_MAX_AGE_SECONDS;
-    if (!(source?.enabled === 1 && source.availability === 'available' && freshEnough)) {
-      return sourceId;
-    }
-  }
-  return null;
-}
-
-function managedComputerRouteFailure(remoteUrl) {
-  const nonCanonicalSource = nonCanonicalManagedComputerSourceId(remoteUrl);
-  if (nonCanonicalSource) {
-    return `Managed computer player URL is not a canonical app URL: ${nonCanonicalSource}`;
-  }
-  const unavailableSource = unavailableManagedComputerSourceId(remoteUrl);
-  return unavailableSource ? `Managed computer source is unavailable: ${unavailableSource}` : null;
-}
-
-function managedComputerRouteFailureInContentIds(contentIds) {
-  const findContent = db.prepare('SELECT remote_url FROM content WHERE id = ?');
-  for (const contentId of contentIds || []) {
-    const failure = managedComputerRouteFailure(findContent.get(contentId)?.remote_url);
-    if (failure) return failure;
-  }
-  return null;
-}
 
 function resolveRemoteUrlContent(remoteUrl, workspaceId, userId) {
   const shareManagedComputer = isManagedComputerPlayerUrl(remoteUrl);
@@ -423,18 +293,25 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
     returnDetails = false,
   } = opts;
   const authoritativeTargets = Array.isArray(targetDeviceIds);
-  const finish = (ok, details = {}) => (
-    returnDetails
+  const finish = (ok, details = {}) => {
+    // buildPlaylistPayload is the final delivery fence. Its safe empty payload
+    // must never be collapsed into a successful Scene Engine result after a
+    // health change races an earlier route preflight.
+    const blocked = details.blocked === true;
+    const complete = !!ok && !blocked;
+    return returnDetails
       ? {
-          ok: !!ok,
+          ok: complete,
           delivered: details.delivered === true,
           queued: details.queued === true,
+          blocked,
+          failureCode: complete ? null : (details.failureCode || null),
           playlistRevision: details.playlistRevision || null,
           expectedSourceId: details.expectedSourceId || null,
-          failureReason: ok ? null : (details.failureReason || 'Broadcast mutation failed'),
+          failureReason: complete ? null : (details.failureReason || 'Broadcast mutation failed'),
         }
-      : !!ok
-  );
+      : complete;
+  };
   try {
     const device = db.prepare('SELECT id, workspace_id, user_id FROM devices WHERE id = ?').get(deviceId);
     if (!device) return finish(false, { failureReason: 'Display not found' });
@@ -489,7 +366,7 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
       fanOutPlaylistToPlaybackScope(io, deviceId, source.playlist_id, authoritativeTargets
         ? { allowedDeviceIds: targetDeviceIds, emitFollowers: false }
         : {});
-      return finish(true, dispatch);
+      return finish(!dispatch?.blocked, dispatch);
     }
 
     // --- Content / remote_url source: build a one-item published playlist. ---
@@ -602,7 +479,7 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
     } catch (e) {
       console.warn(`[scene-engine] span fan-out lookup failed: ${e.message}`);
     }
-    return finish(true, { ...dispatch, expectedSourceId: contentId });
+    return finish(!dispatch?.blocked, { ...dispatch, expectedSourceId: contentId });
   } catch (e) {
     console.warn(`[scene-engine] pushSourceToDevice failed for ${deviceId}: ${e.message}`);
     return finish(false, { failureReason: e.message });
@@ -621,14 +498,20 @@ function pushSourceToRegions(io, deviceId, source, routes, opts = {}) {
     contentContext = null,
     deliveries = [],
   } = opts;
-  const finish = (ok, details = {}) => ({
-    ok: !!ok,
-    delivered: details.delivered === true,
-    queued: details.queued === true,
-    playlistRevision: details.playlistRevision || null,
-    expectedSourceId: details.expectedSourceId || null,
-    failureReason: ok ? null : (details.failureReason || 'Broadcast mutation failed'),
-  });
+  const finish = (ok, details = {}) => {
+    const blocked = details.blocked === true;
+    const complete = !!ok && !blocked;
+    return {
+      ok: complete,
+      delivered: details.delivered === true,
+      queued: details.queued === true,
+      blocked,
+      failureCode: complete ? null : (details.failureCode || null),
+      playlistRevision: details.playlistRevision || null,
+      expectedSourceId: details.expectedSourceId || null,
+      failureReason: complete ? null : (details.failureReason || 'Broadcast mutation failed'),
+    };
+  };
   try {
     const regionRoutes = Array.isArray(routes) ? routes : [];
     if (regionRoutes.length < 2 || regionRoutes.some((route) => !route?.zone_id || !route?.region_id)) {
@@ -724,7 +607,7 @@ function pushSourceToRegions(io, deviceId, source, routes, opts = {}) {
       deviceId,
       deliveries.map((delivery) => ({ ...delivery, expectedSourceId: contentId })),
     );
-    return finish(true, { ...dispatch, expectedSourceId: contentId });
+    return finish(!dispatch?.blocked, { ...dispatch, expectedSourceId: contentId });
   } catch (error) {
     console.warn(`[scene-engine] pushSourceToRegions failed for ${deviceId}: ${error.message}`);
     return finish(false, { failureReason: error.message });

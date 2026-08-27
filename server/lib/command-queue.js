@@ -57,6 +57,18 @@ function queueOrEmitPlaylistUpdate(deviceNs, deviceId, buildPayload, context = n
   // offline request records the revision it intends to replay.
   const payload = buildPayload(deviceId, context);
   const room = deviceNs.adapter.rooms.get(deviceId);
+  if (payload?.delivery_blocked) {
+    // A reconnecting/previously assigned renderer must receive the safe empty
+    // payload, but the caller must never record this as a successful route.
+    if (room && room.size > 0) deviceNs.to(deviceId).emit('device:playlist-update', payload);
+    return {
+      delivered: false,
+      blocked: true,
+      failureCode: payload.delivery_block_code || null,
+      failureReason: payload.delivery_block_reason || 'managed_computer_source_unavailable',
+      playlistRevision: payload.playlist_revision || null,
+    };
+  }
   if (room && room.size > 0) {
     deviceNs.to(deviceId).emit('device:playlist-update', payload);
     return {
@@ -109,8 +121,9 @@ function flushQueue(deviceNs, deviceId, buildPayload) {
   if (pu) {
     pendingPlaylistUpdate.delete(deviceId);
     if (typeof buildPayload === 'function') {
-      deviceNs.to(deviceId).emit('device:playlist-update', buildPayload(deviceId, pu.context || null));
-      playlistUpdate = true;
+      const payload = buildPayload(deviceId, pu.context || null);
+      deviceNs.to(deviceId).emit('device:playlist-update', payload);
+      playlistUpdate = payload?.delivery_blocked !== true;
     }
   }
 

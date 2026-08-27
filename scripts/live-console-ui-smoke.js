@@ -1147,6 +1147,9 @@ async function main() {
 
     await evaluate(cdp, `(() => {
       localStorage.removeItem('mc_multiview_cells_v1');
+      localStorage.removeItem('mc_multiview_cells_v2');
+      localStorage.removeItem('mc_multiview_geoms_v1');
+      localStorage.removeItem('mc_multiview_geoms_v2');
       const toolbox = document.querySelector('#mc-toolbox');
       if (toolbox && !toolbox.querySelector('.mc-tile[data-drag-source]')) {
         const source = document.createElement('button');
@@ -1235,26 +1238,39 @@ async function main() {
     })()`);
     assert(liveSourceTabOpened, 'Live Sources tab is missing');
     const inScopeLiveSourceLabel = dragConfig?.sourceLabel || '';
-    await waitFor(cdp, `!![...document.querySelectorAll('.mc-live-source-tile')].find((tile) => (
-      !${JSON.stringify(inScopeLiveSourceLabel)}
-      || tile.querySelector('.mc-tile-label')?.textContent?.trim() === ${JSON.stringify(inScopeLiveSourceLabel)}
-    ))?.querySelector('[data-state]')`, 'live source status');
+    const canonicalLiveSourceLabels = ['Anpviz Camera', 'Podium Computer', 'Guest Computer'];
+    await waitFor(cdp, `(${JSON.stringify(canonicalLiveSourceLabels)}).every((label) => {
+      const tile = [...document.querySelectorAll('.mc-live-source-tile')]
+        .find((item) => item.querySelector('.mc-tile-label')?.textContent?.trim() === label);
+      return !!tile?.querySelector('[data-state]');
+    })`, 'all canonical live-source statuses');
     const liveSources = await evaluate(cdp, `(() => [...document.querySelectorAll('.mc-live-source-tile')]
-      .filter((tile) => !${JSON.stringify(inScopeLiveSourceLabel)}
-        || tile.querySelector('.mc-tile-label')?.textContent?.trim() === ${JSON.stringify(inScopeLiveSourceLabel)})
       .map((tile) => ({
       label: tile.querySelector('.mc-tile-label')?.textContent?.trim(),
       state: tile.querySelector('[data-state]')?.dataset.state,
       disabled: tile.disabled,
-      source: JSON.parse(tile.dataset.dragSource || '{}'),
+      draggable: tile.getAttribute('draggable'),
+      hasDragSource: tile.hasAttribute('data-drag-source'),
+      source: (() => { try { return JSON.parse(tile.dataset.dragSource || '{}'); } catch { return {}; } })(),
       height: Math.round(tile.getBoundingClientRect().height),
     })))()`);
+    assert(canonicalLiveSourceLabels.every((label) => liveSources.some((item) => item.label === label)),
+      `canonical live sources missing: ${JSON.stringify(liveSources)}`);
     if (inScopeLiveSourceLabel) {
-      assert(liveSources.length === 1 && liveSources[0].label === inScopeLiveSourceLabel,
+      assert(liveSources.some((item) => item.label === inScopeLiveSourceLabel),
         `configured live source missing: ${JSON.stringify(liveSources)}`);
-    } else {
-      assert(liveSources.some((item) => item.label === 'Anpviz Camera'), `canonical Anpviz source missing: ${JSON.stringify(liveSources)}`);
-      assert(!liveSources.some((item) => /Focus|ANNKE|WyreStorm|Camera [123]/i.test(item.label || '')), `obsolete camera surfaced: ${JSON.stringify(liveSources)}`);
+    }
+    assert(!liveSources.some((item) => /Focus|ANNKE|WyreStorm|Camera [123]/i.test(item.label || '')), `obsolete camera surfaced: ${JSON.stringify(liveSources)}`);
+    for (const item of liveSources.filter((source) => ['Podium Computer', 'Guest Computer'].includes(source.label))) {
+      if (!item.disabled) {
+        assert(item.draggable === 'true' && item.hasDragSource,
+          `healthy computer source is not draggable/tappable: ${JSON.stringify(item)}`);
+        assert(['podium-computer', 'guest-computer'].includes(item.source.live_source_id),
+          `healthy computer source payload is not canonical: ${JSON.stringify(item)}`);
+      } else {
+        assert(item.draggable !== 'true' && !item.hasDragSource,
+          `unavailable computer source is still routable: ${JSON.stringify(item)}`);
+      }
     }
     assert(liveSources.every((item) => item.height >= 48), `live-source touch target is too small: ${JSON.stringify(liveSources)}`);
     const liveSourceShot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });

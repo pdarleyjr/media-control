@@ -467,10 +467,10 @@ function availableLibrarySources() {
       thumb: image?.currentSrc || image?.src || '',
     });
   });
-  // Guest Computer and live news must remain selectable even when another
-  // toolbox tab is active. These descriptors come from the same canonical
-  // catalogs as Camera Feeds; Guest is included only when the live-source API
-  // reports it available.
+  // Podium Computer, Guest Computer, and live news must remain selectable even
+  // when another toolbox tab is active. These descriptors come from the same
+  // canonical catalogs as Camera Feeds; computer sources are included only
+  // when the live-source API reports them available.
   multiviewLiveSources.forEach((item) => {
     const key = JSON.stringify(item.source);
     if (seen.has(key)) return;
