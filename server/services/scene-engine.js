@@ -56,20 +56,20 @@ function buildSnapshotItems(playlistId) {
 // Keeps the broadcast path inside the existing playlist_item->content model
 // rather than inventing a new payload type. Mirrors routes/content.js POST
 // /remote (empty filepath, derived mime_type).
-function isGuestComputerPlayerUrl(remoteUrl) {
+function isManagedComputerPlayerUrl(remoteUrl) {
   if (!isAppOwnedRelativeUrl(remoteUrl)) return false;
   try {
     const parsed = new URL(String(remoteUrl), 'http://media-control.local');
     return parsed.pathname === '/player/live-source.html'
-      && parsed.searchParams.get('source') === 'guest-computer';
+      && ['podium-computer', 'guest-computer'].includes(parsed.searchParams.get('source'));
   } catch {
     return false;
   }
 }
 
 function resolveRemoteUrlContent(remoteUrl, workspaceId, userId) {
-  const shareGuestComputer = isGuestComputerPlayerUrl(remoteUrl);
-  const existing = shareGuestComputer
+  const shareManagedComputer = isManagedComputerPlayerUrl(remoteUrl);
+  const existing = shareManagedComputer
     ? db.prepare(`
         SELECT id, mime_type, access_level
         FROM content
@@ -83,12 +83,12 @@ function resolveRemoteUrlContent(remoteUrl, workspaceId, userId) {
         LIMIT 1
       `).get(remoteUrl, workspaceId || null);
   if (existing) {
-    // Guest Computer is a workspace-owned live input, not an operator-owned
+    // Managed computer sources are workspace-owned live inputs, not operator-owned
     // library item. Older releases stored the generated player row as private,
     // which made the same live source fail for every later operator. Normalize
     // only this canonical app-owned source; ordinary remote/deck rows retain
     // their governed visibility.
-    if (shareGuestComputer && existing.access_level !== 'workspace_shared') {
+    if (shareManagedComputer && existing.access_level !== 'workspace_shared') {
       db.prepare("UPDATE content SET access_level = 'workspace_shared' WHERE id = ?").run(existing.id);
     }
     // Self-heal legacy deck/presentation rows that an older resolver stored as
@@ -121,7 +121,7 @@ function resolveRemoteUrlContent(remoteUrl, workspaceId, userId) {
   else mimeType = 'text/html';
   let filename;
   try { filename = new URL(remoteUrl).hostname || 'remote'; } catch { filename = 'remote'; }
-  const accessLevel = shareGuestComputer ? 'workspace_shared' : 'private';
+  const accessLevel = shareManagedComputer ? 'workspace_shared' : 'private';
   db.prepare(`
     INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, remote_url, access_level)
     VALUES (?, ?, ?, ?, '', ?, 0, ?, ?)

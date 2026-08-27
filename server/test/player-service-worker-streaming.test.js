@@ -53,6 +53,8 @@ test('player worker never intercepts live streams, document pages, media assets,
   const requests = [
     new Request('https://media.mbfdhub.com/player/live-source/guest-computer/index.m3u8'),
     new Request('https://media.mbfdhub.com/player/live-source/guest-computer/segment-42.ts'),
+    new Request('https://media.mbfdhub.com/player/live-source/podium-computer/index.m3u8'),
+    new Request('https://media.mbfdhub.com/player/live-source/podium-computer/segment-42.ts'),
     new Request('https://media.mbfdhub.com/player/hls-proxy?url=stream'),
     new Request('https://media.mbfdhub.com/player/doc-page/content-id/4.png'),
     new Request('https://media.mbfdhub.com/player/doc-meta/content-id'),

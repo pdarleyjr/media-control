@@ -45,8 +45,10 @@ test('live source renders clean full-stage video without a persistent title or d
   assert.match(player, /window\.__mcEnableAudio/);
 });
 
-test('classroom camera player exposes only the canonical Anpviz source', () => {
+test('classroom camera player exposes only the three explicit canonical sources', () => {
   assert.match(player, /source=params\.get\('source'\)\|\|'anpviz'/);
+  assert.match(player, /'podium-computer':'Podium Computer'/);
+  assert.match(player, /'guest-computer':'Guest Computer'/);
   assert.match(player, /\/player\/live-source\/.*index\.m3u8/);
   assert.doesNotMatch(player, /camera=3|ANNKE|Focus 210|WyreStorm/);
 });

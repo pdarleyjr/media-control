@@ -50,8 +50,10 @@ const SLOTS = [
 ];
 const SLOT_BY_ID = Object.fromEntries(SLOTS.map((s) => [s.id, s]));
 
-const STORE_KEY = 'mc_multiview_cells_v1';
-const GEOM_KEY = 'mc_multiview_geoms_v1';
+const STORE_KEY = 'mc_multiview_cells_v2';
+const GEOM_KEY = 'mc_multiview_geoms_v2';
+const LEGACY_STORE_KEY = 'mc_multiview_cells_v1';
+const LEGACY_GEOM_KEY = 'mc_multiview_geoms_v1';
 const LABEL_MAX = 80;
 const MIN_PCT = 5;                              // smallest tile edge (mirror of core)
 const HANDLE_DIRS = ['nw', 'ne', 'sw', 'se', 'n', 'e', 's', 'w'];
@@ -143,18 +145,67 @@ function reflowAroundActive(rects, activeId) {
 }
 
 // ---------- persistence ----------
+function readStoredObject(key) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || '{}');
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+// Before this cutover, every persisted guest-computer player URL meant the
+// ZowieBox. Versioning the local store lets us convert that known legacy
+// semantic to Podium exactly once without ever changing a newly-created Guest
+// Computer selection.
+function rewriteLegacyPodiumUrl(value) {
+  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//')) return value;
+  try {
+    const parsed = new URL(value, location.origin);
+    if (parsed.pathname !== '/player/live-source.html'
+        || parsed.searchParams.get('source') !== 'guest-computer') return value;
+    parsed.searchParams.set('source', 'podium-computer');
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return value;
+  }
+}
+
+function migrateLegacyCells(candidates) {
+  const migrated = {};
+  for (const [slotId, cell] of Object.entries(candidates || {})) {
+    if (!cell || typeof cell !== 'object') {
+      migrated[slotId] = cell;
+      continue;
+    }
+    const cellUrl = rewriteLegacyPodiumUrl(cell.cellUrl);
+    const monitorUrl = rewriteLegacyPodiumUrl(cell.monitorUrl);
+    migrated[slotId] = { ...cell, cellUrl, monitorUrl };
+  }
+  return migrated;
+}
+
 function loadStore() {
-  try { cells = JSON.parse(localStorage.getItem(STORE_KEY) || '{}') || {}; }
-  catch { cells = {}; }
+  const hasCurrentCells = localStorage.getItem(STORE_KEY) !== null;
+  const hasCurrentGeoms = localStorage.getItem(GEOM_KEY) !== null;
+  let migratedLegacyStore = false;
+  if (hasCurrentCells) {
+    cells = readStoredObject(STORE_KEY);
+  } else {
+    cells = migrateLegacyCells(readStoredObject(LEGACY_STORE_KEY));
+    migratedLegacyStore = localStorage.getItem(LEGACY_STORE_KEY) !== null;
+  }
   // Keep only known slots that still carry content (a url) or are a share frame.
   for (const id of Object.keys(cells)) {
     const c = cells[id];
     if (!SLOT_BY_ID[id] || !c || (!c.cellUrl && c.kind !== 'share')) delete cells[id];
   }
-  try { geoms = JSON.parse(localStorage.getItem(GEOM_KEY) || '{}') || {}; }
-  catch { geoms = {}; }
+  geoms = readStoredObject(hasCurrentGeoms ? GEOM_KEY : LEGACY_GEOM_KEY);
   for (const id of Object.keys(geoms)) {
     if (!SLOT_BY_ID[id] || !validGeom(geoms[id])) delete geoms[id];
+  }
+  if (migratedLegacyStore || (!hasCurrentGeoms && localStorage.getItem(LEGACY_GEOM_KEY) !== null)) {
+    saveStore();
   }
 }
 function saveStore() {
@@ -1058,7 +1109,7 @@ export async function renderMultiview(container, { routeSource, onClose } = {}) 
     const byId = new Map((response.sources || []).map((source) => [source.id, source]));
     LIVE_SOURCE_CATALOG
       .map((config) => ({ config, source: byId.get(config.id) || { available: false } }))
-      .filter(({ config, source }) => config.id === 'guest-computer' && source.available === true)
+      .filter(({ config, source }) => ['podium-computer', 'guest-computer'].includes(config.id) && source.available === true)
       .forEach(({ config }) => {
         multiviewLiveSources.unshift({
           source: { remote_url: config.url, live_source_id: config.id, audio_policy: config.audio_policy },
@@ -1066,7 +1117,7 @@ export async function renderMultiview(container, { routeSource, onClose } = {}) 
           thumb: '',
         });
       });
-  } catch { /* news remains usable; unavailable Guest remains hidden */ }
+  } catch { /* news remains usable; unavailable computer sources remain hidden */ }
   render();
 }
 

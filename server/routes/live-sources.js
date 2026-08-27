@@ -35,7 +35,9 @@ function safeSignal(sourceId, edgeStatus) {
     };
   }
   return {
-    device_online: source.device_online === true,
+    device_online: source.device_online === true ? true : source.device_online === null ? null : false,
+    device_observable: source.device_observable === true,
+    publisher_online: source.publisher_online === true,
     signal_present: source.signal_present === true,
     available: source.available === true,
     stream_ready: source.stream_ready === true,

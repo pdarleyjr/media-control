@@ -24,6 +24,10 @@ test('ownPlayerPath: absolute URL on the SAME host → root-relative path+query'
     PR.ownPlayerPath('https://media.mbfdhub.com/player/live-source.html?source=anpviz'),
     '/player/live-source.html?source=anpviz'
   );
+  assert.equal(
+    PR.ownPlayerPath('https://media.mbfdhub.com/player/live-source.html?source=podium-computer'),
+    '/player/live-source.html?source=podium-computer'
+  );
 });
 
 test('ownPlayerPath: absolute URL on a DIFFERENT host → still OUR root-relative path', () => {

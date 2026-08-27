@@ -121,23 +121,23 @@ test('a wall broadcast forks a playlist shared with another wall', () => {
   }
 });
 
-test('the canonical Guest Computer player remains routable after another operator created its legacy private row', () => {
-  const prefix = `test-guest-visibility-${Date.now()}-`;
+test('the canonical Podium Computer player remains routable after another operator created its legacy private row', () => {
+  const prefix = `test-podium-visibility-${Date.now()}-`;
   const ownerId = `${prefix}owner`;
   const operatorId = `${prefix}operator`;
   const orgId = `${prefix}org`;
   const workspaceId = `${prefix}workspace`;
   const deviceId = `${prefix}display`;
-  const contentId = `${prefix}guest-content`;
-  const remoteUrl = `/player/live-source.html?source=guest-computer&test=${encodeURIComponent(prefix)}`;
+  const contentId = `${prefix}podium-content`;
+  const remoteUrl = `/player/live-source.html?source=podium-computer&test=${encodeURIComponent(prefix)}`;
 
   cleanup(prefix);
   try {
     const insertUser = db.prepare("INSERT INTO users (id, email, name, role) VALUES (?, ?, ?, 'user')");
-    insertUser.run(ownerId, `${prefix}owner@example.test`, 'Legacy Guest Owner');
+    insertUser.run(ownerId, `${prefix}owner@example.test`, 'Legacy Podium Owner');
     insertUser.run(operatorId, `${prefix}operator@example.test`, 'Current Classroom Operator');
     db.prepare('INSERT INTO organizations (id, name, owner_user_id) VALUES (?, ?, ?)')
-      .run(orgId, 'Guest Visibility Org', ownerId);
+      .run(orgId, 'Podium Visibility Org', ownerId);
     db.prepare('INSERT INTO workspaces (id, organization_id, name, created_by) VALUES (?, ?, ?, ?)')
       .run(workspaceId, orgId, 'Guest Visibility Workspace', ownerId);
     db.prepare("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, 'workspace_admin')")
@@ -147,7 +147,7 @@ test('the canonical Guest Computer player remains routable after another operato
     db.prepare(`
       INSERT INTO content
         (id, user_id, workspace_id, filename, filepath, mime_type, file_size, remote_url, access_level)
-      VALUES (?, ?, ?, 'Guest Computer', '', 'text/html', 0, ?, 'private')
+      VALUES (?, ?, ?, 'Podium Computer', '', 'text/html', 0, ?, 'private')
     `).run(contentId, ownerId, workspaceId, remoteUrl);
     db.prepare(`
       INSERT INTO devices (id, user_id, workspace_id, name, status)

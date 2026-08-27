@@ -21,6 +21,10 @@ test('isAppOwnedRelativeUrl allows managed player and content paths', () => {
     isAppOwnedRelativeUrl('/player/live-source.html?source=guest-computer'),
     true
   );
+  assert.equal(
+    isAppOwnedRelativeUrl('/player/live-source.html?source=podium-computer'),
+    true
+  );
   assert.equal(isAppOwnedRelativeUrl('/api/content/example-id/file'), true);
 });
 

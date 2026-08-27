@@ -56,11 +56,11 @@ test('Multiview populated frames render the assigned media instead of an icon-on
   assert.match(source, /\$\{preview\}[\s\S]*?<div class="mc-mv-cell-actions">/);
 });
 
-test('Multiview always offers live news and an available Guest Computer source', () => {
+test('Multiview always offers live news and only available explicit computer sources', () => {
   assert.match(source, /LIVE_NEWS_CATALOG/);
   assert.match(source, /LIVE_SOURCE_CATALOG/);
   assert.match(source, /api\.liveSources\.list\(\)/);
-  assert.match(source, /config\.id === 'guest-computer'/);
+  assert.match(source, /\['podium-computer', 'guest-computer'\]\.includes\(config\.id\)/);
   assert.match(source, /source\.available === true/);
   assert.match(source, /multiviewLiveSources/);
 });

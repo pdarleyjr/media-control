@@ -6,6 +6,7 @@ const Database = require('better-sqlite3');
 
 const {
   LIVE_SOURCES_SCHEMA_MIGRATION_ID,
+  LIVE_SOURCES_PODIUM_GUEST_MIGRATION_ID,
   migrateLiveSourcesSchema,
 } = require('../db/migrations/live-sources');
 
@@ -21,7 +22,7 @@ function baseDb() {
   return db;
 }
 
-test('live source migration creates only the canonical Anpviz camera and Guest Computer identities', () => {
+test('live source migration creates the canonical Anpviz, Podium Computer, and Guest Computer identities idempotently', () => {
   const db = baseDb();
 
   assert.equal(migrateLiveSourcesSchema(db), true);
@@ -44,20 +45,30 @@ test('live source migration creates only the canonical Anpviz camera and Guest C
         source_type: 'guest_computer',
         display_name: 'Guest Computer',
         stream_path: 'guest-computer',
-        visibility_policy: 'signal',
+        visibility_policy: 'always',
+      },
+      {
+        id: 'podium-computer',
+        source_type: 'guest_computer',
+        display_name: 'Podium Computer',
+        stream_path: 'podium-computer',
+        visibility_policy: 'always',
       },
     ],
   );
   assert.ok(db.prepare(
     'SELECT 1 FROM schema_migrations WHERE id=?',
   ).get(LIVE_SOURCES_SCHEMA_MIGRATION_ID));
+  assert.ok(db.prepare(
+    'SELECT 1 FROM schema_migrations WHERE id=?',
+  ).get(LIVE_SOURCES_PODIUM_GUEST_MIGRATION_ID));
 
   assert.equal(migrateLiveSourcesSchema(db), true);
-  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM live_sources').get().count, 2);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM live_sources').get().count, 3);
   db.close();
 });
 
-test('live source migration removes obsolete camera rows without deleting the Guest Computer identity', () => {
+test('topology migration renames the legacy Zowie source to Podium and preserves only targeted durable references', () => {
   const db = baseDb();
   db.exec(`
     CREATE TABLE live_sources (
@@ -74,23 +85,83 @@ test('live source migration removes obsolete camera rows without deleting the Gu
       created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
       updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     );
+    CREATE TABLE content (
+      id TEXT PRIMARY KEY,
+      remote_url TEXT
+    );
+    CREATE TABLE playlists (
+      id TEXT PRIMARY KEY,
+      published_snapshot TEXT
+    );
+    CREATE TABLE activity_asset_placements (
+      id TEXT PRIMARY KEY,
+      remote_url TEXT
+    );
+    CREATE TABLE activity_log (
+      id TEXT PRIMARY KEY,
+      details TEXT
+    );
     INSERT INTO live_sources
       (id, source_type, display_name, stream_path, player_path, visibility_policy)
     VALUES
       ('focus-210', 'camera', 'Focus 210', 'kamrui-camera-1', '/old', 'always'),
       ('camera-2', 'camera', 'Camera 2', 'kamrui-camera-2', '/old', 'always'),
       ('guest-computer', 'guest_computer', 'Old guest label', 'old-guest', '/old', 'signal');
+    INSERT INTO content (id, remote_url)
+      VALUES ('legacy-content', '/player/live-source.html?source=guest-computer&layout=old');
+    INSERT INTO playlists (id, published_snapshot)
+      VALUES ('legacy-playlist', '[{"remote_url":"/player/live-source.html?source=guest-computer","live_source_id":"guest-computer"}]');
+    INSERT INTO activity_asset_placements (id, remote_url)
+      VALUES ('legacy-placement', '/player/live-source.html?source=guest-computer');
+    INSERT INTO activity_log (id, details)
+      VALUES ('historical', 'guest-computer was the old ZowieBox source');
   `);
 
   migrateLiveSourcesSchema(db);
 
   assert.deepEqual(
     db.prepare('SELECT id FROM live_sources ORDER BY id').all().map((row) => row.id),
-    ['anpviz', 'guest-computer'],
+    ['anpviz', 'guest-computer', 'podium-computer'],
   );
   assert.equal(
-    db.prepare('SELECT display_name FROM live_sources WHERE id=?').get('guest-computer').display_name,
-    'Guest Computer',
+    db.prepare('SELECT display_name FROM live_sources WHERE id=?').get('podium-computer').display_name,
+    'Podium Computer',
+  );
+  assert.equal(
+    db.prepare('SELECT remote_url FROM content WHERE id=?').get('legacy-content').remote_url,
+    '/player/live-source.html?source=podium-computer&layout=old',
+  );
+  assert.deepEqual(
+    JSON.parse(db.prepare('SELECT published_snapshot FROM playlists WHERE id=?').get('legacy-playlist').published_snapshot),
+    [{
+      remote_url: '/player/live-source.html?source=podium-computer',
+      live_source_id: 'podium-computer',
+    }],
+  );
+  assert.equal(
+    db.prepare('SELECT remote_url FROM activity_asset_placements WHERE id=?').get('legacy-placement').remote_url,
+    '/player/live-source.html?source=podium-computer',
+  );
+  assert.equal(
+    db.prepare('SELECT details FROM activity_log WHERE id=?').get('historical').details,
+    'guest-computer was the old ZowieBox source',
+    'historical/audit text is deliberately retained rather than globally replaced',
+  );
+
+  assert.equal(
+    require('../db/migrations/live-sources').rewriteLegacyPlayerUrl(
+      'https://example.invalid/player/live-source.html?source=guest-computer',
+    ),
+    'https://example.invalid/player/live-source.html?source=guest-computer',
+    'an unrelated absolute URL cannot be silently repurposed',
+  );
+
+  migrateLiveSourcesSchema(db);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM live_sources').get().count, 3);
+  assert.equal(
+    db.prepare('SELECT remote_url FROM content WHERE id=?').get('legacy-content').remote_url,
+    '/player/live-source.html?source=podium-computer&layout=old',
+    'the one-time legacy migration cannot repurpose old Podium state on a later startup',
   );
   db.close();
 });

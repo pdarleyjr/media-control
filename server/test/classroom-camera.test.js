@@ -7,7 +7,7 @@ const {
   rewriteCameraManifest,
 } = require('../lib/classroom-camera');
 
-test('cameraUpstreamUrl only permits the two canonical live source identities', () => {
+test('cameraUpstreamUrl only permits the three canonical live source identities', () => {
   assert.equal(
     cameraUpstreamUrl('anpviz', 'index.m3u8'),
     'http://192.168.1.122:8888/anpviz-main/index.m3u8'
@@ -16,8 +16,26 @@ test('cameraUpstreamUrl only permits the two canonical live source identities', 
     cameraUpstreamUrl('guest-computer', 'index.m3u8'),
     'http://192.168.1.122:8888/guest-computer/index.m3u8'
   );
+  assert.equal(
+    cameraUpstreamUrl('podium-computer', 'index.m3u8'),
+    'http://192.168.1.122:8888/podium-computer/index.m3u8'
+  );
   assert.throws(() => cameraUpstreamUrl('focus-210', 'index.m3u8'), /source/);
   assert.throws(() => cameraUpstreamUrl('anpviz', '../config.yml'), /asset/);
+});
+
+test('rewriteCameraManifest keeps the canonical Podium assets on the same-origin proxy', () => {
+  const manifest = [
+    '#EXTM3U',
+    '#EXT-X-MAP:URI="init.mp4"',
+    '#EXTINF:2.0,',
+    'segment-001.mp4',
+  ].join('\n');
+
+  const rewritten = rewriteCameraManifest(manifest, 'podium-computer');
+
+  assert.match(rewritten, /URI="\/player\/live-source\/podium-computer\/init\.mp4"/);
+  assert.match(rewritten, /\/player\/live-source\/podium-computer\/segment-001\.mp4/);
 });
 
 test('rewriteCameraManifest keeps every HLS request on the same-origin locked proxy', () => {
