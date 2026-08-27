@@ -142,7 +142,7 @@ export async function renderManagedSourcesTab(container, { selectedIds, onAfterS
   try {
     const response = await api.liveSources.list();
     const byId = new Map((response.sources || []).map((source) => [source.id, source]));
-    // All installed and guest-computer tiles stay visible. An unavailable
+    // All three managed-source tiles stay visible. An unavailable
     // source remains visibly disabled and has no route/drag payload.
     const visible = LIVE_SOURCE_CATALOG
       .map((config) => ({ config, source: byId.get(config.id) || { id: config.id, available: false, signal: {} } }));

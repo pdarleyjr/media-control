@@ -5,7 +5,7 @@
 // to the upstream HLS edge and rewrites manifest segment URIs to same-origin
 // so the browser never cross-origin loads from the camera edge directly.
 //
-// Only two identifiers are valid: the canonical synchronized Anpviz/TONOR
+// Only three identifiers are valid: the canonical synchronized Anpviz/TONOR
 // stream, the ZowieBox Podium Computer stream, and the separately published
 // Guest Computer stream.
 //

@@ -7,6 +7,12 @@ const { persistedSignal } = require('../lib/live-source-state');
 
 const router = express.Router();
 
+function nullableFiniteNumber(value) {
+  if ((typeof value !== 'number' && typeof value !== 'string') || String(value).trim() === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 function safeSignal(sourceId, edgeStatus) {
   const source = edgeStatus?.sources?.[sourceId];
   if (!source || typeof source !== 'object') return {};
@@ -42,7 +48,7 @@ function safeSignal(sourceId, edgeStatus) {
     available: source.available === true,
     stream_ready: source.stream_ready === true,
     resolution: source.resolution || null,
-    frame_rate: Number.isFinite(Number(source.frame_rate)) ? Number(source.frame_rate) : null,
+    frame_rate: nullableFiniteNumber(source.frame_rate),
     embedded_audio_detected: source.embedded_audio_detected === true,
     last_update: source.last_update || null,
   };

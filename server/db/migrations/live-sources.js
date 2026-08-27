@@ -38,6 +38,13 @@ const CANONICAL_SOURCES = [
 const CANONICAL_SOURCE_IDS = CANONICAL_SOURCES.map((source) => source.id);
 const LEGACY_SOURCE_ID = 'guest-computer';
 const PODIUM_SOURCE_ID = 'podium-computer';
+// These are the only public application origins that historically stored
+// absolute player URLs. The migration normalizes them to a local player path;
+// it must never reinterpret an arbitrary upstream URL as a Media Control source.
+const CANONICAL_PLAYER_ORIGINS = new Set([
+  'https://media.mbfdhub.com',
+  'https://media-control.mbfdhub.com',
+]);
 
 function tableHasColumn(db, tableName, columnName) {
   const table = db.prepare(
@@ -49,22 +56,72 @@ function tableHasColumn(db, tableName, columnName) {
     .some((column) => column.name === columnName);
 }
 
-// Rewrite only the canonical embedded-player identity. This deliberately does
-// not perform a global text replacement: historical audit/event details remain
-// evidence of the old label, and unrelated URLs cannot be repurposed.
-function rewriteLegacyPlayerUrl(value) {
-  if (typeof value !== 'string' || !value || !value.startsWith('/') || value.startsWith('//')) return value;
+function parseCanonicalPlayerUrl(value) {
+  if (typeof value !== 'string' || !value) return null;
+  const rootRelative = value.startsWith('/') && !value.startsWith('//');
+  if (!rootRelative && !/^https:\/\//i.test(value)) return null;
   let parsed;
   try {
     parsed = new URL(value, 'http://media-control.local');
   } catch {
-    return value;
+    return null;
   }
-  if (parsed.pathname !== '/player/live-source.html'
-      || parsed.searchParams.get('source') !== LEGACY_SOURCE_ID) {
-    return value;
+  if (!rootRelative && (
+    parsed.username
+    || parsed.password
+    || !CANONICAL_PLAYER_ORIGINS.has(parsed.origin)
+  )) return null;
+  return { parsed, rootRelative };
+}
+
+function decodeGridCells(value) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]+$/.test(value)) return null;
+  try {
+    const cells = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+    return cells && typeof cells === 'object' && !Array.isArray(cells) ? cells : null;
+  } catch {
+    return null;
   }
-  parsed.searchParams.set('source', PODIUM_SOURCE_ID);
+}
+
+function encodeGridCells(cells) {
+  return Buffer.from(JSON.stringify(cells), 'utf8').toString('base64url');
+}
+
+// A saved Multiview wall is itself a durable /player/grid.html URL. Its cell
+// URLs are base64url JSON, so rewrite only the explicit `u` fields after a
+// successful parse. Malformed grids and non-player cell values remain intact.
+function rewriteLegacyGridCells(value) {
+  const cells = decodeGridCells(value);
+  if (!cells) return value;
+  let changed = false;
+  for (const cell of Object.values(cells)) {
+    if (!cell || typeof cell !== 'object' || Array.isArray(cell) || typeof cell.u !== 'string') continue;
+    const rewritten = rewriteLegacyPlayerUrl(cell.u);
+    if (rewritten === cell.u) continue;
+    cell.u = rewritten;
+    changed = true;
+  }
+  return changed ? encodeGridCells(cells) : value;
+}
+
+// Rewrite only the canonical embedded-player identity. This deliberately does
+// not perform a global text replacement: historical audit/event details remain
+// evidence of the old label, and unrelated URLs cannot be repurposed.
+function rewriteLegacyPlayerUrl(value) {
+  const playerUrl = parseCanonicalPlayerUrl(value);
+  if (!playerUrl) return value;
+  const { parsed } = playerUrl;
+  if (parsed.pathname === '/player/live-source.html'
+      && parsed.searchParams.get('source') === LEGACY_SOURCE_ID) {
+    parsed.searchParams.set('source', PODIUM_SOURCE_ID);
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  }
+  if (parsed.pathname !== '/player/grid.html') return value;
+  const cells = parsed.searchParams.get('cells');
+  const rewrittenCells = rewriteLegacyGridCells(cells);
+  if (rewrittenCells === cells) return value;
+  parsed.searchParams.set('cells', rewrittenCells);
   return `${parsed.pathname}${parsed.search}${parsed.hash}`;
 }
 
@@ -142,6 +199,11 @@ function migrateLegacyGuestComputerToPodium(db) {
   if (legacy && podium) {
     throw new Error(
       'live source topology is ambiguous: both legacy guest-computer and podium-computer exist before migration',
+    );
+  }
+  if (podium && !legacy) {
+    throw new Error(
+      'live source topology is ambiguous: podium-computer exists before migration but legacy guest-computer does not',
     );
   }
   if (legacy) {

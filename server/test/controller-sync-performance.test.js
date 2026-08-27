@@ -195,7 +195,7 @@ test('stage repaint identity includes the authored web player URL', () => {
   const main = read('frontend/js/views/media-control.js');
   const stage = read('frontend/js/views/media-control/stage.js');
 
-  // Guest Computer and a live-news station are both kind=web. Their content
+  // Podium/Guest Computer and a live-news station are kind=web. Their content
   // identity can arrive before the richer authored URL, so the later URL
   // reconciliation must rebuild the iframe rather than taking the
   // screenshot-only in-place path and leaving the prior source visible.
@@ -249,11 +249,12 @@ test('normal display routing never probes or mutates the live composition', () =
   assert.match(dock, /data-composition-add/);
 });
 
-test('live source catalog contains one camera identity while the canvas avoids obsolete ordinal presets', () => {
+test('live source catalog contains one camera identity and both computer identities while the canvas avoids obsolete ordinal presets', () => {
   const catalog = read('frontend/js/views/media-control/camera-feeds-catalog.js');
   const canvas = read('frontend/js/views/media-control/advanced-canvas.js');
 
   assert.match(catalog, /id:\s*'anpviz'/);
+  assert.match(catalog, /id:\s*'podium-computer'/);
   assert.match(catalog, /id:\s*'guest-computer'/);
   assert.doesNotMatch(catalog, /Focus 210|ANNKE|WyreStorm|kamrui-camera-/i);
   assert.doesNotMatch(catalog, /Video Wall [12]/);

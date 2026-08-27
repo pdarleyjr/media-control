@@ -649,7 +649,8 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
           edge_available: true,
           sources: [
             { id: 'anpviz', available: true, signal: { video_online: true, microphone_connected: true, audio_online: true } },
-            { id: 'guest-computer', available: true, signal: { resolution: '1920x1080', frame_rate: 60, embedded_audio_detected: true } },
+            { id: 'podium-computer', available: true, signal: { resolution: '1920x1080', frame_rate: 60, embedded_audio_detected: true } },
+            { id: 'guest-computer', available: false, signal: { resolution: null, frame_rate: null, embedded_audio_detected: false } },
           ],
         }),
       });
@@ -659,7 +660,23 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await page.locator('#mc-library-drawer > [data-library-toggle]').click();
     await page.locator('.mc-tb-tab[data-tab="sources"]').click();
 
-    await expect(page.locator('#mc-toolbox .mc-live-source-tile')).toHaveCount(2);
+    const sourceTiles = page.locator('#mc-toolbox .mc-live-source-tile');
+    await expect(sourceTiles).toHaveCount(3);
+    await expect(sourceTiles.locator('.mc-tile-label')).toHaveText([
+      'Anpviz Camera',
+      'Podium Computer',
+      'Guest Computer',
+    ]);
+    expect(await sourceTiles.evaluateAll((items) => items.map((item) => ({
+      label: item.querySelector('.mc-tile-label')?.textContent?.trim(),
+      disabled: item.disabled,
+      draggable: item.getAttribute('draggable'),
+      hasPayload: item.hasAttribute('data-drag-source'),
+    })))).toEqual([
+      { label: 'Anpviz Camera', disabled: false, draggable: 'true', hasPayload: true },
+      { label: 'Podium Computer', disabled: false, draggable: 'true', hasPayload: true },
+      { label: 'Guest Computer', disabled: true, draggable: null, hasPayload: false },
+    ]);
     await expect(page.locator('#mc-toolbox .mc-live-news-tile')).toHaveCount(0);
     await expect(page.locator('#mc-toolbox')).not.toContainText('CBS News Miami');
     await expect(page.locator('#mc-toolbox')).not.toContainText('1st Street Beach');
@@ -674,6 +691,65 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     const requestsAtLiveFeeds = managedRequestTimes.length;
     await page.waitForTimeout(5_500);
     expect(managedRequestTimes.length, 'public Live Feeds does not start or retain a managed-source poller').toBe(requestsAtLiveFeeds);
+    await context.close();
+  });
+
+  test('Multiview v1 storage retains Screen Share and geometry while translating known absolute legacy Zowie URLs to Podium', async ({ browser }) => {
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 838, height: 500 },
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: true,
+    });
+    await page.evaluate(() => {
+      localStorage.removeItem('mc_multiview_cells_v2');
+      localStorage.removeItem('mc_multiview_geoms_v2');
+      localStorage.setItem('mc_multiview_cells_v1', JSON.stringify({
+        C1: {
+          cellUrl: 'https://media.mbfdhub.com/player/live-source.html?source=guest-computer&fit=cover',
+          monitorUrl: 'https://media-control.mbfdhub.com/player/live-source.html?source=guest-computer&audio=1',
+          kind: 'i',
+          label: 'Legacy Zowie',
+        },
+        C2: {
+          cellUrl: null,
+          monitorUrl: null,
+          kind: 'share',
+          label: 'Screen Share',
+          deviceIds: ['mobile-wall-display-1'],
+        },
+      }));
+      localStorage.setItem('mc_multiview_geoms_v1', JSON.stringify({
+        C1: { x: 25, y: 0, w: 50, h: 50 },
+        C2: { x: 25, y: 50, w: 50, h: 50 },
+      }));
+    });
+    await page.reload({ waitUntil: 'networkidle' });
+    await waitForCommandCenterVisualReady(page);
+    await page.locator('[data-dock="multiview"]').click();
+    await expect(page.locator('.mc-multiview-host:not([hidden]) .mc-mv-stage')).toBeVisible();
+
+    const persisted = await page.evaluate(() => ({
+      cells: JSON.parse(localStorage.getItem('mc_multiview_cells_v2') || '{}'),
+      geoms: JSON.parse(localStorage.getItem('mc_multiview_geoms_v2') || '{}'),
+    }));
+    expect(persisted.cells.C1).toMatchObject({
+      cellUrl: '/player/live-source.html?source=podium-computer&fit=cover',
+      monitorUrl: '/player/live-source.html?source=podium-computer&audio=1',
+      kind: 'i',
+      label: 'Legacy Zowie',
+    });
+    expect(persisted.cells.C2).toMatchObject({
+      cellUrl: null,
+      monitorUrl: null,
+      kind: 'share',
+      label: 'Screen Share',
+      deviceIds: ['mobile-wall-display-1'],
+    });
+    expect(persisted.geoms).toEqual({
+      C1: { x: 25, y: 0, w: 50, h: 50 },
+      C2: { x: 25, y: 50, w: 50, h: 50 },
+    });
     await context.close();
   });
 
@@ -799,10 +875,14 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify([
-          { id: 'anpviz', name: 'Anpviz Camera', type: 'camera', available: true },
-          { id: 'guest-computer', name: 'Guest Computer', type: 'computer', available: true },
-        ]),
+        body: JSON.stringify({
+          edge_available: true,
+          sources: [
+            { id: 'anpviz', name: 'Anpviz Camera', type: 'camera', available: true },
+            { id: 'podium-computer', name: 'Podium Computer', type: 'computer', available: true },
+            { id: 'guest-computer', name: 'Guest Computer', type: 'computer', available: true },
+          ],
+        }),
       });
     });
     await page.reload({ waitUntil: 'networkidle' });

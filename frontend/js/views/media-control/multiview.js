@@ -159,9 +159,19 @@ function readStoredObject(key) {
 // semantic to Podium exactly once without ever changing a newly-created Guest
 // Computer selection.
 function rewriteLegacyPodiumUrl(value) {
-  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//')) return value;
+  if (typeof value !== 'string' || !value) return value;
+  const rootRelative = value.startsWith('/') && !value.startsWith('//');
+  if (!rootRelative && !/^https:\/\//i.test(value)) return value;
   try {
     const parsed = new URL(value, location.origin);
+    const isCanonicalAppOrigin = rootRelative
+      || (
+        !parsed.username
+        && !parsed.password
+        && [location.origin, 'https://media.mbfdhub.com', 'https://media-control.mbfdhub.com']
+          .includes(parsed.origin)
+      );
+    if (!isCanonicalAppOrigin) return value;
     if (parsed.pathname !== '/player/live-source.html'
         || parsed.searchParams.get('source') !== 'guest-computer') return value;
     parsed.searchParams.set('source', 'podium-computer');

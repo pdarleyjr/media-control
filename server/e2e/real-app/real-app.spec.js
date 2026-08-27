@@ -495,7 +495,7 @@ test.describe('Phase 1 — Feature flag OFF: real app loads correctly', () => {
     assertNoErrors(errors, 'static assets');
   });
 
-  test('1g. Live Sources renders only the canonical Anpviz camera when the edge is unavailable', async ({ page }) => {
+  test('1g. Live Sources keeps all three canonical tiles visible but non-routable when the edge is unavailable', async ({ page }) => {
     const errors = attachErrorCollectors(page);
     await setupAuth(page);
     await page.goto(`${BASE_URL}/app#/control`);
@@ -505,12 +505,25 @@ test.describe('Phase 1 — Feature flag OFF: real app loads correctly', () => {
     const liveSourcesTab = page.locator('.mc-tb-tab[data-tab="sources"]');
     await expect(liveSourcesTab).toBeVisible();
     await liveSourcesTab.click();
-    await expect(page.locator('.mc-live-source-tile')).toHaveCount(1);
-    await expect(page.locator('.mc-live-source-tile .mc-tile-label')).toHaveText('Anpviz Camera');
-    await expect(page.locator('.mc-live-source-tile')).toBeDisabled();
+    const tiles = page.locator('.mc-live-source-tile');
+    await expect(tiles).toHaveCount(3);
+    await expect(tiles.locator('.mc-tile-label')).toHaveText([
+      'Anpviz Camera',
+      'Podium Computer',
+      'Guest Computer',
+    ]);
+    expect(await tiles.evaluateAll((items) => items.map((item) => ({
+      disabled: item.disabled,
+      ariaDisabled: item.getAttribute('aria-disabled'),
+      dragPayload: item.hasAttribute('data-drag-source'),
+    })))).toEqual([
+      { disabled: true, ariaDisabled: 'true', dragPayload: false },
+      { disabled: true, ariaDisabled: 'true', dragPayload: false },
+      { disabled: true, ariaDisabled: 'true', dragPayload: false },
+    ]);
     await expect(page.locator('body')).not.toContainText(/ANNKE|WyreStorm|Focus 210|Camera [123]/i);
 
-    const height = await page.locator('.mc-live-source-tile').evaluate((element) =>
+    const height = await tiles.first().evaluate((element) =>
       element.getBoundingClientRect().height);
     expect(height).toBeGreaterThanOrEqual(48);
     assertNoErrors(errors, 'canonical live sources');
@@ -525,8 +538,12 @@ test.describe('Phase 1 — Feature flag OFF: real app loads correctly', () => {
     });
 
     await page.goto(`${BASE_URL}/app#/control?panel=cameras`);
-    await expect(page.locator('.mc-live-source-tile')).toHaveCount(1, { timeout: 20000 });
-    await expect(page.locator('.mc-live-source-tile .mc-tile-label')).toHaveText('Anpviz Camera');
+    await expect(page.locator('.mc-live-source-tile')).toHaveCount(3, { timeout: 20000 });
+    await expect(page.locator('.mc-live-source-tile .mc-tile-label')).toHaveText([
+      'Anpviz Camera',
+      'Podium Computer',
+      'Guest Computer',
+    ]);
     await page.waitForTimeout(1_000);
 
     assertNoErrors(errors, 'direct Camera-panel navigation');
@@ -536,7 +553,7 @@ test.describe('Phase 1 — Feature flag OFF: real app loads correctly', () => {
     const errors = attachErrorCollectors(page);
     await setupAuth(page);
     await page.goto(`${BASE_URL}/app#/control?panel=cameras`);
-    await expect(page.locator('.mc-live-source-tile')).toHaveCount(1, { timeout: 20000 });
+    await expect(page.locator('.mc-live-source-tile')).toHaveCount(3, { timeout: 20000 });
     await page.locator('.mc-tb-tab[data-tab="livefeeds"]').click();
 
     const liveNews = page.locator('details[data-feed-group-id="news"]');
@@ -572,31 +589,33 @@ test.describe('Phase 1 — Feature flag OFF: real app loads correctly', () => {
     await expect(page.locator('#error')).toBeVisible();
   });
 
-  test('1k. Guest Computer player is clean full-stage LL-HLS without forced segment lag', async ({ page }) => {
-    await page.route('**/player/live-source/guest-computer/**', async (route) => {
+  test('1k. Podium and Guest Computer players are clean full-stage LL-HLS without forced segment lag', async ({ page }) => {
+    await page.route('**/player/live-source/**', async (route) => {
       await route.fulfill({ status: 503, contentType: 'text/plain', body: 'fixture unavailable' });
     });
-    await page.goto(`${BASE_URL}/player/live-source.html?source=guest-computer&audio=1`);
-    await expect(page.locator('.stage')).toBeVisible();
-    await expect(page.locator('.bar')).toHaveCount(0);
-    await expect(page.locator('#meta')).toBeHidden();
+    for (const sourceId of ['podium-computer', 'guest-computer']) {
+      await page.goto(`${BASE_URL}/player/live-source.html?source=${sourceId}&audio=1`);
+      await expect(page.locator('.stage')).toBeVisible();
+      await expect(page.locator('.bar')).toHaveCount(0);
+      await expect(page.locator('#meta')).toBeHidden();
 
-    const geometry = await page.locator('video').evaluate((video) => {
-      const rect = video.getBoundingClientRect();
-      return { width: rect.width, height: rect.height, fit: getComputedStyle(video).objectFit };
-    });
-    expect(geometry).toEqual({ width: 1440, height: 900, fit: 'contain' });
+      const geometry = await page.locator('video').evaluate((video) => {
+        const rect = video.getBoundingClientRect();
+        return { width: rect.width, height: rect.height, fit: getComputedStyle(video).objectFit };
+      });
+      expect(geometry).toEqual({ width: 1440, height: 900, fit: 'contain' });
 
-    const hlsConfig = await page.evaluate(() => ({
-      lowLatencyMode: window.__hls?.userConfig?.lowLatencyMode,
-      maxLiveSyncPlaybackRate: window.__hls?.userConfig?.maxLiveSyncPlaybackRate,
-      forcedSegmentCount: Object.prototype.hasOwnProperty.call(window.__hls?.userConfig || {}, 'liveSyncDurationCount'),
-    }));
-    expect(hlsConfig).toEqual({
-      lowLatencyMode: true,
-      maxLiveSyncPlaybackRate: 1.1,
-      forcedSegmentCount: false,
-    });
+      const hlsConfig = await page.evaluate(() => ({
+        lowLatencyMode: window.__hls?.userConfig?.lowLatencyMode,
+        maxLiveSyncPlaybackRate: window.__hls?.userConfig?.maxLiveSyncPlaybackRate,
+        forcedSegmentCount: Object.prototype.hasOwnProperty.call(window.__hls?.userConfig || {}, 'liveSyncDurationCount'),
+      }));
+      expect(hlsConfig).toEqual({
+        lowLatencyMode: true,
+        maxLiveSyncPlaybackRate: 1.1,
+        forcedSegmentCount: false,
+      });
+    }
   });
 
   test('1l. enhanced Whiteboard launcher is reachable from Additional Controls', async ({ page }) => {

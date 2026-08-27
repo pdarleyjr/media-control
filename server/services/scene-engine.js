@@ -57,14 +57,138 @@ function buildSnapshotItems(playlistId) {
 // rather than inventing a new payload type. Mirrors routes/content.js POST
 // /remote (empty filepath, derived mime_type).
 function isManagedComputerPlayerUrl(remoteUrl) {
-  if (!isAppOwnedRelativeUrl(remoteUrl)) return false;
-  try {
-    const parsed = new URL(String(remoteUrl), 'http://media-control.local');
-    return parsed.pathname === '/player/live-source.html'
-      && ['podium-computer', 'guest-computer'].includes(parsed.searchParams.get('source'));
-  } catch {
-    return false;
+  return managedComputerSourceIds(remoteUrl, false).length > 0;
+}
+
+const MANAGED_COMPUTER_SOURCE_IDS = new Set(['podium-computer', 'guest-computer']);
+const MANAGED_COMPUTER_HEALTH_MAX_AGE_SECONDS = 60;
+const CANONICAL_MANAGED_PLAYER_ORIGINS = new Set([
+  'https://media.mbfdhub.com',
+  'https://media-control.mbfdhub.com',
+]);
+
+function canonicalManagedPlayerUrl(remoteUrl) {
+  if (isAppOwnedRelativeUrl(remoteUrl)) {
+    try { return new URL(String(remoteUrl), 'http://media-control.local'); } catch { return null; }
   }
+  if (typeof remoteUrl !== 'string' || !/^https:\/\//i.test(remoteUrl)) return null;
+  try {
+    const parsed = new URL(remoteUrl);
+    return !parsed.username
+      && !parsed.password
+      && CANONICAL_MANAGED_PLAYER_ORIGINS.has(parsed.origin)
+      ? parsed
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function decodeMultiviewGridCells(value) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]+$/.test(value)) return null;
+  try {
+    const cells = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+    return cells && typeof cells === 'object' && !Array.isArray(cells) ? cells : null;
+  } catch {
+    return null;
+  }
+}
+
+function managedComputerSourceIds(remoteUrl, allowGrid = true) {
+  const parsed = canonicalManagedPlayerUrl(remoteUrl);
+  if (!parsed) return [];
+  try {
+    const sourceId = parsed.searchParams.get('source');
+    if (parsed.pathname === '/player/live-source.html') {
+      return MANAGED_COMPUTER_SOURCE_IDS.has(sourceId) ? [sourceId] : [];
+    }
+    if (!allowGrid || parsed.pathname !== '/player/grid.html') return [];
+    const cells = decodeMultiviewGridCells(parsed.searchParams.get('cells'));
+    if (!cells) return [];
+    const ids = new Set();
+    for (const cell of Object.values(cells)) {
+      if (!cell || typeof cell !== 'object' || Array.isArray(cell)) continue;
+      for (const nestedSourceId of managedComputerSourceIds(cell.u, false)) ids.add(nestedSourceId);
+    }
+    return [...ids];
+  } catch {
+    return [];
+  }
+}
+
+function potentialManagedPlayerUrl(remoteUrl) {
+  if (typeof remoteUrl !== 'string' || !remoteUrl) return null;
+  if (!remoteUrl.startsWith('/') && !/^https?:\/\//i.test(remoteUrl)) return null;
+  try {
+    return new URL(remoteUrl, 'http://media-control.local');
+  } catch {
+    return null;
+  }
+}
+
+// This deliberately recognizes the URL shape without granting it canonical
+// status. The display player normalizes absolute /player/* paths, so a foreign
+// host must not be able to impersonate an app-owned Podium or Guest source.
+function potentialManagedComputerSourceIds(remoteUrl, allowGrid = true) {
+  const parsed = potentialManagedPlayerUrl(remoteUrl);
+  if (!parsed) return [];
+  const sourceId = parsed.searchParams.get('source');
+  if (parsed.pathname === '/player/live-source.html') {
+    return MANAGED_COMPUTER_SOURCE_IDS.has(sourceId) ? [sourceId] : [];
+  }
+  if (!allowGrid || parsed.pathname !== '/player/grid.html') return [];
+  const cells = decodeMultiviewGridCells(parsed.searchParams.get('cells'));
+  if (!cells) return [];
+  const ids = new Set();
+  for (const cell of Object.values(cells)) {
+    if (!cell || typeof cell !== 'object' || Array.isArray(cell)) continue;
+    for (const nestedSourceId of potentialManagedComputerSourceIds(cell.u, false)) ids.add(nestedSourceId);
+  }
+  return [...ids];
+}
+
+function nonCanonicalManagedComputerSourceId(remoteUrl) {
+  const canonical = new Set(managedComputerSourceIds(remoteUrl));
+  return potentialManagedComputerSourceIds(remoteUrl)
+    .find((sourceId) => !canonical.has(sourceId)) || null;
+}
+
+// The client only exposes a computer tile once /api/live-sources has observed
+// it healthy. Preserve that contract for direct broadcasts, scenes, and saved
+// playlists too: a stale or unavailable durable record is not authority to
+// route a live computer source. Anpviz keeps its pre-existing route path.
+function unavailableManagedComputerSourceId(remoteUrl, nowSeconds = Math.floor(Date.now() / 1000)) {
+  for (const sourceId of managedComputerSourceIds(remoteUrl)) {
+    const source = db.prepare(`
+      SELECT enabled, availability, last_seen_at
+      FROM live_sources
+      WHERE id = ?
+    `).get(sourceId);
+    const freshEnough = Number.isFinite(Number(source?.last_seen_at))
+      && Number(source.last_seen_at) >= nowSeconds - MANAGED_COMPUTER_HEALTH_MAX_AGE_SECONDS;
+    if (!(source?.enabled === 1 && source.availability === 'available' && freshEnough)) {
+      return sourceId;
+    }
+  }
+  return null;
+}
+
+function managedComputerRouteFailure(remoteUrl) {
+  const nonCanonicalSource = nonCanonicalManagedComputerSourceId(remoteUrl);
+  if (nonCanonicalSource) {
+    return `Managed computer player URL is not a canonical app URL: ${nonCanonicalSource}`;
+  }
+  const unavailableSource = unavailableManagedComputerSourceId(remoteUrl);
+  return unavailableSource ? `Managed computer source is unavailable: ${unavailableSource}` : null;
+}
+
+function managedComputerRouteFailureInContentIds(contentIds) {
+  const findContent = db.prepare('SELECT remote_url FROM content WHERE id = ?');
+  for (const contentId of contentIds || []) {
+    const failure = managedComputerRouteFailure(findContent.get(contentId)?.remote_url);
+    if (failure) return failure;
+  }
+  return null;
 }
 
 function resolveRemoteUrlContent(remoteUrl, workspaceId, userId) {
@@ -340,6 +464,12 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
         device.workspace_id || workspaceId,
         callerContext,
       ).allowed)) return finish(false, { failureReason: 'Playlist content unavailable' });
+      const computerRouteFailure = managedComputerRouteFailureInContentIds(
+        playlistContent.map((item) => item.content_id),
+      );
+      if (computerRouteFailure) {
+        return finish(false, { failureReason: computerRouteFailure });
+      }
       if (source.audio_policy && !stampPlaylistAudioPolicy(
         db,
         source.playlist_id,
@@ -363,6 +493,10 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
     }
 
     // --- Content / remote_url source: build a one-item published playlist. ---
+    const remoteComputerRouteFailure = managedComputerRouteFailure(source.remote_url);
+    if (remoteComputerRouteFailure) {
+      return finish(false, { failureReason: remoteComputerRouteFailure });
+    }
     let contentId = source.content_id || null;
     if (!contentId && source.remote_url) {
       contentId = resolveRemoteUrlContent(source.remote_url, device.workspace_id || workspaceId, userId || device.user_id);
@@ -378,6 +512,10 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
     );
     const content = decision.content;
     if (!content || !decision.allowed) return finish(false, { failureReason: 'Content unavailable' });
+    const contentComputerRouteFailure = managedComputerRouteFailure(content.remote_url);
+    if (contentComputerRouteFailure) {
+      return finish(false, { failureReason: contentComputerRouteFailure });
+    }
 
     const playlistId = ensureDevicePlaylist(deviceId, userId || device.user_id, {
       mutableDeviceIds: targetDeviceIds,
@@ -501,6 +639,10 @@ function pushSourceToRegions(io, deviceId, source, routes, opts = {}) {
     }
     const device = db.prepare('SELECT id, workspace_id, user_id FROM devices WHERE id = ?').get(deviceId);
     if (!device) return finish(false, { failureReason: 'Display not found' });
+    const remoteComputerRouteFailure = managedComputerRouteFailure(source.remote_url);
+    if (remoteComputerRouteFailure) {
+      return finish(false, { failureReason: remoteComputerRouteFailure });
+    }
     let contentId = source.content_id || null;
     if (!contentId && source.remote_url) {
       contentId = resolveRemoteUrlContent(
@@ -518,6 +660,10 @@ function pushSourceToRegions(io, deviceId, source, routes, opts = {}) {
     );
     if (!decision.content || !decision.allowed) {
       return finish(false, { failureReason: 'Content unavailable' });
+    }
+    const contentComputerRouteFailure = managedComputerRouteFailure(decision.content.remote_url);
+    if (contentComputerRouteFailure) {
+      return finish(false, { failureReason: contentComputerRouteFailure });
     }
     const playlistId = ensureDevicePlaylist(deviceId, userId || device.user_id, {
       mutableDeviceIds: targetDeviceIds,

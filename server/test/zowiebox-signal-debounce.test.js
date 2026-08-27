@@ -31,7 +31,7 @@ test('ZowieBox HDMI input normalization requires device response, HDMI lock, and
   assert.equal(normalizeZowieInput(null).signalPresent, false);
 });
 
-test('Guest Computer becomes visible after signal-on debounce and hides after the longer loss debounce', () => {
+test('Podium Computer becomes visible after signal-on debounce and hides after the longer loss debounce', () => {
   const debounce = createSignalDebouncer({ signalOnMs: 2_000, signalOffMs: 5_000 });
 
   assert.equal(debounce.update(true, 1_000).available, false);
