@@ -19,6 +19,7 @@ ENV_FILE=/etc/mbfd/media-stack/camera.env
 CONTAINER=mbfd-mediamtx
 SNAPSHOT_ROOT=/home/peter/mbfd-backups
 ROLLBACK_SCRIPT="$HERE/scripts/rollback.sh"
+FEATURE_ROLLBACK_SCRIPT="$HERE/scripts/rollback-live-sources-cutover.sh"
 SNAPSHOT_VALIDATOR="$HERE/scripts/validate-rollback-snapshot.py"
 RENDERER="$HERE/scripts/render-mediamtx-config.py"
 TEMPLATE="$HERE/mediamtx.yml.tpl"
@@ -35,9 +36,9 @@ ACTIVE_CONFIG_TEMP=""
 ACTIVE_COMPOSE_TEMP=""
 MUTATION_STARTED=0
 ROLLBACK_STARTED=0
-GUEST_FIREWALL_RULE_ADDED=0
 GUEST_FIREWALL_GUEST_IP=""
 GUEST_FIREWALL_KAMRUI_IP=""
+GUEST_FIREWALL_PRESENT_BEFORE_CUTOVER=""
 CURRENT_VERSION=""
 CURRENT_IMAGE_ID=""
 CURRENT_REPO_DIGEST=""
@@ -82,12 +83,11 @@ rollback_after_failure() {
   trap - ERR INT TERM
 
   printf 'ERROR: cutover failed at line %s (exit %s).\n' "$line" "$status" >&2
-  revoke_guest_rtmp_firewall_after_failure
   if (( MUTATION_STARTED == 1 && ROLLBACK_STARTED == 0 )); then
     ROLLBACK_STARTED=1
-    if [[ -n "$SNAPSHOT_DIR" && -r "$ROLLBACK_SCRIPT" ]]; then
-      printf 'Active MediaMTX files may have changed; invoking verified source-only rollback.\n' >&2
-      if ! bash "$ROLLBACK_SCRIPT" "$SNAPSHOT_DIR"; then
+    if [[ -n "$SNAPSHOT_DIR" && -r "$FEATURE_ROLLBACK_SCRIPT" ]]; then
+      printf 'Active MediaMTX files may have changed; invoking verified feature rollback.\n' >&2
+      if ! bash "$FEATURE_ROLLBACK_SCRIPT" "$SNAPSHOT_DIR"; then
         printf 'CRITICAL: automatic rollback failed. Preserve %s and escalate.\n' "$SNAPSHOT_DIR" >&2
       fi
     else
@@ -95,17 +95,6 @@ rollback_after_failure() {
     fi
   fi
   exit "$status"
-}
-
-revoke_guest_rtmp_firewall_after_failure() {
-  if (( GUEST_FIREWALL_RULE_ADDED == 0 )); then
-    return
-  fi
-  printf 'Removing the exact Guest RTMP firewall rule added by this cutover attempt.\n' >&2
-  if ! ufw --force delete allow in from "$GUEST_FIREWALL_GUEST_IP" to "$GUEST_FIREWALL_KAMRUI_IP" port 1935 proto tcp; then
-    printf 'CRITICAL: unable to remove the exact Guest RTMP firewall rule; escalate immediately.\n' >&2
-  fi
-  GUEST_FIREWALL_RULE_ADDED=0
 }
 
 on_signal() {
@@ -138,6 +127,71 @@ read_env_ipv4() {
   value="$(sed -n -E "s/^${key}=([0-9.]+)$/\\1/p" "$ENV_FILE" | tail -n 1 | tr -d '\r')"
   is_ipv4 "$value" || die "$key is missing or is not a valid IPv4 address"
   printf '%s\n' "$value"
+}
+
+observe_exact_guest_rtmp_rule() {
+  local status_file observation rule_number fingerprint extra
+  [[ -n "$WORKDIR" ]] || die "cannot observe numbered UFW state before the isolated work directory exists"
+  status_file="$(mktemp "$WORKDIR/ufw-status-numbered.XXXXXX")"
+  LC_ALL=C ufw status numbered >"$status_file" \
+    || die "unable to read active numbered UFW status"
+  observation="$(python3 "$SNAPSHOT_VALIDATOR" \
+    --observe-ufw-status "$status_file" \
+    --guest-ip "$GUEST_FIREWALL_GUEST_IP" \
+    --kamrui-ip "$GUEST_FIREWALL_KAMRUI_IP" \
+    --port 1935 \
+    --protocol tcp \
+    --action ALLOW \
+    --direction IN)" \
+    || die "numbered UFW state is ambiguous or malformed for the Guest RTMP identity"
+  IFS=$'\t' read -r rule_number fingerprint extra <<< "$observation"
+  [[ -z "${extra:-}" && "$rule_number" =~ ^(0|[1-9][0-9]*)$ && "$fingerprint" =~ ^[a-f0-9]{64}$ ]] \
+    || die "numbered UFW observer returned an invalid exact-rule identity"
+  printf '%s\n' "$rule_number"
+}
+
+capture_guest_rtmp_firewall_baseline() {
+  local before_status exact_rule
+  GUEST_FIREWALL_GUEST_IP="$(read_env_ipv4 GUEST_RTMP_PUBLISHER_LAN_IP)"
+  GUEST_FIREWALL_KAMRUI_IP="$(read_env_ipv4 KAMRUI_LAN_IP)"
+  before_status="$WORKDIR/ufw-status-numbered-before.txt"
+  LC_ALL=C ufw status numbered >"$before_status" \
+    || die "unable to capture numbered UFW baseline"
+  exact_rule="$(python3 "$SNAPSHOT_VALIDATOR" \
+    --observe-ufw-status "$before_status" \
+    --guest-ip "$GUEST_FIREWALL_GUEST_IP" \
+    --kamrui-ip "$GUEST_FIREWALL_KAMRUI_IP" \
+    --port 1935 \
+    --protocol tcp \
+    --action ALLOW \
+    --direction IN)" \
+    || die "numbered UFW baseline is ambiguous or malformed for the Guest RTMP identity"
+  IFS=$'\t' read -r exact_rule _ <<< "$exact_rule"
+  case "$exact_rule" in
+    0) GUEST_FIREWALL_PRESENT_BEFORE_CUTOVER=false ;;
+    [1-9][0-9]*) GUEST_FIREWALL_PRESENT_BEFORE_CUTOVER=true ;;
+    *) die "numbered UFW baseline did not return a valid exact-rule state" ;;
+  esac
+  python3 - "$WORKDIR/guest-rtmp-firewall-before.json" \
+    "$GUEST_FIREWALL_GUEST_IP" "$GUEST_FIREWALL_KAMRUI_IP" \
+    "$GUEST_FIREWALL_PRESENT_BEFORE_CUTOVER" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+destination = Path(sys.argv[1])
+guest_ip, kamrui_ip, present = sys.argv[2:]
+payload = {
+    "action": "ALLOW",
+    "direction": "IN",
+    "guest_ip": guest_ip,
+    "kamrui_ip": kamrui_ip,
+    "port": 1935,
+    "protocol": "tcp",
+    "present_before_cutover": present == "true",
+}
+destination.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
 }
 
 require_exact_new_image() {
@@ -228,6 +282,7 @@ preflight() {
   [[ -x "$RENDERER" && -r "$TEMPLATE" ]] || die "rendering inputs are unavailable"
   [[ -d "$SNAPSHOT_ROOT" ]] || die "approved snapshot root is unavailable"
   [[ -r "$ROLLBACK_SCRIPT" ]] || die "verified rollback script is unavailable"
+  [[ -r "$FEATURE_ROLLBACK_SCRIPT" ]] || die "verified feature rollback script is unavailable"
   [[ -r "$SNAPSHOT_VALIDATOR" ]] || die "rollback snapshot validator is unavailable"
 }
 
@@ -247,20 +302,26 @@ set_snapshot_directory() {
 
 create_rollback_ready_snapshot() {
   local plan plan_kind plan_image plan_version plan_image_id plan_repo_digest
+  local firewall_plan plan_guest_ip plan_kamrui_ip plan_port plan_protocol plan_present plan_action plan_direction
   set_snapshot_directory "$SNAPSHOT_DIR"
+  capture_guest_rtmp_firewall_baseline
   install -d -m 0700 "$SNAPSHOT_DIR/opt/media-stack" "$SNAPSHOT_DIR/etc/media-stack" "$SNAPSHOT_DIR/runtime"
   install -m 0600 "$ACTIVE_CONFIG" "$SNAPSHOT_DIR/opt/media-stack/mediamtx.yml"
   install -m 0600 "$ACTIVE_COMPOSE" "$SNAPSHOT_DIR/opt/media-stack/docker-compose.mediamtx.yml"
   install -m 0600 "$ENV_FILE" "$SNAPSHOT_DIR/etc/media-stack/camera.env"
   docker inspect "$CONTAINER" >"$WORKDIR/mediamtx-inspect.json"
   install -m 0600 "$WORKDIR/mediamtx-inspect.json" "$SNAPSHOT_DIR/runtime/mediamtx-inspect.json"
+  install -m 0600 "$WORKDIR/guest-rtmp-firewall-before.json" "$SNAPSHOT_DIR/runtime/guest-rtmp-firewall-before.json"
+  install -m 0600 "$WORKDIR/ufw-status-numbered-before.txt" "$SNAPSHOT_DIR/runtime/ufw-status-numbered.txt"
   (
     cd "$SNAPSHOT_DIR"
     sha256sum \
       opt/media-stack/mediamtx.yml \
       opt/media-stack/docker-compose.mediamtx.yml \
       etc/media-stack/camera.env \
-      runtime/mediamtx-inspect.json >SHA256SUMS
+      runtime/mediamtx-inspect.json \
+      runtime/guest-rtmp-firewall-before.json \
+      runtime/ufw-status-numbered.txt >SHA256SUMS
   )
   python3 - "$SNAPSHOT_DIR" "$WORKDIR/rollback-manifest.json" "$SNAPSHOT_KIND" "$CURRENT_VERSION" "$CURRENT_IMAGE_ID" "$CURRENT_REPO_DIGEST" "$CURRENT_STARTED_AT" <<'PY'
 import hashlib
@@ -276,13 +337,18 @@ relative_paths = (
     "opt/media-stack/docker-compose.mediamtx.yml",
     "etc/media-stack/camera.env",
     "runtime/mediamtx-inspect.json",
+    "runtime/guest-rtmp-firewall-before.json",
+    "runtime/ufw-status-numbered.txt",
 )
 hashes = {
     relative_path: hashlib.sha256((snapshot / relative_path).read_bytes()).hexdigest()
     for relative_path in relative_paths
 }
+firewall = json.loads(
+    (snapshot / "runtime/guest-rtmp-firewall-before.json").read_text(encoding="utf-8")
+)
 manifest = {
-    "schema_version": 1,
+    "schema_version": 2,
     "snapshot_kind": snapshot_kind,
     "artifacts": list(relative_paths),
     "sha256": hashes,
@@ -293,6 +359,13 @@ manifest = {
             "repo_digest": repo_digest,
             "started_at": started_at,
             "inspect_sha256": hashes["runtime/mediamtx-inspect.json"],
+        }
+    },
+    "firewall": {
+        "guest_rtmp": {
+            **firewall,
+            "artifact": "runtime/guest-rtmp-firewall-before.json",
+            "status_artifact": "runtime/ufw-status-numbered.txt",
         }
     },
 }
@@ -313,6 +386,12 @@ PY
   else
     [[ "$plan_image" == "$EXPECTED_MEDIAMTX_IMAGE" ]] || die "pinned snapshot did not preserve the expected immutable image"
   fi
+  firewall_plan="$(python3 "$SNAPSHOT_VALIDATOR" "$SNAPSHOT_DIR" --approved-root "$SNAPSHOT_ROOT" --print-firewall-plan)"
+  IFS=$'\t' read -r plan_guest_ip plan_kamrui_ip plan_port plan_protocol plan_present plan_action plan_direction <<< "$firewall_plan"
+  [[ "$plan_guest_ip" == "$GUEST_FIREWALL_GUEST_IP" && "$plan_kamrui_ip" == "$GUEST_FIREWALL_KAMRUI_IP" ]] \
+    || die "fresh snapshot firewall identity does not match the captured baseline"
+  [[ "$plan_port" == 1935 && "$plan_protocol" == tcp && "$plan_present" == "$GUEST_FIREWALL_PRESENT_BEFORE_CUTOVER" && "$plan_action" == ALLOW && "$plan_direction" == IN ]] \
+    || die "fresh snapshot firewall baseline is invalid"
   printf 'Created verified rollback snapshot at %s\n' "$SNAPSHOT_DIR"
 }
 
@@ -436,19 +515,16 @@ verify_post_cutover() {
 }
 
 allow_guest_rtmp_firewall() {
-  local guest_ip kamrui_ip
-  guest_ip="$(read_env_ipv4 GUEST_RTMP_PUBLISHER_LAN_IP)"
-  kamrui_ip="$(read_env_ipv4 KAMRUI_LAN_IP)"
-  if ufw status numbered | grep -F "$guest_ip" | grep -F "$kamrui_ip" | grep -Eq '1935(/tcp)?'; then
-    die "the exact guest RTMP firewall rule already exists; stop for review"
-  fi
-  GUEST_FIREWALL_RULE_ADDED=1
-  GUEST_FIREWALL_GUEST_IP="$guest_ip"
-  GUEST_FIREWALL_KAMRUI_IP="$kamrui_ip"
-  ufw allow in from "$guest_ip" to "$kamrui_ip" port 1935 proto tcp
-  if ! ufw status numbered | grep -F "$guest_ip" | grep -F "$kamrui_ip" | grep -Eq '1935(/tcp)?'; then
-    die "the exact guest RTMP firewall rule was not observable after insertion"
-  fi
+  local exact_rule
+  [[ -n "$GUEST_FIREWALL_GUEST_IP" && -n "$GUEST_FIREWALL_KAMRUI_IP" ]] \
+    || die "Guest RTMP firewall identity was not captured in the verified snapshot"
+  exact_rule="$(observe_exact_guest_rtmp_rule)"
+  [[ "$exact_rule" == 0 ]] \
+    || die "the exact guest RTMP firewall rule already exists; stop for review"
+  ufw allow in from "$GUEST_FIREWALL_GUEST_IP" to "$GUEST_FIREWALL_KAMRUI_IP" port 1935 proto tcp
+  exact_rule="$(observe_exact_guest_rtmp_rule)"
+  [[ "$exact_rule" != 0 ]] \
+    || die "the exact guest RTMP firewall rule was not observable after insertion"
   printf 'Added the exact Guest-to-KAMRUI RTMP firewall rule after MediaMTX verification.\n'
 }
 
@@ -464,6 +540,8 @@ run_dry_run() {
 run_apply() {
   create_workdir
   create_rollback_ready_snapshot
+  [[ "$GUEST_FIREWALL_PRESENT_BEFORE_CUTOVER" == false ]] \
+    || die "the exact Guest RTMP firewall rule predates cutover; snapshot retained and no mutation was attempted"
   render_to_temporary_location
   validate_rendered_contract
   prepare_isolated_parser_config

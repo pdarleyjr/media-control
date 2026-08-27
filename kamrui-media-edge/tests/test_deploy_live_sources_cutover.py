@@ -88,7 +88,7 @@ class LiveSourcesCutoverPolicyTests(unittest.TestCase):
     def test_snapshot_manifest_captures_the_rollback_contract(self) -> None:
         for token in (
             "rollback-manifest.json",
-            '"schema_version": 1',
+            '"schema_version": 2',
             '"snapshot_kind"',
             "verified-legacy",
             "pinned-release",
@@ -96,6 +96,12 @@ class LiveSourcesCutoverPolicyTests(unittest.TestCase):
             "opt/media-stack/docker-compose.mediamtx.yml",
             "etc/media-stack/camera.env",
             "runtime/mediamtx-inspect.json",
+            "runtime/guest-rtmp-firewall-before.json",
+            "runtime/ufw-status-numbered.txt",
+            '"firewall"',
+            '"present_before_cutover"',
+            "--print-firewall-plan",
+            "--observe-ufw-status",
             "repo_digest",
             "inspect_sha256",
             "SHA256SUMS",
@@ -108,23 +114,23 @@ class LiveSourcesCutoverPolicyTests(unittest.TestCase):
     def test_mutating_steps_are_limited_and_ordered(self) -> None:
         script = self.script
         self.assertIn("docker compose -f \"$ACTIVE_COMPOSE\" up -d --no-deps --force-recreate mediamtx", script)
-        self.assertIn("ufw allow in from \"$guest_ip\" to \"$kamrui_ip\" port 1935 proto tcp", script)
+        self.assertIn(
+            "ufw allow in from \"$GUEST_FIREWALL_GUEST_IP\" to \"$GUEST_FIREWALL_KAMRUI_IP\" port 1935 proto tcp",
+            script,
+        )
         self.assertLess(script.index("render_to_temporary_location"), script.index("install_active_mediamtx_files"))
         self.assertLess(script.index("install_active_mediamtx_files"), script.index("recreate_mediamtx"))
         self.assertLess(script.index("recreate_mediamtx"), script.index("allow_guest_rtmp_firewall"))
-        self.assertIn('bash "$ROLLBACK_SCRIPT" "$SNAPSHOT_DIR"', script)
-        self.assertLess(
-            script.index("revoke_guest_rtmp_firewall_after_failure"),
-            script.index('bash "$ROLLBACK_SCRIPT" "$SNAPSHOT_DIR"'),
-        )
+        self.assertIn('bash "$FEATURE_ROLLBACK_SCRIPT" "$SNAPSHOT_DIR"', script)
+        self.assertIn('FEATURE_ROLLBACK_SCRIPT="$HERE/scripts/rollback-live-sources-cutover.sh"', script)
         self.assertIn(
-            'ufw --force delete allow in from "$GUEST_FIREWALL_GUEST_IP" to "$GUEST_FIREWALL_KAMRUI_IP" port 1935 proto tcp',
+            '[[ -r "$FEATURE_ROLLBACK_SCRIPT" ]] || die "verified feature rollback script is unavailable"',
             script,
         )
-        self.assertLess(
-            script.index('GUEST_FIREWALL_RULE_ADDED=1', script.index('allow_guest_rtmp_firewall()')),
-            script.index('ufw allow in from "$guest_ip" to "$kamrui_ip" port 1935 proto tcp'),
-        )
+        self.assertIn("capture_guest_rtmp_firewall_baseline", script)
+        self.assertIn("observe_exact_guest_rtmp_rule", script)
+        self.assertNotIn("GUEST_FIREWALL_RULE_ADDED", script)
+        self.assertNotIn("revoke_guest_rtmp_firewall_after_failure", script)
 
     def test_broad_or_unrelated_administration_is_absent(self) -> None:
         # Keep this list to executable commands/paths, rather than prose, so a
@@ -162,6 +168,9 @@ class LiveSourcesCutoverPolicyTests(unittest.TestCase):
         self.assertIn("never use `scripts/upgrade.sh deploy`", readme)
         self.assertIn("sudo bash ./scripts/deploy-live-sources-cutover.sh --dry-run", documentation)
         self.assertIn("bash ./scripts/deploy-live-sources-cutover.sh --apply", documentation)
+        self.assertIn("rollback-live-sources-cutover.sh", documentation)
+        self.assertIn("same feature-specific rollback wrapper", documentation)
+        self.assertNotIn("invokes `scripts/rollback.sh` with the fresh verified snapshot", documentation)
         self.assertIn("Cannot perform", documentation)
         self.assertIn("Physical acceptance remains a separate gate", documentation)
 
@@ -185,7 +194,11 @@ class LiveSourcesCutoverPolicyTests(unittest.TestCase):
 
             original_config = b"paths:\n  anpviz-main:\n    source: publisher\n"
             original_compose = b"services:\n  mediamtx:\n    image: bluenviron/mediamtx:latest\n"
-            original_environment = b"FIXTURE_ONLY=not-a-production-secret\n"
+            original_environment = (
+                b"FIXTURE_ONLY=not-a-production-secret\n"
+                b"GUEST_RTMP_PUBLISHER_LAN_IP=192.168.1.50\n"
+                b"KAMRUI_LAN_IP=192.168.1.122\n"
+            )
             (stack / "mediamtx.yml").write_bytes(original_config)
             (stack / "docker-compose.mediamtx.yml").write_bytes(original_compose)
             (environment_dir / "camera.env").write_bytes(original_environment)
@@ -202,6 +215,14 @@ class LiveSourcesCutoverPolicyTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (fake_bin / "docker").chmod(0o755)
+            (fake_bin / "ufw").write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "[[ \"$1\" == status && \"$2\" == numbered ]] || exit 98\n"
+                "printf '%s\\n' 'Status: active'\n",
+                encoding="utf-8",
+            )
+            (fake_bin / "ufw").chmod(0o755)
             (fake_bin / "install").write_text(
                 "#!/usr/bin/env bash\n"
                 "set -euo pipefail\n"
@@ -279,6 +300,10 @@ class LiveSourcesCutoverPolicyTests(unittest.TestCase):
             plan = ROLLBACK_VALIDATOR.resolve_snapshot(snapshot, [approved_root])
             self.assertEqual(plan.snapshot_kind, "verified-legacy")
             self.assertEqual(plan.restore_image, REPO_DIGEST)
+            self.assertIsNotNone(plan.guest_rtmp_firewall)
+            assert plan.guest_rtmp_firewall is not None
+            self.assertEqual(plan.guest_rtmp_firewall.guest_ip, "192.168.1.50")
+            self.assertFalse(plan.guest_rtmp_firewall.present_before_cutover)
             self.assertEqual(
                 (snapshot / "opt/media-stack/docker-compose.mediamtx.yml").read_bytes(),
                 original_compose,
@@ -291,7 +316,14 @@ class LiveSourcesCutoverPolicyTests(unittest.TestCase):
                     "opt/media-stack/docker-compose.mediamtx.yml",
                     "etc/media-stack/camera.env",
                     "runtime/mediamtx-inspect.json",
+                    "runtime/guest-rtmp-firewall-before.json",
+                    "runtime/ufw-status-numbered.txt",
                 ],
+            )
+            self.assertEqual(manifest["schema_version"], 2)
+            self.assertEqual(
+                manifest["firewall"]["guest_rtmp"]["status_artifact"],
+                "runtime/ufw-status-numbered.txt",
             )
 
 

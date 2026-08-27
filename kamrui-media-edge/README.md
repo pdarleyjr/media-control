@@ -57,8 +57,11 @@ OBS.
 RTMP stays plaintext by design only inside the LAN: MediaMTX binds `1935` to
 `KAMRUI_LAN_IP`, never `0.0.0.0` or the Tailscale interface. The future upgrade
 adds only the exact `GUEST_RTMP_PUBLISHER_LAN_IP -> KAMRUI_LAN_IP:1935/tcp` UFW
-rule. Do not use the older `ufw-apply` helper for this operation: it resets the
-host firewall and is outside this narrowly scoped rollout.
+rule. The cutover snapshot records whether that exact rule existed before the
+cutover, so feature rollback restores the observed firewall baseline rather
+than assuming it was absent. Do not use the older `ufw-apply` helper for this
+operation: it resets the host firewall and is outside this narrowly scoped
+rollout.
 
 ### Mandatory Guest Laptop wired-LAN acceptance
 
@@ -169,7 +172,9 @@ and stop both fail closed if that identity changes or Docker is unavailable.
 - UFW: deny incoming by default; SSH from Tailscale + LAN; media ports 8200/8888
   from the GMKtec only, plus port 8200 from the exact P3 LAN/Tailscale identities
   for authenticated publisher heartbeats. TCP/1935 is a separate exact-source
-  rule for the guest computer only, never a subnet-wide or Tailscale rule.
+  rule for the guest computer only, never a subnet-wide or Tailscale rule. The
+  feature snapshot records that rule's pre-cutover state; feature rollback
+  restores only that state and never resets UFW or removes unrelated rules.
 - Least-privilege sudo via `/usr/local/sbin/mbfd-media-admin` (root-owned,
   allowlisted subcommands only, operator use only).
 - Recording administration uses a **root-owned recording broker** reached
@@ -224,6 +229,23 @@ a fresh manifest-backed rollback snapshot, renders and validates privately,
 replaces only MediaMTX's configuration and Compose definition, recreates only
 MediaMTX, verifies the path contract, and only then adds the exact Guest RTMP
 rule.
+
+### Feature-specific rollback after a successful cutover
+
+The only approved manual rollback command for a completed podium/Guest cutover
+is:
+
+```bash
+sudo bash ./scripts/rollback-live-sources-cutover.sh \
+  /home/peter/mbfd-backups/<verified-cutover-snapshot>
+```
+
+Do not manually delete a UFW rule first, and do not run `scripts/rollback.sh`
+directly after a successful cutover. The feature-specific wrapper validates the
+snapshot's hash-covered Guest RTMP firewall baseline, restores that one exact
+rule to its recorded state, then calls `scripts/rollback.sh` as its lower-level
+verified, MediaMTX/source-only restore primitive. It fails closed on malformed
+or ambiguous firewall identity and does not alter any unrelated UFW rule.
 
 For this feature, **never use `scripts/upgrade.sh deploy`**. That general
 workflow remains in the repository for separately authorized maintenance but
