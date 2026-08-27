@@ -1,9 +1,14 @@
 # MBFD Kamrui Media Edge
 
-Dedicated MBFD media edge for the canonical Anpviz + TONOR classroom source and
-the signal-gated ZowieBox Guest Computer source. It provides HLS/RTSP, records
-segmented fMP4, livestreams to PeerTube, syncs recordings to the GMKtec over LAN
-(Tailscale fallback), and uploads recordings privately to PeerTube for review.
+Dedicated MBFD media edge for the canonical Anpviz + TONOR classroom source,
+the ZowieBox podium source, and a separate OBS-published guest source. It
+provides HLS/RTSP, records segmented fMP4, livestreams to PeerTube, syncs
+recordings to the GMKtec over LAN (Tailscale fallback), and uploads recordings
+privately to PeerTube for review.
+
+The podium/guest topology below is staged source only. It must be deployed only
+with Agent 1's matching Media Control source-contract migration; this edge
+branch deliberately does not change application, player, or camera API files.
 
 ## Architecture
 
@@ -15,9 +20,13 @@ Anpviz camera (RTSP H.264)
            -> HLS (:8888) + RTSP (:8554) + RTMP (:1935) + WebRTC (:8889)
 
 ZowieBox (HDMI H.264/AAC)
-  -> MediaMTX direct pull: guest-computer
-  -> Camera API polls real HDMI input lock and debounces availability
-  -> Media Control keeps one stable source identity and shows it only with signal
+  -> MediaMTX direct pull: podium-computer
+
+Guest computer (OBS H.264/AAC)
+  -> RTMP, LAN-only: guest-computer
+
+Camera API and Media Control source identity migration
+  -> coordinated application release owned outside this edge branch
 
 Camera Control API (Node.js, :8200)
   -> /api/sources/anpviz/heartbeat  authenticated P3 publisher health
@@ -29,6 +38,97 @@ Camera Control API (Node.js, :8200)
   -> /api/recordings/:id/upload PeerTube private upload (privacy=3)
   -> /api/recordings/:id/publish privacy change (private->unlisted->public)
 ```
+
+## Podium and guest staging contract
+
+`docker-compose.mediamtx.yml` pins the read-only-observed MediaMTX v1.19.3 OCI
+index digest. The running container is not changed by this source update; a
+future approved deployment recreates only the `mediamtx` service from that exact
+digest.
+
+The rendered MediaMTX configuration keeps the existing anonymous `read` access
+for HLS/RTSP/WebRTC readers, keeps the P3 Anpviz publisher only on
+`anpviz-main` and only from its established LAN/Tailscale identities, and gives
+the guest OBS publisher only `publish` permission on `guest-computer`. There is
+no anonymous, unrestricted `publish` permission. The rendered guest password is
+an Argon2id (preferred) or SHA-256 hash; it is not the plaintext entered into
+OBS.
+
+RTMP stays plaintext by design only inside the LAN: MediaMTX binds `1935` to
+`KAMRUI_LAN_IP`, never `0.0.0.0` or the Tailscale interface. The future upgrade
+adds only the exact `GUEST_RTMP_PUBLISHER_LAN_IP -> KAMRUI_LAN_IP:1935/tcp` UFW
+rule. Do not use the older `ufw-apply` helper for this operation: it resets the
+host firewall and is outside this narrowly scoped rollout.
+
+### Mandatory Guest Laptop wired-LAN acceptance
+
+The intended physical topology is fixed: **Guest Laptop -> USB/USB-C Ethernet
+dongle -> Ethernet cable -> TRENDnet 10 Gb switch -> KAMRUI**. The same switch
+also connects GMKtec and the P3. Do not replace it with a direct laptop link
+unless evidence identifies a physical-network fault.
+
+Before configuring the actual OBS profile or sending any Guest RTMP media, run
+the read-only collector on the Guest Laptop while its wired dongle is connected:
+
+```powershell
+.\scripts\collect-guest-laptop-network.ps1 -AdapterName '<wired adapter name>' -KamruiIp 192.168.1.122 -OutputPath .\guest-network-acceptance.json
+```
+
+`192.168.1.122` was the read-only-observed KAMRUI Ethernet IPv4 on 2026-08-27;
+it is DHCP-derived, so confirm it again in the approved maintenance window.
+The collector reads the NIC/dongle identity and driver, link speed, duplex
+setting, IPv4/prefix/gateway/DNS, MTU, interface metric and route, Wi-Fi state,
+adapter counters, power policy, sleep/hibernate policy, and relevant recent
+Windows events. It sends only ICMP echo and a TCP connect to `:1935`; it does
+not publish RTMP or alter any Windows setting.
+
+Acceptance requires a route to KAMRUI through the selected Ethernet adapter,
+stable loss-free baseline, at least 1 Gbps full duplex (or an investigated
+exception), zero/near-zero counter errors, TCP/1935 reachability after the
+scheduled MediaMTX/firewall change, no unsafe Wi-Fi route competition, and no
+NIC/sleep power-down risk. Standard MTU is retained: a 10 Gb switch does not
+justify jumbo frames. A 1 Gbps full-duplex dongle is more than sufficient for
+the approximately 6 Mbps stream; a 100 Mbps result must be investigated.
+
+Obtain a DHCP reservation before entering `GUEST_RTMP_PUBLISHER_LAN_IP`; do not
+hard-code an address or create a conflict. The DHCP server, not the laptop,
+authoritatively proves that reservation. If Wi-Fi remains enabled, retain the
+captured Ethernet route and metric; for the dedicated presentation role,
+disabling Wi-Fi before the presentation is preferred. Do not change routes while
+a stream is active.
+
+### OBS baseline for the guest computer
+
+- Video: `1920x1080`, 30 FPS; H.264; CBR about `6000 Kbps`; keyframe interval
+  `2 seconds`. Use a stable H.264 hardware encoder when it has been proven on
+  that computer, otherwise use the OBS software H.264 encoder.
+- Audio: `48 kHz`, stereo, AAC at `160 Kbps` (128 Kbps is the lower acceptable
+  baseline).
+- Stream service: **Custom**. Server:
+  `rtmp://<KAMRUI_LAN_IP>:1935`; stream key:
+  `guest-computer?user=<URL-encoded-user>&pass=<URL-encoded-plaintext-password>`.
+  The plaintext is stored only in OBS; `camera.env` contains its one-way hash.
+- Require a DHCP reservation for the guest computer before populating
+  `GUEST_RTMP_PUBLISHER_LAN_IP`. A Tailscale address, a CIDR, or an arbitrary
+  LAN host is not an acceptable substitute.
+
+### ZowieBox AAC repair boundary
+
+`config=1690` decodes as AAC-LC with sampling-frequency index 13, which is
+reserved/invalid; it is not a Media Control compatibility issue. Historical
+release evidence (not current-state proof) ties the condition to a laptop that
+had HDMI video but no HDMI audio. The smallest safe source-side repair is to
+retain/restore **Line In**, AAC, 48 kHz stereo, about 128 Kbps while HDMI carries
+the podium video. Switch to HDMI audio only after the podium computer is known
+to provide 48 kHz stereo LPCM and a direct protected RTSP SDP capture advertises
+valid AAC-LC 48 kHz stereo (`config=1190`).
+
+The installed ZowieBox model and firmware are not currently substantiated, so
+this branch deliberately does not recommend a firmware update or change any
+device setting. During an approved hardware window, capture the model, firmware,
+audio-source selection, and redacted SDP before changing the source. If `1690`
+persists, stop and preserve the evidence for the vendor rather than adding a
+player/parser workaround.
 
 Recordings are stored on the dedicated 1.7 TB data drive `/mnt/data/recordings`
 (30-minute fMP4 segments), finalized, SHA-256 checksummed, validated with
@@ -57,9 +157,13 @@ and stop both fail closed if that identity changes or Docker is unavailable.
   systemd status, or log.
 - API token + PeerTube token + RTMP stream key live in
   `/etc/mbfd/media-stack/camera.env` (mode 0600). Never committed.
+- The guest publisher plaintext is held only in the guest OBS profile. KAMRUI
+  stores only `GUEST_RTMP_PUBLISHER_PASSWORD_HASH`; MediaMTX verifies it using
+  its internal Argon2/SHA-256 support.
 - UFW: deny incoming by default; SSH from Tailscale + LAN; media ports 8200/8888
   from the GMKtec only, plus port 8200 from the exact P3 LAN/Tailscale identities
-  for authenticated publisher heartbeats.
+  for authenticated publisher heartbeats. TCP/1935 is a separate exact-source
+  rule for the guest computer only, never a subnet-wide or Tailscale rule.
 - Least-privilege sudo via `/usr/local/sbin/mbfd-media-admin` (root-owned,
   allowlisted subcommands only, operator use only).
 - Recording administration uses a **root-owned recording broker** reached
@@ -87,12 +191,40 @@ and stop both fail closed if that identity changes or Docker is unavailable.
 
 See `scripts/install.sh`. Runtime secrets are provisioned into
 `/etc/mbfd/media-stack/camera.env` (see `.env.example`); `mediamtx.yml` is
-generated from `mediamtx.yml.tpl` with the Anpviz and ZowieBox RTSP URLs
-substituted at install time and set to mode 0600.
+generated from `mediamtx.yml.tpl` with physical RTSP URLs and protected publisher
+policy values substituted at install time and set to mode 0600.
+
+Before an approved podium/guest deployment, set the exact wired KAMRUI address,
+the existing P3 addresses, and a DHCP-reserved guest LAN IPv4. Generate an
+Argon2id hash without placing the OBS plaintext in `camera.env`, for example on
+a secured administrator shell:
+
+```bash
+printf %s "$GUEST_OBS_PASSWORD" | argon2 "a-unique-random-salt" -id -l 32 -e
+```
+
+Prefix the output with `argon2:` in `GUEST_RTMP_PUBLISHER_PASSWORD_HASH`.
+MediaMTX v1.19.3 parses the complete configuration only while starting listeners
+and source pulls; Compose validation is not a semantic MediaMTX check. Validate
+the rendered configuration with the pinned image in an isolated staging host or
+network namespace before using the active deployment command.
 
 ## Rollback / upgrade
 
-See `scripts/upgrade.sh` and `scripts/rollback.sh`.
+`scripts/upgrade.sh deploy` is an active maintenance command and is not to be
+run during a class. It validates Compose, pulls the pinned digest, and
+force-recreates only `mediamtx` with `--no-deps`; only then does it add the
+exact guest RTMP UFW rule. That order prevents a momentary firewall opening to
+the pre-authentication container. This source change does not invoke that
+command.
+
+Before that command, create and checksum a release snapshot containing at least
+`camera.env`, the rendered `mediamtx.yml`, and
+`docker-compose.mediamtx.yml`. `scripts/rollback.sh <verified-snapshot>` now
+requires all three, verifies its checksum manifest, removes only the exact
+guest RTMP UFW rule while the current guest address is still known, restores
+the pinned prior Compose reference, and recreates only `mediamtx` before
+restarting the Camera API. Do not use a broad firewall reset as rollback.
 
 ## Owner
 
