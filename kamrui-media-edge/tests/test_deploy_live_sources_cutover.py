@@ -85,6 +85,14 @@ class LiveSourcesCutoverPolicyTests(unittest.TestCase):
         self.assertIn('MBFD_LIVE_SOURCES_CUTOVER_AUTHORIZATION=YES', self.script)
         self.assertIn('MODE="dry-run"', self.script)
 
+    def test_python_renderer_requires_a_regular_readable_file_not_execute_permission(self) -> None:
+        self.assertIn(
+            '[[ -f "$RENDERER" && -r "$RENDERER" && -r "$TEMPLATE" ]] || die "rendering inputs are unavailable"',
+            self.script,
+        )
+        self.assertIn('python3 "$RENDERER" "$ENV_FILE" "$TEMPLATE" "$rendered"', self.script)
+        self.assertNotIn('[[ -x "$RENDERER"', self.script)
+
     def test_snapshot_manifest_captures_the_rollback_contract(self) -> None:
         for token in (
             "rollback-manifest.json",
