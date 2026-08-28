@@ -106,6 +106,12 @@ test('topology migration renames the legacy Zowie source to Podium and preserves
       id TEXT PRIMARY KEY,
       remote_url TEXT
     );
+    CREATE TABLE advanced_canvas_layers (
+      id TEXT PRIMARY KEY,
+      endpoint_id TEXT NOT NULL,
+      source_json TEXT NOT NULL,
+      render_json TEXT NOT NULL
+    );
     CREATE TABLE activity_log (
       id TEXT PRIMARY KEY,
       details TEXT
@@ -129,6 +135,11 @@ test('topology migration renames the legacy Zowie source to Podium and preserves
       VALUES ('legacy-playlist', '[{"remote_url":"/player/live-source.html?source=guest-computer","live_source_id":"guest-computer"},{"player_url":"https://media-control.mbfdhub.com/player/live-source.html?source=guest-computer"},{"url":"https://example.invalid/player/live-source.html?source=guest-computer"}]');
     INSERT INTO activity_asset_placements (id, remote_url)
       VALUES ('legacy-placement', '/player/live-source.html?source=guest-computer');
+    INSERT INTO advanced_canvas_layers (id, endpoint_id, source_json, render_json)
+      VALUES
+        ('legacy-canvas-layer', 'canvas-1',
+          '{"live_source_id":"guest-computer","remote_url":"/player/live-source.html?source=guest-computer&fit=fill","foreign_url":"https://example.invalid/player/live-source.html?source=guest-computer"}',
+          '{"kind":"frame","live_source_id":"guest-computer","url":"https://media.mbfdhub.com/player/live-source.html?source=guest-computer&fit=fill","fallback_url":"https://example.invalid/player/live-source.html?source=guest-computer"}');
     INSERT INTO activity_log (id, details)
       VALUES ('historical', 'guest-computer was the old ZowieBox source');
   `);
@@ -186,6 +197,25 @@ test('topology migration renames the legacy Zowie source to Podium and preserves
     db.prepare('SELECT remote_url FROM activity_asset_placements WHERE id=?').get('legacy-placement').remote_url,
     '/player/live-source.html?source=podium-computer',
   );
+  assert.deepEqual(
+    JSON.parse(db.prepare('SELECT source_json FROM advanced_canvas_layers WHERE id=?').get('legacy-canvas-layer').source_json),
+    {
+      live_source_id: 'podium-computer',
+      remote_url: '/player/live-source.html?source=podium-computer&fit=fill',
+      foreign_url: 'https://example.invalid/player/live-source.html?source=guest-computer',
+    },
+    'the persisted canvas source descriptor retains the old Zowie meaning only for canonical managed references',
+  );
+  assert.deepEqual(
+    JSON.parse(db.prepare('SELECT render_json FROM advanced_canvas_layers WHERE id=?').get('legacy-canvas-layer').render_json),
+    {
+      kind: 'frame',
+      live_source_id: 'podium-computer',
+      url: '/player/live-source.html?source=podium-computer&fit=fill',
+      fallback_url: 'https://example.invalid/player/live-source.html?source=guest-computer',
+    },
+    'the persisted canvas render descriptor is rewritten before reconnect can re-emit it',
+  );
   assert.equal(
     db.prepare('SELECT details FROM activity_log WHERE id=?').get('historical').details,
     'guest-computer was the old ZowieBox source',
@@ -206,6 +236,26 @@ test('topology migration renames the legacy Zowie source to Podium and preserves
     db.prepare('SELECT remote_url FROM content WHERE id=?').get('legacy-content').remote_url,
     '/player/live-source.html?source=podium-computer&layout=old',
     'the one-time legacy migration cannot repurpose old Podium state on a later startup',
+  );
+  db.prepare(`
+    INSERT INTO advanced_canvas_layers (id, endpoint_id, source_json, render_json)
+    VALUES (?, ?, ?, ?)
+  `).run(
+    'current-guest-canvas-layer',
+    'canvas-1',
+    JSON.stringify({ remote_url: '/player/live-source.html?source=guest-computer' }),
+    JSON.stringify({ kind: 'frame', url: '/player/live-source.html?source=guest-computer' }),
+  );
+  migrateLiveSourcesSchema(db);
+  assert.deepEqual(
+    JSON.parse(db.prepare('SELECT source_json FROM advanced_canvas_layers WHERE id=?').get('current-guest-canvas-layer').source_json),
+    { remote_url: '/player/live-source.html?source=guest-computer' },
+    'a new Guest Computer canvas source written after the topology migration is preserved',
+  );
+  assert.deepEqual(
+    JSON.parse(db.prepare('SELECT render_json FROM advanced_canvas_layers WHERE id=?').get('current-guest-canvas-layer').render_json),
+    { kind: 'frame', url: '/player/live-source.html?source=guest-computer' },
+    'a new Guest Computer canvas render descriptor is preserved',
   );
   db.close();
 });

@@ -388,12 +388,67 @@
       if (isManagedProgramReceiver()) delete persisted.deviceToken;
       localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
     }
-    const PLAYLIST_CACHE_KEY = 'rd_playlist_cache';
+    // The original array-only cache predates the Podium/Guest split. It has no
+    // release or receiver identity, so it cannot safely be replayed on a P3
+    // cold boot: an old Zowie item is indistinguishable from the new Guest
+    // Computer by its former guest-computer URL alone. Retire it deliberately
+    // and retain offline recovery only for a scoped current-release envelope.
+    const LEGACY_PLAYLIST_CACHE_KEY = 'rd_playlist_cache';
+    const PLAYLIST_CACHE_KEY = 'rd_playlist_cache_v2';
+    const PLAYLIST_CACHE_VERSION = 2;
+    function playlistCacheScope() {
+      const deviceId = String(config?.deviceId || '').trim();
+      if (!deviceId) return null;
+      try {
+        return {
+          deviceId,
+          serverOrigin: new URL(config?.serverUrl || location.origin, location.origin).origin,
+        };
+      } catch {
+        return null;
+      }
+    }
+    function clearPlaylistCache() {
+      try {
+        localStorage.removeItem(LEGACY_PLAYLIST_CACHE_KEY);
+        localStorage.removeItem(PLAYLIST_CACHE_KEY);
+      } catch {}
+    }
     function savePlaylistCache(items) {
-      try { localStorage.setItem(PLAYLIST_CACHE_KEY, JSON.stringify(items)); } catch {}
+      try {
+        const scope = playlistCacheScope();
+        if (!scope || !Array.isArray(items)) {
+          clearPlaylistCache();
+          return;
+        }
+        localStorage.setItem(PLAYLIST_CACHE_KEY, JSON.stringify({
+          version: PLAYLIST_CACHE_VERSION,
+          device_id: scope.deviceId,
+          server_origin: scope.serverOrigin,
+          items,
+        }));
+      } catch {}
     }
     function loadPlaylistCache() {
-      try { return JSON.parse(localStorage.getItem(PLAYLIST_CACHE_KEY) || '[]'); } catch { return []; }
+      try {
+        // Never migrate the old unscoped array: its legacy Guest identity may
+        // refer to the former Zowie/Podium source.
+        localStorage.removeItem(LEGACY_PLAYLIST_CACHE_KEY);
+        const scope = playlistCacheScope();
+        const cached = JSON.parse(localStorage.getItem(PLAYLIST_CACHE_KEY) || 'null');
+        if (!scope
+            || !cached
+            || cached.version !== PLAYLIST_CACHE_VERSION
+            || cached.device_id !== scope.deviceId
+            || cached.server_origin !== scope.serverOrigin
+            || !Array.isArray(cached.items)) {
+          localStorage.removeItem(PLAYLIST_CACHE_KEY);
+          return [];
+        }
+        return cached.items;
+      } catch {
+        return [];
+      }
     }
 
     // These constants must be initialized before cached playback can call
@@ -409,7 +464,7 @@
       const managed = window.__playerConfig && window.__playerConfig.managedDisplay;
       if (!managed || !managed.deviceId || !managed.deviceToken) return;
       if (config.deviceId && config.deviceId !== managed.deviceId) {
-        savePlaylistCache([]);
+        clearPlaylistCache();
       }
       const origin = window.location.origin;
       const bootstrap = window.MbfdPlayerBootstrap;
@@ -2801,7 +2856,7 @@
         delete config.deviceToken;
         config.paired = false;
         saveConfig(config);
-        savePlaylistCache([]);
+        clearPlaylistCache();
         document.getElementById('setupScreen').style.display = 'flex';
         document.getElementById('urlForm').style.display = 'block';
         document.getElementById('pairingSection').style.display = 'none';
@@ -5385,7 +5440,7 @@
         // Reset config and go back to setup
         if (confirm('Reset player and return to setup?')) {
           localStorage.removeItem(STORAGE_KEY);
-          localStorage.removeItem(PLAYLIST_CACHE_KEY);
+          clearPlaylistCache();
           location.reload();
         }
       }

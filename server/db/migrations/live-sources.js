@@ -172,19 +172,58 @@ function rewriteLegacyReferences(db) {
     }
   }
 
-  if (!tableHasColumn(db, 'playlists', 'published_snapshot')) return;
-  const rows = db.prepare(
-    'SELECT rowid, published_snapshot FROM playlists WHERE published_snapshot IS NOT NULL',
-  ).all();
-  const update = db.prepare('UPDATE playlists SET published_snapshot = ? WHERE rowid = ?');
-  for (const row of rows) {
-    try {
-      const result = rewriteSnapshotValue(JSON.parse(row.published_snapshot));
-      if (result.changed) update.run(JSON.stringify(result.value), row.rowid);
-    } catch {
-      // A malformed historical snapshot is preserved verbatim; this migration
-      // must not turn a recoverable record into an unrecoverable one.
+  if (tableHasColumn(db, 'playlists', 'published_snapshot')) {
+    const rows = db.prepare(
+      'SELECT rowid, published_snapshot FROM playlists WHERE published_snapshot IS NOT NULL',
+    ).all();
+    const update = db.prepare('UPDATE playlists SET published_snapshot = ? WHERE rowid = ?');
+    for (const row of rows) {
+      try {
+        const result = rewriteSnapshotValue(JSON.parse(row.published_snapshot));
+        if (result.changed) update.run(JSON.stringify(result.value), row.rowid);
+      } catch {
+        // A malformed historical snapshot is preserved verbatim; this migration
+        // must not turn a recoverable record into an unrecoverable one.
+      }
     }
+  }
+
+  // Canvas scenes are re-emitted after the P3 reconnects. Rewrite their two
+  // persisted descriptors while the legacy topology is still unambiguous, so
+  // an old Zowie URL cannot be replayed as the new Guest Computer source.
+  // Parse each field independently: one malformed historical descriptor must
+  // not prevent the valid companion descriptor from being migrated.
+  if (!tableHasColumn(db, 'advanced_canvas_layers', 'source_json')
+      || !tableHasColumn(db, 'advanced_canvas_layers', 'render_json')) return;
+  const canvasRows = db.prepare(`
+    SELECT rowid, source_json, render_json
+    FROM advanced_canvas_layers
+  `).all();
+  const updateCanvas = db.prepare(`
+    UPDATE advanced_canvas_layers
+    SET source_json = ?, render_json = ?
+    WHERE rowid = ?
+  `);
+  for (const row of canvasRows) {
+    let sourceJson = row.source_json;
+    let renderJson = row.render_json;
+    let changed = false;
+    for (const [field, current] of [
+      ['source_json', row.source_json],
+      ['render_json', row.render_json],
+    ]) {
+      try {
+        const result = rewriteSnapshotValue(JSON.parse(current));
+        if (!result.changed) continue;
+        if (field === 'source_json') sourceJson = JSON.stringify(result.value);
+        else renderJson = JSON.stringify(result.value);
+        changed = true;
+      } catch {
+        // Preserve malformed historical canvas JSON verbatim. The normal
+        // canvas loader already surfaces malformed descriptors safely.
+      }
+    }
+    if (changed) updateCanvas.run(sourceJson, renderJson, row.rowid);
   }
 }
 
