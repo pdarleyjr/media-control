@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 from pathlib import Path
 import tempfile
@@ -104,6 +105,24 @@ class RenderMediaMtxConfigTests(unittest.TestCase):
                             GUEST_RTMP_PUBLISHER_PASSWORD_HASH=password_hash,
                         ),
                     )
+
+    def test_rejects_sha256_password_hashes_with_noncanonical_base64_pad_bits(self) -> None:
+        digest = bytes(range(32))
+        canonical_encoded = base64.b64encode(digest).decode("ascii")
+        self.assertEqual(canonical_encoded[-1], "=")
+
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        noncanonical_last_character = alphabet[alphabet.index(canonical_encoded[-2]) | 0b01]
+        noncanonical_encoded = f"{canonical_encoded[:-2]}{noncanonical_last_character}="
+
+        self.assertNotEqual(noncanonical_encoded, canonical_encoded)
+        self.assertEqual(base64.b64decode(noncanonical_encoded, validate=True), digest)
+        with self.assertRaisesRegex(ValueError, "canonical base64"):
+            self.render(
+                complete_environment(
+                    GUEST_RTMP_PUBLISHER_PASSWORD_HASH=f"sha256:{noncanonical_encoded}",
+                ),
+            )
 
     def test_retains_argon2_guest_password_hash_support(self) -> None:
         password_hash = "argon2:$argon2id$v=19$m=65536,t=3,p=1$c2FsdA$Z2VzdC1wdWJsaXNoZXItaGFzaA"
