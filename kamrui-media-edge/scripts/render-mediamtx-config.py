@@ -84,8 +84,9 @@ def validate_environment(values: dict[str, str]) -> None:
     if any(character in password_hash for character in "\r\n\x00") or not password_hash.startswith(("argon2:", "sha256:")):
         raise ValueError("GUEST_RTMP_PUBLISHER_PASSWORD_HASH must be an Argon2 or SHA-256 MediaMTX hash")
     if password_hash.startswith("sha256:"):
+        encoded = password_hash.removeprefix("sha256:")
         try:
-            digest = base64.b64decode(password_hash.removeprefix("sha256:"), validate=True)
+            digest = base64.b64decode(encoded, validate=True)
         except (ValueError, binascii.Error) as error:
             raise ValueError(
                 "GUEST_RTMP_PUBLISHER_PASSWORD_HASH SHA-256 MediaMTX hash must be valid base64",
@@ -93,6 +94,10 @@ def validate_environment(values: dict[str, str]) -> None:
         if len(digest) != 32:
             raise ValueError(
                 "GUEST_RTMP_PUBLISHER_PASSWORD_HASH SHA-256 MediaMTX hash must decode to 32 bytes",
+            )
+        if base64.standard_b64encode(digest).decode("ascii") != encoded:
+            raise ValueError(
+                "GUEST_RTMP_PUBLISHER_PASSWORD_HASH SHA-256 MediaMTX hash must be canonical base64",
             )
 
 

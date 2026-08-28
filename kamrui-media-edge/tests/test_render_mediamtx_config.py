@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import importlib.util
 from pathlib import Path
 import tempfile
@@ -29,7 +31,7 @@ def load_renderer():
 RENDERER = load_renderer()
 
 
-def complete_environment(**overrides: str) -> str:
+def complete_environment_values(**overrides: str) -> dict[str, str]:
     values = {
         "ANPVIZ_RTSP_URL": "rtsp://anpviz-user:anpviz-password@192.168.1.226:554/Streaming/Channels/101",
         "ZOWIEBOX_RTSP_URL": "rtsp://zowie-user:zowie-password@192.168.1.186:554/main/av",
@@ -42,7 +44,14 @@ def complete_environment(**overrides: str) -> str:
         "GUEST_RTMP_PUBLISHER_PASSWORD_HASH": "sha256:ioLmivBaId5ZXlF9kBUrTRD8cfo/18K5jZA7PbueyF0=",
     }
     values.update(overrides)
-    return "".join(f"{key}={value}\n" for key, value in values.items())
+    return values
+
+
+def complete_environment(**overrides: str) -> str:
+    return "".join(
+        f"{key}={value}\n"
+        for key, value in complete_environment_values(**overrides).items()
+    )
 
 
 class RenderMediaMtxConfigTests(unittest.TestCase):
@@ -104,6 +113,44 @@ class RenderMediaMtxConfigTests(unittest.TestCase):
                             GUEST_RTMP_PUBLISHER_PASSWORD_HASH=password_hash,
                         ),
                     )
+
+    def test_rejects_sha256_password_hashes_with_noncanonical_base64_pad_bits(self) -> None:
+        digest = hashlib.sha256(b"test-only-canonical-base64-regression").digest()
+        canonical = base64.standard_b64encode(digest).decode("ascii")
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        final_character_index = alphabet.index(canonical[-2])
+
+        # A 32-byte digest ends with one "="; the final non-padding character
+        # therefore has two unused pad bits. Flip one without changing the bytes.
+        self.assertTrue(canonical.endswith("="))
+        self.assertEqual(final_character_index & 0b11, 0)
+        noncanonical = f"{canonical[:-2]}{alphabet[final_character_index | 0b01]}{canonical[-1:]}"
+
+        self.assertEqual(
+            base64.b64decode(canonical, validate=True),
+            digest,
+        )
+        self.assertEqual(
+            base64.b64decode(noncanonical, validate=True),
+            digest,
+        )
+        self.assertNotEqual(
+            noncanonical,
+            base64.standard_b64encode(base64.b64decode(noncanonical, validate=True)).decode("ascii"),
+        )
+        self.assertIsNone(
+            RENDERER.validate_environment(
+                complete_environment_values(
+                    GUEST_RTMP_PUBLISHER_PASSWORD_HASH=f"sha256:{canonical}",
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "canonical base64"):
+            RENDERER.validate_environment(
+                complete_environment_values(
+                    GUEST_RTMP_PUBLISHER_PASSWORD_HASH=f"sha256:{noncanonical}",
+                ),
+            )
 
     def test_retains_argon2_guest_password_hash_support(self) -> None:
         password_hash = "argon2:$argon2id$v=19$m=65536,t=3,p=1$c2FsdA$Z2VzdC1wdWJsaXNoZXItaGFzaA"
