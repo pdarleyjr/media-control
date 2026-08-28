@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -65,6 +66,233 @@ class LiveSourcesCutoverPolicyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.script = SCRIPT_PATH.read_text(encoding="utf-8")
+
+    @staticmethod
+    def set_bash_mode(bash: str, path: Path, mode: str) -> None:
+        subprocess.run(
+            [bash, "-lc", 'chmod "$MODE" "$TARGET"'],
+            env={
+                **os.environ,
+                "MODE": mode,
+                "TARGET": bash_path(bash, path),
+            },
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    @staticmethod
+    def bash_file_is_readable(bash: str, path: Path) -> bool:
+        result = subprocess.run(
+            [bash, "-lc", 'test -r "$TARGET"'],
+            env={
+                **os.environ,
+                "TARGET": bash_path(bash, path),
+            },
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode == 0
+
+    def run_preflight_fixture(
+        self,
+        bash: str,
+        *,
+        renderer_exists: bool = True,
+        renderer_mode: str = "0644",
+        template_exists: bool = True,
+        template_mode: str = "0644",
+        require_unreadable_renderer: bool = False,
+        require_unreadable_template: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        """Run only the real preflight function against a disposable fake host."""
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            temporary = Path(temporary_dir)
+            edge = temporary / "edge"
+            scripts = edge / "scripts"
+            stack = temporary / "media-stack"
+            fake_bin = temporary / "fake-bin"
+            snapshot_root = temporary / "approved-backups"
+            environment = temporary / "camera.env"
+            for directory in (scripts, stack, fake_bin, snapshot_root):
+                directory.mkdir(parents=True, exist_ok=True)
+
+            expected_image_match = re.search(
+                r"^EXPECTED_MEDIAMTX_IMAGE=(?P<image>[^\r\n]+)$",
+                self.script,
+                re.MULTILINE,
+            )
+            self.assertIsNotNone(expected_image_match)
+            assert expected_image_match is not None
+            expected_image = expected_image_match.group("image")
+            expected_repo_digest = "bluenviron/mediamtx@" + expected_image.split("@", 1)[1]
+
+            renderer = scripts / "render-mediamtx-config.py"
+            if renderer_exists:
+                renderer.write_text("# fixture renderer\n", encoding="utf-8")
+                self.set_bash_mode(bash, renderer, renderer_mode)
+                if require_unreadable_renderer and self.bash_file_is_readable(bash, renderer):
+                    self.skipTest("the local Bash runtime cannot reliably model an unreadable file")
+
+            template = edge / "mediamtx.yml.tpl"
+            if template_exists:
+                template.write_text("paths: {}\n", encoding="utf-8")
+                self.set_bash_mode(bash, template, template_mode)
+                if require_unreadable_template and self.bash_file_is_readable(bash, template):
+                    self.skipTest("the local Bash runtime cannot reliably model an unreadable file")
+
+            (edge / "docker-compose.mediamtx.yml").write_text(
+                f"services:\n  mediamtx:\n    image: {expected_image}\n",
+                encoding="utf-8",
+            )
+            for rollback_file in (
+                scripts / "rollback.sh",
+                scripts / "rollback-live-sources-cutover.sh",
+                scripts / "validate-rollback-snapshot.py",
+            ):
+                rollback_file.write_text("# fixture prerequisite\n", encoding="utf-8")
+                self.set_bash_mode(bash, rollback_file, "0644")
+
+            (stack / "mediamtx.yml").write_text("paths: {}\n", encoding="utf-8")
+            (stack / "docker-compose.mediamtx.yml").write_text(
+                f"services:\n  mediamtx:\n    image: {expected_image}\n",
+                encoding="utf-8",
+            )
+            environment.write_text("FIXTURE_ONLY=yes\n", encoding="utf-8")
+
+            fake_commands = {
+                "docker": """#!/usr/bin/env bash
+set -euo pipefail
+if [[ \"$1\" == compose && \"${2:-}\" == version ]]; then
+  exit 0
+fi
+if [[ \"$1\" == inspect && \"${2:-}\" == mbfd-mediamtx ]]; then
+  printf '%s\\n' '{}'
+  exit 0
+fi
+if [[ \"$1\" == exec && \"${2:-}\" == mbfd-mediamtx ]]; then
+  printf '%s\\n' v1.19.3
+  exit 0
+fi
+if [[ \"$1\" == inspect && \"${2:-}\" == --format && \"${3:-}\" == '{{.Image}}' ]]; then
+  printf '%s\\n' \"$FAKE_IMAGE_ID\"
+  exit 0
+fi
+if [[ \"$1\" == inspect && \"${2:-}\" == --format && \"${3:-}\" == '{{.State.StartedAt}}' ]]; then
+  printf '%s\\n' \"$FAKE_STARTED_AT\"
+  exit 0
+fi
+if [[ \"$1\" == image && \"${2:-}\" == inspect ]]; then
+  printf '%s\\n' \"$FAKE_REPO_DIGEST\"
+  exit 0
+fi
+printf 'unexpected fake docker command: %s\\n' \"$*\" >&2
+exit 99
+""",
+                "hostnamectl": "#!/usr/bin/env bash\nprintf '%s\\n' fixture-host\n",
+                "curl": """#!/usr/bin/env bash
+printf '%s' '{"items":[{"name":"anpviz-video","ready":true},{"name":"anpviz-main","ready":true},{"name":"guest-computer","ready":false}]}'
+""",
+                "ufw": "#!/usr/bin/env bash\nexit 0\n",
+            }
+            for name, contents in fake_commands.items():
+                command = fake_bin / name
+                command.write_text(contents, encoding="utf-8")
+                self.set_bash_mode(bash, command, "0755")
+
+            script = self.script.split("while (( $# > 0 )); do", 1)[0]
+            script = script.replace(
+                'HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"',
+                f"HERE='{bash_path(bash, edge)}'",
+            )
+            script = script.replace("STACK=/opt/mbfd/media-stack", f"STACK='{bash_path(bash, stack)}'")
+            script = script.replace(
+                "ENV_FILE=/etc/mbfd/media-stack/camera.env",
+                f"ENV_FILE='{bash_path(bash, environment)}'",
+            )
+            script = script.replace(
+                "SNAPSHOT_ROOT=/home/peter/mbfd-backups",
+                f"SNAPSHOT_ROOT='{bash_path(bash, snapshot_root)}'",
+            )
+            script = script.replace("EXPECTED_HOSTNAME=peter-Default-string", "EXPECTED_HOSTNAME=fixture-host")
+            privilege_guard = '  (( EUID == 0 )) || die "run with sudo only during an approved maintenance window"\n'
+            self.assertIn(privilege_guard, script)
+            script = script.replace(privilege_guard, "  : # fixture bypasses the production sudo gate\n")
+            fixture_script = temporary / "run-preflight.sh"
+            fixture_script.write_text(script + "\npreflight\nprintf 'PREFLIGHT_SUCCESS\\n'\n", encoding="utf-8")
+
+            return subprocess.run(
+                [
+                    bash,
+                    "-lc",
+                    'PATH="$FAKE_BIN:$PATH"; export PATH; exec bash "$FIXTURE_SCRIPT"',
+                ],
+                env={
+                    **os.environ,
+                    "FAKE_BIN": bash_path(bash, fake_bin),
+                    "FIXTURE_SCRIPT": bash_path(bash, fixture_script),
+                    "FAKE_IMAGE_ID": IMAGE_ID,
+                    "FAKE_REPO_DIGEST": expected_repo_digest,
+                    "FAKE_STARTED_AT": STARTED_AT,
+                },
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+    def test_preflight_accepts_readable_non_executable_renderer(self) -> None:
+        bash = git_bash()
+        if bash is None:  # pragma: no cover - only for unusually minimal hosts
+            self.skipTest("bash is unavailable")
+
+        result = self.run_preflight_fixture(bash, renderer_mode="0644")
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("PREFLIGHT_SUCCESS", result.stdout)
+
+    def test_preflight_rejects_missing_renderer_and_template(self) -> None:
+        bash = git_bash()
+        if bash is None:  # pragma: no cover - only for unusually minimal hosts
+            self.skipTest("bash is unavailable")
+
+        for fixture in (
+            {"renderer_exists": False},
+            {"template_exists": False},
+        ):
+            with self.subTest(fixture=fixture):
+                result = self.run_preflight_fixture(bash, **fixture)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("ERROR: rendering inputs are unavailable", result.stderr)
+
+    def test_preflight_rejects_unreadable_renderer_and_template_when_supported(self) -> None:
+        bash = git_bash()
+        if bash is None:  # pragma: no cover - only for unusually minimal hosts
+            self.skipTest("bash is unavailable")
+
+        for fixture in (
+            {"renderer_mode": "0000", "require_unreadable_renderer": True},
+            {"template_mode": "0000", "require_unreadable_template": True},
+        ):
+            with self.subTest(fixture=fixture):
+                result = self.run_preflight_fixture(bash, **fixture)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("ERROR: rendering inputs are unavailable", result.stderr)
+
+    def test_renderer_preflight_contract_is_python_file_not_direct_execution(self) -> None:
+        self.assertIn('[[ -f "$RENDERER" && -r "$RENDERER" && -r "$TEMPLATE" ]]', self.script)
+        self.assertIn('python3 "$RENDERER" "$ENV_FILE" "$TEMPLATE" "$rendered"', self.script)
+        for existing_guard in (
+            "verify_path_contract preflight",
+            '[[ -d "$SNAPSHOT_ROOT" ]] || die "approved snapshot root is unavailable"',
+            '[[ -r "$ROLLBACK_SCRIPT" ]] || die "verified rollback script is unavailable"',
+            '[[ -r "$FEATURE_ROLLBACK_SCRIPT" ]] || die "verified feature rollback script is unavailable"',
+            '[[ -r "$SNAPSHOT_VALIDATOR" ]] || die "rollback snapshot validator is unavailable"',
+        ):
+            with self.subTest(existing_guard=existing_guard):
+                self.assertIn(existing_guard, self.script)
 
     def test_help_is_safe_and_apply_is_explicitly_authorized(self) -> None:
         bash = git_bash()

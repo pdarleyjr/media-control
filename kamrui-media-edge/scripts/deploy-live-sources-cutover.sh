@@ -279,7 +279,7 @@ preflight() {
   determine_snapshot_kind
   require_exact_new_image
   verify_path_contract preflight
-  [[ -x "$RENDERER" && -r "$TEMPLATE" ]] || die "rendering inputs are unavailable"
+  [[ -f "$RENDERER" && -r "$RENDERER" && -r "$TEMPLATE" ]] || die "rendering inputs are unavailable"
   [[ -d "$SNAPSHOT_ROOT" ]] || die "approved snapshot root is unavailable"
   [[ -r "$ROLLBACK_SCRIPT" ]] || die "verified rollback script is unavailable"
   [[ -r "$FEATURE_ROLLBACK_SCRIPT" ]] || die "verified feature rollback script is unavailable"
