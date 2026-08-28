@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import ipaddress
 import json
 import os
@@ -81,6 +83,17 @@ def validate_environment(values: dict[str, str]) -> None:
     password_hash = values["GUEST_RTMP_PUBLISHER_PASSWORD_HASH"]
     if any(character in password_hash for character in "\r\n\x00") or not password_hash.startswith(("argon2:", "sha256:")):
         raise ValueError("GUEST_RTMP_PUBLISHER_PASSWORD_HASH must be an Argon2 or SHA-256 MediaMTX hash")
+    if password_hash.startswith("sha256:"):
+        try:
+            digest = base64.b64decode(password_hash.removeprefix("sha256:"), validate=True)
+        except (ValueError, binascii.Error) as error:
+            raise ValueError(
+                "GUEST_RTMP_PUBLISHER_PASSWORD_HASH SHA-256 MediaMTX hash must be valid base64",
+            ) from error
+        if len(digest) != 32:
+            raise ValueError(
+                "GUEST_RTMP_PUBLISHER_PASSWORD_HASH SHA-256 MediaMTX hash must decode to 32 bytes",
+            )
 
 
 def yaml_scalar(value: str) -> str:

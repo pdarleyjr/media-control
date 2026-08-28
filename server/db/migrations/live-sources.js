@@ -125,6 +125,18 @@ function rewriteLegacyPlayerUrl(value) {
   return `${parsed.pathname}${parsed.search}${parsed.hash}`;
 }
 
+function setOwnJsonProperty(target, key, value) {
+  // JSON.parse can produce an own `__proto__` property. Assignment would
+  // invoke Object.prototype's legacy setter and silently drop that serialized
+  // value, so reconstruct JSON objects with an explicit data property.
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+}
+
 function rewriteSnapshotValue(value) {
   if (Array.isArray(value)) {
     let changed = false;
@@ -141,18 +153,18 @@ function rewriteSnapshotValue(value) {
   const rewritten = {};
   for (const [key, nestedValue] of Object.entries(value)) {
     if (key === 'live_source_id' && nestedValue === LEGACY_SOURCE_ID) {
-      rewritten[key] = PODIUM_SOURCE_ID;
+      setOwnJsonProperty(rewritten, key, PODIUM_SOURCE_ID);
       changed = true;
       continue;
     }
     if (['remote_url', 'player_url', 'url'].includes(key) && typeof nestedValue === 'string') {
       const nextUrl = rewriteLegacyPlayerUrl(nestedValue);
-      rewritten[key] = nextUrl;
+      setOwnJsonProperty(rewritten, key, nextUrl);
       changed ||= nextUrl !== nestedValue;
       continue;
     }
     const result = rewriteSnapshotValue(nestedValue);
-    rewritten[key] = result.value;
+    setOwnJsonProperty(rewritten, key, result.value);
     changed ||= result.changed;
   }
   return { value: rewritten, changed };

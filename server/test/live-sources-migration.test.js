@@ -260,6 +260,151 @@ test('topology migration renames the legacy Zowie source to Podium and preserves
   db.close();
 });
 
+test('topology migration preserves an own __proto__ descriptor property while rewriting its legacy values', () => {
+  const db = baseDb();
+  db.exec(`
+    CREATE TABLE live_sources (
+      id TEXT PRIMARY KEY,
+      source_type TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      stream_path TEXT NOT NULL,
+      player_path TEXT NOT NULL,
+      visibility_policy TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      availability TEXT NOT NULL DEFAULT 'unknown',
+      signal_json TEXT,
+      last_seen_at INTEGER,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE TABLE advanced_canvas_layers (
+      id TEXT PRIMARY KEY,
+      endpoint_id TEXT NOT NULL,
+      source_json TEXT NOT NULL,
+      render_json TEXT NOT NULL
+    );
+    INSERT INTO live_sources
+      (id, source_type, display_name, stream_path, player_path, visibility_policy)
+    VALUES ('guest-computer', 'guest_computer', 'Old guest label', 'old-guest', '/old', 'signal');
+  `);
+  db.prepare(`
+    INSERT INTO advanced_canvas_layers (id, endpoint_id, source_json, render_json)
+    VALUES (?, ?, ?, ?)
+  `).run(
+    'prototype-safe-canvas-layer',
+    'canvas-1',
+    '{"__proto__":{"live_source_id":"guest-computer","remote_url":"/player/live-source.html?source=guest-computer"}}',
+    '{"kind":"frame"}',
+  );
+
+  migrateLiveSourcesSchema(db);
+
+  const descriptor = JSON.parse(
+    db.prepare('SELECT source_json FROM advanced_canvas_layers WHERE id=?')
+      .get('prototype-safe-canvas-layer').source_json,
+  );
+  assert.equal(Object.hasOwn(descriptor, '__proto__'), true);
+  assert.equal(Object.getPrototypeOf(descriptor), Object.prototype);
+  assert.deepEqual(descriptor.__proto__, {
+    live_source_id: 'podium-computer',
+    remote_url: '/player/live-source.html?source=podium-computer',
+  });
+  db.close();
+});
+
+test('topology migration rewrites a valid canvas companion descriptor when the other descriptor is malformed', () => {
+  const db = baseDb();
+  db.exec(`
+    CREATE TABLE live_sources (
+      id TEXT PRIMARY KEY,
+      source_type TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      stream_path TEXT NOT NULL,
+      player_path TEXT NOT NULL,
+      visibility_policy TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      availability TEXT NOT NULL DEFAULT 'unknown',
+      signal_json TEXT,
+      last_seen_at INTEGER,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE TABLE advanced_canvas_layers (
+      id TEXT PRIMARY KEY,
+      endpoint_id TEXT NOT NULL,
+      source_json TEXT NOT NULL,
+      render_json TEXT NOT NULL
+    );
+    INSERT INTO live_sources
+      (id, source_type, display_name, stream_path, player_path, visibility_policy)
+    VALUES ('guest-computer', 'guest_computer', 'Old guest label', 'old-guest', '/old', 'signal');
+  `);
+  db.prepare(`
+    INSERT INTO advanced_canvas_layers (id, endpoint_id, source_json, render_json)
+    VALUES (?, ?, ?, ?)
+  `).run(
+    'independent-canvas-descriptors',
+    'canvas-1',
+    '{"live_source_id":',
+    '{"kind":"frame","live_source_id":"guest-computer","url":"/player/live-source.html?source=guest-computer"}',
+  );
+
+  migrateLiveSourcesSchema(db);
+
+  const row = db.prepare(`
+    SELECT source_json, render_json
+    FROM advanced_canvas_layers
+    WHERE id = ?
+  `).get('independent-canvas-descriptors');
+  assert.equal(row.source_json, '{"live_source_id":');
+  assert.deepEqual(JSON.parse(row.render_json), {
+    kind: 'frame',
+    live_source_id: 'podium-computer',
+    url: '/player/live-source.html?source=podium-computer',
+  });
+  db.close();
+});
+
+test('completed topology migration leaves post-cutover Guest canvas descriptors untouched', () => {
+  const db = baseDb();
+  migrateLiveSourcesSchema(db);
+  db.exec(`
+    CREATE TABLE advanced_canvas_layers (
+      id TEXT PRIMARY KEY,
+      endpoint_id TEXT NOT NULL,
+      source_json TEXT NOT NULL,
+      render_json TEXT NOT NULL
+    );
+  `);
+  db.prepare(`
+    INSERT INTO advanced_canvas_layers (id, endpoint_id, source_json, render_json)
+    VALUES (?, ?, ?, ?)
+  `).run(
+    'post-cutover-guest-layer',
+    'canvas-1',
+    JSON.stringify({ live_source_id: 'guest-computer', remote_url: '/player/live-source.html?source=guest-computer' }),
+    JSON.stringify({ kind: 'frame', live_source_id: 'guest-computer', url: '/player/live-source.html?source=guest-computer' }),
+  );
+
+  migrateLiveSourcesSchema(db);
+
+  const row = db.prepare(`
+    SELECT source_json, render_json
+    FROM advanced_canvas_layers
+    WHERE id = ?
+  `).get('post-cutover-guest-layer');
+  assert.deepEqual(JSON.parse(row.source_json), {
+    live_source_id: 'guest-computer',
+    remote_url: '/player/live-source.html?source=guest-computer',
+  });
+  assert.deepEqual(JSON.parse(row.render_json), {
+    kind: 'frame',
+    live_source_id: 'guest-computer',
+    url: '/player/live-source.html?source=guest-computer',
+  });
+  db.close();
+});
+
 test('topology migration fails closed rather than guessing durable Guest semantics after a partial manual rename', () => {
   const db = baseDb();
   migrateLiveSourcesSchema(db);

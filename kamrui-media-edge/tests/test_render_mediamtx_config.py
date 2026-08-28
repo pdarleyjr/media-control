@@ -92,6 +92,30 @@ class RenderMediaMtxConfigTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.render(complete_environment(**{key: value}))
 
+    def test_rejects_sha256_password_hashes_that_are_not_a_32_byte_base64_digest(self) -> None:
+        for password_hash in (
+            "sha256:not-base64!",
+            "sha256:YWJj",
+        ):
+            with self.subTest(password_hash=password_hash):
+                with self.assertRaisesRegex(ValueError, "SHA-256 MediaMTX hash"):
+                    self.render(
+                        complete_environment(
+                            GUEST_RTMP_PUBLISHER_PASSWORD_HASH=password_hash,
+                        ),
+                    )
+
+    def test_retains_argon2_guest_password_hash_support(self) -> None:
+        password_hash = "argon2:$argon2id$v=19$m=65536,t=3,p=1$c2FsdA$Z2VzdC1wdWJsaXNoZXItaGFzaA"
+
+        config = self.render(
+            complete_environment(
+                GUEST_RTMP_PUBLISHER_PASSWORD_HASH=password_hash,
+            ),
+        )
+
+        self.assertIn(f'pass: "{password_hash}"', config)
+
     def test_compose_pins_the_observed_v1193_image_digest_without_changing_host_networking(self) -> None:
         compose = COMPOSE_PATH.read_text(encoding="utf-8")
 
