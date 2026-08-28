@@ -80,3 +80,49 @@ test('P3 playlist cache restores only a current release envelope for the same de
   );
   assert.equal(storage.getItem('rd_playlist_cache_v2'), null, 'a mismatched cache scope is discarded, not retained for a later replay');
 });
+
+test('P3 playlist cache rejects a cache envelope from the same device at another server origin', () => {
+  const storage = createStorage();
+  const cache = loadPlaylistCache({
+    storage,
+    config: { deviceId: 'classroom-1-p3', serverUrl: 'http://127.0.0.1:8096' },
+  });
+  cache.savePlaylistCache([
+    { remote_url: '/player/live-source.html?source=podium-computer', label: 'Podium Computer' },
+  ]);
+
+  cache.setConfig({ deviceId: 'classroom-1-p3', serverUrl: 'https://other.example.invalid' });
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(cache.loadPlaylistCache())),
+    [],
+    'the same receiver must not replay cache state from another Media Control origin',
+  );
+  assert.equal(storage.getItem('rd_playlist_cache_v2'), null);
+});
+
+test('P3 player discards malformed scoped playlist cache instead of retrying it on each offline boot', () => {
+  const storage = createStorage({
+    rd_playlist_cache_v2: '{not-json',
+  });
+  const cache = loadPlaylistCache({
+    storage,
+    config: { deviceId: 'classroom-1-p3', serverUrl: 'http://127.0.0.1:8096' },
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(cache.loadPlaylistCache())), []);
+  assert.equal(storage.getItem('rd_playlist_cache_v2'), null);
+});
+
+test('non-managed device auth rejection clears the scoped playlist cache before a later registration can reuse its ID', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'player', 'index.html'), 'utf8');
+  const start = source.indexOf("socket.on('device:auth-error'", source.indexOf("socket.on('device:unpaired'"));
+  const end = source.indexOf("\n      socket.on(", start + 1);
+  assert.ok(start >= 0 && end > start, 'device auth-error handler must remain independently inspectable');
+  const authErrorHandler = source.slice(start, end);
+
+  assert.match(
+    authErrorHandler,
+    /delete config\.deviceId;[\s\S]*?delete config\.deviceToken;[\s\S]*?config\.paired = false;[\s\S]*?saveConfig\(config\);[\s\S]*?clearPlaylistCache\(\);/,
+    'credential rejection must retire receiver-scoped offline state with the rejected pairing',
+  );
+});

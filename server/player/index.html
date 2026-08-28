@@ -447,6 +447,7 @@
         }
         return cached.items;
       } catch {
+        clearPlaylistCache();
         return [];
       }
     }
@@ -2877,6 +2878,7 @@
         delete config.deviceToken;
         config.paired = false;
         saveConfig(config);
+        clearPlaylistCache();
         document.getElementById('setupScreen').style.display = 'flex';
         document.getElementById('urlForm').style.display = 'block';
         // 2026-05-28: previously this hid pairingSection and only showed a
