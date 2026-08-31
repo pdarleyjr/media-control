@@ -155,7 +155,13 @@
 
       window.handleAction = function (input) { return executeTransport(input, false); };
       window.addEventListener('message', function (event) {
-        if (event.origin !== location.origin || !event.data || !event.data.__mc_transport) return;
+        if (event.origin !== location.origin || !event.data) return;
+        if (event.data.type === 'mbfd-player-command') {
+          if (event.data.action === 'mute' && typeof window.__mcDisableAudio === 'function') window.__mcDisableAudio();
+          if (event.data.action === 'unmute' && typeof window.__mcEnableAudio === 'function') window.__mcEnableAudio();
+          return;
+        }
+        if (!event.data.__mc_transport) return;
         executeTransport(event.data.__mc_transport, true);
       });
 
@@ -176,9 +182,14 @@
       }
       // Called by the parent (display player / multiview grid) after a user gesture.
       window.__mcEnableAudio = function () {
+        wantAudio = true;
         video.muted = false; video.volume = 1;
         try { video.removeAttribute('muted'); } catch (e) {}
         var p = video.play(); if (p && p.catch) p.catch(function () {});
+      };
+      window.__mcDisableAudio = function () {
+        wantAudio = false;
+        video.muted = true;
       };
 
       var hls = null, reresolves = 0, MAX = 5, stallTimer = null, stopped = false;

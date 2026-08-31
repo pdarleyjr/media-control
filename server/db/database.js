@@ -831,6 +831,30 @@ function migrateDisplayScreenState() {
 
 migrateDisplayScreenState();
 
+// `muted` is effective runtime telemetry and may be true solely because an
+// authoritative audio policy temporarily denied this renderer. Preserve
+// explicit operator intent separately so an old fail-muted report cannot be
+// restored later as a permanent user mute. NULL deliberately means legacy or
+// unknown; do not backfill it from `muted`.
+const DISPLAY_OPERATOR_MUTE_STATE_ID = 'display_operator_mute_state_v1';
+function migrateDisplayOperatorMuteState() {
+  let cols = [];
+  try { cols = db.prepare('PRAGMA table_info(display_states)').all().map((column) => column.name); }
+  catch (e) { console.warn(`[${DISPLAY_OPERATOR_MUTE_STATE_ID}] table_info failed:`, e.message); return; }
+  if (!cols.includes('operator_muted')) {
+    try {
+      db.exec('ALTER TABLE display_states ADD COLUMN operator_muted INTEGER CHECK(operator_muted IN (0, 1))');
+    } catch (e) {
+      console.error(`[${DISPLAY_OPERATOR_MUTE_STATE_ID}] operator_muted failed:`, e.message);
+      return;
+    }
+  }
+  try { db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(DISPLAY_OPERATOR_MUTE_STATE_ID); }
+  catch (e) { console.warn(`[${DISPLAY_OPERATOR_MUTE_STATE_ID}] stamp failed:`, e.message); }
+}
+
+migrateDisplayOperatorMuteState();
+
 const CONTENT_LIFECYCLE_ID = 'content_asset_lifecycle';
 function migrateContentLifecycle() {
   let cols = [];

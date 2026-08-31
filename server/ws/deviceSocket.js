@@ -288,7 +288,7 @@ function displayStateForDevice(deviceId) {
   if (!deviceId) return null;
   const row = db.prepare(`
     SELECT current_content_id, current_asset_id, content_type, layout_mode,
-           slide_index, slide_count, current_time, duration, paused, muted, volume,
+            slide_index, slide_count, current_time, duration, paused, muted, operator_muted, volume,
            local_asset_ready, render_state, error_state, screen_on, state_revision, updated_at
            , wall_id, layout_id, group_id, member_id, playback_revision, command_revision
     FROM display_states
@@ -307,6 +307,7 @@ function displayStateForDevice(deviceId) {
     duration: row.duration ?? null,
     paused: row.paused == null ? null : !!row.paused,
     muted: row.muted == null ? null : !!row.muted,
+    operator_muted: row.operator_muted == null ? null : !!row.operator_muted,
     volume: row.volume ?? null,
     local_asset_ready: row.local_asset_ready ?? null,
     render_state: row.render_state || null,
@@ -349,6 +350,10 @@ function restoreStateForDevice(deviceId, device, wall, layoutGroup) {
     // are per renderer. A follower must rebase from its own persisted counter
     // after a kiosk reload or every new report can be rejected as stale.
     state_revision: ownState?.state_revision ?? leaderState.state_revision,
+    // Operator mute is renderer-local intent. A leader's mute must not become
+    // a follower's stored preference merely because its continuity state is
+    // borrowed for a span wall.
+    operator_muted: ownState?.operator_muted ?? null,
     restore_source: 'layout_group_leader',
     restore_source_device_id: leaderDeviceId,
     wall_id: wall.id,
