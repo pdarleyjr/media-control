@@ -66,6 +66,113 @@ class LiveSourcesCutoverPolicyTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.script = SCRIPT_PATH.read_text(encoding="utf-8")
 
+    def run_path_contract(self, phase: str, payload: dict, active_config: str | None = None) -> subprocess.CompletedProcess[str]:
+        """Run the embedded MediaMTX path classifier without a KAMRUI mutation."""
+
+        marker = '  printf \'%s\' "$payload" | python3 -c \'\n'
+        start = self.script.index(marker) + len(marker)
+        end = self.script.index("\n' \"$phase\"", start)
+        classifier = self.script[start:end]
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            config_path = Path(temporary_dir) / "mediamtx.yml"
+            config_path.write_text(
+                active_config
+                or "paths:\n  guest-computer:\n    source: rtsp://legacy.example.invalid/main/av\n",
+                encoding="utf-8",
+            )
+            return subprocess.run(
+                [sys.executable, "-c", classifier, phase, "verified-legacy", str(config_path)],
+                input=json.dumps(payload),
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+
+    @staticmethod
+    def legacy_path_payload(*, guest: dict | None = None, extra_paths: list[dict] | None = None) -> dict:
+        items = [
+            {"name": "anpviz-video", "ready": True},
+            {"name": "anpviz-main", "ready": True},
+            guest
+            or {
+                "name": "guest-computer",
+                "ready": True,
+                "source": {"type": "rtspSource", "id": ""},
+                "tracks": ["H264", "MPEG-4 Audio"],
+                "readers": [],
+            },
+        ]
+        return {"items": items + (extra_paths or [])}
+
+    def test_preflight_accepts_only_the_ready_legacy_rtsp_guest_topology(self) -> None:
+        result = self.run_path_contract("preflight", self.legacy_path_payload())
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_preflight_rejects_publisher_and_unknown_guest_source_types(self) -> None:
+        for source_type in ("rtmpConn", "rtspSession", "webRTCSession", "unknownSource"):
+            with self.subTest(source_type=source_type):
+                payload = self.legacy_path_payload(
+                    guest={
+                        "name": "guest-computer",
+                        "ready": False,
+                        "source": {"type": source_type, "id": "publisher-id"},
+                        "tracks": [],
+                        "readers": [],
+                    },
+                )
+                result = self.run_path_contract("preflight", payload)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("source type", result.stderr)
+
+    def test_preflight_rejects_missing_or_duplicate_or_unexpected_paths(self) -> None:
+        missing = {"items": [{"name": "anpviz-video", "ready": True}, {"name": "anpviz-main", "ready": True}]}
+        duplicate = self.legacy_path_payload(extra_paths=[{
+            "name": "guest-computer",
+            "ready": False,
+            "source": {"type": "rtspSource", "id": ""},
+            "tracks": ["H264", "MPEG-4 Audio"],
+            "readers": [],
+        }])
+        unexpected = self.legacy_path_payload(extra_paths=[{"name": "podium-computer", "ready": False}])
+        for label, payload in (("missing", missing), ("duplicate", duplicate), ("unexpected", unexpected)):
+            with self.subTest(label=label):
+                result = self.run_path_contract("preflight", payload)
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_preflight_preserves_reader_anpviz_and_podium_conflict_guards(self) -> None:
+        readers = self.legacy_path_payload(guest={
+            "name": "guest-computer",
+            "ready": True,
+            "source": {"type": "rtspSource", "id": ""},
+            "tracks": ["H264", "MPEG-4 Audio"],
+            "readers": [{"type": "hlsSession", "id": "reader-id"}],
+        })
+        anpviz = self.legacy_path_payload()
+        anpviz["items"][0]["ready"] = False
+        podium = self.legacy_path_payload(extra_paths=[{"name": "podium-computer", "ready": False}])
+        for label, payload, expected_error in (
+            ("readers", readers, "active readers"),
+            ("anpviz", anpviz, "required Anpviz path is not ready"),
+            ("podium", podium, "unexpected preflight MediaMTX paths"),
+        ):
+            with self.subTest(label=label):
+                result = self.run_path_contract("preflight", payload)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(expected_error, result.stderr)
+
+    def test_preflight_rejects_malformed_legacy_config_and_tracks(self) -> None:
+        wrong_config = self.run_path_contract(
+            "preflight",
+            self.legacy_path_payload(),
+            "paths:\n  guest-computer:\n    source: publisher\n",
+        )
+        wrong_tracks = self.legacy_path_payload()
+        wrong_tracks["items"][2]["tracks"] = ["H264", "G711"]
+        for label, result in (("config", wrong_config), ("tracks", self.run_path_contract("preflight", wrong_tracks))):
+            with self.subTest(label=label):
+                self.assertNotEqual(result.returncode, 0)
+
     def test_help_is_safe_and_apply_is_explicitly_authorized(self) -> None:
         bash = git_bash()
         if bash is None:  # pragma: no cover - only for unusually minimal hosts

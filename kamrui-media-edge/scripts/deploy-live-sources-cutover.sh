@@ -239,15 +239,67 @@ verify_path_contract() {
   payload="$(curl -fsS --max-time 5 http://127.0.0.1:9997/v3/paths/list)" || die "MediaMTX local path API is unavailable"
   printf '%s' "$payload" | python3 -c '
 import json
+from pathlib import Path
+import re
 import sys
 
-phase = sys.argv[1]
+phase, snapshot_kind, active_config = sys.argv[1:]
 try:
     payload = json.load(sys.stdin)
 except json.JSONDecodeError as error:
     raise SystemExit(f"MediaMTX path API returned invalid JSON: {error}")
 
-items = {item.get("name"): item for item in payload.get("items", [])}
+raw_items = payload.get("items")
+if not isinstance(raw_items, list):
+    raise SystemExit("MediaMTX path API items are malformed")
+
+items = {}
+for item in raw_items:
+    if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+        raise SystemExit("MediaMTX path API contains a malformed path")
+    name = item["name"]
+    if name in items:
+        raise SystemExit(f"MediaMTX path API contains a duplicate path: {name}")
+    items[name] = item
+
+
+def legacy_guest_has_rtsp_config(path: Path) -> bool:
+    """Confirm the active legacy path is a configured RTSP pull, not a publisher."""
+    try:
+        configuration = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+    blocks = re.findall(
+        r"(?ms)^  guest-computer:\s*\n(.*?)(?=^  [^\s#][^:]*:\s*$|\Z)",
+        configuration,
+    )
+    if len(blocks) != 1:
+        return False
+    sources = re.findall(r"(?m)^    source:\s*(.+?)\s*$", blocks[0])
+    if len(sources) != 1:
+        return False
+    return sources[0].strip().strip(chr(34) + chr(39)).startswith("rtsp://")
+
+
+def verify_legacy_guest(guest: dict) -> None:
+    source = guest.get("source")
+    if not isinstance(source, dict):
+        raise SystemExit("guest-computer legacy source is missing or malformed")
+    if source.get("type") != "rtspSource":
+        raise SystemExit("guest-computer source type is not the expected legacy rtspSource")
+    if guest.get("ready") is not True:
+        raise SystemExit("guest-computer legacy RTSP source is not ready")
+    tracks = guest.get("tracks")
+    if not isinstance(tracks, list) or len(tracks) != 2 or set(tracks) != {"H264", "MPEG-4 Audio"}:
+        raise SystemExit("guest-computer legacy RTSP source does not have expected H264 and MPEG-4 Audio tracks")
+    readers = guest.get("readers")
+    if not isinstance(readers, list) or readers:
+        raise SystemExit("guest-computer legacy RTSP source has active readers")
+    if not legacy_guest_has_rtsp_config(Path(active_config)):
+        raise SystemExit("guest-computer is not configured as the expected legacy RTSP pull")
+
+
 for name in ("anpviz-video", "anpviz-main"):
     if name not in items:
         raise SystemExit(f"required Anpviz path is absent: {name}")
@@ -255,8 +307,17 @@ for name in ("anpviz-video", "anpviz-main"):
         raise SystemExit(f"required Anpviz path is not ready: {name}")
 
 guest = items.get("guest-computer")
-if guest is not None and guest.get("ready") is True:
-    raise SystemExit("guest-computer already has an unexpected publisher")
+if phase == "preflight":
+    expected_paths = {"anpviz-video", "anpviz-main", "guest-computer"}
+    unexpected_paths = set(items).difference(expected_paths)
+    if unexpected_paths:
+        unexpected_list = ", ".join(sorted(unexpected_paths))
+        raise SystemExit(f"unexpected preflight MediaMTX paths: {unexpected_list}")
+    if snapshot_kind != "verified-legacy":
+        raise SystemExit("preflight requires the verified legacy MediaMTX configuration")
+    if guest is None:
+        raise SystemExit("guest-computer legacy RTSP path is absent")
+    verify_legacy_guest(guest)
 
 if phase == "post":
     if "podium-computer" not in items:
@@ -265,7 +326,7 @@ if phase == "post":
         raise SystemExit("guest-computer publisher path is absent after cutover")
 
 print(f"{phase}: Anpviz paths ready; guest publisher idle")
-' "$phase"
+' "$phase" "$SNAPSHOT_KIND" "$ACTIVE_CONFIG"
 }
 
 preflight() {
