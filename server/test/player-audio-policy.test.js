@@ -464,6 +464,30 @@ test('managed player applies playlist policy before rendering and transport unmu
   assert.match(source, /audio_policy_state:/);
 });
 
+test('authoritative owner grants release already-rendered media without weakening fail-muted policy', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'player', 'index.html'), 'utf8');
+  const reconcile = source.slice(
+    source.indexOf('function reconcileAudioPolicy()'),
+    source.indexOf('function applyPlaylistAudioPolicy('),
+  );
+  const release = source.slice(
+    source.indexOf('function releaseAuthorizedPlayerAudio()'),
+    source.indexOf('function applyPlaylistAudioPolicy('),
+  );
+
+  assert.match(reconcile, /if \(!audioOutputAllowed\(\)\) \{\s*muteAllPlayerAudio\(\)/);
+  assert.ok(
+    reconcile.indexOf('userHasInteracted = true;') < reconcile.indexOf('releaseAuthorizedPlayerAudio();')
+      && reconcile.indexOf('releaseAuthorizedPlayerAudio();') < reconcile.indexOf("publishAudioPolicyState('authoritative_owner_grant');"),
+    'an accepted owner grant must release media only after the policy gate and before publishing success',
+  );
+  assert.match(release, /if \(!audioOutputAllowed\(\)\) return false;/);
+  assert.match(release, /document\.querySelectorAll\('#playerContainer video, #playerContainer audio'\)/);
+  assert.match(release, /media\.muted = false;/);
+  assert.match(release, /media\.volume = 1\.0;/);
+  assert.match(release, /activeYtPlayer\.unMute\(\)/);
+});
+
 test('unpair and authentication rejection fail-mute before receiver exits or credential clearing', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'player', 'index.html'), 'utf8');
   const unpaired = source.slice(

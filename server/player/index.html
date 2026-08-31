@@ -635,6 +635,29 @@
         } catch (_) {}
       });
     }
+    // A policy can arrive after the current item was mounted fail-muted.  The
+    // owner grant must therefore release that existing element as well as make
+    // the next item audible.  Keep this behind the same authoritative gate as
+    // every other unmute path so a stale or rejected policy cannot leak audio.
+    function releaseAuthorizedPlayerAudio() {
+      if (!audioOutputAllowed()) return false;
+      let released = false;
+      document.querySelectorAll('#playerContainer video, #playerContainer audio').forEach((media) => {
+        try {
+          media.muted = false;
+          media.volume = 1.0;
+          released = true;
+        } catch (_) {}
+      });
+      try {
+        if (activeYtPlayer && typeof activeYtPlayer.unMute === 'function') {
+          activeYtPlayer.unMute();
+          activeYtPlayer.setVolume?.(100);
+          released = true;
+        }
+      } catch (_) {}
+      return released;
+    }
     function reconcileAudioPolicy() {
       if (!audioOutputAllowed()) {
         muteAllPlayerAudio();
@@ -644,6 +667,7 @@
       }
       userHasInteracted = true;
       unlockAudio();
+      releaseAuthorizedPlayerAudio();
       publishAudioPolicyState('authoritative_owner_grant');
     }
     function applyPlaylistAudioPolicy(data, items) {
