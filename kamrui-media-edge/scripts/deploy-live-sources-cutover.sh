@@ -28,6 +28,8 @@ EXPECTED_HOSTNAME=peter-Default-string
 EXPECTED_MEDIAMTX_VERSION=v1.19.3
 EXPECTED_MEDIAMTX_IMAGE=bluenviron/mediamtx:1.19.3@sha256:7797ed3df88df21e8c04ecd0aff08ce49a5232d1db453e51f5480ef36bc80865
 EXPECTED_MEDIAMTX_REPO_DIGEST=bluenviron/mediamtx@sha256:7797ed3df88df21e8c04ecd0aff08ce49a5232d1db453e51f5480ef36bc80865
+POST_VALIDATION_ATTEMPTS=25
+POST_VALIDATION_INTERVAL_SECONDS=1
 
 MODE="dry-run"
 SNAPSHOT_DIR=""
@@ -282,6 +284,25 @@ def legacy_guest_has_rtsp_config(path: Path) -> bool:
     return sources[0].strip().strip(chr(34) + chr(39)).startswith("rtsp://")
 
 
+def configured_source(path: Path, name: str) -> str | None:
+    """Return one configured source value, rejecting ambiguous path blocks."""
+    try:
+        configuration = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+    blocks = re.findall(
+        rf"(?ms)^  {re.escape(name)}:\s*\n(.*?)(?=^  [^\s#][^:]*:\s*$|\Z)",
+        configuration,
+    )
+    if len(blocks) != 1:
+        return None
+    sources = re.findall(r"(?m)^    source:\s*(.+?)\s*$", blocks[0])
+    if len(sources) != 1:
+        return None
+    return sources[0].strip().strip(chr(34) + chr(39))
+
+
 def verify_legacy_guest(guest: dict) -> None:
     source = guest.get("source")
     if not isinstance(source, dict):
@@ -298,6 +319,43 @@ def verify_legacy_guest(guest: dict) -> None:
         raise SystemExit("guest-computer legacy RTSP source has active readers")
     if not legacy_guest_has_rtsp_config(Path(active_config)):
         raise SystemExit("guest-computer is not configured as the expected legacy RTSP pull")
+
+
+def verify_post_podium(podium: object) -> None:
+    if not isinstance(podium, dict):
+        raise SystemExit("podium-computer path is absent after cutover")
+    if podium.get("ready") is not True:
+        raise SystemExit("podium-computer RTSP source is not ready after cutover")
+    source = podium.get("source")
+    if not isinstance(source, dict) or not isinstance(source.get("type"), str):
+        raise SystemExit("podium-computer source is missing or malformed after cutover")
+    if source.get("type") != "rtspSource":
+        raise SystemExit("podium-computer source type is not the expected rtspSource after cutover")
+    tracks = podium.get("tracks")
+    if not isinstance(tracks, list) or len(tracks) != 2 or set(tracks) != {"H264", "MPEG-4 Audio"}:
+        raise SystemExit("podium-computer RTSP source does not have expected H264 and MPEG-4 Audio tracks")
+    readers = podium.get("readers")
+    if readers is not None and not isinstance(readers, list):
+        raise SystemExit("podium-computer readers are malformed after cutover")
+    configured = configured_source(Path(active_config), "podium-computer")
+    if configured is None:
+        raise SystemExit("podium-computer active configuration is missing or malformed")
+    if not configured.startswith("rtsp://"):
+        raise SystemExit("podium-computer active configuration is not RTSP-backed")
+
+
+def verify_post_guest(guest: object) -> None:
+    if not isinstance(guest, dict):
+        raise SystemExit("guest-computer publisher path is absent after cutover")
+    if guest.get("ready") is not False:
+        raise SystemExit("guest-computer publisher is active before the authorized canary")
+    if guest.get("source") is not None:
+        raise SystemExit("guest-computer has an active or residual publisher source before the authorized canary")
+    readers = guest.get("readers")
+    if not isinstance(readers, list) or readers:
+        raise SystemExit("guest-computer has active or malformed readers before the authorized canary")
+    if configured_source(Path(active_config), "guest-computer") != "publisher":
+        raise SystemExit("guest-computer active configuration is not the expected publisher path")
 
 
 for name in ("anpviz-video", "anpviz-main"):
@@ -320,12 +378,15 @@ if phase == "preflight":
     verify_legacy_guest(guest)
 
 if phase == "post":
-    if "podium-computer" not in items:
-        raise SystemExit("podium-computer path is absent after cutover")
-    if guest is None:
-        raise SystemExit("guest-computer publisher path is absent after cutover")
+    expected_paths = {"anpviz-video", "anpviz-main", "podium-computer", "guest-computer"}
+    unexpected_paths = set(items).difference(expected_paths)
+    if unexpected_paths:
+        unexpected_list = ", ".join(sorted(unexpected_paths))
+        raise SystemExit(f"unexpected post-cutover MediaMTX paths: {unexpected_list}")
+    verify_post_podium(items.get("podium-computer"))
+    verify_post_guest(guest)
 
-print(f"{phase}: Anpviz paths ready; guest publisher idle")
+print(f"{phase}: complete final topology valid; guest publisher idle")
 ' "$phase" "$SNAPSHOT_KIND" "$ACTIVE_CONFIG"
 }
 
@@ -567,12 +628,21 @@ recreate_mediamtx() {
 }
 
 verify_post_cutover() {
-  sleep 4
-  [[ "$(docker inspect --format '{{.State.Running}}' "$CONTAINER")" == "true" ]] || die "MediaMTX container is not running after recreation"
-  [[ "$(docker inspect --format '{{.State.Restarting}}' "$CONTAINER")" != "true" ]] || die "MediaMTX container is restart-looping"
-  [[ "$(docker inspect --format '{{.Image}}' "$CONTAINER")" == "$EXPECTED_IMAGE_ID" ]] || die "MediaMTX is not running the pinned image ID"
-  [[ "$(docker exec "$CONTAINER" /mediamtx --version)" == "$EXPECTED_MEDIAMTX_VERSION" ]] || die "MediaMTX version is not $EXPECTED_MEDIAMTX_VERSION"
-  verify_path_contract post
+  local attempt
+  for (( attempt = 1; attempt <= POST_VALIDATION_ATTEMPTS; attempt++ )); do
+    if [[ "$(docker inspect --format '{{.State.Running}}' "$CONTAINER")" == "true" ]] \
+      && [[ "$(docker inspect --format '{{.State.Restarting}}' "$CONTAINER")" != "true" ]] \
+      && [[ "$(docker inspect --format '{{.Image}}' "$CONTAINER")" == "$EXPECTED_IMAGE_ID" ]] \
+      && [[ "$(docker exec "$CONTAINER" /mediamtx --version)" == "$EXPECTED_MEDIAMTX_VERSION" ]] \
+      && verify_path_contract post; then
+      printf 'Post-cutover final topology became valid after %s/%s checks.\n' "$attempt" "$POST_VALIDATION_ATTEMPTS"
+      return 0
+    fi
+    if (( attempt < POST_VALIDATION_ATTEMPTS )); then
+      sleep "$POST_VALIDATION_INTERVAL_SECONDS"
+    fi
+  done
+  die "complete post-cutover topology did not become valid within ${POST_VALIDATION_ATTEMPTS} checks"
 }
 
 allow_guest_rtmp_firewall() {

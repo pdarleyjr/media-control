@@ -105,6 +105,39 @@ class LiveSourcesCutoverPolicyTests(unittest.TestCase):
         ]
         return {"items": items + (extra_paths or [])}
 
+    @staticmethod
+    def post_cutover_config(*, podium_source: str = "rtsp://zowie.example.invalid/main/av", guest_source: str = "publisher") -> str:
+        return (
+            "paths:\n"
+            "  podium-computer:\n"
+            f"    source: {podium_source}\n"
+            "  guest-computer:\n"
+            f"    source: {guest_source}\n"
+        )
+
+    @staticmethod
+    def post_cutover_payload(*, podium: dict | None = None, guest: dict | None = None, anpviz_ready: bool = True) -> dict:
+        return {
+            "items": [
+                {"name": "anpviz-video", "ready": anpviz_ready},
+                {"name": "anpviz-main", "ready": anpviz_ready},
+                podium
+                or {
+                    "name": "podium-computer",
+                    "ready": True,
+                    "source": {"type": "rtspSource", "id": "zowie"},
+                    "tracks": ["H264", "MPEG-4 Audio"],
+                    "readers": [],
+                },
+                guest
+                or {
+                    "name": "guest-computer",
+                    "ready": False,
+                    "readers": [],
+                },
+            ]
+        }
+
     def test_preflight_accepts_only_the_ready_legacy_rtsp_guest_topology(self) -> None:
         result = self.run_path_contract("preflight", self.legacy_path_payload())
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -172,6 +205,258 @@ class LiveSourcesCutoverPolicyTests(unittest.TestCase):
         for label, result in (("config", wrong_config), ("tracks", self.run_path_contract("preflight", wrong_tracks))):
             with self.subTest(label=label):
                 self.assertNotEqual(result.returncode, 0)
+
+    def test_post_cutover_accepts_only_the_complete_final_topology(self) -> None:
+        result = self.run_path_contract(
+            "post",
+            self.post_cutover_payload(),
+            self.post_cutover_config(),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_post_cutover_rejects_a_not_ready_or_missing_podium(self) -> None:
+        not_ready = self.post_cutover_payload()
+        not_ready["items"][2]["ready"] = False
+        missing = self.post_cutover_payload()
+        missing["items"] = [item for item in missing["items"] if item["name"] != "podium-computer"]
+        for label, payload in (("not-ready", not_ready), ("missing", missing)):
+            with self.subTest(label=label):
+                result = self.run_path_contract("post", payload, self.post_cutover_config())
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_post_cutover_rejects_a_podium_with_wrong_source_tracks_or_config(self) -> None:
+        wrong_source = self.post_cutover_payload()
+        wrong_source["items"][2]["source"] = {"type": "rtmpConn", "id": "publisher"}
+        wrong_tracks = self.post_cutover_payload()
+        wrong_tracks["items"][2]["tracks"] = ["H264"]
+        cases = (
+            ("source", wrong_source, self.post_cutover_config()),
+            ("tracks", wrong_tracks, self.post_cutover_config()),
+            ("config", self.post_cutover_payload(), self.post_cutover_config(podium_source="publisher")),
+        )
+        for label, payload, config in cases:
+            with self.subTest(label=label):
+                result = self.run_path_contract("post", payload, config)
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_post_cutover_rejects_an_active_or_residual_guest_publisher(self) -> None:
+        active_rtmp = self.post_cutover_payload()
+        active_rtmp["items"][3] = {
+            "name": "guest-computer",
+            "ready": True,
+            "source": {"type": "rtmpConn", "id": "rtmp-publisher"},
+            "readers": [],
+        }
+        active_other = self.post_cutover_payload()
+        active_other["items"][3] = {
+            "name": "guest-computer",
+            "ready": True,
+            "source": {"type": "webRTCSession", "id": "webrtc-publisher"},
+            "readers": [],
+        }
+        residual_source = self.post_cutover_payload()
+        residual_source["items"][3] = {
+            "name": "guest-computer",
+            "ready": False,
+            "source": {"type": "rtspSession", "id": "residual-session"},
+            "readers": [],
+        }
+        for label, payload in (("rtmp", active_rtmp), ("other", active_other), ("residual", residual_source)):
+            with self.subTest(label=label):
+                result = self.run_path_contract("post", payload, self.post_cutover_config())
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_post_cutover_rejects_a_guest_with_wrong_config_or_readers(self) -> None:
+        readers = self.post_cutover_payload()
+        readers["items"][3]["readers"] = [{"type": "hlsSession", "id": "reader"}]
+        wrong_config = self.run_path_contract(
+            "post",
+            self.post_cutover_payload(),
+            self.post_cutover_config(guest_source="rtsp://legacy.example.invalid/main/av"),
+        )
+        for label, result in (("readers", self.run_path_contract("post", readers, self.post_cutover_config())), ("config", wrong_config)):
+            with self.subTest(label=label):
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_post_cutover_preserves_anpviz_readiness_as_a_required_gate(self) -> None:
+        result = self.run_path_contract(
+            "post",
+            self.post_cutover_payload(anpviz_ready=False),
+            self.post_cutover_config(),
+        )
+        self.assertNotEqual(result.returncode, 0)
+
+    def run_post_validation_fixture(self, payloads: list[dict], attempts: int) -> subprocess.CompletedProcess[str]:
+        bash = git_bash()
+        if bash is None:  # pragma: no cover - only for unusually minimal hosts
+            self.skipTest("bash is unavailable")
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            temporary = Path(temporary_dir)
+            stack = temporary / "media-stack"
+            response_dir = temporary / "responses"
+            response_counter = temporary / "response-count"
+            stack.mkdir()
+            response_dir.mkdir()
+            (stack / "mediamtx.yml").write_text(self.post_cutover_config(), encoding="utf-8")
+            for index, payload in enumerate(payloads, start=1):
+                (response_dir / f"{index}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+            script = SCRIPT_PATH.read_text(encoding="utf-8").split("while (( $# > 0 )); do")[0]
+            script = (
+                script.replace("STACK=/opt/mbfd/media-stack", f"STACK='{bash_path(bash, stack)}'")
+                .replace("POST_VALIDATION_ATTEMPTS=25", f"POST_VALIDATION_ATTEMPTS={attempts}")
+            )
+            fixture = temporary / "verify-post.sh"
+            fixture.write_text(
+                script
+                + "\nprintf 0 > \"$RESPONSE_COUNTER\"\n"
+                + "docker() {\n"
+                + "  if [[ \"$1\" == inspect ]]; then\n"
+                + "    case \"$3\" in\n"
+                + "      *State.Running*) printf true ;;\n"
+                + "      *State.Restarting*) printf false ;;\n"
+                + "      *Image*) printf '%s' \"$EXPECTED_IMAGE_ID\" ;;\n"
+                + "    esac\n"
+                + "  elif [[ \"$1\" == exec ]]; then\n"
+                + "    printf '%s' \"$EXPECTED_MEDIAMTX_VERSION\"\n"
+                + "  else\n"
+                + "    return 99\n"
+                + "  fi\n"
+                + "}\n"
+                + "curl() {\n"
+                + "  local response_index file\n"
+                + "  response_index=$(( $(cat \"$RESPONSE_COUNTER\") + 1 ))\n"
+                + "  printf '%s' \"$response_index\" > \"$RESPONSE_COUNTER\"\n"
+                + "  file=\"$RESPONSE_DIR/$response_index.json\"\n"
+                + "  [[ -f \"$file\" ]] || file=\"$RESPONSE_DIR/$(ls \"$RESPONSE_DIR\" | sort -n | tail -n 1)\"\n"
+                + "  cat \"$file\"\n"
+                + "}\n"
+                + "sleep() { :; }\n"
+                + "EXPECTED_IMAGE_ID='sha256:fixture'\n"
+                + "if verify_post_cutover; then printf 'VALIDATION=PASS\\n'; else printf 'VALIDATION=FAIL\\n'; fi\n",
+                encoding="utf-8",
+            )
+            return subprocess.run(
+                [bash, "-lc", 'export RESPONSE_DIR="$FIXTURE_RESPONSES"; exec bash "$FIXTURE_SCRIPT"'],
+                env={
+                    **os.environ,
+                    "FIXTURE_RESPONSES": bash_path(bash, response_dir),
+                    "RESPONSE_COUNTER": bash_path(bash, response_counter),
+                    "FIXTURE_SCRIPT": bash_path(bash, fixture),
+                },
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+
+    def test_post_cutover_retries_until_the_complete_topology_is_ready(self) -> None:
+        initially_unready = self.post_cutover_payload()
+        initially_unready["items"][2]["ready"] = False
+        result = self.run_post_validation_fixture(
+            [initially_unready, self.post_cutover_payload()],
+            attempts=2,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Post-cutover final topology became valid after 2/2 checks.", result.stdout)
+        self.assertIn("VALIDATION=PASS", result.stdout)
+
+    def test_post_cutover_times_out_when_the_complete_topology_never_becomes_valid(self) -> None:
+        invalid = self.post_cutover_payload()
+        invalid["items"][2]["ready"] = False
+        result = self.run_post_validation_fixture([invalid], attempts=2)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("complete post-cutover topology did not become valid within 2 checks", result.stderr)
+        self.assertIn("VALIDATION=FAIL", result.stdout)
+
+    def test_apply_invalid_post_topology_fails_and_invokes_feature_rollback(self) -> None:
+        """Exercise run_apply's real post validator and ERR-trap rollback path."""
+
+        bash = git_bash()
+        if bash is None:  # pragma: no cover - only for unusually minimal hosts
+            self.skipTest("bash is unavailable")
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            temporary = Path(temporary_dir)
+            stack = temporary / "media-stack"
+            snapshot = temporary / "snapshot"
+            response = temporary / "invalid-paths.json"
+            final_config = temporary / "final-mediamtx.yml"
+            rollback_log = temporary / "rollback.log"
+            stack.mkdir()
+            (snapshot / "opt" / "media-stack").mkdir(parents=True)
+            prior_config = "paths:\n  guest-computer:\n    source: rtsp://legacy.example.invalid/main/av\n"
+            (stack / "mediamtx.yml").write_text(prior_config, encoding="utf-8")
+            (snapshot / "opt" / "media-stack" / "mediamtx.yml").write_text(prior_config, encoding="utf-8")
+            final_config.write_text(self.post_cutover_config(), encoding="utf-8")
+            invalid = self.post_cutover_payload()
+            invalid["items"][2]["ready"] = False
+            response.write_text(json.dumps(invalid), encoding="utf-8")
+            rollback = temporary / "rollback-live-sources-cutover.sh"
+            rollback.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "cp \"$1/opt/media-stack/mediamtx.yml\" \"$TARGET_ACTIVE_CONFIG\"\n"
+                "printf rollback-invoked > \"$ROLLBACK_LOG\"\n",
+                encoding="utf-8",
+            )
+            rollback.chmod(0o755)
+
+            script = SCRIPT_PATH.read_text(encoding="utf-8").split("while (( $# > 0 )); do")[0]
+            script = (
+                script.replace("STACK=/opt/mbfd/media-stack", f"STACK='{bash_path(bash, stack)}'")
+                .replace("POST_VALIDATION_ATTEMPTS=25", "POST_VALIDATION_ATTEMPTS=1")
+            )
+            fixture = temporary / "apply-invalid-post.sh"
+            fixture.write_text(
+                script
+                + "\nFEATURE_ROLLBACK_SCRIPT=\"$FIXTURE_ROLLBACK\"\n"
+                + "SNAPSHOT_DIR=\"$FIXTURE_SNAPSHOT\"\n"
+                + "GUEST_FIREWALL_PRESENT_BEFORE_CUTOVER=false\n"
+                + "create_workdir() { :; }\n"
+                + "create_rollback_ready_snapshot() { :; }\n"
+                + "render_to_temporary_location() { :; }\n"
+                + "validate_rendered_contract() { :; }\n"
+                + "prepare_isolated_parser_config() { :; }\n"
+                + "validate_with_exact_mediamtx() { :; }\n"
+                + "install_active_mediamtx_files() { MUTATION_STARTED=1; cp \"$FIXTURE_FINAL_CONFIG\" \"$ACTIVE_CONFIG\"; }\n"
+                + "recreate_mediamtx() { :; }\n"
+                + "docker() {\n"
+                + "  if [[ \"$1\" == inspect ]]; then\n"
+                + "    case \"$3\" in\n"
+                + "      *State.Running*) printf true ;;\n"
+                + "      *State.Restarting*) printf false ;;\n"
+                + "      *Image*) printf '%s' \"$EXPECTED_IMAGE_ID\" ;;\n"
+                + "    esac\n"
+                + "  elif [[ \"$1\" == exec ]]; then printf '%s' \"$EXPECTED_MEDIAMTX_VERSION\"; else return 99; fi\n"
+                + "}\n"
+                + "curl() { cat \"$FIXTURE_RESPONSE\"; }\n"
+                + "sleep() { :; }\n"
+                + "EXPECTED_IMAGE_ID='sha256:fixture'\n"
+                + "run_apply\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [bash, "-lc", 'exec bash "$FIXTURE_SCRIPT"'],
+                env={
+                    **os.environ,
+                    "FIXTURE_SCRIPT": bash_path(bash, fixture),
+                    "FIXTURE_ROLLBACK": bash_path(bash, rollback),
+                    "FIXTURE_SNAPSHOT": bash_path(bash, snapshot),
+                    "FIXTURE_FINAL_CONFIG": bash_path(bash, final_config),
+                    "FIXTURE_RESPONSE": bash_path(bash, response),
+                    "TARGET_ACTIVE_CONFIG": bash_path(bash, stack / "mediamtx.yml"),
+                    "ROLLBACK_LOG": bash_path(bash, rollback_log),
+                },
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("complete post-cutover topology did not become valid", result.stderr)
+            self.assertIn("invoking verified feature rollback", result.stderr)
+            self.assertEqual((stack / "mediamtx.yml").read_text(encoding="utf-8"), prior_config)
+            self.assertEqual(rollback_log.read_text(encoding="utf-8"), "rollback-invoked")
 
     def test_help_is_safe_and_apply_is_explicitly_authorized(self) -> None:
         bash = git_bash()
