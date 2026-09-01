@@ -4830,6 +4830,24 @@
           // background wall leaders acknowledged but never render-confirmed.
           frame.addEventListener('load', () => markBroadcastElementReady(frame, 'web-frame-ready'), { once: true });
           frame.addEventListener('error', () => failPendingBroadcastElement(frame, 'Web frame failed to load'), { once: true });
+          // An owner grant can arrive while a same-origin live child is still
+          // loading. The first reconciliation cannot call its hook yet, so
+          // reapply the current effective state once the child is ready. This
+          // preserves fail-closed fencing if ownership changed again meanwhile.
+          if (/\/player\/(oz|hls|live-source)\.html(\?|$)/.test(ownPath || '')) {
+            frame.addEventListener('load', () => {
+              const muted = effectiveAudioMuted();
+              try {
+                const child = frame.contentWindow;
+                if (muted && typeof child?.__mcDisableAudio === 'function') child.__mcDisableAudio();
+                if (!muted && typeof child?.__mcEnableAudio === 'function') child.__mcEnableAudio();
+                child?.postMessage({
+                  type: 'mbfd-player-command',
+                  action: muted ? 'mute' : 'unmute',
+                }, location.origin);
+              } catch (_) {}
+            }, { once: true });
+          }
           frame.src = webSrc;
           // Multiview audio: once the page has user activation (the one-time "tap to
           // enable audio"), (re)enable the grid's chosen audio cell on EVERY mount —
