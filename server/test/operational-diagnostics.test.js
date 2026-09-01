@@ -1,0 +1,174 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const repoRoot = path.join(__dirname, '..', '..');
+
+function fixtureDb({ displays = [], nodes = [] } = {}) {
+  const statements = [];
+  return {
+    statements,
+    prepare(sql) {
+      const normalized = String(sql).replace(/\s+/g, ' ').trim();
+      statements.push(normalized);
+      assert.match(normalized, /^SELECT\b/i, 'diagnostics may prepare SELECT statements only');
+      return {
+        all() {
+          if (/FROM devices d/i.test(normalized)) return displays;
+          if (/FROM managed_nodes/i.test(normalized)) return nodes;
+          throw new Error(`Unexpected diagnostics query: ${normalized}`);
+        },
+      };
+    },
+  };
+}
+
+test('operational diagnostics are read-only, bounded, and use authoritative existing rows', () => {
+  const { buildOperationalDiagnostics } = require('../lib/operational-diagnostics');
+  const now = 1_800_000_000_000;
+  const db = fixtureDb({
+    displays: Array.from({ length: 60 }, (_, index) => ({
+      id: `tv-${index + 1}`,
+      name: index === 0 ? 'Front Left' : `TV ${index + 1}`,
+      status: 'online',
+      last_heartbeat: Math.floor(now / 1000) - 4,
+      last_heartbeat_at: now - 3_000,
+      latest_route_confirmed_at: now - 2_000,
+      render_state: 'playing',
+      error_state: null,
+      current_content_id: 'content-1',
+      content_type: 'video',
+      muted: index !== 0 ? 1 : 0,
+      operator_muted: 0,
+      state_updated_at: now - 1_000,
+    })),
+    nodes: Array.from({ length: 30 }, (_, index) => ({
+      node_id: `node-${index + 1}`,
+      node_name: `Node ${index + 1}`,
+      node_type: 'p3',
+      last_heartbeat: Math.floor(now / 1000) - 5,
+      software_version: 'agent-1',
+      cache_size: 4096,
+      sync_status: 'ready',
+      network_state_json: JSON.stringify({ server_url_category: 'local_lan', reachability: 'reachable' }),
+      telemetry_json: JSON.stringify({ cache: { file_count: 12, manifest_count: 12, cached_manifest_count: 12, origin_category: 'local_lan' } }),
+    })),
+  });
+
+  const snapshot = buildOperationalDiagnostics(db, {
+    workspaceId: 'workspace-1',
+    roomId: 'classroom-1',
+    now,
+    heartbeatTimeoutMs: 45_000,
+    audioAuthorityDeviceId: 'tv-1',
+  });
+
+  assert.equal(snapshot.renderers.length, 50);
+  assert.equal(snapshot.nodes.length, 20);
+  assert.equal(snapshot.renderers[0].connected, true);
+  assert.equal(snapshot.renderers[0].latest_route_confirmation_at, now - 2_000);
+  assert.equal(snapshot.renderers[0].latest_render_confirmation.state, 'playing');
+  assert.deepEqual(snapshot.configured_audio_authority, {
+    device_id: 'tv-1',
+    device_name: 'Front Left',
+    configured: true,
+    connected: true,
+    muted: false,
+    operator_muted: false,
+  });
+  assert.equal(snapshot.nodes[0].origin_path, 'local_lan');
+  assert.equal(snapshot.nodes[0].cache.file_count, 12);
+  assert.equal(snapshot.health.status, 'healthy');
+  assert.ok(db.statements.every((sql) => /^SELECT\b/i.test(sql)));
+});
+
+test('missing and malformed telemetry degrade safely without inventing authority', () => {
+  const { buildOperationalDiagnostics } = require('../lib/operational-diagnostics');
+  const now = 1_800_000_000_000;
+  const db = fixtureDb({
+    displays: [{
+      id: 'tv-1', name: 'TV 1', status: 'online', last_heartbeat: null,
+      last_heartbeat_at: null, last_ack_at: null, render_state: null,
+      error_state: '{not-json', muted: null, operator_muted: null,
+    }],
+    nodes: [{
+      node_id: 'node-1', node_name: 'P3', last_heartbeat: null, cache_size: null,
+      network_state_json: '{broken', telemetry_json: '[]',
+    }],
+  });
+
+  const snapshot = buildOperationalDiagnostics(db, {
+    workspaceId: 'workspace-1', roomId: 'classroom-1', now,
+    heartbeatTimeoutMs: 45_000, audioAuthorityDeviceId: 'missing-device',
+  });
+
+  assert.equal(snapshot.renderers[0].connected, false);
+  assert.equal(snapshot.renderers[0].heartbeat_age_sec, null);
+  assert.deepEqual(snapshot.renderers[0].latest_render_confirmation, { state: 'unknown', at: null, error: '{not-json' });
+  assert.deepEqual(snapshot.nodes[0].cache, {
+    size_bytes: null, file_count: null, manifest_count: null,
+    cached_manifest_count: null, sync_status: 'unknown',
+  });
+  assert.equal(snapshot.nodes[0].origin_path, 'unknown');
+  assert.equal(snapshot.configured_audio_authority.configured, true);
+  assert.equal(snapshot.configured_audio_authority.device_name, null);
+  assert.equal(snapshot.health.status, 'degraded');
+  assert.ok(snapshot.health.reasons.includes('configured_audio_authority_not_found'));
+});
+
+test('a generic command acknowledgement is not reported as a confirmed route', () => {
+  const { buildOperationalDiagnostics } = require('../lib/operational-diagnostics');
+  const db = fixtureDb({ displays: [{
+    id: 'tv-1', name: 'TV 1', status: 'online', last_heartbeat: 1_800_000_000,
+    last_ack_at: 1_800_000_000_000, latest_route_confirmed_at: null,
+  }] });
+  const snapshot = buildOperationalDiagnostics(db, {
+    workspaceId: 'workspace-1', now: 1_800_000_001_000,
+    audioAuthorityDeviceId: 'tv-1', heartbeatTimeoutMs: 45_000,
+  });
+  assert.equal(snapshot.renderers[0].latest_route_confirmation_at, null);
+});
+
+test('unavailable read models return a bounded degraded snapshot instead of throwing', () => {
+  const { buildOperationalDiagnostics } = require('../lib/operational-diagnostics');
+  const db = { prepare() { throw new Error('read model unavailable'); } };
+  const snapshot = buildOperationalDiagnostics(db, {
+    workspaceId: 'workspace-1', now: 1_800_000_001_000,
+  });
+  assert.deepEqual(snapshot.renderers, []);
+  assert.deepEqual(snapshot.nodes, []);
+  assert.equal(snapshot.configured_audio_authority.configured, false);
+  assert.deepEqual(snapshot.health.reasons, [
+    'no_renderer_telemetry',
+    'configured_audio_authority_not_configured',
+    'no_room_node_telemetry',
+  ]);
+});
+
+test('diagnostics reject missing database and workspace scope', () => {
+  const { buildOperationalDiagnostics } = require('../lib/operational-diagnostics');
+  assert.throws(() => buildOperationalDiagnostics(null, { workspaceId: 'workspace-1' }), /database/i);
+  assert.throws(() => buildOperationalDiagnostics(fixtureDb(), {}), /workspaceId/);
+});
+
+test('diagnostics UI is collapsed, fetches on demand, and cannot emit device commands', () => {
+  const adminSource = fs.readFileSync(path.join(repoRoot, 'frontend', 'js', 'views', 'admin.js'), 'utf8');
+  const routeSource = fs.readFileSync(path.join(repoRoot, 'server', 'routes', 'operational-diagnostics.js'), 'utf8');
+  const serverSource = fs.readFileSync(path.join(repoRoot, 'server', 'server.js'), 'utf8');
+
+  assert.match(adminSource, /<details[^>]+id="operationalDiagnostics"/);
+  assert.doesNotMatch(adminSource, /<details[^>]+id="operationalDiagnostics"[^>]+open/);
+  assert.match(adminSource, /addEventListener\('toggle'/);
+  assert.match(adminSource, /api\.getOperationalDiagnostics\(\)/);
+  assert.match(adminSource, /version\.git_tree/);
+  assert.match(adminSource, /version\.build_id/);
+  assert.match(adminSource, /version\.image_tag/);
+  assert.match(adminSource, /version\.branch/);
+  assert.doesNotMatch(adminSource, /device:command|sendCommand|setInterval/);
+  assert.match(routeSource, /router\.get\('\/'/);
+  assert.doesNotMatch(routeSource, /router\.(post|put|patch|delete)|\.run\(|\.exec\(|\.emit\(/i);
+  assert.match(serverSource, /\/api\/operational-diagnostics/);
+});
