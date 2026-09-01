@@ -113,6 +113,10 @@ Schema migrations run automatically on first boot — no manual migration comman
 | `DISABLE_HOMEPAGE` | Redirect `/` to `/app` instead of serving the marketing landing page. For internal-only self-hosted deployments. | `false` |
 | `APP_URL` | Your public URL (used for Stripe callbacks and invite-accept URLs in emailed invites) | _(none)_ |
 | `JWT_SECRET` | JWT signing key (auto-generated if not set) | _(auto)_ |
+| `MBFD_HUB_FEDERATION_TOKEN` | Dedicated service credential shared only with Hub for one-time code exchange | _(required for Hub sign-in)_ |
+| `MBFD_HUB_AUTHORIZE_URL` | Exact Hub authorization endpoint | `https://www.mbfdhub.com/auth/media-control/authorize` |
+| `MBFD_HUB_ISSUER` | Exact Hub issuer and exchange origin | `https://www.mbfdhub.com` |
+| `MBFD_HUB_CALLBACK_URL` | Exact Media Control callback allowlisted by Hub | `https://media.mbfdhub.com/api/auth/hub/callback` |
 | `SSL_CERT` | Path to SSL certificate | `server/certs/cert.pem` |
 | `SSL_KEY` | Path to SSL private key | `server/certs/key.pem` |
 | `PING_INTERVAL` | Socket.IO Engine.IO ping interval (ms). Raise for slow TV WebKits that miss pongs under decode load. | `30000` |

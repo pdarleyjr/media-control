@@ -51,6 +51,7 @@ const { attachCaptionsToItems } = require('../lib/content-captions');
 const {
   bindEnrollmentFingerprint,
   findReusablePendingEnrollment,
+  pairingCodeExpiresAt,
 } = require('../lib/device-enrollment');
 const { parseStoredLayout, groupForDevice, resolveEffectiveLayoutLeaders } = require('../lib/wall-layout');
 const { buildUniversalWallGeometry, buildLayoutAssignment } = require('../lib/wall-geometry');
@@ -852,7 +853,7 @@ module.exports = function setupDeviceSocket(io, dependencies = {}) {
       // Socket.IO reconnects can occur before an operator claims a pairing
       // code. Reuse that one provisional row instead of minting another
       // Unnamed Display on every transport flap/page reload.
-      if (!device_id && pairing_code) {
+      if (!device_id && /^\d{6}$/.test(String(pairing_code || ''))) {
         const pendingDevice = findReusablePendingEnrollment(db, pairing_code);
         if (pendingDevice) {
           const newToken = generateDeviceToken();
@@ -866,6 +867,7 @@ module.exports = function setupDeviceSocket(io, dependencies = {}) {
           db.prepare(`
             UPDATE devices
             SET device_token = ?, status = 'provisioning',
+                pairing_expires_at = ?,
                 last_heartbeat = strftime('%s','now'), ip_address = ?,
                 android_version = ?, app_version = ?,
                 screen_width = ?, screen_height = ?,
@@ -873,6 +875,7 @@ module.exports = function setupDeviceSocket(io, dependencies = {}) {
             WHERE id = ?
           `).run(
             newToken,
+            pairingCodeExpiresAt(),
             getClientIp(socket),
             device_info?.android_version || null,
             device_info?.app_version || null,
@@ -1018,7 +1021,7 @@ module.exports = function setupDeviceSocket(io, dependencies = {}) {
         return;
       }
 
-      if (pairing_code) {
+      if (/^\d{6}$/.test(String(pairing_code || ''))) {
         // New device registering with pairing code — generate a device_token
         const id = uuidv4();
         const newToken = generateDeviceToken();
@@ -1026,10 +1029,10 @@ module.exports = function setupDeviceSocket(io, dependencies = {}) {
         authenticated = true;
 
         db.prepare(`
-          INSERT INTO devices (id, pairing_code, device_token, status, ip_address, android_version, app_version, screen_width, screen_height, last_heartbeat)
-          VALUES (?, ?, ?, 'provisioning', ?, ?, ?, ?, ?, strftime('%s','now'))
+          INSERT INTO devices (id, pairing_code, pairing_expires_at, device_token, status, ip_address, android_version, app_version, screen_width, screen_height, last_heartbeat)
+          VALUES (?, ?, ?, ?, 'provisioning', ?, ?, ?, ?, ?, strftime('%s','now'))
         `).run(
-          id, pairing_code, newToken, getClientIp(socket),
+          id, pairing_code, pairingCodeExpiresAt(), newToken, getClientIp(socket),
           device_info?.android_version || null,
           device_info?.app_version || null,
           device_info?.screen_width || null,
@@ -1048,7 +1051,7 @@ module.exports = function setupDeviceSocket(io, dependencies = {}) {
         // Dashboards refresh /api/devices/unassigned on poll for the
         // platform_admin pairing view.
         emitToDeviceWorkspace(dashboardNs, id, 'dashboard:device-added', db.prepare('SELECT * FROM devices WHERE id = ?').get(id));
-        console.log(`New device registered: ${id} with pairing code: ${pairing_code}`);
+        console.log(`New device registered for pairing: ${id}`);
       }
     });
 
@@ -1129,8 +1132,13 @@ module.exports = function setupDeviceSocket(io, dependencies = {}) {
         catch (e) { /* command-model heartbeat upsert is best-effort */ }
 
         try {
-          db.prepare("UPDATE devices SET status = 'online', last_heartbeat = strftime('%s','now'), updated_at = strftime('%s','now') WHERE id = ?")
-            .run(device_id);
+          db.prepare(`
+            UPDATE devices
+            SET status = 'online', last_heartbeat = strftime('%s','now'),
+                pairing_expires_at = CASE WHEN user_id IS NULL THEN ? ELSE pairing_expires_at END,
+                updated_at = strftime('%s','now')
+            WHERE id = ?
+          `).run(pairingCodeExpiresAt(), device_id);
         } catch (e) {
           console.warn(`heartbeat UPDATE devices failed for ${device_id}: ${e.message}`);
         }

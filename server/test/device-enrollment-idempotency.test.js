@@ -100,7 +100,7 @@ test('web player reconnects with provisional credentials instead of creating a f
   );
 
   assert.match(player, /config\.deviceId && \(config\.paired \|\| config\.deviceToken\)/);
-  assert.match(player, /const code = config\.pairingCode \|\| String\(/);
+  assert.match(player, /const code = config\.pairingCode \|\| securePairingCode\(\)/);
   assert.match(socket, /findReusablePendingEnrollment\(db, pairing_code\)/);
   assert.match(socket, /bindEnrollmentFingerprint\(db, fingerprint, id\)/);
   assert.doesNotMatch(

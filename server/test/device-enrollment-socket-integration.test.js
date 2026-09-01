@@ -11,6 +11,7 @@ installIsolatedTestDatabase('device-enrollment-socket');
 const { db } = require('../db/database');
 const setupDeviceSocket = require('../ws/deviceSocket');
 const commandQueue = require('../lib/command-queue');
+const { generatePairingCode } = require('../lib/device-enrollment');
 
 function once(socket, event, timeoutMs = 3000) {
   return new Promise((resolve, reject) => {
@@ -39,8 +40,9 @@ function register(client, payload) {
 
 test('pending reconnect is idempotent and an identical new display keeps a distinct identity', async () => {
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const firstCode = `first-${suffix}`;
-  const secondCode = `second-${suffix}`;
+  const firstCode = generatePairingCode();
+  let secondCode = generatePairingCode();
+  while (secondCode === firstCode) secondCode = generatePairingCode();
   const fingerprint = `identical-browser-${suffix}`;
   const httpServer = http.createServer();
   const io = new Server(httpServer, { transports: ['websocket'] });
@@ -109,7 +111,7 @@ test('pending reconnect is idempotent and an identical new display keeps a disti
 
 test('reconnect recovery exceptions keep the renderer fail-muted without releasing queued or stale policy', async () => {
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const pairingCode = `audio-failure-${suffix}`;
+  const pairingCode = generatePairingCode();
   const httpServer = http.createServer();
   const io = new Server(httpServer, { transports: ['websocket'] });
   let recoveryAttempts = 0;

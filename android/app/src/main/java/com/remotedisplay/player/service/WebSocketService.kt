@@ -18,6 +18,7 @@ import io.socket.client.IO
 import io.socket.client.Socket
 import org.json.JSONObject
 import java.net.URI
+import java.security.SecureRandom
 
 class WebSocketService : Service() {
 
@@ -349,7 +350,7 @@ class WebSocketService : Service() {
                         put("device_token", token)
                     }
                 } else {
-                    val pairingCode = (100000..999999).random().toString()
+                    val pairingCode = (100000 + SecureRandom().nextInt(900000)).toString()
                     put("pairing_code", pairingCode)
                     config.deviceId = ""
                     getSharedPreferences("remote_display", MODE_PRIVATE)

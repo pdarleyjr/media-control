@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS devices (
     user_id         TEXT REFERENCES users(id),
     name            TEXT NOT NULL DEFAULT 'Unnamed Display',
     pairing_code    TEXT UNIQUE,
+    pairing_expires_at INTEGER,
     status          TEXT NOT NULL DEFAULT 'offline',
     last_heartbeat  INTEGER,
     ip_address      TEXT,

@@ -13,8 +13,7 @@ const { logActivity, getClientIp } = require('../services/activity');
 const config = require('../config');
 
 // Resolve the workspace to embed in the user's JWT. Delegates to the shared
-// primary-workspace resolver so the local auth flow and the MBFD Hub user-sync
-// (routes/admin-sync.js) stay consistent: every individual login lands in the
+// primary-workspace resolver so every individual login lands in the
 // ONE shared room (the primary workspace) so displays are shared, while media
 // stays per-user. Additive only — see lib/primary-workspace.js.
 function ensureDefaultOrgForUser(user) {
@@ -498,6 +497,8 @@ router.put('/users/:id/password', requireAuth, requireAdmin, (req, res) => {
 router.get('/config', (req, res) => {
   const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
   res.json({
+    hubEnabled: !!config.hubAuth?.serviceToken,
+    hubStartUrl: '/api/auth/hub/start',
     googleEnabled: !!config.googleClientId,
     googleClientId: config.googleClientId,
     microsoftEnabled: !!config.microsoftClientId,
