@@ -205,16 +205,21 @@ test('stage repaint identity includes the authored web player URL', () => {
   assert.match(stage, /data-mc-media-identity/);
 });
 
-test('video previews reconcile seek and play state from the physical player', () => {
+test('video previews reconcile each physical clock report once without heartbeat seek loops', () => {
   const livePreview = read('frontend/js/views/media-control/live-preview.js');
   const main = read('frontend/js/views/media-control.js');
+  const clock = read('frontend/js/views/media-control/preview-clock-reconciliation.js');
 
   assert.match(livePreview, /data-mc-video="1"/);
   assert.match(livePreview, /data-mc-current-time/);
   assert.match(livePreview, /data-mc-paused/);
   assert.match(main, /video\.mc-live-embed\[data-mc-video="1"\]/);
-  assert.match(main, /Math\.abs\(video\.currentTime - target\) > 1\.25/);
-  assert.match(main, /if \(paused\) video\.pause\(\)/);
+  assert.match(main, /reconcilePreviewClock/);
+  assert.match(main, /video\.dataset\.mcSyncAnchor/);
+  assert.match(clock, /stateChanged: false/);
+  assert.match(clock, /shouldSeek: stateChanged/);
+  assert.doesNotMatch(main, /Math\.abs\(video\.currentTime - target\) > 1\.25/);
+  assert.match(main, /if \(!video\.paused\) video\.pause\(\)/);
   assert.match(main, /video\.play\(\)\.then/);
   assert.match(main, /data-mc-playback-error/);
   assert.match(main, /playRejections/);
