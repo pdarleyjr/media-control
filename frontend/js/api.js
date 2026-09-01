@@ -525,6 +525,9 @@ export const api = {
 
   // Admin status snapshots
   getNodeStatus: () => requestStatus('/status/nodes'),
+  getOperationalDiagnostics: () => request('/operational-diagnostics', {
+    headers: { 'Cache-Control': 'no-store' },
+  }),
 
   // Playlists
   getPlaylists: () => request('/playlists'),

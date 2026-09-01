@@ -379,6 +379,44 @@ test.describe('Phase 1 — Feature flag OFF: real app loads correctly', () => {
     assertNoErrors(errors, 'root redirect');
   });
 
+  test('1a2. operational diagnostics stay collapsed and opening them emits no device command', async ({ page }) => {
+    await setupAuth(page);
+    const diagnosticsRequests = [];
+    const commandRequests = [];
+    const commandFrames = [];
+    page.on('request', (request) => {
+      const url = new URL(request.url());
+      if (url.pathname === '/api/operational-diagnostics') diagnosticsRequests.push(request.method());
+      if (request.method() !== 'GET' && /\/api\/(broadcast|devices|groups|walls|displays)/.test(url.pathname)) {
+        commandRequests.push(`${request.method()} ${url.pathname}`);
+      }
+    });
+    page.on('websocket', (socket) => {
+      socket.on('framesent', ({ payload }) => {
+        const text = typeof payload === 'string' ? payload : payload.toString('utf8');
+        if (text.includes('dashboard:device-command')) commandFrames.push(text);
+      });
+    });
+
+    await page.goto(`${BASE_URL}/app#/admin`);
+    const details = page.locator('#operationalDiagnostics');
+    await expect(details).toBeVisible();
+    await expect(details).not.toHaveAttribute('open', '');
+    expect(diagnosticsRequests).toEqual([]);
+
+    const responsePromise = page.waitForResponse((response) => (
+      new URL(response.url()).pathname === '/api/operational-diagnostics'
+      && response.request().method() === 'GET'
+    ));
+    await details.locator('summary').click();
+    const response = await responsePromise;
+    expect(response.status()).toBe(200);
+    await expect(page.locator('#operationalDiagnosticsBody')).toContainText('Classroom renderers');
+    expect(diagnosticsRequests).toEqual(['GET']);
+    expect(commandRequests).toEqual([]);
+    expect(commandFrames).toEqual([]);
+  });
+
   test('1b. Authenticated #/control renders the Command Center', async ({ page }) => {
     const errors = attachErrorCollectors(page);
     await setupAuth(page);

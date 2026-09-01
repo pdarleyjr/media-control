@@ -32,11 +32,87 @@ export async function render(container) {
       <h3>Classroom Network Diagnostics</h3>
       <div id="networkDiagnostics"><p style="color:var(--text-muted)">${t('common.loading')}</p></div>
     </div>
+
+    <details class="settings-section" id="operationalDiagnostics">
+      <summary style="cursor:pointer;font-weight:600">Classroom Operations Diagnostics</summary>
+      <p style="color:var(--text-muted);font-size:12px;margin:10px 0">Read-only persisted state. Opening this panel does not contact or command classroom devices.</p>
+      <div id="operationalDiagnosticsBody"><p style="color:var(--text-muted)">Open to load the latest bounded snapshot.</p></div>
+    </details>
   `;
 
   loadUsers();
   loadSystem();
+  wireOperationalDiagnostics();
 
+}
+
+function formatAge(seconds) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value < 0) return 'Unknown';
+  if (value < 60) return `${Math.floor(value)}s ago`;
+  return `${Math.floor(value / 60)}m ago`;
+}
+
+function formatTime(value) {
+  const timestamp = Number(value);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return 'Not reported';
+  try { return new Date(timestamp).toLocaleString(); } catch { return 'Not reported'; }
+}
+
+function diagnosticStatus(value) {
+  return value === true
+    ? '<span style="color:var(--success)">Connected</span>'
+    : '<span style="color:var(--danger)">Offline / stale</span>';
+}
+
+async function loadOperationalDiagnostics() {
+  const body = document.getElementById('operationalDiagnosticsBody');
+  if (!body) return;
+  body.innerHTML = `<p style="color:var(--text-muted)">${t('common.loading')}</p>`;
+  try {
+    const data = await api.getOperationalDiagnostics();
+    const renderers = Array.isArray(data?.renderers) ? data.renderers : [];
+    const nodes = Array.isArray(data?.nodes) ? data.nodes : [];
+    const reasons = Array.isArray(data?.health?.reasons) ? data.health.reasons : [];
+    const owner = data?.audio_owner || {};
+    const healthColor = data?.health?.status === 'healthy' ? 'var(--success)' : 'var(--warning)';
+    body.innerHTML = `
+      <div class="info-grid">
+        <div class="info-card"><div class="info-card-label">Persisted health</div><div class="info-card-value small" style="color:${healthColor}">${esc(data?.health?.status || 'unknown')}</div><div style="font-size:11px;color:var(--text-muted)">${reasons.length ? esc(reasons.join(', ')) : 'No degraded persisted signals'}</div></div>
+        <div class="info-card"><div class="info-card-label">Audio owner</div><div class="info-card-value small">${esc(owner.device_name || owner.device_id || 'Not configured')}</div><div style="font-size:11px;color:var(--text-muted)">${diagnosticStatus(owner.connected)} · ${owner.muted === true ? 'Muted' : owner.muted === false ? 'Unmuted' : 'Mute unknown'}</div></div>
+        <div class="info-card"><div class="info-card-label">Snapshot generated</div><div class="info-card-value small">${esc(formatTime(Date.parse(data?.generated_at || '')))}</div><div style="font-size:11px;color:var(--text-muted)">No physical acceptance inferred</div></div>
+      </div>
+      <h4 style="margin:18px 0 8px">Classroom renderers (${renderers.length})</h4>
+      <div class="table-wrap"><table style="width:100%;border-collapse:collapse;font-size:12px;min-width:820px">
+        <thead><tr style="border-bottom:1px solid var(--border);text-align:left"><th style="padding:8px">Renderer</th><th style="padding:8px">Connection</th><th style="padding:8px">Route confirmation</th><th style="padding:8px">Render confirmation</th><th style="padding:8px">Content</th></tr></thead>
+        <tbody>${renderers.map((renderer) => `
+          <tr style="border-bottom:1px solid var(--border)"><td style="padding:8px"><strong>${esc(renderer?.name || renderer?.id || 'Unknown')}</strong><div style="color:var(--text-muted)">${esc(renderer?.id || '')}</div></td><td style="padding:8px">${diagnosticStatus(renderer?.connected)}<div style="color:var(--text-muted)">${esc(formatAge(renderer?.heartbeat_age_sec))}</div></td><td style="padding:8px">${esc(formatTime(renderer?.latest_route_confirmation_at))}</td><td style="padding:8px">${esc(renderer?.latest_render_confirmation?.state || 'unknown')}<div style="color:${renderer?.latest_render_confirmation?.error ? 'var(--danger)' : 'var(--text-muted)'}">${esc(renderer?.latest_render_confirmation?.error || formatTime(renderer?.latest_render_confirmation?.at))}</div></td><td style="padding:8px">${esc(renderer?.content?.type || 'Unknown')}<div style="color:var(--text-muted)">${esc(renderer?.content?.id || 'No content ID')}</div></td></tr>
+        `).join('') || '<tr><td colspan="5" style="padding:12px;color:var(--danger)">No renderer telemetry is available.</td></tr>'}</tbody>
+      </table></div>
+      <h4 style="margin:18px 0 8px">Room agents (${nodes.length})</h4>
+      <div class="table-wrap"><table style="width:100%;border-collapse:collapse;font-size:12px;min-width:720px">
+        <thead><tr style="border-bottom:1px solid var(--border);text-align:left"><th style="padding:8px">Agent</th><th style="padding:8px">Connection</th><th style="padding:8px">Origin path</th><th style="padding:8px">Cache</th></tr></thead>
+        <tbody>${nodes.map((node) => `
+          <tr style="border-bottom:1px solid var(--border)"><td style="padding:8px"><strong>${esc(node?.name || node?.id || 'Unknown')}</strong><div style="color:var(--text-muted)">${esc(node?.software_version || 'Version unknown')}</div></td><td style="padding:8px">${diagnosticStatus(node?.connected)}<div style="color:var(--text-muted)">${esc(formatAge(node?.heartbeat_age_sec))}</div></td><td style="padding:8px">${esc(node?.origin_path || 'unknown')}<div style="color:var(--text-muted)">${esc(node?.network?.reachability || 'unknown')}</div></td><td style="padding:8px">${esc(node?.cache?.sync_status || 'unknown')}<div style="color:var(--text-muted)">${node?.cache?.file_count != null && Number.isFinite(Number(node.cache.file_count)) ? `${Number(node.cache.file_count)} files` : 'File count unknown'} · ${node?.cache?.size_bytes != null && Number.isFinite(Number(node.cache.size_bytes)) ? `${Number(node.cache.size_bytes)} bytes` : 'Size unknown'}</div></td></tr>
+        `).join('') || '<tr><td colspan="4" style="padding:12px;color:var(--text-muted)">No room-agent telemetry is available.</td></tr>'}</tbody>
+      </table></div>
+      <button id="refreshOperationalDiagnostics" class="btn btn-secondary btn-sm" style="margin-top:12px">Refresh snapshot</button>
+    `;
+    document.getElementById('refreshOperationalDiagnostics')?.addEventListener('click', loadOperationalDiagnostics);
+  } catch (error) {
+    body.innerHTML = `<p style="color:var(--danger)">Diagnostics unavailable: ${esc(error?.message || 'Unknown error')}</p>`;
+  }
+}
+
+function wireOperationalDiagnostics() {
+  const details = document.getElementById('operationalDiagnostics');
+  if (!details) return;
+  let loaded = false;
+  details.addEventListener('toggle', () => {
+    if (!details.open || loaded) return;
+    loaded = true;
+    loadOperationalDiagnostics();
+  });
 }
 
 async function loadUsers() {
@@ -129,6 +205,10 @@ async function loadSystem() {
     el.innerHTML = `
       <div class="info-grid">
         <div class="info-card"><div class="info-card-label">Server commit</div><div class="info-card-value small">${esc(version.git_commit || 'Unknown')}</div></div>
+        <div class="info-card"><div class="info-card-label">Git tree</div><div class="info-card-value small">${esc(version.git_tree || 'Unknown')}</div></div>
+        <div class="info-card"><div class="info-card-label">Build ID</div><div class="info-card-value small">${esc(version.build_id || 'Unknown')}</div></div>
+        <div class="info-card"><div class="info-card-label">Image tag</div><div class="info-card-value small">${esc(version.image_tag || 'Unknown')}</div></div>
+        <div class="info-card"><div class="info-card-label">Branch</div><div class="info-card-value small">${esc(version.branch || 'Unknown')}</div></div>
         <div class="info-card"><div class="info-card-label">Frontend bundle</div><div class="info-card-value small">${esc(version.frontend_bundle_hash || 'Unknown')}</div></div>
         <div class="info-card"><div class="info-card-label">Player bundle</div><div class="info-card-value small">${esc(version.player_bundle_hash || 'Unknown')}</div></div>
         <div class="info-card"><div class="info-card-label">Build timestamp</div><div class="info-card-value small">${esc(version.build_timestamp || 'Unknown')}</div></div>

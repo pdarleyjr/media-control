@@ -1006,6 +1006,8 @@ app.use('/api/classroom-preparation', rateLimit(rateLimitOptions(60000, 60)));
 app.use('/api/classroom-preparation', requireAuth, resolveTenancy, require('./routes/classroom-preparation'));
 app.use('/api/media-observability', rateLimit(rateLimitOptions(60000, 60)));
 app.use('/api/media-observability', requireAuth, resolveTenancy, require('./routes/media-observability'));
+app.use('/api/operational-diagnostics', rateLimit(rateLimitOptions(60000, 30)));
+app.use('/api/operational-diagnostics', requireAuth, resolveTenancy, require('./routes/operational-diagnostics'));
 app.use('/api/live-stream', requireAuth, resolveTenancy, requireWorkspaceWrite, require('./routes/live-stream'));
 app.use('/api/peertube-replays', requireAuth, resolveTenancy, require('./routes/peertube-replays'));
 app.use('/api/activity', requireAuth, resolveTenancy, require('./routes/activity'));
