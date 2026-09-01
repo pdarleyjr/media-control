@@ -71,7 +71,7 @@ test('operational diagnostics are read-only, bounded, and use authoritative exis
   assert.equal(snapshot.renderers[0].connected, true);
   assert.equal(snapshot.renderers[0].latest_route_confirmation_at, now - 2_000);
   assert.equal(snapshot.renderers[0].latest_render_confirmation.state, 'playing');
-  assert.deepEqual(snapshot.audio_owner, {
+  assert.deepEqual(snapshot.configured_audio_authority, {
     device_id: 'tv-1',
     device_name: 'Front Left',
     configured: true,
@@ -113,10 +113,10 @@ test('missing and malformed telemetry degrade safely without inventing authority
     cached_manifest_count: null, sync_status: 'unknown',
   });
   assert.equal(snapshot.nodes[0].origin_path, 'unknown');
-  assert.equal(snapshot.audio_owner.configured, true);
-  assert.equal(snapshot.audio_owner.device_name, null);
+  assert.equal(snapshot.configured_audio_authority.configured, true);
+  assert.equal(snapshot.configured_audio_authority.device_name, null);
   assert.equal(snapshot.health.status, 'degraded');
-  assert.ok(snapshot.health.reasons.includes('audio_owner_not_found'));
+  assert.ok(snapshot.health.reasons.includes('configured_audio_authority_not_found'));
 });
 
 test('a generic command acknowledgement is not reported as a confirmed route', () => {
@@ -140,10 +140,10 @@ test('unavailable read models return a bounded degraded snapshot instead of thro
   });
   assert.deepEqual(snapshot.renderers, []);
   assert.deepEqual(snapshot.nodes, []);
-  assert.equal(snapshot.audio_owner.configured, false);
+  assert.equal(snapshot.configured_audio_authority.configured, false);
   assert.deepEqual(snapshot.health.reasons, [
     'no_renderer_telemetry',
-    'audio_owner_not_configured',
+    'configured_audio_authority_not_configured',
     'no_room_node_telemetry',
   ]);
 });

@@ -74,12 +74,12 @@ async function loadOperationalDiagnostics() {
     const renderers = Array.isArray(data?.renderers) ? data.renderers : [];
     const nodes = Array.isArray(data?.nodes) ? data.nodes : [];
     const reasons = Array.isArray(data?.health?.reasons) ? data.health.reasons : [];
-    const owner = data?.audio_owner || {};
+    const configuredAuthority = data?.configured_audio_authority || {};
     const healthColor = data?.health?.status === 'healthy' ? 'var(--success)' : 'var(--warning)';
     body.innerHTML = `
       <div class="info-grid">
         <div class="info-card"><div class="info-card-label">Persisted health</div><div class="info-card-value small" style="color:${healthColor}">${esc(data?.health?.status || 'unknown')}</div><div style="font-size:11px;color:var(--text-muted)">${reasons.length ? esc(reasons.join(', ')) : 'No degraded persisted signals'}</div></div>
-        <div class="info-card"><div class="info-card-label">Audio owner</div><div class="info-card-value small">${esc(owner.device_name || owner.device_id || 'Not configured')}</div><div style="font-size:11px;color:var(--text-muted)">${diagnosticStatus(owner.connected)} · ${owner.muted === true ? 'Muted' : owner.muted === false ? 'Unmuted' : 'Mute unknown'}</div></div>
+        <div class="info-card"><div class="info-card-label">Configured Audio Authority</div><div class="info-card-value small">${esc(configuredAuthority.device_name || configuredAuthority.device_id || 'Not configured')}</div><div style="font-size:11px;color:var(--text-muted)">Persisted ${diagnosticStatus(configuredAuthority.connected)} · ${configuredAuthority.muted === true ? 'Muted' : configuredAuthority.muted === false ? 'Unmuted' : 'Mute unknown'}</div></div>
         <div class="info-card"><div class="info-card-label">Snapshot generated</div><div class="info-card-value small">${esc(formatTime(Date.parse(data?.generated_at || '')))}</div><div style="font-size:11px;color:var(--text-muted)">No physical acceptance inferred</div></div>
       </div>
       <h4 style="margin:18px 0 8px">Classroom renderers (${renderers.length})</h4>

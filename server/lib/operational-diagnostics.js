@@ -148,7 +148,9 @@ function buildOperationalDiagnostics(db, options = {}) {
   const audioRenderer = configuredAudioId
     ? renderers.find((renderer) => renderer.id === configuredAudioId) || null
     : null;
-  const audioOwner = {
+  // This is the configured/pinned classroom authority, not the dynamic
+  // per-route audio-policy owner or a physical-audio observation.
+  const configuredAudioAuthority = {
     device_id: configuredAudioId,
     device_name: audioRenderer?.name || null,
     configured: configuredAudioId != null,
@@ -161,9 +163,9 @@ function buildOperationalDiagnostics(db, options = {}) {
   if (!renderers.length) reasons.push('no_renderer_telemetry');
   if (renderers.some((renderer) => !renderer.connected)) reasons.push('renderer_offline_or_stale');
   if (renderers.some((renderer) => renderer.latest_render_confirmation.error != null)) reasons.push('renderer_error_reported');
-  if (!audioOwner.configured) reasons.push('audio_owner_not_configured');
-  else if (!audioRenderer) reasons.push('audio_owner_not_found');
-  else if (!audioOwner.connected) reasons.push('audio_owner_offline_or_stale');
+  if (!configuredAudioAuthority.configured) reasons.push('configured_audio_authority_not_configured');
+  else if (!audioRenderer) reasons.push('configured_audio_authority_not_found');
+  else if (!configuredAudioAuthority.connected) reasons.push('configured_audio_authority_offline_or_stale');
   if (nodes.some((node) => !node.connected)) reasons.push('room_node_offline_or_stale');
   if (!nodes.length) reasons.push('no_room_node_telemetry');
   if (nodes.some((node) => node.network.degraded)) reasons.push('room_node_network_degraded');
@@ -180,7 +182,7 @@ function buildOperationalDiagnostics(db, options = {}) {
       basis: 'persisted renderer confirmations and latest managed-node heartbeat telemetry',
       physical_acceptance_observed: false,
     },
-    audio_owner: audioOwner,
+    configured_audio_authority: configuredAudioAuthority,
     renderers,
     nodes,
   };
