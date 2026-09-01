@@ -6,6 +6,11 @@ import { clearTarget as clearSocketTarget, identifyDevice, requestScreenshot, se
 import { createScreenshotPoller, getScreenshotPollMetrics } from '../services/screenshot-poll.js';
 import { COMMAND_TYPES } from '../player-protocol.js';
 import { mountTargetSelector } from './media-control/target-selector.js';
+import {
+  reconcileControlTarget,
+  wallTopologySignature,
+} from './media-control/target-reconciliation.js';
+import { reconcilePreviewClock } from './media-control/preview-clock-reconciliation.js';
 import { mountSpanSplit } from './media-control/span-split.js';
 import { mountActionDock } from './media-control/action-dock.js';
 import * as displayState from '../services/display-state.js';
@@ -207,7 +212,7 @@ async function fetchWalls() {
     const result = await api.getWalls();
     return Array.isArray(result) ? result : [];
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -268,10 +273,12 @@ function reconcileWallUi() {
   pruneSelection();
   targetApi?.setOptions?.(walls, commandCenterControlTargets(), routeableDisplays());
 
-  const activeRef = activeTarget?.id
-    ? `${activeTarget.type || 'display'}:${activeTarget.id}`
-    : null;
-  const refreshedTarget = validatePersistedTarget(activeRef) || chooseDefaultFocusTarget();
+  const reconciliation = reconcileControlTarget({
+    activeTarget,
+    validateTarget: validatePersistedTarget,
+    chooseDefaultTarget: chooseDefaultFocusTarget,
+  });
+  const refreshedTarget = reconciliation.target;
   if (refreshedTarget) {
     targetApi?.setActive?.(refreshedTarget);
     restoringTarget = true;
@@ -290,7 +297,13 @@ function reconcileWallUi() {
 async function refreshWallsFromSocket(generation) {
   const nextWalls = await fetchWalls();
   if (generation !== wallRefreshGeneration) return;
+  if (!Array.isArray(nextWalls)) return;
+  const previousTopology = wallTopologySignature(walls);
   applyWalls(nextWalls);
+  if (wallTopologySignature(walls) === previousTopology) {
+    targetApi?.setOptions?.(walls, commandCenterControlTargets(), routeableDisplays());
+    return;
+  }
   reconcileWallUi();
 }
 
@@ -302,7 +315,12 @@ function applyRoomSnapshotWalls(snapshot) {
     clearTimeout(wallRefreshTimer);
     wallRefreshTimer = null;
   }
+  const previousTopology = wallTopologySignature(walls);
   applyWalls(nextWalls);
+  if (wallTopologySignature(walls) === previousTopology) {
+    targetApi?.setOptions?.(walls, commandCenterControlTargets(), routeableDisplays());
+    return;
+  }
   reconcileWallUi();
 }
 
@@ -748,24 +766,29 @@ function refreshPreviewsInPlace() {
     const reported = Number(nowPlaying.currentTime ?? display.current_time ?? 0);
     if (!Number.isFinite(reported) || reported < 0) return;
     const paused = (nowPlaying.paused ?? display.paused) === true;
-    let target = reported;
     const rawUpdatedAt = Number(display.state_updated_at ?? nowPlaying.updated_at ?? 0);
     const updatedAt = rawUpdatedAt > 0 && rawUpdatedAt < 10_000_000_000
       ? rawUpdatedAt * 1000
       : rawUpdatedAt;
-    if (!paused && updatedAt > 0) {
-      target += Math.max(0, Math.min(5, (Date.now() - updatedAt) / 1000));
-    }
-    const duration = Number(nowPlaying.duration ?? display.duration);
-    if (Number.isFinite(duration) && duration > 0) target = Math.min(target, duration);
     const seek = () => {
-      if (Number.isFinite(video.duration) && Math.abs(video.currentTime - target) > 1.25) {
-        try { video.currentTime = target; } catch {}
+      const duration = Number(nowPlaying.duration ?? display.duration ?? video.duration);
+      const decision = reconcilePreviewClock({
+        previousAnchor: video.dataset.mcSyncAnchor || null,
+        currentTime: video.currentTime,
+        reportedTime: reported,
+        paused,
+        updatedAt,
+        duration,
+      });
+      if (decision.shouldSeek) {
+        try { video.currentTime = decision.targetTime; } catch {}
       }
+      video.dataset.mcSyncAnchor = decision.anchor || '';
       video.dataset.mcCurrentTime = String(reported);
       video.dataset.mcPaused = paused ? '1' : '0';
-      if (paused) video.pause();
-      else {
+      if (paused) {
+        if (!video.paused) video.pause();
+      } else if (video.paused) {
         video.play().then(() => {
           video.removeAttribute('data-mc-playback-error');
         }).catch((error) => {
