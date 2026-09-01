@@ -30,6 +30,15 @@ function parseCacheQuota(raw) {
 
 module.exports = {
   appName: process.env.APP_NAME || 'Media Control',
+  hubAuth: {
+    authorizeUrl: process.env.MBFD_HUB_AUTHORIZE_URL || 'https://www.mbfdhub.com/auth/media-control/authorize',
+    issuer: process.env.MBFD_HUB_ISSUER || 'https://www.mbfdhub.com',
+    audience: 'media-control',
+    callbackUrl: process.env.MBFD_HUB_CALLBACK_URL || 'https://media.mbfdhub.com/api/auth/hub/callback',
+    serviceToken: process.env.MBFD_HUB_FEDERATION_TOKEN || '',
+    stateTtlSeconds: 300,
+    sessionTtlSeconds: 900,
+  },
   port: process.env.PORT || 3001,
   httpsPort: process.env.HTTPS_PORT || 3443,
   // DB_PATH lets the SQLite file live OUTSIDE the code dir. In Docker the data

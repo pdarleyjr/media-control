@@ -2937,7 +2937,7 @@
         setupStatus.textContent = 'Authentication failed — enter the code below on the dashboard.';
         let code = config.pairingCode;
         if (!code) {
-          code = String(Math.floor(100000 + Math.random() * 900000));
+          code = securePairingCode();
           config.pairingCode = code;
           saveConfig(config);
         }
@@ -3851,13 +3851,20 @@
       });
     }
 
+    function securePairingCode() {
+      const values = new Uint32Array(1);
+      const limit = Math.floor(0x100000000 / 900000) * 900000;
+      do { globalThis.crypto.getRandomValues(values); } while (values[0] >= limit);
+      return String(100000 + (values[0] % 900000));
+    }
+
     function register() {
       const data = {};
       if (config.deviceId && (config.paired || config.deviceToken)) {
         data.device_id = config.deviceId;
         if (config.deviceToken) data.device_token = config.deviceToken;
       } else {
-        const code = config.pairingCode || String(Math.floor(100000 + Math.random() * 900000));
+        const code = config.pairingCode || securePairingCode();
         config.pairingCode = code;
         saveConfig(config);
         data.pairing_code = code;
@@ -3870,7 +3877,7 @@
       };
       // Browser fingerprint (survives localStorage clear)
       if (!isManagedProgramReceiver()) data.fingerprint = generateBrowserFingerprint();
-      console.log(`[register] device_id=${data.device_id || 'none'}, has_token=${!!data.device_token}, token_len=${data.device_token?.length || 0}, paired=${config.paired}, pairing_code=${data.pairing_code || 'none'}`);
+      console.log(`[register] device_id=${data.device_id || 'none'}, has_token=${!!data.device_token}, token_len=${data.device_token?.length || 0}, paired=${config.paired}, requests_pairing=${!!data.pairing_code}`);
       socket.emit('device:register', data);
     }
 

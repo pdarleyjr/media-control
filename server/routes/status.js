@@ -10,6 +10,7 @@ const { createTrustedUploadStorage } = require('../lib/trusted-upload-storage');
 const { PLATFORM_ROLES, requireAuth } = require('../middleware/auth');
 const nodeRegistry = require('../lib/node-registry');
 const performanceMetrics = require('../lib/performance-metrics');
+const { generatePairingCode, pairingCodeExpiresAt } = require('../lib/device-enrollment');
 
 const LAN_HEALTH_OBJECT_BYTES = 64 * 1024 * 1024;
 const LAN_HEALTH_COOLDOWN_MS = 5 * 60 * 1000;
@@ -434,8 +435,8 @@ router.post('/import', requireAuth, importUpload.single('file'), async (req, res
     for (const d of (data.devices || [])) {
       const newId = uuid.v4();
       idMap.devices[d.id] = newId;
-      const pairingCode = String(Math.floor(100000 + Math.random() * 900000));
-      db.prepare(`INSERT INTO devices (id, user_id, workspace_id, name, pairing_code, status, screen_width, screen_height, created_at) VALUES (?, ?, ?, ?, ?, 'provisioning', ?, ?, ?)`).run(newId, userId, workspaceId, d.name, pairingCode, d.screen_width || null, d.screen_height || null, d.created_at || Math.floor(Date.now() / 1000));
+      const pairingCode = generatePairingCode();
+      db.prepare(`INSERT INTO devices (id, user_id, workspace_id, name, pairing_code, pairing_expires_at, status, screen_width, screen_height, created_at) VALUES (?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?)`).run(newId, userId, workspaceId, d.name, pairingCode, pairingCodeExpiresAt(), d.screen_width || null, d.screen_height || null, d.created_at || Math.floor(Date.now() / 1000));
       stats.devices++;
     }
 

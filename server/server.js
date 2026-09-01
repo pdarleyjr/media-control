@@ -674,8 +674,16 @@ app.use('/api/auth/register', rateLimit(rateLimitOptions(60000, 5))); // 5 regis
 // cap the blast radius to 20 resets/min/IP. Express matches the longest
 // path prefix first, so this fires before /api/auth catches the request.
 app.use('/api/auth/users', rateLimit(rateLimitOptions(60000, 20)));
+const { createHubFederationRouter } = require('./routes/hub-federation');
+const { db: hubFederationDb } = require('./db/database');
+const { ensurePrimaryWorkspaceMembership } = require('./lib/primary-workspace');
+app.use('/api/auth/hub', rateLimit(rateLimitOptions(60000, 30)));
+app.use('/api/auth/hub', createHubFederationRouter({
+  db: hubFederationDb,
+  config,
+  ensureWorkspace: (user) => ensurePrimaryWorkspaceMembership(hubFederationDb, user),
+}));
 app.use('/api/auth', require('./routes/auth'));
-app.use('/api/admin', require('./routes/admin-sync'));
 // Rate limit pairing to prevent brute force (5 attempts per minute per IP)
 app.use('/api/provision/pair', rateLimit(rateLimitOptions(60000, 5)));
 // Rate limit expensive operations
@@ -1271,10 +1279,17 @@ app.post('/api/provision/pair', requireAuth, resolveTenancy, requireWorkspaceWri
 
   const device = db.prepare('SELECT * FROM devices WHERE pairing_code = ?').get(pairing_code);
   if (!device) return res.status(404).json({ error: 'No device found with that pairing code' });
+  const { isPairingCodeActive } = require('./lib/device-enrollment');
+  if (!isPairingCodeActive(device)) return res.status(410).json({ error: 'Pairing code expired. Refresh the display for a new code.' });
 
   const deviceName = name || 'Display ' + (db.prepare('SELECT COUNT(*) as count FROM devices WHERE user_id = ?').get(req.user.id).count + 1);
-  db.prepare("UPDATE devices SET pairing_code = NULL, name = ?, user_id = ?, workspace_id = ?, status = 'online', updated_at = strftime('%s','now') WHERE id = ?")
-    .run(deviceName, req.user.id, req.workspaceId, device.id);
+  const claimed = db.prepare(`
+    UPDATE devices
+    SET pairing_code = NULL, pairing_expires_at = NULL, name = ?, user_id = ?,
+        workspace_id = ?, status = 'online', updated_at = strftime('%s','now')
+    WHERE id = ? AND pairing_code = ? AND pairing_expires_at > strftime('%s','now')
+  `).run(deviceName, req.user.id, req.workspaceId, device.id, pairing_code);
+  if (claimed.changes !== 1) return res.status(409).json({ error: 'Pairing code was already used or expired.' });
 
   // Link fingerprint to user
   db.prepare("UPDATE device_fingerprints SET user_id = ?, device_id = ? WHERE device_id = ?")

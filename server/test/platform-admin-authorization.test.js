@@ -125,7 +125,7 @@ test('role-management writes and active admin UI use only canonical role names',
   assert.match(english, /'admin\.role\.platform_admin': 'Platform admin'/);
 });
 
-test('authoritative sync canonicalizes legacy roles instead of reintroducing them', () => {
+test('role canonicalization remains available without a password-sync receiver', () => {
   assert.equal(canonicalGlobalRole('platform_admin'), 'platform_admin');
   assert.equal(canonicalGlobalRole('superadmin'), 'platform_admin');
   assert.equal(canonicalGlobalRole('admin'), 'user');
@@ -133,7 +133,5 @@ test('authoritative sync canonicalizes legacy roles instead of reintroducing the
   assert.equal(canonicalGlobalRole('unknown'), 'user');
   assert.equal(canonicalGlobalRole(null), 'user');
 
-  const syncRoute = fs.readFileSync(path.join(__dirname, '..', 'routes', 'admin-sync.js'), 'utf8');
-  assert.match(syncRoute, /canonicalGlobalRole\(role\)/);
-  assert.doesNotMatch(syncRoute, /ALLOWED_SYNC_ROLES/);
+  assert.equal(fs.existsSync(path.join(__dirname, '..', 'routes', 'admin-sync.js')), false);
 });

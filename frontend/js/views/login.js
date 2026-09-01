@@ -32,6 +32,11 @@ export async function render(container) {
         </div>
 
         <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:24px">
+          ${config.hubEnabled && !isSetup ? `
+          <button class="btn btn-primary" id="hubSignInBtn" style="width:100%;justify-content:center;padding:10px;margin-bottom:16px">
+            Continue with MBFD Hub
+          </button>
+          ` : ''}
           <!-- Local Auth Form -->
           <div id="localAuthForm">
             <div class="form-group">
@@ -143,6 +148,10 @@ function setupHandlers(config, isSetup) {
     el.textContent = msg;
     el.style.display = 'block';
   };
+
+  document.getElementById('hubSignInBtn')?.addEventListener('click', () => {
+    window.location.assign(config.hubStartUrl);
+  });
 
   // Support token login
   document.getElementById('supportLoginBtn')?.addEventListener('click', async () => {

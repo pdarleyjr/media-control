@@ -225,6 +225,7 @@ const migrations = [
   // 2026-07-24: display retirement. Retired displays are hidden from target
   // selectors and screenshot polling but preserved for historical data.
   "ALTER TABLE devices ADD COLUMN retired INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE devices ADD COLUMN pairing_expires_at INTEGER",
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (e) { /* already exists */ }

@@ -1,9 +1,27 @@
 'use strict';
 
+const crypto = require('node:crypto');
+
+const PAIRING_CODE_TTL_SECONDS = 600;
+
 function normalizedText(value, maxLength) {
   const text = String(value || '').trim();
   if (!text || text.length > maxLength) return '';
   return text;
+}
+
+function generatePairingCode() {
+  return String(crypto.randomInt(100000, 1000000));
+}
+
+function pairingCodeExpiresAt(now = Math.floor(Date.now() / 1000)) {
+  return Number(now) + PAIRING_CODE_TTL_SECONDS;
+}
+
+function isPairingCodeActive(device, now = Math.floor(Date.now() / 1000)) {
+  return /^\d{6}$/.test(String(device?.pairing_code || ''))
+    && Number.isFinite(Number(device?.pairing_expires_at))
+    && Number(device.pairing_expires_at) > Number(now);
 }
 
 function findReusablePendingEnrollment(db, pairingCode) {
@@ -57,4 +75,7 @@ function bindEnrollmentFingerprint(db, fingerprint, deviceId) {
 module.exports = {
   bindEnrollmentFingerprint,
   findReusablePendingEnrollment,
+  generatePairingCode,
+  pairingCodeExpiresAt,
+  isPairingCodeActive,
 };
