@@ -41,7 +41,7 @@ function statusText(config, source) {
       level,
     });
   }
-  return t('mc.live_source.guest_ready', {
+  return t('mc.live_source.computer_ready', {
     resolution: signal.resolution || t('mc.live_source.unknown'),
     frameRate: signal.frame_rate ?? t('mc.live_source.unknown'),
     audio: signal.embedded_audio_detected
@@ -142,9 +142,10 @@ export async function renderManagedSourcesTab(container, { selectedIds, onAfterS
   try {
     const response = await api.liveSources.list();
     const byId = new Map((response.sources || []).map((source) => [source.id, source]));
+    // All three managed-source tiles stay visible. An unavailable
+    // source remains visibly disabled and has no route/drag payload.
     const visible = LIVE_SOURCE_CATALOG
-      .map((config) => ({ config, source: byId.get(config.id) || { id: config.id, available: false, signal: {} } }))
-      .filter(({ config, source }) => config.alwaysVisible || source.available === true);
+      .map((config) => ({ config, source: byId.get(config.id) || { id: config.id, available: false, signal: {} } }));
 
     container.innerHTML = `
       <div class="mc-live-source-heading">

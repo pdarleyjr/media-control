@@ -501,8 +501,9 @@ app.get('/player/news-stream', async (req, res) => {
 });
 app.get('/player/hls-proxy', handleProxy);
 
-// Canonical live-source gateway. It exposes only the synchronized Anpviz/TONOR
-// and ZowieBox Guest Computer MediaMTX paths, and rewrites HLS assets to HTTPS.
+// Canonical live-source gateway. It exposes only the synchronized Anpviz/TONOR,
+// ZowieBox Podium Computer, and wired Guest Computer MediaMTX paths, and
+// rewrites HLS assets to HTTPS.
 const { handleClassroomCamera } = require('./lib/classroom-camera');
 app.get('/player/live-source/:camera/*', handleClassroomCamera);
 
@@ -1252,6 +1253,11 @@ startAlertService(io);
 
 // Handle provisioning via WebSocket notification
 const { db } = require('./db/database');
+// Live-source health is server-owned. Start it before accepting connections so
+// stale computer state from a previous process cannot authorize routing.
+const { managedLiveSourceHealth } = require('./lib/managed-live-source-health');
+void managedLiveSourceHealth.start();
+server.once('close', () => managedLiveSourceHealth.stop());
 // Override provision to also notify device via WS
 app.post('/api/provision/pair', requireAuth, resolveTenancy, requireWorkspaceWrite, (req, res) => {
   const { pairing_code, name } = req.body;

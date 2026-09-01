@@ -108,8 +108,13 @@ test('span payload revision follows the published assignment instead of stale re
     db.prepare('UPDATE video_walls SET leader_device_id = ? WHERE id = ?').run(leftId, wallId);
     db.prepare(`
       INSERT INTO display_states
-        (target_type, target_id, workspace_id, current_content_id, render_state, state_revision)
-      VALUES ('display', ?, ?, ?, 'playing', 1)
+        (target_type, target_id, workspace_id, current_content_id, slide_index, operator_muted, render_state, state_revision)
+      VALUES ('display', ?, ?, ?, 1, 1, 'playing', 8)
+    `).run(leftId, workspaceId, newContentId);
+    db.prepare(`
+      INSERT INTO display_states
+        (target_type, target_id, workspace_id, current_content_id, operator_muted, render_state, state_revision)
+      VALUES ('display', ?, ?, ?, 0, 'playing', 1)
     `).run(rightId, workspaceId, oldContentId);
 
     const beforeStateCatchup = deviceSocket.buildPlaylistPayload(rightId);
@@ -124,6 +129,8 @@ test('span payload revision follows the published assignment instead of stale re
     assert.equal(beforeStateCatchup.audio_policy.playlist_revision, beforeStateCatchup.playlist_revision);
     assert.equal(afterStateCatchup.audio_policy.playlist_revision, afterStateCatchup.playlist_revision);
     assert.equal(beforeStateCatchup.audio_policy.audio_allowed, true);
+    assert.equal(afterStateCatchup.display_state.operator_muted, false,
+      'span continuity must retain a follower\'s local operator intent, not copy the leader\'s mute');
   } finally {
     cleanup(prefix);
   }

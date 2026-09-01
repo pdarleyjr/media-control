@@ -10,6 +10,10 @@ const { accessContext } = require('../lib/tenancy');
 const { ELEVATED_ROLES } = require('../middleware/auth');
 const { ownedContentScope } = require('../lib/content-scope');
 const { contentUseDecision, contextFromRequest } = require('../lib/content-visibility');
+const {
+  managedComputerRouteFailureDetailInPlaylistItems,
+  managedComputerPlaylistDeliveryFailureDetail,
+} = require('../lib/managed-computer-routing');
 
 // Re-probe video duration with ffprobe if content.duration_sec is missing
 async function probeAndUpdateDuration(content) {
@@ -208,6 +212,14 @@ router.post('/:id/publish', requirePlaylistWrite, (req, res) => {
   // Snapshot shape (no pi.id) is intentional — published_snapshot is consumed
   // by devices and stored as JSON; row IDs there would be misleading.
   const snapshotItems = buildSnapshotItems(req.params.id);
+  const managedComputerFailure = managedComputerRouteFailureDetailInPlaylistItems(snapshotItems);
+  if (managedComputerFailure) {
+    return res.status(409).json({
+      error: managedComputerFailure.message,
+      code: managedComputerFailure.code,
+      source_id: managedComputerFailure.sourceId,
+    });
+  }
   db.prepare("UPDATE playlists SET status = 'published', published_snapshot = ?, updated_at = strftime('%s','now') WHERE id = ?")
     .run(JSON.stringify(snapshotItems), req.params.id);
   pushToDevices(req.params.id, req);
@@ -482,6 +494,18 @@ router.post('/:id/assign', requirePlaylistWrite, (req, res) => {
   if (!device) return res.status(404).json({ error: 'Device not found' });
   if (device.workspace_id !== req.playlist.workspace_id) {
     return res.status(403).json({ error: 'Device is not in this playlist\'s workspace' });
+  }
+
+  // Guard the exact published snapshot that deviceSocket will reconstruct.
+  // Draft item editing remains allowed; only a durable device assignment is a
+  // live delivery boundary.
+  const managedComputerFailure = managedComputerPlaylistDeliveryFailureDetail(req.params.id);
+  if (managedComputerFailure) {
+    return res.status(409).json({
+      error: managedComputerFailure.message,
+      code: managedComputerFailure.code,
+      source_id: managedComputerFailure.sourceId,
+    });
   }
 
   db.prepare('UPDATE devices SET playlist_id = ? WHERE id = ?').run(req.params.id, device_id);

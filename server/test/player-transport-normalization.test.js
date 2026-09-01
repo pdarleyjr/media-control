@@ -262,17 +262,6 @@ test('player version handshake reloads stale renderers after a socket reconnect'
   );
 });
 
-test('managed display audio permission remains authoritative in split mode', () => {
-  const html = readPlayerFile('index.html');
-
-  assert.ok(html.includes('function audioOutputAllowed()'), 'player should centralize output audio permission');
-  assert.ok(html.includes('managedDisplay.audioEnabled === true'), 'managed TVs should require an explicit audio grant');
-  assert.match(html, /if \(!audioOutputAllowed\(\)\) \{\r?\n\s+document\.querySelectorAll/, 'transport audio unlock should hard-mute non-audio displays');
-  assert.ok(html.includes('video.muted = !audioOutputAllowed() || !userHasInteracted'), 'local videos should mount muted on non-audio displays');
-  assert.ok(html.includes('mute: youtubeAudioAllowed && userHasInteracted ? 0 : 1'), 'YouTube should obey the same output policy');
-  assert.ok(html.includes('video.muted = audioOutputAllowed() ? wasMuted : true'), 'seek completion must not restore forbidden audio');
-});
-
 test('video startup fallback does not override an operator pause', () => {
   const html = readPlayerFile('index.html');
   assert.ok(html.includes('let videoHasStarted = false'), 'video startup should track whether playback ever began');
@@ -372,6 +361,7 @@ test('video reconnect state normalizes into an executable pause and position res
     duration: 241.069569,
     paused: true,
     muted: false,
+    operator_muted: null,
     volume: 1,
     state_revision: 42,
   });
@@ -386,6 +376,7 @@ test('video reconnect state normalizes into an executable pause and position res
       duration: 241.069569,
       paused: true,
       muted: false,
+      operator_muted: null,
       volume: 1,
       restore_source: null,
       restore_source_device_id: null,

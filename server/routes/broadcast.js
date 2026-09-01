@@ -38,6 +38,10 @@ const { buildBroadcastPreflight } = require('../lib/broadcast-preflight');
 const cameraControl = require('../lib/camera-control-client');
 const { ELEVATED_ROLES } = require('../middleware/auth');
 const {
+  managedComputerRouteFailureDetail,
+  managedComputerPlaylistDeliveryFailureDetail,
+} = require('../lib/managed-computer-routing');
+const {
   buildAudioPolicy,
   findAudioPolicyParticipants,
   isClassroomRendererDevice,
@@ -223,12 +227,14 @@ router.post('/', async (req, res) => {
   if (sourceFields.length !== 1) {
     return res.status(400).json({ error: 'exactly one of content_id, remote_url, playlist_id, or presentation_id is required' });
   }
+  let contentForBroadcast = null;
   if (content_id) {
     const decision = contentUseDecision(db, String(content_id), req.workspaceId, contextFromRequest(req));
     if (!decision.content) return res.status(404).json({ error: 'Content not found' });
     if (!decision.allowed) return res.status(403).json({ error: decision.reason });
     const readiness = contentBroadcastReadiness(db, decision.content);
     if (!readiness.ready) return res.status(readiness.status).json(readiness);
+    contentForBroadcast = decision.content;
   }
 
   // SSRF gate: app-owned root-relative player/content paths are rendered by the
@@ -324,6 +330,22 @@ router.post('/', async (req, res) => {
   const targetingAll = totalInWorkspace > 0 && physicalTargets.length === totalInWorkspace;
   if (targetingAll && confirm_all !== true) {
     return res.status(409).json({ code: 'CONFIRM_ALL_REQUIRED', count: totalInWorkspace });
+  }
+
+  // This preflight intentionally occurs before creating a delivery request,
+  // touching Live Program state, or fencing audio. Scene Engine repeats the
+  // same guard at commit time to close the later TOCTOU window.
+  const managedComputerFailure = contentForBroadcast
+    ? managedComputerRouteFailureDetail(contentForBroadcast.remote_url)
+    : playlist_id
+      ? managedComputerPlaylistDeliveryFailureDetail(playlist_id)
+      : managedComputerRouteFailureDetail(effectiveRemoteUrl);
+  if (managedComputerFailure) {
+    return res.status(409).json({
+      error: managedComputerFailure.message,
+      code: managedComputerFailure.code,
+      source_id: managedComputerFailure.sourceId,
+    });
   }
 
   // All read-only validation and the operator confirmation gate have passed.

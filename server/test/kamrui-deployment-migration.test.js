@@ -93,21 +93,35 @@ test('Linux deployment artifacts are exported with LF line endings', () => {
   assert.doesNotMatch(helper, /\r/);
 });
 
-test('MediaMTX renderer writes secrets only to the protected destination', (t) => {
+test('MediaMTX renderer renders the complete security topology without emitting credentials', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mbfd-mediamtx-render-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const envPath = path.join(root, 'camera.env');
-  const templatePath = path.join(root, 'mediamtx.yml.tpl');
+  const templatePath = path.join(edgeRoot, 'mediamtx.yml.tpl');
   const outputPath = path.join(root, 'mediamtx.yml');
-  const cameraSecret = 'rtsp://camera-user:camera-secret@example.invalid/main';
-  const guestSecret = 'rtsp://guest-user:guest-secret@example.invalid/main';
+  const anpvizRtspUrl = 'rtsp://anpviz-test:anpviz-test-password@192.0.2.10:554/Streaming/Channels/101';
+  const zowieboxRtspUrl = 'rtsp://zowiebox-test:zowiebox-test-password@198.51.100.10:554/main/av';
+  const kamruiLanIp = '192.0.2.20';
+  const kamruiTailscaleIp = '198.51.100.20';
+  const p3PublisherLanIp = '192.0.2.30';
+  const p3PublisherTailscaleIp = '198.51.100.30';
+  const guestPublisherLanIp = '203.0.113.40';
+  const guestPublisherUser = 'fixture-guest-obs';
+  const guestPublisherPasswordHash = 'sha256:5ouY7uMmer2LsXqwy6C8hnjV3oTbxPjE8RAsagW4mXE=';
   fs.writeFileSync(
     envPath,
-    `ANPVIZ_RTSP_URL=${cameraSecret}\nZOWIEBOX_RTSP_URL=${guestSecret}\n`,
-  );
-  fs.writeFileSync(
-    templatePath,
-    'camera: __ANPVIZ_RTSP_URL__\nguest: __ZOWIEBOX_RTSP_URL__\n',
+    [
+      `ANPVIZ_RTSP_URL=${anpvizRtspUrl}`,
+      `ZOWIEBOX_RTSP_URL=${zowieboxRtspUrl}`,
+      `KAMRUI_LAN_IP=${kamruiLanIp}`,
+      `KAMRUI_TAILSCALE_IP=${kamruiTailscaleIp}`,
+      `P3_PUBLISHER_LAN_IP=${p3PublisherLanIp}`,
+      `P3_PUBLISHER_TAILSCALE_IP=${p3PublisherTailscaleIp}`,
+      `GUEST_RTMP_PUBLISHER_LAN_IP=${guestPublisherLanIp}`,
+      `GUEST_RTMP_PUBLISHER_USER=${guestPublisherUser}`,
+      `GUEST_RTMP_PUBLISHER_PASSWORD_HASH=${guestPublisherPasswordHash}`,
+      '',
+    ].join('\n'),
   );
 
   const python = process.platform === 'win32' ? 'python' : 'python3';
@@ -121,8 +135,81 @@ test('MediaMTX renderer writes secrets only to the protected destination', (t) =
   assert.equal(rendered.status, 0, rendered.stderr);
   assert.equal(rendered.stdout, '');
   assert.equal(rendered.stderr, '');
-  assert.equal(
-    fs.readFileSync(outputPath, 'utf8').replace(/\r\n/g, '\n'),
-    `camera: ${cameraSecret}\nguest: ${guestSecret}\n`,
+  const renderedConfig = fs.readFileSync(outputPath, 'utf8').replace(/\r\n/g, '\n');
+  assert.ok(
+    renderedConfig.includes(`source: ${JSON.stringify(anpvizRtspUrl)}`),
+    'renders the Anpviz RTSP source',
   );
+  assert.ok(
+    renderedConfig.includes(`source: ${JSON.stringify(zowieboxRtspUrl)}`),
+    'renders the ZowieBox RTSP source',
+  );
+  assert.ok(
+    renderedConfig.includes(`rtmpAddress: ${JSON.stringify(`${kamruiLanIp}:1935`)}`),
+    'renders the KAMRUI LAN-only RTMP listener',
+  );
+  assert.ok(
+    renderedConfig.includes(
+      `webrtcAdditionalHosts: [${JSON.stringify(kamruiLanIp)}, ${JSON.stringify(kamruiTailscaleIp)}]`,
+    ),
+    'renders the KAMRUI LAN and Tailscale WebRTC hosts',
+  );
+
+  const authSection = renderedConfig.slice(
+    renderedConfig.indexOf('authInternalUsers:'),
+    renderedConfig.indexOf('\npaths:'),
+  );
+  const publisherPaths = (marker, label) => {
+    const start = authSection.indexOf(marker);
+    assert.ok(start >= 0, `${label} publisher restriction must be rendered`);
+    const end = authSection.indexOf('\n  - user:', start + 1);
+    const publisherBlock = authSection.slice(start, end === -1 ? authSection.length : end);
+    return [...publisherBlock.matchAll(/^\s+path: (.+)$/gm)].map((match) => match[1]);
+  };
+
+  const p3PublisherMarker = [
+    '  - user: any',
+    '    pass:',
+    `    ips: [${JSON.stringify(p3PublisherLanIp)}, ${JSON.stringify(p3PublisherTailscaleIp)}]`,
+    '    permissions:',
+    '      - action: publish',
+    '        path: anpviz-main',
+  ].join('\n');
+  assert.deepEqual(
+    publisherPaths(p3PublisherMarker, 'P3'),
+    ['anpviz-main'],
+    'P3 can publish only the existing Anpviz path',
+  );
+
+  const guestPublisherMarker = [
+    `  - user: ${JSON.stringify(guestPublisherUser)}`,
+    `    pass: ${JSON.stringify(guestPublisherPasswordHash)}`,
+    `    ips: [${JSON.stringify(guestPublisherLanIp)}]`,
+    '    permissions:',
+    '      - action: publish',
+    '        path: guest-computer',
+  ].join('\n');
+  assert.deepEqual(
+    publisherPaths(guestPublisherMarker, 'guest'),
+    ['guest-computer'],
+    'the guest publisher can publish only guest-computer',
+  );
+
+  assert.ok(
+    renderedConfig.includes([
+      '  podium-computer:',
+      `    source: ${JSON.stringify(zowieboxRtspUrl)}`,
+      '    rtspTransport: tcp',
+    ].join('\n')),
+    'podium-computer remains the ZowieBox RTSP source',
+  );
+  assert.ok(
+    renderedConfig.includes([
+      '  guest-computer:',
+      '    source: publisher',
+      '    overridePublisher: false',
+    ].join('\n')),
+    'guest-computer remains publisher-backed',
+  );
+  assert.doesNotMatch(renderedConfig, /__[A-Z0-9_]+__/);
 });

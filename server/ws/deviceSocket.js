@@ -60,6 +60,9 @@ const {
   programReceiverEventGuard,
   resolveProgramReceiverSnapshotTarget,
 } = require('../lib/program-receiver-policy');
+const {
+  managedComputerRouteFailureDetailInPlaylistItems,
+} = require('../lib/managed-computer-routing');
 
 function emitToDeviceWorkspace(dashboardNs, deviceId, event, payload) {
   emitToWorkspace(dashboardNs, deviceRoom(deviceId), event, payload);
@@ -285,7 +288,7 @@ function displayStateForDevice(deviceId) {
   if (!deviceId) return null;
   const row = db.prepare(`
     SELECT current_content_id, current_asset_id, content_type, layout_mode,
-           slide_index, slide_count, current_time, duration, paused, muted, volume,
+            slide_index, slide_count, current_time, duration, paused, muted, operator_muted, volume,
            local_asset_ready, render_state, error_state, screen_on, state_revision, updated_at
            , wall_id, layout_id, group_id, member_id, playback_revision, command_revision
     FROM display_states
@@ -304,6 +307,7 @@ function displayStateForDevice(deviceId) {
     duration: row.duration ?? null,
     paused: row.paused == null ? null : !!row.paused,
     muted: row.muted == null ? null : !!row.muted,
+    operator_muted: row.operator_muted == null ? null : !!row.operator_muted,
     volume: row.volume ?? null,
     local_asset_ready: row.local_asset_ready ?? null,
     render_state: row.render_state || null,
@@ -346,6 +350,10 @@ function restoreStateForDevice(deviceId, device, wall, layoutGroup) {
     // are per renderer. A follower must rebase from its own persisted counter
     // after a kiosk reload or every new report can be rejected as stale.
     state_revision: ownState?.state_revision ?? leaderState.state_revision,
+    // Operator mute is renderer-local intent. A leader's mute must not become
+    // a follower's stored preference merely because its continuity state is
+    // borrowed for a span wall.
+    operator_muted: ownState?.operator_muted ?? null,
     restore_source: 'layout_group_leader',
     restore_source_device_id: leaderDeviceId,
     wall_id: wall.id,
@@ -357,6 +365,40 @@ function restoreStateForDevice(deviceId, device, wall, layoutGroup) {
 
 // Build playlist payload with layout and zones
 // Reads from published_snapshot (Phase 3) so draft edits don't affect live devices
+function blockedPlaylistPayload(device, failure) {
+  const payload = {
+    assignments: [],
+    // Do not use the account-suspension branch here. The player deliberately
+    // returns early for suspended accounts, whereas a normal empty playlist
+    // applies audio_policy:null and tears down the current media element.
+    delivery_blocked: true,
+    delivery_block_code: failure.code,
+    delivery_block_reason: failure.message,
+    orientation: device?.orientation || 'landscape',
+    layout: null,
+    wall_config: null,
+    layout_assignment: null,
+    wall_layout: null,
+    layout_context: null,
+    device_geometry: {
+      width: device?.screen_width || null,
+      height: device?.screen_height || null,
+      refresh_rate_hz: device?.refresh_rate_hz || null,
+      auto_detected: !!device?.auto_detect_resolution,
+    },
+    display_profile: profileForDevice(device),
+    audio_policy: null,
+  };
+  payload.playlist_revision = crypto.createHash('sha256').update(JSON.stringify({
+    assignments: payload.assignments,
+    delivery_block_code: payload.delivery_block_code,
+    delivery_block_reason: payload.delivery_block_reason,
+    orientation: payload.orientation,
+    device_geometry: payload.device_geometry,
+  })).digest('hex').slice(0, 24);
+  return payload;
+}
+
 function buildPlaylistPayload(deviceId, delivery = null) {
   const device = db.prepare('SELECT id, name, playlist_id, layout_id, orientation, wall_id, screen_width, screen_height, refresh_rate_hz, auto_detect_resolution FROM devices WHERE id = ?').get(deviceId);
 
@@ -387,6 +429,13 @@ function buildPlaylistPayload(deviceId, delivery = null) {
         }
       }
     } catch (e) { /* live backfill is best-effort */ }
+
+    // The published snapshot is a durable delivery boundary. It can be
+    // reconstructed during reconnect, a queued flush, a sync repair, or a
+    // legacy assignment writer, so recheck managed computer health here even
+    // when a route already preflighted the original send.
+    const managedComputerFailure = managedComputerRouteFailureDetailInPlaylistItems(assignments);
+    if (managedComputerFailure) return blockedPlaylistPayload(device, managedComputerFailure);
 
     assignments = attachCaptionsToItems(db, assignments);
 
@@ -1187,6 +1236,18 @@ module.exports = function setupDeviceSocket(io, dependencies = {}) {
         }
         await waitForAudioOwnerRecovery(currentDeviceId);
         const payload = buildPlaylistPayload(currentDeviceId);
+        if (payload.delivery_blocked) {
+          socket.emit('device:playlist-update', payload);
+          if (typeof acknowledge === 'function') {
+            acknowledge({
+              ok: false,
+              delivery_blocked: true,
+              error: payload.delivery_block_reason,
+              playlist_revision: payload.playlist_revision,
+            });
+          }
+          return;
+        }
         const appliedRevision = data && typeof data.playlist_revision === 'string'
           ? data.playlist_revision
           : null;

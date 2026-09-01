@@ -8,6 +8,18 @@ ENV_FILE=/etc/mbfd/media-stack/camera.env
 RECORDING_ROOT=/mnt/data/recordings
 RECORDING_PARENT="$(dirname "$RECORDING_ROOT")"
 
+require_pinned_mediamtx_image() {
+  local compose_file="$1"
+  if grep -Fq 'bluenviron/mediamtx:latest' "$compose_file"; then
+    echo "ERROR: refusing floating MediaMTX image reference" >&2
+    exit 1
+  fi
+  if ! grep -Eq 'bluenviron/mediamtx(:[^@[:space:]]+)?@sha256:[a-f0-9]{64}' "$compose_file"; then
+    echo "ERROR: MediaMTX image must be pinned by an immutable sha256 digest" >&2
+    exit 1
+  fi
+}
+
 case "${1:-status}" in
   status)
     sudo /usr/local/sbin/mbfd-media-admin status
@@ -76,6 +88,11 @@ case "${1:-status}" in
     sudo /usr/bin/python3 "$HERE/scripts/render-mediamtx-config.py" \
       "$ENV_FILE" "$HERE/mediamtx.yml.tpl" "$STACK/mediamtx.yml"
     sudo install -o root -g root -m 0644 "$HERE/docker-compose.mediamtx.yml" "$STACK/docker-compose.mediamtx.yml"
+    require_pinned_mediamtx_image "$STACK/docker-compose.mediamtx.yml"
+    # This validates only the Compose document. MediaMTX itself must be
+    # semantically validated in an isolated v1.19.3 staging environment before
+    # this active maintenance command is used on KAMRUI.
+    ( cd "$STACK" && sudo docker compose -f docker-compose.mediamtx.yml config --quiet )
 
     # ── Recording broker (root-owned, peer-verified Unix socket) ──────
     sudo install -o root -g root -m 0755 "$HERE/recording-broker/mbfd-recording-broker.py" /usr/local/sbin/mbfd-recording-broker
@@ -121,7 +138,14 @@ case "${1:-status}" in
     # ── Restart services ─────────────────────────────────────────────
     sudo systemctl enable --now mbfd-recording-broker.socket
     sudo systemctl restart mbfd-recording-broker.service
-    sudo /usr/local/sbin/mbfd-media-admin restart-mediamtx
+    # Image configuration changes require a targeted recreation; `docker
+    # restart` would keep the old floating image reference. This command is
+    # deliberately scoped to MediaMTX and its dependencies are not touched.
+    ( cd "$STACK" && sudo docker compose -f docker-compose.mediamtx.yml pull mediamtx )
+    ( cd "$STACK" && sudo docker compose -f docker-compose.mediamtx.yml up -d --no-deps --force-recreate mediamtx )
+    # Open the source-specific firewall rule only after the replacement
+    # container is running the IP-and-credential-scoped publish policy.
+    sudo /usr/local/sbin/mbfd-media-admin ufw-allow-guest-rtmp
     sleep 4
     sudo /usr/local/sbin/mbfd-media-admin restart-camera-api
     echo "deploy complete"

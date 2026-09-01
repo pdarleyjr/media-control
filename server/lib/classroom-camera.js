@@ -5,8 +5,9 @@
 // to the upstream HLS edge and rewrites manifest segment URIs to same-origin
 // so the browser never cross-origin loads from the camera edge directly.
 //
-// Only two identifiers are valid: the canonical synchronized Anpviz/TONOR
-// stream and the ZowieBox Guest Computer stream.
+// Only three identifiers are valid: the canonical synchronized Anpviz/TONOR
+// stream, the ZowieBox Podium Computer stream, and the separately published
+// Guest Computer stream.
 //
 // Upstream base is env-overridable (CLASSROOM_CAMERA_UPSTREAM) for deployment
 // flexibility; the default is the Kamrui MediaMTX HLS edge.
@@ -14,6 +15,7 @@ const CAMERA_HOST = (process.env.CLASSROOM_CAMERA_UPSTREAM || 'http://192.168.1.
 
 const SOURCE_PATHS = Object.freeze({
   anpviz: 'anpviz-main',
+  'podium-computer': 'podium-computer',
   'guest-computer': 'guest-computer',
 });
 

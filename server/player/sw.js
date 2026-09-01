@@ -36,7 +36,16 @@ function playerNetworkFirst(event) {
       return response;
     })
     .catch(async () => {
-      const cached = await caches.match(event.request, { ignoreSearch: true }).catch(() => null);
+      const url = new URL(event.request.url);
+      // live-source.html selects a different managed program by `source`.
+      // CacheStorage.match searches rollback caches too, so ignoreSearch here
+      // could turn a legacy Anpviz/Guest shell into a Podium response. Preserve
+      // the full URL only for that query-sensitive shell; existing static
+      // player shell fallback behavior intentionally continues to ignore asset
+      // cache-busting queries.
+      const cached = url.pathname === '/player/live-source.html'
+        ? await caches.match(event.request).catch(() => null)
+        : await caches.match(event.request, { ignoreSearch: true }).catch(() => null);
       return cached || new Response('Offline', {
         status: 503,
         statusText: 'Service Unavailable',

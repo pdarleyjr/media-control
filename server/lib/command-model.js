@@ -51,12 +51,12 @@ const stmts = {
   displayStateExists: p('SELECT state_revision FROM display_states WHERE target_type = ? AND target_id = ?'),
   insertDisplayState: p(`INSERT INTO display_states
     (target_type, target_id, workspace_id, current_content_id, current_asset_id,
-     content_type, layout_mode, slide_index, slide_count, current_time, duration, paused, muted,
+      content_type, layout_mode, slide_index, slide_count, current_time, duration, paused, muted, operator_muted,
      volume, local_asset_ready, last_ack_at, render_state,
      error_state, idle_screensaver_id, default_screensaver_id, wall_id, layout_id,
      group_id, member_id, playback_revision, command_revision, screen_on, last_heartbeat_at,
      state_revision, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
   updateDisplayState: p(`UPDATE display_states SET
      workspace_id = COALESCE(?, workspace_id),
      current_content_id = COALESCE(?, current_content_id),
@@ -67,9 +67,10 @@ const stmts = {
      slide_count = COALESCE(?, slide_count),
      current_time = COALESCE(?, current_time),
      duration = COALESCE(?, duration),
-     paused = COALESCE(?, paused),
-     muted = COALESCE(?, muted),
-     volume = COALESCE(?, volume),
+      paused = COALESCE(?, paused),
+      muted = COALESCE(?, muted),
+      operator_muted = COALESCE(?, operator_muted),
+      volume = COALESCE(?, volume),
      local_asset_ready = COALESCE(?, local_asset_ready),
      last_ack_at = COALESCE(?, last_ack_at),
      render_state = COALESCE(?, render_state),
@@ -104,7 +105,7 @@ const stmts = {
 // MUST list these in the same order.
 const STATE_COLS = [
   'workspace_id', 'current_content_id', 'current_asset_id', 'content_type',
-  'layout_mode', 'slide_index', 'slide_count', 'current_time', 'duration', 'paused', 'muted',
+  'layout_mode', 'slide_index', 'slide_count', 'current_time', 'duration', 'paused', 'muted', 'operator_muted',
   'volume', 'local_asset_ready', 'last_ack_at', 'render_state', 'error_state',
   'idle_screensaver_id', 'default_screensaver_id', 'wall_id', 'layout_id',
   'group_id', 'member_id', 'playback_revision', 'command_revision', 'screen_on',
@@ -113,7 +114,7 @@ const STATE_NUMERIC_COLS = new Set([
   'slide_index', 'slide_count', 'current_time', 'duration', 'volume',
   'last_ack_at', 'playback_revision',
 ]);
-const STATE_BOOLEAN_COLS = new Set(['paused', 'muted', 'local_asset_ready', 'screen_on']);
+const STATE_BOOLEAN_COLS = new Set(['paused', 'muted', 'operator_muted', 'local_asset_ready', 'screen_on']);
 
 // Compute the next per-target revision (monotonic optimistic-lock counter).
 function nextRevision(targetId) {

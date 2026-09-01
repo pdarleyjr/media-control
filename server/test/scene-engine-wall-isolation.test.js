@@ -4,17 +4,55 @@ const { db } = require('../db/database');
 const sceneEngine = require('../services/scene-engine');
 
 function cleanup(prefix) {
-  db.prepare('DELETE FROM playlist_items WHERE playlist_id IN (SELECT id FROM playlists WHERE id LIKE ?)').run(`${prefix}%`);
+  db.prepare(`
+    DELETE FROM playlist_items
+    WHERE playlist_id IN (
+      SELECT id FROM playlists
+      WHERE id LIKE ? OR user_id LIKE ? OR workspace_id LIKE ?
+    )
+  `).run(`${prefix}%`, `${prefix}%`, `${prefix}%`);
   db.prepare('DELETE FROM video_wall_devices WHERE wall_id LIKE ? OR device_id LIKE ?').run(`${prefix}%`, `${prefix}%`);
   db.prepare('DELETE FROM video_walls WHERE id LIKE ?').run(`${prefix}%`);
   db.prepare('DELETE FROM devices WHERE id LIKE ?').run(`${prefix}%`);
-  db.prepare('DELETE FROM content WHERE id LIKE ?').run(`${prefix}%`);
+  db.prepare('DELETE FROM content WHERE id LIKE ? OR user_id LIKE ? OR workspace_id LIKE ?')
+    .run(`${prefix}%`, `${prefix}%`, `${prefix}%`);
   db.prepare('DELETE FROM playlists WHERE id LIKE ? OR user_id LIKE ? OR workspace_id LIKE ?').run(`${prefix}%`, `${prefix}%`, `${prefix}%`);
   db.prepare('DELETE FROM workspace_members WHERE workspace_id LIKE ? OR user_id LIKE ?').run(`${prefix}%`, `${prefix}%`);
   db.prepare('DELETE FROM workspaces WHERE id LIKE ?').run(`${prefix}%`);
   db.prepare('DELETE FROM organization_members WHERE organization_id LIKE ? OR user_id LIKE ?').run(`${prefix}%`, `${prefix}%`);
   db.prepare('DELETE FROM organizations WHERE id LIKE ?').run(`${prefix}%`);
   db.prepare('DELETE FROM users WHERE id LIKE ? OR email LIKE ?').run(`${prefix}%`, `${prefix}%@example.test`);
+}
+
+function snapshotComputerSourceHealth() {
+  return db.prepare(`
+    SELECT id, enabled, availability, last_seen_at
+    FROM live_sources
+    WHERE id IN ('podium-computer', 'guest-computer')
+  `).all();
+}
+
+function restoreComputerSourceHealth(rows) {
+  const update = db.prepare(`
+    UPDATE live_sources
+    SET enabled = ?, availability = ?, last_seen_at = ?
+    WHERE id = ?
+  `);
+  for (const row of rows) {
+    update.run(row.enabled, row.availability, row.last_seen_at, row.id);
+  }
+}
+
+function setComputerSourceHealth(id, availability, lastSeenAt = Math.floor(Date.now() / 1000)) {
+  db.prepare(`
+    UPDATE live_sources
+    SET enabled = 1, availability = ?, last_seen_at = ?
+    WHERE id = ?
+  `).run(availability, lastSeenAt, id);
+}
+
+function gridUrl(cells) {
+  return `/player/grid.html?cells=${Buffer.from(JSON.stringify(cells), 'utf8').toString('base64url')}`;
 }
 
 test('a wall broadcast forks a playlist shared with another wall', () => {
@@ -121,23 +159,31 @@ test('a wall broadcast forks a playlist shared with another wall', () => {
   }
 });
 
-test('the canonical Guest Computer player remains routable after another operator created its legacy private row', () => {
-  const prefix = `test-guest-visibility-${Date.now()}-`;
+test('the canonical Podium Computer player remains routable after another operator created its legacy private row', () => {
+  const prefix = `test-podium-visibility-${Date.now()}-`;
   const ownerId = `${prefix}owner`;
   const operatorId = `${prefix}operator`;
   const orgId = `${prefix}org`;
   const workspaceId = `${prefix}workspace`;
   const deviceId = `${prefix}display`;
-  const contentId = `${prefix}guest-content`;
-  const remoteUrl = `/player/live-source.html?source=guest-computer&test=${encodeURIComponent(prefix)}`;
+  const contentId = `${prefix}podium-content`;
+  const gridContentId = `${prefix}grid-content`;
+  const remoteUrl = `/player/live-source.html?source=podium-computer&test=${encodeURIComponent(prefix)}`;
+  const gridRemoteUrl = gridUrl({
+    C1: { u: remoteUrl, l: 'Podium', k: 'i' },
+    C2: { l: 'Screen Share', k: 'share' },
+    R1: { u: '/api/content/private-training/file', l: 'Private Training', k: 'i' },
+  });
+  const priorComputerHealth = snapshotComputerSourceHealth();
 
   cleanup(prefix);
   try {
+    setComputerSourceHealth('podium-computer', 'available');
     const insertUser = db.prepare("INSERT INTO users (id, email, name, role) VALUES (?, ?, ?, 'user')");
-    insertUser.run(ownerId, `${prefix}owner@example.test`, 'Legacy Guest Owner');
+    insertUser.run(ownerId, `${prefix}owner@example.test`, 'Legacy Podium Owner');
     insertUser.run(operatorId, `${prefix}operator@example.test`, 'Current Classroom Operator');
     db.prepare('INSERT INTO organizations (id, name, owner_user_id) VALUES (?, ?, ?)')
-      .run(orgId, 'Guest Visibility Org', ownerId);
+      .run(orgId, 'Podium Visibility Org', ownerId);
     db.prepare('INSERT INTO workspaces (id, organization_id, name, created_by) VALUES (?, ?, ?, ?)')
       .run(workspaceId, orgId, 'Guest Visibility Workspace', ownerId);
     db.prepare("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, 'workspace_admin')")
@@ -147,12 +193,17 @@ test('the canonical Guest Computer player remains routable after another operato
     db.prepare(`
       INSERT INTO content
         (id, user_id, workspace_id, filename, filepath, mime_type, file_size, remote_url, access_level)
-      VALUES (?, ?, ?, 'Guest Computer', '', 'text/html', 0, ?, 'private')
+      VALUES (?, ?, ?, 'Podium Computer', '', 'text/html', 0, ?, 'private')
     `).run(contentId, ownerId, workspaceId, remoteUrl);
     db.prepare(`
       INSERT INTO devices (id, user_id, workspace_id, name, status)
       VALUES (?, ?, ?, 'Guest Route Display', 'online')
     `).run(deviceId, ownerId, workspaceId);
+    db.prepare(`
+      INSERT INTO content
+        (id, user_id, workspace_id, filename, filepath, mime_type, file_size, remote_url, access_level)
+      VALUES (?, ?, ?, 'Private Mixed Grid', '', 'text/html', 0, ?, 'private')
+    `).run(gridContentId, operatorId, workspaceId, gridRemoteUrl);
 
     assert.equal(sceneEngine.pushSourceToDevice(null, deviceId, { remote_url: remoteUrl }, {
       workspaceId,
@@ -168,7 +219,157 @@ test('the canonical Guest Computer player remains routable after another operato
       db.prepare('SELECT access_level FROM content WHERE id = ?').get(contentId).access_level,
       'workspace_shared'
     );
+    assert.equal(sceneEngine.pushSourceToDevice(null, deviceId, { remote_url: gridRemoteUrl }, {
+      workspaceId,
+      userId: operatorId,
+      contentContext: {
+        userId: operatorId,
+        workspaceId,
+        workspaceRole: 'workspace_editor',
+      },
+      targetDeviceIds: [deviceId],
+    }), true);
+    assert.equal(
+      db.prepare('SELECT access_level FROM content WHERE id = ?').get(gridContentId).access_level,
+      'private',
+      'a composite is health-fenced but does not inherit the direct managed-source sharing exception',
+    );
   } finally {
+    restoreComputerSourceHealth(priorComputerHealth);
+    cleanup(prefix);
+  }
+});
+
+test('unavailable or stale Podium/Guest computer content fails closed before a scene or direct route can mutate a display', () => {
+  const prefix = `test-computer-route-health-${Date.now()}-`;
+  const userId = `${prefix}user`;
+  const orgId = `${prefix}org`;
+  const workspaceId = `${prefix}workspace`;
+  const deviceId = `${prefix}display`;
+  const podiumContentId = `${prefix}podium-content`;
+  const absolutePodiumContentId = `${prefix}absolute-podium-content`;
+  const foreignPodiumContentId = `${prefix}foreign-podium-content`;
+  const playlistId = `${prefix}podium-playlist`;
+  const podiumUrl = `/player/live-source.html?source=podium-computer&test=${encodeURIComponent(prefix)}`;
+  const absolutePodiumUrl = `https://media.mbfdhub.com/player/live-source.html?source=podium-computer&test=${encodeURIComponent(prefix)}`;
+  const foreignPodiumUrl = `https://example.invalid/player/live-source.html?source=podium-computer&test=${encodeURIComponent(prefix)}`;
+  const guestUrl = `/player/live-source.html?source=guest-computer&test=${encodeURIComponent(prefix)}`;
+  const priorComputerHealth = snapshotComputerSourceHealth();
+
+  cleanup(prefix);
+  try {
+    db.prepare("INSERT INTO users (id, email, name, role) VALUES (?, ?, 'Computer Route User', 'platform_admin')")
+      .run(userId, `${prefix}@example.test`);
+    db.prepare('INSERT INTO organizations (id, name, owner_user_id) VALUES (?, ?, ?)')
+      .run(orgId, 'Computer Route Org', userId);
+    db.prepare('INSERT INTO workspaces (id, organization_id, name, created_by) VALUES (?, ?, ?, ?)')
+      .run(workspaceId, orgId, 'Computer Route Workspace', userId);
+    db.prepare("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, 'workspace_admin')")
+      .run(workspaceId, userId);
+    db.prepare(`
+      INSERT INTO devices (id, user_id, workspace_id, name, status)
+      VALUES (?, ?, ?, 'Computer Route Display', 'online')
+    `).run(deviceId, userId, workspaceId);
+    db.prepare(`
+      INSERT INTO content
+        (id, user_id, workspace_id, filename, filepath, mime_type, file_size, remote_url, access_level)
+      VALUES (?, ?, ?, 'Podium Computer', '', 'text/html', 0, ?, 'workspace_shared')
+    `).run(podiumContentId, userId, workspaceId, podiumUrl);
+    db.prepare(`
+      INSERT INTO content
+        (id, user_id, workspace_id, filename, filepath, mime_type, file_size, remote_url, access_level)
+      VALUES (?, ?, ?, 'Absolute Podium Computer', '', 'text/html', 0, ?, 'workspace_shared')
+    `).run(absolutePodiumContentId, userId, workspaceId, absolutePodiumUrl);
+    db.prepare(`
+      INSERT INTO content
+        (id, user_id, workspace_id, filename, filepath, mime_type, file_size, remote_url, access_level)
+      VALUES (?, ?, ?, 'Foreign Podium Computer', '', 'text/html', 0, ?, 'workspace_shared')
+    `).run(foreignPodiumContentId, userId, workspaceId, foreignPodiumUrl);
+    db.prepare(`
+      INSERT INTO playlists (id, user_id, workspace_id, name, is_auto_generated, status, published_snapshot)
+      VALUES (?, ?, ?, 'Podium Health Playlist', 0, 'published', '[]')
+    `).run(playlistId, userId, workspaceId);
+    db.prepare('INSERT INTO playlist_items (playlist_id, content_id, sort_order, duration_sec) VALUES (?, ?, 0, 10)')
+      .run(playlistId, podiumContentId);
+
+    setComputerSourceHealth('podium-computer', 'unavailable');
+    setComputerSourceHealth('guest-computer', 'available');
+    const common = {
+      workspaceId,
+      userId,
+      contentContext: { userId, workspaceId, workspaceRole: 'workspace_admin' },
+      targetDeviceIds: [deviceId],
+    };
+
+    assert.equal(
+      sceneEngine.pushSourceToDevice(null, deviceId, { remote_url: podiumUrl }, common),
+      false,
+      'a direct offline Podium URL is rejected before a content row can be created',
+    );
+    assert.equal(
+      sceneEngine.pushSourceToDevice(null, deviceId, { remote_url: absolutePodiumUrl }, common),
+      false,
+      'a canonical absolute Podium player URL is health-fenced like its root-relative form',
+    );
+    assert.equal(
+      sceneEngine.pushSourceToDevice(null, deviceId, { remote_url: foreignPodiumUrl }, common),
+      false,
+      'a foreign host cannot impersonate an app-owned Podium player URL',
+    );
+    assert.equal(
+      sceneEngine.pushSourceToDevice(null, deviceId, { content_id: podiumContentId }, common),
+      false,
+      'a persisted offline Podium content item is rejected',
+    );
+    assert.equal(
+      sceneEngine.pushSourceToDevice(null, deviceId, { content_id: absolutePodiumContentId }, common),
+      false,
+      'a persisted canonical absolute Podium player row cannot bypass health',
+    );
+    assert.equal(
+      sceneEngine.pushSourceToDevice(null, deviceId, { content_id: foreignPodiumContentId }, common),
+      false,
+      'a persisted foreign-host player row cannot bypass the canonical source allowlist',
+    );
+    assert.equal(
+      sceneEngine.pushSourceToDevice(null, deviceId, { playlist_id: playlistId }, common),
+      false,
+      'a scene/playlist cannot bypass the managed-computer health fence',
+    );
+    assert.equal(
+      sceneEngine.pushSourceToDevice(null, deviceId, {
+        remote_url: gridUrl({
+          C1: { u: podiumUrl, l: 'Podium', k: 'i' },
+          C2: { l: 'Screen Share', k: 'share' },
+          R1: { u: '/player/hls.html?station=mbtv', l: 'News', k: 'i' },
+        }),
+      }, common),
+      false,
+      'a Multiview grid cannot bypass an unavailable nested Podium source while Screen Share/news remain non-computer cells',
+    );
+    assert.equal(db.prepare('SELECT playlist_id FROM devices WHERE id = ?').get(deviceId).playlist_id, null);
+
+    assert.equal(
+      sceneEngine.pushSourceToDevice(null, deviceId, { remote_url: guestUrl }, common),
+      true,
+      'the separately healthy Guest publisher remains routable',
+    );
+
+    setComputerSourceHealth('guest-computer', 'available', Math.floor(Date.now() / 1000) - 61);
+    assert.equal(
+      sceneEngine.pushSourceToDevice(null, deviceId, { remote_url: guestUrl }, common),
+      false,
+      'a stale health record is not evidence that a computer remains routable',
+    );
+    assert.equal(
+      sceneEngine.pushSourceToDevice(null, deviceId, {
+        remote_url: gridUrl({ C1: { u: guestUrl, l: 'Guest', k: 'i' } }),
+      }, common),
+      false,
+      'a Multiview grid cannot bypass a stale nested Guest source',
+    );
+  } finally {
+    restoreComputerSourceHealth(priorComputerHealth);
     cleanup(prefix);
   }
 });

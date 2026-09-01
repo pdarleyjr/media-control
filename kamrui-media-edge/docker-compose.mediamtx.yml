@@ -1,6 +1,8 @@
 services:
   mediamtx:
-    image: bluenviron/mediamtx:latest
+    # Observed read-only on KAMRUI 2026-08-27: v1.19.3 index digest below.
+    # Keep the tag for operator readability and the digest for immutability.
+    image: bluenviron/mediamtx:1.19.3@sha256:7797ed3df88df21e8c04ecd0aff08ce49a5232d1db453e51f5480ef36bc80865
     container_name: mbfd-mediamtx
     restart: unless-stopped
     network_mode: host

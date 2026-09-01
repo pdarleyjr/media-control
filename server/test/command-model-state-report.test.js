@@ -67,6 +67,60 @@ test('mergeDisplayState coerces boolean state values into sqlite-friendly scalar
   }
 });
 
+test('mergeDisplayState persists explicit operator mute intent separately from effective mute telemetry', () => {
+  const targetId = `test-operator-mute-${crypto.randomUUID()}`;
+  try {
+    mergeDisplayState('display', targetId, {
+      muted: true,
+      operator_muted: true,
+    });
+    let row = db.prepare(`
+      SELECT muted, operator_muted
+      FROM display_states
+      WHERE target_type = ? AND target_id = ?
+    `).get('display', targetId);
+    assert.deepEqual(row, { muted: 1, operator_muted: 1 });
+
+    mergeDisplayState('display', targetId, {
+      muted: false,
+      operator_muted: false,
+    });
+    row = db.prepare(`
+      SELECT muted, operator_muted
+      FROM display_states
+      WHERE target_type = ? AND target_id = ?
+    `).get('display', targetId);
+    assert.deepEqual(row, { muted: 0, operator_muted: 0 });
+  } finally {
+    db.prepare('DELETE FROM display_states WHERE target_type = ? AND target_id = ?')
+      .run('display', targetId);
+  }
+});
+
+test('mergeDisplayState leaves legacy effective mute telemetry without operator intent', () => {
+  const targetId = `test-legacy-mute-${crypto.randomUUID()}`;
+  try {
+    mergeDisplayState('display', targetId, { muted: true });
+    let row = db.prepare(`
+      SELECT muted, operator_muted
+      FROM display_states
+      WHERE target_type = ? AND target_id = ?
+    `).get('display', targetId);
+    assert.deepEqual(row, { muted: 1, operator_muted: null });
+
+    mergeDisplayState('display', targetId, { muted: false });
+    row = db.prepare(`
+      SELECT muted, operator_muted
+      FROM display_states
+      WHERE target_type = ? AND target_id = ?
+    `).get('display', targetId);
+    assert.deepEqual(row, { muted: 0, operator_muted: null });
+  } finally {
+    db.prepare('DELETE FROM display_states WHERE target_type = ? AND target_id = ?')
+      .run('display', targetId);
+  }
+});
+
 test('mergeDisplayState assigns monotonic revisions and rejects stale reports', () => {
   const targetId = `test-state-revision-${crypto.randomUUID()}`;
   try {

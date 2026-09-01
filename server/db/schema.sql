@@ -992,6 +992,9 @@ CREATE TABLE IF NOT EXISTS display_states (
     duration              REAL,
     paused                INTEGER,
     muted                 INTEGER,
+    -- Explicit operator intent. NULL is intentionally legacy/unknown and must
+    -- never be inferred from muted, which is effective runtime telemetry.
+    operator_muted        INTEGER CHECK(operator_muted IN (0, 1)),
     volume                INTEGER,
     local_asset_ready     INTEGER,
     last_ack_at           INTEGER,

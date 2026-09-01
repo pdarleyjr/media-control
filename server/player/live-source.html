@@ -35,7 +35,7 @@
 (function(){
   var params=new URLSearchParams(location.search);
   var source=params.get('source')||'anpviz';
-  var allowed={anpviz:'Anpviz Camera','guest-computer':'Guest Computer'};
+  var allowed={anpviz:'Anpviz Camera','podium-computer':'Podium Computer','guest-computer':'Guest Computer'};
   if(!Object.prototype.hasOwnProperty.call(allowed,source)) source='anpviz';
   var wantAudio=params.get('audio')==='1';
   var debug=params.get('debug')==='1';
@@ -90,6 +90,18 @@
     var play=v.play();
     if(play&&play.catch) play.catch(function(){});
   };
+  // Parent audio authority can change after this same-origin live frame has
+  // already been unlocked. Keep a symmetric mute hook so an owner transfer or
+  // loss immediately fences the child as well.
+  window.__mcDisableAudio=function(){
+    wantAudio=false;
+    v.muted=true;
+  };
+  window.addEventListener('message',function(event){
+    if(event.origin!==location.origin||!event.data||event.data.type!=='mbfd-player-command') return;
+    if(event.data.action==='mute') window.__mcDisableAudio();
+    if(event.data.action==='unmute') window.__mcEnableAudio();
+  });
   function scheduleReconnect(){
     if(retryTO) return;
     var delay=Math.min(5000,750*Math.pow(1.6,reconnectAttempt++));

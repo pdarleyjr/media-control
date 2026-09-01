@@ -99,8 +99,8 @@ async function callCameraApi(method, path, body, timeoutMs = 15000, { headers: e
   }
 }
 
-async function getStatus() {
-  return callCameraApi('GET', '/api/status');
+async function getStatus(timeoutMs = 15000) {
+  return callCameraApi('GET', '/api/status', undefined, timeoutMs);
 }
 
 async function startRecording() {

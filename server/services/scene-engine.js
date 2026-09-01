@@ -29,7 +29,11 @@ const { ensureDevicePlaylist } = require('../lib/wall-playlists');
 const { parseStoredLayout, groupForDevice } = require('../lib/wall-layout');
 const whiteboardState = require('./whiteboard-state');
 const { contentUseDecision } = require('../lib/content-visibility');
-const { isAppOwnedRelativeUrl } = require('../lib/ssrf-policy');
+const {
+  isManagedComputerPlayerUrl,
+  managedComputerRouteFailure,
+  managedComputerRouteFailureInContentIds,
+} = require('../lib/managed-computer-routing');
 const {
   canReplacePlaylistAudioPolicy,
   stampPlaylistAudioPolicy,
@@ -56,20 +60,10 @@ function buildSnapshotItems(playlistId) {
 // Keeps the broadcast path inside the existing playlist_item->content model
 // rather than inventing a new payload type. Mirrors routes/content.js POST
 // /remote (empty filepath, derived mime_type).
-function isGuestComputerPlayerUrl(remoteUrl) {
-  if (!isAppOwnedRelativeUrl(remoteUrl)) return false;
-  try {
-    const parsed = new URL(String(remoteUrl), 'http://media-control.local');
-    return parsed.pathname === '/player/live-source.html'
-      && parsed.searchParams.get('source') === 'guest-computer';
-  } catch {
-    return false;
-  }
-}
 
 function resolveRemoteUrlContent(remoteUrl, workspaceId, userId) {
-  const shareGuestComputer = isGuestComputerPlayerUrl(remoteUrl);
-  const existing = shareGuestComputer
+  const shareManagedComputer = isManagedComputerPlayerUrl(remoteUrl);
+  const existing = shareManagedComputer
     ? db.prepare(`
         SELECT id, mime_type, access_level
         FROM content
@@ -83,12 +77,12 @@ function resolveRemoteUrlContent(remoteUrl, workspaceId, userId) {
         LIMIT 1
       `).get(remoteUrl, workspaceId || null);
   if (existing) {
-    // Guest Computer is a workspace-owned live input, not an operator-owned
+    // Managed computer sources are workspace-owned live inputs, not operator-owned
     // library item. Older releases stored the generated player row as private,
     // which made the same live source fail for every later operator. Normalize
     // only this canonical app-owned source; ordinary remote/deck rows retain
     // their governed visibility.
-    if (shareGuestComputer && existing.access_level !== 'workspace_shared') {
+    if (shareManagedComputer && existing.access_level !== 'workspace_shared') {
       db.prepare("UPDATE content SET access_level = 'workspace_shared' WHERE id = ?").run(existing.id);
     }
     // Self-heal legacy deck/presentation rows that an older resolver stored as
@@ -121,7 +115,7 @@ function resolveRemoteUrlContent(remoteUrl, workspaceId, userId) {
   else mimeType = 'text/html';
   let filename;
   try { filename = new URL(remoteUrl).hostname || 'remote'; } catch { filename = 'remote'; }
-  const accessLevel = shareGuestComputer ? 'workspace_shared' : 'private';
+  const accessLevel = shareManagedComputer ? 'workspace_shared' : 'private';
   db.prepare(`
     INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, remote_url, access_level)
     VALUES (?, ?, ?, ?, '', ?, 0, ?, ?)
@@ -299,18 +293,25 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
     returnDetails = false,
   } = opts;
   const authoritativeTargets = Array.isArray(targetDeviceIds);
-  const finish = (ok, details = {}) => (
-    returnDetails
+  const finish = (ok, details = {}) => {
+    // buildPlaylistPayload is the final delivery fence. Its safe empty payload
+    // must never be collapsed into a successful Scene Engine result after a
+    // health change races an earlier route preflight.
+    const blocked = details.blocked === true;
+    const complete = !!ok && !blocked;
+    return returnDetails
       ? {
-          ok: !!ok,
+          ok: complete,
           delivered: details.delivered === true,
           queued: details.queued === true,
+          blocked,
+          failureCode: complete ? null : (details.failureCode || null),
           playlistRevision: details.playlistRevision || null,
           expectedSourceId: details.expectedSourceId || null,
-          failureReason: ok ? null : (details.failureReason || 'Broadcast mutation failed'),
+          failureReason: complete ? null : (details.failureReason || 'Broadcast mutation failed'),
         }
-      : !!ok
-  );
+      : complete;
+  };
   try {
     const device = db.prepare('SELECT id, workspace_id, user_id FROM devices WHERE id = ?').get(deviceId);
     if (!device) return finish(false, { failureReason: 'Display not found' });
@@ -340,6 +341,12 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
         device.workspace_id || workspaceId,
         callerContext,
       ).allowed)) return finish(false, { failureReason: 'Playlist content unavailable' });
+      const computerRouteFailure = managedComputerRouteFailureInContentIds(
+        playlistContent.map((item) => item.content_id),
+      );
+      if (computerRouteFailure) {
+        return finish(false, { failureReason: computerRouteFailure });
+      }
       if (source.audio_policy && !stampPlaylistAudioPolicy(
         db,
         source.playlist_id,
@@ -359,10 +366,14 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
       fanOutPlaylistToPlaybackScope(io, deviceId, source.playlist_id, authoritativeTargets
         ? { allowedDeviceIds: targetDeviceIds, emitFollowers: false }
         : {});
-      return finish(true, dispatch);
+      return finish(!dispatch?.blocked, dispatch);
     }
 
     // --- Content / remote_url source: build a one-item published playlist. ---
+    const remoteComputerRouteFailure = managedComputerRouteFailure(source.remote_url);
+    if (remoteComputerRouteFailure) {
+      return finish(false, { failureReason: remoteComputerRouteFailure });
+    }
     let contentId = source.content_id || null;
     if (!contentId && source.remote_url) {
       contentId = resolveRemoteUrlContent(source.remote_url, device.workspace_id || workspaceId, userId || device.user_id);
@@ -378,6 +389,10 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
     );
     const content = decision.content;
     if (!content || !decision.allowed) return finish(false, { failureReason: 'Content unavailable' });
+    const contentComputerRouteFailure = managedComputerRouteFailure(content.remote_url);
+    if (contentComputerRouteFailure) {
+      return finish(false, { failureReason: contentComputerRouteFailure });
+    }
 
     const playlistId = ensureDevicePlaylist(deviceId, userId || device.user_id, {
       mutableDeviceIds: targetDeviceIds,
@@ -464,7 +479,7 @@ function pushSourceToDevice(io, deviceId, source, opts = {}) {
     } catch (e) {
       console.warn(`[scene-engine] span fan-out lookup failed: ${e.message}`);
     }
-    return finish(true, { ...dispatch, expectedSourceId: contentId });
+    return finish(!dispatch?.blocked, { ...dispatch, expectedSourceId: contentId });
   } catch (e) {
     console.warn(`[scene-engine] pushSourceToDevice failed for ${deviceId}: ${e.message}`);
     return finish(false, { failureReason: e.message });
@@ -483,14 +498,20 @@ function pushSourceToRegions(io, deviceId, source, routes, opts = {}) {
     contentContext = null,
     deliveries = [],
   } = opts;
-  const finish = (ok, details = {}) => ({
-    ok: !!ok,
-    delivered: details.delivered === true,
-    queued: details.queued === true,
-    playlistRevision: details.playlistRevision || null,
-    expectedSourceId: details.expectedSourceId || null,
-    failureReason: ok ? null : (details.failureReason || 'Broadcast mutation failed'),
-  });
+  const finish = (ok, details = {}) => {
+    const blocked = details.blocked === true;
+    const complete = !!ok && !blocked;
+    return {
+      ok: complete,
+      delivered: details.delivered === true,
+      queued: details.queued === true,
+      blocked,
+      failureCode: complete ? null : (details.failureCode || null),
+      playlistRevision: details.playlistRevision || null,
+      expectedSourceId: details.expectedSourceId || null,
+      failureReason: complete ? null : (details.failureReason || 'Broadcast mutation failed'),
+    };
+  };
   try {
     const regionRoutes = Array.isArray(routes) ? routes : [];
     if (regionRoutes.length < 2 || regionRoutes.some((route) => !route?.zone_id || !route?.region_id)) {
@@ -501,6 +522,10 @@ function pushSourceToRegions(io, deviceId, source, routes, opts = {}) {
     }
     const device = db.prepare('SELECT id, workspace_id, user_id FROM devices WHERE id = ?').get(deviceId);
     if (!device) return finish(false, { failureReason: 'Display not found' });
+    const remoteComputerRouteFailure = managedComputerRouteFailure(source.remote_url);
+    if (remoteComputerRouteFailure) {
+      return finish(false, { failureReason: remoteComputerRouteFailure });
+    }
     let contentId = source.content_id || null;
     if (!contentId && source.remote_url) {
       contentId = resolveRemoteUrlContent(
@@ -518,6 +543,10 @@ function pushSourceToRegions(io, deviceId, source, routes, opts = {}) {
     );
     if (!decision.content || !decision.allowed) {
       return finish(false, { failureReason: 'Content unavailable' });
+    }
+    const contentComputerRouteFailure = managedComputerRouteFailure(decision.content.remote_url);
+    if (contentComputerRouteFailure) {
+      return finish(false, { failureReason: contentComputerRouteFailure });
     }
     const playlistId = ensureDevicePlaylist(deviceId, userId || device.user_id, {
       mutableDeviceIds: targetDeviceIds,
@@ -578,7 +607,7 @@ function pushSourceToRegions(io, deviceId, source, routes, opts = {}) {
       deviceId,
       deliveries.map((delivery) => ({ ...delivery, expectedSourceId: contentId })),
     );
-    return finish(true, { ...dispatch, expectedSourceId: contentId });
+    return finish(!dispatch?.blocked, { ...dispatch, expectedSourceId: contentId });
   } catch (error) {
     console.warn(`[scene-engine] pushSourceToRegions failed for ${deviceId}: ${error.message}`);
     return finish(false, { failureReason: error.message });
