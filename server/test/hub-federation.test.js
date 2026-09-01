@@ -170,6 +170,21 @@ test('state tamper and replay are rejected before a Hub exchange', async (t) => 
   assert.equal(calls.length, 1);
 });
 
+test('malformed and adversarial cookie names fail closed without property injection', async (t) => {
+  const { server, calls } = await createHarness(t);
+  const started = await start(server);
+  const location = new URL(started.headers.get('location'));
+  const state = location.searchParams.get('state');
+
+  const malformed = await fetch(`${baseUrl(server)}/api/auth/hub/callback?code=opaque-hub-code&state=${encodeURIComponent(state)}`, {
+    headers: { Cookie: '__proto__=polluted; mc_hub_state=%E0%A4%A' },
+    redirect: 'manual',
+  });
+  assert.equal(malformed.status, 400);
+  assert.equal(calls.length, 0);
+  assert.equal({}.polluted, undefined);
+});
+
 test('successful exchange uses the dedicated service credential and creates a short local session', async (t) => {
   const { server, calls } = await createHarness(t);
   const started = await start(server);

@@ -26,13 +26,17 @@ function ensureHubFederationSchema(db) {
   `);
 }
 
-function parseCookies(header) {
-  return String(header || '').split(';').reduce((cookies, part) => {
+function readCookie(header, name) {
+  for (const part of String(header || '').split(';')) {
     const separator = part.indexOf('=');
-    if (separator < 1) return cookies;
-    cookies[part.slice(0, separator).trim()] = decodeURIComponent(part.slice(separator + 1).trim());
-    return cookies;
-  }, {});
+    if (separator < 1 || part.slice(0, separator).trim() !== name) continue;
+    try {
+      return decodeURIComponent(part.slice(separator + 1).trim());
+    } catch (_) {
+      return '';
+    }
+  }
+  return '';
 }
 
 function stateHash(state) {
@@ -80,7 +84,7 @@ function createHubFederationRouter({ db, config, fetchImpl = fetch, ensureWorksp
   router.get('/callback', async (req, res) => {
     if (!completeConfig(config)) return res.status(503).json({ error: 'hub_auth_unavailable' });
     const { code, state } = req.query;
-    const cookieState = parseCookies(req.headers.cookie).mc_hub_state;
+    const cookieState = readCookie(req.headers.cookie, 'mc_hub_state');
     if (typeof code !== 'string' || typeof state !== 'string' || !sameValue(state, cookieState)) {
       return res.status(400).json({ error: 'invalid_authorization_response' });
     }
@@ -170,7 +174,7 @@ function createHubFederationRouter({ db, config, fetchImpl = fetch, ensureWorksp
   });
 
   router.get('/session', (req, res) => {
-    const token = parseCookies(req.headers.cookie).mc_token;
+    const token = readCookie(req.headers.cookie, 'mc_token');
     if (!token) return res.status(401).json({ error: 'authentication_required' });
     try {
       const claims = jwt.verify(token, config.jwtSecret, { algorithms: ['HS256'] });
