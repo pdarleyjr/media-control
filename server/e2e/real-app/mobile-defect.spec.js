@@ -2952,7 +2952,10 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     })();
     database.close();
 
-    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const context = await browser.newContext({
+      viewport: { width: 1440, height: 900 },
+      serviceWorkers: 'block',
+    });
     const page = await context.newPage();
     try {
       await page.addInitScript(() => {
@@ -3021,6 +3024,62 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
         await expect(secondary).toHaveClass(/is-active/);
         await expect(visibleWallStages).toHaveCount(1);
         await expect(visibleWallStages).toHaveAttribute('data-wall-id', 'mobile-secondary-wall');
+      });
+
+      await test.step('Scenario B2: a failed topology refresh cannot redirect Wall 2 transport to Wall 1', async () => {
+        let failedWallRefreshes = 0;
+        await page.route('**/api/walls', async (route) => {
+          const request = route.request();
+          const requestUrl = new URL(request.url());
+          if (request.method() === 'GET'
+              && requestUrl.pathname === '/api/walls'
+              && failedWallRefreshes < 2) {
+            failedWallRefreshes += 1;
+            await route.abort('failed');
+            return;
+          }
+          await route.continue();
+        });
+
+        const startedAt = Date.now();
+        const wallChangedListeners = await page.evaluate(async () => {
+          // Consume one controlled failure directly so both browser engines
+          // prove the interception is active. The second failure belongs to
+          // the application's scheduled topology refresh below.
+          await fetch('/api/walls').catch(() => null);
+          const { getSocket } = await import('/js/socket.js');
+          const callbacks = getSocket()?._callbacks?.['$dashboard:wall-changed'] || [];
+          callbacks.forEach((callback) => callback());
+          return callbacks.length;
+        });
+        expect(wallChangedListeners).toBeGreaterThan(0);
+        await expect.poll(() => failedWallRefreshes).toBe(2);
+        await page.waitForTimeout(250);
+
+        await expect(secondary).toHaveAttribute('aria-selected', 'true');
+        await expect(secondary).toHaveClass(/is-active/);
+        await expect(visibleWallStages).toHaveAttribute('data-wall-id', 'mobile-secondary-wall');
+        await page.locator('[data-cc-tp="play_pause"]').click();
+
+        await expect.poll(() => {
+          const commandDb = new Database(dbPath, { readonly: true });
+          try {
+            return commandDb.prepare(`
+              SELECT target_id
+              FROM command_logs
+              WHERE created_at >= ?
+                AND target_id IN (
+                  'mobile-secondary-display',
+                  'mobile-wall-display-1',
+                  'mobile-wall-display-2',
+                  'mobile-wall-display-3'
+                )
+              ORDER BY target_id
+            `).all(startedAt).map((row) => row.target_id);
+          } finally {
+            commandDb.close();
+          }
+        }, { timeout: 10000 }).toEqual(['mobile-secondary-display']);
       });
 
       await test.step('Scenario A: Wall 1 wins over a delayed Wall 2 preference', async () => {

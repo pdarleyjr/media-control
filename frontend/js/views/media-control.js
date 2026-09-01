@@ -6,6 +6,10 @@ import { clearTarget as clearSocketTarget, identifyDevice, requestScreenshot, se
 import { createScreenshotPoller, getScreenshotPollMetrics } from '../services/screenshot-poll.js';
 import { COMMAND_TYPES } from '../player-protocol.js';
 import { mountTargetSelector } from './media-control/target-selector.js';
+import {
+  reconcileControlTarget,
+  wallTopologySignature,
+} from './media-control/target-reconciliation.js';
 import { mountSpanSplit } from './media-control/span-split.js';
 import { mountActionDock } from './media-control/action-dock.js';
 import * as displayState from '../services/display-state.js';
@@ -207,7 +211,7 @@ async function fetchWalls() {
     const result = await api.getWalls();
     return Array.isArray(result) ? result : [];
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -268,10 +272,12 @@ function reconcileWallUi() {
   pruneSelection();
   targetApi?.setOptions?.(walls, commandCenterControlTargets(), routeableDisplays());
 
-  const activeRef = activeTarget?.id
-    ? `${activeTarget.type || 'display'}:${activeTarget.id}`
-    : null;
-  const refreshedTarget = validatePersistedTarget(activeRef) || chooseDefaultFocusTarget();
+  const reconciliation = reconcileControlTarget({
+    activeTarget,
+    validateTarget: validatePersistedTarget,
+    chooseDefaultTarget: chooseDefaultFocusTarget,
+  });
+  const refreshedTarget = reconciliation.target;
   if (refreshedTarget) {
     targetApi?.setActive?.(refreshedTarget);
     restoringTarget = true;
@@ -290,7 +296,13 @@ function reconcileWallUi() {
 async function refreshWallsFromSocket(generation) {
   const nextWalls = await fetchWalls();
   if (generation !== wallRefreshGeneration) return;
+  if (!Array.isArray(nextWalls)) return;
+  const previousTopology = wallTopologySignature(walls);
   applyWalls(nextWalls);
+  if (wallTopologySignature(walls) === previousTopology) {
+    targetApi?.setOptions?.(walls, commandCenterControlTargets(), routeableDisplays());
+    return;
+  }
   reconcileWallUi();
 }
 
@@ -302,7 +314,12 @@ function applyRoomSnapshotWalls(snapshot) {
     clearTimeout(wallRefreshTimer);
     wallRefreshTimer = null;
   }
+  const previousTopology = wallTopologySignature(walls);
   applyWalls(nextWalls);
+  if (wallTopologySignature(walls) === previousTopology) {
+    targetApi?.setOptions?.(walls, commandCenterControlTargets(), routeableDisplays());
+    return;
+  }
   reconcileWallUi();
 }
 
