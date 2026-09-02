@@ -355,6 +355,12 @@ body.has-classroom-banner.cc-fullscreen .content { height: calc(100vh - var(--cl
   transition: margin-left var(--transition), padding var(--transition);
 }
 
+/* The forced web Command Center mounts a width-sensitive 16:9 wall. Resolve
+   its collapsed shell geometry before that wall participates in grid sizing. */
+body.cc-sidebar-forced .content {
+  transition: none;
+}
+
 /* Page Header */
 .page-header {
   display: flex;

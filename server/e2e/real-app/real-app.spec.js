@@ -433,6 +433,52 @@ test.describe('Phase 1 — Feature flag OFF: real app loads correctly', () => {
     assertNoErrors(errors, '#/control authenticated');
   });
 
+  test('1b1. Command Center body classes do not leak across early-return routes', async ({ page }) => {
+    await setupAuth(page);
+    await page.goto(`${BASE_URL}/app#/control`);
+    await expect(page.locator('.mc-cc-shell')).toBeVisible({ timeout: 20000 });
+
+    const body = page.locator('body');
+    await expect(body).toHaveClass(/\bcc-fullscreen\b/);
+    await expect(body).toHaveClass(/\bcc-sidebar-forced\b/);
+    await expect.poll(() => page.locator('.content').evaluate((element) => (
+      getComputedStyle(element).transitionProperty
+    ))).toBe('none');
+
+    await page.evaluate(() => {
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      window.location.hash = '#/login';
+    });
+    await expect(page).toHaveURL(/#\/login$/);
+    await expect(body).not.toHaveClass(/\bcc-fullscreen\b/);
+    await expect(body).not.toHaveClass(/\bcc-sidebar-forced\b/);
+
+    await page.evaluate(({ token, user }) => {
+      localStorage.setItem('token', token);
+      localStorage.setItem('user', JSON.stringify(user));
+      localStorage.removeItem('rd_onboarded');
+      window.location.hash = '#/onboarding';
+    }, { token: authToken, user: authUser });
+    await expect(page).toHaveURL(/#\/onboarding$/);
+    await expect(body).not.toHaveClass(/\bcc-fullscreen\b/);
+    await expect(body).not.toHaveClass(/\bcc-sidebar-forced\b/);
+
+    await page.evaluate(() => {
+      localStorage.setItem('rd_onboarded', '1');
+      window.location.hash = '#/help';
+    });
+    await expect(page).toHaveURL(/#\/help$/);
+    await expect(body).not.toHaveClass(/\bcc-fullscreen\b/);
+    await expect(body).not.toHaveClass(/\bcc-sidebar-forced\b/);
+    await expect.poll(() => page.locator('.content').evaluate((element) => (
+      getComputedStyle(element).transitionProperty
+    ))).toContain('margin-left');
+    await expect.poll(() => page.locator('.content').evaluate((element) => (
+      getComputedStyle(element).transitionProperty
+    ))).toContain('padding');
+  });
+
   test('1b2. a delayed wallpaper catalog repaints the primary Command Center selector', async ({ page }) => {
     await page.route('**/api/content/wallpaper-menu', async route => {
       await new Promise(resolve => setTimeout(resolve, 750));
