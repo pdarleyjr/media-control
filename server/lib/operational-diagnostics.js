@@ -1,5 +1,7 @@
 'use strict';
 
+const rendererProgress = require('../services/renderer-progress');
+
 const MAX_RENDERERS = 50;
 const MAX_NODES = 20;
 
@@ -51,6 +53,11 @@ function heartbeatState(row, now, timeoutMs) {
   };
 }
 
+function causalLatency(startAt, endAt) {
+  if (startAt == null || endAt == null || endAt < startAt) return null;
+  return endAt - startAt;
+}
+
 function buildOperationalDiagnostics(db, options = {}) {
   if (!db || typeof db.prepare !== 'function') throw new TypeError('A database is required');
   const workspaceId = String(options.workspaceId || '').trim();
@@ -60,10 +67,21 @@ function buildOperationalDiagnostics(db, options = {}) {
   const heartbeatTimeoutMs = Math.max(1_000, finiteOrNull(options.heartbeatTimeoutMs) || 45_000);
 
   const displayRows = safeAll(db, `
+    WITH latest_display_commands AS (
+      SELECT command_id, parent_command_id, target_id, created_at, ack_at, status,
+             ROW_NUMBER() OVER (PARTITION BY target_id ORDER BY created_at DESC, command_id DESC) AS row_number
+      FROM command_logs
+      WHERE target_type = 'display'
+    )
     SELECT d.id, d.name, d.status, d.last_heartbeat,
            ds.last_heartbeat_at, ds.render_state, ds.error_state,
            ds.current_content_id, ds.content_type, ds.muted, ds.operator_muted,
            ds.updated_at AS state_updated_at,
+           ldc.command_id AS last_command_id,
+           ldc.parent_command_id AS last_parent_command_id,
+           ldc.created_at AS last_command_created_at,
+           ldc.ack_at AS last_command_ack_at,
+           ldc.status AS last_command_status,
            (SELECT MAX(bdr.confirmed_at)
               FROM broadcast_device_results bdr
               INNER JOIN broadcast_requests br ON br.id = bdr.request_id
@@ -73,6 +91,8 @@ function buildOperationalDiagnostics(db, options = {}) {
     FROM devices d
     LEFT JOIN display_states ds
       ON ds.target_type = 'display' AND ds.target_id = d.id
+    LEFT JOIN latest_display_commands ldc
+      ON ldc.target_id = d.id AND ldc.row_number = 1
     WHERE d.workspace_id = ? AND d.id NOT LIKE 'live-stream-program-%'
     ORDER BY d.name COLLATE NOCASE, d.id
     LIMIT 50
@@ -80,6 +100,18 @@ function buildOperationalDiagnostics(db, options = {}) {
 
   const renderers = displayRows.map((row) => {
     const heartbeat = heartbeatState(row, now, heartbeatTimeoutMs);
+    const progress = typeof options.rendererProgressById === 'function'
+      ? options.rendererProgressById(String(row.id || ''))
+      : rendererProgress.get(String(row.id || ''));
+    const commandCreatedAt = timestampMs(row.last_command_created_at);
+    const commandStatus = row.last_command_status == null ? null : String(row.last_command_status);
+    const commandAcknowledgedAt = commandStatus === 'acked' ? timestampMs(row.last_command_ack_at) : null;
+    const commandId = row.last_command_id == null ? null : String(row.last_command_id);
+    const correlationMatches = commandId != null && progress?.command_id === commandId;
+    const candidateRenderConfirmationAt = correlationMatches
+      ? timestampMs(progress.command_confirmation_at) : null;
+    const renderConfirmationAt = causalLatency(commandCreatedAt, candidateRenderConfirmationAt) == null
+      ? null : candidateRenderConfirmationAt;
     return {
       id: String(row.id || ''),
       name: String(row.name || row.id || 'Unknown renderer'),
@@ -91,6 +123,22 @@ function buildOperationalDiagnostics(db, options = {}) {
         state: String(row.render_state || 'unknown'),
         at: timestampMs(row.state_updated_at),
         error: row.error_state == null ? null : String(row.error_state),
+      },
+      // A bounded, server-observed software-progress report. It is distinct
+      // from heartbeat freshness, ACKs, persisted state, and physical pixels.
+      render_progress: progress || null,
+      last_command: {
+        command_id: commandId,
+        parent_command_id: row.last_parent_command_id == null ? null : String(row.last_parent_command_id),
+        created_at: commandCreatedAt,
+        // command_logs does not record a separate transport-send timestamp.
+        // Do not substitute created_at and imply a measurement we do not have.
+        sent_at: null,
+        status: commandStatus,
+        acknowledged_at: commandAcknowledgedAt,
+        ack_latency_ms: causalLatency(commandCreatedAt, commandAcknowledgedAt),
+        render_confirmation_at: renderConfirmationAt,
+        render_confirmation_latency_ms: causalLatency(commandCreatedAt, renderConfirmationAt),
       },
       content: {
         id: row.current_content_id == null ? null : String(row.current_content_id),
@@ -163,6 +211,9 @@ function buildOperationalDiagnostics(db, options = {}) {
   if (!renderers.length) reasons.push('no_renderer_telemetry');
   if (renderers.some((renderer) => !renderer.connected)) reasons.push('renderer_offline_or_stale');
   if (renderers.some((renderer) => renderer.latest_render_confirmation.error != null)) reasons.push('renderer_error_reported');
+  if (renderers.some((renderer) => renderer.render_progress?.playback_state === 'STALLED')) reasons.push('renderer_playback_stalled');
+  if (renderers.some((renderer) => renderer.render_progress?.playback_state === 'ERROR'
+    || renderer.render_progress?.error?.active === true)) reasons.push('renderer_playback_error');
   if (!configuredAudioAuthority.configured) reasons.push('configured_audio_authority_not_configured');
   else if (!audioRenderer) reasons.push('configured_audio_authority_not_found');
   else if (!configuredAudioAuthority.connected) reasons.push('configured_audio_authority_offline_or_stale');
@@ -179,7 +230,7 @@ function buildOperationalDiagnostics(db, options = {}) {
     health: {
       status: reasons.length ? 'degraded' : 'healthy',
       reasons,
-      basis: 'persisted renderer confirmations and latest managed-node heartbeat telemetry',
+      basis: 'persisted renderer confirmations, bounded renderer software-progress reports, and latest managed-node heartbeat telemetry',
       physical_acceptance_observed: false,
     },
     configured_audio_authority: configuredAudioAuthority,

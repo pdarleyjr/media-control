@@ -6,6 +6,7 @@ const fs = require('fs');
 const { db, pruneTelemetry, pruneScreenshots } = require('../db/database');
 const config = require('../config');
 const heartbeat = require('../services/heartbeat');
+const rendererProgress = require('../services/renderer-progress');
 const commandQueue = require('../lib/command-queue');
 const {
   audioPolicyHeartbeatDecision,
@@ -1438,6 +1439,14 @@ module.exports = function setupDeviceSocket(io, dependencies = {}) {
           console.warn(`[state-report] rejected ${currentDeviceId} revision ${state && state.state_revision}: ${result.reason}`);
           return;
         }
+        // Progress telemetry is deliberately an in-memory bounded read model.
+        // It does not alter command delivery, heartbeat behaviour, or database
+        // write frequency, and no client timestamp is trusted as server time.
+        if (state.render_telemetry && typeof state.render_telemetry === 'object') {
+          rendererProgress.record(currentDeviceId, {
+            ...state.render_telemetry,
+          });
+        }
         commandModel.recordHeartbeat({ target_type: 'display', target_id: currentDeviceId, ts: Date.now() });
         emitToDeviceTargetAndWorkspace(dashboardNs, currentDeviceId, 'dashboard:state-sync', {
           version: 1, type: 'device:state-report', target_type: 'display', target_id: currentDeviceId,
@@ -1727,6 +1736,10 @@ socket.on('device:wb-undo', () => {
 
       const deviceId = currentDeviceId;
       const closingSocketId = socket.id;
+      // Renderer telemetry is an ephemeral observation tied to this browser
+      // lifecycle. A disconnected/replaced renderer must not lend its old
+      // progress to a later session for the same display ID.
+      rendererProgress.clear(deviceId);
       console.log(`Device disconnected: ${deviceId} (offline transition deferred ${OFFLINE_DEBOUNCE_MS}ms)`);
 
       // Defensive: clear any existing timer for this device. Shouldn't happen

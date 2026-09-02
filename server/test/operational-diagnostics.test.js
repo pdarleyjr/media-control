@@ -14,7 +14,7 @@ function fixtureDb({ displays = [], nodes = [] } = {}) {
     prepare(sql) {
       const normalized = String(sql).replace(/\s+/g, ' ').trim();
       statements.push(normalized);
-      assert.match(normalized, /^SELECT\b/i, 'diagnostics may prepare SELECT statements only');
+      assert.match(normalized, /^(SELECT|WITH)\b/i, 'diagnostics may prepare SELECT statements only');
       return {
         all() {
           if (/FROM devices d/i.test(normalized)) return displays;
@@ -82,7 +82,7 @@ test('operational diagnostics are read-only, bounded, and use authoritative exis
   assert.equal(snapshot.nodes[0].origin_path, 'local_lan');
   assert.equal(snapshot.nodes[0].cache.file_count, 12);
   assert.equal(snapshot.health.status, 'healthy');
-  assert.ok(db.statements.every((sql) => /^SELECT\b/i.test(sql)));
+  assert.ok(db.statements.every((sql) => /^(SELECT|WITH)\b/i.test(sql)));
 });
 
 test('missing and malformed telemetry degrade safely without inventing authority', () => {
@@ -130,6 +130,59 @@ test('a generic command acknowledgement is not reported as a confirmed route', (
     audioAuthorityDeviceId: 'tv-1', heartbeatTimeoutMs: 45_000,
   });
   assert.equal(snapshot.renderers[0].latest_route_confirmation_at, null);
+});
+
+test('diagnostics correlate existing per-target command ACKs with only causally matching software progress', () => {
+  const { buildOperationalDiagnostics } = require('../lib/operational-diagnostics');
+  const now = 1_800_000_010_000;
+  const db = fixtureDb({ displays: [{
+    id: 'tv-1', name: 'TV 1', status: 'online', last_heartbeat: Math.floor(now / 1000),
+    last_heartbeat_at: now, last_command_id: 'child-command-1', last_parent_command_id: 'wall-command-1',
+    last_command_created_at: now - 800, last_command_ack_at: now - 600, last_command_status: 'acked',
+  }] });
+  const snapshot = buildOperationalDiagnostics(db, {
+    workspaceId: 'workspace-1', now, heartbeatTimeoutMs: 45_000,
+    rendererProgressById: () => ({
+      playback_state: 'PLAYING_PROGRESS', command_id: 'child-command-1',
+      last_confirmed_render_progress_at: now - 400, command_confirmation_at: now - 400,
+      physical_pixels_observed: false,
+    }),
+  });
+  const renderer = snapshot.renderers[0];
+  assert.equal(renderer.last_command.parent_command_id, 'wall-command-1');
+  assert.equal(renderer.last_command.ack_latency_ms, 200);
+  assert.equal(renderer.last_command.render_confirmation_at, now - 400);
+  assert.equal(renderer.last_command.render_confirmation_latency_ms, 400);
+  assert.equal(renderer.render_progress.physical_pixels_observed, false);
+});
+
+test('diagnostics fail closed for impossible clock ordering and timeout is not an acknowledgement', () => {
+  const { buildOperationalDiagnostics } = require('../lib/operational-diagnostics');
+  const now = 1_800_000_010_000;
+  const db = fixtureDb({ displays: [{
+    id: 'tv-1', name: 'TV 1', status: 'online', last_heartbeat: Math.floor(now / 1000),
+    last_heartbeat_at: now, last_command_id: 'command-1', last_command_created_at: now - 100,
+    last_command_ack_at: now - 200, last_command_status: 'timeout',
+  }] });
+  const renderer = buildOperationalDiagnostics(db, {
+    workspaceId: 'workspace-1', now, rendererProgressById: () => ({
+      command_id: 'command-1', command_confirmation_at: now - 200,
+    }),
+  }).renderers[0];
+  assert.equal(renderer.last_command.acknowledged_at, null);
+  assert.equal(renderer.last_command.ack_latency_ms, null);
+  assert.equal(renderer.last_command.render_confirmation_at, null);
+  assert.equal(renderer.last_command.render_confirmation_latency_ms, null);
+});
+
+test('command lookup is a bounded display-only read model, never a scalar-ID lookup across target types', () => {
+  const source = fs.readFileSync(path.join(repoRoot, 'server', 'lib', 'operational-diagnostics.js'), 'utf8');
+  assert.match(source, /WITH latest_display_commands AS/);
+  assert.match(source, /WHERE target_type = 'display'/);
+  assert.match(source, /ldc\.target_id = d\.id AND ldc\.row_number = 1/);
+  assert.doesNotMatch(source, /SELECT cl\.command_id FROM command_logs cl/);
+  const schema = fs.readFileSync(path.join(repoRoot, 'server', 'db', 'schema.sql'), 'utf8');
+  assert.match(schema, /idx_command_logs_display_latest ON command_logs\(target_type, target_id, created_at DESC\)/);
 });
 
 test('unavailable read models return a bounded degraded snapshot instead of throwing', () => {

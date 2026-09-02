@@ -917,6 +917,7 @@ CREATE TABLE IF NOT EXISTS command_logs (
 
 CREATE INDEX IF NOT EXISTS idx_command_logs_target_revision ON command_logs(target_id, revision);
 CREATE INDEX IF NOT EXISTS idx_command_logs_status ON command_logs(status);
+CREATE INDEX IF NOT EXISTS idx_command_logs_display_latest ON command_logs(target_type, target_id, created_at DESC);
 
 -- Broadcast delivery proof is intentionally separate from command_logs.
 -- A content broadcast has one operator request and one independently tracked
