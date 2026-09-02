@@ -29,7 +29,8 @@
   <video id="cam" muted playsinline autoplay></video>
   <div id="state"><span id="statetext">Connecting…</span></div>
   <div id="label" hidden><span class="dot" aria-hidden="true"></span><span id="labeltext"></span></div>
-  <script src="device-contract.js"></script>
+    <script src="device-contract.js"></script>
+    <script src="media-progress.js"></script>
   <script src="vendor/hls.light.min.js"></script>
   <script>
     // Generic live-channel wrapper for the Camera Feeds "Live News" folder.
@@ -54,6 +55,24 @@
       var labelEl = document.getElementById('label');
       var labelText = document.getElementById('labeltext');
       var lastMediaError = null;
+      var progressTracker = null;
+      var rendererSessionId = 'hls-' + Date.now() + '-' + Math.random().toString(36).slice(2, 12);
+      var contentGeneration = 'hls-' + station;
+      var pendingSeekBaseline = false;
+      try {
+        if (window.MbfdMediaProgress && typeof window.MbfdMediaProgress.createMediaProgressTracker === 'function') {
+          progressTracker = window.MbfdMediaProgress.createMediaProgressTracker({ stallThresholdMs: 30000 });
+        }
+      } catch (e) { progressTracker = null; }
+
+      function safeErrorState() {
+        try {
+          return lastMediaError && window.MbfdMediaProgress && typeof window.MbfdMediaProgress.normalizePlaybackError === 'function'
+            ? window.MbfdMediaProgress.normalizePlaybackError(lastMediaError).message : null;
+        } catch (e) {
+          return null;
+        }
+      }
 
       function playbackState() {
         var duration = Number(video.duration);
@@ -71,11 +90,29 @@
           volume: Number(video.volume),
           render_state: renderState,
           playback_status: renderState,
-          error_state: lastMediaError,
+          error_state: safeErrorState(),
         };
+        if (progressTracker) {
+          var decodedFrames = window.MbfdMediaProgress.readDecodedFrames
+            ? window.MbfdMediaProgress.readDecodedFrames(video) : null;
+          try {
+            progressTracker.setGeneration && progressTracker.setGeneration(contentGeneration);
+            state.render_telemetry = progressTracker.observe({
+              now: Date.now(), expected_playing: !video.paused && !video.ended,
+              current_time: currentTime, decoded_frames: decodedFrames, paused: video.paused,
+              ended: video.ended, seeking: video.seeking, seek_transition: pendingSeekBaseline,
+              loading: video.readyState < 3 && !video.paused,
+              error: lastMediaError,
+            });
+            pendingSeekBaseline = false;
+            state.render_telemetry.renderer_session_id = rendererSessionId;
+            state.render_telemetry.content_generation = contentGeneration;
+          } catch (e) { progressTracker = null; }
+        }
         window.__mcTransportState = state;
         return state;
       }
+      window.__mcGetTransportState = playbackState;
 
       function notifyParent(kind, payload) {
         if (!window.parent || window.parent === window) return;
@@ -129,6 +166,7 @@
           } else if (action === 'seek') {
             var position = seekPosition(command.payload);
             if (position === null) throw new Error('Invalid or unsupported seek target');
+            pendingSeekBaseline = true;
             video.currentTime = Math.min(position, Math.max(0, Number(video.duration) - 0.05));
             operation = Promise.resolve();
           } else {
@@ -138,6 +176,9 @@
           operation = Promise.reject(error);
         }
         return operation.then(function () {
+          // The tracker itself requires post-command advancement before it
+          // exposes this successful command ID as a render confirmation.
+          try { if (progressTracker) progressTracker.setCommand(command.command_id, { now: Date.now() }); } catch (e) {}
           var ack = { ok: true, error: null, command_id: command.command_id, state: playbackState() };
           if (reportToParent) notifyParent('__mc_transport_ack', ack);
           return ack;
@@ -226,10 +267,11 @@
         fetch('news-stream?station=' + encodeURIComponent(station), { cache: 'no-store' })
           .then(function (r) { if (!r.ok) throw new Error('resolve ' + r.status); return r.json(); })
           .then(function (data) { if (!data || !data.source) throw new Error('no source'); attach(data.source); })
-          .catch(function () { reresolves++; if (reresolves > MAX) { showState(true, 'Channel unavailable'); return; } setTimeout(resolveAndPlay, 5000); });
+          .catch(function () { lastMediaError = { source: 'hls', type: 'networkError', details: 'manifestLoadError', fatal: false }; notifyParent('__mc_transport_state', playbackState()); reresolves++; if (reresolves > MAX) { showState(true, 'Channel unavailable'); return; } setTimeout(resolveAndPlay, 5000); });
       }
 
       function attach(source) {
+        try { if (progressTracker) progressTracker.reset(); } catch (e) {}
         if (hls) { try { hls.destroy(); } catch (e) {} hls = null; }
         if (window.Hls && window.Hls.isSupported()) {
           hls = new window.Hls({ liveSyncDurationCount: 3, manifestLoadingTimeOut: 12000, fragLoadingTimeOut: 20000 });
@@ -237,6 +279,8 @@
           hls.attachMedia(video);
           hls.on(window.Hls.Events.MANIFEST_PARSED, function () { safePlay(); armStall(); });
           hls.on(window.Hls.Events.ERROR, function (evt, data) {
+            lastMediaError = { source: 'hls', type: data && data.type, details: data && data.details, fatal: data && data.fatal === true };
+            notifyParent('__mc_transport_state', playbackState());
             if (data && data.fatal) { armStall(); if (reresolves <= MAX) { reresolves++; setTimeout(resolveAndPlay, 3000); } }
           });
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
@@ -250,14 +294,25 @@
       video.addEventListener('ended', function () { notifyParent('__mc_transport_state', playbackState()); });
       video.addEventListener('error', function () {
         lastMediaError = video.error
-          ? { code: video.error.code, message: video.error.message || 'Video playback failed' }
-          : { code: 'video_error', message: 'Video playback failed' };
+          ? { source: 'html5', type: 'mediaError', details: video.error.code, message: video.error.message, fatal: true }
+          : { source: 'html5', type: 'mediaError', details: 'video_error', fatal: true };
         notifyParent('__mc_transport_state', playbackState());
+      });
+      video.addEventListener('timeupdate', function () {
+        // A nonfatal HLS error is no longer active once this media element has
+        // genuinely resumed. Do not require a particular vendor `playing`
+        // event, which some recovery paths never emit.
+        if (lastMediaError && lastMediaError.fatal !== true && !video.paused && video.readyState >= 3) {
+          lastMediaError = null;
+          notifyParent('__mc_transport_state', playbackState());
+        }
       });
       video.addEventListener('waiting', armStall);
       video.addEventListener('stalled', armStall);
+      // The parent reads __mcGetTransportState as part of its existing state
+      // report cadence.  Do not add an HLS-specific report loop.
       document.addEventListener('visibilitychange', function () {
-        if (document.hidden) { clearStall(); if (hls) { try { hls.destroy(); } catch (e) {} hls = null; } }
+        if (document.hidden) { clearStall(); try { if (progressTracker) progressTracker.reset(); } catch (e) {} if (hls) { try { hls.destroy(); } catch (e) {} hls = null; } }
         else { resolveAndPlay(); }
       });
 
