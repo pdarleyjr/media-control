@@ -17,7 +17,9 @@ test('player and HLS paths report bounded software progress through the existing
   assert.match(rootPlayer, /getVideoPlaybackQuality/);
   assert.match(hlsPlayer, /media-progress\.js/);
   assert.match(hlsPlayer, /Hls\.Events\.ERROR/);
-  assert.match(hlsPlayer, /setInterval\(function \(\) \{ notifyParent\('__mc_transport_state', playbackState\(\)\); \}, 15000\)/);
+  assert.match(hlsPlayer, /window\.__mcGetTransportState = playbackState/);
+  assert.doesNotMatch(hlsPlayer, /setInterval\(function \(\) \{ notifyParent\('__mc_transport_state', playbackState\(\)\); \}, 15000\)/);
+  assert.match(rootPlayer, /__mcGetTransportState/);
   assert.match(deviceSocket, /state\.render_telemetry/);
   assert.match(deviceSocket, /rendererProgress\.record/);
   assert.doesNotMatch(deviceSocket, /INSERT INTO .*render_progress/i);

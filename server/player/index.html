@@ -1888,6 +1888,19 @@
       const child = !currentVideoEl && !activeYtPlayer && lastTransportState && typeof lastTransportState === 'object'
         ? lastTransportState
         : null;
+      let currentChild = child;
+      if (!currentVideoEl && !activeYtPlayer) {
+        try {
+          const frame = document.querySelector('#playerContainer iframe, .wall-stage iframe, .zone iframe');
+          const currentChildState = frame?.contentWindow?.__mcGetTransportState?.();
+          if (currentChildState && typeof currentChildState === 'object') {
+            lastTransportState = currentChildState;
+            currentChild = currentChildState;
+          }
+        } catch (_) {
+          // A cross-origin or tearing-down frame is deliberately unobservable.
+        }
+      }
       const snapshot = {
         current_content_id: item?.content_id || null,
         content_instance_id: item?.content_instance_id || (item?.id != null ? String(item.id) : null),
@@ -1927,27 +1940,27 @@
       };
       Object.assign(snapshot, audioPolicyController.stateFields());
 
-      if (child && typeof child === 'object') {
-        if (child.current_content_id != null) snapshot.current_content_id = child.current_content_id;
-        if (child.current_asset_id != null) snapshot.current_asset_id = child.current_asset_id;
-        if (child.content_type != null) snapshot.content_type = child.content_type;
-        if (child.layout_mode != null) snapshot.layout_mode = child.layout_mode;
-        if (child.slide_index != null) snapshot.slide_index = child.slide_index;
-        if (child.slide_total != null) snapshot.slide_total = child.slide_total;
-        if (child.current_time != null) snapshot.current_time = Number(child.current_time);
-        if (child.duration != null) snapshot.duration = Number(child.duration);
-        if (child.paused != null) snapshot.paused = !!child.paused;
-        if (child.muted != null) snapshot.muted = !!child.muted;
-        if (child.volume != null) snapshot.volume = Number(child.volume);
-        if (child.local_asset_ready != null) snapshot.local_asset_ready = child.local_asset_ready;
-        if (child.render_state != null) snapshot.render_state = child.render_state;
-        if (child.error_state != null) snapshot.error_state = child.error_state;
-        if (child.render_telemetry != null) snapshot.render_telemetry = child.render_telemetry;
-        if (child.media_title != null) snapshot.media_title = child.media_title;
-        if (child.media_type != null) snapshot.media_type = child.media_type;
-        if (child.cache_status != null) snapshot.cache_status = child.cache_status;
-        if (child.wall_state != null) snapshot.wall_state = child.wall_state;
-        if (child.p3_link != null) snapshot.p3_link = child.p3_link;
+      if (currentChild && typeof currentChild === 'object') {
+        if (currentChild.current_content_id != null) snapshot.current_content_id = currentChild.current_content_id;
+        if (currentChild.current_asset_id != null) snapshot.current_asset_id = currentChild.current_asset_id;
+        if (currentChild.content_type != null) snapshot.content_type = currentChild.content_type;
+        if (currentChild.layout_mode != null) snapshot.layout_mode = currentChild.layout_mode;
+        if (currentChild.slide_index != null) snapshot.slide_index = currentChild.slide_index;
+        if (currentChild.slide_total != null) snapshot.slide_total = currentChild.slide_total;
+        if (currentChild.current_time != null) snapshot.current_time = Number(currentChild.current_time);
+        if (currentChild.duration != null) snapshot.duration = Number(currentChild.duration);
+        if (currentChild.paused != null) snapshot.paused = !!currentChild.paused;
+        if (currentChild.muted != null) snapshot.muted = !!currentChild.muted;
+        if (currentChild.volume != null) snapshot.volume = Number(currentChild.volume);
+        if (currentChild.local_asset_ready != null) snapshot.local_asset_ready = currentChild.local_asset_ready;
+        if (currentChild.render_state != null) snapshot.render_state = currentChild.render_state;
+        if (currentChild.error_state != null) snapshot.error_state = currentChild.error_state;
+        if (currentChild.render_telemetry != null) snapshot.render_telemetry = currentChild.render_telemetry;
+        if (currentChild.media_title != null) snapshot.media_title = currentChild.media_title;
+        if (currentChild.media_type != null) snapshot.media_type = currentChild.media_type;
+        if (currentChild.cache_status != null) snapshot.cache_status = currentChild.cache_status;
+        if (currentChild.wall_state != null) snapshot.wall_state = currentChild.wall_state;
+        if (currentChild.p3_link != null) snapshot.p3_link = currentChild.p3_link;
       }
 
       if (snapshot.current_time == null) {
@@ -2017,7 +2030,6 @@
         });
       }
       if (snapshot.render_telemetry) {
-        snapshot.render_telemetry.command_id = snapshot.command_revision || null;
         if (snapshot.render_telemetry.error?.active === true) {
           snapshot.error_state = snapshot.render_telemetry.error.message;
           snapshot.render_state = 'error';
@@ -2376,6 +2388,9 @@
 
     function finishTransportCommand(command, ok, error, state) {
       if (!command) return;
+      // A command is correlatable only after it actually became applicable. The
+      // tracker then requires a later decoded-frame/media-time advance.
+      if (ok !== false) mediaProgressTracker?.setCommand?.(command.command_id, { now: Date.now() });
       lastTransportAck = {
         command_id: command.command_id || null,
         action: command.action || null,
@@ -4638,6 +4653,7 @@
     // zone-mode (multi-region) videos get cleaned up too, not just currentVideoEl.
     function teardownCurrentMedia() {
       ++playbackGeneration;
+      mediaProgressTracker?.reset?.();
       if (currentMediaAbortController) {
         currentMediaAbortController.abort();
         currentMediaAbortController = null;

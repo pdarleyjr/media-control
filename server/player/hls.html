@@ -55,8 +55,12 @@
       var labelEl = document.getElementById('label');
       var labelText = document.getElementById('labeltext');
       var lastMediaError = null;
-      var progressTracker = window.MbfdMediaProgress && window.MbfdMediaProgress.createMediaProgressTracker
-        ? window.MbfdMediaProgress.createMediaProgressTracker({ stallThresholdMs: 30000 }) : null;
+      var progressTracker = null;
+      try {
+        if (window.MbfdMediaProgress && typeof window.MbfdMediaProgress.createMediaProgressTracker === 'function') {
+          progressTracker = window.MbfdMediaProgress.createMediaProgressTracker({ stallThresholdMs: 30000 });
+        }
+      } catch (e) { progressTracker = null; }
 
       function playbackState() {
         var duration = Number(video.duration);
@@ -74,7 +78,8 @@
           volume: Number(video.volume),
           render_state: renderState,
           playback_status: renderState,
-          error_state: lastMediaError ? window.MbfdMediaProgress.normalizePlaybackError(lastMediaError).message : null,
+          error_state: lastMediaError && window.MbfdMediaProgress && typeof window.MbfdMediaProgress.normalizePlaybackError === 'function'
+            ? window.MbfdMediaProgress.normalizePlaybackError(lastMediaError).message : null,
         };
         if (progressTracker) {
           var decodedFrames = null;
@@ -83,16 +88,19 @@
               decodedFrames = Number(video.getVideoPlaybackQuality().totalVideoFrames);
             }
           } catch (e) {}
-          state.render_telemetry = progressTracker.observe({
-            now: Date.now(), expected_playing: !video.paused && !video.ended,
-            current_time: currentTime, decoded_frames: decodedFrames, paused: video.paused,
-            ended: video.ended, seeking: video.seeking, loading: video.readyState < 3 && !video.paused,
-            error: lastMediaError,
-          });
+          try {
+            state.render_telemetry = progressTracker.observe({
+              now: Date.now(), expected_playing: !video.paused && !video.ended,
+              current_time: currentTime, decoded_frames: decodedFrames, paused: video.paused,
+              ended: video.ended, seeking: video.seeking, loading: video.readyState < 3 && !video.paused,
+              error: lastMediaError,
+            });
+          } catch (e) { progressTracker = null; }
         }
         window.__mcTransportState = state;
         return state;
       }
+      window.__mcGetTransportState = playbackState;
 
       function notifyParent(kind, payload) {
         if (!window.parent || window.parent === window) return;
@@ -155,6 +163,9 @@
           operation = Promise.reject(error);
         }
         return operation.then(function () {
+          // The tracker itself requires post-command advancement before it
+          // exposes this successful command ID as a render confirmation.
+          try { if (progressTracker) progressTracker.setCommand(command.command_id, { now: Date.now() }); } catch (e) {}
           var ack = { ok: true, error: null, command_id: command.command_id, state: playbackState() };
           if (reportToParent) notifyParent('__mc_transport_ack', ack);
           return ack;
@@ -247,6 +258,7 @@
       }
 
       function attach(source) {
+        try { if (progressTracker) progressTracker.reset(); } catch (e) {}
         if (hls) { try { hls.destroy(); } catch (e) {} hls = null; }
         if (window.Hls && window.Hls.isSupported()) {
           hls = new window.Hls({ liveSyncDurationCount: 3, manifestLoadingTimeOut: 12000, fragLoadingTimeOut: 20000 });
@@ -273,13 +285,21 @@
           : { source: 'html5', type: 'mediaError', details: 'video_error', fatal: true };
         notifyParent('__mc_transport_state', playbackState());
       });
+      video.addEventListener('timeupdate', function () {
+        // A nonfatal HLS error is no longer active once this media element has
+        // genuinely resumed. Do not require a particular vendor `playing`
+        // event, which some recovery paths never emit.
+        if (lastMediaError && lastMediaError.fatal !== true && !video.paused && video.readyState >= 3) {
+          lastMediaError = null;
+          notifyParent('__mc_transport_state', playbackState());
+        }
+      });
       video.addEventListener('waiting', armStall);
       video.addEventListener('stalled', armStall);
-      // Child state is sampled at the same low frequency as the parent player
-      // heartbeat. Transitions still report immediately through media events.
-      setInterval(function () { notifyParent('__mc_transport_state', playbackState()); }, 15000);
+      // The parent reads __mcGetTransportState as part of its existing state
+      // report cadence.  Do not add an HLS-specific report loop.
       document.addEventListener('visibilitychange', function () {
-        if (document.hidden) { clearStall(); if (hls) { try { hls.destroy(); } catch (e) {} hls = null; } }
+        if (document.hidden) { clearStall(); try { if (progressTracker) progressTracker.reset(); } catch (e) {} if (hls) { try { hls.destroy(); } catch (e) {} hls = null; } }
         else { resolveAndPlay(); }
       });
 

@@ -53,6 +53,11 @@ function heartbeatState(row, now, timeoutMs) {
   };
 }
 
+function causalLatency(startAt, endAt) {
+  if (startAt == null || endAt == null || endAt < startAt) return null;
+  return endAt - startAt;
+}
+
 function buildOperationalDiagnostics(db, options = {}) {
   if (!db || typeof db.prepare !== 'function') throw new TypeError('A database is required');
   const workspaceId = String(options.workspaceId || '').trim();
@@ -62,20 +67,21 @@ function buildOperationalDiagnostics(db, options = {}) {
   const heartbeatTimeoutMs = Math.max(1_000, finiteOrNull(options.heartbeatTimeoutMs) || 45_000);
 
   const displayRows = safeAll(db, `
+    WITH latest_display_commands AS (
+      SELECT command_id, parent_command_id, target_id, created_at, ack_at, status,
+             ROW_NUMBER() OVER (PARTITION BY target_id ORDER BY created_at DESC, command_id DESC) AS row_number
+      FROM command_logs
+      WHERE target_type = 'display'
+    )
     SELECT d.id, d.name, d.status, d.last_heartbeat,
            ds.last_heartbeat_at, ds.render_state, ds.error_state,
            ds.current_content_id, ds.content_type, ds.muted, ds.operator_muted,
            ds.updated_at AS state_updated_at,
-           (SELECT cl.command_id FROM command_logs cl
-             WHERE cl.target_id = d.id ORDER BY cl.created_at DESC LIMIT 1) AS last_command_id,
-           (SELECT cl.parent_command_id FROM command_logs cl
-             WHERE cl.target_id = d.id ORDER BY cl.created_at DESC LIMIT 1) AS last_parent_command_id,
-           (SELECT cl.created_at FROM command_logs cl
-             WHERE cl.target_id = d.id ORDER BY cl.created_at DESC LIMIT 1) AS last_command_created_at,
-           (SELECT cl.ack_at FROM command_logs cl
-             WHERE cl.target_id = d.id ORDER BY cl.created_at DESC LIMIT 1) AS last_command_ack_at,
-           (SELECT cl.status FROM command_logs cl
-             WHERE cl.target_id = d.id ORDER BY cl.created_at DESC LIMIT 1) AS last_command_status,
+           ldc.command_id AS last_command_id,
+           ldc.parent_command_id AS last_parent_command_id,
+           ldc.created_at AS last_command_created_at,
+           ldc.ack_at AS last_command_ack_at,
+           ldc.status AS last_command_status,
            (SELECT MAX(bdr.confirmed_at)
               FROM broadcast_device_results bdr
               INNER JOIN broadcast_requests br ON br.id = bdr.request_id
@@ -85,6 +91,8 @@ function buildOperationalDiagnostics(db, options = {}) {
     FROM devices d
     LEFT JOIN display_states ds
       ON ds.target_type = 'display' AND ds.target_id = d.id
+    LEFT JOIN latest_display_commands ldc
+      ON ldc.target_id = d.id AND ldc.row_number = 1
     WHERE d.workspace_id = ? AND d.id NOT LIKE 'live-stream-program-%'
     ORDER BY d.name COLLATE NOCASE, d.id
     LIMIT 50
@@ -96,11 +104,14 @@ function buildOperationalDiagnostics(db, options = {}) {
       ? options.rendererProgressById(String(row.id || ''))
       : rendererProgress.get(String(row.id || ''));
     const commandCreatedAt = timestampMs(row.last_command_created_at);
-    const commandAcknowledgedAt = timestampMs(row.last_command_ack_at);
+    const commandStatus = row.last_command_status == null ? null : String(row.last_command_status);
+    const commandAcknowledgedAt = commandStatus === 'acked' ? timestampMs(row.last_command_ack_at) : null;
     const commandId = row.last_command_id == null ? null : String(row.last_command_id);
     const correlationMatches = commandId != null && progress?.command_id === commandId;
-    const renderConfirmationAt = correlationMatches
-      ? timestampMs(progress.last_confirmed_render_progress_at) : null;
+    const candidateRenderConfirmationAt = correlationMatches
+      ? timestampMs(progress.command_confirmation_at) : null;
+    const renderConfirmationAt = causalLatency(commandCreatedAt, candidateRenderConfirmationAt) == null
+      ? null : candidateRenderConfirmationAt;
     return {
       id: String(row.id || ''),
       name: String(row.name || row.id || 'Unknown renderer'),
@@ -123,13 +134,11 @@ function buildOperationalDiagnostics(db, options = {}) {
         // command_logs does not record a separate transport-send timestamp.
         // Do not substitute created_at and imply a measurement we do not have.
         sent_at: null,
-        status: row.last_command_status == null ? null : String(row.last_command_status),
+        status: commandStatus,
         acknowledged_at: commandAcknowledgedAt,
-        ack_latency_ms: commandCreatedAt != null && commandAcknowledgedAt != null
-          ? Math.max(0, commandAcknowledgedAt - commandCreatedAt) : null,
+        ack_latency_ms: causalLatency(commandCreatedAt, commandAcknowledgedAt),
         render_confirmation_at: renderConfirmationAt,
-        render_confirmation_latency_ms: commandCreatedAt != null && renderConfirmationAt != null
-          ? Math.max(0, renderConfirmationAt - commandCreatedAt) : null,
+        render_confirmation_latency_ms: causalLatency(commandCreatedAt, renderConfirmationAt),
       },
       content: {
         id: row.current_content_id == null ? null : String(row.current_content_id),

@@ -14,8 +14,13 @@ function get(deviceId) {
   return registry.get(deviceId);
 }
 
+function clear(deviceId) {
+  if (deviceId == null) return;
+  registry.entries.delete(String(deviceId));
+}
+
 function _clearForTests() {
   registry.clear();
 }
 
-module.exports = { record, get, _clearForTests };
+module.exports = { record, get, clear, _clearForTests };

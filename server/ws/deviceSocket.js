@@ -1445,7 +1445,6 @@ module.exports = function setupDeviceSocket(io, dependencies = {}) {
         if (state.render_telemetry && typeof state.render_telemetry === 'object') {
           rendererProgress.record(currentDeviceId, {
             ...state.render_telemetry,
-            command_id: state.command_revision || state.render_telemetry.command_id || null,
           });
         }
         commandModel.recordHeartbeat({ target_type: 'display', target_id: currentDeviceId, ts: Date.now() });
@@ -1737,6 +1736,10 @@ socket.on('device:wb-undo', () => {
 
       const deviceId = currentDeviceId;
       const closingSocketId = socket.id;
+      // Renderer telemetry is an ephemeral observation tied to this browser
+      // lifecycle. A disconnected/replaced renderer must not lend its old
+      // progress to a later session for the same display ID.
+      rendererProgress.clear(deviceId);
       console.log(`Device disconnected: ${deviceId} (offline transition deferred ${OFFLINE_DEBOUNCE_MS}ms)`);
 
       // Defensive: clear any existing timer for this device. Shouldn't happen

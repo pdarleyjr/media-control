@@ -21,6 +21,7 @@
   };
 
   function finite(value) {
+    if (value == null || value === '') return null;
     var number = Number(value);
     return Number.isFinite(number) ? number : null;
   }
@@ -31,11 +32,10 @@
     return code || fallback || 'PLAYBACK_UNKNOWN_ERROR';
   }
 
-  function safeMessage(value, fallback) {
-    var text = String(value || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 160);
-    // Source URLs, signed query strings, and tokens have no place in telemetry.
-    if (!text || /https?:\/\/|\b(token|signature|sig|key|authorization)=/i.test(text)) return fallback;
-    return text;
+  function safeMessage(code, fallback) {
+    // Telemetry is diagnostic data, not a log transport.  Never permit an
+    // exception message, URL, header, or vendor response to cross this API.
+    return SAFE_MESSAGES[code] || fallback || SAFE_MESSAGES.PLAYBACK_UNKNOWN_ERROR;
   }
 
   function normalizePlaybackError(input) {
@@ -52,7 +52,7 @@
         code: explicitCode,
         fatal: input && input.fatal === true,
         recoverable: input && input.fatal !== true && input && input.recoverable !== false,
-        message: safeMessage(input && input.message, explicitMessage),
+        message: safeMessage(explicitCode, explicitMessage),
       };
     }
     var source = String(input && input.source || '').toLowerCase();
@@ -62,7 +62,17 @@
     var fatal = input && input.fatal === true;
     var category = 'UNKNOWN';
     var code = 'PLAYBACK_UNKNOWN_ERROR';
-    if (source === 'hls' && /manifest/.test(details)) {
+    if (source === 'html5' && /^\d+$/.test(rawDetails)) {
+      var mediaCode = Number(rawDetails);
+      if (mediaCode === 1) { category = 'MEDIA'; code = 'HTML5_MEDIA_ERR_ABORTED'; }
+      else if (mediaCode === 2) { category = 'NETWORK'; code = 'HTML5_MEDIA_ERR_NETWORK'; }
+      else if (mediaCode === 3) { category = 'DECODE'; code = 'HTML5_MEDIA_ERR_DECODE'; }
+      else if (mediaCode === 4) { category = 'SOURCE'; code = 'HTML5_MEDIA_ERR_SRC_NOT_SUPPORTED'; }
+    } else if (source === 'youtube') {
+      var youtubeCode = safeCode(rawDetails, 'UNKNOWN');
+      category = /^(2|5)$/.test(String(rawDetails)) ? 'SOURCE' : 'MEDIA';
+      code = 'YOUTUBE_' + youtubeCode;
+    } else if (source === 'hls' && /manifest/.test(details)) {
       category = type === 'networkerror' ? 'NETWORK' : 'MANIFEST';
       code = 'HLS_' + safeCode(rawDetails, 'MANIFEST_LOAD_ERROR');
     } else if (source === 'hls' && /(parsing|decode)/.test(details)) {
@@ -87,7 +97,7 @@
       code: code,
       fatal: fatal,
       recoverable: !fatal,
-      message: safeMessage(input && input.message, message),
+      message: safeMessage(code, message),
     };
   }
 
@@ -105,10 +115,42 @@
     var activeError = null;
     var lastError = null;
     var recoveryPending = false;
+    var activeCommand = null;
+    var generation = 0;
+
+    function reset() {
+      previousTime = null;
+      previousFrames = null;
+      lastMediaProgressAt = null;
+      lastFrameProgressAt = null;
+      expectedPlayingSinceAt = null;
+      stallStartedAt = null;
+      recoveredAt = null;
+      lastState = 'IDLE';
+      activeError = null;
+      lastError = null;
+      recoveryPending = false;
+      activeCommand = null;
+      generation += 1;
+    }
+
+    function setCommand(commandId, commandOptions) {
+      var id = String(commandId || '').trim();
+      if (!id) { activeCommand = null; return; }
+      commandOptions = commandOptions || {};
+      var applicableAt = finite(commandOptions.now);
+      activeCommand = {
+        id: id.slice(0, 128),
+        applicableAt: applicableAt == null ? Date.now() : applicableAt,
+        generation: generation,
+        confirmationAt: null,
+      };
+    }
 
     function observe(sample) {
       sample = sample || {};
-      var now = finite(sample.now) || Date.now();
+      var now = finite(sample.now);
+      if (now == null) now = Date.now();
       var currentTime = finite(sample.current_time);
       var frames = finite(sample.decoded_frames);
       var hasTime = currentTime != null;
@@ -119,8 +161,9 @@
       var framesAdvanced = hasFrames && previousFrames != null && frames > previousFrames;
       if (hasTime) previousTime = currentTime;
       if (hasFrames) previousFrames = frames;
-      if (timeAdvanced) lastMediaProgressAt = now;
-      if (framesAdvanced) lastFrameProgressAt = now;
+      // Seeking changes a clock without proving decoded/rendered progress.
+      if (timeAdvanced && sample.seeking !== true) lastMediaProgressAt = now;
+      if (framesAdvanced && sample.seeking !== true) lastFrameProgressAt = now;
 
       var normalizedError = sample.error ? normalizePlaybackError(sample.error) : null;
       if (normalizedError) {
@@ -140,42 +183,48 @@
       }
 
       var expected = sample.expected_playing === true && sample.paused !== true
-        && sample.ended !== true && sample.seeking !== true && sample.loading !== true;
+        && sample.ended !== true && sample.seeking !== true;
       if (expected && expectedPlayingSinceAt == null) expectedPlayingSinceAt = now;
       if (!expected) expectedPlayingSinceAt = null;
-      var progressed = timeAdvanced || framesAdvanced;
+      var progressed = sample.seeking !== true && (hasFrames ? framesAdvanced : timeAdvanced);
       var state;
       if (activeError) state = 'ERROR';
-      else if (sample.loading === true || sample.seeking === true) state = 'LOADING';
+      else if (sample.seeking === true) state = 'LOADING';
       else if (sample.paused === true) state = 'PAUSED';
       else if (!expected) state = 'IDLE';
       else if (progressed && (recoveryPending || lastState === 'STALLED')) {
         state = 'RECOVERING'; recoveredAt = now; recoveryPending = false; stallStartedAt = null;
       } else {
-        var lastProgressAt = Math.max(lastMediaProgressAt || 0, lastFrameProgressAt || 0, expectedPlayingSinceAt || 0) || null;
-        if (lastProgressAt != null && now - lastProgressAt >= threshold
-          && (!hasFrames || lastFrameProgressAt == null || now - lastFrameProgressAt >= threshold)) {
+        var relevantProgressAt = hasFrames ? lastFrameProgressAt : lastMediaProgressAt;
+        var lastProgressAt = relevantProgressAt == null ? expectedPlayingSinceAt : relevantProgressAt;
+        if (lastProgressAt != null && now - lastProgressAt >= threshold) {
           state = 'STALLED'; if (stallStartedAt == null) stallStartedAt = now;
-        } else state = 'PLAYING_PROGRESS';
+        } else state = sample.loading === true ? 'LOADING' : 'PLAYING_PROGRESS';
       }
       if (state !== 'STALLED' && state !== 'RECOVERING' && !expected) stallStartedAt = null;
       lastState = state;
 
+      if (activeCommand && activeCommand.generation === generation && activeCommand.confirmationAt == null && progressed) {
+        activeCommand.confirmationAt = now;
+      }
+      var confirmedRenderProgressAt = hasFrames ? lastFrameProgressAt : lastMediaProgressAt;
       return {
         playback_state: state,
         expected_playing: expected,
         decoded_frame_available: hasFrames,
         last_media_progress_at: lastMediaProgressAt,
         last_decoded_frame_progress_at: lastFrameProgressAt,
-        last_confirmed_render_progress_at: Math.max(lastMediaProgressAt || 0, lastFrameProgressAt || 0) || null,
+        last_confirmed_render_progress_at: confirmedRenderProgressAt,
         stall_started_at: stallStartedAt,
         recovered_at: recoveredAt,
         error: lastError ? Object.assign({}, lastError) : null,
+        command_id: activeCommand && activeCommand.confirmationAt != null ? activeCommand.id : null,
+        command_confirmation_at: activeCommand && activeCommand.confirmationAt != null ? activeCommand.confirmationAt : null,
         physical_pixels_observed: false,
       };
     }
 
-    return { observe: observe, stallThresholdMs: threshold };
+    return { observe: observe, reset: reset, setCommand: setCommand, stallThresholdMs: threshold };
   }
 
   function RendererProgressRegistry(options) {
@@ -207,6 +256,7 @@
       stall_started_at: finite(report.stall_started_at),
       recovered_at: finite(report.recovered_at),
       command_id: String(report.command_id || '').slice(0, 128) || null,
+      command_confirmation_at: report.command_id && finite(report.command_confirmation_at) != null ? observedAt : null,
       error: normalizedError ? Object.assign({}, normalizedError, {
         first_seen_at: finite(report.error.first_seen_at), last_seen_at: finite(report.error.last_seen_at),
         recovered_at: finite(report.error.recovered_at), active: report.error.active === true,
