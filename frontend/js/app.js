@@ -628,6 +628,13 @@ async function route() {
   }
 
   const hash = window.location.hash || '#/';
+  const isControlRoute = hash.startsWith('#/control');
+  const ccForceCollapsed = isControlRoute && !CONSOLE_MODE;
+
+  // Keep Command Center-only body state in sync before any auth/onboarding
+  // redirect can return early from this route pass.
+  document.body.classList.toggle('cc-fullscreen', isControlRoute);
+  document.body.classList.toggle('cc-sidebar-forced', ccForceCollapsed);
 
   if (CONSOLE_MODE) {
     const ready = await ensureConsoleSession();
@@ -733,20 +740,16 @@ async function route() {
   // the dedicated physical console route, or the Command Center (#/control) which
   // renders its own left icon rail. Either one alongside the legacy .sidebar would
   // create a duplicate left nav. The else branch restores the sidebar elsewhere.
-  const isControlRoute = hash.startsWith('#/control');
   const fullScreenChrome = CONSOLE_MODE;
   if (CONSOLE_MODE) {
     document.body.classList.add('console-mode');
   } else {
     document.body.classList.remove('console-mode');
   }
-  document.body.classList.toggle('cc-fullscreen', isControlRoute);
   // Command Center on the web uses ONE collapsed (~72px) application sidebar so the
   // wall previews get the full workspace. This is a LOCAL visual override — it does
   // not persist to localStorage, so the operator's saved expand/collapse preference
   // for other views is preserved and restored when leaving #/control.
-  const ccForceCollapsed = isControlRoute && !CONSOLE_MODE;
-  document.body.classList.toggle('cc-sidebar-forced', ccForceCollapsed);
   if (ccForceCollapsed) {
     sidebar?.classList.add('collapsed');
     document.body.classList.add('sidebar-collapsed');
