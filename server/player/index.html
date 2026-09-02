@@ -116,6 +116,7 @@
        few-ms delay vs the inline trap is fine since errors before this
        loads are already captured in __debugLog by the inline trap above. -->
   <script src="/player/debug-overlay.js" defer></script>
+  <script src="/player/media-progress.js"></script>
   <title>Media Control Player</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -542,6 +543,9 @@
     let currentVideoEl = null;
     let currentMediaEnded = false;
     let currentMediaError = null;
+    const mediaProgressTracker = window.MbfdMediaProgress?.createMediaProgressTracker
+      ? window.MbfdMediaProgress.createMediaProgressTracker({ stallThresholdMs: 30000 })
+      : null;
     let lastPlaybackProgressAt = 0;
     let playbackGeneration = 0;
     const pendingBroadcastDeliveries = new Map();
@@ -1902,7 +1906,8 @@
         volume: null,
         local_asset_ready: currentLocalAssetReady,
         render_state: null,
-        error_state: currentMediaError,
+        error_state: currentMediaError?.message || null,
+        render_telemetry: null,
         media_title: (item && item.filename) || config.deviceName || 'Web Player',
         media_type: contentKindForItem(item),
         cache_status: currentCacheStatus,
@@ -1937,6 +1942,7 @@
         if (child.local_asset_ready != null) snapshot.local_asset_ready = child.local_asset_ready;
         if (child.render_state != null) snapshot.render_state = child.render_state;
         if (child.error_state != null) snapshot.error_state = child.error_state;
+        if (child.render_telemetry != null) snapshot.render_telemetry = child.render_telemetry;
         if (child.media_title != null) snapshot.media_title = child.media_title;
         if (child.media_type != null) snapshot.media_type = child.media_type;
         if (child.cache_status != null) snapshot.cache_status = child.cache_status;
@@ -1988,6 +1994,34 @@
         else if (ytState) snapshot.render_state = ytState;
         else if (currentVideoEl && currentVideoEl.readyState < 3 && !currentVideoEl.paused) snapshot.render_state = 'loading';
         else snapshot.render_state = snapshot.paused ? 'paused' : (item ? 'playing' : 'idle');
+      }
+      // Only players with an actual media clock can establish progress here.
+      // Generic/web content may have a wall-clock fallback above, which is not
+      // evidence that its media or rendered frames are advancing.
+      if (!snapshot.render_telemetry && mediaProgressTracker && (currentVideoEl || activeYtPlayer)) {
+        const video = currentVideoEl;
+        let decodedFrames = null;
+        if (video && typeof video.getVideoPlaybackQuality === 'function') {
+          try { decodedFrames = Number(video.getVideoPlaybackQuality().totalVideoFrames); } catch (_) {}
+        }
+        snapshot.render_telemetry = mediaProgressTracker.observe({
+          now: Date.now(),
+          expected_playing: snapshot.paused === false && !!item,
+          current_time: snapshot.current_time,
+          decoded_frames: decodedFrames,
+          paused: snapshot.paused === true,
+          ended: currentMediaEnded === true,
+          seeking: video?.seeking === true,
+          loading: snapshot.render_state === 'loading',
+          error: currentMediaError,
+        });
+      }
+      if (snapshot.render_telemetry) {
+        snapshot.render_telemetry.command_id = snapshot.command_revision || null;
+        if (snapshot.render_telemetry.error?.active === true) {
+          snapshot.error_state = snapshot.render_telemetry.error.message;
+          snapshot.render_state = 'error';
+        }
       }
       if (snapshot.media_type == null) snapshot.media_type = snapshot.content_type;
       if (snapshot.slide_total == null && item) snapshot.slide_total = playlist.length;
@@ -4824,7 +4858,7 @@
             webSrc = '/player/site.html?id=' + encodeURIComponent(item.content_id) + '&w=' + sw + '&h=' + sh + '&full=1';
           }
           if (!webSrc) {
-            currentMediaError = { code: 'unsafe_web_url', message: 'Web content URL is not allowed' };
+            currentMediaError = { category: 'SOURCE', code: 'PLAYBACK_SOURCE_ERROR', fatal: true, recoverable: false, message: 'Web content URL is not allowed' };
             showStatus('Unable to load web content');
             publishPlayerState();
             failPendingBroadcastRender('Web content URL is not allowed');
@@ -4983,8 +5017,8 @@
             if (playbackGeneration !== myGeneration) return;
             console.error('Video error:', src);
             currentMediaError = video.error
-              ? { code: video.error.code, message: video.error.message || 'Video playback failed' }
-              : { code: 'video_error', message: 'Video playback failed' };
+              ? { source: 'html5', type: 'mediaError', details: video.error.code, fatal: true, message: video.error.message || 'Video playback failed' }
+              : { source: 'html5', type: 'mediaError', details: 'video_error', fatal: true, message: 'Video playback failed' };
             publishPlayerState();
             failPendingBroadcastRender(currentMediaError.message);
             if (!isFollower) advanceTimer = setTimeout(nextItem, 3000);

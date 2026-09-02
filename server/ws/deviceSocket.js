@@ -6,6 +6,7 @@ const fs = require('fs');
 const { db, pruneTelemetry, pruneScreenshots } = require('../db/database');
 const config = require('../config');
 const heartbeat = require('../services/heartbeat');
+const rendererProgress = require('../services/renderer-progress');
 const commandQueue = require('../lib/command-queue');
 const {
   audioPolicyHeartbeatDecision,
@@ -1437,6 +1438,15 @@ module.exports = function setupDeviceSocket(io, dependencies = {}) {
         if (result && result.applied === false) {
           console.warn(`[state-report] rejected ${currentDeviceId} revision ${state && state.state_revision}: ${result.reason}`);
           return;
+        }
+        // Progress telemetry is deliberately an in-memory bounded read model.
+        // It does not alter command delivery, heartbeat behaviour, or database
+        // write frequency, and no client timestamp is trusted as server time.
+        if (state.render_telemetry && typeof state.render_telemetry === 'object') {
+          rendererProgress.record(currentDeviceId, {
+            ...state.render_telemetry,
+            command_id: state.command_revision || state.render_telemetry.command_id || null,
+          });
         }
         commandModel.recordHeartbeat({ target_type: 'display', target_id: currentDeviceId, ts: Date.now() });
         emitToDeviceTargetAndWorkspace(dashboardNs, currentDeviceId, 'dashboard:state-sync', {

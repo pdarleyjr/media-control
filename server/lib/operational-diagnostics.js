@@ -1,5 +1,7 @@
 'use strict';
 
+const rendererProgress = require('../services/renderer-progress');
+
 const MAX_RENDERERS = 50;
 const MAX_NODES = 20;
 
@@ -64,6 +66,16 @@ function buildOperationalDiagnostics(db, options = {}) {
            ds.last_heartbeat_at, ds.render_state, ds.error_state,
            ds.current_content_id, ds.content_type, ds.muted, ds.operator_muted,
            ds.updated_at AS state_updated_at,
+           (SELECT cl.command_id FROM command_logs cl
+             WHERE cl.target_id = d.id ORDER BY cl.created_at DESC LIMIT 1) AS last_command_id,
+           (SELECT cl.parent_command_id FROM command_logs cl
+             WHERE cl.target_id = d.id ORDER BY cl.created_at DESC LIMIT 1) AS last_parent_command_id,
+           (SELECT cl.created_at FROM command_logs cl
+             WHERE cl.target_id = d.id ORDER BY cl.created_at DESC LIMIT 1) AS last_command_created_at,
+           (SELECT cl.ack_at FROM command_logs cl
+             WHERE cl.target_id = d.id ORDER BY cl.created_at DESC LIMIT 1) AS last_command_ack_at,
+           (SELECT cl.status FROM command_logs cl
+             WHERE cl.target_id = d.id ORDER BY cl.created_at DESC LIMIT 1) AS last_command_status,
            (SELECT MAX(bdr.confirmed_at)
               FROM broadcast_device_results bdr
               INNER JOIN broadcast_requests br ON br.id = bdr.request_id
@@ -80,6 +92,15 @@ function buildOperationalDiagnostics(db, options = {}) {
 
   const renderers = displayRows.map((row) => {
     const heartbeat = heartbeatState(row, now, heartbeatTimeoutMs);
+    const progress = typeof options.rendererProgressById === 'function'
+      ? options.rendererProgressById(String(row.id || ''))
+      : rendererProgress.get(String(row.id || ''));
+    const commandCreatedAt = timestampMs(row.last_command_created_at);
+    const commandAcknowledgedAt = timestampMs(row.last_command_ack_at);
+    const commandId = row.last_command_id == null ? null : String(row.last_command_id);
+    const correlationMatches = commandId != null && progress?.command_id === commandId;
+    const renderConfirmationAt = correlationMatches
+      ? timestampMs(progress.last_confirmed_render_progress_at) : null;
     return {
       id: String(row.id || ''),
       name: String(row.name || row.id || 'Unknown renderer'),
@@ -91,6 +112,24 @@ function buildOperationalDiagnostics(db, options = {}) {
         state: String(row.render_state || 'unknown'),
         at: timestampMs(row.state_updated_at),
         error: row.error_state == null ? null : String(row.error_state),
+      },
+      // A bounded, server-observed software-progress report. It is distinct
+      // from heartbeat freshness, ACKs, persisted state, and physical pixels.
+      render_progress: progress || null,
+      last_command: {
+        command_id: commandId,
+        parent_command_id: row.last_parent_command_id == null ? null : String(row.last_parent_command_id),
+        created_at: commandCreatedAt,
+        // command_logs does not record a separate transport-send timestamp.
+        // Do not substitute created_at and imply a measurement we do not have.
+        sent_at: null,
+        status: row.last_command_status == null ? null : String(row.last_command_status),
+        acknowledged_at: commandAcknowledgedAt,
+        ack_latency_ms: commandCreatedAt != null && commandAcknowledgedAt != null
+          ? Math.max(0, commandAcknowledgedAt - commandCreatedAt) : null,
+        render_confirmation_at: renderConfirmationAt,
+        render_confirmation_latency_ms: commandCreatedAt != null && renderConfirmationAt != null
+          ? Math.max(0, renderConfirmationAt - commandCreatedAt) : null,
       },
       content: {
         id: row.current_content_id == null ? null : String(row.current_content_id),
@@ -163,6 +202,9 @@ function buildOperationalDiagnostics(db, options = {}) {
   if (!renderers.length) reasons.push('no_renderer_telemetry');
   if (renderers.some((renderer) => !renderer.connected)) reasons.push('renderer_offline_or_stale');
   if (renderers.some((renderer) => renderer.latest_render_confirmation.error != null)) reasons.push('renderer_error_reported');
+  if (renderers.some((renderer) => renderer.render_progress?.playback_state === 'STALLED')) reasons.push('renderer_playback_stalled');
+  if (renderers.some((renderer) => renderer.render_progress?.playback_state === 'ERROR'
+    || renderer.render_progress?.error?.active === true)) reasons.push('renderer_playback_error');
   if (!configuredAudioAuthority.configured) reasons.push('configured_audio_authority_not_configured');
   else if (!audioRenderer) reasons.push('configured_audio_authority_not_found');
   else if (!configuredAudioAuthority.connected) reasons.push('configured_audio_authority_offline_or_stale');
@@ -179,7 +221,7 @@ function buildOperationalDiagnostics(db, options = {}) {
     health: {
       status: reasons.length ? 'degraded' : 'healthy',
       reasons,
-      basis: 'persisted renderer confirmations and latest managed-node heartbeat telemetry',
+      basis: 'persisted renderer confirmations, bounded renderer software-progress reports, and latest managed-node heartbeat telemetry',
       physical_acceptance_observed: false,
     },
     configured_audio_authority: configuredAudioAuthority,

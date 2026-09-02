@@ -132,6 +132,29 @@ test('a generic command acknowledgement is not reported as a confirmed route', (
   assert.equal(snapshot.renderers[0].latest_route_confirmation_at, null);
 });
 
+test('diagnostics correlate existing per-target command ACKs with only causally matching software progress', () => {
+  const { buildOperationalDiagnostics } = require('../lib/operational-diagnostics');
+  const now = 1_800_000_010_000;
+  const db = fixtureDb({ displays: [{
+    id: 'tv-1', name: 'TV 1', status: 'online', last_heartbeat: Math.floor(now / 1000),
+    last_heartbeat_at: now, last_command_id: 'child-command-1', last_parent_command_id: 'wall-command-1',
+    last_command_created_at: now - 800, last_command_ack_at: now - 600, last_command_status: 'acked',
+  }] });
+  const snapshot = buildOperationalDiagnostics(db, {
+    workspaceId: 'workspace-1', now, heartbeatTimeoutMs: 45_000,
+    rendererProgressById: () => ({
+      playback_state: 'PLAYING_PROGRESS', command_id: 'child-command-1',
+      last_confirmed_render_progress_at: now - 400, physical_pixels_observed: false,
+    }),
+  });
+  const renderer = snapshot.renderers[0];
+  assert.equal(renderer.last_command.parent_command_id, 'wall-command-1');
+  assert.equal(renderer.last_command.ack_latency_ms, 200);
+  assert.equal(renderer.last_command.render_confirmation_at, now - 400);
+  assert.equal(renderer.last_command.render_confirmation_latency_ms, 400);
+  assert.equal(renderer.render_progress.physical_pixels_observed, false);
+});
+
 test('unavailable read models return a bounded degraded snapshot instead of throwing', () => {
   const { buildOperationalDiagnostics } = require('../lib/operational-diagnostics');
   const db = { prepare() { throw new Error('read model unavailable'); } };
