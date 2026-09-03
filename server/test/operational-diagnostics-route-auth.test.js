@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const express = require('express');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
 const { installIsolatedTestDatabase } = require('./live-stream-test-db');
 
@@ -43,6 +44,16 @@ test('real diagnostics route enforces the canonical persisted platform-admin bou
   db.prepare("INSERT INTO organization_members (organization_id, user_id, role) VALUES ('diag-org-a', 'diag-org-admin', 'org_admin')").run();
 
   const app = express();
+  app.use('/api/operational-diagnostics', rateLimit({
+    windowMs: 60_000,
+    limit: 30,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    keyGenerator: req => `${ipKeyGenerator(req.ip)}:${req.path}`,
+    handler: (_req, res) => res.status(429).json({
+      error: 'Too many requests, try again later',
+    }),
+  }));
   app.use('/api/operational-diagnostics', requireAuth, resolveTenancy, diagnosticsRouter);
   const server = await listen(app);
   t.after(() => new Promise((resolve) => server.close(resolve)));
