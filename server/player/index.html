@@ -2394,11 +2394,13 @@
       return state;
     }
 
-    function finishTransportCommand(command, ok, error, state) {
+    function finishTransportCommand(command, ok, error, state, options = {}) {
       if (!command) return;
       // A command is correlatable only after it actually became applicable. The
       // tracker then requires a later decoded-frame/media-time advance.
-      if (ok !== false) mediaProgressTracker?.setCommand?.(command.command_id, { now: Date.now() });
+      if (ok !== false && options.armRenderConfirmation !== false) {
+        mediaProgressTracker?.setCommand?.(command.command_id, { now: Date.now() });
+      }
       lastTransportAck = {
         command_id: command.command_id || null,
         action: command.action || null,
@@ -3513,7 +3515,13 @@
           const prior = alreadyAppliedCommand(command.command_id);
           if (prior) {
             // Exact command_id already applied — idempotent no-op ack.
-            finishTransportCommand(command, prior.ok !== false, prior.ok === false ? 'duplicate_command' : null, buildPlayerState());
+            finishTransportCommand(
+              command,
+              prior.ok !== false,
+              prior.ok === false ? 'duplicate_command' : null,
+              buildPlayerState(),
+              { armRenderConfirmation: false },
+            );
             return;
           }
           // Drop very stale reconnect replays (>45s) unless they are pure stateful seeks/go_to.

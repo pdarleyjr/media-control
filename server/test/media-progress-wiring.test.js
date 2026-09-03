@@ -36,7 +36,7 @@ test('the schema stays unchanged: progress is not a migration or a per-frame dat
   assert.doesNotMatch(progressService, /db\.prepare|INSERT|UPDATE/i);
 });
 
-test('a fatal HLS callback still publishes error state and arms recovery when error normalization throws', async () => {
+test('fatal HLS callbacks protect recovery before hostile telemetry getters are inspected', async () => {
   const hlsPage = fs.readFileSync(path.join(serverRoot, 'player', 'hls.html'), 'utf8');
   const inlineScript = hlsPage.match(/<script>\s*([\s\S]*?)\s*<\/script>\s*<\/body>/)[1];
   const posted = [];
@@ -78,6 +78,7 @@ test('a fatal HLS callback still publishes error state and arms recovery when er
     URLSearchParams,
     Date,
     Math,
+    crypto: { randomUUID: () => 'test-renderer-session' },
     Number,
     Promise,
     encodeURIComponent,
@@ -107,14 +108,34 @@ test('a fatal HLS callback still publishes error state and arms recovery when er
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.ok(hlsInstance, 'the HLS page should attach after stream resolution');
-  hlsInstance.handlers.get(Hls.Events.ERROR)(null, {
-    type: 'networkError', details: 'unknown-hostile-detail', fatal: true,
-  });
+  const hostileEvents = [
+    Object.defineProperties({}, {
+      fatal: { get: () => true },
+      type: { get() { throw new Error('type getter'); } },
+    }),
+    Object.defineProperties({}, {
+      fatal: { get: () => true },
+      details: { get() { throw new Error('details getter'); } },
+    }),
+    { fatal: true, type: 'mediaError', details: { toString() { throw new Error('nested detail coercion'); } } },
+    { fatal: true, type: 42, details: ['malformed'] },
+  ];
+  for (const hostileEvent of hostileEvents) {
+    posted.length = 0;
+    timers.length = 0;
+    assert.doesNotThrow(() => hlsInstance.handlers.get(Hls.Events.ERROR)(null, hostileEvent));
+    assert.equal(posted.length, 1);
+    const state = posted[0].__mc_transport_state;
+    assert.equal(state.render_state, 'error');
+    assert.equal(state.error_state, null);
+    assert.ok(timers.some((timer) => timer.delay === 45000));
+    assert.ok(timers.some((timer) => timer.delay === 3000));
+  }
+});
 
-  assert.equal(posted.length, 1);
-  const state = posted[0].__mc_transport_state;
-  assert.equal(state.render_state, 'error');
-  assert.equal(state.error_state, null);
-  assert.ok(timers.some((timer) => timer.delay === 45000));
-  assert.ok(timers.some((timer) => timer.delay === 3000));
+test('HLS renderer session identity uses browser cryptography instead of Math.random', () => {
+  const hlsPage = fs.readFileSync(path.join(serverRoot, 'player', 'hls.html'), 'utf8');
+  const sessionLine = hlsPage.split(/\r?\n/).find((line) => line.includes('rendererSessionId'));
+  assert.match(hlsPage, /crypto\.randomUUID|crypto\.getRandomValues/);
+  assert.doesNotMatch(sessionLine, /Math\.random/);
 });

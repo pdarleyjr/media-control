@@ -56,7 +56,21 @@
       var labelText = document.getElementById('labeltext');
       var lastMediaError = null;
       var progressTracker = null;
-      var rendererSessionId = 'hls-' + Date.now() + '-' + Math.random().toString(36).slice(2, 12);
+      function createRendererSessionId() {
+        try {
+          if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+            return 'hls-' + window.crypto.randomUUID();
+          }
+          if (window.crypto && typeof window.crypto.getRandomValues === 'function') {
+            var words = new Uint32Array(4);
+            window.crypto.getRandomValues(words);
+            return 'hls-' + Array.from(words, function (word) { return word.toString(36); }).join('-');
+          }
+        } catch (e) {}
+        // The session ID is lifecycle uniqueness, not an authorization secret.
+        return 'hls-' + Date.now().toString(36) + '-' + String(window.performance && window.performance.timeOrigin || 0).replace(/\D/g, '');
+      }
+      var rendererSessionId = createRendererSessionId();
       var contentGeneration = 'hls-' + station;
       var pendingSeekBaseline = false;
       try {
@@ -279,9 +293,25 @@
           hls.attachMedia(video);
           hls.on(window.Hls.Events.MANIFEST_PARSED, function () { safePlay(); armStall(); });
           hls.on(window.Hls.Events.ERROR, function (evt, data) {
-            lastMediaError = { source: 'hls', type: data && data.type, details: data && data.details, fatal: data && data.fatal === true };
+            function safeField(key) {
+              try { return data == null ? null : data[key]; } catch (e) { return null; }
+            }
+            function safeText(value) {
+              try { return typeof value === 'string' || typeof value === 'number' ? String(value) : ''; }
+              catch (e) { return ''; }
+            }
+            var fatal = safeField('fatal') === true;
+            // Playback recovery is authoritative. Protect its timers before
+            // best-effort inspection or publication of vendor error metadata.
+            if (fatal) {
+              armStall();
+              if (reresolves <= MAX) { reresolves++; setTimeout(resolveAndPlay, 3000); }
+            }
+            lastMediaError = {
+              source: 'hls', type: safeText(safeField('type')),
+              details: safeText(safeField('details')), fatal: fatal,
+            };
             notifyParent('__mc_transport_state', playbackState());
-            if (data && data.fatal) { armStall(); if (reresolves <= MAX) { reresolves++; setTimeout(resolveAndPlay, 3000); } }
           });
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
           video.src = source; safePlay(); armStall();

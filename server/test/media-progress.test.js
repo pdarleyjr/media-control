@@ -7,6 +7,7 @@ const {
   DEFAULT_STALL_THRESHOLD_MS,
   createMediaProgressTracker,
   normalizePlaybackError,
+  normalizeRendererProgressReport,
   RendererProgressRegistry,
 } = require('../lib/media-progress');
 
@@ -191,6 +192,53 @@ test('the first stable post-seek observation is a baseline even if seek complete
   assert.equal(laterProgress.command_confirmation_at, 4_000);
 });
 
+test('a command activated during a seek waits for a stable post-seek baseline before genuine progress confirms it', () => {
+  const tracker = createMediaProgressTracker({ stallThresholdMs: 30_000 });
+  tracker.observe({ now: 1_000, expected_playing: true, current_time: 1, decoded_frames: 10 });
+  tracker.setCommand('during-seek', { now: 1_500 });
+  tracker.observe({ now: 2_000, expected_playing: true, current_time: 2, decoded_frames: 11, seeking: true });
+
+  const completionJump = tracker.observe({
+    now: 3_000, expected_playing: true, current_time: 90, decoded_frames: 90,
+  });
+  assert.equal(completionJump.command_id, null);
+  assert.equal(completionJump.command_confirmation_at, null);
+
+  const genuineProgress = tracker.observe({
+    now: 4_000, expected_playing: true, current_time: 91, decoded_frames: 91,
+  });
+  assert.equal(genuineProgress.command_id, 'during-seek');
+  assert.equal(genuineProgress.command_confirmation_at, 4_000);
+});
+
+test('observations earlier than command applicability cannot establish or confirm its local-clock baseline', () => {
+  const tracker = createMediaProgressTracker({ stallThresholdMs: 30_000 });
+  tracker.setCommand('future-command', { now: 5_000 });
+  tracker.observe({ now: 4_000, expected_playing: true, current_time: 1, decoded_frames: 10 });
+  const earlyProgress = tracker.observe({ now: 4_500, expected_playing: true, current_time: 2, decoded_frames: 11 });
+  assert.equal(earlyProgress.command_id, null);
+  assert.equal(earlyProgress.command_confirmation_at, null);
+
+  const applicableBaseline = tracker.observe({ now: 5_000, expected_playing: true, current_time: 3, decoded_frames: 12 });
+  assert.equal(applicableBaseline.command_id, null);
+  const laterProgress = tracker.observe({ now: 5_500, expected_playing: true, current_time: 4, decoded_frames: 13 });
+  assert.equal(laterProgress.command_id, 'future-command');
+  assert.equal(laterProgress.command_confirmation_at, 5_500);
+});
+
+test('an idempotent duplicate command does not re-arm an already confirmed render obligation', () => {
+  const tracker = createMediaProgressTracker({ stallThresholdMs: 30_000 });
+  tracker.setCommand('duplicate-command', { now: 1_000 });
+  tracker.observe({ now: 1_000, expected_playing: true, current_time: 1, decoded_frames: 10 });
+  const confirmed = tracker.observe({ now: 2_000, expected_playing: true, current_time: 2, decoded_frames: 11 });
+  assert.equal(confirmed.command_confirmation_at, 2_000);
+
+  tracker.setCommand('duplicate-command', { now: 3_000 });
+  const duplicateAckSample = tracker.observe({ now: 3_000, expected_playing: true, current_time: 3, decoded_frames: 12 });
+  assert.equal(duplicateAckSample.command_id, 'duplicate-command');
+  assert.equal(duplicateAckSample.command_confirmation_at, 2_000);
+});
+
 test('registry records command confirmation at server observation time only after a qualifying report', () => {
   const registry = new RendererProgressRegistry({ maxEntries: 2, now: () => 9_000 });
   registry.record('display-a', { playback_state: 'PLAYING_PROGRESS', command_id: null, last_confirmed_render_progress_at: 1_000 });
@@ -226,6 +274,41 @@ test('unknown external codes and YouTube text collapse to bounded safe codes', (
     category: 'MEDIA', code: 'PLAYBACK_UNKNOWN_ERROR', fatal: false, recoverable: true,
     message: 'Playback failed.',
   });
+});
+
+test('hostile HLS buffer details and throwing telemetry getters collapse to the finite allowlist', () => {
+  const rawBufferDetail = normalizePlaybackError({
+    source: 'hls', type: 'mediaError', details: 'bufferAuthorizationBearerRedactedTestValue',
+  });
+  assert.deepEqual(rawBufferDetail, {
+    category: 'BUFFER', code: 'PLAYBACK_BUFFER_ERROR', fatal: false, recoverable: true,
+    message: 'Playback buffer could not advance.',
+  });
+
+  const hostile = {};
+  Object.defineProperties(hostile, {
+    source: { get() { throw new Error('source getter'); } },
+    type: { get() { throw new Error('type getter'); } },
+    details: { get() { throw new Error('details getter'); } },
+    code: { get() { throw new Error('code getter'); } },
+  });
+  assert.deepEqual(normalizePlaybackError(hostile), {
+    category: 'UNKNOWN', code: 'PLAYBACK_UNKNOWN_ERROR', fatal: false, recoverable: true,
+    message: 'Playback failed.',
+  });
+});
+
+test('renderer report normalization tolerates hostile scalar coercion without leaking it', () => {
+  const hostileScalar = { valueOf() { throw new Error('numeric coercion'); }, toString() { throw new Error('text coercion'); } };
+  const normalized = normalizeRendererProgressReport({
+    renderer_session_id: hostileScalar,
+    last_media_progress_at: hostileScalar,
+    error: { category: 'BUFFER', code: hostileScalar },
+  });
+  assert.equal(normalized.renderer_session_id, null);
+  assert.equal(normalized.last_media_progress_at, null);
+  assert.equal(normalized.error.code, 'PLAYBACK_BUFFER_ERROR');
+  assert.equal(normalized.error.message, 'Playback buffer could not advance.');
 });
 
 test('bounded renderer registry records server-observed progress, preserves the command correlation, and strips unsafe error details', () => {

@@ -27,12 +27,14 @@ const DISPLAY_DIAGNOSTICS_SQL = `
          (SELECT cl.created_at FROM command_logs cl WHERE cl.target_type = 'display' AND cl.target_id = d.id ORDER BY cl.created_at DESC, cl.command_id DESC LIMIT 1) AS last_command_created_at,
          (SELECT cl.ack_at FROM command_logs cl WHERE cl.target_type = 'display' AND cl.target_id = d.id ORDER BY cl.created_at DESC, cl.command_id DESC LIMIT 1) AS last_command_ack_at,
          (SELECT cl.status FROM command_logs cl WHERE cl.target_type = 'display' AND cl.target_id = d.id ORDER BY cl.created_at DESC, cl.command_id DESC LIMIT 1) AS last_command_status,
-         (SELECT MAX(bdr.confirmed_at)
+         (SELECT bdr.confirmed_at
             FROM broadcast_device_results bdr
             INNER JOIN broadcast_requests br ON br.id = bdr.request_id
            WHERE br.workspace_id = d.workspace_id
              AND bdr.device_id = d.id
-             AND bdr.state = 'confirmed') AS latest_route_confirmed_at
+             AND bdr.state = 'confirmed'
+           ORDER BY bdr.confirmed_at DESC
+           LIMIT 1) AS latest_route_confirmed_at
     FROM scoped_displays d
 `;
 

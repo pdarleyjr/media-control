@@ -81,6 +81,8 @@ function createBroadcastDeliveryStore(database, options = {}) {
         ON broadcast_requests(status, expires_at);
       CREATE INDEX IF NOT EXISTS idx_broadcast_device_results_state
         ON broadcast_device_results(request_id, state);
+      CREATE INDEX IF NOT EXISTS idx_broadcast_device_results_device_state_confirmed
+        ON broadcast_device_results(device_id, state, confirmed_at DESC, request_id);
     `);
     const requestColumns = new Set(
       database.prepare('PRAGMA table_info(broadcast_requests)').all().map((column) => column.name)
@@ -163,6 +165,8 @@ function createBroadcastDeliveryStore(database, options = {}) {
         ALTER TABLE broadcast_device_results_v2 RENAME TO broadcast_device_results;
         CREATE INDEX idx_broadcast_device_results_state
           ON broadcast_device_results(request_id, state);
+        CREATE INDEX idx_broadcast_device_results_device_state_confirmed
+          ON broadcast_device_results(device_id, state, confirmed_at DESC, request_id);
         COMMIT;
       `);
       columns.add('target_key');

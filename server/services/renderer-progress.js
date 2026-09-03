@@ -1,6 +1,6 @@
 'use strict';
 
-const { RendererProgressRegistry } = require('../lib/media-progress');
+const { RendererProgressRegistry, normalizeRendererProgressReport } = require('../lib/media-progress');
 
 // This is an intentionally ephemeral read model. It is bounded and fed only by
 // existing device state reports; no progress sample writes a database row.
@@ -19,8 +19,16 @@ function clear(deviceId) {
   registry.entries.delete(String(deviceId));
 }
 
+function normalize(report) {
+  return normalizeRendererProgressReport(report);
+}
+
 function _clearForTests() {
   registry.clear();
 }
 
-module.exports = { record, get, clear, _clearForTests };
+function _sizeForTests() {
+  return registry.entries.size;
+}
+
+module.exports = { record, get, clear, normalize, _clearForTests, _sizeForTests };

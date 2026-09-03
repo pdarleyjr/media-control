@@ -70,6 +70,17 @@ function emitToDeviceWorkspace(dashboardNs, deviceId, event, payload) {
   emitToWorkspace(dashboardNs, deviceRoom(deviceId), event, payload);
 }
 
+function normalizeD01TelemetryInState(state) {
+  if (!state || typeof state !== 'object') return state;
+  if (!Object.prototype.hasOwnProperty.call(state, 'render_telemetry')) return state;
+  return {
+    ...state,
+    render_telemetry: state.render_telemetry && typeof state.render_telemetry === 'object'
+      ? rendererProgress.normalize(state.render_telemetry)
+      : null,
+  };
+}
+
 function emitToDeviceTargetAndWorkspace(dashboardNs, deviceId, event, payload) {
   const rooms = Array.from(new Set([displayRoom(deviceId), deviceRoom(deviceId)].filter(Boolean)));
   if (!rooms.length) return;
@@ -1393,7 +1404,11 @@ module.exports = function setupDeviceSocket(io, dependencies = {}) {
     socket.on('device:ack', (data) => {
       try {
         if (!requireDeviceAuth()) return;
-        const ack = deviceContract.createAck({ ...(data || {}), device_id: currentDeviceId });
+        const ackInput = { ...(data || {}), device_id: currentDeviceId };
+        if (ackInput.state && typeof ackInput.state === 'object') {
+          ackInput.state = normalizeD01TelemetryInState(ackInput.state);
+        }
+        const ack = deviceContract.createAck(ackInput);
         const { command_id, ok, error, state } = ack;
         if (!command_id) return;
         commandModel.recordAck({
@@ -1443,9 +1458,10 @@ module.exports = function setupDeviceSocket(io, dependencies = {}) {
         // It does not alter command delivery, heartbeat behaviour, or database
         // write frequency, and no client timestamp is trusted as server time.
         if (state.render_telemetry && typeof state.render_telemetry === 'object') {
-          rendererProgress.record(currentDeviceId, {
+          const normalizedTelemetry = rendererProgress.record(currentDeviceId, {
             ...state.render_telemetry,
           });
+          state.render_telemetry = normalizedTelemetry;
         } else if (Object.prototype.hasOwnProperty.call(state, 'render_telemetry')) {
           // An explicit null describes an observable-to-unobservable lifecycle
           // transition. Never retain a prior video's evidence for this state.
@@ -1801,3 +1817,8 @@ socket.on('device:wb-undo', () => {
 module.exports.buildPlaylistPayload = buildPlaylistPayload;
 module.exports.ensureAudioOwnerAfterReconnect = ensureAudioOwnerAfterReconnect;
 module.exports.recoverLostAudioOwner = recoverLostAudioOwner;
+module.exports._pendingOfflineCountForTests = () => pendingOfflines.size;
+module.exports._clearPendingOfflinesForTests = () => {
+  for (const timer of pendingOfflines.values()) clearTimeout(timer);
+  pendingOfflines.clear();
+};

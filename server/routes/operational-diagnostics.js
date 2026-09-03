@@ -3,7 +3,7 @@
 const express = require('express');
 const config = require('../config');
 const { db } = require('../db/database');
-const { requirePlatformAdmin } = require('../middleware/auth');
+const { requirePlatformAdmin } = require('../lib/permissions');
 const { buildOperationalDiagnostics } = require('../lib/operational-diagnostics');
 
 const router = express.Router();

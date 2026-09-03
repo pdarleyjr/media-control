@@ -205,6 +205,7 @@ test('command lookup is a bounded display-only read model, never a scalar-ID loo
   assert.doesNotMatch(source, /latest_display_commands/);
   const schema = fs.readFileSync(path.join(repoRoot, 'server', 'db', 'schema.sql'), 'utf8');
   assert.match(schema, /idx_command_logs_display_latest_command[\s\S]*target_type, target_id, created_at DESC, command_id DESC/);
+  assert.match(schema, /idx_broadcast_device_results_device_state_confirmed[\s\S]*device_id, state, confirmed_at DESC, request_id/);
 });
 
 test('bounded diagnostics query uses index-backed display command probes and preserves target/workspace isolation', () => {
@@ -219,6 +220,8 @@ test('bounded diagnostics query uses index-backed display command probes and pre
     CREATE TABLE broadcast_requests (id TEXT, workspace_id TEXT);
     CREATE INDEX idx_devices_workspace_diagnostics_order ON devices(workspace_id, name COLLATE NOCASE, id);
     CREATE INDEX idx_command_logs_display_latest_command ON command_logs(target_type, target_id, created_at DESC, command_id DESC);
+    CREATE INDEX idx_broadcast_device_results_device_state_confirmed
+      ON broadcast_device_results(device_id, state, confirmed_at DESC, request_id);
   `);
   db.prepare('INSERT INTO devices VALUES (?, ?, ?, ?, ?)').run('same-id', 'Display A', 'online', 1, 'workspace-a');
   db.prepare('INSERT INTO devices VALUES (?, ?, ?, ?, ?)').run('other-id', 'Display B', 'online', 1, 'workspace-b');
@@ -240,6 +243,7 @@ test('bounded diagnostics query uses index-backed display command probes and pre
   const plan = db.prepare(`EXPLAIN QUERY PLAN ${DISPLAY_DIAGNOSTICS_SQL}`).all('workspace-a')
     .map((row) => row.detail).join('\n');
   assert.match(plan, /SEARCH cl USING (COVERING )?INDEX idx_command_logs_display_latest_command/);
+  assert.match(plan, /SEARCH bdr USING (COVERING )?INDEX idx_broadcast_device_results_device_state_confirmed/);
   assert.doesNotMatch(plan, /SCAN cl/);
   assert.doesNotMatch(plan, /USE TEMP B-TREE/);
   const databaseBootstrap = fs.readFileSync(path.join(repoRoot, 'server', 'db', 'database.js'), 'utf8');
