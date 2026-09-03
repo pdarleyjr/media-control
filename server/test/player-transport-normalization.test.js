@@ -175,7 +175,7 @@ test('parent media acknowledgements do not freeze the authoritative playback clo
   const html = readPlayerFile('index.html');
   const finish = readSnippet(
     path.join(__dirname, '..', 'player', 'index.html'),
-    'function finishTransportCommand(command, ok, error, state) {',
+    'function finishTransportCommand(command, ok, error, state, options = {}) {',
     'function handleTransportMessage(event)'
   );
 
@@ -211,6 +211,20 @@ test('player screenshot reporting tolerates socket startup and disconnect races'
     /if \(base64 && base64\.length > 100 && socket\?\.connected\) \{[\s\S]*?socket\.emit\('device:screenshot'/,
     'canvas screenshots must not emit after a device socket disconnect'
   );
+});
+
+test('duplicate transport acknowledgements do not re-arm render confirmation', () => {
+  const doTransportNow = readSnippet(
+    path.join(__dirname, '..', 'player', 'index.html'),
+    'function doTransportNow(command) {',
+    'function securePairingCode()'
+  );
+  const duplicateBranch = doTransportNow.slice(
+    doTransportNow.indexOf('const prior = alreadyAppliedCommand'),
+    doTransportNow.indexOf('// Drop very stale reconnect replays')
+  );
+  assert.match(duplicateBranch, /armRenderConfirmation:\s*false/);
+  assert.doesNotMatch(duplicateBranch, /setCommand/);
 });
 
 test('single-item playlists never timer-advance into a black-flash re-render', () => {

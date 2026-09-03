@@ -116,6 +116,7 @@
        few-ms delay vs the inline trap is fine since errors before this
        loads are already captured in __debugLog by the inline trap above. -->
   <script src="/player/debug-overlay.js" defer></script>
+  <script src="/player/media-progress.js"></script>
   <title>Media Control Player</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -542,8 +543,12 @@
     let currentVideoEl = null;
     let currentMediaEnded = false;
     let currentMediaError = null;
+    const mediaProgressTracker = window.MbfdMediaProgress?.createMediaProgressTracker
+      ? window.MbfdMediaProgress.createMediaProgressTracker({ stallThresholdMs: 30000 })
+      : null;
     let lastPlaybackProgressAt = 0;
     let playbackGeneration = 0;
+    let renderTelemetrySeekBaselinePending = false;
     const pendingBroadcastDeliveries = new Map();
     let currentMediaAbortController = null;
     let activeSeekCancel = null;
@@ -1884,6 +1889,19 @@
       const child = !currentVideoEl && !activeYtPlayer && lastTransportState && typeof lastTransportState === 'object'
         ? lastTransportState
         : null;
+      let currentChild = child;
+      if (!currentVideoEl && !activeYtPlayer) {
+        try {
+          const frame = document.querySelector('#playerContainer iframe, .wall-stage iframe, .zone iframe');
+          const currentChildState = frame?.contentWindow?.__mcGetTransportState?.();
+          if (currentChildState && typeof currentChildState === 'object') {
+            lastTransportState = currentChildState;
+            currentChild = currentChildState;
+          }
+        } catch (_) {
+          // A cross-origin or tearing-down frame is deliberately unobservable.
+        }
+      }
       const snapshot = {
         current_content_id: item?.content_id || null,
         content_instance_id: item?.content_instance_id || (item?.id != null ? String(item.id) : null),
@@ -1902,7 +1920,8 @@
         volume: null,
         local_asset_ready: currentLocalAssetReady,
         render_state: null,
-        error_state: currentMediaError,
+        error_state: currentMediaError?.message || null,
+        render_telemetry: null,
         media_title: (item && item.filename) || config.deviceName || 'Web Player',
         media_type: contentKindForItem(item),
         cache_status: currentCacheStatus,
@@ -1922,26 +1941,27 @@
       };
       Object.assign(snapshot, audioPolicyController.stateFields());
 
-      if (child && typeof child === 'object') {
-        if (child.current_content_id != null) snapshot.current_content_id = child.current_content_id;
-        if (child.current_asset_id != null) snapshot.current_asset_id = child.current_asset_id;
-        if (child.content_type != null) snapshot.content_type = child.content_type;
-        if (child.layout_mode != null) snapshot.layout_mode = child.layout_mode;
-        if (child.slide_index != null) snapshot.slide_index = child.slide_index;
-        if (child.slide_total != null) snapshot.slide_total = child.slide_total;
-        if (child.current_time != null) snapshot.current_time = Number(child.current_time);
-        if (child.duration != null) snapshot.duration = Number(child.duration);
-        if (child.paused != null) snapshot.paused = !!child.paused;
-        if (child.muted != null) snapshot.muted = !!child.muted;
-        if (child.volume != null) snapshot.volume = Number(child.volume);
-        if (child.local_asset_ready != null) snapshot.local_asset_ready = child.local_asset_ready;
-        if (child.render_state != null) snapshot.render_state = child.render_state;
-        if (child.error_state != null) snapshot.error_state = child.error_state;
-        if (child.media_title != null) snapshot.media_title = child.media_title;
-        if (child.media_type != null) snapshot.media_type = child.media_type;
-        if (child.cache_status != null) snapshot.cache_status = child.cache_status;
-        if (child.wall_state != null) snapshot.wall_state = child.wall_state;
-        if (child.p3_link != null) snapshot.p3_link = child.p3_link;
+      if (currentChild && typeof currentChild === 'object') {
+        if (currentChild.current_content_id != null) snapshot.current_content_id = currentChild.current_content_id;
+        if (currentChild.current_asset_id != null) snapshot.current_asset_id = currentChild.current_asset_id;
+        if (currentChild.content_type != null) snapshot.content_type = currentChild.content_type;
+        if (currentChild.layout_mode != null) snapshot.layout_mode = currentChild.layout_mode;
+        if (currentChild.slide_index != null) snapshot.slide_index = currentChild.slide_index;
+        if (currentChild.slide_total != null) snapshot.slide_total = currentChild.slide_total;
+        if (currentChild.current_time != null) snapshot.current_time = Number(currentChild.current_time);
+        if (currentChild.duration != null) snapshot.duration = Number(currentChild.duration);
+        if (currentChild.paused != null) snapshot.paused = !!currentChild.paused;
+        if (currentChild.muted != null) snapshot.muted = !!currentChild.muted;
+        if (currentChild.volume != null) snapshot.volume = Number(currentChild.volume);
+        if (currentChild.local_asset_ready != null) snapshot.local_asset_ready = currentChild.local_asset_ready;
+        if (currentChild.render_state != null) snapshot.render_state = currentChild.render_state;
+        if (currentChild.error_state != null) snapshot.error_state = currentChild.error_state;
+        if (currentChild.render_telemetry != null) snapshot.render_telemetry = currentChild.render_telemetry;
+        if (currentChild.media_title != null) snapshot.media_title = currentChild.media_title;
+        if (currentChild.media_type != null) snapshot.media_type = currentChild.media_type;
+        if (currentChild.cache_status != null) snapshot.cache_status = currentChild.cache_status;
+        if (currentChild.wall_state != null) snapshot.wall_state = currentChild.wall_state;
+        if (currentChild.p3_link != null) snapshot.p3_link = currentChild.p3_link;
       }
 
       if (snapshot.current_time == null) {
@@ -1988,6 +2008,37 @@
         else if (ytState) snapshot.render_state = ytState;
         else if (currentVideoEl && currentVideoEl.readyState < 3 && !currentVideoEl.paused) snapshot.render_state = 'loading';
         else snapshot.render_state = snapshot.paused ? 'paused' : (item ? 'playing' : 'idle');
+      }
+      // Only players with an actual media clock can establish progress here.
+      // Generic/web content may have a wall-clock fallback above, which is not
+      // evidence that its media or rendered frames are advancing.
+      if (!snapshot.render_telemetry && mediaProgressTracker && (currentVideoEl || activeYtPlayer)) {
+        const video = currentVideoEl;
+        const decodedFrames = window.MbfdMediaProgress?.readDecodedFrames
+          ? window.MbfdMediaProgress.readDecodedFrames(video)
+          : null;
+        mediaProgressTracker.setGeneration?.(`content-${playbackGeneration}`);
+        snapshot.render_telemetry = mediaProgressTracker.observe({
+          now: Date.now(),
+          expected_playing: snapshot.paused === false && !!item,
+          current_time: snapshot.current_time,
+          decoded_frames: decodedFrames,
+          paused: snapshot.paused === true,
+          ended: currentMediaEnded === true,
+          seeking: video?.seeking === true,
+          seek_transition: renderTelemetrySeekBaselinePending,
+          loading: snapshot.render_state === 'loading',
+          error: currentMediaError,
+        });
+        renderTelemetrySeekBaselinePending = false;
+        snapshot.render_telemetry.renderer_session_id = rendererSessionId;
+        snapshot.render_telemetry.content_generation = `content-${playbackGeneration}`;
+      }
+      if (snapshot.render_telemetry) {
+        if (snapshot.render_telemetry.error?.active === true) {
+          snapshot.error_state = snapshot.render_telemetry.error.message;
+          snapshot.render_state = 'error';
+        }
       }
       if (snapshot.media_type == null) snapshot.media_type = snapshot.content_type;
       if (snapshot.slide_total == null && item) snapshot.slide_total = playlist.length;
@@ -2272,7 +2323,10 @@
 
     function publishPlayerState(options = {}) {
       if (!socket?.connected || !config.deviceId) return null;
-      const state = buildPlayerState();
+      // A heartbeat samples telemetry once, then reuses that immutable snapshot
+      // for its state report. Calling the stateful tracker twice could consume
+      // a one-cycle RECOVERING transition before it is published.
+      const state = options.state || buildPlayerState();
       if (awaitingAuthoritativePlaylist && !options.ack) {
         return state;
       }
@@ -2340,8 +2394,13 @@
       return state;
     }
 
-    function finishTransportCommand(command, ok, error, state) {
+    function finishTransportCommand(command, ok, error, state, options = {}) {
       if (!command) return;
+      // A command is correlatable only after it actually became applicable. The
+      // tracker then requires a later decoded-frame/media-time advance.
+      if (ok !== false && options.armRenderConfirmation !== false) {
+        mediaProgressTracker?.setCommand?.(command.command_id, { now: Date.now() });
+      }
       lastTransportAck = {
         command_id: command.command_id || null,
         action: command.action || null,
@@ -3380,6 +3439,7 @@
             activeSeekCancel = null;
             transportSeekInProgress = false;
           }
+          if (ok && isCurrentSeek()) renderTelemetrySeekBaselinePending = true;
           finishTransportCommand(command, ok, error || null, buildPlayerState());
         };
         const cancel = (reason) => complete(false, reason || 'Video seek cancelled');
@@ -3455,7 +3515,13 @@
           const prior = alreadyAppliedCommand(command.command_id);
           if (prior) {
             // Exact command_id already applied — idempotent no-op ack.
-            finishTransportCommand(command, prior.ok !== false, prior.ok === false ? 'duplicate_command' : null, buildPlayerState());
+            finishTransportCommand(
+              command,
+              prior.ok !== false,
+              prior.ok === false ? 'duplicate_command' : null,
+              buildPlayerState(),
+              { armRenderConfirmation: false },
+            );
             return;
           }
           // Drop very stale reconnect replays (>45s) unless they are pure stateful seeks/go_to.
@@ -3928,7 +3994,7 @@
           else audioPolicyController.apply(authoritative, audioPolicyContext());
           reconcileAudioPolicy();
         });
-        publishPlayerState();
+        publishPlayerState({ state });
       };
       sendHeartbeat();
       heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL);
@@ -4604,6 +4670,7 @@
     // zone-mode (multi-region) videos get cleaned up too, not just currentVideoEl.
     function teardownCurrentMedia() {
       ++playbackGeneration;
+      mediaProgressTracker?.reset?.();
       if (currentMediaAbortController) {
         currentMediaAbortController.abort();
         currentMediaAbortController = null;
@@ -4824,7 +4891,7 @@
             webSrc = '/player/site.html?id=' + encodeURIComponent(item.content_id) + '&w=' + sw + '&h=' + sh + '&full=1';
           }
           if (!webSrc) {
-            currentMediaError = { code: 'unsafe_web_url', message: 'Web content URL is not allowed' };
+            currentMediaError = { category: 'SOURCE', code: 'PLAYBACK_SOURCE_ERROR', fatal: true, recoverable: false, message: 'Web content URL is not allowed' };
             showStatus('Unable to load web content');
             publishPlayerState();
             failPendingBroadcastRender('Web content URL is not allowed');
@@ -4983,8 +5050,8 @@
             if (playbackGeneration !== myGeneration) return;
             console.error('Video error:', src);
             currentMediaError = video.error
-              ? { code: video.error.code, message: video.error.message || 'Video playback failed' }
-              : { code: 'video_error', message: 'Video playback failed' };
+              ? { source: 'html5', type: 'mediaError', details: video.error.code, fatal: true, message: video.error.message || 'Video playback failed' }
+              : { source: 'html5', type: 'mediaError', details: 'video_error', fatal: true, message: 'Video playback failed' };
             publishPlayerState();
             failPendingBroadcastRender(currentMediaError.message);
             if (!isFollower) advanceTimer = setTimeout(nextItem, 3000);

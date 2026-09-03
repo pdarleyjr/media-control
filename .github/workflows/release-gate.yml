@@ -162,6 +162,12 @@ jobs:
           - suite: real-app
             script: test:real-app
             browsers: chromium
+          # This is intentionally a distinct behavioral gate: the default
+          # real-app project does not guarantee execution of its audio-policy
+          # configuration, and Audio Authority semantics need independent RC coverage.
+          - suite: player-audio-policy
+            script: test:player-audio
+            browsers: chromium
           - suite: live-preview
             script: test:live-preview
             browsers: chromium

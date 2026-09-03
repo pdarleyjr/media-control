@@ -6,6 +6,7 @@ const fs = require('fs');
 const { db, pruneTelemetry, pruneScreenshots } = require('../db/database');
 const config = require('../config');
 const heartbeat = require('../services/heartbeat');
+const rendererProgress = require('../services/renderer-progress');
 const commandQueue = require('../lib/command-queue');
 const {
   audioPolicyHeartbeatDecision,
@@ -67,6 +68,17 @@ const {
 
 function emitToDeviceWorkspace(dashboardNs, deviceId, event, payload) {
   emitToWorkspace(dashboardNs, deviceRoom(deviceId), event, payload);
+}
+
+function normalizeD01TelemetryInState(state) {
+  if (!state || typeof state !== 'object') return state;
+  if (!Object.prototype.hasOwnProperty.call(state, 'render_telemetry')) return state;
+  return {
+    ...state,
+    render_telemetry: state.render_telemetry && typeof state.render_telemetry === 'object'
+      ? rendererProgress.normalize(state.render_telemetry)
+      : null,
+  };
 }
 
 function emitToDeviceTargetAndWorkspace(dashboardNs, deviceId, event, payload) {
@@ -1392,7 +1404,11 @@ module.exports = function setupDeviceSocket(io, dependencies = {}) {
     socket.on('device:ack', (data) => {
       try {
         if (!requireDeviceAuth()) return;
-        const ack = deviceContract.createAck({ ...(data || {}), device_id: currentDeviceId });
+        const ackInput = { ...(data || {}), device_id: currentDeviceId };
+        if (ackInput.state && typeof ackInput.state === 'object') {
+          ackInput.state = normalizeD01TelemetryInState(ackInput.state);
+        }
+        const ack = deviceContract.createAck(ackInput);
         const { command_id, ok, error, state } = ack;
         if (!command_id) return;
         commandModel.recordAck({
@@ -1437,6 +1453,19 @@ module.exports = function setupDeviceSocket(io, dependencies = {}) {
         if (result && result.applied === false) {
           console.warn(`[state-report] rejected ${currentDeviceId} revision ${state && state.state_revision}: ${result.reason}`);
           return;
+        }
+        // Progress telemetry is deliberately an in-memory bounded read model.
+        // It does not alter command delivery, heartbeat behaviour, or database
+        // write frequency, and no client timestamp is trusted as server time.
+        if (state.render_telemetry && typeof state.render_telemetry === 'object') {
+          const normalizedTelemetry = rendererProgress.record(currentDeviceId, {
+            ...state.render_telemetry,
+          });
+          state.render_telemetry = normalizedTelemetry;
+        } else if (Object.prototype.hasOwnProperty.call(state, 'render_telemetry')) {
+          // An explicit null describes an observable-to-unobservable lifecycle
+          // transition. Never retain a prior video's evidence for this state.
+          rendererProgress.clear(currentDeviceId);
         }
         commandModel.recordHeartbeat({ target_type: 'display', target_id: currentDeviceId, ts: Date.now() });
         emitToDeviceTargetAndWorkspace(dashboardNs, currentDeviceId, 'dashboard:state-sync', {
@@ -1727,6 +1756,10 @@ socket.on('device:wb-undo', () => {
 
       const deviceId = currentDeviceId;
       const closingSocketId = socket.id;
+      // Renderer telemetry is an ephemeral observation tied to this browser
+      // lifecycle. A disconnected/replaced renderer must not lend its old
+      // progress to a later session for the same display ID.
+      rendererProgress.clear(deviceId);
       console.log(`Device disconnected: ${deviceId} (offline transition deferred ${OFFLINE_DEBOUNCE_MS}ms)`);
 
       // Defensive: clear any existing timer for this device. Shouldn't happen
@@ -1784,3 +1817,8 @@ socket.on('device:wb-undo', () => {
 module.exports.buildPlaylistPayload = buildPlaylistPayload;
 module.exports.ensureAudioOwnerAfterReconnect = ensureAudioOwnerAfterReconnect;
 module.exports.recoverLostAudioOwner = recoverLostAudioOwner;
+module.exports._pendingOfflineCountForTests = () => pendingOfflines.size;
+module.exports._clearPendingOfflinesForTests = () => {
+  for (const timer of pendingOfflines.values()) clearTimeout(timer);
+  pendingOfflines.clear();
+};

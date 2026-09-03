@@ -485,6 +485,15 @@ migrateGroupSchedules();
 // updates workspace_id.
 ensureMultitenancyMigration();
 
+// Operational diagnostics orders a bounded workspace-scoped display set before
+// making per-display command-history probes. This index must be created after
+// the multitenancy migration, which is what guarantees devices.workspace_id on
+// both fresh and upgraded databases.
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_devices_workspace_diagnostics_order
+  ON devices(workspace_id, name COLLATE NOCASE, id)
+`);
+
 // A separate corrective migration is required because some production
 // databases retained legacy roles even though phase5_multitenancy_backfill was
 // already stamped. Keep this in the normal startup path, transactional, and
