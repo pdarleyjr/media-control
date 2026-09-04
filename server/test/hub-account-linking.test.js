@@ -224,7 +224,9 @@ test('guest, wrong-browser cookie, expiry, and replay all fail closed', async (t
   const employee = seedUser(db, { id: 'employee', email: 'employee@miamibeachfl.gov', username: 'employee' });
   db.prepare('UPDATE hub_account_link_transactions SET expires_at = 0').run();
   const expired = await link(server, linkCookie, employee.username);
-  assert.equal(expired.status, 401);
+  assert.equal(expired.status, 410);
+  assert.deepEqual(await expired.json(), { error: 'account_link_expired' });
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM hub_account_link_transactions').get().n, 0);
 
   const fresh = await beginLink(server);
   const success = await link(server, fresh.linkCookie, employee.username);

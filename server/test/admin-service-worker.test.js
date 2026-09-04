@@ -144,3 +144,21 @@ test('cache persistence extends the FetchEvent lifetime synchronously without de
   await event.lifetime();
   assert.equal(cacheWrites.length, 1);
 });
+
+test('network-first admin requests bypass a still-fresh browser HTTP cache', async () => {
+  let observedOptions;
+  const { listeners } = compileWorker({
+    fetchImpl: async (_request, options) => {
+      observedOptions = options;
+      return new Response('current-release-module', { status: 200 });
+    },
+  });
+  const event = dispatchFetch(
+    listeners.get('fetch'),
+    new Request('https://media.mbfdhub.com/js/views/admin.js'),
+  );
+
+  assert.equal(event.responded, true);
+  assert.equal(await (await event.response()).text(), 'current-release-module');
+  assert.equal(observedOptions?.cache, 'no-store');
+});
