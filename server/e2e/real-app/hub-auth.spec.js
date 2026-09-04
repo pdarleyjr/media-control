@@ -5,6 +5,7 @@ const express = require('express');
 const http = require('node:http');
 const path = require('node:path');
 const Database = require('../../node_modules/better-sqlite3');
+const bcrypt = require('../../node_modules/bcryptjs');
 const { createHubFederationRouter, ensureHubFederationSchema } = require('../../routes/hub-federation');
 
 function listen(app) {
@@ -19,7 +20,7 @@ function origin(server) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
-test('browser completes Hub federation without a second password and enforces denial, logout, and expiry', async ({ page }) => {
+test('browser links an existing account once, preserves its role, and reuses it on later Hub logins', async ({ page }) => {
   const serviceToken = 'browser-federation-service-token';
   const db = new Database(':memory:');
   db.exec(`
@@ -33,6 +34,10 @@ test('browser completes Hub federation without a second password and enforces de
     );
   `);
   ensureHubFederationSchema(db);
+  db.prepare(`INSERT INTO users
+    (id, email, username, name, password_hash, auth_provider, role, plan_id)
+    VALUES (?, ?, ?, ?, ?, 'local', 'user', 'enterprise')`)
+    .run('existing-browser-user', 'browser@miamibeachfl.gov', 'browser.operator', 'Existing Browser Operator', bcrypt.hashSync('existing-browser-password', 4));
 
   let deny = false;
   let exchangedBody = '';
@@ -85,6 +90,10 @@ test('browser completes Hub federation without a second password and enforces de
 
   try {
     await page.goto(`${origin(mediaServer)}/api/auth/hub/start`);
+    await expect(page.locator('#hubAccountLinkForm')).toBeVisible();
+    await page.locator('#hubLinkIdentifier').fill('browser.operator');
+    await page.locator('#hubLinkPassword').fill('existing-browser-password');
+    await page.locator('#hubLinkSubmit').click();
     await expect(page).toHaveURL(`${origin(mediaServer)}/app#/control`);
     const session = await page.evaluate(() => ({
       token: localStorage.getItem('token'),
@@ -92,7 +101,12 @@ test('browser completes Hub federation without a second password and enforces de
     }));
     expect(session.token).toBeTruthy();
     expect(session.user.auth_provider).toBe('mbfd_hub');
+    expect(session.user.id).toBe('existing-browser-user');
+    expect(session.user.email).toBe('browser@miamibeachfl.gov');
+    expect(session.user.role).toBe('user');
     expect(exchangedBody).not.toMatch(/password|session|cookie/i);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM users').get().n).toBe(1);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM hub_federated_identities').get().n).toBe(1);
 
     await page.request.post(`${origin(mediaServer)}/api/auth/logout`);
     expect((await page.request.get(`${origin(mediaServer)}/api/auth/hub/session`)).status()).toBe(401);
@@ -105,6 +119,8 @@ test('browser completes Hub federation without a second password and enforces de
     deny = false;
     await page.goto(`${origin(mediaServer)}/api/auth/hub/start`);
     await expect(page).toHaveURL(`${origin(mediaServer)}/app#/control`);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM users').get().n).toBe(1);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM hub_federated_identities').get().n).toBe(1);
     await page.waitForTimeout(2100);
     expect((await page.request.get(`${origin(mediaServer)}/api/auth/hub/session`)).status()).toBe(401);
   } finally {

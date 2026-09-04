@@ -11,6 +11,9 @@ const { resolveTenancy } = require('../lib/tenancy');
 const { ensurePrimaryWorkspaceMembership } = require('../lib/primary-workspace');
 const { logActivity, getClientIp } = require('../services/activity');
 const config = require('../config');
+const { ensureHubFederationSchema } = require('./hub-federation');
+
+ensureHubFederationSchema(db);
 
 // Resolve the workspace to embed in the user's JWT. Delegates to the shared
 // primary-workspace resolver so every individual login lands in the
@@ -22,6 +25,27 @@ function ensureDefaultOrgForUser(user) {
 
 function loginIdentifier(body) {
   return String(body?.identifier || body?.username || body?.email || '').trim().toLowerCase();
+}
+
+function hubEnabled() {
+  return Boolean(config.hubAuth?.serviceToken);
+}
+
+function isValidEmployeeEmail(email) {
+  if (!email || email.length > 254) return false;
+  let at = -1;
+  let domainDot = -1;
+  for (let index = 0; index < email.length; index += 1) {
+    const code = email.charCodeAt(index);
+    if (code <= 32 || code === 127) return false;
+    if (email[index] === '@') {
+      if (at !== -1) return false;
+      at = index;
+    } else if (email[index] === '.' && at !== -1 && index > at + 1) {
+      domainDot = index;
+    }
+  }
+  return at > 0 && domainDot > at + 1 && domainDot < email.length - 1;
 }
 
 function logFailedLogin(email, ip, reason) {
@@ -51,9 +75,10 @@ function logSuccessfulLogin(userId, email, ip) {
 // Returns true if new account creation is allowed at this moment.
 // First-user setup (empty DB) is always allowed so a fresh install can be initialized.
 function canRegister() {
-  if (!config.disableRegistration) return true;
   const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
-  return userCount === 0;
+  if (userCount === 0) return true;
+  if (hubEnabled()) return false;
+  return !config.disableRegistration;
 }
 
 // Register
@@ -120,6 +145,11 @@ router.post('/login', (req, res) => {
     return res.status(401).json({ error: 'Invalid email/username or password' });
   }
 
+  if (hubEnabled() && String(user.username || '').toLowerCase() !== 'guest') {
+    logFailedLogin(identifier, getClientIp(req), 'Hub login required');
+    return res.status(401).json({ error: 'Invalid email/username or password' });
+  }
+
   logSuccessfulLogin(user.id, identifier, getClientIp(req));
   const workspaceId = ensureDefaultOrgForUser(user);
   const token = generateToken(user, workspaceId);
@@ -133,6 +163,7 @@ router.post('/login', (req, res) => {
 // ==================== Google OAuth ====================
 
 router.post('/google', async (req, res) => {
+  if (hubEnabled()) return res.status(403).json({ error: 'MBFD Hub sign-in is required.' });
   const { credential } = req.body;
   if (!credential) return res.status(400).json({ error: 'Google credential required' });
 
@@ -207,6 +238,7 @@ async function verifyGoogleToken(credential) {
 // ==================== Microsoft OAuth ====================
 
 router.post('/microsoft', async (req, res) => {
+  if (hubEnabled()) return res.status(403).json({ error: 'MBFD Hub sign-in is required.' });
   const { access_token } = req.body;
   if (!access_token) return res.status(400).json({ error: 'Microsoft access token required' });
 
@@ -413,19 +445,85 @@ router.put('/me', requireAuth, (req, res) => {
 // List users - platform admins see all, admins see team members only
 router.get('/users', requireAuth, requireAdmin, (req, res) => {
   if (PLATFORM_ROLES.includes(req.user.role)) {
-    const users = db.prepare('SELECT id, email, username, name, role, auth_provider, avatar_url, plan_id, created_at, last_login FROM users ORDER BY created_at ASC').all();
+    const users = db.prepare(`
+      SELECT u.id, u.email, u.username, u.name, u.role, u.auth_provider,
+             u.avatar_url, u.plan_id, u.created_at, u.last_login,
+             CASE
+               WHEN lower(COALESCE(u.username, '')) = 'guest' THEN 'local_guest'
+               WHEN h.user_id IS NOT NULL THEN 'hub_linked'
+               ELSE 'hub_unlinked'
+             END AS identity_state
+      FROM users u
+      LEFT JOIN hub_federated_identities h ON h.user_id = u.id AND h.provider = 'mbfd_hub'
+      ORDER BY u.created_at ASC
+    `).all();
     res.json(users);
   } else {
     // Admin sees themselves + users in their teams
     const users = db.prepare(`
-      SELECT DISTINCT u.id, u.email, u.username, u.name, u.role, u.auth_provider, u.avatar_url, u.plan_id, u.created_at
+      SELECT DISTINCT u.id, u.email, u.username, u.name, u.role, u.auth_provider,
+             u.avatar_url, u.plan_id, u.created_at,
+             CASE
+               WHEN lower(COALESCE(u.username, '')) = 'guest' THEN 'local_guest'
+               WHEN h.user_id IS NOT NULL THEN 'hub_linked'
+               ELSE 'hub_unlinked'
+             END AS identity_state
       FROM users u
       LEFT JOIN team_members tm ON u.id = tm.user_id
+      LEFT JOIN hub_federated_identities h ON h.user_id = u.id AND h.provider = 'mbfd_hub'
       WHERE u.id = ? OR tm.team_id IN (SELECT team_id FROM team_members WHERE user_id = ?)
       ORDER BY u.created_at ASC
     `).all(req.user.id, req.user.id);
     res.json(users);
   }
+});
+
+// Platform-admin controlled pre-provisioning for a future employee. The
+// temporary password proves ownership only during the first Hub account link;
+// normal local employee login remains disabled while Hub federation is active.
+router.post('/users', requireAuth, requirePlatformAdmin, (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const username = String(req.body?.username || '').trim();
+  const name = String(req.body?.name || '').trim();
+  const temporaryPassword = typeof req.body?.temporary_password === 'string'
+    ? req.body.temporary_password
+    : '';
+  const role = req.body?.role || 'user';
+  if (!isValidEmployeeEmail(email)
+    || !/^[A-Za-z0-9._-]{1,80}$/.test(username)
+    || username.toLowerCase() === 'guest'
+    || email.endsWith('@federated.invalid')
+    || temporaryPassword.length < 12
+    || !['user', 'platform_admin'].includes(role)) {
+    return res.status(400).json({ error: 'Valid employee account details are required' });
+  }
+  const collision = db.prepare(`
+    SELECT 1 FROM users
+    WHERE lower(email) = ? OR lower(username) = ?
+    LIMIT 1
+  `).get(email, username.toLowerCase());
+  if (collision) return res.status(409).json({ error: 'Employee account could not be provisioned' });
+
+  const id = uuidv4();
+  const passwordHash = bcrypt.hashSync(temporaryPassword, 10);
+  const provision = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO users (id, email, username, name, password_hash, auth_provider, role, plan_id)
+      VALUES (?, ?, ?, ?, ?, 'local', ?, 'enterprise')
+    `).run(id, email, username, name || username, passwordHash, role);
+    ensureDefaultOrgForUser({ id, email, username, name: name || username, role, auth_provider: 'local' });
+  });
+  try {
+    provision();
+  } catch (_) {
+    return res.status(409).json({ error: 'Employee account could not be provisioned' });
+  }
+  const user = db.prepare(`
+    SELECT id, email, username, name, role, auth_provider, avatar_url, plan_id,
+           'hub_unlinked' AS identity_state
+    FROM users WHERE id = ?
+  `).get(id);
+  return res.status(201).json({ user });
 });
 
 // Delete user (platform admin only)
@@ -496,17 +594,19 @@ router.put('/users/:id/password', requireAuth, requireAdmin, (req, res) => {
 // Get auth config (public - tells frontend which providers are available)
 router.get('/config', (req, res) => {
   const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
+  const hub = hubEnabled();
   res.json({
-    hubEnabled: !!config.hubAuth?.serviceToken,
+    hubEnabled: hub,
     hubStartUrl: '/api/auth/hub/start',
-    googleEnabled: !!config.googleClientId,
+    googleEnabled: !hub && !!config.googleClientId,
     googleClientId: config.googleClientId,
-    microsoftEnabled: !!config.microsoftClientId,
+    microsoftEnabled: !hub && !!config.microsoftClientId,
     microsoftClientId: config.microsoftClientId,
     microsoftTenantId: config.microsoftTenantId,
     localEnabled: true,
+    localMode: hub ? 'guest_only' : 'all_local',
     needsSetup: userCount === 0,
-    registration_enabled: !config.disableRegistration || userCount === 0,
+    registration_enabled: canRegister(),
   });
 });
 

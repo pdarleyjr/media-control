@@ -120,6 +120,11 @@ async function loadUsers() {
   try {
     const users = await API('/auth/users');
     const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
+    const identityLabel = (state) => ({
+      hub_linked: 'Hub-linked employee',
+      hub_unlinked: 'Unlinked employee',
+      local_guest: 'Local guest',
+    }[state] || 'Unlinked employee');
 
     el.innerHTML = `
       <div class="table-wrap">
@@ -135,7 +140,7 @@ async function loadUsers() {
           ${users.map(u => `
             <tr style="border-bottom:1px solid var(--border)">
               <td style="padding:8px"><div style="font-weight:500">${u.name || u.email}</div><div style="font-size:11px;color:var(--text-muted)">${u.email}</div></td>
-              <td style="padding:8px"><span style="background:var(--bg-primary);padding:2px 8px;border-radius:10px;font-size:11px">${u.auth_provider}</span></td>
+              <td style="padding:8px"><span data-identity-state="${u.identity_state}" style="background:var(--bg-primary);padding:2px 8px;border-radius:10px;font-size:11px">${identityLabel(u.identity_state)}</span></td>
               <td style="padding:8px;font-size:11px;color:var(--text-muted)">${u.last_login ? new Date(u.last_login * 1000).toLocaleString() : t('common.never')}</td>
               <td style="padding:8px">
                 <select class="input" style="max-width:120px;width:100%;background:var(--bg-input);font-size:12px;padding:4px" data-role-user="${u.id}">

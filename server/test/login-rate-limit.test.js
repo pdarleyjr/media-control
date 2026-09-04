@@ -75,3 +75,17 @@ test('username identifiers receive the same per-account protection as emails', (
   assert.equal(blocked.status, 429);
   assert.equal(attempt(limiter, { identifier: 'another_user', status: 200 }).allowed, true);
 });
+
+test('per-account failures are aggregated across source IP addresses', () => {
+  const limiter = createLoginFailureRateLimit({
+    getClientIp: (req) => req.ip,
+    maxAccountFailures: 2,
+    maxIpFailures: 10,
+  });
+
+  assert.equal(attempt(limiter, { identifier: 'target', ip: '192.0.2.1', status: 401 }).allowed, true);
+  assert.equal(attempt(limiter, { identifier: 'target', ip: '192.0.2.2', status: 401 }).allowed, true);
+  const blocked = attempt(limiter, { identifier: 'target', ip: '192.0.2.3', status: 401 });
+  assert.equal(blocked.allowed, false);
+  assert.equal(blocked.status, 429);
+});

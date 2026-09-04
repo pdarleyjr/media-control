@@ -836,6 +836,7 @@ export const api = {
 
   // Admin - Users
   getUsers: () => request('/auth/users'),
+  provisionUser: (data) => request('/auth/users', { method: 'POST', body: JSON.stringify(data) }),
   deleteUser: (id) => request(`/auth/users/${id}`, { method: 'DELETE' }),
   resetUserPassword: (id, password) => request(`/auth/users/${id}/password`, {
     method: 'PUT',

@@ -31,7 +31,9 @@ function createLoginFailureRateLimit({
     const ip = String(getClientIp(req) || 'unknown');
     const identifier = String(req.body?.identifier || req.body?.username || req.body?.email || '')
       .trim().toLowerCase().slice(0, 320) || '<missing>';
-    const accountKey = `account:${ip}:${identifier}`;
+    // Account and IP are independent buckets: distributed attempts against one
+    // account are bounded even when the attacker rotates source addresses.
+    const accountKey = `account:${identifier}`;
     const ipKey = `ip:${ip}`;
     const accountFailures = active(accountKey, cutoff);
     const ipFailures = active(ipKey, cutoff);

@@ -13,6 +13,7 @@ async function loadAuthConfig() {
 export async function render(container) {
   const config = await loadAuthConfig();
   const isSetup = config.needsSetup;
+  const guestOnly = !isSetup && config.localMode === 'guest_only';
   // registration_enabled may be absent on older servers — treat as enabled for back-compat
   const canRegister = config.registration_enabled !== false;
 
@@ -38,10 +39,11 @@ export async function render(container) {
           </button>
           ` : ''}
           <!-- Local Auth Form -->
-          <div id="localAuthForm">
+          <div id="localAuthForm" style="${guestOnly ? 'border-top:1px solid var(--border);padding-top:16px' : ''}">
+            ${guestOnly ? '<div style="font-size:13px;font-weight:600;margin-bottom:12px;color:var(--text-secondary)">Guest Access</div>' : ''}
             <div class="form-group">
-              <label>${isSetup ? t('auth.email') : t('auth.identifier')}</label>
-              <input type="${isSetup ? 'email' : 'text'}" id="loginEmail" class="input" placeholder="${isSetup ? t('auth.placeholder_email') : t('auth.placeholder_identifier')}" autocomplete="${isSetup ? 'email' : 'username'}">
+              <label>${guestOnly ? 'Guest username' : (isSetup ? t('auth.email') : t('auth.identifier'))}</label>
+              <input type="${isSetup ? 'email' : 'text'}" id="loginEmail" class="input" placeholder="${guestOnly ? 'guest' : (isSetup ? t('auth.placeholder_email') : t('auth.placeholder_identifier'))}" autocomplete="${isSetup ? 'email' : 'username'}">
             </div>
             <div class="form-group">
               <label>${t('auth.password')}</label>
@@ -53,8 +55,8 @@ export async function render(container) {
               <input type="text" id="loginName" class="input" placeholder="${t('auth.placeholder_name')}">
             </div>
             ` : ''}
-            <button class="btn btn-primary" id="loginBtn" style="width:100%;justify-content:center;padding:10px">
-              ${isSetup ? t('auth.create_admin_account') : t('auth.sign_in')}
+            <button class="${guestOnly ? 'btn btn-secondary' : 'btn btn-primary'}" id="loginBtn" style="width:100%;justify-content:center;padding:10px">
+              ${guestOnly ? 'Guest Access' : (isSetup ? t('auth.create_admin_account') : t('auth.sign_in'))}
             </button>
             ${!isSetup && canRegister ? `
             <button class="btn btn-secondary" id="showRegisterBtn" style="width:100%;justify-content:center;padding:10px;margin-top:8px">

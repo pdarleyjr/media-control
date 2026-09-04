@@ -37,6 +37,7 @@ module.exports = {
     callbackUrl: process.env.MBFD_HUB_CALLBACK_URL || 'https://media.mbfdhub.com/api/auth/hub/callback',
     serviceToken: process.env.MBFD_HUB_FEDERATION_TOKEN || '',
     stateTtlSeconds: 300,
+    linkTtlSeconds: 300,
     sessionTtlSeconds: 900,
   },
   port: process.env.PORT || 3001,

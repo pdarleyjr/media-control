@@ -15,6 +15,7 @@ fs.mkdirSync(dbDir, { recursive: true });
 
 process.env.DB_PATH = path.join(dbDir, 'test.db');
 process.env.JWT_SECRET = 'username-login-test-secret-that-is-long-enough';
+delete process.env.MBFD_HUB_FEDERATION_TOKEN;
 
 const { db } = require('../db/database');
 const authRouter = require('../routes/auth');
