@@ -190,7 +190,7 @@ const MEDIA_SORTS = [
   { id: 'type',   key: 'mc.media.sort_type' },
 ];
 
-async function renderMediaCategoryTab(container, { selectedIds, onAfterSend, onRouteSource }, category, context = {}) {
+async function renderMediaCategoryTab(container, { selectedIds, onAfterSend, onRouteSource, onArmSource, armedSourceKey, mediaHeaderHost }, category, context = {}) {
   const PAGE = 60;
   const state = {
     folder: category === 'images' && context.folder ? String(context.folder) : undefined,
@@ -204,7 +204,8 @@ async function renderMediaCategoryTab(container, { selectedIds, onAfterSend, onR
     requestController: null,
   };
 
-  container.innerHTML = `
+  mediaHeaderHost.hidden = false;
+  mediaHeaderHost.innerHTML = `
     <div class="mc-tb-media-toolbar">
       <div class="mc-tb-context-filter-host"></div>
       <div class="mc-tb-media-controls">
@@ -213,14 +214,15 @@ async function renderMediaCategoryTab(container, { selectedIds, onAfterSend, onR
           ${MEDIA_SORTS.map(o => `<option value="${esc(o.id)}"${o.id === state.sort ? ' selected' : ''}>${esc(t(o.key))}</option>`).join('')}
         </select>
       </div>
-    </div>
+    </div>`;
+  container.innerHTML = `
     <div class="mc-tb-media-status" id="mc-media-status"></div>
     <div class="mc-tile-grid" id="mc-media-grid"></div>
     <div class="mc-tb-loadmore-wrap" id="mc-media-loadmore-wrap"></div>`;
 
   const grid = container.querySelector('#mc-media-grid');
   const statusEl = container.querySelector('#mc-media-status');
-  const contextFilterHost = container.querySelector('.mc-tb-context-filter-host');
+  const contextFilterHost = mediaHeaderHost.querySelector('.mc-tb-context-filter-host');
   const loadmoreWrap = container.querySelector('#mc-media-loadmore-wrap');
 
   function renderContextFilter() {
@@ -271,7 +273,7 @@ async function renderMediaCategoryTab(container, { selectedIds, onAfterSend, onR
     cancelActiveTouchDrag();
     grid.innerHTML = state.items.length ? state.items.map(tileHtml).join('') : '';
     wireMediaThumbnailFallbacks(grid);
-    attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource);
+    attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource, onArmSource, armedSourceKey);
     grid.querySelectorAll('[data-download-id]').forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.preventDefault();
@@ -349,14 +351,14 @@ async function renderMediaCategoryTab(container, { selectedIds, onAfterSend, onR
 
   // Debounced search + filter/sort change resets to page 1.
   let searchTimer = null;
-  container.querySelector('#mc-media-search').addEventListener('input', (e) => {
+  mediaHeaderHost.querySelector('#mc-media-search').addEventListener('input', (e) => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {
       state.search = (e.target.value || '').trim();
       loadPage({ offset: 0, append: false });
     }, 300);
   });
-  container.querySelector('#mc-media-sort').addEventListener('change', (e) => {
+  mediaHeaderHost.querySelector('#mc-media-sort').addEventListener('change', (e) => {
     state.sort = e.target.value; state.items = sortItems(state.items); renderGrid();
   });
 
@@ -367,7 +369,7 @@ async function renderMediaCategoryTab(container, { selectedIds, onAfterSend, onR
 // send funnel already accepts playlist_id. A "Manage playlists" link opens the
 // full builder (kept reachable, just no longer a sidebar item). The item count +
 // a Draft badge ride on each tile so the operator picks the right one at a glance.
-async function renderPlaylistsTab(container, { selectedIds, onAfterSend, onRouteSource }) {
+async function renderPlaylistsTab(container, { selectedIds, onAfterSend, onRouteSource, onArmSource, armedSourceKey }) {
   container.innerHTML = loadingState(t('mc.tb.loading_playlists'));
   let items = [];
   try {
@@ -399,10 +401,10 @@ async function renderPlaylistsTab(container, { selectedIds, onAfterSend, onRoute
     </button>`;
   }).join('');
   container.innerHTML = manage + `<div class="mc-tile-grid">${tiles}</div>`;
-  attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource);
+  attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource, onArmSource, armedSourceKey);
 }
 
-async function renderPresentationsTab(container, { selectedIds, onAfterSend, onRouteSource }) {
+async function renderPresentationsTab(container, { selectedIds, onAfterSend, onRouteSource, onArmSource, armedSourceKey }) {
   container.innerHTML = loadingState(t('mc.tb.loading_presentations'));
   let items = [];
   try {
@@ -428,7 +430,7 @@ async function renderPresentationsTab(container, { selectedIds, onAfterSend, onR
     </button>`;
   }).join('');
   container.innerHTML = `<div class="mc-tile-grid">${tiles}</div>`;
-  attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource);
+  attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource, onArmSource, armedSourceKey);
 }
 
 function renderYouTubeTab(container, { selectedIds, onAfterSend, onRouteSource }) {
@@ -956,12 +958,29 @@ function attachTouchDrag(tile, suppressClick) {
   });
 }
 
-export function attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource) {
+function sourceKey(source) {
+  if (!source || typeof source !== 'object') return '';
+  return Object.keys(source).sort().map((key) => `${key}:${JSON.stringify(source[key])}`).join('|');
+}
+
+export function paintArmedSource(container, armedSourceKey = '') {
+  if (!container) return;
+  const activeKey = typeof armedSourceKey === 'function' ? armedSourceKey() : armedSourceKey;
+  container.querySelectorAll('.mc-tile[data-drag-source]').forEach((tile) => {
+    let key = '';
+    try { key = sourceKey(JSON.parse(tile.dataset.dragSource)); } catch { /* malformed source is not routable */ }
+    const armed = !!activeKey && key === activeKey;
+    tile.classList.toggle('mc-source-armed', armed);
+    tile.setAttribute('aria-pressed', armed ? 'true' : 'false');
+  });
+}
+
+export function attachTileHandlers(container, selectedIds, onAfterSend, onRouteSource, onArmSource, armedSourceKey = '') {
   container.querySelectorAll('.mc-tile[data-drag-source]').forEach(tile => {
     let suppressNextClick = false;
     let suppressClickTimer = null;
-    // Click = explicit target picker in Command Center; fallback preserves the
-    // legacy immediate send contract for other callers/tests.
+    // Command Center tiles arm a source for an exact stage tap. Other callers
+    // retain their existing explicit-route or immediate-send contracts.
     tile.addEventListener('click', async (event) => {
       if (suppressNextClick) {
         suppressNextClick = false;
@@ -971,6 +990,10 @@ export function attachTileHandlers(container, selectedIds, onAfterSend, onRouteS
       let source;
       try { source = JSON.parse(tile.dataset.dragSource); } catch { return; }
       const label = tile.dataset.label || t('mc.tile.content_fallback');
+      if (typeof onArmSource === 'function') {
+        await onArmSource(source, label);
+        return;
+      }
       const ok = typeof onRouteSource === 'function'
         ? await onRouteSource(source, label)
         : await sendToDisplays(source, selectedIds, label);
@@ -998,6 +1021,7 @@ export function attachTileHandlers(container, selectedIds, onAfterSend, onRouteS
       suppressClickTimer = setTimeout(() => { suppressNextClick = false; }, 700);
     });
   });
+  paintArmedSource(container, armedSourceKey);
 }
 
 // Load and render the given tab into the tab-body container.
@@ -1011,9 +1035,11 @@ function clearLiveSourceTimers(root) {
 }
 
 async function loadTab(tabId, tabBody, options, context = {}) {
-  const { selectedIds, onAfterSend, onRouteSource, onRouteNextcloud, onMountAdditionalControls, onBeforeToolboxReplace } = options;
+  const { selectedIds, onAfterSend, onRouteSource, onArmSource, armedSourceKey, mediaHeaderHost, onRouteNextcloud, onMountAdditionalControls, onBeforeToolboxReplace } = options;
   cancelActiveTouchDrag();
   if (typeof onBeforeToolboxReplace === 'function') onBeforeToolboxReplace();
+  mediaHeaderHost.replaceChildren();
+  mediaHeaderHost.hidden = true;
   const previousHost = tabBody._renderHost;
   clearLiveSourceTimers(previousHost);
   const renderHost = document.createElement('div');
@@ -1024,10 +1050,10 @@ async function loadTab(tabId, tabBody, options, context = {}) {
   switch (tabId) {
     case 'videos':
     case 'images':
-      await renderMediaCategoryTab(renderHost, { selectedIds, onAfterSend, onRouteSource }, tabId, context);
+      await renderMediaCategoryTab(renderHost, { selectedIds, onAfterSend, onRouteSource, onArmSource, armedSourceKey, mediaHeaderHost }, tabId, context);
       break;
     case 'docs':
-      await renderDocsCategory(renderHost, { selectedIds, onAfterSend, onRouteSource }, context);
+      await renderDocsCategory(renderHost, { selectedIds, onAfterSend, onRouteSource, onArmSource, armedSourceKey, mediaHeaderHost }, context);
       break;
     case 'sources':
       await renderSourcesCategory(renderHost, { selectedIds, onAfterSend, onRouteSource, onRouteNextcloud });
@@ -1055,13 +1081,11 @@ async function loadTab(tabId, tabBody, options, context = {}) {
  * @param {(host:HTMLElement)=>void} [opts.onMountAdditionalControls]
  * @param {()=>void} [opts.onBeforeToolboxReplace]
  */
-export function renderToolbox(container, { selectedIds = [], onAfterSend, onRouteSource, onRouteNextcloud, onMountAdditionalControls, onBeforeToolboxReplace } = {}) {
+export function renderToolbox(container, { selectedIds = [], onAfterSend, onRouteSource, onArmSource, armedSourceKey = '', onRouteNextcloud, onMountAdditionalControls, onBeforeToolboxReplace } = {}) {
   if (!container) return;
   cancelActiveTouchDrag();
   if (typeof onBeforeToolboxReplace === 'function') onBeforeToolboxReplace();
   activeTab = normalizeToolboxTab(activeTab);
-  const options = { selectedIds, onAfterSend, onRouteSource, onRouteNextcloud, onMountAdditionalControls, onBeforeToolboxReplace };
-
   const tabHtml = TABS.map(tab =>
     `<button type="button" class="mc-tb-tab${tab.id === activeTab ? ' active' : ''}"
              id="mc-tb-tab-${esc(tab.id)}" role="tab"
@@ -1071,10 +1095,15 @@ export function renderToolbox(container, { selectedIds = [], onAfterSend, onRout
   ).join('');
 
   container.innerHTML = `
-    <div class="mc-tb-bar" role="tablist" aria-label="Content Library categories">${tabHtml}</div>
+    <div class="mc-tb-header-shelf">
+      <div class="mc-tb-bar" role="tablist" aria-label="Content Library categories">${tabHtml}</div>
+      <div id="mc-tb-media-header" class="mc-tb-media-header" hidden></div>
+    </div>
     <div class="mc-tb-body" id="mc-tb-panel" role="tabpanel" aria-labelledby="mc-tb-tab-${esc(activeTab)}"></div>`;
 
   const tabBody = container.querySelector('#mc-tb-panel');
+  const mediaHeaderHost = container.querySelector('#mc-tb-media-header');
+  const options = { selectedIds, onAfterSend, onRouteSource, onArmSource, armedSourceKey, mediaHeaderHost, onRouteNextcloud, onMountAdditionalControls, onBeforeToolboxReplace };
   const tabs = [...container.querySelectorAll('.mc-tb-tab')];
 
   const activateTab = async (requestedTab, context) => {

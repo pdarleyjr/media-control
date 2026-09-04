@@ -1156,8 +1156,10 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     expect(dragPayload).toEqual({ content_id: 'large-card-video-1' });
 
     await firstTile.click();
-    await expect(page.locator('dialog.mc-target-picker[open]')).toBeVisible();
-    await page.locator('[data-target-cancel]').click();
+    await expect(firstTile).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('dialog.mc-target-picker[open]')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await expect(firstTile).toHaveAttribute('aria-pressed', 'false');
 
     await page.locator('#mc-media-search').fill('training-video-64');
     await expect(labels).toHaveCount(1);
@@ -1191,6 +1193,118 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
       pageOverflow: document.documentElement.scrollWidth - innerWidth,
     }));
     expect(desktopTrack).toEqual({ flexWrap: 'nowrap', overflowX: 'auto', pageOverflow: 0 });
+    await context.close();
+  });
+
+  test('Command Center keeps accessible geometry and routes an armed source exactly once', async ({ browser }) => {
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 1857, height: 970 },
+      deviceScaleFactor: 1,
+    });
+    const videos = [
+      { id: 'armed-source-a', filename: 'Armed Source A.mp4', mime_type: 'video/mp4', detected_mime_type: 'video/mp4', created_at: 2 },
+      { id: 'armed-source-b', filename: 'Armed Source B.mp4', mime_type: 'video/mp4', detected_mime_type: 'video/mp4', created_at: 1 },
+    ];
+    await page.route('**/api/content*', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname !== '/api/content') return route.continue();
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(videos) });
+    });
+    await page.reload({ waitUntil: 'networkidle' });
+    await waitForCommandCenterVisualReady(page);
+
+    for (const [width, height] of [[1857, 970], [1920, 1080], [1440, 900], [838, 500], [500, 838]]) {
+      await page.setViewportSize({ width, height });
+      await page.waitForTimeout(120);
+      const geometry = await page.evaluate(() => {
+        const rect = (selector) => {
+          const element = document.querySelector(selector);
+          if (!element) return null;
+          const box = element.getBoundingClientRect();
+          return { top: box.top, bottom: box.bottom, left: box.left, right: box.right, width: box.width, height: box.height };
+        };
+        const main = rect('.mc-cc-main');
+        const canvas = rect('.mc-cc-canvas-area');
+        const stage = rect('.mc-stage.mc-cc-canvas');
+        const firstCard = rect('.mc-wall-cell[data-device-id], .mc-display-card[data-device-id]');
+        const firstTitle = rect('.mc-wall-cell-name, .mc-card-title');
+        return {
+          main, canvas, stage, firstCard, firstTitle,
+          scrollTop: document.scrollingElement?.scrollTop || 0,
+          scrollHeight: document.scrollingElement?.scrollHeight || 0,
+          clientHeight: document.scrollingElement?.clientHeight || 0,
+          pageWidth: document.documentElement.scrollWidth,
+          viewportWidth: innerWidth,
+        };
+      });
+      const accessibleTop = Math.max(0, geometry.canvas.top);
+      expect(geometry.firstCard.top, `${width}x${height} first card top ${JSON.stringify(geometry)}`).toBeGreaterThanOrEqual(accessibleTop - 1);
+      expect(geometry.firstTitle.top, `${width}x${height} first title top ${JSON.stringify(geometry)}`).toBeGreaterThanOrEqual(accessibleTop - 1);
+      expect(geometry.stage.top, `${width}x${height} preview top ${JSON.stringify(geometry)}`).toBeGreaterThanOrEqual(accessibleTop - 1);
+      expect(geometry.pageWidth, `${width}x${height} page width`).toBeLessThanOrEqual(geometry.viewportWidth + 1);
+    }
+
+    await page.setViewportSize({ width: 1857, height: 970 });
+    await page.locator('[data-library-toggle]').click();
+    await expect(page.locator('#mc-library-drawer')).toHaveAttribute('data-open', 'true');
+    await expect(page.locator('.mc-tb-header-shelf .mc-tb-bar')).toBeVisible();
+    await expect(page.locator('.mc-tb-header-shelf #mc-media-search')).toBeVisible();
+    await expect(page.locator('.mc-tb-header-shelf #mc-media-sort')).toBeVisible();
+    await expect(page.locator('#mc-tb-panel > .mc-tb-media-toolbar')).toHaveCount(0);
+    const mediaHeaderGeometry = await page.locator('.mc-tb-header-shelf').evaluate((header) => {
+      const rect = (selector) => {
+        const box = header.querySelector(selector).getBoundingClientRect();
+        return { top: box.top, left: box.left, right: box.right };
+      };
+      return { tabs: rect('.mc-tb-bar'), search: rect('#mc-media-search'), sort: rect('#mc-media-sort') };
+    });
+    expect(mediaHeaderGeometry.search.top).toBeLessThanOrEqual(mediaHeaderGeometry.tabs.top + 4);
+    expect(mediaHeaderGeometry.sort.top).toBeLessThanOrEqual(mediaHeaderGeometry.tabs.top + 4);
+    expect(mediaHeaderGeometry.tabs.right).toBeLessThanOrEqual(mediaHeaderGeometry.search.left + 1);
+
+    let broadcasts = 0;
+    let deliveryStatus = 'confirmed';
+    const broadcastPayloads = [];
+    await page.route('**/api/broadcast', async (route) => {
+      broadcasts += 1;
+      broadcastPayloads.push(route.request().postDataJSON());
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, request_id: 'armed-route', delivery: { status: 'pending' } }) });
+    });
+    await page.route('**/api/broadcast/armed-route', async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: deliveryStatus, expected_target_count: 3, devices: [] }) });
+    });
+
+    const firstTile = page.locator('.mc-tile[data-drag-source]').filter({ hasText: 'Armed Source A.mp4' });
+    const secondTile = page.locator('.mc-tile[data-drag-source]').filter({ hasText: 'Armed Source B.mp4' });
+    await firstTile.click();
+    await expect(firstTile).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('dialog.mc-target-picker[open]')).toHaveCount(0);
+    expect(broadcasts).toBe(0);
+    await page.locator('#mc-media-sort').selectOption('name');
+    await expect(firstTile).toHaveAttribute('aria-pressed', 'true');
+    await secondTile.click();
+    await expect(firstTile).toHaveAttribute('aria-pressed', 'false');
+    await expect(secondTile).toHaveAttribute('aria-pressed', 'true');
+    await page.keyboard.press('Escape');
+    await expect(secondTile).toHaveAttribute('aria-pressed', 'false');
+
+    await firstTile.click();
+    const target = page.locator('.mc-wall-all[data-wall-ids]').first();
+    await target.click();
+    await target.click();
+    await expect.poll(() => broadcasts).toBe(1);
+    await expect(firstTile).toHaveAttribute('aria-pressed', 'false');
+    expect(broadcastPayloads[0]).toMatchObject({ content_id: 'armed-source-a', targets: expect.any(Array) });
+
+    deliveryStatus = 'failed';
+    await secondTile.click();
+    await target.click();
+    await expect.poll(() => broadcasts).toBe(2);
+    await page.waitForTimeout(500);
+    await expect(secondTile).toHaveAttribute('aria-pressed', 'true');
+    await page.keyboard.press('Escape');
+    await expect(secondTile).toHaveAttribute('aria-pressed', 'false');
     await context.close();
   });
 
@@ -1659,8 +1773,10 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     expect(await tile.evaluate((element) => getComputedStyle(element).touchAction)).toContain('pan-x');
 
     await tile.click();
-    await expect(page.locator('dialog.mc-target-picker[open]')).toHaveCount(1);
-    await page.locator('[data-target-cancel]').click();
+    await expect(tile).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('dialog.mc-target-picker[open]')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await expect(tile).toHaveAttribute('aria-pressed', 'false');
 
     await tile.dragTo(page.locator('[data-test-touch-target="tv1"]'));
     await expect.poll(() => page.evaluate(() => window.__afterHoursMouseDrops.length)).toBe(1);

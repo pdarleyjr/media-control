@@ -56,7 +56,8 @@ test('podium library drag and drop preserves the source contract through physica
   assert.match(view, /\.mc-wall-all\[data-wall-ids\][\s\S]*?addEventListener\('drop'/);
   assert.match(stage, /mc-wall-groups-overview[\s\S]*?class="mc-wall-all"[\s\S]*?data-wall-id="\$\{esc\(wall\.id\)\}"/);
   assert.match(stage, /data-wall-id="\$\{esc\(wall\.id\)\}" data-wall-ids="\$\{esc\(wallMemberIds\)\}"/);
-  assert.match(view, /zone\.dataset\.wallId \|\| zone\.closest\('\.mc-wall\[data-wall-id\]'\)/);
+  assert.match(view, /const wholeWall = element\.closest\('\.mc-wall-all\[data-wall-ids\]'\)/);
+  assert.match(view, /kind: 'wall', ids: String\(wholeWall\.dataset\.wallIds \|\| ''\)\.split\(','\)\.filter\(Boolean\), wallId:/);
   assert.match(smoke, /new DragEvent\('dragstart'/);
   assert.match(smoke, /new DragEvent\('drop'/);
   assert.match(smoke, /SMOKE_DRAG_CONTENT_ID/);
@@ -137,8 +138,8 @@ test('grouped wall regions accept an exact typed drop instead of falling through
 
   assert.match(stage, /class="mc-wall-region[\s\S]*?data-layout-group-id=[\s\S]*?data-wall-id=/);
   assert.match(view, /\.mc-wall-region\[data-layout-group-id\]\[data-wall-id\]/);
-  assert.match(view, /const group = layoutGroupById\(region\.dataset\.layoutGroupId, region\.dataset\.wallId\)/);
-  assert.match(view, /sendToPhysicalScope\([\s\S]*?group\.member_ids/);
+  assert.match(view, /function resolveStageRouteDestination[\s\S]*?groupedRegion[\s\S]*?kind: 'layout-group'/);
+  assert.match(view, /destination\.kind === 'layout-group'[\s\S]*?layoutGroupById\(destination\.groupId, destination\.wallId\)[\s\S]*?sendToPhysicalScope\([\s\S]*?group\.member_ids/);
   assert.match(view, /e\.stopPropagation\(\)/);
   assert.match(smoke, /\.mc-wall-region\[data-layout-group-id\]/);
 });
