@@ -149,6 +149,8 @@ let commandCenterState = createCommandCenterState();
 let armedSource = null;
 let armedRoutePromise = null;
 let armedSourceEscapeHandler = null;
+const presentationPreviewSync = new WeakMap();
+let presentationPreviewCommandSequence = 0;
 let prefsStore = null;       // serialized control-preferences store (§6/§7)
 let targetApi = null;       // target-selector module API
 let transportApi = null;    // canvas-level transport row
@@ -616,6 +618,9 @@ function paintStage() {
     overviewMode: false,
     onSelect: selectStageDisplayTarget,
     onSelectGroup: selectLayoutGroupTarget,
+    onSelectRegion: selectWallRegionTarget,
+    onSelectWall: selectStageWallTarget,
+    onDetails: openInspector,
     onCalibrateWall: showWallCalibration,
     onAddDisplay: openAddPicker,
     onTransportAction: (ids) => refreshAfterSend(ids),
@@ -643,6 +648,7 @@ function selectLayoutGroupTarget(groupId) {
   const group = layoutGroupById(groupId);
   if (!group) return;
   activeControlTarget = { ...group, type: 'group', id: group.id, wall_id: group.wall_id };
+  targetApi?.setActive?.(activeControlTarget);
   commandCenterState = setControlTarget(commandCenterState, activeControlTarget);
   syncSocketTarget(activeControlTarget);
   paintStage();
@@ -654,13 +660,35 @@ function selectLayoutGroupTarget(groupId) {
 
 function selectStageDisplayTarget(deviceId) {
   const wall = wallForDeviceId(deviceId);
-  if (wall && wall.layout_mode === 'split') {
-    const target = { type: 'display', id: deviceId, supportsModes: false };
-    if (targetApi) targetApi.setActive(target);
-    handleTargetChange(target);
+  if (wall?.layout_mode === 'groups') {
+    const group = layoutGroupForDevice(deviceId);
+    if (group) selectLayoutGroupTarget(group.id);
     return;
   }
-  openInspector(deviceId);
+  if (wall && wall.layout_mode !== 'split') {
+    selectStageWallTarget(wall.id);
+    return;
+  }
+  const target = { type: 'display', id: deviceId, supportsModes: false };
+  if (targetApi) targetApi.setActive(target);
+  handleTargetChange(target);
+}
+
+function selectStageWallTarget(wallId) {
+  const wall = (walls || []).find((candidate) => candidate.id === wallId);
+  if (!wall) return;
+  const target = { type: 'wall', id: wall.id, wall_id: wall.id, supportsModes: true };
+  if (targetApi) targetApi.setActive(target);
+  handleTargetChange(target);
+}
+
+function selectWallRegionTarget(wallId, regionId) {
+  const target = wallRegionTargets().find((candidate) => (
+    candidate.wall_id === wallId && candidate.region_id === regionId
+  ));
+  if (!target) return;
+  if (targetApi) targetApi.setActive(target);
+  handleTargetChange(target);
 }
 
 // A compact signature of the STRUCTURE the stage renders: which cards/wall cells
@@ -707,6 +735,82 @@ function stageSignature() {
 // Patch the preview <img>s already on the stage to the latest screenshot URL,
 // without rebuilding the DOM. Authenticated fetch → blob URL (never bare API
 // paths that 401 without a cookie, and never JWT-in-URL).
+function confirmPresentationPreview(frame, state) {
+  const sync = presentationPreviewSync.get(frame);
+  const reported = parseInt(state?.slide_index ?? state?.page, 10);
+  if (!sync || !Number.isFinite(reported) || reported !== sync.desiredSlide) return false;
+  frame.dataset.mcSlideIndex = String(reported);
+  sync.inFlight = false;
+  sync.attempt = 0;
+  if (sync.retryTimer) clearTimeout(sync.retryTimer);
+  sync.retryTimer = null;
+  return true;
+}
+
+function schedulePresentationPreviewRetry(frame) {
+  const sync = presentationPreviewSync.get(frame);
+  if (!sync || sync.retryTimer || !frame.isConnected) return;
+  const delay = Math.min(2000, 150 * Math.pow(2, Math.min(sync.attempt, 4)));
+  sync.retryTimer = setTimeout(() => {
+    sync.retryTimer = null;
+    if (!frame.isConnected) return;
+    syncPresentationPreview(frame, sync.desiredSlide);
+  }, delay);
+}
+
+function syncPresentationPreview(frame, slide) {
+  let sync = presentationPreviewSync.get(frame);
+  if (!sync || sync.desiredSlide !== slide) {
+    if (sync?.retryTimer) clearTimeout(sync.retryTimer);
+    sync = {
+      desiredSlide: slide,
+      commandId: `passive-preview-${Date.now()}-${++presentationPreviewCommandSequence}`,
+      attempt: 0,
+      inFlight: false,
+      retryTimer: null,
+    };
+    presentationPreviewSync.set(frame, sync);
+    frame.dataset.mcRequestedSlideIndex = String(slide);
+  }
+  if (String(slide) === frame.dataset.mcSlideIndex || sync.inFlight) return;
+  sync.attempt += 1;
+  const command = {
+    command_id: sync.commandId,
+    action: 'go_to_slide',
+    payload: { action: 'go_to_slide', slide },
+  };
+  try {
+    const child = frame.contentWindow;
+    if (child && typeof child.handleAction === 'function') {
+      sync.inFlight = true;
+      Promise.resolve(child.handleAction(command)).then((ack) => {
+        sync.inFlight = false;
+        const state = ack?.state || child.__mcTransportState;
+        if (!ack || ack.ok === false || !confirmPresentationPreview(frame, state)) {
+          schedulePresentationPreviewRetry(frame);
+        }
+      }).catch(() => {
+        sync.inFlight = false;
+        schedulePresentationPreviewRetry(frame);
+      });
+      return;
+    }
+    child?.postMessage({ __mc_transport: command }, location.origin);
+  } catch { /* Loading/replaced frames are retried below. */ }
+  schedulePresentationPreviewRetry(frame);
+}
+
+function handlePresentationPreviewMessage(event) {
+  if (!event || event.origin !== location.origin) return;
+  const frame = Array.from(stageEl()?.querySelectorAll('iframe.mc-live-embed[data-mc-presentation="1"]') || [])
+    .find((candidate) => candidate.contentWindow === event.source);
+  if (!frame) return;
+  const data = event.data || {};
+  const state = data.__mc_transport_ack?.state || data.__mc_transport_state;
+  if (confirmPresentationPreview(frame, state)) return;
+  schedulePresentationPreviewRetry(frame);
+}
+
 function refreshPreviewsInPlace() {
   const el = stageEl();
   if (!el) return;
@@ -750,15 +854,7 @@ function refreshPreviewsInPlace() {
     const display = id && byId.get(id);
     const slide = parseInt(display?.now_playing?.slideIndex ?? display?.slide_index, 10);
     if (!Number.isFinite(slide) || slide < 1 || String(slide) === frame.dataset.mcSlideIndex) return;
-    try {
-      frame.contentWindow?.postMessage({
-        __mc_transport: {
-          action: 'go_to_slide',
-          payload: { action: 'go_to_slide', slide },
-        },
-      }, location.origin);
-      frame.dataset.mcSlideIndex = String(slide);
-    } catch { /* The next state refresh retries if the preview frame is reloading. */ }
+    syncPresentationPreview(frame, slide);
   });
   el.querySelectorAll('video.mc-live-embed[data-mc-video="1"]').forEach((video) => {
     const host = video.closest('[data-device-id]');
@@ -3029,11 +3125,14 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
     clearArmedSource();
   };
   document.addEventListener('keydown', armedSourceEscapeHandler);
+  window.removeEventListener('message', handlePresentationPreviewMessage);
+  window.addEventListener('message', handlePresentationPreviewMessage);
   signal?.addEventListener?.('abort', () => {
     if (armedSourceEscapeHandler) document.removeEventListener('keydown', armedSourceEscapeHandler);
     armedSourceEscapeHandler = null;
     armedSource = null;
     armedRoutePromise = null;
+    window.removeEventListener('message', handlePresentationPreviewMessage);
   }, { once: true });
   activeTarget = null;
   activeControlTarget = null;
@@ -3402,6 +3501,7 @@ window.mcGetNavigationContext = () => ({ selected_target: activeTarget });
 
 export function unmount() {
   cancelActiveTouchDrag();
+  window.removeEventListener('message', handlePresentationPreviewMessage);
   targetRestoreLifecycleGeneration += 1;
   // Abort the preference store so a pending write can't mutate an unmounted view.
   if (prefsStore) { try { prefsStore.abort(); } catch { /* */ } prefsStore = null; }
