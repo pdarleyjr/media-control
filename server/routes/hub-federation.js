@@ -79,7 +79,7 @@ function completePage() {
 }
 
 function accountLinkPage() {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Link Media Control account</title><link rel="stylesheet" href="/css/variables.css"><link rel="stylesheet" href="/css/reset.css"><link rel="stylesheet" href="/css/main.css"></head><body><main style="min-height:100vh;display:grid;place-items:center;padding:16px"><section style="width:420px;max-width:100%;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:24px"><h1 style="font-size:22px;margin-bottom:8px">Link your Media Control account</h1><p style="color:var(--text-secondary);font-size:13px;margin-bottom:20px">For this one-time step, enter your existing Media Control username or email and current password. Future sign-ins will use MBFD Hub.</p><form id="hubAccountLinkForm"><div class="form-group"><label for="hubLinkIdentifier">Username or email</label><input class="input" id="hubLinkIdentifier" name="identifier" autocomplete="username" required></div><div class="form-group"><label for="hubLinkPassword">Current Media Control password</label><input class="input" id="hubLinkPassword" name="password" type="password" autocomplete="current-password" required></div><button class="btn btn-primary" id="hubLinkSubmit" type="submit" style="width:100%;justify-content:center">Link account</button><p id="hubLinkError" role="alert" style="display:none;color:var(--danger);font-size:12px;margin-top:12px">Account linking failed. Check your existing Media Control credentials or contact an administrator.</p></form></section></main><script type="module" src="/js/hub-account-link.js"></script></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Link Media Control account</title><link rel="stylesheet" href="/css/variables.css"><link rel="stylesheet" href="/css/reset.css"><link rel="stylesheet" href="/css/main.css"></head><body><main style="min-height:100vh;display:grid;place-items:center;padding:16px"><section style="width:420px;max-width:100%;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:24px"><h1 style="font-size:22px;margin-bottom:8px">Link your Media Control account</h1><p style="color:var(--text-secondary);font-size:13px;margin-bottom:20px">For this one-time step, enter your existing Media Control username or email and current password. Future sign-ins will use MBFD Hub.</p><form id="hubAccountLinkForm"><div class="form-group"><label for="hubLinkIdentifier">Username or email</label><input class="input" id="hubLinkIdentifier" name="identifier" autocomplete="username" required></div><div class="form-group"><label for="hubLinkPassword">Current Media Control password</label><input class="input" id="hubLinkPassword" name="password" type="password" autocomplete="current-password" required></div><button class="btn btn-primary" id="hubLinkSubmit" type="submit" style="width:100%;justify-content:center">Link account</button><p id="hubLinkError" role="alert" style="display:none;color:var(--danger);font-size:12px;margin-top:12px">Account linking failed. Check your existing Media Control credentials or contact an administrator.</p><a id="hubLinkRestart" href="/api/auth/hub/start" style="display:none;margin-top:10px;font-size:13px">Restart MBFD Hub sign-in</a></form></section></main><script type="module" src="/js/hub-account-link.js"></script></body></html>`;
 }
 
 function loginIdentifier(body) {
@@ -225,10 +225,11 @@ function createHubFederationRouter({ db, config, fetchImpl = fetch, ensureWorksp
     const pending = linkHash
       ? db.prepare('SELECT subject, expires_at FROM hub_account_link_transactions WHERE link_hash = ?').get(linkHash)
       : null;
-    if (!pending || Number(pending.expires_at) <= now || !identifier || !password || password.length > 1024) {
-      if (pending && Number(pending.expires_at) <= now) {
-        db.prepare('DELETE FROM hub_account_link_transactions WHERE link_hash = ?').run(linkHash);
-      }
+    if (pending && Number(pending.expires_at) <= now) {
+      db.prepare('DELETE FROM hub_account_link_transactions WHERE link_hash = ?').run(linkHash);
+      return res.status(410).json({ error: 'account_link_expired' });
+    }
+    if (!pending || !identifier || !password || password.length > 1024) {
       return res.status(401).json({ error: 'account_link_failed' });
     }
 

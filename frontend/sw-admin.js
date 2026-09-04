@@ -1,6 +1,6 @@
 // Service worker for the admin SPA. Stable JS module names must always be
 // network-first; the cache is only an offline fallback.
-const CACHE = 'rd-admin-v5';
+const CACHE = 'rd-admin-v6';
 const ADMIN_STATIC_PREFIXES = Object.freeze([
   '/js/',
   '/css/',
@@ -71,7 +71,10 @@ function offlineResponse(request) {
 
 function networkFirst(event) {
   let cacheUpdate = Promise.resolve();
-  const responsePromise = fetch(event.request)
+  // Stable module URLs can otherwise remain fresh in the browser HTTP cache
+  // after a release even though the service worker is network-first. Bypass
+  // that lower cache layer, then retain our own scoped offline fallback.
+  const responsePromise = fetch(event.request, { cache: 'no-store' })
     .then((response) => {
       if (response.ok && response.type !== 'opaque') {
         cacheUpdate = caches.open(CACHE)

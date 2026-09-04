@@ -21,6 +21,9 @@ test('account-link page posts only existing account proof and redirects through 
   assert.doesNotMatch(source, /subject|hub_user|role|provider/i);
   assert.match(source, /credentials:\s*'same-origin'/);
   assert.match(source, /\/api\/auth\/hub\/complete/);
+  assert.match(source, /account_link_expired/);
+  assert.match(source, /response\.status === 429/);
+  assert.match(source, /hubLinkRestart/);
 });
 
 test('admin user management shows safe link status and supports controlled pre-provisioning', () => {
