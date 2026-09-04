@@ -117,4 +117,10 @@ test('Hub-enabled auth permits only the existing local guest and disables employ
     email: 'other@miamibeachfl.gov', username: 'guest', temporary_password: 'temporary-password', role: 'user',
   }, adminToken);
   assert.equal(guestProvision.status, 400);
+
+  const oversizedEmail = await post(server, '/api/auth/users', {
+    email: `${'a'.repeat(300)}@miamibeachfl.gov`, username: 'oversized',
+    temporary_password: 'temporary-password', role: 'user',
+  }, adminToken);
+  assert.equal(oversizedEmail.status, 400);
 });

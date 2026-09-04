@@ -31,6 +31,23 @@ function hubEnabled() {
   return Boolean(config.hubAuth?.serviceToken);
 }
 
+function isValidEmployeeEmail(email) {
+  if (!email || email.length > 254) return false;
+  let at = -1;
+  let domainDot = -1;
+  for (let index = 0; index < email.length; index += 1) {
+    const code = email.charCodeAt(index);
+    if (code <= 32 || code === 127) return false;
+    if (email[index] === '@') {
+      if (at !== -1) return false;
+      at = index;
+    } else if (email[index] === '.' && at !== -1 && index > at + 1) {
+      domainDot = index;
+    }
+  }
+  return at > 0 && domainDot > at + 1 && domainDot < email.length - 1;
+}
+
 function logFailedLogin(email, ip, reason) {
   try {
     db.prepare('INSERT INTO activity_log (user_id, action, details, ip_address) VALUES (NULL, ?, ?, ?)')
@@ -472,7 +489,7 @@ router.post('/users', requireAuth, requirePlatformAdmin, (req, res) => {
     ? req.body.temporary_password
     : '';
   const role = req.body?.role || 'user';
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+  if (!isValidEmployeeEmail(email)
     || !/^[A-Za-z0-9._-]{1,80}$/.test(username)
     || username.toLowerCase() === 'guest'
     || email.endsWith('@federated.invalid')
