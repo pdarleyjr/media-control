@@ -20,9 +20,67 @@ const PDF_MIME = 'application/pdf';
 const DEFAULT_DPI = Math.max(96, Math.min(360, parseInt(process.env.DOC_RENDER_DPI, 10) || 144));
 const PDFINFO_TIMEOUT_MS = parseInt(process.env.DOC_PDFINFO_TIMEOUT_MS, 10) || 15000;
 const RENDER_TIMEOUT_MS = parseInt(process.env.DOC_RENDER_TIMEOUT_MS, 10) || 60000;
+const RENDER_CONCURRENCY = Math.max(1, Math.min(4, parseInt(process.env.DOC_RENDER_CONCURRENCY, 10) || 2));
 
 const infoCache = new Map();
 const renderInflight = new Map();
+
+function createRenderScheduler(concurrency = RENDER_CONCURRENCY) {
+  const limit = Math.max(1, Math.floor(Number(concurrency) || 1));
+  const queue = [];
+  const records = new WeakMap();
+  let active = 0;
+  let sequence = 0;
+
+  const rank = (priority) => priority === 'prefetch' ? 1 : 0;
+  const sortQueue = () => queue.sort((a, b) => a.rank - b.rank || a.sequence - b.sequence);
+  const drain = () => {
+    sortQueue();
+    while (active < limit && queue.length) {
+      const item = queue.shift();
+      item.started = true;
+      active += 1;
+      Promise.resolve()
+        .then(item.task)
+        .then(item.resolve, item.reject)
+        .finally(() => {
+          active -= 1;
+          drain();
+        });
+    }
+  };
+
+  return {
+    run(task, options = {}) {
+      let resolve;
+      let reject;
+      const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+      const item = {
+        task,
+        resolve,
+        reject,
+        rank: rank(options.priority),
+        sequence: sequence++,
+        started: false,
+      };
+      records.set(promise, item);
+      queue.push(item);
+      drain();
+      return promise;
+    },
+    promote(promise) {
+      const item = records.get(promise);
+      if (!item || item.started || item.rank === 0) return false;
+      item.rank = 0;
+      sortQueue();
+      return true;
+    },
+    activeCount: () => active,
+    pendingCount: () => queue.length,
+  };
+}
+
+const renderScheduler = createRenderScheduler();
 
 function execFileAsync(cmd, args, opts = {}) {
   return new Promise((resolve, reject) => {
@@ -94,9 +152,18 @@ async function renderPdfPageImage(contentId, pdfPath, page, opts = {}) {
   const outPath = path.join(config.contentDir, pageCacheBasename(contentId, stat.mtimeMs, pageNum, dpi));
   if (fs.existsSync(outPath) && fs.statSync(outPath).size > 0) return { path: outPath, page: pageNum, pages, dpi };
 
-  if (renderInflight.has(outPath)) return renderInflight.get(outPath);
+  if (renderInflight.has(outPath)) {
+    const existing = renderInflight.get(outPath);
+    if (opts.priority !== 'prefetch') renderScheduler.promote(existing);
+    return existing;
+  }
 
-  const job = (async () => {
+  const job = renderScheduler.run(async () => {
+    // A queued request may have become a cache hit while another renderer was
+    // active. Recheck at execution time before spawning Poppler.
+    if (fs.existsSync(outPath) && fs.statSync(outPath).size > 0) {
+      return { path: outPath, page: pageNum, pages, dpi };
+    }
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcdocpage-'));
     try {
       const prefix = path.join(workDir, 'page');
@@ -114,7 +181,7 @@ async function renderPdfPageImage(contentId, pdfPath, page, opts = {}) {
     } finally {
       try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
-  })();
+  }, { priority: opts.priority });
 
   renderInflight.set(outPath, job);
   try {
@@ -126,7 +193,9 @@ async function renderPdfPageImage(contentId, pdfPath, page, opts = {}) {
 
 module.exports = {
   DEFAULT_DPI,
+  RENDER_CONCURRENCY,
   clampPage,
+  createRenderScheduler,
   getPdfPageCount,
   getRenderablePdf,
   isDocumentMime,

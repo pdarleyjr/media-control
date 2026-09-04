@@ -78,7 +78,7 @@ function playbackSeconds(nowPlaying) {
 //     preview iframe, so we omit `allow` entirely rather than mask the noise.
 //   • allowfullscreen is not set — these are non-interactive passive previews.
 function presentationFrameHtml(src, klass, slide) {
-  return `<iframe class="${klass}" src="${esc(src)}" loading="eager" referrerpolicy="no-referrer" style="pointer-events:none" data-mc-presentation="1" data-mc-slide-index="${slide}"></iframe>`;
+  return `<iframe class="${klass}" src="${esc(src)}" loading="eager" referrerpolicy="no-referrer" style="pointer-events:none" data-mc-presentation="1" data-mc-requested-slide-index="${slide}"></iframe>`;
 }
 
 // Dashboard previews are PASSIVE (task §9): they must NEVER produce classroom

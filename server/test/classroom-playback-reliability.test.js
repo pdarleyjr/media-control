@@ -181,7 +181,7 @@ test('duplicate command_id is idempotent in player and deck/doc without re-apply
 test('document player bounds slide look-ahead to one reusable image surface', () => {
   const doc = read('doc.html');
   assert.ok(doc.includes('var prefetchImage = new Image();'));
-  assert.ok(doc.includes('prefetchImage.src = pageUrl(n);'));
+  assert.ok(doc.includes('prefetchImage.src = pageUrl(n, true);'));
   assert.ok(!doc.includes('prefetch(page - 1);'));
 });
 

@@ -245,7 +245,7 @@ function displayCard(display, { livePreviewTarget = null, previewSurfaceKey = nu
     <article class="mc-card mc-display-card ${s.cls}${sb ? ' mc-display-card-tile' : ''}"
             data-device-id="${esc(display.id)}"${sb ? ' style="--mc-cols:1"' : ''}>
       <button type="button" class="mc-card-select" data-device-id="${esc(display.id)}"
-              aria-label="${esc(t('mc.card.inspect_aria', { name: display.name }))}">
+              aria-label="${esc(`Control ${display.name}`)}">
         <div class="mc-card-media" style="aspect-ratio:${ar}">
           ${preview}
           ${statusBadge(s)}
@@ -253,6 +253,8 @@ function displayCard(display, { livePreviewTarget = null, previewSurfaceKey = nu
         </div>
         <div class="mc-card-nowplaying" title="${nowPlaying}">${nowPlaying}</div>
       </button>
+      <button type="button" class="mc-card-details" data-details-device-id="${esc(display.id)}"
+              aria-label="${esc(`Details for ${display.name}`)}" title="${esc(`Details for ${display.name}`)}">i</button>
       <div class="mc-card-foot">
         <span class="mc-card-title">${esc(display.name)}</span>
         ${screensaverSelect(`data-device-id="${esc(display.id)}"`, screensaverValueForDisplays([display]))}
@@ -322,10 +324,12 @@ function wallCell(member, screenNo, { showPreview = true } = {}) {
   return `
     <div class="mc-wall-cell ${s.cls}${showPreview ? '' : ' mc-wall-cell-overlay'}" data-device-id="${esc(member.id)}"
          role="button" tabindex="0" title="${esc(title)}"
-         aria-label="${esc(t('mc.card.inspect_aria', { name: member.name }))}">
+         aria-label="${esc(`Control ${member.name}`)}">
       ${preview}
       ${statusBadge(s)}
       <span class="mc-wall-cell-name">${esc(cellLabel)}</span>
+      <button type="button" class="mc-card-details" data-details-device-id="${esc(member.id)}"
+              aria-label="${esc(`Details for ${member.name}`)}" title="${esc(`Details for ${member.name}`)}">i</button>
     </div>`;
 }
 
@@ -463,6 +467,8 @@ function wallCard(wall, byId, livePreviewTargets = new Map(), overviewMode = fal
         <span class="mc-wall-all-ico" aria-hidden="true">${ICON_WALL_ALL}</span>
         <span>${esc(fillLabel)}</span>
       </div>
+      ${leader ? `<button type="button" class="mc-card-details mc-wall-details" data-details-device-id="${esc(leader.id)}"
+              aria-label="${esc(`Details for ${leader.name}`)}" title="${esc(`Details for ${leader.name}`)}">i</button>` : ''}
     </section>`;
 }
 
@@ -849,7 +855,7 @@ function bumpStageMetric(container, key, n = 1) {
  * @param {(ids:string[], source:object, label:string)=>void} [opts.onScreensaver]
  *   A screensaver option was chosen on a card; broadcast `source` to `ids`.
  */
-export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], livePreviewTargets = new Map(), activeControlTarget = null, overviewMode = false, onSelect, onSelectGroup, onCalibrateWall, onAddDisplay, onTransportAction, onSetWallMode, onScreensaver } = {}) {
+export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], livePreviewTargets = new Map(), activeControlTarget = null, overviewMode = false, onSelect, onSelectGroup, onSelectRegion, onSelectWall, onDetails, onCalibrateWall, onAddDisplay, onTransportAction, onSetWallMode, onScreensaver } = {}) {
   if (!container) return;
   const selected = new Set(selectedIds);
 
@@ -924,8 +930,8 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
   updateControlStateInPlace(container, activeControlTarget);
 
   // Display cards are <article> with a dedicated <button class="mc-card-select">
-  // (the preview media) as the sole inspect/select affordance; wall screen cells
-  // are <div role=button>. Both open the inspector for that display. The
+  // (the preview media) as the control-target affordance; wall screen cells are
+  // <div role=button>. Inspector access is reserved for .mc-card-details. The
   // whole-wall <a href="#/walls"> "Edit" link navigates natively. There are NO
   // transport controls inside cards — one authoritative toolbar lives below the
   // canvas, so there is nothing to stopPropagation against here.
@@ -936,6 +942,30 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
     el.addEventListener('click', () => { if (typeof onSelect === 'function') onSelect(el.dataset.deviceId); });
     el.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (typeof onSelect === 'function') onSelect(el.dataset.deviceId); }
+    });
+  });
+  container.querySelectorAll('.mc-wall-all[data-wall-id]').forEach((el) => {
+    const select = () => { if (typeof onSelectWall === 'function') onSelectWall(el.dataset.wallId); };
+    el.addEventListener('click', select);
+    el.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(); }
+    });
+  });
+  container.querySelectorAll('.mc-wall-split-half[data-wall-region-id]').forEach((el) => {
+    const wallId = el.closest('[data-wall-id]')?.dataset.wallId;
+    const select = () => {
+      if (typeof onSelectRegion === 'function') onSelectRegion(wallId, el.dataset.wallRegionId);
+    };
+    el.addEventListener('click', select);
+    el.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(); }
+    });
+  });
+  container.querySelectorAll('.mc-card-details[data-details-device-id]').forEach((button) => {
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (typeof onDetails === 'function') onDetails(button.dataset.detailsDeviceId);
     });
   });
   container.querySelectorAll('[data-layout-group-id]').forEach((region) => {

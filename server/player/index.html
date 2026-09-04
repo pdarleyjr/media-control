@@ -3183,6 +3183,30 @@
             currentVideoEl.play().catch(() => {});
           }
         }
+        // Documents have their own committed page lifecycle inside doc.html.
+        // Align followers to the leader's committed slide without treating a
+        // merely-requested page as visible and without emitting an operator ACK.
+        const leaderSlide = parseInt(data.slide_index, 10);
+        const currentItem = getCurrentItem();
+        if (Number.isFinite(leaderSlide) && leaderSlide >= 1 && currentItem && isDocumentMime(currentItem.mime_type)) {
+          const frame = document.querySelector('#playerContainer iframe, .wall-stage iframe, .zone iframe');
+          try {
+            const child = frame?.contentWindow;
+            const childState = child?.__mcGetTransportState?.() || child?.__mcTransportState || null;
+            const committedSlide = parseInt(childState?.slide_index ?? childState?.page, 10);
+            const requestedSlide = parseInt(childState?.requested_slide_index ?? childState?.requested_page, 10);
+            if (committedSlide !== leaderSlide && requestedSlide !== leaderSlide) {
+              const syncCommand = { action: 'go_to_slide', payload: { action: 'go_to_slide', slide: leaderSlide } };
+              if (child && typeof child.handleAction === 'function') {
+                Promise.resolve(child.handleAction(syncCommand)).then((ack) => {
+                  if (ack?.state) acceptChildTransportState(ack.state);
+                }).catch(() => {});
+              } else if (child) {
+                child.postMessage({ __mc_transport: syncCommand }, location.origin);
+              }
+            }
+          } catch (_) { /* the next 4Hz sync retries once the child is ready */ }
+        }
       });
 
       // Leader receives a sync-request from a (re)connecting follower and
@@ -4109,6 +4133,7 @@
       } else {
         position = Math.max(0, (Date.now() - currentItemStartedAt) / 1000);
       }
+      const wallSnapshot = currentPlaybackSnapshot();
       socket.emit('wall:sync', {
         wall_id: wallConfig.wall_id,
         group_id: wallConfig.group_id,
@@ -4120,6 +4145,7 @@
         paused: activeYtPlayer
           ? ytPlayerStateLabel() === 'paused'
           : !!(currentVideoEl && currentVideoEl.paused),
+        slide_index: wallSnapshot.content_type === 'document' ? wallSnapshot.slide_index : null,
         sent_at: Date.now(),
         start_in_ms: Math.max(0, currentItemStartedAt - Date.now()),
       });

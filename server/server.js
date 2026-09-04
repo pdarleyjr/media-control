@@ -618,7 +618,9 @@ app.get('/player/doc-page/:id/:page.png', async (req, res) => {
     const pdfPath = await getRenderablePdf(c);
     const pages = await getPdfPageCount(pdfPath);
     const page = clampPage(req.params.page, pages);
-    const rendered = await renderPdfPageImage(c.id, pdfPath, page);
+    const rendered = await renderPdfPageImage(c.id, pdfPath, page, {
+      priority: req.query.prefetch === '1' ? 'prefetch' : 'interactive',
+    });
     res.setHeader('Content-Type', 'image/png');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Cache-Control', 'public, max-age=86400, immutable');

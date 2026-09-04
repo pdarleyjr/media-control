@@ -1213,7 +1213,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await page.reload({ waitUntil: 'networkidle' });
     await waitForCommandCenterVisualReady(page);
 
-    for (const [width, height] of [[1857, 970], [1920, 1080], [1440, 900], [838, 500], [500, 838]]) {
+    for (const [width, height] of [[1920, 1080], [1366, 768], [838, 500], [768, 1024], [390, 844]]) {
       await page.setViewportSize({ width, height });
       await page.waitForTimeout(120);
       const geometry = await page.evaluate(() => {
@@ -1226,10 +1226,13 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
         const main = rect('.mc-cc-main');
         const canvas = rect('.mc-cc-canvas-area');
         const stage = rect('.mc-stage.mc-cc-canvas');
+        const header = rect('.mc-cc-head');
+        const controls = rect('.mc-cc-controls');
         const firstCard = rect('.mc-wall-cell[data-device-id], .mc-display-card[data-device-id]');
         const firstTitle = rect('.mc-wall-cell-name, .mc-card-title');
+        const firstBadge = rect('.mc-badge');
         return {
-          main, canvas, stage, firstCard, firstTitle,
+          main, canvas, stage, header, controls, firstCard, firstTitle, firstBadge,
           scrollTop: document.scrollingElement?.scrollTop || 0,
           scrollHeight: document.scrollingElement?.scrollHeight || 0,
           clientHeight: document.scrollingElement?.clientHeight || 0,
@@ -1241,6 +1244,12 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
       expect(geometry.firstCard.top, `${width}x${height} first card top ${JSON.stringify(geometry)}`).toBeGreaterThanOrEqual(accessibleTop - 1);
       expect(geometry.firstTitle.top, `${width}x${height} first title top ${JSON.stringify(geometry)}`).toBeGreaterThanOrEqual(accessibleTop - 1);
       expect(geometry.stage.top, `${width}x${height} preview top ${JSON.stringify(geometry)}`).toBeGreaterThanOrEqual(accessibleTop - 1);
+      expect(geometry.stage.top, `${width}x${height} stage must clear the header`).toBeGreaterThanOrEqual(geometry.header.bottom + 6);
+      expect(geometry.stage.left, `${width}x${height} stage left margin ${JSON.stringify(geometry)}`).toBeGreaterThanOrEqual(geometry.main.left - 1);
+      expect(geometry.stage.right, `${width}x${height} stage right margin ${JSON.stringify(geometry)}`).toBeLessThanOrEqual(geometry.main.right + 1);
+      expect(geometry.firstBadge.left, `${width}x${height} badge left`).toBeGreaterThanOrEqual(0);
+      expect(geometry.firstBadge.right, `${width}x${height} badge right`).toBeLessThanOrEqual(geometry.viewportWidth);
+      expect(geometry.controls.bottom, `${width}x${height} controls remain in viewport`).toBeLessThanOrEqual(height + 1);
       expect(geometry.pageWidth, `${width}x${height} page width`).toBeLessThanOrEqual(geometry.viewportWidth + 1);
     }
 
@@ -1294,6 +1303,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await target.click();
     await target.click();
     await expect.poll(() => broadcasts).toBe(1);
+    await expect(page.locator('#mc-inspector')).toBeHidden();
     await expect(firstTile).toHaveAttribute('aria-pressed', 'false');
     expect(broadcastPayloads[0]).toMatchObject({ content_id: 'armed-source-a', targets: expect.any(Array) });
 
@@ -1357,7 +1367,13 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await page.keyboard.press('ArrowLeft');
     await expect(page.locator('.mc-tb-tab[data-tab="additional"]')).toBeFocused();
 
-    await page.locator('.mc-wall-cell[data-device-id]').first().evaluate((element) => element.click());
+    const wallCell = page.locator('.mc-wall-cell[data-device-id]').first();
+    await wallCell.evaluate((element) => element.click());
+    await expect(page.locator('#mc-inspector')).toBeHidden();
+    await expect(page.locator('.mc-wall.is-control-target').first()).toBeVisible();
+    const details = page.locator('.mc-wall > .mc-card-details[data-details-device-id]').first();
+    await expect(details).toHaveAttribute('aria-label', /Details for/);
+    await details.click();
     await expect(page.locator('#mc-inspector')).toBeVisible();
     await expect(page.locator('#mc-library-drawer')).toHaveAttribute('inert', '');
     await expect(page.locator('#mc-library-drawer')).toHaveAttribute('aria-hidden', 'true');
@@ -3300,6 +3316,117 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
         cleanup.prepare("DELETE FROM display_states WHERE target_id='mobile-secondary-display'").run();
         cleanup.prepare("DELETE FROM video_walls WHERE id='mobile-secondary-wall'").run();
         cleanup.prepare("DELETE FROM devices WHERE id='mobile-secondary-display'").run();
+      })();
+      cleanup.close();
+    }
+  });
+
+  test('surface clicks select standalone, span, split, and grouped targets while Details alone opens Inspector', async ({ browser }) => {
+    const Database = require('better-sqlite3');
+    const dbPath = path.join(tmpDir, 'test.db');
+    const database = new Database(dbPath, { timeout: 10000 });
+    const workspaceId = database.prepare(
+      'SELECT workspace_id FROM workspace_members WHERE user_id = ? LIMIT 1'
+    ).get(userId)?.workspace_id;
+    const now = Math.floor(Date.now() / 1000) + 3600;
+
+    database.transaction(() => {
+      const insertDevice = database.prepare(`
+        INSERT INTO devices (id, user_id, workspace_id, name, pairing_code, status, last_heartbeat, wall_id, screen_on)
+        VALUES (?, ?, ?, ?, ?, 'online', ?, ?, 1)
+      `);
+      insertDevice.run('selection-standalone', userId, workspaceId, 'Selection Standalone', '821001', now, null);
+      insertDevice.run('selection-split-left', userId, workspaceId, 'Selection Split Left', '821002', now, 'selection-split-wall');
+      insertDevice.run('selection-split-right', userId, workspaceId, 'Selection Split Right', '821003', now, 'selection-split-wall');
+      for (const id of ['selection-standalone', 'selection-split-left', 'selection-split-right']) {
+        database.prepare(`
+          INSERT INTO display_states
+            (target_type, target_id, workspace_id, screen_on, command_revision, state_revision, updated_at)
+          VALUES ('display', ?, ?, 1, 'fixture-on', 1, ?)
+        `).run(id, workspaceId, Date.now());
+      }
+      database.prepare(`
+        INSERT INTO video_walls (id, user_id, workspace_id, name, grid_cols, grid_rows, is_locked, layout_mode)
+        VALUES ('selection-split-wall', ?, ?, 'Selection Split Wall', 2, 1, 1, 'split')
+      `).run(userId, workspaceId);
+      database.prepare(`
+        INSERT INTO video_wall_devices
+          (wall_id, device_id, grid_col, grid_row, canvas_x, canvas_y, canvas_width, canvas_height)
+        VALUES
+          ('selection-split-wall', 'selection-split-left', 0, 0, 0, 0, 1920, 1080),
+          ('selection-split-wall', 'selection-split-right', 1, 0, 1920, 0, 1920, 1080)
+      `).run();
+      database.prepare(`
+        UPDATE video_walls
+        SET layout_mode = 'groups', layout_revision = 11, layout_json = ?
+        WHERE id = 'mobile-command-wall'
+      `).run(JSON.stringify({
+        version: 1,
+        revision: 11,
+        preset: 'span-left',
+        groups: [
+          {
+            id: 'selection-primary-pair',
+            name: 'Selection Primary Pair',
+            layout: 'span',
+            member_ids: ['mobile-wall-display-1', 'mobile-wall-display-2'],
+            leader_device_id: 'mobile-wall-display-1',
+          },
+          {
+            id: 'selection-primary-solo',
+            name: 'Selection Primary Solo',
+            layout: 'solo',
+            member_ids: ['mobile-wall-display-3'],
+            leader_device_id: 'mobile-wall-display-3',
+          },
+        ],
+      }));
+    })();
+    database.close();
+
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 1440, height: 900 },
+      deviceScaleFactor: 1,
+    });
+    try {
+      await waitForCommandCenterVisualReady(page);
+      await expect(page.locator('#mc-inspector')).toBeHidden();
+
+      await page.locator('.mc-wall-region[data-layout-group-id="selection-primary-pair"] .mc-wall-cell[data-device-id="mobile-wall-display-1"]')
+        .evaluate((element) => element.click());
+      await expect(page.locator('.mc-target-select')).toHaveValue('group:selection-primary-pair');
+      await expect(page.locator('.mc-wall-region[data-layout-group-id="selection-primary-pair"]')).toHaveClass(/is-active/);
+      await expect(page.locator('#mc-inspector')).toBeHidden();
+
+      await page.locator('.mc-target-select').selectOption('wall:selection-split-wall');
+      await page.locator('.mc-display-card[data-device-id="selection-split-right"] .mc-card-select').click();
+      await expect(page.locator('.mc-target-select')).toHaveValue('display:selection-split-right');
+      await expect(page.locator('#mc-inspector')).toBeHidden();
+
+      await page.locator('.mc-card-select[data-device-id="selection-standalone"]')
+        .evaluate((element) => element.click());
+      await expect(page.locator('.mc-target-select')).toHaveValue('display:selection-standalone');
+      await expect(page.locator('.mc-display-card[data-device-id="selection-standalone"]')).toHaveClass(/is-active/);
+      await expect(page.locator('#mc-inspector')).toBeHidden();
+
+      const details = page.locator('.mc-card-details[data-details-device-id="selection-standalone"]');
+      await expect(details).toHaveAttribute('aria-label', 'Details for Selection Standalone');
+      await details.click();
+      await expect(page.locator('#mc-inspector')).toBeVisible();
+      await expect(page.locator('.mc-target-select')).toHaveValue('display:selection-standalone');
+    } finally {
+      await context.close();
+      const cleanup = new Database(dbPath, { timeout: 10000 });
+      cleanup.transaction(() => {
+        cleanup.prepare(`
+          UPDATE video_walls
+          SET layout_mode = 'span', layout_json = NULL, layout_revision = 0
+          WHERE id = 'mobile-command-wall'
+        `).run();
+        cleanup.prepare("DELETE FROM video_wall_devices WHERE wall_id='selection-split-wall'").run();
+        cleanup.prepare("DELETE FROM display_states WHERE target_id IN ('selection-standalone','selection-split-left','selection-split-right')").run();
+        cleanup.prepare("DELETE FROM video_walls WHERE id='selection-split-wall'").run();
+        cleanup.prepare("DELETE FROM devices WHERE id IN ('selection-standalone','selection-split-left','selection-split-right')").run();
       })();
       cleanup.close();
     }

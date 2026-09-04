@@ -131,7 +131,9 @@ test('presentation previews follow the authoritative physical slide state', () =
   assert.match(livePreview, /case 'presentation':/);
   assert.match(livePreview, /data-mc-presentation="1"/);
   assert.match(main, /iframe\.mc-live-embed\[data-mc-presentation="1"\]/);
-  assert.match(main, /__mc_transport:[\s\S]*action: 'go_to_slide'/);
+  assert.match(main, /function syncPresentationPreview\(frame, slide\)/);
+  assert.match(main, /child\.handleAction\(command\)/);
+  assert.match(main, /confirmPresentationPreview\(frame, state\)/);
   assert.match(deck, /params\.get\('slide'\)/);
   assert.match(deck, /params\.get\('preview'\) === '1'/);
   assert.match(main, /const preview = previewSource\(d\)/);
@@ -326,7 +328,9 @@ test('document player publishes the actual rendered slide to the parent screensh
   const player = fs.readFileSync(path.join(__dirname, '..', 'player', 'index.html'), 'utf8');
   assert.match(doc, /function publishScreenshot\(\)/);
   assert.match(doc, /__mc_screenshot: base64/);
-  assert.match(doc, /img\.onload = function \(\)/);
+  assert.match(doc, /candidate\.onload = function \(\)/);
+  assert.match(doc, /committedPage = targetPage/);
+  assert.match(doc, /slide_index: committedPage/);
   assert.match(doc, /window\.publishScreenshot = publishScreenshot/);
   assert.match(doc, /data\.__mc_screenshot_request === true/);
   assert.match(player, /data\.__mc_screenshot\.length <= 2 \* 1024 \* 1024/);

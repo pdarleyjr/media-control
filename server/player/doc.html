@@ -26,7 +26,13 @@
       color: #fecaca; background: #0f172a; font: 700 clamp(18px, 2vw, 30px)/1.35 system-ui, sans-serif; text-align: center;
     }
     body[data-error="1"] #error { display: flex; }
-    body[data-error="1"] #stage, body[data-error="1"] #status { display: none; }
+    body[data-error="1"]:not([data-has-committed="1"]) #stage,
+    body[data-error="1"]:not([data-has-committed="1"]) #status { display: none; }
+    body[data-error="1"][data-has-committed="1"] #error {
+      inset: auto max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+      min-height: 48px; padding: 10px 16px; border: 1px solid rgba(248,113,113,.72); border-radius: 10px;
+      background: rgba(69,10,10,.92); font-size: clamp(14px, 1.3vw, 18px); z-index: 4;
+    }
   </style>
 </head>
 <body>
@@ -48,27 +54,37 @@
       var prefetchImage = new Image();
       prefetchImage.decoding = 'async';
       var statusEl = document.getElementById('status');
-      var page = Math.max(1, parseInt(params.get('page') || '1', 10) || 1);
+      var requestedPage = Math.max(1, parseInt(params.get('page') || '1', 10) || 1);
+      var committedPage = null;
       var pages = 1;
       var filename = 'Document';
       var version = '';
       var statusTimer = null;
       var playTimer = null;
+      var renderGeneration = 0;
+      var renderPending = false;
+      var renderError = null;
+      document.body.dataset.error = '0';
+      document.body.dataset.hasCommitted = '0';
 
       function esc(s) {
         return String(s == null ? '' : s)
           .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
           .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
       }
-      function showStatus(ms) {
-        statusEl.innerHTML = esc(filename) + ' · ' + page + ' / ' + pages;
+      function showStatus(ms, pageNumber) {
+        var shownPage = pageNumber || committedPage || requestedPage;
+        statusEl.innerHTML = esc(filename) + ' · ' + shownPage + ' / ' + pages;
         document.body.dataset.showStatus = '1';
         clearTimeout(statusTimer);
         statusTimer = setTimeout(function () { document.body.dataset.showStatus = '0'; }, ms || 1400);
       }
-      function pageUrl(n) {
-        var q = version ? ('?v=' + encodeURIComponent(version)) : '';
-        return '/player/doc-page/' + encodeURIComponent(id) + '/' + n + '.png' + q;
+      function pageUrl(n, speculative) {
+        var query = new URLSearchParams();
+        if (version) query.set('v', version);
+        if (speculative) query.set('prefetch', '1');
+        var q = query.toString();
+        return '/player/doc-page/' + encodeURIComponent(id) + '/' + n + '.png' + (q ? '?' + q : '');
       }
       function prefetch(n) {
         if (n < 1 || n > pages) return;
@@ -76,7 +92,7 @@
         // Image instances on every slide change made five-display PowerPoint
         // playback retain unnecessary decoded PNG surfaces under memory
         // pressure.
-        prefetchImage.src = pageUrl(n);
+        prefetchImage.src = pageUrl(n, true);
       }
       function currentState() {
         var paused = !playTimer;
@@ -90,16 +106,18 @@
           media_type: 'document',
           fit: fit,
           version: version,
-          page: page,
-          slide_index: page,
+          page: committedPage,
+          slide_index: committedPage,
+          requested_page: requestedPage,
+          requested_slide_index: requestedPage,
           slide_total: pages,
           total_pages: pages,
-          current_time: page,
+          current_time: committedPage,
           duration: pages,
           paused: paused,
-          render_state: error ? 'error' : (paused ? 'paused' : 'playing'),
-          status: error ? 'error' : (paused ? 'paused' : 'playing'),
-          error_state: error ? 'Document failed to load.' : null,
+          render_state: error ? 'error' : (renderPending ? 'loading' : (paused ? 'paused' : 'playing')),
+          status: error ? 'error' : (renderPending ? 'loading' : (paused ? 'paused' : 'playing')),
+          error_state: error ? renderError : null,
         };
       }
       function publishState(ack) {
@@ -129,7 +147,7 @@
           ctx.drawImage(img, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
           var base64 = canvas.toDataURL('image/jpeg', 0.58).split(',')[1];
           if (base64 && window.parent && window.parent !== window) {
-            window.parent.postMessage({ __mc_screenshot: base64, captured_at: Date.now() }, location.origin);
+            window.parent.postMessage({ __mc_screenshot: base64, captured_at: Date.now(), slide_index: committedPage }, location.origin);
             return true;
           }
         } catch (e) {
@@ -137,28 +155,86 @@
         }
         return false;
       }
+      function clearRenderError() {
+        renderError = null;
+        document.body.dataset.error = '0';
+      }
+      function setRenderError(pageNumber) {
+        renderError = 'Document page ' + pageNumber + ' failed to render.';
+        document.getElementById('error').textContent = renderError;
+        document.body.dataset.error = '1';
+      }
+      function waitForCandidate(candidate) {
+        return new Promise(function (resolve, reject) {
+          var settled = false;
+          function finish(ok) {
+            if (settled) return;
+            settled = true;
+            candidate.onload = null;
+            candidate.onerror = null;
+            if (ok && candidate.naturalWidth > 0 && candidate.naturalHeight > 0) resolve();
+            else reject(new Error('page image unavailable'));
+          }
+          candidate.onload = function () {
+            if (typeof candidate.decode !== 'function') { finish(true); return; }
+            candidate.decode().then(function () { finish(true); }).catch(function () {
+              finish(candidate.complete && candidate.naturalWidth > 0);
+            });
+          };
+          candidate.onerror = function () { finish(false); };
+          candidate.src = pageUrl(candidate._mcRequestedPage, false);
+          if (candidate.complete && candidate.naturalWidth > 0) candidate.onload();
+        });
+      }
       function render(n, announce) {
-        page = Math.max(1, Math.min(pages, parseInt(n, 10) || 1));
-        img.src = pageUrl(page);
-        img.onload = function () {
-          prefetch(page + 1);
+        var targetPage = Math.max(1, Math.min(pages, parseInt(n, 10) || 1));
+        requestedPage = targetPage;
+        var generation = ++renderGeneration;
+        renderPending = true;
+        if (announce !== false) showStatus(undefined, targetPage);
+
+        var candidate = new Image();
+        candidate.decoding = 'async';
+        candidate.alt = 'Document page';
+        candidate._mcRequestedPage = targetPage;
+        candidate.dataset.committedPage = String(targetPage);
+
+        return waitForCandidate(candidate).then(function () {
+          if (generation !== renderGeneration) {
+            return { ok: false, status: 'superseded', error: 'Superseded by a newer page request.' };
+          }
+          candidate.id = 'page';
+          img.removeAttribute('id');
+          img.replaceWith(candidate);
+          img = candidate;
+          committedPage = targetPage;
+          renderPending = false;
+          document.body.dataset.hasCommitted = '1';
+          clearRenderError();
+          if (announce !== false) showStatus(undefined, committedPage);
+          prefetch(committedPage + 1);
           publishScreenshot();
-        };
-        if (announce !== false) showStatus();
-        publishState();
+          return { ok: true, status: 'committed' };
+        }).catch(function () {
+          if (generation !== renderGeneration) {
+            return { ok: false, status: 'superseded', error: 'Superseded by a newer page request.' };
+          }
+          renderPending = false;
+          setRenderError(targetPage);
+          return { ok: false, status: 'failed', error: renderError };
+        });
       }
       function stopAuto() {
         if (playTimer) clearInterval(playTimer);
         playTimer = null;
-        publishState();
       }
       function toggleAuto() {
-      if (playTimer) { stopAuto(); showStatus(); return; }
+      if (playTimer) { stopAuto(); showStatus(); return Promise.resolve(); }
       playTimer = setInterval(function () {
-        render(page >= pages ? 1 : page + 1, true);
+        render(requestedPage >= pages ? 1 : requestedPage + 1, true).then(function () { publishState(); });
       }, Math.max(2500, parseInt(params.get('interval') || '8000', 10) || 8000));
       showStatus();
-      publishState();
+      return Promise.resolve();
     }
       function unwrapTransportPayload(payload) {
         var current = payload;
@@ -205,42 +281,56 @@
         var parsed = parseInt(value, 10);
         if (!Number.isFinite(parsed)) throw new Error('Missing page number');
         if (parsed < 1 || (pages > 0 && parsed > pages)) throw new Error('Page out of range');
-        render(parsed, true);
+        return render(parsed, true);
       }
       function handleAction(input) {
         var cmd = normalizeAction(input);
         var action = cmd.action;
         var ack = { command_id: cmd.command_id || null, action: action || null, ok: true, status: 'acked', type: 'transport' };
-        try {
-          if (cmd.command_id && appliedCommandIds[cmd.command_id]) {
+        if (cmd.command_id && appliedCommandIds[cmd.command_id]) {
+          return Promise.resolve(appliedCommandIds[cmd.command_id]).then(function (priorAck) {
+            ack = Object.assign(ack, priorAck);
             ack.idempotent = true;
-            ack.state = publishState(ack);
             return ack;
-          }
-          if (action === 'next' || action === 'next_slide') render(page + 1, true);
-          else if (action === 'prev' || action === 'previous' || action === 'previous_slide') render(page - 1, true);
-          else if (action === 'restart' || action === 'restart_deck' || action === 'reset') { stopAuto(); render(1, true); }
-          else if (action === 'play_pause' || action === 'toggle_play_pause') toggleAuto();
-          else if (action === 'pause' || action === 'pause_deck') stopAuto();
-          else if (action === 'play' || action === 'resume' || action === 'resume_deck') { if (!playTimer) toggleAuto(); }
+          });
+        }
+        var operation;
+        try {
+          if (action === 'next' || action === 'next_slide') operation = render(requestedPage + 1, true);
+          else if (action === 'prev' || action === 'previous' || action === 'previous_slide') operation = render(requestedPage - 1, true);
+          else if (action === 'restart' || action === 'restart_deck' || action === 'reset') { stopAuto(); operation = render(1, true); }
+          else if (action === 'play_pause' || action === 'toggle_play_pause') operation = toggleAuto();
+          else if (action === 'pause' || action === 'pause_deck') { stopAuto(); operation = Promise.resolve(); }
+          else if (action === 'play' || action === 'resume' || action === 'resume_deck') operation = playTimer ? Promise.resolve() : toggleAuto();
           else if (action === 'go_to_slide' || action === 'slide' || action === 'goto') {
-            goToPage(cmd.payload.page || cmd.payload.slide || cmd.payload.index || cmd.payload.page_number || cmd.payload.slide_number);
-          } else {
-            throw new Error('Unsupported action: ' + action);
-          }
-          if (cmd.command_id) appliedCommandIds[cmd.command_id] = true;
+            operation = goToPage(cmd.payload.page || cmd.payload.slide || cmd.payload.index || cmd.payload.page_number || cmd.payload.slide_number);
+          } else throw new Error('Unsupported action: ' + action);
         } catch (err) {
+          operation = Promise.reject(err);
+        }
+        var resultPromise = Promise.resolve(operation).then(function (result) {
+          if (result && result.ok === false) {
+            ack.ok = false;
+            ack.status = result.status || 'failed';
+            ack.error = result.error || 'Page render failed';
+          }
+          ack.state = publishState(ack);
+          return ack;
+        }).catch(function (err) {
           ack.ok = false;
           ack.status = 'failed';
           ack.error = err && err.message ? err.message : String(err || 'Action failed');
-        }
-        ack.state = publishState(ack);
-        return ack;
+          ack.state = publishState(ack);
+          return ack;
+        });
+        if (cmd.command_id) appliedCommandIds[cmd.command_id] = resultPromise;
+        return resultPromise;
       }
       // Expose handleAction on window so the parent player page can call it
       // directly (same-origin) as the primary path when it is available.
       window.handleAction = handleAction;
       window.publishScreenshot = publishScreenshot;
+      window.__mcGetTransportState = currentState;
 
       window.addEventListener('message', function (event) {
         if (!event || event.origin !== location.origin || event.source !== window.parent) return;
@@ -258,19 +348,25 @@
         else if (event.key === 'ArrowLeft' || event.key === 'PageUp') { event.preventDefault(); handleAction('prev'); }
         else if (event.key === 'Home') { event.preventDefault(); handleAction('restart'); }
       });
-      document.addEventListener('click', function () { handleAction('next'); });
-
       fetch('/player/doc-meta/' + encodeURIComponent(id), { cache: 'no-store' })
         .then(function (r) { if (!r.ok) throw new Error('metadata ' + r.status); return r.json(); })
         .then(function (meta) {
           pages = Math.max(1, parseInt(meta.pages, 10) || 1);
           filename = meta.filename || filename;
           version = meta.version || '';
-          render(page, true);
-          publishState({ action: 'ready', ok: true, status: 'ready' });
+          requestedPage = Math.max(1, Math.min(pages, requestedPage));
+          return render(requestedPage, true);
+        })
+        .then(function (result) {
+          var readyAck = { action: 'ready', ok: result.ok !== false, status: result.ok === false ? result.status : 'ready' };
+          if (result.error) readyAck.error = result.error;
+          publishState(readyAck);
         })
         .catch(function (e) {
           console.error('[doc-player] failed:', e);
+          renderPending = false;
+          renderError = e && e.message ? e.message : String(e || 'load failed');
+          document.getElementById('error').textContent = renderError;
           document.body.dataset.error = '1';
           publishState({ action: 'load', ok: false, status: 'failed', error: e && e.message ? e.message : String(e || 'load failed') });
         });
