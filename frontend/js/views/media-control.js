@@ -16,7 +16,7 @@ import { mountActionDock } from './media-control/action-dock.js';
 import * as displayState from '../services/display-state.js';
 import { previewSource, renderStage } from './media-control/stage.js';
 import { buildLivePreviewTargets, livePreviewTargetDeviceIds } from './media-control/preview-targets.js';
-import { cancelActiveTouchDrag, openToolboxTab, renderToolbox } from './media-control/toolbox.js';
+import { cancelActiveTouchDrag, openToolboxTab, paintArmedSource, renderToolbox } from './media-control/toolbox.js';
 import { sendToDisplays, sentToast, trackBroadcastDelivery } from './media-control/send.js';
 import { dispatchTransportTransaction, sendTransportCommand } from './media-control/transport.js';
 import { createTransportIntentTracker } from './media-control/transport-intent.js';
@@ -146,6 +146,9 @@ let restoringTarget = false; // suppresses preference writes during startup rest
 let targetIntentGeneration = 0; // a real operator selection always wins over late startup preferences
 let targetRestoreLifecycleGeneration = 0; // invalidates async restores across unmount/render cycles
 let commandCenterState = createCommandCenterState();
+let armedSource = null;
+let armedRoutePromise = null;
+let armedSourceEscapeHandler = null;
 let prefsStore = null;       // serialized control-preferences store (§6/§7)
 let targetApi = null;       // target-selector module API
 let transportApi = null;    // canvas-level transport row
@@ -1034,14 +1037,14 @@ async function setWallLayout(wallId, preset, expectedRevision) {
 // preserved by the scene engine; no synthetic composite URL is generated.
 async function dropOnWallRegion(wallId, regionId, source, label) {
   const wall = (walls || []).find(w => w.id === wallId);
-  if (!wall) return;
+  if (!wall) return false;
   const region = (wall.layout?.regions || []).find((candidate) => candidate.id === regionId);
   if (!region || region.enabled === false || wall.layout?.valid === false) {
     showToast(t('mc.wall.regions_sync_required'), 'error');
-    return;
+    return false;
   }
   const leaderId = region.player_device_id;
-  if (!leaderId) return;
+  if (!leaderId) return false;
   const reference = {
     type: 'wall-region',
     wall_id: wall.id,
@@ -1053,6 +1056,7 @@ async function dropOnWallRegion(wallId, regionId, source, label) {
     ...DROP_DELIVERY_OPTIONS,
   });
   if (ok) refreshAfterSend([leaderId]);
+  return ok;
 }
 
 // ---- Live preview driver ----
@@ -1281,6 +1285,8 @@ function paintToolbox() {
     selectedIds: effectiveTargets(),
     onAfterSend: refreshAfterSend,
     onRouteSource: routeSourceWithPicker,
+    onArmSource: armSource,
+    armedSourceKey: () => armedSource ? sourceIdentity(armedSource.source) : '',
     onRouteNextcloud: routeNextcloudWithPicker,
     onMountAdditionalControls: (host) => dockApi?.attachSecondaryHost(host),
   });
@@ -1707,7 +1713,136 @@ function forcesSingleScreen(source) {
   return true;
 }
 
+// One logical stage resolver for every pointer modality. Native mouse drops,
+// custom touch/pen drops, and armed-source taps all resolve the same DOM surface
+// into the same typed broadcast operation below.
+function resolveStageRouteDestination(element, stageContainer, { allowStage = true } = {}) {
+  if (!element?.closest) return null;
+  const splitHalf = element.closest('.mc-wall-split-half[data-device-id][data-wall-region-id]');
+  if (splitHalf) {
+    const wallId = splitHalf.closest('.mc-wall[data-wall-id]')?.dataset.wallId;
+    return wallId ? { kind: 'wall-region', wallId, regionId: splitHalf.dataset.wallRegionId } : null;
+  }
+  const groupedRegion = element.closest('.mc-wall-region[data-layout-group-id][data-wall-id]');
+  if (groupedRegion) return { kind: 'layout-group', groupId: groupedRegion.dataset.layoutGroupId, wallId: groupedRegion.dataset.wallId };
+  const cell = element.closest('.mc-wall-cell[data-device-id]');
+  if (cell) {
+    const wall = cell.closest('.mc-wall');
+    if (wall?.dataset.layoutMode === 'split') return { kind: 'display', deviceId: cell.dataset.deviceId };
+    const wholeWall = wall?.querySelector('.mc-wall-all[data-wall-ids]');
+    if (wholeWall) return { kind: 'wall', ids: String(wholeWall.dataset.wallIds || '').split(',').filter(Boolean), wallId: wholeWall.dataset.wallId || wall.dataset.wallId };
+  }
+  const display = element.closest('.mc-display-card[data-device-id]');
+  if (display) return { kind: 'display', deviceId: display.dataset.deviceId };
+  const wholeWall = element.closest('.mc-wall-all[data-wall-ids]');
+  if (wholeWall) return { kind: 'wall', ids: String(wholeWall.dataset.wallIds || '').split(',').filter(Boolean), wallId: wholeWall.dataset.wallId || wholeWall.closest('.mc-wall[data-wall-id]')?.dataset.wallId };
+  return allowStage && stageContainer?.contains(element) ? { kind: 'stage' } : null;
+}
+
+async function routeSourceToStageDestination(destination, source, label) {
+  if (!destination || !source) return false;
+  if (destination.kind === 'wall-region') {
+    return dropOnWallRegion(destination.wallId, destination.regionId, source, label);
+  }
+  if (destination.kind === 'layout-group') {
+    const group = layoutGroupById(destination.groupId, destination.wallId);
+    if (!group?.member_ids?.length) return false;
+    const ok = await sendToPhysicalScope(source, group.member_ids, label, DROP_DELIVERY_OPTIONS);
+    if (ok) refreshAfterSend(group.member_ids);
+    return ok;
+  }
+  if (destination.kind === 'display') {
+    if (!destination.deviceId) return false;
+    const ok = await sendToPhysicalScope(source, [destination.deviceId], label, DROP_DELIVERY_OPTIONS);
+    if (ok) refreshAfterSend([destination.deviceId]);
+    return ok;
+  }
+  if (destination.kind === 'wall') {
+    const ids = destination.ids || [];
+    if (!ids.length) { showToast(t('mc.send.no_displays'), 'error'); return false; }
+    const targetIds = forcesSingleScreen(source)
+      ? [wallTransportDeviceId((walls || []).find((wall) => wall.id === destination.wallId)) || ids[0]]
+      : ids;
+    if (targetIds.length !== ids.length) showToast(t('mc.route.single_screen_only'), 'info');
+    const ok = await sendToPhysicalScope(source, targetIds, label, DROP_DELIVERY_OPTIONS);
+    if (ok) refreshAfterSend(targetIds);
+    return ok;
+  }
+  if (destination.kind === 'stage') {
+    const targets = effectiveTargets();
+    if (!targets.length) { showToast(t('mc.send.no_displays'), 'error'); return false; }
+    const ok = await sendToDisplays(source, targets, label, {
+      targets: commandCenterState.broadcastTargets,
+      quietSuccess: true,
+    });
+    if (ok) refreshAfterSend(targets);
+    return ok;
+  }
+  return false;
+}
+
+function sourceIdentity(source) {
+  return Object.keys(source || {}).sort().map((key) => `${key}:${JSON.stringify(source[key])}`).join('|');
+}
+
+function paintArmedSourceState() {
+  const key = armedSource ? sourceIdentity(armedSource.source) : '';
+  paintArmedSource(toolboxEl(), key);
+  stageEl()?.classList.toggle('mc-stage-source-armed', !!armedSource);
+}
+
+function clearArmedSource() {
+  armedSource = null;
+  paintArmedSourceState();
+}
+
+function armSource(source, label = t('mc.tile.content_fallback')) {
+  const key = sourceIdentity(source);
+  if (!key) return false;
+  if (armedSource && sourceIdentity(armedSource.source) === key) {
+    clearArmedSource();
+    return true;
+  }
+  armedSource = { source, label };
+  paintArmedSourceState();
+  return true;
+}
+
+async function routeArmedSourceToStageDestination(destination) {
+  if (!armedSource || armedRoutePromise) return false;
+  const armedAtDispatch = armedSource;
+  armedRoutePromise = (async () => {
+    let ok = false;
+    try {
+      ok = await routeSourceToStageDestination(destination, armedAtDispatch.source, armedAtDispatch.label);
+    } catch (error) {
+      showToast(error?.message || t('mc.send.failed'), 'error');
+    }
+    if (ok && armedSource === armedAtDispatch) clearArmedSource();
+    return ok;
+  })();
+  try {
+    return await armedRoutePromise;
+  } finally {
+    armedRoutePromise = null;
+  }
+}
+
 function attachStageDrop(stageContainer) {
+  if (!stageContainer.__armedRouteClickWired) {
+    stageContainer.__armedRouteClickWired = true;
+    stageContainer.addEventListener('click', (event) => {
+      if (!armedSource) return;
+      const destination = resolveStageRouteDestination(event.target, stageContainer, { allowStage: false });
+      if (!destination) return;
+      // Capture-phase precedence makes an armed source route instead of also
+      // opening the inspector, changing focus, or activating nested controls.
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (armedRoutePromise) return;
+      void routeArmedSourceToStageDestination(destination);
+    }, true);
+  }
   // A grouped wall is presented as independently routable regions. Wire the
   // region wrapper itself before its nested span cells so a drop stays scoped
   // to the exact revisioned wall-group and never bubbles into the room target.
@@ -1729,15 +1864,8 @@ function attachStageDrop(stageContainer) {
       e.stopPropagation();
       region.classList.remove('mc-card-dragover');
       const parsed = parseDragSource(e);
-      const group = layoutGroupById(region.dataset.layoutGroupId, region.dataset.wallId);
-      if (!parsed || !group?.member_ids?.length) return;
-      const ok = await sendToPhysicalScope(
-        parsed.source,
-        group.member_ids,
-        parsed.label,
-        DROP_DELIVERY_OPTIONS,
-      );
-      if (ok) refreshAfterSend(group.member_ids);
+      if (!parsed) return;
+      await routeSourceToStageDestination(resolveStageRouteDestination(region, stageContainer), parsed.source, parsed.label);
     };
     region.addEventListener('drop', handleDrop);
     region.addEventListener('mc:source-drop', handleDrop);
@@ -1763,15 +1891,8 @@ function attachStageDrop(stageContainer) {
       e.stopPropagation();
       card.classList.remove('mc-card-dragover');
       const parsed = parseDragSource(e);
-      const deviceId = card.dataset.deviceId;
-      if (!parsed || !deviceId) return;
-      const ok = await sendToPhysicalScope(
-        parsed.source,
-        [deviceId],
-        parsed.label,
-        DROP_DELIVERY_OPTIONS,
-      );
-      if (ok) refreshAfterSend([deviceId]); // re-fetch state + refresh THIS card's preview
+      if (!parsed) return;
+      await routeSourceToStageDestination(resolveStageRouteDestination(card, stageContainer), parsed.source, parsed.label);
     };
     card.addEventListener('drop', handleDrop);
     card.addEventListener('mc:source-drop', handleDrop);
@@ -1795,10 +1916,8 @@ function attachStageDrop(stageContainer) {
       e.stopPropagation();
       half.classList.remove('mc-card-dragover');
       const parsed = parseDragSource(e);
-      const wallId = half.closest('.mc-wall[data-wall-id]')?.dataset.wallId;
-      const regionId = half.dataset.wallRegionId;
-      if (!parsed || !wallId || !regionId) return;
-      await dropOnWallRegion(wallId, regionId, parsed.source, parsed.label);
+      if (!parsed) return;
+      await routeSourceToStageDestination(resolveStageRouteDestination(half, stageContainer), parsed.source, parsed.label);
     };
     half.addEventListener('drop', handleDrop);
     half.addEventListener('mc:source-drop', handleDrop);
@@ -1842,30 +1961,7 @@ function attachStageDrop(stageContainer) {
       zone.classList.remove('mc-wall-all-dragover');
       const parsed = parseDragSource(e);
       if (!parsed) return;
-      const ids = (zone.dataset.wallIds || '').split(',').filter(Boolean);
-      if (!ids.length) { showToast(t('mc.send.no_displays'), 'error'); return; }
-      if (forcesSingleScreen(parsed.source)) {
-        // Website → one screen only. Prefer a live wall member, else the first member.
-        const wallId = zone.dataset.wallId || zone.closest('.mc-wall[data-wall-id]')?.dataset.wallId;
-        const wall = (walls || []).find((w) => w.id === wallId);
-        const single = wallTransportDeviceId(wall) || ids[0];
-        showToast(t('mc.route.single_screen_only'), 'info');
-        const ok = await sendToPhysicalScope(
-          parsed.source,
-          [single],
-          parsed.label,
-          DROP_DELIVERY_OPTIONS,
-        );
-        if (ok) refreshAfterSend([single]);
-        return;
-      }
-      const ok = await sendToPhysicalScope(
-        parsed.source,
-        ids,
-        parsed.label,
-        DROP_DELIVERY_OPTIONS,
-      );
-      if (ok) refreshAfterSend(ids);
+      await routeSourceToStageDestination(resolveStageRouteDestination(zone, stageContainer), parsed.source, parsed.label);
     };
     zone.addEventListener('drop', handleDrop);
     zone.addEventListener('mc:source-drop', handleDrop);
@@ -1891,36 +1987,14 @@ function attachStageDrop(stageContainer) {
     stageContainer.classList.remove('mc-stage-dragover');
     const parsed = parseDragSource(e);
     if (!parsed) return;
-    const targets = effectiveTargets();
-    if (!targets.length) { showToast(t('mc.send.no_displays'), 'error'); return; }
-    const ok = await sendToDisplays(
-      parsed.source,
-      targets,
-      parsed.label,
-      {
-        targets: commandCenterState.broadcastTargets,
-        quietSuccess: true,
-      },
-    );
-    if (ok) refreshAfterSend(targets);
+    await routeSourceToStageDestination({ kind: 'stage' }, parsed.source, parsed.label);
   });
   stageContainer.addEventListener('mc:source-drop', async (e) => {
     e.preventDefault();
     stageContainer.classList.remove('mc-stage-dragover');
     const parsed = parseDragSource(e);
     if (!parsed) return;
-    const targets = effectiveTargets();
-    if (!targets.length) { showToast(t('mc.send.no_displays'), 'error'); return; }
-    const ok = await sendToDisplays(
-      parsed.source,
-      targets,
-      parsed.label,
-      {
-        targets: commandCenterState.broadcastTargets,
-        quietSuccess: true,
-      },
-    );
-    if (ok) refreshAfterSend(targets);
+    await routeSourceToStageDestination({ kind: 'stage' }, parsed.source, parsed.label);
   });
 }
 
@@ -2946,6 +3020,21 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
     </div>`;
 
   commandCenterState = createCommandCenterState();
+  armedSource = null;
+  armedRoutePromise = null;
+  if (armedSourceEscapeHandler) document.removeEventListener('keydown', armedSourceEscapeHandler);
+  armedSourceEscapeHandler = (event) => {
+    if (event.key !== 'Escape' || !armedSource || armedRoutePromise) return;
+    event.preventDefault();
+    clearArmedSource();
+  };
+  document.addEventListener('keydown', armedSourceEscapeHandler);
+  signal?.addEventListener?.('abort', () => {
+    if (armedSourceEscapeHandler) document.removeEventListener('keydown', armedSourceEscapeHandler);
+    armedSourceEscapeHandler = null;
+    armedSource = null;
+    armedRoutePromise = null;
+  }, { once: true });
   activeTarget = null;
   activeControlTarget = null;
   targetRestoreLifecycleGeneration += 1;

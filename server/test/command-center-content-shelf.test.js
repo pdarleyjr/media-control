@@ -76,8 +76,9 @@ test('Command Center composition follows the approved shelf mockup without a dup
   assert.match(css, /\.mc-library-body \.mc-tb-bar\s*\{[\s\S]*?justify-content:\s*flex-start/);
   assert.match(css, /\.mc-library-body \.mc-tb-tab\.active\s*\{[\s\S]*?background:\s*var\(--mc-surface/);
   assert.match(css, /\.mc-action-dock-persistent \.mc-cam-health-wrap\s*\{\s*display:\s*none/);
-  assert.match(css, /--mc-library-layout-reserve-h:\s*clamp\(220px, 27dvh, 260px\)/);
+  assert.match(css, /--mc-library-expanded-h:\s*clamp\(220px, 27dvh, 260px\);[\s\S]*?--mc-library-layout-reserve-h:\s*calc\(var\(--mc-library-expanded-h\) \+ 12px\)/);
   assert.match(css, /@media \(min-width: 1100px\) and \(min-height: 760px\)[\s\S]*?--mc-library-expanded-h:\s*clamp\(340px, 40dvh, 350px\)/);
+  assert.match(toolbox, /class="mc-tb-header-shelf"[\s\S]*?id="mc-tb-media-header"[\s\S]*?id="mc-tb-panel"/);
 });
 
 test('touch drag acquisition is prioritized, tolerant, ambiguity-safe, and lifecycle-clean', () => {
@@ -112,7 +113,7 @@ test('bottom shelf is a compact horizontal touch track without changing stage re
   assert.match(css, /\.mc-library-body \.mc-tile-dl\s*\{[^}]*width:\s*48px;[^}]*height:\s*48px;[^}]*opacity:\s*1/);
   assert.match(css, /\.mc-card-dragover::before[\s\S]*?pointer-events:\s*none/);
 
-  // Refining the shelf must not move the stage or enlarge the short-tablet reserve.
-  assert.match(css, /--mc-library-layout-reserve-h:\s*clamp\(220px, 27dvh, 260px\)/);
-  assert.match(css, /@media \(min-width: 769px\) and \(max-width: 1024px\) and \(max-height: 600px\)[\s\S]*?--mc-library-layout-reserve-h:\s*180px/);
+  // The stage reserves the opened shelf plus a small separation buffer, including short tablets.
+  assert.match(css, /--mc-library-expanded-h:\s*clamp\(220px, 27dvh, 260px\);[\s\S]*?--mc-library-layout-reserve-h:\s*calc\(var\(--mc-library-expanded-h\) \+ 12px\)/);
+  assert.match(css, /@media \(min-width: 769px\) and \(max-width: 1024px\) and \(max-height: 600px\)[\s\S]*?--mc-library-expanded-h:\s*180px;[\s\S]*?--mc-library-layout-reserve-h:\s*calc\(var\(--mc-library-expanded-h\) \+ 12px\)/);
 });
