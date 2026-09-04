@@ -6,6 +6,7 @@ const express = require('express');
 const http = require('node:http');
 const Database = require('better-sqlite3');
 const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
 
 const {
   createHubFederationRouter,
@@ -138,6 +139,30 @@ async function callback(server, state, stateCookie, code = 'opaque-hub-code') {
   });
 }
 
+function seedLocalUser(db, overrides = {}) {
+  const user = {
+    id: 'existing-user',
+    email: 'operator@miamibeachfl.gov',
+    username: 'operator',
+    name: 'Existing Operator',
+    password: 'existing-password',
+    role: 'user',
+    ...overrides,
+  };
+  db.prepare(`
+    INSERT INTO users (id, email, username, name, password_hash, auth_provider, role)
+    VALUES (?, ?, ?, ?, ?, 'local', ?)
+  `).run(user.id, user.email, user.username, user.name, bcrypt.hashSync(user.password, 4), user.role);
+  return user;
+}
+
+function seedHubMapping(db, user, subject = 'hub-user:42') {
+  db.prepare("UPDATE users SET auth_provider = 'mbfd_hub', provider_id = ? WHERE id = ?")
+    .run(subject, user.id);
+  db.prepare('INSERT INTO hub_federated_identities (provider, subject, user_id) VALUES (?, ?, ?)')
+    .run('mbfd_hub', subject, user.id);
+}
+
 test('start uses only the configured Hub authorize URL, callback, audience, and fresh state', async (t) => {
   const { server } = await createHarness(t);
   const res = await start(server);
@@ -186,7 +211,9 @@ test('malformed and adversarial cookie names fail closed without property inject
 });
 
 test('successful exchange uses the dedicated service credential and creates a short local session', async (t) => {
-  const { server, calls } = await createHarness(t);
+  const { db, server, calls } = await createHarness(t);
+  const existing = seedLocalUser(db, { role: 'user' });
+  seedHubMapping(db, existing);
   const started = await start(server);
   const location = new URL(started.headers.get('location'));
   const state = location.searchParams.get('state');
@@ -213,16 +240,18 @@ test('successful exchange uses the dedicated service credential and creates a sh
   const body = await session.json();
   assert.equal(body.token, token);
   assert.equal(body.user.auth_provider, 'mbfd_hub');
-  assert.equal(body.user.role, 'platform_admin');
+  assert.equal(body.user.id, existing.id);
+  assert.equal(body.user.role, 'user');
   assert.equal(body.user.password_hash, undefined);
 });
 
-test('federated identities are keyed by canonical subject and never matched by email', async (t) => {
+test('unmapped subjects require explicit account proof and are never matched by email', async (t) => {
   const { db, server } = await createHarness(t);
-  db.prepare(`
-    INSERT INTO users (id, email, name, password_hash, auth_provider, role)
-    VALUES ('legacy-local', ?, 'Legacy local account', 'bcrypt-hash-fixture', 'local', 'platform_admin')
-  `).run('must-not-be-used-for-linking@example.test');
+  const local = seedLocalUser(db, {
+    id: 'legacy-local',
+    email: 'must-not-be-used-for-linking@example.test',
+    role: 'platform_admin',
+  });
 
   const started = await start(server);
   const location = new URL(started.headers.get('location'));
@@ -232,18 +261,16 @@ test('federated identities are keyed by canonical subject and never matched by e
     cookieValue(started.headers.get('set-cookie'), 'mc_hub_state'),
   );
   assert.equal(completed.status, 200);
+  assert.match(await completed.text(), /hub-account-link\.js/);
+  assert.equal(cookieValue(completed.headers.get('set-cookie'), 'mc_token'), '');
 
   const users = db.prepare('SELECT id, email, password_hash, auth_provider, provider_id FROM users ORDER BY id').all();
-  assert.equal(users.length, 2);
-  const federated = users.find((user) => user.auth_provider === 'mbfd_hub');
-  assert.ok(federated);
-  assert.notEqual(federated.id, 'legacy-local');
-  assert.notEqual(federated.email, 'must-not-be-used-for-linking@example.test');
-  assert.equal(federated.password_hash, null);
-  assert.equal(federated.provider_id, 'hub-user:42');
-  const audit = db.prepare("SELECT user_id, details FROM activity_log WHERE action = 'auth:hub_login'").get();
-  assert.equal(audit.user_id, federated.id);
-  assert.equal(JSON.parse(audit.details).canonical_subject, 'hub-user:42');
+  assert.equal(users.length, 1);
+  assert.equal(users[0].id, local.id);
+  assert.equal(users[0].auth_provider, 'local');
+  assert.equal(users[0].provider_id, null);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM hub_federated_identities').get().count, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM hub_account_link_transactions').get().count, 1);
 });
 
 test('wrong issuer, audience, subject, role, or failed exchange is denied without a session', async (t) => {

@@ -402,8 +402,23 @@ async function loadUsers() {
     const users = await api.getUsers();
 
     const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
+    const identityLabel = (state) => ({
+      hub_linked: 'Hub-linked employee',
+      hub_unlinked: 'Unlinked employee',
+      local_guest: 'Local guest',
+    }[state] || 'Unlinked employee');
 
     el.innerHTML = `
+      <form id="provisionEmployeeForm" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:16px;padding:12px;border:1px solid var(--border);border-radius:var(--radius)">
+        <div style="grid-column:1/-1;font-weight:600">Provision employee account</div>
+        <input class="input" id="provisionName" placeholder="Name" required>
+        <input class="input" id="provisionUsername" placeholder="Username" autocomplete="off" required>
+        <input class="input" id="provisionEmail" type="email" placeholder="Work email" autocomplete="off" required>
+        <input class="input" id="provisionPassword" type="password" minlength="12" placeholder="One-time password (12+ chars)" autocomplete="new-password" required>
+        <select class="input" id="provisionRole"><option value="user">User</option><option value="platform_admin">Platform admin</option></select>
+        <button class="btn btn-secondary" type="submit">Provision for Hub linking</button>
+        <div style="grid-column:1/-1;color:var(--text-muted);font-size:11px">The employee uses this password once to link the pre-provisioned account, then signs in through MBFD Hub.</div>
+      </form>
       <div class="table-wrap">
       <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:520px">
         <thead>
@@ -422,7 +437,7 @@ async function loadUsers() {
                 <div style="font-size:11px;color:var(--text-muted)">${u.email}</div>
               </td>
               <td style="padding:10px 12px">
-                <span style="background:var(--bg-primary);padding:2px 8px;border-radius:10px;font-size:11px">${u.auth_provider}</span>
+                <span data-identity-state="${u.identity_state}" style="background:var(--bg-primary);padding:2px 8px;border-radius:10px;font-size:11px">${identityLabel(u.identity_state)}</span>
               </td>
               <td style="padding:10px 12px">
                 <span style="color:${isPlatformAdmin(u) ? 'var(--accent)' : 'var(--text-secondary)'}">${u.role === 'platform_admin' ? t('admin.role.platform_admin') : t('admin.role.user')}</span>
@@ -438,6 +453,28 @@ async function loadUsers() {
       </div>
       <p style="color:var(--text-muted);font-size:11px;margin-top:12px">${tn('settings.user.count', users.length)}</p>
     `;
+
+    document.getElementById('provisionEmployeeForm')?.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const submit = form.querySelector('button[type="submit"]');
+      submit.disabled = true;
+      try {
+        await api.provisionUser({
+          name: document.getElementById('provisionName').value.trim(),
+          username: document.getElementById('provisionUsername').value.trim(),
+          email: document.getElementById('provisionEmail').value.trim(),
+          temporary_password: document.getElementById('provisionPassword').value,
+          role: document.getElementById('provisionRole').value,
+        });
+        form.reset();
+        showToast('Employee account provisioned for Hub linking', 'success');
+        await loadUsers();
+      } catch (err) {
+        showToast(err.message, 'error');
+        submit.disabled = false;
+      }
+    });
 
     // Reset password handlers
     el.querySelectorAll('.reset-user-pw-btn').forEach(btn => {
