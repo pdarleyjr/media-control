@@ -4009,7 +4009,7 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-body .mc-library-drawer {
 .mc-cc-sub-row { width: 100%; margin-top: 0; gap: 12px; justify-content: center; }
 
 .mc-cc-body .mc-library-drawer {
-  left: 0; height: var(--mc-library-expanded-h); max-height: calc(100dvh - 72px);
+  left: 0; height: var(--mc-library-effective-h, var(--mc-library-expanded-h)); max-height: calc(100dvh - 72px);
 }
 .mc-cc-body .mc-library-drawer .mc-library-tab {
   width: min(172px, calc(100vw - 24px)); min-width: min(172px, calc(100vw - 24px));

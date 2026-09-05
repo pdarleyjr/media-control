@@ -85,6 +85,11 @@ test('Command Center composition follows the approved shelf mockup without a dup
   assert.match(stage, /controls\.getBoundingClientRect\(\)/);
   assert.match(stage, /mc-stage-height-constrained/);
   assert.match(view, /refreshStageLayout\(document\.getElementById\('mc-stage'\)\)/);
+  assert.match(view, /window\.innerHeight - controls\.getBoundingClientRect\(\)\.bottom - 4/);
+  assert.match(view, /Math\.min\(preferred, Math\.max\(minimum, available\)\)/);
+  assert.match(view, /window\.addEventListener\('resize', libraryResizeHandler\)/);
+  assert.match(view, /window\.removeEventListener\('resize', libraryResizeHandler\)/);
+  assert.match(css, /height:\s*var\(--mc-library-effective-h,\s*var\(--mc-library-expanded-h\)\)/);
   assert.match(toolbox, /class="mc-tb-header-shelf"[\s\S]*?id="mc-tb-media-header"[\s\S]*?id="mc-tb-panel"/);
 });
 
