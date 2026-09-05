@@ -86,10 +86,18 @@ test('Command Center composition follows the approved shelf mockup without a dup
   assert.match(stage, /mc-stage-height-constrained/);
   assert.match(view, /refreshStageLayout\(document\.getElementById\('mc-stage'\)\)/);
   assert.match(view, /window\.innerHeight - controls\.getBoundingClientRect\(\)\.bottom - 4/);
-  assert.match(view, /Math\.min\(preferred, Math\.max\(minimum, available\)\)/);
+  assert.match(view, /const measureLibraryContentMinimum = \(\) =>/);
+  assert.match(view, /toolbox\.scrollHeight/);
+  assert.match(view, /Math\.min\(preferred, contentMinimum\)/);
+  assert.match(view, /Math\.max\(configuredContentMinimum, unobstructedPreference\)/);
+  assert.doesNotMatch(view, /const minimum = Math\.min\(preferred, 180\)/);
+  assert.match(view, /new MutationObserver/);
   assert.match(view, /window\.addEventListener\('resize', libraryResizeHandler\)/);
   assert.match(view, /window\.removeEventListener\('resize', libraryResizeHandler\)/);
+  assert.match(view, /libraryContentObserver\.disconnect\(\)/);
   assert.match(css, /height:\s*var\(--mc-library-effective-h,\s*var\(--mc-library-expanded-h\)\)/);
+  assert.match(css, /\.mc-library-drawer\[data-open="true"\] > \.mc-library-tab\s*\{[\s\S]*?position:\s*absolute/);
+  assert.match(css, /\.mc-library-drawer\[data-open="true"\] \.mc-tb-header-shelf\s*\{[\s\S]*?padding-left:\s*184px/);
   assert.match(toolbox, /class="mc-tb-header-shelf"[\s\S]*?id="mc-tb-media-header"[\s\S]*?id="mc-tb-panel"/);
 });
 
