@@ -620,7 +620,6 @@ function paintStage() {
     onSelectGroup: selectLayoutGroupTarget,
     onSelectRegion: selectWallRegionTarget,
     onSelectWall: selectStageWallTarget,
-    onDetails: openInspector,
     onCalibrateWall: showWallCalibration,
     onAddDisplay: openAddPicker,
     onTransportAction: (ids) => refreshAfterSend(ids),
@@ -632,6 +631,7 @@ function paintStage() {
   // this bounded canvas prevents any mounted preview from covering controls.
   el.classList.remove('mc-cc-cinema');
   el.classList.add('mc-cc-overview');
+  paintDetailsAction();
   // Re-attach drop handlers on the freshly-rendered cards.
   attachStageDrop(el);
   // Record what we just rendered so screenshot-only updates can patch in place
@@ -2120,6 +2120,36 @@ function activeTargetDeviceIds() {
   }
   return commandTarget.id ? [commandTarget.id] : [];
 }
+
+function activeInspectorDeviceId() {
+  const commandTarget = activeControlTarget || activeTarget;
+  if (!commandTarget) return null;
+  if (commandTarget.type === 'group') {
+    const group = layoutGroupById(commandTarget.id, commandTarget.wall_id);
+    return group?.leader_device_id || group?.member_ids?.[0] || null;
+  }
+  if (commandTarget.type === 'region') {
+    return commandTarget.device_id || commandTarget.player_device_id || null;
+  }
+  if (commandTarget.type === 'wall') {
+    const wall = (walls || []).find((candidate) => candidate.id === commandTarget.id);
+    return wallTransportDeviceId(wall) || wallDeviceIds(wall)[0] || null;
+  }
+  return commandTarget.id || null;
+}
+
+function paintDetailsAction() {
+  const button = document.getElementById('mc-cc-details');
+  if (!button) return;
+  const commandTarget = activeControlTarget || activeTarget;
+  const deviceId = activeInspectorDeviceId();
+  const label = commandTarget?.name || commandTarget?.label
+    || (deviceId ? displayState.get(deviceId)?.name : '')
+    || 'selected target';
+  button.disabled = !deviceId;
+  button.setAttribute('aria-label', `Details for ${label}`);
+  button.setAttribute('title', `Details for ${label}`);
+}
 function wallTransportDeviceIds(wall) {
   if (!wall || wall.layout_mode === 'split') return [];
   const ids = wallDeviceIds(wall);
@@ -3071,6 +3101,7 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
         <div class="mc-cc-target" id="mc-target-host"></div>
         <div class="mc-cc-tools">
           <div id="mc-broadcast-chip" class="mc-chip mc-chip-live" hidden></div>
+          <button type="button" class="mc-cc-details" id="mc-cc-details" aria-label="Details for selected target" disabled>Details</button>
           <button type="button" class="mc-cc-bell" id="mc-cc-bell" aria-label="${esc(t('mc.cc.notifications'))}">${ICON_BELL}</button>
           ${ccAvatarHtml()}
         </div>
@@ -3124,6 +3155,10 @@ export async function render({ signal, routeHash = '#/control' } = {}) {
     event.preventDefault();
     clearArmedSource();
   };
+  document.getElementById('mc-cc-details')?.addEventListener('click', () => {
+    const deviceId = activeInspectorDeviceId();
+    if (deviceId) openInspector(deviceId);
+  });
   document.addEventListener('keydown', armedSourceEscapeHandler);
   window.removeEventListener('message', handlePresentationPreviewMessage);
   window.addEventListener('message', handlePresentationPreviewMessage);

@@ -116,17 +116,50 @@ function wallOrderKey(w) {
   const m = String((w && w.name) || '').match(/(\d+)/);
   return m ? parseInt(m[1], 10) : 999;
 }
-// Shared uniform tile size in px = stageWidth / maxCols, clamped so a lone
-// display can't balloon and tiny stages stay usable. Set as --mc-tile on the
-// stage; cards are sized to cols x --mc-tile in CSS.
-const TILE_MIN_PX = 160, TILE_MAX_PX = 520;
+// Shared uniform tile size is constrained by BOTH stage width and the usable
+// canvas height. The height calculation measures fixed title/control chrome
+// separately from the scalable preview grid so grouped walls remain fully
+// visible without shrinking when vertical space is plentiful.
+const TILE_MIN_PX = 64, TILE_MAX_PX = 520;
 function applyTileSize(container, maxCols) {
-  // Defer the first layout measure until after stylesheets/layout settle so we
-  // do not force layout before CSS is ready (and avoid FOUC sizing jumps).
+  const columns = Math.max(1, maxCols);
+  // Establish the width bound immediately. renderStage calls this before it
+  // installs the new cards, so waiting two frames here would expose the 300px
+  // CSS fallback to synchronous consumers and produce a visible sizing jump.
+  const initialWidth = container.clientWidth || 0;
+  if (initialWidth > 0) {
+    container.style.setProperty('--mc-tile', `${Math.min(TILE_MAX_PX, Math.floor(initialWidth / columns))}px`);
+  }
+
+  // Refine against rendered vertical geometry after styles and cards settle.
   const run = () => {
     const w = container.clientWidth || 0;
     if (w <= 0) return; // not laid out yet; ResizeObserver will fire when it is
-    const tile = Math.max(TILE_MIN_PX, Math.min(TILE_MAX_PX, Math.floor(w / Math.max(1, maxCols))));
+    const widthBound = Math.floor(w / columns);
+    const containerHeight = container.clientHeight || 0;
+    const canvasHeight = container.parentElement?.clientHeight || 0;
+    const availableHeight = canvasHeight > 0 ? canvasHeight : containerHeight;
+    const currentTile = parseFloat(getComputedStyle(container).getPropertyValue('--mc-tile')) || widthBound;
+    let heightBound = TILE_MAX_PX;
+
+    if (availableHeight > 0 && currentTile > 0) {
+      const surfaces = container.querySelectorAll(
+        ':scope > .mc-wall, :scope > .mc-display-card-tile, :scope > .mc-wall-groups-overview',
+      );
+      surfaces.forEach((surface) => {
+        const scalable = surface.matches('.mc-wall-groups-overview')
+          ? Array.from(surface.querySelectorAll('.mc-wall-region .mc-wall-grid'))
+          : [surface.querySelector(':scope > .mc-wall-grid, :scope > .mc-card-select > .mc-card-media')].filter(Boolean);
+        const scalableHeight = Math.max(0, ...scalable.map((element) => element.getBoundingClientRect().height));
+        if (scalableHeight <= 0) return;
+        const fixedHeight = Math.max(0, surface.getBoundingClientRect().height - scalableHeight);
+        const scalablePerTile = scalableHeight / currentTile;
+        if (scalablePerTile <= 0) return;
+        heightBound = Math.min(heightBound, Math.floor(Math.max(0, availableHeight - fixedHeight) / scalablePerTile));
+      });
+    }
+
+    const tile = Math.max(TILE_MIN_PX, Math.min(widthBound, heightBound));
     container.style.setProperty('--mc-tile', tile + 'px');
   };
   if (typeof requestAnimationFrame === 'function') {
@@ -253,8 +286,6 @@ function displayCard(display, { livePreviewTarget = null, previewSurfaceKey = nu
         </div>
         <div class="mc-card-nowplaying" title="${nowPlaying}">${nowPlaying}</div>
       </button>
-      <button type="button" class="mc-card-details" data-details-device-id="${esc(display.id)}"
-              aria-label="${esc(`Details for ${display.name}`)}" title="${esc(`Details for ${display.name}`)}">i</button>
       <div class="mc-card-foot">
         <span class="mc-card-title">${esc(display.name)}</span>
         ${screensaverSelect(`data-device-id="${esc(display.id)}"`, screensaverValueForDisplays([display]))}
@@ -328,8 +359,6 @@ function wallCell(member, screenNo, { showPreview = true } = {}) {
       ${preview}
       ${statusBadge(s)}
       <span class="mc-wall-cell-name">${esc(cellLabel)}</span>
-      <button type="button" class="mc-card-details" data-details-device-id="${esc(member.id)}"
-              aria-label="${esc(`Details for ${member.name}`)}" title="${esc(`Details for ${member.name}`)}">i</button>
     </div>`;
 }
 
@@ -467,8 +496,6 @@ function wallCard(wall, byId, livePreviewTargets = new Map(), overviewMode = fal
         <span class="mc-wall-all-ico" aria-hidden="true">${ICON_WALL_ALL}</span>
         <span>${esc(fillLabel)}</span>
       </div>
-      ${leader ? `<button type="button" class="mc-card-details mc-wall-details" data-details-device-id="${esc(leader.id)}"
-              aria-label="${esc(`Details for ${leader.name}`)}" title="${esc(`Details for ${leader.name}`)}">i</button>` : ''}
     </section>`;
 }
 
@@ -855,7 +882,7 @@ function bumpStageMetric(container, key, n = 1) {
  * @param {(ids:string[], source:object, label:string)=>void} [opts.onScreensaver]
  *   A screensaver option was chosen on a card; broadcast `source` to `ids`.
  */
-export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], livePreviewTargets = new Map(), activeControlTarget = null, overviewMode = false, onSelect, onSelectGroup, onSelectRegion, onSelectWall, onDetails, onCalibrateWall, onAddDisplay, onTransportAction, onSetWallMode, onScreensaver } = {}) {
+export function renderStage(container, { displays = [], walls = [], byId = new Map(), selectedIds = [], livePreviewTargets = new Map(), activeControlTarget = null, overviewMode = false, onSelect, onSelectGroup, onSelectRegion, onSelectWall, onCalibrateWall, onAddDisplay, onTransportAction, onSetWallMode, onScreensaver } = {}) {
   if (!container) return;
   const selected = new Set(selectedIds);
 
@@ -931,8 +958,8 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
 
   // Display cards are <article> with a dedicated <button class="mc-card-select">
   // (the preview media) as the control-target affordance; wall screen cells are
-  // <div role=button>. Inspector access is reserved for .mc-card-details. The
-  // whole-wall <a href="#/walls"> "Edit" link navigates natively. There are NO
+  // <div role=button>. Inspector access lives outside the stage so previews stay
+  // unobscured. The whole-wall <a href="#/walls"> "Edit" link navigates natively. There are NO
   // transport controls inside cards — one authoritative toolbar lives below the
   // canvas, so there is nothing to stopPropagation against here.
   container.querySelectorAll('.mc-card-select[data-device-id]').forEach(el => {
@@ -959,13 +986,6 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
     el.addEventListener('click', select);
     el.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(); }
-    });
-  });
-  container.querySelectorAll('.mc-card-details[data-details-device-id]').forEach((button) => {
-    button.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (typeof onDetails === 'function') onDetails(button.dataset.detailsDeviceId);
     });
   });
   container.querySelectorAll('[data-layout-group-id]').forEach((region) => {
