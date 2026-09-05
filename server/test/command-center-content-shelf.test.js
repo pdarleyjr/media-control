@@ -60,6 +60,7 @@ test('Command Center shelf cards are large visual tiles without changing route p
 
 test('Command Center composition follows the approved shelf mockup without a duplicate internal rail', () => {
   const view = read('frontend/js/views/media-control.js');
+  const stage = read('frontend/js/views/media-control/stage.js');
   const dock = read('frontend/js/views/media-control/action-dock.js');
   const toolbox = read('frontend/js/views/media-control/toolbox.js');
   const css = read('frontend/css/media-control.css');
@@ -77,8 +78,13 @@ test('Command Center composition follows the approved shelf mockup without a dup
   assert.match(css, /\.mc-library-body \.mc-tb-tab\.active\s*\{[\s\S]*?background:\s*var\(--mc-surface/);
   assert.match(css, /\.mc-action-dock-persistent \.mc-cam-health-wrap\s*\{\s*display:\s*none/);
   assert.match(css, /--mc-library-expanded-h:\s*clamp\(220px, 27dvh, 260px\);[\s\S]*?--mc-library-layout-reserve-h:\s*calc\(var\(--mc-library-collapsed-h\) \+ 12px\)/);
-  assert.match(css, /\.mc-cc-body:has\(> \.mc-library-drawer\[data-open="true"\]\) \.mc-cc-main\s*\{[\s\S]*?--mc-library-layout-reserve-h:\s*calc\(var\(--mc-library-expanded-h\) \+ 12px\)/);
+  assert.doesNotMatch(css, /\.mc-cc-body:has\(> \.mc-library-drawer\[data-open="true"\]\) \.mc-cc-main\s*\{[\s\S]*?--mc-library-layout-reserve-h:\s*calc\(var\(--mc-library-expanded-h\) \+ 12px\)/);
   assert.match(css, /@media \(min-width: 1100px\) and \(min-height: 760px\)[\s\S]*?--mc-library-expanded-h:\s*clamp\(340px, 40dvh, 350px\)/);
+  assert.match(css, /\.mc-cc-main\s*\{[\s\S]*?grid-template-rows:\s*auto auto/);
+  assert.match(stage, /drawer\.getBoundingClientRect\(\)/);
+  assert.match(stage, /controls\.getBoundingClientRect\(\)/);
+  assert.match(stage, /mc-stage-height-constrained/);
+  assert.match(view, /refreshStageLayout\(document\.getElementById\('mc-stage'\)\)/);
   assert.match(toolbox, /class="mc-tb-header-shelf"[\s\S]*?id="mc-tb-media-header"[\s\S]*?id="mc-tb-panel"/);
 });
 
@@ -102,7 +108,7 @@ test('touch drag acquisition is prioritized, tolerant, ambiguity-safe, and lifec
   assert.match(view, /export function unmount\(\) \{\s*cancelActiveTouchDrag\(\)/);
 });
 
-test('bottom shelf is a compact horizontal touch track with state-dependent stage reserve geometry', () => {
+test('bottom shelf is a compact horizontal touch track with collision-based stage geometry', () => {
   const css = read('frontend/css/media-control.css');
 
   assert.match(css, /\.mc-library-body \.mc-tile-grid\s*\{[^}]*flex-wrap:\s*nowrap;[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*hidden;/);
@@ -114,9 +120,10 @@ test('bottom shelf is a compact horizontal touch track with state-dependent stag
   assert.match(css, /\.mc-library-body \.mc-tile-dl\s*\{[^}]*width:\s*48px;[^}]*height:\s*48px;[^}]*opacity:\s*1/);
   assert.match(css, /\.mc-card-dragover::before[\s\S]*?pointer-events:\s*none/);
 
-  // Closed reserves only the pull tab; open reserves the expanded shelf, including short tablets.
+  // Main layout always reserves only the pull tab. Open-state collision handling
+  // is driven by measured drawer/control geometry in stage.js.
   assert.match(css, /--mc-library-expanded-h:\s*clamp\(220px, 27dvh, 260px\);[\s\S]*?--mc-library-layout-reserve-h:\s*calc\(var\(--mc-library-collapsed-h\) \+ 12px\)/);
-  assert.match(css, /\.mc-cc-body:has\(> \.mc-library-drawer\[data-open="true"\]\) \.mc-cc-main\s*\{[\s\S]*?--mc-library-layout-reserve-h:\s*calc\(var\(--mc-library-expanded-h\) \+ 12px\)/);
+  assert.doesNotMatch(css, /\.mc-cc-body:has\(> \.mc-library-drawer\[data-open="true"\]\) \.mc-cc-main\s*\{[\s\S]*?--mc-library-layout-reserve-h:\s*calc\(var\(--mc-library-expanded-h\) \+ 12px\)/);
   assert.match(css, /@media \(min-width: 769px\) and \(max-width: 1024px\) and \(max-height: 600px\)[\s\S]*?--mc-library-expanded-h:\s*180px;/);
 });
 
@@ -125,7 +132,7 @@ test('Command Center keeps preview chrome structural and exposes one external De
   const view = read('frontend/js/views/media-control.js');
   const css = read('frontend/css/media-control.css');
 
-  assert.match(stage, /container\.clientHeight/);
+  assert.match(stage, /collisionHeightBudget\(container\)/);
   assert.match(stage, /Math\.min\(widthBound, heightBound\)/);
   assert.doesNotMatch(stage, /class="mc-card-details/);
   assert.doesNotMatch(stage, /querySelectorAll\('\.mc-card-details/);
