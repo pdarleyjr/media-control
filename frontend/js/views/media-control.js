@@ -187,6 +187,8 @@ async function loadWorkspaceWallpaperOptions() {
   }
 }
 let multiviewEscapeHandler = null;
+let libraryResizeHandler = null;
+let libraryResizeFrame = null;
 let selectedIds = [];   // ids on the stage; re-hydrated from the server, persisted on change
 let wallMemberIds = new Set();   // device ids owned by a video wall (never their own card)
 let walls = [];
@@ -3446,8 +3448,27 @@ pruneSelection();
     // don't tab into hidden tiles — but leave the docked reopen tab focusable so
     // it can be pulled back open. The tab lives OUTSIDE .mc-library-inner.
     const libraryInner = libraryDrawer.querySelector('.mc-library-inner');
+    const fitLibraryBelowControls = () => {
+      const controls = document.querySelector('.mc-cc-controls');
+      if (!controls) return;
+      const previousEffective = libraryDrawer.style.getPropertyValue('--mc-library-effective-h');
+      libraryDrawer.style.removeProperty('--mc-library-effective-h');
+      const preferred = parseFloat(getComputedStyle(libraryDrawer).height);
+      if (previousEffective) {
+        libraryDrawer.style.setProperty('--mc-library-effective-h', previousEffective);
+      }
+      if (!Number.isFinite(preferred) || preferred <= 0) return;
+      const available = Math.floor(window.innerHeight - controls.getBoundingClientRect().bottom - 4);
+      const minimum = Math.min(preferred, 180);
+      const effective = Math.min(preferred, Math.max(minimum, available));
+      libraryDrawer.style.setProperty('--mc-library-effective-h', `${effective}px`);
+    };
     const setLibraryOpen = (open) => {
       if (!open) cancelActiveTouchDrag();
+      // Preserve the natural closed-stage size whenever a shorter drawer still
+      // leaves a useful media track. Only after the 180px drawer floor is reached
+      // may stage.js shrink previews to clear the measured obstruction.
+      if (open) fitLibraryBelowControls();
       libraryDrawer.dataset.open = open ? 'true' : 'false';
       libraryDrawer.querySelectorAll('[data-library-toggle]').forEach(btn => {
         btn.setAttribute('aria-expanded', open ? 'true' : 'false');
@@ -3468,6 +3489,18 @@ pruneSelection();
         refreshStageLayout(document.getElementById('mc-stage'));
       }
     });
+    libraryResizeHandler = () => {
+      if (libraryResizeFrame !== null) cancelAnimationFrame(libraryResizeFrame);
+      refreshStageLayout(document.getElementById('mc-stage'));
+      libraryResizeFrame = requestAnimationFrame(() => {
+        libraryResizeFrame = requestAnimationFrame(() => {
+          libraryResizeFrame = null;
+          if (libraryDrawer.dataset.open === 'true') fitLibraryBelowControls();
+          refreshStageLayout(document.getElementById('mc-stage'));
+        });
+      });
+    };
+    window.addEventListener('resize', libraryResizeHandler);
   }
 
   // Mount the persistent live-broadcast chip (Task 4.5). The chip subscribes to
@@ -3544,6 +3577,14 @@ window.mcGetNavigationContext = () => ({ selected_target: activeTarget });
 export function unmount() {
   cancelActiveTouchDrag();
   disposeStageLayout(document.getElementById('mc-stage'));
+  if (libraryResizeHandler) {
+    window.removeEventListener('resize', libraryResizeHandler);
+    libraryResizeHandler = null;
+  }
+  if (libraryResizeFrame !== null) {
+    cancelAnimationFrame(libraryResizeFrame);
+    libraryResizeFrame = null;
+  }
   window.removeEventListener('message', handlePresentationPreviewMessage);
   targetRestoreLifecycleGeneration += 1;
   // Abort the preference store so a pending write can't mutate an unmounted view.

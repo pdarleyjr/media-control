@@ -3491,6 +3491,11 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
       viewport: { width: 1857, height: 970 },
       deviceScaleFactor: 1,
     });
+    // The production podium authenticates with a device token and therefore
+    // renders beneath the fixed 88px console header. Reproduce that vertical
+    // geometry here in addition to the Command Center's own 72px header.
+    await page.evaluate(() => document.body.classList.add('console-mode'));
+    await waitForCommandCenterVisualReady(page);
 
     const auditGeometry = async (width, height) => {
       await page.setViewportSize({ width, height });
@@ -3656,6 +3661,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
       await expect(page.locator('#mc-inspector')).toBeHidden();
 
       const closedBaseline = await auditGeometry(1857, 970);
+      expect(closedBaseline.main.top, 'production console + Command Center header stack').toBeCloseTo(160, 0);
       expectCompleteGeometry(closedBaseline, 1857, 970);
       await page.screenshot({ path: testInfo.outputPath('primary-wall-grouped-1857x970-closed.png'), fullPage: true });
 
@@ -3669,6 +3675,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
         const geometry = await auditGeometry(1857, 970);
         if (expectedOpen) {
           expectCompleteGeometry(geometry, 1857, 970, true);
+          expect(geometry.drawer.height, 'adaptive drawer retains a usable media track').toBeGreaterThanOrEqual(180);
           expect(geometry.mainPaddingBottom).toBeCloseTo(closedBaseline.mainPaddingBottom, 1);
           for (const [index, screen] of geometry.screens.entries()) {
             expect(Math.abs(screen.box.width - closedBaseline.screens[index].box.width), `open screen ${index + 1} width delta`).toBeLessThanOrEqual(2);
@@ -3692,6 +3699,8 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
         JSON.stringify({ closed: closedBaseline, open: openBaseline }, null, 2),
       );
 
+      await page.evaluate(() => document.body.classList.remove('console-mode'));
+      await waitForCommandCenterVisualReady(page);
       for (const [width, height] of [[1920, 1080], [1366, 768], [838, 500], [768, 1024], [390, 844]]) {
         const closed = await auditGeometry(width, height);
         expectCompleteGeometry(closed, width, height);
