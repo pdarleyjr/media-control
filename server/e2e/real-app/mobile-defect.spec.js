@@ -956,11 +956,25 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     expect(await tabs.allTextContents()).toEqual(['Videos', 'Images', 'Docs', 'Sources', 'Live Feeds', 'Additional Controls']);
     const tabGeometry = await page.evaluate(() => {
       const tabs = Array.from(document.querySelectorAll('.mc-tb-tab')).map((element) => element.getBoundingClientRect());
-      return { firstLeft: tabs[0].left, lastRight: tabs[tabs.length - 1].right, maxWidth: Math.max(...tabs.map((box) => box.width)) };
+      const handle = document.querySelector('#mc-library-drawer > [data-library-toggle]').getBoundingClientRect();
+      const search = document.querySelector('#mc-media-search').getBoundingClientRect();
+      return {
+        firstLeft: tabs[0].left,
+        firstTop: tabs[0].top,
+        firstBottom: tabs[0].bottom,
+        lastRight: tabs[tabs.length - 1].right,
+        maxWidth: Math.max(...tabs.map((box) => box.width)),
+        handleRight: handle.right,
+        handleTop: handle.top,
+        handleBottom: handle.bottom,
+        searchLeft: search.left,
+      };
     });
-    expect(tabGeometry.firstLeft).toBeGreaterThanOrEqual(72);
-    expect(tabGeometry.firstLeft).toBeLessThan(120);
-    expect(tabGeometry.lastRight).toBeLessThan(720);
+    expect(tabGeometry.firstLeft - tabGeometry.handleRight, JSON.stringify(tabGeometry)).toBeGreaterThanOrEqual(8);
+    expect(tabGeometry.firstLeft - tabGeometry.handleRight, JSON.stringify(tabGeometry)).toBeLessThanOrEqual(20);
+    expect(Math.abs(tabGeometry.firstTop - tabGeometry.handleTop), JSON.stringify(tabGeometry)).toBeLessThanOrEqual(2);
+    expect(Math.abs(tabGeometry.firstBottom - tabGeometry.handleBottom), JSON.stringify(tabGeometry)).toBeLessThanOrEqual(2);
+    expect(tabGeometry.searchLeft - tabGeometry.lastRight, JSON.stringify(tabGeometry)).toBeGreaterThanOrEqual(24);
     expect(tabGeometry.maxWidth).toBeLessThan(180);
     await expect(page.locator('#mc-media-grid .mc-tile-cell')).toHaveCount(2);
     const openVideosGeometry = await page.evaluate(() => {
