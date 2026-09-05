@@ -189,6 +189,7 @@ async function loadWorkspaceWallpaperOptions() {
 let multiviewEscapeHandler = null;
 let libraryResizeHandler = null;
 let libraryResizeFrame = null;
+let libraryContentObserver = null;
 let selectedIds = [];   // ids on the stage; re-hydrated from the server, persisted on change
 let wallMemberIds = new Set();   // device ids owned by a video wall (never their own card)
 let walls = [];
@@ -3448,27 +3449,64 @@ pruneSelection();
     // don't tab into hidden tiles — but leave the docked reopen tab focusable so
     // it can be pulled back open. The tab lives OUTSIDE .mc-library-inner.
     const libraryInner = libraryDrawer.querySelector('.mc-library-inner');
+    const measureLibraryContentMinimum = () => {
+      const body = libraryDrawer.querySelector('.mc-library-body');
+      const toolbox = libraryDrawer.querySelector('.mc-toolbox');
+      const toggle = libraryDrawer.querySelector(':scope > .mc-library-tab');
+      if (!body || !toolbox || !libraryInner || !toggle) return 0;
+
+      const pixels = (value) => {
+        const parsed = parseFloat(value);
+        return Number.isFinite(parsed) ? parsed : 0;
+      };
+      const bodyStyle = getComputedStyle(body);
+      const innerStyle = getComputedStyle(libraryInner);
+      const toggleStyle = getComputedStyle(toggle);
+      const handleInFlow = toggleStyle.position === 'absolute'
+        ? 0
+        : toggle.getBoundingClientRect().height;
+
+      // The toolbox has intrinsic height even when its scrollport clips it. Its
+      // scrollHeight therefore includes the active category header, status row,
+      // and one complete media-card row without changing the user's scroll state.
+      // Keep one compact spacing unit below that content so browser/font rounding
+      // cannot turn a just-fitting row into a clipped row on another renderer.
+      return Math.ceil(
+        handleInFlow
+        + pixels(innerStyle.borderTopWidth)
+        + pixels(innerStyle.borderBottomWidth)
+        + pixels(bodyStyle.paddingTop)
+        + toolbox.scrollHeight
+        + pixels(bodyStyle.paddingBottom)
+        + 8
+      );
+    };
     const fitLibraryBelowControls = () => {
       const controls = document.querySelector('.mc-cc-controls');
       if (!controls) return;
       const previousEffective = libraryDrawer.style.getPropertyValue('--mc-library-effective-h');
       libraryDrawer.style.removeProperty('--mc-library-effective-h');
-      const preferred = parseFloat(getComputedStyle(libraryDrawer).height);
+      const drawerStyle = getComputedStyle(libraryDrawer);
+      const preferred = parseFloat(drawerStyle.height);
+      const maximum = parseFloat(drawerStyle.maxHeight);
+      const usableFloor = parseFloat(drawerStyle.getPropertyValue('--mc-library-usable-floor-h'));
+      const measuredMinimum = measureLibraryContentMinimum();
       if (previousEffective) {
         libraryDrawer.style.setProperty('--mc-library-effective-h', previousEffective);
       }
       if (!Number.isFinite(preferred) || preferred <= 0) return;
       const available = Math.floor(window.innerHeight - controls.getBoundingClientRect().bottom - 4);
-      const minimum = Math.min(preferred, 180);
-      const effective = Math.min(preferred, Math.max(minimum, available));
+      const ceiling = Number.isFinite(maximum) && maximum > 0 ? maximum : window.innerHeight;
+      const contentMinimum = Math.min(ceiling, Math.max(0, measuredMinimum));
+      const accessibleMinimum = Number.isFinite(usableFloor) ? usableFloor : 0;
+      const configuredContentMinimum = Math.min(preferred, Math.max(contentMinimum, accessibleMinimum));
+      const unobstructedPreference = Math.min(preferred, Math.max(0, available));
+      const effective = Math.min(ceiling, Math.max(configuredContentMinimum, unobstructedPreference));
+      libraryDrawer.style.setProperty('--mc-library-content-min-h', `${contentMinimum}px`);
       libraryDrawer.style.setProperty('--mc-library-effective-h', `${effective}px`);
     };
     const setLibraryOpen = (open) => {
       if (!open) cancelActiveTouchDrag();
-      // Preserve the natural closed-stage size whenever a shorter drawer still
-      // leaves a useful media track. Only after the 180px drawer floor is reached
-      // may stage.js shrink previews to clear the measured obstruction.
-      if (open) fitLibraryBelowControls();
       libraryDrawer.dataset.open = open ? 'true' : 'false';
       libraryDrawer.querySelectorAll('[data-library-toggle]').forEach(btn => {
         btn.setAttribute('aria-expanded', open ? 'true' : 'false');
@@ -3477,6 +3515,9 @@ pruneSelection();
         if (open) { libraryInner.removeAttribute('inert'); }
         else { libraryInner.setAttribute('inert', ''); }
       }
+      // Open-state CSS integrates the handle with the category header. Measure
+      // after that state is applied so the handle is not counted twice.
+      if (open) fitLibraryBelowControls();
       refreshStageLayout(document.getElementById('mc-stage'));
     };
     libraryDrawer.querySelectorAll('[data-library-toggle]').forEach(btn => {
@@ -3501,6 +3542,13 @@ pruneSelection();
       });
     };
     window.addEventListener('resize', libraryResizeHandler);
+    if (libraryInner && typeof MutationObserver !== 'undefined') {
+      libraryContentObserver?.disconnect();
+      libraryContentObserver = new MutationObserver(() => {
+        if (libraryDrawer.dataset.open === 'true') libraryResizeHandler();
+      });
+      libraryContentObserver.observe(libraryInner, { childList: true, subtree: true });
+    }
   }
 
   // Mount the persistent live-broadcast chip (Task 4.5). The chip subscribes to
@@ -3584,6 +3632,10 @@ export function unmount() {
   if (libraryResizeFrame !== null) {
     cancelAnimationFrame(libraryResizeFrame);
     libraryResizeFrame = null;
+  }
+  if (libraryContentObserver) {
+    libraryContentObserver.disconnect();
+    libraryContentObserver = null;
   }
   window.removeEventListener('message', handlePresentationPreviewMessage);
   targetRestoreLifecycleGeneration += 1;

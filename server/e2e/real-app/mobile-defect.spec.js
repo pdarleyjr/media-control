@@ -956,11 +956,25 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     expect(await tabs.allTextContents()).toEqual(['Videos', 'Images', 'Docs', 'Sources', 'Live Feeds', 'Additional Controls']);
     const tabGeometry = await page.evaluate(() => {
       const tabs = Array.from(document.querySelectorAll('.mc-tb-tab')).map((element) => element.getBoundingClientRect());
-      return { firstLeft: tabs[0].left, lastRight: tabs[tabs.length - 1].right, maxWidth: Math.max(...tabs.map((box) => box.width)) };
+      const handle = document.querySelector('#mc-library-drawer > [data-library-toggle]').getBoundingClientRect();
+      const search = document.querySelector('#mc-media-search').getBoundingClientRect();
+      return {
+        firstLeft: tabs[0].left,
+        firstTop: tabs[0].top,
+        firstBottom: tabs[0].bottom,
+        lastRight: tabs[tabs.length - 1].right,
+        maxWidth: Math.max(...tabs.map((box) => box.width)),
+        handleRight: handle.right,
+        handleTop: handle.top,
+        handleBottom: handle.bottom,
+        searchLeft: search.left,
+      };
     });
-    expect(tabGeometry.firstLeft).toBeGreaterThanOrEqual(72);
-    expect(tabGeometry.firstLeft).toBeLessThan(120);
-    expect(tabGeometry.lastRight).toBeLessThan(720);
+    expect(tabGeometry.firstLeft - tabGeometry.handleRight, JSON.stringify(tabGeometry)).toBeGreaterThanOrEqual(8);
+    expect(tabGeometry.firstLeft - tabGeometry.handleRight, JSON.stringify(tabGeometry)).toBeLessThanOrEqual(20);
+    expect(Math.abs(tabGeometry.firstTop - tabGeometry.handleTop), JSON.stringify(tabGeometry)).toBeLessThanOrEqual(2);
+    expect(Math.abs(tabGeometry.firstBottom - tabGeometry.handleBottom), JSON.stringify(tabGeometry)).toBeLessThanOrEqual(2);
+    expect(tabGeometry.searchLeft - tabGeometry.lastRight, JSON.stringify(tabGeometry)).toBeGreaterThanOrEqual(24);
     expect(tabGeometry.maxWidth).toBeLessThan(180);
     await expect(page.locator('#mc-media-grid .mc-tile-cell')).toHaveCount(2);
     const openVideosGeometry = await page.evaluate(() => {
@@ -3458,6 +3472,14 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     const Database = require('better-sqlite3');
     const dbPath = path.join(tmpDir, 'test.db');
     const database = new Database(dbPath, { timeout: 10000 });
+    const workspaceId = database.prepare(
+      'SELECT workspace_id FROM workspace_members WHERE user_id = ? LIMIT 1'
+    ).get(userId)?.workspace_id;
+    database.prepare(`
+      INSERT INTO content
+        (id, user_id, workspace_id, filename, filepath, mime_type, file_size, processing_status, access_level)
+      VALUES ('initial-library-card', ?, ?, 'Initial Card Visibility.mp4', '', 'video/mp4', 0, 'uploaded', 'private')
+    `).run(userId, workspaceId);
     database.prepare(`
       UPDATE video_walls
       SET layout_mode = 'groups', layout_revision = 19, layout_json = ?
@@ -3545,6 +3567,8 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
         const stage = box(document.querySelector('.mc-stage.mc-cc-canvas'));
         const controls = box(document.querySelector('.mc-cc-controls'));
         const drawer = document.querySelector('#mc-library-drawer');
+        const libraryBody = document.querySelector('.mc-library-body');
+        const firstMediaTile = document.querySelector('#mc-media-grid .mc-tile');
         const regions = Array.from(document.querySelectorAll('.mc-wall-region[data-layout-group-id]')).filter(visible);
         const screens = Array.from(document.querySelectorAll('.mc-wall-region[data-layout-group-id] .mc-wall-cell')).filter(visible);
         const frames = Array.from(document.querySelectorAll('.mc-wall-region[data-layout-group-id] .mc-wall-grid')).filter(visible);
@@ -3559,6 +3583,16 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
           layoutControls: box(document.querySelector('.mc-cc-sub-row')),
           drawer: box(drawer),
           drawerOpen: drawer.dataset.open,
+          libraryBody: libraryBody ? {
+            box: box(libraryBody),
+            clientHeight: libraryBody.clientHeight,
+            scrollHeight: libraryBody.scrollHeight,
+            scrollTop: libraryBody.scrollTop,
+          } : null,
+          firstMediaTile: firstMediaTile && visible(firstMediaTile) ? {
+            box: box(firstMediaTile),
+            clippingAncestors: clippingAncestors(firstMediaTile),
+          } : null,
           mainPaddingBottom: parseFloat(getComputedStyle(document.querySelector('.mc-cc-main')).paddingBottom),
           pageWidth: document.documentElement.scrollWidth,
           viewportWidth: innerWidth,
@@ -3672,10 +3706,24 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
         await toggle.click();
         await expect(drawer).toHaveAttribute('data-open', String(expectedOpen));
         await waitForCommandCenterVisualReady(page);
+        if (expectedOpen) {
+          await expect(page.locator('#mc-media-grid .mc-tile').first()).toBeVisible();
+        }
         const geometry = await auditGeometry(1857, 970);
         if (expectedOpen) {
           expectCompleteGeometry(geometry, 1857, 970, true);
           expect(geometry.drawer.height, 'adaptive drawer retains a usable media track').toBeGreaterThanOrEqual(180);
+          expect(geometry.libraryBody, 'open drawer exposes the library scrollport').not.toBeNull();
+          expect(geometry.libraryBody.scrollTop, 'initial library state is verified without scrolling').toBe(0);
+          expect(geometry.firstMediaTile, 'initial library contains a media card').not.toBeNull();
+          expect(
+            geometry.firstMediaTile.box.bottom,
+            'first media card is fully visible above the initial drawer/viewport bottom',
+          ).toBeLessThanOrEqual(Math.min(geometry.libraryBody.box.bottom, 970) - 1);
+          expect(
+            geometry.firstMediaTile.clippingAncestors,
+            'first media card is not clipped by the library scrollport',
+          ).toEqual([]);
           expect(geometry.mainPaddingBottom).toBeCloseTo(closedBaseline.mainPaddingBottom, 1);
           for (const [index, screen] of geometry.screens.entries()) {
             expect(Math.abs(screen.box.width - closedBaseline.screens[index].box.width), `open screen ${index + 1} width delta`).toBeLessThanOrEqual(2);
@@ -3734,6 +3782,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
         SET layout_mode = 'span', layout_json = NULL, layout_revision = 0
         WHERE id = 'mobile-command-wall'
       `).run();
+      cleanup.prepare("DELETE FROM content WHERE id = 'initial-library-card'").run();
       cleanup.close();
     }
   });
