@@ -348,7 +348,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await context.close();
   });
 
-  test('bottom Content Library shelf reserves only its state-specific height and keeps the resized wall usable', async ({ browser }, testInfo) => {
+  test('bottom Content Library shelf acts as a collision boundary and keeps the resized wall usable', async ({ browser }, testInfo) => {
     const { context, page } = await openAuthedControl(browser, {
       viewport: { width: 838, height: 500 },
       deviceScaleFactor: 1,
@@ -394,12 +394,14 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     for (const key of ['x', 'y', 'width']) {
       expect(Math.abs(after.stage[key] - before.stage[key]), `stage ${key} delta`).toBeLessThanOrEqual(1);
     }
-    expect(before.stage.height - after.stage.height, 'open shelf reserves its expanded height').toBeGreaterThan(100);
-    expect(after.mainPaddingBottom - before.mainPaddingBottom, 'layout reserve grows only while open').toBeGreaterThan(100);
+    expect(after.stage.height, 'the constrained stage never grows into the open shelf').toBeLessThanOrEqual(before.stage.height + 1);
+    expect(Math.abs(after.mainPaddingBottom - before.mainPaddingBottom), 'opening does not deduct the full shelf height as padding').toBeLessThanOrEqual(1);
     expect(after.cells.length).toBe(before.cells.length);
     for (const [index, cell] of after.cells.entries()) {
       expect(cell.width, `wall cell ${index} width`).toBeGreaterThan(0);
       expect(cell.height, `wall cell ${index} height`).toBeGreaterThan(0);
+      expect(cell.width, `wall cell ${index} useful width`).toBeGreaterThanOrEqual(64);
+      expect(cell.height, `wall cell ${index} useful height`).toBeGreaterThanOrEqual(36);
       expect(cell.width / cell.height, `wall cell ${index} aspect ratio`).toBeCloseTo(16 / 9, 1);
       expect(cell.x, `wall cell ${index} left edge`).toBeGreaterThanOrEqual(after.stage.x - 1);
       expect(cell.x + cell.width, `wall cell ${index} right edge`).toBeLessThanOrEqual(after.stage.x + after.stage.width + 1);
@@ -411,6 +413,8 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     expect(expandedBox.width).toBeGreaterThanOrEqual(764);
     expect(expandedBox.height).toBeGreaterThanOrEqual(180);
     expect(expandedBox.y + expandedBox.height).toBeLessThanOrEqual(501);
+    expect(after.controls.y + after.controls.height, 'all persistent controls end above the shelf collision boundary')
+      .toBeLessThanOrEqual(expandedBox.y - 4);
     expect(await page.locator('.mc-library-backdrop, [data-library-backdrop]').count()).toBe(0);
     expect(await page.locator('.mc-stage.mc-cc-canvas').getAttribute('inert')).toBeNull();
     expect(await page.locator('.mc-stage.mc-cc-canvas').getAttribute('aria-hidden')).toBeNull();
@@ -475,7 +479,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     for (const key of ['x', 'y', 'width']) {
       expect(Math.abs(after[key] - before[key]), `stage ${key} delta`).toBeLessThanOrEqual(1);
     }
-    expect(before.height - after.height, 'expanded shelf reserves vertical space without overlaying the stage').toBeGreaterThan(100);
+    expect(after.height, 'the constrained stage never grows into the expanded shelf').toBeLessThanOrEqual(before.height + 1);
     expect(after.width, 'the stage uses the width reclaimed from the removed left rail').toBeGreaterThanOrEqual(800);
 
     const geometry = await page.evaluate(() => {
@@ -938,13 +942,15 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await waitForLibraryDrawerSettled(page);
     const stageAfterOpen = await page.locator('.mc-stage.mc-cc-canvas').boundingBox();
     const controlsAfterOpen = await page.locator('.mc-cc-controls').boundingBox();
-    for (const key of ['x', 'y', 'width']) {
+    const drawerAfterOpen = await page.locator('#mc-library-drawer').boundingBox();
+    for (const key of ['x', 'y', 'width', 'height']) {
       expect(Math.abs(stageAfterOpen[key] - stageBeforeOpen[key]), `stage ${key} delta`).toBeLessThanOrEqual(1);
     }
-    expect(stageBeforeOpen.height - stageAfterOpen.height, 'desktop shelf reserves expanded space only while open').toBeGreaterThan(250);
-    for (const key of ['width', 'height']) {
+    for (const key of ['x', 'y', 'width', 'height']) {
       expect(Math.abs(controlsAfterOpen[key] - controlsBeforeOpen[key]), `controls ${key} delta`).toBeLessThanOrEqual(1);
     }
+    expect(controlsAfterOpen.y + controlsAfterOpen.height, 'controls remain above the open drawer')
+      .toBeLessThanOrEqual(drawerAfterOpen.y - 4);
     const tabs = page.locator('.mc-tb-tab');
     await expect(tabs).toHaveCount(6);
     expect(await tabs.allTextContents()).toEqual(['Videos', 'Images', 'Docs', 'Sources', 'Live Feeds', 'Additional Controls']);
@@ -3528,6 +3534,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
           return clippedBy;
         };
 
+        const header = box(document.querySelector('.mc-cc-head'));
         const main = box(document.querySelector('.mc-cc-main'));
         const canvas = box(document.querySelector('.mc-cc-canvas-area'));
         const stage = box(document.querySelector('.mc-stage.mc-cc-canvas'));
@@ -3539,9 +3546,13 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
         const titles = Array.from(document.querySelectorAll('.mc-wall-region[data-layout-group-id] .mc-wall-title')).filter(visible);
         return {
           main,
+          header,
           canvas,
           stage,
           controls,
+          transport: box(document.querySelector('.mc-persistent-controls')),
+          layoutControls: box(document.querySelector('.mc-cc-sub-row')),
+          drawer: box(drawer),
           drawerOpen: drawer.dataset.open,
           mainPaddingBottom: parseFloat(getComputedStyle(document.querySelector('.mc-cc-main')).paddingBottom),
           pageWidth: document.documentElement.scrollWidth,
@@ -3589,8 +3600,8 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
       });
     };
 
-    const expectCompleteGeometry = (geometry, width, height) => {
-      expect(geometry.drawerOpen).toBe('false');
+    const expectCompleteGeometry = (geometry, width, height, expectedOpen = false) => {
+      expect(geometry.drawerOpen).toBe(String(expectedOpen));
       expect(geometry.stageDetails).toBe(0);
       expect(geometry.screens, `${width}x${height} physical screens`).toHaveLength(3);
       expect(geometry.frames, `${width}x${height} logical preview frames`).toHaveLength(2);
@@ -3598,6 +3609,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
       expect(geometry.pageWidth, `${width}x${height} page overflow`).toBeLessThanOrEqual(geometry.viewportWidth + 1);
       for (const [index, screen] of geometry.screens.entries()) {
         expect(screen.box.top, `${width}x${height} screen ${index + 1} top`).toBeGreaterThanOrEqual(geometry.canvas.top - 1);
+        expect(screen.box.top, `${width}x${height} screen ${index + 1} below header`).toBeGreaterThanOrEqual(geometry.header.bottom - 1);
         expect(screen.box.bottom, `${width}x${height} screen ${index + 1} bottom`).toBeLessThanOrEqual(geometry.canvas.bottom + 1);
         expect(screen.box.left, `${width}x${height} screen ${index + 1} left`).toBeGreaterThanOrEqual(geometry.main.left - 1);
         expect(screen.box.right, `${width}x${height} screen ${index + 1} right`).toBeLessThanOrEqual(geometry.main.right + 1);
@@ -3612,6 +3624,11 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
         expect(screen.label, `${width}x${height} screen ${index + 1} label`).not.toBeNull();
         expect(screen.label.top).toBeGreaterThanOrEqual(screen.box.top - 1);
         expect(screen.label.bottom).toBeLessThanOrEqual(screen.box.bottom + 1);
+      }
+      expect(geometry.transport.bottom, `${width}x${height} transport order`).toBeLessThanOrEqual(geometry.layoutControls.top + 1);
+      if (expectedOpen) {
+        expect(geometry.controls.bottom, `${width}x${height} controls vs drawer`).toBeLessThanOrEqual(geometry.drawer.top - 4);
+        expect(geometry.layoutControls.bottom, `${width}x${height} layout controls vs drawer`).toBeLessThanOrEqual(geometry.drawer.top - 4);
       }
       const widths = geometry.screens.map((screen) => screen.box.width);
       const heights = geometry.screens.map((screen) => screen.box.height);
@@ -3644,17 +3661,24 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
 
       const drawer = page.locator('#mc-library-drawer');
       const toggle = drawer.locator(':scope > [data-library-toggle]');
+      let openBaseline = null;
       for (const expectedOpen of [true, false, true, false]) {
         await toggle.click();
         await expect(drawer).toHaveAttribute('data-open', String(expectedOpen));
         await waitForCommandCenterVisualReady(page);
         const geometry = await auditGeometry(1857, 970);
         if (expectedOpen) {
-          expect(geometry.mainPaddingBottom).toBeGreaterThan(closedBaseline.mainPaddingBottom + 200);
-          expect(geometry.screens).toHaveLength(3);
-          for (const screen of geometry.screens) {
-            expect(screen.box.bottom).toBeLessThanOrEqual(geometry.canvas.bottom + 1);
-            expect(screen.clippingAncestors).toEqual([]);
+          expectCompleteGeometry(geometry, 1857, 970, true);
+          expect(geometry.mainPaddingBottom).toBeCloseTo(closedBaseline.mainPaddingBottom, 1);
+          for (const [index, screen] of geometry.screens.entries()) {
+            expect(Math.abs(screen.box.width - closedBaseline.screens[index].box.width), `open screen ${index + 1} width delta`).toBeLessThanOrEqual(2);
+            expect(Math.abs(screen.box.height - closedBaseline.screens[index].box.height), `open screen ${index + 1} height delta`).toBeLessThanOrEqual(2);
+          }
+          if (openBaseline) {
+            expect(geometry.screens.map((screen) => screen.box)).toEqual(openBaseline.screens.map((screen) => screen.box));
+            expect(geometry.controls).toEqual(openBaseline.controls);
+          } else {
+            openBaseline = geometry;
           }
           await page.screenshot({ path: testInfo.outputPath('primary-wall-grouped-1857x970-open.png'), fullPage: true });
         } else {
@@ -3663,10 +3687,27 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
           expectCompleteGeometry(geometry, 1857, 970);
         }
       }
+      fs.writeFileSync(
+        testInfo.outputPath('primary-wall-grouped-1857x970-geometry.json'),
+        JSON.stringify({ closed: closedBaseline, open: openBaseline }, null, 2),
+      );
 
       for (const [width, height] of [[1920, 1080], [1366, 768], [838, 500], [768, 1024], [390, 844]]) {
-        const geometry = await auditGeometry(width, height);
-        expectCompleteGeometry(geometry, width, height);
+        const closed = await auditGeometry(width, height);
+        expectCompleteGeometry(closed, width, height);
+        await toggle.click();
+        await expect(drawer).toHaveAttribute('data-open', 'true');
+        await waitForCommandCenterVisualReady(page);
+        const open = await auditGeometry(width, height);
+        expectCompleteGeometry(open, width, height, true);
+        for (const [index, screen] of open.screens.entries()) {
+          expect(screen.box.height, `${width}x${height} open screen ${index + 1} useful height`).toBeGreaterThanOrEqual(36);
+          expect(screen.box.width, `${width}x${height} open screen ${index + 1} useful width`).toBeGreaterThanOrEqual(64);
+        }
+        await page.screenshot({ path: testInfo.outputPath(`primary-wall-grouped-${width}x${height}-open.png`), fullPage: true });
+        await toggle.click();
+        await expect(drawer).toHaveAttribute('data-open', 'false');
+        await waitForCommandCenterVisualReady(page);
       }
 
       await page.locator('.mc-wall-region[data-layout-group-id="classroom-displays-2-3"] .mc-wall-all').click();

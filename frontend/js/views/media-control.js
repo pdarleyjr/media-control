@@ -14,7 +14,7 @@ import { reconcilePreviewClock } from './media-control/preview-clock-reconciliat
 import { mountSpanSplit } from './media-control/span-split.js';
 import { mountActionDock } from './media-control/action-dock.js';
 import * as displayState from '../services/display-state.js';
-import { previewSource, renderStage } from './media-control/stage.js';
+import { disposeStageLayout, previewSource, refreshStageLayout, renderStage } from './media-control/stage.js';
 import { buildLivePreviewTargets, livePreviewTargetDeviceIds } from './media-control/preview-targets.js';
 import { cancelActiveTouchDrag, openToolboxTab, paintArmedSource, renderToolbox } from './media-control/toolbox.js';
 import { sendToDisplays, sentToast, trackBroadcastDelivery } from './media-control/send.js';
@@ -3431,11 +3431,12 @@ pruneSelection();
     });
   }
 
-  // Content LIBRARY drawer (right side, collapsible). Toggling flips data-open on
+  // Content LIBRARY drawer (fixed bottom, collapsible). Toggling flips data-open on
   // the drawer; both the docked reopen tab and the in-header collapse button drive
   // it (mirrors the multiview toggle's aria-expanded pattern). The drawer is a
-  // FIXED overlay so collapsing/expanding never reflows the stage — the stage's
-  // ResizeObserver tiling is untouched. Drag-and-drop is unaffected: tiles keep
+  // physical obstruction: stage sizing is refreshed against its measured top
+  // boundary, shrinking only if stage + controls would collide. Drag-and-drop is
+  // unaffected: tiles keep
   // their draggable + data-drag-source attrs and the drawer never sets
   // pointer-events:none, so an operator can drag a tile from the open drawer onto
   // a stage card exactly as before.
@@ -3455,11 +3456,17 @@ pruneSelection();
         if (open) { libraryInner.removeAttribute('inert'); }
         else { libraryInner.setAttribute('inert', ''); }
       }
+      refreshStageLayout(document.getElementById('mc-stage'));
     };
     libraryDrawer.querySelectorAll('[data-library-toggle]').forEach(btn => {
       btn.addEventListener('click', () => {
         setLibraryOpen(libraryDrawer.dataset.open !== 'true');
       });
+    });
+    libraryDrawer.addEventListener('transitionend', (event) => {
+      if (event.target === libraryDrawer && event.propertyName === 'transform') {
+        refreshStageLayout(document.getElementById('mc-stage'));
+      }
     });
   }
 
@@ -3536,6 +3543,7 @@ window.mcGetNavigationContext = () => ({ selected_target: activeTarget });
 
 export function unmount() {
   cancelActiveTouchDrag();
+  disposeStageLayout(document.getElementById('mc-stage'));
   window.removeEventListener('message', handlePresentationPreviewMessage);
   targetRestoreLifecycleGeneration += 1;
   // Abort the preference store so a pending write can't mutate an unmounted view.

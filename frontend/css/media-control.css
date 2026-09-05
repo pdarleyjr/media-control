@@ -2926,7 +2926,8 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-body .mc-library-drawer {
   left: var(--sidebar-current-width);
 }
 /* Parked below the viewport (only the pull-tab shows); open slides it up. The
-   stage/grid NEVER reflows, so the displays can't blank or re-tile on toggle. */
+   stage keeps its natural size unless measured stage + controls geometry would
+   cross the drawer's real top edge. */
 .mc-cc-body .mc-library-drawer[data-open="false"] {
   transform: translateY(calc(100% - var(--mc-library-collapsed-h)));
 }
@@ -3900,21 +3901,19 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-body .mc-library-drawer {
   --mc-library-expanded-h: clamp(220px, 27dvh, 260px);
   --mc-library-layout-reserve-h: calc(var(--mc-library-collapsed-h) + 12px);
 }
-.mc-cc-body:has(> .mc-library-drawer[data-open="true"]) .mc-cc-main {
-  --mc-library-layout-reserve-h: calc(var(--mc-library-expanded-h) + 12px);
-}
 .mc-cc-main {
   padding: clamp(18px, 2.2dvh, 26px) max(16px, 2vw) calc(8px + var(--mc-library-layout-reserve-h));
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr) auto;
-  row-gap: 8px; justify-content: stretch; align-content: start;
+  grid-template-rows: auto auto;
+  row-gap: 4px; justify-content: stretch; align-content: start;
 }
 .mc-cc-main .mc-stage.mc-cc-canvas,
 .mc-cc-main .mc-stage.mc-cc-canvas.mc-cc-overview {
-  width: 100%; min-width: 0; max-width: 100%; height: 100%; padding: 0; align-content: start;
+  width: 100%; min-width: 0; max-width: 100%; height: auto; padding: 0; align-content: start;
   box-sizing: border-box;
   background: transparent; border-radius: 0; box-shadow: none;
 }
+.mc-cc-canvas-area { height: auto; flex: 0 0 auto; }
 .mc-cc-canvas-area,
 .mc-cc-controls { min-width: 0; max-width: 100%; }
 .mc-cc-overview > .mc-wall {
@@ -3974,8 +3973,22 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-body .mc-library-drawer {
 .mc-cc-overview .mc-wall-region:focus-visible .mc-wall-grid {
   box-shadow: inset 0 0 0 2px var(--accent);
 }
+.mc-stage-height-constrained .mc-wall-groups-head {
+  display: none;
+}
+.mc-stage-height-constrained .mc-wall-groups-head span,
+.mc-stage-height-constrained .mc-wall-region .mc-wall-hint { display: none !important; }
+.mc-stage-height-constrained .mc-wall-region .mc-wall-title {
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mc-stage-height-constrained .mc-wall-cell .mc-badge {
+  min-width: 0; max-width: calc(100% - 8px); overflow: hidden;
+}
+.mc-stage-height-constrained .mc-wall-cell .mc-badge-label {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
-.mc-cc-controls { gap: 8px; }
+.mc-cc-controls { gap: 4px; }
 .mc-persistent-controls { position: relative; width: 100%; min-height: 48px; }
 .mc-transport-row-host { margin-top: 0; }
 .mc-cc-tp-row { flex-wrap: nowrap; }
@@ -4045,12 +4058,12 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-body .mc-library-drawer {
     --mc-library-expanded-h: 290px;
   }
   .mc-cc-main {
-    grid-template-rows: minmax(180px, 1fr) auto;
+    grid-template-rows: auto auto;
     padding: 12px max(10px, env(safe-area-inset-right)) calc(6px + var(--mc-library-layout-reserve-h)) max(10px, env(safe-area-inset-left));
-    row-gap: 6px; overflow: hidden; align-content: stretch;
+    row-gap: 6px; overflow: hidden; align-content: start;
   }
   .mc-cc-canvas-area { width: 100%; height: auto; min-height: 180px; }
-  .mc-cc-main .mc-stage.mc-cc-canvas { height: 100%; }
+  .mc-cc-main .mc-stage.mc-cc-canvas { height: auto; }
   .mc-persistent-controls { display: flex; flex-direction: column; gap: 6px; }
   .mc-cc-controls .mc-action-dock-host { position: static; width: 100%; }
   .mc-action-dock-persistent { display: flex; justify-content: center; }
@@ -4073,15 +4086,16 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-body .mc-library-drawer {
     --mc-library-expanded-h: 180px;
   }
   .mc-cc-main {
-    grid-template-rows: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
     padding: 8px 10px calc(4px + var(--mc-library-layout-reserve-h));
-    row-gap: 4px; align-content: stretch;
+    row-gap: 4px; align-content: start;
   }
-  .mc-cc-main .mc-stage.mc-cc-canvas { height: 100%; }
+  .mc-cc-main .mc-stage.mc-cc-canvas { height: auto; }
   .mc-cc-main .mc-stage.mc-cc-canvas.mc-cc-overview {
     grid-auto-rows: max-content;
     align-content: start;
   }
+  .mc-cc-overview .mc-wall-region .mc-wall-hint { display: none !important; }
   .mc-cc-main .mc-stage.mc-cc-canvas.mc-cc-overview > .mc-wall {
     display: block; height: auto; max-height: none; padding: 0; align-self: start;
   }

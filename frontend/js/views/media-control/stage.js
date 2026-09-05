@@ -116,33 +116,94 @@ function wallOrderKey(w) {
   const m = String((w && w.name) || '').match(/(\d+)/);
   return m ? parseInt(m[1], 10) : 999;
 }
-// Shared uniform tile size is constrained by BOTH stage width and the usable
-// canvas height. The height calculation measures fixed title/control chrome
-// separately from the scalable preview grid so grouped walls remain fully
-// visible without shrinking when vertical space is plentiful.
+// Shared uniform tile size is constrained by stage width and, only while the
+// fixed Content Library is open, the measured collision boundary above it.
+// Fixed title/control chrome is measured separately from the scalable preview
+// grid so grouped walls remain fully visible without shrinking when vertical
+// space is plentiful.
 const TILE_MIN_PX = 64, TILE_MAX_PX = 520;
+const LIBRARY_SAFE_GAP_PX = 4;
+
+function setTileSize(container, value) {
+  const next = Math.max(TILE_MIN_PX, Math.floor(value));
+  const current = parseFloat(container.style.getPropertyValue('--mc-tile'));
+  if (!Number.isFinite(current) || Math.abs(current - next) >= 1) {
+    container.style.setProperty('--mc-tile', `${next}px`);
+  }
+  return next;
+}
+
+function drawerLayoutTop(drawer) {
+  const rect = drawer.getBoundingClientRect();
+  const transform = getComputedStyle(drawer).transform;
+  if (!transform || transform === 'none' || typeof DOMMatrixReadOnly === 'undefined') return rect.top;
+  try {
+    // The drawer animates with translateY. Removing the in-flight transform
+    // yields the real open-state obstruction boundary without waiting for the
+    // animation and without assuming a viewport-specific drawer height.
+    return rect.top - new DOMMatrixReadOnly(transform).m42;
+  } catch {
+    return rect.top;
+  }
+}
+
+function collisionHeightBudget(container) {
+  const drawer = document.getElementById('mc-library-drawer');
+  if (!drawer || drawer.dataset.open !== 'true') return Infinity;
+
+  const main = container.closest('.mc-cc-main');
+  const controls = main?.querySelector('.mc-cc-controls');
+  if (!main || !controls) return Infinity;
+
+  const stageTop = container.getBoundingClientRect().top;
+  const controlsHeight = controls.getBoundingClientRect().height;
+  const rowGap = parseFloat(getComputedStyle(main).rowGap) || 0;
+  return Math.max(0, drawerLayoutTop(drawer) - LIBRARY_SAFE_GAP_PX - stageTop - rowGap - controlsHeight);
+}
+
+function updateCollisionMode(container, libraryOpen) {
+  if (!libraryOpen) {
+    container.classList.remove('mc-stage-height-constrained');
+    return;
+  }
+
+  const main = container.closest('.mc-cc-main');
+  const controls = main?.querySelector('.mc-cc-controls');
+  const drawer = document.getElementById('mc-library-drawer');
+  if (!main || !controls || !drawer) return;
+  // Measure the natural chrome on every refresh so an open drawer can recover
+  // from constrained phone/landscape sizing after a larger resize.
+  container.classList.remove('mc-stage-height-constrained');
+  const rowGap = parseFloat(getComputedStyle(main).rowGap) || 0;
+  const naturalFlowBottom = container.getBoundingClientRect().bottom + rowGap + controls.getBoundingClientRect().height;
+  if (naturalFlowBottom + LIBRARY_SAFE_GAP_PX - drawerLayoutTop(drawer) > 8) {
+    container.classList.add('mc-stage-height-constrained');
+  }
+}
+
 function applyTileSize(container, maxCols) {
   const columns = Math.max(1, maxCols);
   // Establish the width bound immediately. renderStage calls this before it
   // installs the new cards, so waiting two frames here would expose the 300px
   // CSS fallback to synchronous consumers and produce a visible sizing jump.
   const initialWidth = container.clientWidth || 0;
-  if (initialWidth > 0) {
-    container.style.setProperty('--mc-tile', `${Math.min(TILE_MAX_PX, Math.floor(initialWidth / columns))}px`);
+  const libraryOpen = document.getElementById('mc-library-drawer')?.dataset.open === 'true';
+  updateCollisionMode(container, libraryOpen);
+  if (initialWidth > 0 && !libraryOpen) {
+    setTileSize(container, Math.min(TILE_MAX_PX, initialWidth / columns));
   }
 
   // Refine against rendered vertical geometry after styles and cards settle.
   const run = () => {
+    updateCollisionMode(container, document.getElementById('mc-library-drawer')?.dataset.open === 'true');
     const w = container.clientWidth || 0;
     if (w <= 0) return; // not laid out yet; ResizeObserver will fire when it is
     const widthBound = Math.floor(w / columns);
-    const containerHeight = container.clientHeight || 0;
-    const canvasHeight = container.parentElement?.clientHeight || 0;
-    const availableHeight = canvasHeight > 0 ? canvasHeight : containerHeight;
+    const availableHeight = collisionHeightBudget(container);
     const currentTile = parseFloat(getComputedStyle(container).getPropertyValue('--mc-tile')) || widthBound;
     let heightBound = TILE_MAX_PX;
 
-    if (availableHeight > 0 && currentTile > 0) {
+    if (Number.isFinite(availableHeight) && currentTile > 0) {
       const surfaces = container.querySelectorAll(
         ':scope > .mc-wall, :scope > .mc-display-card-tile, :scope > .mc-wall-groups-overview',
       );
@@ -159,14 +220,28 @@ function applyTileSize(container, maxCols) {
       });
     }
 
-    const tile = Math.max(TILE_MIN_PX, Math.min(widthBound, heightBound));
-    container.style.setProperty('--mc-tile', tile + 'px');
+    setTileSize(container, Math.min(widthBound, heightBound));
   };
   if (typeof requestAnimationFrame === 'function') {
     requestAnimationFrame(() => requestAnimationFrame(run));
   } else {
     setTimeout(run, 0);
   }
+}
+
+export function refreshStageLayout(container) {
+  if (!container) return;
+  applyTileSize(container, container._mcTileMax || 1);
+}
+
+export function disposeStageLayout(container) {
+  if (!container) return;
+  try { container._mcTileRO?.disconnect(); } catch { /* observer already gone */ }
+  if (container._mcTileResizeHandler) {
+    window.removeEventListener('resize', container._mcTileResizeHandler);
+  }
+  delete container._mcTileRO;
+  delete container._mcTileResizeHandler;
 }
 
 // Pick the preview image for a display / wall screen. Video/web/YouTube captures
@@ -903,6 +978,10 @@ export function renderStage(container, { displays = [], walls = [], byId = new M
     container._mcTileRO.observe(container);
   } else {
     container._mcTileMax = maxCols;
+  }
+  if (!container._mcTileResizeHandler) {
+    container._mcTileResizeHandler = () => refreshStageLayout(container);
+    window.addEventListener('resize', container._mcTileResizeHandler, { passive: true });
   }
 
   const cards = displays
