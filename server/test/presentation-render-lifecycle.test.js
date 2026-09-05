@@ -101,9 +101,10 @@ test('passive presentation preview retries an unready frame and confirms only th
 test('stage selection and details are separate accessible actions', () => {
   const stage = read('frontend/js/views/media-control/stage.js');
   const main = read('frontend/js/views/media-control.js');
-  assert.match(stage, /mc-card-details/);
-  assert.match(stage, /onDetails/);
-  assert.match(stage, /stopPropagation/);
+  assert.doesNotMatch(stage, /mc-card-details|onDetails/);
+  assert.match(main, /id="mc-cc-details"/);
+  assert.match(main, /function activeInspectorDeviceId\(\)/);
+  assert.match(main, /getElementById\('mc-cc-details'\)[\s\S]{0,300}openInspector\(deviceId\)/);
   assert.match(main, /selectStageDisplayTarget/);
   assert.match(main, /openInspector/);
   assert.doesNotMatch(main, /function selectStageDisplayTarget\(deviceId\)[\s\S]{0,500}openInspector\(deviceId\)/);

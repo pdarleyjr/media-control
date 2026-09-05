@@ -51,7 +51,12 @@ if (files.length === 0) {
   process.exit(2);
 }
 
-const args = ['--test', '--test-concurrency=1', ...files];
+// Keep the Windows command line below its 32K process-launch limit. Absolute
+// paths from a deep worktree can exceed that limit even though the equivalent
+// server-relative list is comfortably bounded; cwd already points at the
+// server root, so relative paths preserve the exact discovered test set.
+const relativeFiles = files.map((file) => path.relative(SERVER_ROOT, file));
+const args = ['--test', '--test-concurrency=1', ...relativeFiles];
 const child = spawn(process.execPath, args, {
   cwd: SERVER_ROOT,
   stdio: 'inherit',

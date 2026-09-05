@@ -348,7 +348,7 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await context.close();
   });
 
-  test('bottom Content Library shelf preserves stage and wall geometry while open', async ({ browser }, testInfo) => {
+  test('bottom Content Library shelf reserves only its state-specific height and keeps the resized wall usable', async ({ browser }, testInfo) => {
     const { context, page } = await openAuthedControl(browser, {
       viewport: { width: 838, height: 500 },
       deviceScaleFactor: 1,
@@ -365,6 +365,8 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
       return {
         stage: rect(document.querySelector('.mc-stage.mc-cc-canvas')),
         cells: Array.from(document.querySelectorAll('.mc-wall-cell')).map(rect),
+        controls: rect(document.querySelector('.mc-cc-controls')),
+        mainPaddingBottom: parseFloat(getComputedStyle(document.querySelector('.mc-cc-main')).paddingBottom),
       };
     });
 
@@ -389,14 +391,20 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await waitForLibraryDrawerSettled(page);
     const after = await measureStage();
 
-    for (const key of ['x', 'y', 'width', 'height']) {
+    for (const key of ['x', 'y', 'width']) {
       expect(Math.abs(after.stage[key] - before.stage[key]), `stage ${key} delta`).toBeLessThanOrEqual(1);
     }
+    expect(before.stage.height - after.stage.height, 'open shelf reserves its expanded height').toBeGreaterThan(100);
+    expect(after.mainPaddingBottom - before.mainPaddingBottom, 'layout reserve grows only while open').toBeGreaterThan(100);
     expect(after.cells.length).toBe(before.cells.length);
-    for (let index = 0; index < before.cells.length; index += 1) {
-      for (const key of ['x', 'y', 'width', 'height']) {
-        expect(Math.abs(after.cells[index][key] - before.cells[index][key]), `wall cell ${index} ${key} delta`).toBeLessThanOrEqual(1);
-      }
+    for (const [index, cell] of after.cells.entries()) {
+      expect(cell.width, `wall cell ${index} width`).toBeGreaterThan(0);
+      expect(cell.height, `wall cell ${index} height`).toBeGreaterThan(0);
+      expect(cell.width / cell.height, `wall cell ${index} aspect ratio`).toBeCloseTo(16 / 9, 1);
+      expect(cell.x, `wall cell ${index} left edge`).toBeGreaterThanOrEqual(after.stage.x - 1);
+      expect(cell.x + cell.width, `wall cell ${index} right edge`).toBeLessThanOrEqual(after.stage.x + after.stage.width + 1);
+      expect(cell.y, `wall cell ${index} top edge`).toBeGreaterThanOrEqual(after.stage.y - 1);
+      expect(cell.y + cell.height, `wall cell ${index} vs controls`).toBeLessThanOrEqual(after.controls.y + 1);
     }
 
     const expandedBox = await shelf.boundingBox();
@@ -464,9 +472,10 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await expect(page.locator('#mc-library-drawer')).toHaveAttribute('data-open', 'true');
     await waitForLibraryDrawerSettled(page);
     const after = await measureStage();
-    for (const key of ['x', 'y', 'width', 'height']) {
+    for (const key of ['x', 'y', 'width']) {
       expect(Math.abs(after[key] - before[key]), `stage ${key} delta`).toBeLessThanOrEqual(1);
     }
+    expect(before.height - after.height, 'expanded shelf reserves vertical space without overlaying the stage').toBeGreaterThan(100);
     expect(after.width, 'the stage uses the width reclaimed from the removed left rail').toBeGreaterThanOrEqual(800);
 
     const geometry = await page.evaluate(() => {
@@ -929,8 +938,13 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await waitForLibraryDrawerSettled(page);
     const stageAfterOpen = await page.locator('.mc-stage.mc-cc-canvas').boundingBox();
     const controlsAfterOpen = await page.locator('.mc-cc-controls').boundingBox();
-    expect(stageAfterOpen).toEqual(stageBeforeOpen);
-    expect(controlsAfterOpen).toEqual(controlsBeforeOpen);
+    for (const key of ['x', 'y', 'width']) {
+      expect(Math.abs(stageAfterOpen[key] - stageBeforeOpen[key]), `stage ${key} delta`).toBeLessThanOrEqual(1);
+    }
+    expect(stageBeforeOpen.height - stageAfterOpen.height, 'desktop shelf reserves expanded space only while open').toBeGreaterThan(250);
+    for (const key of ['width', 'height']) {
+      expect(Math.abs(controlsAfterOpen[key] - controlsBeforeOpen[key]), `controls ${key} delta`).toBeLessThanOrEqual(1);
+    }
     const tabs = page.locator('.mc-tb-tab');
     await expect(tabs).toHaveCount(6);
     expect(await tabs.allTextContents()).toEqual(['Videos', 'Images', 'Docs', 'Sources', 'Live Feeds', 'Additional Controls']);
@@ -1371,7 +1385,8 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
     await wallCell.evaluate((element) => element.click());
     await expect(page.locator('#mc-inspector')).toBeHidden();
     await expect(page.locator('.mc-wall.is-control-target').first()).toBeVisible();
-    const details = page.locator('.mc-wall > .mc-card-details[data-details-device-id]').first();
+    await expect(page.locator('.mc-cc-canvas .mc-card-details')).toHaveCount(0);
+    const details = page.locator('#mc-cc-details');
     await expect(details).toHaveAttribute('aria-label', /Details for/);
     await details.click();
     await expect(page.locator('#mc-inspector')).toBeVisible();
@@ -3409,7 +3424,8 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
       await expect(page.locator('.mc-display-card[data-device-id="selection-standalone"]')).toHaveClass(/is-active/);
       await expect(page.locator('#mc-inspector')).toBeHidden();
 
-      const details = page.locator('.mc-card-details[data-details-device-id="selection-standalone"]');
+      await expect(page.locator('.mc-cc-canvas .mc-card-details')).toHaveCount(0);
+      const details = page.locator('#mc-cc-details');
       await expect(details).toHaveAttribute('aria-label', 'Details for Selection Standalone');
       await details.click();
       await expect(page.locator('#mc-inspector')).toBeVisible();
@@ -3428,6 +3444,246 @@ test.describe('Mobile operator console — defect reproduction + acceptance', ()
         cleanup.prepare("DELETE FROM video_walls WHERE id='selection-split-wall'").run();
         cleanup.prepare("DELETE FROM devices WHERE id IN ('selection-standalone','selection-split-left','selection-split-right')").run();
       })();
+      cleanup.close();
+    }
+  });
+
+  test('exact 1857x970 grouped Primary Wall stays fully visible through library and target lifecycles', async ({ browser }, testInfo) => {
+    const Database = require('better-sqlite3');
+    const dbPath = path.join(tmpDir, 'test.db');
+    const database = new Database(dbPath, { timeout: 10000 });
+    database.prepare(`
+      UPDATE video_walls
+      SET layout_mode = 'groups', layout_revision = 19, layout_json = ?
+      WHERE id = 'mobile-command-wall'
+    `).run(JSON.stringify({
+      version: 1,
+      revision: 19,
+      preset: 'span-right',
+      groups: [
+        {
+          id: 'classroom-front-left',
+          name: 'Classroom 1 - Front Left',
+          layout: 'solo',
+          member_ids: ['mobile-wall-display-1'],
+          leader_device_id: 'mobile-wall-display-1',
+          geometry: { columns: 1, rows: 1 },
+        },
+        {
+          id: 'classroom-displays-2-3',
+          name: 'Displays 2+3',
+          layout: 'span',
+          member_ids: ['mobile-wall-display-2', 'mobile-wall-display-3'],
+          leader_device_id: 'mobile-wall-display-2',
+          geometry: { columns: 2, rows: 1 },
+        },
+      ],
+    }));
+    database.close();
+
+    const { context, page } = await openAuthedControl(browser, {
+      viewport: { width: 1857, height: 970 },
+      deviceScaleFactor: 1,
+    });
+
+    const auditGeometry = async (width, height) => {
+      await page.setViewportSize({ width, height });
+      await waitForCommandCenterVisualReady(page);
+      return page.evaluate(() => {
+        const box = (element) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            top: rect.top,
+            bottom: rect.bottom,
+            left: rect.left,
+            right: rect.right,
+            width: rect.width,
+            height: rect.height,
+          };
+        };
+        const visible = (element) => {
+          const style = getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+        };
+        const clippingAncestors = (element) => {
+          const elementBox = element.getBoundingClientRect();
+          const clippedBy = [];
+          for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
+            const style = getComputedStyle(ancestor);
+            const clipsX = style.overflowX !== 'visible';
+            const clipsY = style.overflowY !== 'visible';
+            if (!clipsX && !clipsY) continue;
+            const ancestorBox = ancestor.getBoundingClientRect();
+            if ((clipsX && (elementBox.left < ancestorBox.left - 1 || elementBox.right > ancestorBox.right + 1))
+                || (clipsY && (elementBox.top < ancestorBox.top - 1 || elementBox.bottom > ancestorBox.bottom + 1))) {
+              clippedBy.push({
+                className: ancestor.className,
+                overflowX: style.overflowX,
+                overflowY: style.overflowY,
+                box: box(ancestor),
+              });
+            }
+          }
+          return clippedBy;
+        };
+
+        const main = box(document.querySelector('.mc-cc-main'));
+        const canvas = box(document.querySelector('.mc-cc-canvas-area'));
+        const stage = box(document.querySelector('.mc-stage.mc-cc-canvas'));
+        const controls = box(document.querySelector('.mc-cc-controls'));
+        const drawer = document.querySelector('#mc-library-drawer');
+        const regions = Array.from(document.querySelectorAll('.mc-wall-region[data-layout-group-id]')).filter(visible);
+        const screens = Array.from(document.querySelectorAll('.mc-wall-region[data-layout-group-id] .mc-wall-cell')).filter(visible);
+        const frames = Array.from(document.querySelectorAll('.mc-wall-region[data-layout-group-id] .mc-wall-grid')).filter(visible);
+        const titles = Array.from(document.querySelectorAll('.mc-wall-region[data-layout-group-id] .mc-wall-title')).filter(visible);
+        return {
+          main,
+          canvas,
+          stage,
+          controls,
+          drawerOpen: drawer.dataset.open,
+          mainPaddingBottom: parseFloat(getComputedStyle(document.querySelector('.mc-cc-main')).paddingBottom),
+          pageWidth: document.documentElement.scrollWidth,
+          viewportWidth: innerWidth,
+          stageDetails: document.querySelectorAll('.mc-cc-canvas .mc-card-details').length,
+          screens: screens.map((screen) => {
+            const screenBox = box(screen);
+            const badge = screen.querySelector('.mc-badge');
+            const label = screen.querySelector('.mc-wall-cell-name');
+            return {
+              box: screenBox,
+              ratio: screenBox.width / screenBox.height,
+              badge: badge && visible(badge) ? box(badge) : null,
+              label: label && visible(label) ? box(label) : null,
+              clippingAncestors: clippingAncestors(screen),
+            };
+          }),
+          frames: frames.map(box),
+          titles: titles.map((title) => ({ text: title.textContent.trim(), box: box(title) })),
+          regions: regions.map((region) => {
+            const regionStyle = getComputedStyle(region);
+            const wallStyle = getComputedStyle(region.querySelector('.mc-wall'));
+            return {
+              id: region.dataset.layoutGroupId,
+              active: region.classList.contains('is-active'),
+              ariaCurrent: region.getAttribute('aria-current'),
+              box: box(region),
+              wrapper: {
+                padding: regionStyle.padding,
+                borderTopWidth: regionStyle.borderTopWidth,
+                borderRadius: regionStyle.borderRadius,
+                backgroundColor: regionStyle.backgroundColor,
+                boxShadow: regionStyle.boxShadow,
+              },
+              wall: {
+                padding: wallStyle.padding,
+                borderTopWidth: wallStyle.borderTopWidth,
+                borderRadius: wallStyle.borderRadius,
+                backgroundColor: wallStyle.backgroundColor,
+                boxShadow: wallStyle.boxShadow,
+              },
+            };
+          }),
+        };
+      });
+    };
+
+    const expectCompleteGeometry = (geometry, width, height) => {
+      expect(geometry.drawerOpen).toBe('false');
+      expect(geometry.stageDetails).toBe(0);
+      expect(geometry.screens, `${width}x${height} physical screens`).toHaveLength(3);
+      expect(geometry.frames, `${width}x${height} logical preview frames`).toHaveLength(2);
+      expect(geometry.titles.map((title) => title.text)).toEqual(['Classroom 1 - Front Left', 'Displays 2+3']);
+      expect(geometry.pageWidth, `${width}x${height} page overflow`).toBeLessThanOrEqual(geometry.viewportWidth + 1);
+      for (const [index, screen] of geometry.screens.entries()) {
+        expect(screen.box.top, `${width}x${height} screen ${index + 1} top`).toBeGreaterThanOrEqual(geometry.canvas.top - 1);
+        expect(screen.box.bottom, `${width}x${height} screen ${index + 1} bottom`).toBeLessThanOrEqual(geometry.canvas.bottom + 1);
+        expect(screen.box.left, `${width}x${height} screen ${index + 1} left`).toBeGreaterThanOrEqual(geometry.main.left - 1);
+        expect(screen.box.right, `${width}x${height} screen ${index + 1} right`).toBeLessThanOrEqual(geometry.main.right + 1);
+        expect(screen.box.bottom, `${width}x${height} screen ${index + 1} vs controls`).toBeLessThanOrEqual(geometry.controls.top + 1);
+        expect(screen.ratio, `${width}x${height} screen ${index + 1} aspect ratio`).toBeCloseTo(16 / 9, 1);
+        expect(screen.clippingAncestors, `${width}x${height} screen ${index + 1} clipping ancestors`).toEqual([]);
+        expect(screen.badge, `${width}x${height} screen ${index + 1} badge`).not.toBeNull();
+        expect(screen.badge.left).toBeGreaterThanOrEqual(screen.box.left - 1);
+        expect(screen.badge.right).toBeLessThanOrEqual(screen.box.right + 1);
+        expect(screen.badge.top).toBeGreaterThanOrEqual(screen.box.top - 1);
+        expect(screen.badge.bottom).toBeLessThanOrEqual(screen.box.bottom + 1);
+        expect(screen.label, `${width}x${height} screen ${index + 1} label`).not.toBeNull();
+        expect(screen.label.top).toBeGreaterThanOrEqual(screen.box.top - 1);
+        expect(screen.label.bottom).toBeLessThanOrEqual(screen.box.bottom + 1);
+      }
+      const widths = geometry.screens.map((screen) => screen.box.width);
+      const heights = geometry.screens.map((screen) => screen.box.height);
+      const widthEvidence = `screens=${widths.join(', ')} frames=${geometry.frames.map((frame) => frame.width).join(', ')} regions=${geometry.regions.map((region) => region.box.width).join(', ')}`;
+      expect(Math.max(...widths) - Math.min(...widths), `${width}x${height} equal TV widths: ${widthEvidence}`).toBeLessThanOrEqual(1.5);
+      expect(Math.max(...heights) - Math.min(...heights), `${width}x${height} equal TV heights: ${heights.join(', ')}`).toBeLessThanOrEqual(1.5);
+      for (const region of geometry.regions) {
+        expect(region.wrapper.padding, `${width}x${height} ${region.id} wrapper padding`).toBe('0px');
+        expect(region.wrapper.borderTopWidth, `${width}x${height} ${region.id} wrapper border`).toBe('0px');
+        expect(region.wrapper.borderRadius, `${width}x${height} ${region.id} wrapper radius`).toBe('0px');
+        expect(region.wrapper.backgroundColor, `${width}x${height} ${region.id} wrapper background`).toBe('rgba(0, 0, 0, 0)');
+        expect(region.wrapper.boxShadow, `${width}x${height} ${region.id} wrapper shadow`).toBe('none');
+        expect(region.wall.padding, `${width}x${height} ${region.id} wall padding`).toBe('0px');
+        expect(region.wall.borderTopWidth, `${width}x${height} ${region.id} wall border`).toBe('0px');
+        expect(region.wall.borderRadius, `${width}x${height} ${region.id} wall radius`).toBe('0px');
+        expect(region.wall.backgroundColor, `${width}x${height} ${region.id} wall background`).toBe('rgba(0, 0, 0, 0)');
+        expect(region.wall.boxShadow, `${width}x${height} ${region.id} wall shadow`).toBe('none');
+      }
+    };
+
+    try {
+      await waitForCommandCenterVisualReady(page);
+      await page.locator('.mc-target-select').selectOption('group:classroom-front-left');
+      await expect(page.locator('.mc-wall-region[data-layout-group-id="classroom-front-left"]')).toHaveAttribute('aria-current', 'true');
+      await expect(page.locator('#mc-inspector')).toBeHidden();
+
+      const closedBaseline = await auditGeometry(1857, 970);
+      expectCompleteGeometry(closedBaseline, 1857, 970);
+      await page.screenshot({ path: testInfo.outputPath('primary-wall-grouped-1857x970-closed.png'), fullPage: true });
+
+      const drawer = page.locator('#mc-library-drawer');
+      const toggle = drawer.locator(':scope > [data-library-toggle]');
+      for (const expectedOpen of [true, false, true, false]) {
+        await toggle.click();
+        await expect(drawer).toHaveAttribute('data-open', String(expectedOpen));
+        await waitForCommandCenterVisualReady(page);
+        const geometry = await auditGeometry(1857, 970);
+        if (expectedOpen) {
+          expect(geometry.mainPaddingBottom).toBeGreaterThan(closedBaseline.mainPaddingBottom + 200);
+          expect(geometry.screens).toHaveLength(3);
+          for (const screen of geometry.screens) {
+            expect(screen.box.bottom).toBeLessThanOrEqual(geometry.canvas.bottom + 1);
+            expect(screen.clippingAncestors).toEqual([]);
+          }
+          await page.screenshot({ path: testInfo.outputPath('primary-wall-grouped-1857x970-open.png'), fullPage: true });
+        } else {
+          expect(geometry.mainPaddingBottom).toBeCloseTo(closedBaseline.mainPaddingBottom, 1);
+          expect(geometry.screens[0].box).toEqual(closedBaseline.screens[0].box);
+          expectCompleteGeometry(geometry, 1857, 970);
+        }
+      }
+
+      for (const [width, height] of [[1920, 1080], [1366, 768], [838, 500], [768, 1024], [390, 844]]) {
+        const geometry = await auditGeometry(width, height);
+        expectCompleteGeometry(geometry, width, height);
+      }
+
+      await page.locator('.mc-wall-region[data-layout-group-id="classroom-displays-2-3"] .mc-wall-all').click();
+      await expect(page.locator('.mc-target-select')).toHaveValue('group:classroom-displays-2-3');
+      await expect(page.locator('#mc-inspector')).toBeHidden();
+      await expect(page.locator('#mc-cc-details')).toHaveAttribute('aria-label', 'Details for Displays 2+3');
+      await page.locator('#mc-cc-details').click();
+      await expect(page.locator('#mc-inspector')).toBeVisible();
+      await expect(page.locator('.mc-target-select')).toHaveValue('group:classroom-displays-2-3');
+    } finally {
+      await context.close();
+      const cleanup = new Database(dbPath, { timeout: 10000 });
+      cleanup.prepare(`
+        UPDATE video_walls
+        SET layout_mode = 'span', layout_json = NULL, layout_revision = 0
+        WHERE id = 'mobile-command-wall'
+      `).run();
       cleanup.close();
     }
   });
