@@ -88,7 +88,9 @@ test('Command Center composition follows the approved shelf mockup without a dup
   assert.match(view, /window\.innerHeight - controls\.getBoundingClientRect\(\)\.bottom - 4/);
   assert.match(view, /const measureLibraryContentMinimum = \(\) =>/);
   assert.match(view, /toolbox\.scrollHeight/);
-  assert.match(view, /Math\.min\(preferred, contentMinimum\)/);
+  assert.match(css, /--mc-library-usable-floor-h:\s*180px/);
+  assert.match(view, /getPropertyValue\('--mc-library-usable-floor-h'\)/);
+  assert.match(view, /Math\.max\(contentMinimum, accessibleMinimum\)/);
   assert.match(view, /Math\.max\(configuredContentMinimum, unobstructedPreference\)/);
   assert.doesNotMatch(view, /const minimum = Math\.min\(preferred, 180\)/);
   assert.match(view, /new MutationObserver/);

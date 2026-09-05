@@ -3469,6 +3469,8 @@ pruneSelection();
       // The toolbox has intrinsic height even when its scrollport clips it. Its
       // scrollHeight therefore includes the active category header, status row,
       // and one complete media-card row without changing the user's scroll state.
+      // Keep one compact spacing unit below that content so browser/font rounding
+      // cannot turn a just-fitting row into a clipped row on another renderer.
       return Math.ceil(
         handleInFlow
         + pixels(innerStyle.borderTopWidth)
@@ -3476,7 +3478,7 @@ pruneSelection();
         + pixels(bodyStyle.paddingTop)
         + toolbox.scrollHeight
         + pixels(bodyStyle.paddingBottom)
-        + 1
+        + 8
       );
     };
     const fitLibraryBelowControls = () => {
@@ -3487,6 +3489,7 @@ pruneSelection();
       const drawerStyle = getComputedStyle(libraryDrawer);
       const preferred = parseFloat(drawerStyle.height);
       const maximum = parseFloat(drawerStyle.maxHeight);
+      const usableFloor = parseFloat(drawerStyle.getPropertyValue('--mc-library-usable-floor-h'));
       const measuredMinimum = measureLibraryContentMinimum();
       if (previousEffective) {
         libraryDrawer.style.setProperty('--mc-library-effective-h', previousEffective);
@@ -3495,7 +3498,8 @@ pruneSelection();
       const available = Math.floor(window.innerHeight - controls.getBoundingClientRect().bottom - 4);
       const ceiling = Number.isFinite(maximum) && maximum > 0 ? maximum : window.innerHeight;
       const contentMinimum = Math.min(ceiling, Math.max(0, measuredMinimum));
-      const configuredContentMinimum = Math.min(preferred, contentMinimum);
+      const accessibleMinimum = Number.isFinite(usableFloor) ? usableFloor : 0;
+      const configuredContentMinimum = Math.min(preferred, Math.max(contentMinimum, accessibleMinimum));
       const unobstructedPreference = Math.min(preferred, Math.max(0, available));
       const effective = Math.min(ceiling, Math.max(configuredContentMinimum, unobstructedPreference));
       libraryDrawer.style.setProperty('--mc-library-content-min-h', `${contentMinimum}px`);

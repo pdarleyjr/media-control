@@ -2913,6 +2913,7 @@ body.cc-fullscreen:not(.console-mode) .mc-cc-rail {
    existing data-open + data-library-toggle mechanics drive the vertical reveal. */
 .mc-cc-shell {
   --mc-library-collapsed-h: 48px;
+  --mc-library-usable-floor-h: 180px;
   --mc-library-expanded-h: clamp(220px, 40dvh, 360px);
 }
 .mc-cc-body .mc-library-drawer {
